@@ -7,18 +7,18 @@ use std::cmp::Reverse;
 use std::time::{Instant, SystemTime};
 
 use amane::{
-    Canvas, Cap, Center, Column, Cursor, Key, Line, Notification, Notifications, Padding,
-    Rectangle, Row, Scroll, Service, Shape as _, Size, SpaceBetween, Stack, Start, Text, Urgency,
-    Widget, children, shapes,
+    Center, Column, Cursor, Key, Notification, Notifications, Padding, Rectangle, Row, Scroll,
+    Service, Size, SpaceBetween, Stack, Start, Text, Urgency, Widget, children,
 };
 
+use crate::icon::Icon;
 use crate::island::activity::Toast;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::notifications::{self, Daemon};
 use crate::theme;
-use crate::view::{self, Icon};
+use crate::view;
 
 const INSET: f32 = 20.0;
 
@@ -460,7 +460,7 @@ fn header(count: usize) -> Row {
 }
 
 // an icon and what it means, in the middle of where the cards go
-fn state(icon: Canvas, title: &str, detail: &str) -> Rectangle {
+fn state(icon: Rectangle, title: &str, detail: &str) -> Rectangle {
     let mut lines = children![
         icon,
         Text::new(title).size(14.0).color(theme::FG).weight(600),
@@ -669,20 +669,9 @@ fn label_in(label: &str, width: f32) -> Text {
 // a round target with a cross, pressed to close the notification
 fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
     let monitor = monitor.to_owned();
-    let side = 10.0;
 
-    let cross = Canvas::new().width(side).height(side).shapes(shapes![
-        Line::new()
-            .from(0.0, 0.0)
-            .to(side, side)
-            .stroke(1.7, theme::MUTED)
-            .cap(Cap::Round),
-        Line::new()
-            .from(side, 0.0)
-            .to(0.0, side)
-            .stroke(1.7, theme::MUTED)
-            .cap(Cap::Round),
-    ]);
+    // on the same 20 unit grid as every icon, so its 10 point cross keeps the icons' line
+    let cross = Icon::Dismiss.on(20.0, theme::MUTED);
 
     Rectangle::new()
         .width(TARGET)

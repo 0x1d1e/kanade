@@ -6,17 +6,18 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use amane::{
-    Audio, Canvas, Center, Color, Column, Cursor, End, Padding, Path, Rectangle, Row, Scroll,
-    Service, Shape as _, SpaceBetween, Stack, Start, Text, Widget, children, shapes,
+    Audio, Center, Color, Column, Cursor, End, Padding, Rectangle, Row, Scroll, Service,
+    SpaceBetween, Stack, Start, Text, Widget, children,
 };
 
 use super::slider::Slider;
+use crate::icon::Icon;
 use crate::island::activity::Track;
 use crate::island::geometry;
 use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
 use crate::theme;
-use crate::view::{Icon, art, bar};
+use crate::view::{art, bar};
 
 const INSET: f32 = 20.0;
 
@@ -351,13 +352,20 @@ fn play_pause(deck: Option<&Deck>) -> (Transport, Option<Control>) {
 
 /*
  * a round button; filled ones carry their glyph in the body's color. None to do leaves it faded,
- * at the same place, not pressable
+ * at the same place, not pressable. Faded part by part, not as a whole: a faded group costs the
+ * gpu a canvas of its own every frame (#36). The body-colored glyph on a fill stays solid, it
+ * shows the body through either way
  */
 fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Control>) -> Rectangle {
+    let fade = |color: Color| match control {
+        Some(_) => color,
+        None => faded(color),
+    };
+
     let tone = if fill.is_some() {
         theme::BODY
     } else {
-        theme::FG
+        fade(theme::FG)
     };
 
     let button = Rectangle::new()
@@ -368,7 +376,7 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
         .child(glyph.draw(side * 0.5, tone));
 
     let button = match fill {
-        Some(fill) => button.fill(fill),
+        Some(fill) => button.fill(fade(fill)),
         None => button,
     };
 
@@ -378,8 +386,15 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
             .on_click(super::on_left(move || {
                 media::control(control.clone());
             })),
-        None => button.opacity(DISABLED),
+        None => button,
     }
+}
+
+// as if drawn at DISABLED opacity
+fn faded(color: Color) -> Color {
+    let alpha = (f32::from(color.alpha()) * DISABLED).round() as u8;
+
+    Color::rgba(color.red(), color.green(), color.blue(), alpha)
 }
 
 // the speaker's icon and its level `width` wide, set by a press or a drag along it
@@ -420,39 +435,16 @@ enum Transport {
 }
 
 impl Transport {
-    // on a 20 unit grid like the island's icons, in `tone` so it can sit on a filled button
-    fn draw(self, side: f32, tone: Color) -> Canvas {
-        let u = side / 20.0;
-
-        let triangle = |from: f32, to: f32| {
-            Path::new()
-                .move_to(from * u, 4.5 * u)
-                .line_to(to * u, 10.0 * u)
-                .line_to(from * u, 15.5 * u)
-                .close()
-                .fill(tone)
+    // in `tone`, so it can sit on a filled button
+    fn draw(self, side: f32, tone: Color) -> Rectangle {
+        let icon = match self {
+            Transport::Previous => Icon::Previous,
+            Transport::Play => Icon::Play,
+            Transport::Pause => Icon::Pause,
+            Transport::Next => Icon::Next,
         };
 
-        let pause = |x: f32| {
-            Path::new()
-                .move_to(x * u, 4.0 * u)
-                .line_to((x + 3.0) * u, 4.0 * u)
-                .line_to((x + 3.0) * u, 16.0 * u)
-                .line_to(x * u, 16.0 * u)
-                .close()
-                .fill(tone)
-        };
-
-        let shapes = match self {
-            Transport::Previous => shapes![triangle(10.0, 1.5), triangle(18.5, 10.0)],
-
-            // a triangle's weight sits left of its box, so it moves right to look centered
-            Transport::Play => shapes![triangle(6.0, 16.5)],
-            Transport::Pause => shapes![pause(5.0), pause(12.0)],
-            Transport::Next => shapes![triangle(1.5, 10.0), triangle(10.0, 18.5)],
-        };
-
-        Canvas::new().width(side).height(side).shapes(shapes)
+        icon.on(side, tone)
     }
 }
 
