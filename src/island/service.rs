@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
+use super::command::Command;
 use super::fade::Crossfade;
 use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
@@ -132,11 +133,7 @@ impl IslandService {
         self.presentations.overview()
     }
 
-    // where FocusedOutput Activities show; every monitor while niri does not say
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Arbiter filters by scope, #19")
-    )]
+    // where FocusedOutput Activities and IPC commands go; every monitor while niri does not say
     pub fn focused(&self, monitor: &str) -> bool {
         self.focused_output
             .as_deref()
@@ -253,9 +250,57 @@ impl IslandService {
         self.sync(now);
     }
 
+    /*
+     * what an IPC command does, decided on a read so a call that changes nothing never writes.
+     * It goes to the focused output; without niri every monitor counts as focused, so it goes to
+     * the open island, and with none open there is nowhere to open
+     */
+    pub fn resolve(&self, command: Command) -> Result<Option<Effect>, NoFocus> {
+        // nothing is open or opens while the overview is
+        if self.overview() {
+            return Ok(None);
+        }
+
+        let open = self.presentations.expanded();
+
+        let surface = match command {
+            Command::Collapse => {
+                return Ok(open.map(|(monitor, _)| Effect::Collapse(monitor.to_owned())));
+            }
+
+            Command::Toggle(surface)
+                if open
+                    .is_some_and(|(monitor, shown)| shown == surface && self.focused(monitor)) =>
+            {
+                return Ok(open.map(|(monitor, _)| Effect::Collapse(monitor.to_owned())));
+            }
+
+            Command::Open(surface) | Command::Toggle(surface) => surface,
+        };
+
+        let monitor = self
+            .focused_output
+            .as_deref()
+            .or(open.map(|(monitor, _)| monitor))
+            .ok_or(NoFocus)?;
+
+        if self.presentation(monitor) == Presentation::Expanded(surface) {
+            return Ok(None);
+        }
+
+        Ok(Some(Effect::Open(monitor.to_owned(), surface)))
+    }
+
+    pub fn apply(&mut self, effect: Effect, now: Instant) {
+        match effect {
+            Effect::Open(monitor, surface) => self.open(&monitor, surface, now),
+            Effect::Collapse(monitor) => self.input(&monitor, Input::Collapse, now),
+        }
+    }
+
     // expands without a press, so the island holds the keyboard to still get Escape
-    pub fn open(&mut self, monitor: &str, now: Instant) {
-        self.input(monitor, Input::Open(Surface::Controls), now);
+    pub fn open(&mut self, monitor: &str, surface: Surface, now: Instant) {
+        self.input(monitor, Input::Open(surface), now);
 
         // nothing opens while the overview is, and a hold without a Surface would starve the keyboard
         let expanded = self.expanded(monitor);
@@ -364,6 +409,23 @@ impl IslandService {
     }
 }
 
+// an IPC command's change to one island, from IslandService::resolve
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    Open(String, Surface),
+    Collapse(String),
+}
+
+// niri has not said which output is focused and no island is open to stand in for it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoFocus;
+
+impl std::fmt::Display for NoFocus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("island: no focused output known, is niri running?")
+    }
+}
+
 // never blocks: a nudge already queued wakes listen() just the same
 fn nudge() {
     let _ = NUDGE.0.try_send(());
@@ -395,7 +457,7 @@ mod tests {
     fn opened_island_holds_the_keyboard_through_pointer_input() {
         let mut island = IslandService::new();
 
-        island.open(MONITOR, Instant::now());
+        island.open(MONITOR, Surface::Controls, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
 
         island.set_armed(MONITOR, true);
@@ -407,7 +469,7 @@ mod tests {
     fn collapse_releases_a_held_keyboard() {
         let mut island = IslandService::new();
 
-        island.open(MONITOR, Instant::now());
+        island.open(MONITOR, Surface::Controls, Instant::now());
         island.input(MONITOR, Input::Collapse, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
 
@@ -790,7 +852,7 @@ mod tests {
         let later = now + Duration::from_secs(1);
         let mut island = compact(now);
 
-        island.open(MONITOR, now);
+        island.open(MONITOR, Surface::Controls, now);
         island.hover(MONITOR, false, now);
         assert_eq!(island.deadline(), Some(now + GRACE));
 
@@ -804,7 +866,7 @@ mod tests {
         assert_eq!(island.shape(MONITOR, later + Duration::from_secs(1)), REST);
 
         // IPC cannot open it meanwhile, nor take the keyboard
-        island.open(MONITOR, later);
+        island.open(MONITOR, Surface::Controls, later);
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
 
@@ -825,7 +887,7 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.open(MONITOR, now);
+        island.open(MONITOR, Surface::Controls, now);
         island.hover(MONITOR, true, now);
         island.hover(MONITOR, false, now);
         let later = now + ms(100);
@@ -839,5 +901,177 @@ mod tests {
         assert_eq!(island.deadline(), None);
         assert!(!island.settled(MONITOR, later + ms(1)));
         assert_eq!(island.shape(MONITOR, later + Duration::from_secs(1)), REST);
+    }
+
+    const OTHER: &str = "HDMI-A-1";
+
+    // the island after `command`, applied as the IPC handler does
+    fn run(island: &mut IslandService, command: Command, now: Instant) -> Option<Effect> {
+        let effect = island.resolve(command).expect("a focused output");
+
+        if let Some(effect) = effect.clone() {
+            island.apply(effect, now);
+        }
+
+        effect
+    }
+
+    fn focused_on(monitor: &str, now: Instant) -> IslandService {
+        let mut island = IslandService::new();
+
+        island.set_niri(Some(monitor.to_owned()), false, now);
+        island
+    }
+
+    #[test]
+    fn open_goes_to_the_focused_output_and_holds_the_keyboard() {
+        let now = Instant::now();
+        let mut island = focused_on(OTHER, now);
+
+        assert_eq!(
+            run(&mut island, Command::Open(Surface::Media), now),
+            Some(Effect::Open(OTHER.to_owned(), Surface::Media))
+        );
+        assert_eq!(
+            island.presentation(OTHER),
+            Presentation::Expanded(Surface::Media)
+        );
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert_eq!(island.keyboard(OTHER), Keyboard::Exclusive);
+    }
+
+    #[test]
+    fn open_switches_the_surface_and_skips_the_one_showing() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        run(&mut island, Command::Open(Surface::Media), now);
+        assert_eq!(run(&mut island, Command::Open(Surface::Media), now), None);
+
+        assert_eq!(
+            run(&mut island, Command::Open(Surface::Launcher), now),
+            Some(Effect::Open(MONITOR.to_owned(), Surface::Launcher))
+        );
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Launcher)
+        );
+    }
+
+    #[test]
+    fn open_on_the_focused_output_moves_the_open_island_there() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        run(&mut island, Command::Open(Surface::Controls), now);
+        island.set_niri(Some(OTHER.to_owned()), false, now);
+
+        // the same Surface open elsewhere is not showing on the focused output
+        run(&mut island, Command::Toggle(Surface::Controls), now);
+
+        assert_eq!(
+            island.presentation(OTHER),
+            Presentation::Expanded(Surface::Controls)
+        );
+        assert!(!island.expanded(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+    }
+
+    #[test]
+    fn toggle_opens_switches_and_closes() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        run(&mut island, Command::Toggle(Surface::Media), now);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Media)
+        );
+
+        run(&mut island, Command::Toggle(Surface::Controls), now);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
+
+        assert_eq!(
+            run(&mut island, Command::Toggle(Surface::Controls), now),
+            Some(Effect::Collapse(MONITOR.to_owned()))
+        );
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+    }
+
+    #[test]
+    fn toggle_closes_a_pointer_opened_surface() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.input(MONITOR, Input::Click, now);
+        run(&mut island, Command::Toggle(Surface::Controls), now);
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+    }
+
+    #[test]
+    fn collapse_closes_the_open_island_wherever_it_is() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        assert_eq!(run(&mut island, Command::Collapse, now), None);
+
+        island.input(OTHER, Input::Click, now);
+
+        assert_eq!(
+            run(&mut island, Command::Collapse, now),
+            Some(Effect::Collapse(OTHER.to_owned()))
+        );
+        assert!(!island.expanded(OTHER));
+    }
+
+    #[test]
+    fn without_niri_commands_go_to_the_open_island() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
+        assert_eq!(
+            island.resolve(Command::Toggle(Surface::Media)),
+            Err(NoFocus)
+        );
+        assert_eq!(island.resolve(Command::Collapse), Ok(None));
+
+        island.input(OTHER, Input::Click, now);
+
+        assert_eq!(
+            run(&mut island, Command::Open(Surface::Media), now),
+            Some(Effect::Open(OTHER.to_owned(), Surface::Media))
+        );
+        assert_eq!(
+            run(&mut island, Command::Toggle(Surface::Media), now),
+            Some(Effect::Collapse(OTHER.to_owned()))
+        );
+        assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
+    }
+
+    #[test]
+    fn overview_takes_no_command() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        run(&mut island, Command::Open(Surface::Media), now);
+        island.set_niri(Some(MONITOR.to_owned()), true, now);
+
+        for command in [
+            Command::Open(Surface::Launcher),
+            Command::Toggle(Surface::Media),
+            Command::Collapse,
+        ] {
+            assert_eq!(island.resolve(command), Ok(None), "{command:?}");
+        }
+
+        // the overview collapsed the island for good, so without niri nothing stands in for focus
+        island.set_niri(None, false, now);
+        assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
     }
 }
