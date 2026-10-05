@@ -46,7 +46,7 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite
-Small secondary indicator beside the primary island: screen cast, mic/camera, timer, VPN, critical battery.
+Small secondary indicator beside the primary island: screen cast, mic/camera, timer, VPN, low battery.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 
 ## Hold

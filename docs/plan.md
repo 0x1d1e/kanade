@@ -66,9 +66,9 @@ Presentation changes from the earlier draft: the old 5 states (`Rest, Compact, P
 Activity { id, kind, priority, scope, lifetime, interrupt, actions }
 Kind     = Media | Notification | Volume | Brightness | Workspace
          | Battery | Network | Bluetooth | ScreenCast | Timer | Privacy
-Priority = Critical     (low battery, privacy, call)
+Priority = Critical     (critical battery, privacy, call)
          > Actionable   (notification with actions)
-         > Ongoing      (screen cast, timer)
+         > Ongoing      (screen cast, timer, low battery)
          > Osd          (volume, brightness, workspace)
          > Media
          > Passive

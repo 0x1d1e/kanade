@@ -6,7 +6,7 @@ use amane::{
     Shape as _, Stack, Start, Text, Vertical, Widget, Zone, children, request_frame, shapes,
 };
 
-use crate::island::activity::{Activity, Detail, Device, Frame, Kind, Track, Volume};
+use crate::island::activity::{Activity, Charge, Detail, Device, Frame, Kind, Track, Volume};
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation};
 use crate::island::service::IslandService;
@@ -133,17 +133,25 @@ fn satellites(frame: &Frame, body: Rect, shape: Shape) -> Vec<Box<dyn Widget>> {
     let labels = frame
         .satellites
         .iter()
-        .map(|activity| abbreviation(activity.kind()).to_owned())
-        .chain((frame.overflow > 0).then(|| format!("+{}", frame.overflow)));
+        .map(satellite_label)
+        .chain((frame.overflow > 0).then(|| (format!("+{}", frame.overflow), theme::FG)));
 
     labels
         .enumerate()
-        .map(|(index, label)| {
+        .map(|(index, (label, tone))| {
             let at = geometry::satellite(body, index);
 
-            Box::new(dot(at, label).opacity(opacity)) as Box<dyn Widget>
+            Box::new(dot(at, label, tone).opacity(opacity)) as Box<dyn Widget>
         })
         .collect()
+}
+
+// a battery shows its number in its tone (plan 7), the rest their Kind
+fn satellite_label(activity: &Activity) -> (String, Color) {
+    match activity.detail() {
+        Detail::Battery(charge) => (charge.percent.to_string(), charge_tone(charge)),
+        _ => (abbreviation(activity.kind()).to_owned(), theme::FG),
+    }
 }
 
 /*
@@ -165,10 +173,10 @@ fn queued(frame: &Frame, body: Rect, shape: Shape) -> Option<Rectangle> {
         height: geometry::SATELLITE,
     };
 
-    Some(dot(at, frame.queued.len().to_string()).opacity(opacity))
+    Some(dot(at, frame.queued.len().to_string(), theme::FG).opacity(opacity))
 }
 
-fn dot(at: Rect, label: String) -> Rectangle {
+fn dot(at: Rect, label: String, tone: Color) -> Rectangle {
     Rectangle::new()
         .width(at.width)
         .height(at.height)
@@ -176,7 +184,7 @@ fn dot(at: Rect, label: String) -> Rectangle {
         .fill(theme::DOT)
         .align_child(Center, Center)
         .translate(at.x, at.y)
-        .child(Text::new(label).size(12.0).color(theme::FG).weight(600))
+        .child(Text::new(label).size(12.0).color(tone).weight(600))
 }
 
 // stand-in for each Kind's glyph (#21-#33), distinct per Kind
@@ -240,8 +248,118 @@ fn small_form(content: &Content) -> Option<Rectangle> {
         (presentation, Some(&Detail::Brightness(percent))) => {
             level(presentation, Level::brightness(percent))
         }
+        (presentation, Some(Detail::Battery(charge))) => battery(presentation, charge),
         _ => None,
     }
+}
+
+// amber while low, red once critical, and never color alone: the number and the words say it too
+fn charge_tone(charge: &Charge) -> Color {
+    if charge.critical {
+        theme::RED
+    } else {
+        theme::AMBER
+    }
+}
+
+/*
+ * battery, what it means, the number; Peek says what to do about it. Fixed widths, so a number
+ * that ticks down redraws in place
+ */
+fn battery(presentation: Presentation, charge: &Charge) -> Option<Rectangle> {
+    let (icon, number, size, inset) = match presentation {
+        Presentation::Compact => (22.0, 40.0, 13.0, 15.0),
+        Presentation::Peek => (26.0, 48.0, 17.0, 20.0),
+        _ => return None,
+    };
+
+    let gap = 11.0;
+    let width = geometry::shape(presentation).width - 2.0 * inset - icon - number - 2.0 * gap;
+    let tone = charge_tone(charge);
+
+    let title = if charge.critical {
+        "Battery Critical"
+    } else {
+        "Low Battery"
+    };
+
+    let mut words = children![Text::new(title).size(13.0).color(theme::FG).weight(600)];
+
+    if presentation == Presentation::Peek {
+        words.push(Box::new(
+            Text::new("Plug in to charge")
+                .size(12.0)
+                .color(theme::MUTED)
+                .weight(500),
+        ));
+    }
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right: inset,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(
+                Row::new(vec![
+                    Box::new(battery_icon(icon, charge.percent, tone)) as Box<dyn Widget>,
+                    Box::new(Column::new(words).width(width).gap(3.0)),
+                    Box::new(
+                        Rectangle::new()
+                            .width(number)
+                            .height(size)
+                            .align_child(End, Center)
+                            .child(
+                                Text::new(format!("{}%", charge.percent))
+                                    .size(size)
+                                    .color(tone)
+                                    .weight(600),
+                            ),
+                    ),
+                ])
+                .gap(gap)
+                .align(Center),
+            ),
+    )
+}
+
+// a battery on its side, filled as far as it is charged, a sliver at least so empty still reads
+fn battery_icon(width: f32, percent: u8, tone: Color) -> Row {
+    let nub = width / 11.0;
+    let shell = width - nub - 1.0;
+    let height = width / 2.0;
+    let border = 1.5;
+    let inner = shell - 2.0 * border - 2.0;
+    let filled = (inner * f32::from(percent.min(100)) / 100.0).max(2.0);
+
+    let body = Rectangle::new()
+        .width(shell)
+        .height(height)
+        .radius(height / 3.5)
+        .border(border, tone)
+        .padding(border + 1.0)
+        .align_child(Start, Center)
+        .child(
+            Rectangle::new()
+                .width(filled)
+                .height(height - 2.0 * border - 2.0)
+                .radius(1.5)
+                .fill(tone),
+        );
+
+    let tip = Rectangle::new()
+        .width(nub)
+        .height(height / 2.5)
+        .radius(nub / 2.0)
+        .fill(tone);
+
+    Row::new(children![body, tip])
+        .width(width)
+        .gap(1.0)
+        .align(Center)
 }
 
 // a Volume or Brightness as one bar, the same layout for both
