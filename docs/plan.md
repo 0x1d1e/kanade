@@ -161,7 +161,7 @@ Timings (starting values, tune in Phase 6): hover 100-140 ms, expand ~180 ms, su
 - One island per monitor (`window_per_monitor`).
 - Transients and workspace OSD: focused output only.
 - Focused output = output of the workspace with `is_focused` (from `WorkspaceActivated`/`WorkspacesChanged`).
-- Fullscreen on an output: rule 6. The island is on `Layer::Overlay`, above fullscreen, so suppression is Kanade's job, not the compositor's. niri 26.04 does not expose a fullscreen flag, so the only signal is a heuristic: the active window's `window_size` equals the output's logical size. A maximized borderless window can match too. Ship rule 6 only if the Phase 1 check shows no false positives in normal use; otherwise drop it from v0.1 and say so in the README.
+- Fullscreen on an output: rule 6. The island is on `Layer::Overlay`, above fullscreen, so suppression is Kanade's job, not the compositor's. Deferred from v0.1: the size heuristic misfires on maximized windows, so it waits for niri to report fullscreen state over IPC. See [ADR 0002](adr/0002-defer-fullscreen-suppression.md).
 - Overview open (`OverviewOpenedOrClosed`): collapse to Rest, hide transients.
 - Screen capture: niri only says a cast exists, not why. `CastStartedOrChanged` posts a Persistent `ScreenCast` Activity (Satellite); `CastStopped` withdraws it. Label: "CAPTURE" compact, "Screen capture active" expanded. Never "Recording" or "Sharing" until attribution is reliable; those would be future specializations of `ScreenCast`. Concurrent casts stay one Activity (identity unchanged); a `count` field can be added later without touching identity. Mic/camera use is not covered by niri (Phase 5 spike).
 - If the Niri socket is lost, degrade to "every monitor is focused", no error toast, log it.
@@ -311,7 +311,7 @@ Accept: smooth 60/120 Hz, no pointer blocking outside body, no resize jitter, ze
 
 **Phase 4 - surfaces**: Media, Notifications, Controls, Launcher with all states from section 7.
 
-**Phase 5 - desktop-native**: ScreenCast, Timer, Mic/camera privacy, fullscreen suppression.
+**Phase 5 - desktop-native**: ScreenCast, Timer, Mic/camera privacy, fullscreen suppression (waits on niri, ADR 0002).
 
 **Phase 6 - polish**: tune motion and timings, album-art transition, satellite morph, keyboard navigation, themes, config, reduced motion, performance.
 
@@ -325,7 +325,7 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 | Pointer-leave lost when region shrinks | Answered in #3: niri delivers it. If another compositor does not, keep the region at the larger of current and target during collapse grace |
 | Another notification daemon running | Notifications surface shows the error state; README says to stop mako/dunst |
 | Screen capture is covered by niri casts; mic/camera has no source | Phase 5 spike on PipeWire streams. Mic/camera privacy may slip out of v0.1, ScreenCast does not |
-| Niri exposes no fullscreen flag | Heuristic with a false-positive check in Phase 1, else drop rule 6 for v0.1 |
+| Niri exposes no fullscreen flag | Checked in #13: the heuristic misfires, so rule 6 is deferred until niri IPC reports fullscreen ([ADR 0002](adr/0002-defer-fullscreen-suppression.md)) |
 | Source polling wakes the CPU at idle | Prefer `listen()`; any poll returns `false` unless changed |
 | Island nags | Attention budget in section 7 is a review gate for every new Kind |
 
