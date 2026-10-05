@@ -24,7 +24,7 @@ Pure function of (registered Activities, now, focused output) to a Frame. Owns p
 - **Invariant:** preemption never destroys. A Persistent Activity hidden by a Transient shows again when the Transient expires, with no re-post.
 
 ## Frame
-The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `overflow` (the Satellites past the bound, as a count), `transient: Option<Activity>`. Global, then filtered per island by Scope.
+The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `overflow` (the Satellites past the bound, as a count), `transient: Option<Activity>`, `queued` (Transients kept off an open Surface, shown as a badge). One per island: Scope, an open Surface and DND decide what it leaves out.
 - Not a rendered frame (Amane's `request_frame`, `AMANE_FRAMES`).
 
 ## Scope
