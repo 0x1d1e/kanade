@@ -187,6 +187,10 @@ pub enum Detail {
     Workspace(Workspace),
 
     Notification(Toast),
+
+    Network(Connection),
+
+    Bluetooth(Peer),
 }
 
 impl Detail {
@@ -200,6 +204,8 @@ impl Detail {
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
+            Detail::Network(_) => Some(Kind::Network),
+            Detail::Bluetooth(_) => Some(Kind::Bluetooth),
         }
     }
 
@@ -283,6 +289,40 @@ pub struct Toast {
 
     // a local file, like a sender's avatar
     pub image: Option<String>,
+}
+
+// how the machine reaches the network, as NetworkManager's primary connection says
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Uplink {
+    Wired,
+
+    // the network's name
+    Wifi(String),
+
+    // a VPN, a tethered phone and the rest, by the connection's own name
+    Other(String),
+}
+
+// the machine joining an Uplink, or leaving it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connection {
+    pub uplink: Uplink,
+    pub connected: bool,
+}
+
+// a Bluetooth device the machine knows, like a headset
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    // BlueZ's object for it, stable across renames, so it keys the device and Controls connects by it
+    pub path: String,
+
+    // its alias, or the address when it names none
+    pub name: String,
+
+    pub connected: bool,
+
+    // 0 to 100, only for devices that report it
+    pub battery: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

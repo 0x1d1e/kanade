@@ -7,7 +7,8 @@ use amane::{
 };
 
 use crate::island::activity::{
-    Activity, Charge, Detail, Device, Frame, Kind, Toast, Track, Volume, Workspace,
+    Activity, Charge, Connection, Detail, Device, Frame, Kind, Peer, Toast, Track, Uplink, Volume,
+    Workspace,
 };
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
@@ -262,6 +263,10 @@ fn small_form(content: &Content) -> Option<Rectangle> {
         (presentation, Some(Detail::Workspace(workspace))) => {
             self::workspace(presentation, workspace)
         }
+        (presentation, Some(Detail::Network(connection))) => {
+            link(presentation, Link::network(connection))
+        }
+        (presentation, Some(Detail::Bluetooth(peer))) => link(presentation, Link::bluetooth(peer)),
         _ => None,
     }
 }
@@ -456,6 +461,127 @@ fn pager(workspace: &Workspace, dot: f32) -> Box<dyn Widget> {
     Box::new(Row::new(dots).gap(gap).align(Center))
 }
 
+// a network or a Bluetooth device that came or went, the same layout for both
+struct Link {
+    icon: Icon,
+    name: String,
+
+    // what happened, which Peek says under the name
+    status: &'static str,
+
+    connected: bool,
+
+    // a device's own, while connected
+    battery: Option<u8>,
+}
+
+impl Link {
+    fn network(connection: &Connection) -> Link {
+        let connected = connection.connected;
+
+        let (icon, name, status) = match &connection.uplink {
+            Uplink::Wifi(ssid) => (
+                Icon::Wifi,
+                ssid.clone(),
+                if connected {
+                    "Wi-Fi connected"
+                } else {
+                    "Wi-Fi disconnected"
+                },
+            ),
+            Uplink::Wired => (Icon::Wired, String::from("Ethernet"), status(connected)),
+            Uplink::Other(name) => (Icon::Shield, name.clone(), status(connected)),
+        };
+
+        Link {
+            icon,
+            name,
+            status,
+            connected,
+            battery: None,
+        }
+    }
+
+    fn bluetooth(peer: &Peer) -> Link {
+        Link {
+            icon: Icon::Bluetooth,
+            name: peer.name.clone(),
+            status: status(peer.connected),
+            connected: peer.connected,
+            battery: peer.battery.filter(|_| peer.connected),
+        }
+    }
+}
+
+fn status(connected: bool) -> &'static str {
+    if connected {
+        "Connected"
+    } else {
+        "Disconnected"
+    }
+}
+
+/*
+ * icon, name, then a device's battery; Peek says what happened under the name. Gone is the icon
+ * struck through, so it never rests on color alone
+ */
+fn link(presentation: Presentation, link: Link) -> Option<Rectangle> {
+    let (icon, size, inset) = match presentation {
+        Presentation::Compact => (18.0, 13.0, 15.0),
+        Presentation::Peek => (24.0, 15.0, 20.0),
+        _ => return None,
+    };
+
+    let mut words = children![
+        Text::new(link.name)
+            .size(13.0)
+            .color(theme::FG)
+            .weight(600)
+            .elide()
+    ];
+
+    if presentation == Presentation::Peek {
+        words.push(Box::new(
+            Text::new(link.status)
+                .size(12.0)
+                .color(theme::MUTED)
+                .weight(500),
+        ));
+    }
+
+    let icon = if link.connected {
+        link.icon.draw(icon)
+    } else {
+        link.icon.crossed(icon)
+    };
+
+    let mut row = vec![
+        Box::new(icon) as Box<dyn Widget>,
+        Box::new(Column::new(words).width(Parent).gap(3.0)),
+    ];
+
+    if let Some(percent) = link.battery {
+        row.push(Box::new(
+            Text::new(format!("{percent}%"))
+                .size(size)
+                .color(theme::MUTED)
+                .weight(600),
+        ));
+    }
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right: inset,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(Row::new(row).width(Parent).gap(11.0).align(Center)),
+    )
+}
+
 // a Volume or Brightness as one bar, the same layout for both
 struct Level {
     icon: Icon,
@@ -590,6 +716,10 @@ enum Icon {
     Microphone,
     MicrophoneMuted,
     Sun,
+    Wifi,
+    Wired,
+    Shield,
+    Bluetooth,
 }
 
 impl Icon {
@@ -601,11 +731,35 @@ impl Icon {
         }
     }
 
-    // on a 20 unit grid, scaled to `side`
     fn draw(self, side: f32) -> Canvas {
+        self.canvas(side, false)
+    }
+
+    // struck through, for something gone or off
+    fn crossed(self, side: f32) -> Canvas {
+        self.canvas(side, true)
+    }
+
+    // on a 20 unit grid, scaled to `side`
+    fn canvas(self, side: f32, crossed: bool) -> Canvas {
         let u = side / 20.0;
         let line = 1.7 * u;
         let stroke = |shape: Line| shape.stroke(line, theme::FG).cap(Cap::Round);
+
+        // cut out of the icon by a body-colored edge, then drawn
+        let slash = || {
+            let from = (3.5 * u, 2.5 * u);
+            let to = (16.5 * u, 17.5 * u);
+
+            shapes![
+                Line::new()
+                    .from(from.0, from.1)
+                    .to(to.0, to.1)
+                    .stroke(line + 3.0 * u, theme::BODY)
+                    .cap(Cap::Round),
+                stroke(Line::new().from(from.0, from.1).to(to.0, to.1)),
+            ]
+        };
 
         let speaker = || {
             Path::new()
@@ -649,7 +803,7 @@ impl Icon {
             ]
         };
 
-        let shapes = match self {
+        let mut shapes = match self {
             Icon::Speaker(percent) => {
                 let mut shapes = shapes![speaker()];
 
@@ -669,23 +823,7 @@ impl Icon {
                 stroke(Line::new().from(18.5 * u, 7.5 * u).to(13.5 * u, 12.5 * u)),
             ],
             Icon::Microphone => microphone(),
-            Icon::MicrophoneMuted => {
-                let mut shapes = microphone();
-
-                // cut out of the microphone by a body-colored edge, then drawn
-                shapes.push(Box::new(
-                    Line::new()
-                        .from(3.5 * u, 2.5 * u)
-                        .to(16.5 * u, 17.5 * u)
-                        .stroke(line + 3.0 * u, theme::BODY)
-                        .cap(Cap::Round),
-                ));
-                shapes.push(Box::new(stroke(
-                    Line::new().from(3.5 * u, 2.5 * u).to(16.5 * u, 17.5 * u),
-                )));
-
-                shapes
-            }
+            Icon::MicrophoneMuted => microphone(),
             Icon::Sun => {
                 let mut shapes = shapes![
                     Circle::new()
@@ -707,7 +845,74 @@ impl Icon {
 
                 shapes
             }
+            Icon::Wifi => {
+                let mut shapes = shapes![
+                    Circle::new()
+                        .center(10.0 * u, 15.5 * u)
+                        .radius(1.6 * u)
+                        .fill(theme::FG)
+                ];
+
+                for radius in [4.5, 8.0, 11.5] {
+                    shapes.push(Box::new(
+                        Arc::new()
+                            .center(10.0 * u, 16.0 * u)
+                            .radius(radius * u)
+                            .start(315.0)
+                            .sweep(90.0)
+                            .stroke(line, theme::FG)
+                            .cap(Cap::Round),
+                    ));
+                }
+
+                shapes
+            }
+            // an Ethernet port: the socket and its latch
+            Icon::Wired => shapes![
+                Path::new()
+                    .move_to(3.5 * u, 7.0 * u)
+                    .line_to(7.0 * u, 7.0 * u)
+                    .line_to(7.0 * u, 4.5 * u)
+                    .line_to(13.0 * u, 4.5 * u)
+                    .line_to(13.0 * u, 7.0 * u)
+                    .line_to(16.5 * u, 7.0 * u)
+                    .line_to(16.5 * u, 15.5 * u)
+                    .line_to(3.5 * u, 15.5 * u)
+                    .close()
+                    .stroke(line, theme::FG),
+                stroke(Line::new().from(7.5 * u, 11.5 * u).to(7.5 * u, 12.5 * u)),
+                stroke(Line::new().from(10.0 * u, 11.5 * u).to(10.0 * u, 12.5 * u)),
+                stroke(Line::new().from(12.5 * u, 11.5 * u).to(12.5 * u, 12.5 * u)),
+            ],
+            // a shield, as VPNs are drawn
+            Icon::Shield => shapes![
+                Path::new()
+                    .move_to(10.0 * u, 2.5 * u)
+                    .line_to(16.0 * u, 5.0 * u)
+                    .line_to(16.0 * u, 9.5 * u)
+                    .quad_to(16.0 * u, 15.0 * u, 10.0 * u, 17.5 * u)
+                    .quad_to(4.0 * u, 15.0 * u, 4.0 * u, 9.5 * u)
+                    .line_to(4.0 * u, 5.0 * u)
+                    .close()
+                    .stroke(line, theme::FG)
+            ],
+            // the rune
+            Icon::Bluetooth => shapes![
+                Path::new()
+                    .move_to(5.5 * u, 6.5 * u)
+                    .line_to(14.0 * u, 13.5 * u)
+                    .line_to(10.0 * u, 17.0 * u)
+                    .line_to(10.0 * u, 3.0 * u)
+                    .line_to(14.0 * u, 6.5 * u)
+                    .line_to(5.5 * u, 13.5 * u)
+                    .stroke(line, theme::FG)
+                    .cap(Cap::Round)
+            ],
         };
+
+        if crossed || matches!(self, Icon::MicrophoneMuted) {
+            shapes.extend(slash());
+        }
 
         Canvas::new().width(side).height(side).shapes(shapes)
     }
