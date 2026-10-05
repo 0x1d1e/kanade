@@ -169,7 +169,7 @@ impl Activity {
     }
 }
 
-// what the Arbiter decides to show, before it is filtered per island by Scope
+// what the Arbiter decides to show on one island
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Frame {
     pub primary: Option<Activity>,
@@ -181,6 +181,9 @@ pub struct Frame {
     pub overflow: usize,
 
     pub transient: Option<Activity>,
+
+    // Transients kept off an open Surface, highest first, shown as a badge
+    pub queued: Vec<Activity>,
 }
 
 #[cfg(test)]

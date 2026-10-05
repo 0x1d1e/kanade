@@ -1,9 +1,12 @@
-//! The Arbiter (CONTEXT.md, plan 5.1 rules 1, 2, 3, 7). Pure: posts and now in, Frame out.
+//! The Arbiter (CONTEXT.md, plan 5.1 rules 1-5, 7). Pure: posts and now in, Frame out.
 //!
 //! Persistent Activities compete for the primary, Transient ones for the transient that shows
 //! over it. Each slot takes the highest Priority, tie by the newest post. The Ongoing and Critical
 //! Persistent ones that lose the primary become Satellites. Expired Activities
 //! stay registered until `expire`, but never reach a Frame, so the primary returns on its own.
+//!
+//! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
+//! it, never withdraw one. DND (rule 5) hides the toasts already up and drops those posted during it.
 
 #![cfg_attr(
     not(test),
@@ -14,7 +17,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use super::activity::{Activity, Frame, Id, Lifetime, Priority};
+use super::activity::{Activity, Frame, Id, Interrupt, Kind, Lifetime, Priority, Scope};
 
 // beside the primary at once; the rest only count (plan 5.1 rule 3)
 pub const SATELLITES: usize = 2;
@@ -25,6 +28,18 @@ pub struct Arbiter {
 
     // counts posts, so the newest wins a tie even at the same instant
     posts: u64,
+
+    dnd: bool,
+}
+
+// the island a Frame is for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Island {
+    // on the focused output, the only one FocusedOutput Activities show on
+    pub focused: bool,
+
+    // showing a Surface the user opened
+    pub expanded: bool,
 }
 
 #[derive(Debug)]
@@ -49,8 +64,17 @@ impl Entry {
 }
 
 impl Arbiter {
-    // a post with a known Id replaces that Activity and restarts its Lifetime
+    /*
+     * a post with a known Id replaces that Activity and restarts its Lifetime. A toast DND
+     * silences still replaces, then is dropped, so turning DND off shows neither it nor the one
+     * it replaced
+     */
     pub fn post(&mut self, activity: Activity, now: Instant) {
+        if self.silenced(&activity) {
+            self.activities.remove(activity.id());
+            return;
+        }
+
         self.posts += 1;
 
         self.activities.insert(
@@ -86,13 +110,24 @@ impl Arbiter {
             .min()
     }
 
-    pub fn frame(&self, now: Instant) -> Frame {
+    // DND silences Notification toasts, not the Notifications, and never a Critical one (rule 5)
+    pub fn set_dnd(&mut self, dnd: bool) {
+        self.dnd = dnd;
+    }
+
+    pub fn dnd(&self) -> bool {
+        self.dnd
+    }
+
+    pub fn frame(&self, now: Instant, island: Island) -> Frame {
         // highest first, so the primary leads and Satellites keep the same order
         let ranked = |transient: bool| {
             let mut entries: Vec<&Entry> = self
                 .activities
                 .values()
                 .filter(|entry| entry.live(now) && entry.expiry().is_some() == transient)
+                .filter(|entry| island.focused || entry.activity.scope() == Scope::Global)
+                .filter(|entry| !self.silenced(&entry.activity))
                 .collect();
             entries.sort_by_key(|entry| Reverse((entry.activity.priority(), entry.post)));
             entries.into_iter().map(|entry| entry.activity.clone())
@@ -108,12 +143,27 @@ impl Arbiter {
         let overflow = satellites.len().saturating_sub(SATELLITES);
         satellites.truncate(SATELLITES);
 
+        /*
+         * a Surface the user opened is covered only by a Preempt Activity, the rest wait as a
+         * badge and show for what is left of their Lifetime once it closes (rule 4)
+         */
+        let (transients, queued): (Vec<Activity>, Vec<Activity>) = ranked(true)
+            .partition(|activity| !island.expanded || activity.interrupt() == Interrupt::Preempt);
+
         Frame {
             primary,
             satellites,
             overflow,
-            transient: ranked(true).next(),
+            transient: transients.into_iter().next(),
+            queued,
         }
+    }
+
+    fn silenced(&self, activity: &Activity) -> bool {
+        self.dnd
+            && activity.kind() == Kind::Notification
+            && matches!(activity.lifetime(), Lifetime::Transient(_))
+            && activity.priority() != Priority::Critical
     }
 }
 
@@ -122,7 +172,12 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::island::activity::Kind;
+
+    // the focused island at rest, where everything shows
+    const FOCUSED: Island = Island {
+        focused: true,
+        expanded: false,
+    };
 
     const OSD: Duration = Duration::from_millis(1200);
 
@@ -144,14 +199,14 @@ mod tests {
 
     fn primary(arbiter: &Arbiter, now: Instant) -> Option<Id> {
         arbiter
-            .frame(now)
+            .frame(now, FOCUSED)
             .primary
             .map(|activity| activity.id().clone())
     }
 
     fn transient(arbiter: &Arbiter, now: Instant) -> Option<Id> {
         arbiter
-            .frame(now)
+            .frame(now, FOCUSED)
             .transient
             .map(|activity| activity.id().clone())
     }
@@ -160,7 +215,7 @@ mod tests {
     fn nothing_posted_is_an_empty_frame() {
         let arbiter = Arbiter::default();
 
-        assert_eq!(arbiter.frame(Instant::now()), Frame::default());
+        assert_eq!(arbiter.frame(Instant::now(), FOCUSED), Frame::default());
         assert_eq!(arbiter.deadline(Instant::now()), None);
     }
 
@@ -211,14 +266,14 @@ mod tests {
         arbiter.post(Activity::persistent(id.clone(), Priority::Passive), t0);
         arbiter.post(Activity::persistent(id.clone(), Priority::Critical), t0);
 
-        let frame = arbiter.frame(t0);
+        let frame = arbiter.frame(t0, FOCUSED);
 
         assert_eq!(
             frame.primary.map(|activity| activity.priority()),
             Some(Priority::Critical)
         );
         assert!(arbiter.withdraw(&id));
-        assert_eq!(arbiter.frame(t0), Frame::default());
+        assert_eq!(arbiter.frame(t0, FOCUSED), Frame::default());
         assert!(!arbiter.withdraw(&id));
     }
 
@@ -247,7 +302,7 @@ mod tests {
         arbiter.post(media("spotify"), t0);
         arbiter.post(volume(), t0 + ms(100));
 
-        let over = arbiter.frame(t0 + ms(500));
+        let over = arbiter.frame(t0 + ms(500), FOCUSED);
         assert_eq!(
             over.transient.map(|activity| activity.kind()),
             Some(Kind::Volume)
@@ -255,7 +310,7 @@ mod tests {
         assert_eq!(over.primary, Some(media("spotify")));
 
         // no repost: the primary was never displaced, only covered
-        let after = arbiter.frame(t0 + ms(1300));
+        let after = arbiter.frame(t0 + ms(1300), FOCUSED);
         assert_eq!(after.transient, None);
         assert_eq!(after.primary, Some(media("spotify")));
     }
@@ -351,7 +406,7 @@ mod tests {
     }
 
     fn satellites(arbiter: &Arbiter, now: Instant) -> (Vec<Id>, usize) {
-        let frame = arbiter.frame(now);
+        let frame = arbiter.frame(now, FOCUSED);
         let ids = frame
             .satellites
             .iter()
@@ -443,5 +498,172 @@ mod tests {
 
         assert_eq!(primary(&arbiter, t0), Some(ongoing("timer").id().clone()));
         assert_eq!(satellites(&arbiter, t0), (vec![cast().id().clone()], 0));
+    }
+
+    fn toast(key: &str, priority: Priority) -> Activity {
+        Activity::transient(
+            Id::new(Kind::Notification, key),
+            priority,
+            Duration::from_secs(5),
+        )
+    }
+
+    fn call() -> Activity {
+        Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD)
+    }
+
+    const EXPANDED: Island = Island {
+        focused: true,
+        expanded: true,
+    };
+
+    #[test]
+    fn transients_show_only_on_the_focused_island() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let other = Island {
+            focused: false,
+            expanded: false,
+        };
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(cast(), t0);
+        arbiter.post(volume(), t0);
+
+        let focused = arbiter.frame(t0, FOCUSED);
+        let unfocused = arbiter.frame(t0, other);
+
+        assert_eq!(focused.transient, Some(volume()));
+        assert_eq!(unfocused.transient, None);
+
+        // Global ones show everywhere
+        assert_eq!(unfocused.primary, focused.primary);
+        assert_eq!(unfocused.satellites, focused.satellites);
+    }
+
+    #[test]
+    fn an_open_surface_keeps_transients_as_a_badge() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(volume(), t0);
+        arbiter.post(toast("7", Priority::Actionable), t0);
+
+        let open = arbiter.frame(t0, EXPANDED);
+        assert_eq!(open.transient, None);
+        assert_eq!(open.queued, [toast("7", Priority::Actionable), volume()]);
+        assert_eq!(open.primary, Some(media("spotify")));
+
+        // closed before the toast expired: it shows for the rest of its Lifetime
+        let closed = arbiter.frame(t0 + ms(3000), FOCUSED);
+        assert_eq!(closed.transient, Some(toast("7", Priority::Actionable)));
+        assert_eq!(closed.queued, []);
+    }
+
+    #[test]
+    fn only_preempt_covers_an_open_surface() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(toast("7", Priority::Actionable), t0);
+        arbiter.post(call(), t0);
+
+        let open = arbiter.frame(t0, EXPANDED);
+        assert_eq!(open.transient, Some(call()));
+        assert_eq!(open.queued, [toast("7", Priority::Actionable)]);
+    }
+
+    #[test]
+    fn a_queued_transient_still_expires() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(volume(), t0);
+
+        assert_eq!(arbiter.frame(t0, EXPANDED).queued, [volume()]);
+        assert_eq!(arbiter.frame(t0 + OSD, EXPANDED).queued, []);
+        assert_eq!(arbiter.frame(t0 + OSD, FOCUSED).transient, None);
+    }
+
+    #[test]
+    fn dnd_hides_notification_toasts_only() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let history = Activity::persistent(Id::new(Kind::Notification, "7"), Priority::Passive);
+
+        arbiter.set_dnd(true);
+        arbiter.post(history.clone(), t0);
+        arbiter.post(toast("8", Priority::Actionable), t0);
+
+        // the toast is gone from every slot, the Notification and other Transients stay
+        let frame = arbiter.frame(t0, FOCUSED);
+        assert_eq!(frame.primary, Some(history));
+        assert_eq!(frame.transient, None);
+        assert_eq!(arbiter.frame(t0, EXPANDED).queued, []);
+
+        arbiter.post(volume(), t0);
+        assert_eq!(arbiter.frame(t0, FOCUSED).transient, Some(volume()));
+    }
+
+    #[test]
+    fn dnd_never_hides_critical() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.set_dnd(true);
+        arbiter.post(toast("7", Priority::Critical), t0);
+
+        assert_eq!(
+            arbiter.frame(t0, FOCUSED).transient,
+            Some(toast("7", Priority::Critical))
+        );
+    }
+
+    #[test]
+    fn dnd_drops_toasts_posted_during_it() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.set_dnd(true);
+        arbiter.post(toast("7", Priority::Passive), t0);
+        arbiter.set_dnd(false);
+
+        assert!(!arbiter.dnd());
+        assert_eq!(arbiter.frame(t0 + ms(1000), FOCUSED).transient, None);
+        assert_eq!(arbiter.deadline(t0), None);
+    }
+
+    #[test]
+    fn a_toast_reposted_during_dnd_replaces_the_one_already_up() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(toast("7", Priority::Passive), t0);
+        arbiter.set_dnd(true);
+        arbiter.post(toast("7", Priority::Passive), t0 + ms(1000));
+        arbiter.set_dnd(false);
+
+        // inside the first post's Lifetime, which the repost ended
+        assert_eq!(arbiter.frame(t0 + ms(2000), FOCUSED).transient, None);
+        assert_eq!(arbiter.deadline(t0 + ms(2000)), None);
+    }
+
+    #[test]
+    fn dnd_hides_a_toast_already_up_without_withdrawing_it() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(toast("7", Priority::Passive), t0);
+
+        arbiter.set_dnd(true);
+        assert_eq!(arbiter.frame(t0, FOCUSED).transient, None);
+
+        // it was up before DND, so it comes back for the rest of its Lifetime
+        arbiter.set_dnd(false);
+        assert_eq!(
+            arbiter.frame(t0 + ms(1000), FOCUSED).transient,
+            Some(toast("7", Priority::Passive))
+        );
     }
 }
