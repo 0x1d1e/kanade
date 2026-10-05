@@ -70,7 +70,7 @@ pub enum Interrupt {
 }
 
 /*
- * Kind-scoped, so a source picks keys without knowing the others': notification 7 and timer 7
+ * Kind-scoped, so keys of different Kinds never collide: notification 7 and timer 7
  * stay two Activities. Posting the same Id again replaces the Activity
  */
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
