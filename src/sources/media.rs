@@ -4,15 +4,23 @@
 //! Follows MPRIS signals rather than Amane's Media, whose 1 Hz poll would wake Kanade every
 //! second to learn nothing: a player announces every change the island shows, only the position
 //! goes unannounced. So nothing here runs until a player changes, or a pause runs out.
+//!
+//! While the Media Surface is open it also feeds its `Playback`: every player, the one it shows,
+//! and that one's position, asked once a second (plan 7). Its controls come back here as
+//! `Control`s, so the bus is only ever called from this thread.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::{Argument, Bus, Service, Signal, Value};
+use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
 
+use super::playback::{self, Deck, Playback, Timeline};
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
+use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
@@ -34,6 +42,25 @@ const PROXY: &str = "org.mpris.MediaPlayer2.playerctld";
 const DBUS: &str = "org.freedesktop.DBus";
 
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+// plan 7: the shown player's position is asked this often at least while the Surface is open
+const POLL: Duration = Duration::from_secs(1);
+
+/*
+ * a tick asks just after the shown second should change, so the player has moved past it too, and
+ * never sooner than this after the last, so a player that lags behind is not asked in a burst
+ */
+const PAST: Duration = Duration::from_millis(20);
+const GAP: Duration = Duration::from_millis(200);
+
+// colors read from the artwork, enough for its most vivid to be among them
+const COLORS: usize = 8;
+
+// set by the Media Surface when it draws, cleared here once it closed
+static WATCHED: AtomicBool = AtomicBool::new(false);
+
+// where the Surface's watch and controls reach the follower, once it runs
+static EVENTS: OnceLock<Sender<Event>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Status {
@@ -57,12 +84,22 @@ struct Player {
     artist: String,
     art_url: String,
     status: Status,
+
+    timeline: Timeline,
+    can_play: bool,
+    can_previous: bool,
+    can_next: bool,
 }
 
 impl Player {
-    // from the Player interface's properties; anything missing reads as empty or stopped
-    fn of(owner: &str, identity: &str, properties: &Value) -> Player {
+    /*
+     * from the Player interface's properties, read `at`; anything missing reads as empty, stopped,
+     * or unable. MPRIS gives times in microseconds
+     */
+    fn of(owner: &str, identity: &str, properties: &Value, at: Instant) -> Player {
         let metadata = properties.get("Metadata");
+        let micros = |value: &Value| Duration::from_micros(value.number().max(0.0) as u64);
+        let able = |property| properties.get(property).bool();
 
         let status = match properties.get("PlaybackStatus").text() {
             "Playing" => Status::Playing,
@@ -84,6 +121,24 @@ impl Player {
 
             art_url: metadata.get("mpris:artUrl").text().to_owned(),
             status,
+
+            timeline: Timeline {
+                position: micros(properties.get("Position")),
+                at,
+                length: micros(metadata.get("mpris:length")),
+
+                // a player without Rate plays at normal speed
+                rate: match (status, properties.get("Rate")) {
+                    (Status::Playing, Value::Number(rate)) => *rate,
+                    (Status::Playing, _) => 1.0,
+                    _ => 0.0,
+                },
+            },
+
+            // CanControl false means none of the others hold, whatever they say
+            can_play: able("CanControl") && (able("CanPlay") || able("CanPause")),
+            can_previous: able("CanControl") && able("CanGoPrevious"),
+            can_next: able("CanControl") && able("CanGoNext"),
         }
     }
 }
@@ -177,6 +232,23 @@ enum Event {
 
     // some owner's properties changed, which ones is read back in full
     Changed { owner: String },
+
+    // the Media Surface opened, so what it shows is wanted now
+    Watch,
+
+    // pressed on the Media Surface
+    Control(Control),
+}
+
+// what the Media Surface asks of a player, by its bus name
+#[derive(Debug, Clone, PartialEq)]
+pub enum Control {
+    Toggle(String),
+    Previous(String),
+    Next(String),
+
+    // show this player until the Surface closes; the Activity keeps following the playing one
+    Select(String),
 }
 
 impl Event {
@@ -203,6 +275,13 @@ impl Event {
         let interface = arguments.first().map(Value::text);
 
         (path == PATH && interface == Some(PLAYER)).then(|| Event::Changed {
+            owner: sender.to_owned(),
+        })
+    }
+
+    // Seeked: the one jump in position a player announces, read back like any change
+    fn seeked(sender: &str, path: &str) -> Option<Event> {
+        (path == PATH).then(|| Event::Changed {
             owner: sender.to_owned(),
         })
     }
@@ -286,6 +365,139 @@ impl Follower {
     }
 }
 
+// the Media Surface's side of the follower, idle while the Surface is closed
+#[derive(Debug, Default)]
+struct Watcher {
+    // the player chosen on the Surface, until it closes
+    selected: Option<String>,
+
+    // the artwork last read, and the accent it gave
+    accent: Option<(String, Option<Color>)>,
+
+    // what Playback holds, so a tick that changes nothing does not write
+    published: Option<Playback>,
+
+    // when to ask the shown player where it is next
+    tick: Option<Instant>,
+}
+
+impl Watcher {
+    // the player chosen on the Surface while it is open, else the one the Activity follows
+    fn shown<'a>(&self, players: &'a Players) -> Option<(&'a String, &'a Player)> {
+        let open = |name: &Option<String>| players.open.get_key_value(name.as_deref()?);
+
+        open(&self.selected)
+            .or_else(|| open(&players.active))
+            .or_else(|| players.open.first_key_value())
+    }
+
+    // writes what the open Surface shows when it changed, and times the next tick
+    fn show(&mut self, players: &Players, now: Instant) {
+        if !watching() {
+            self.selected = None;
+            self.tick = None;
+            return;
+        }
+
+        let deck = self.shown(players).map(|(name, player)| {
+            let seen = Seen::of(name, player);
+            let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
+
+            Deck {
+                name: name.clone(),
+                track: seen.track,
+                timeline: player.timeline,
+                accent,
+                can_play: player.can_play,
+                can_previous: player.can_previous,
+                can_next: player.can_next,
+            }
+        });
+
+        // a paused player is still asked, it may be moved without playing
+        self.tick = deck.as_ref().map(|deck| {
+            deck.timeline.next_second(now).map_or(now + POLL, |next| {
+                (next + PAST).clamp(now + GAP, now + POLL)
+            })
+        });
+
+        let playback = Playback {
+            players: playback::choices(
+                players
+                    .open
+                    .iter()
+                    .map(|(name, player)| (name.clone(), player.identity.clone())),
+            ),
+            shown: deck,
+        };
+
+        if self.published.as_ref() != Some(&playback) {
+            *Playback::write() = playback.clone();
+            self.published = Some(playback);
+        }
+    }
+
+    // read once per artwork; a file not there yet is read again next time
+    fn accent(&mut self, art: &str) -> Option<Color> {
+        if let Some((read, accent)) = &self.accent
+            && read == art
+        {
+            return *accent;
+        }
+
+        let mut palette = Palette::default();
+        palette.open(art, COLORS);
+
+        let accent = playback::accent(palette.colors());
+
+        if !palette.colors().is_empty() {
+            self.accent = Some((art.to_owned(), accent));
+        }
+
+        accent
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.tick.is_some_and(|tick| tick <= now)
+    }
+}
+
+/*
+ * the Media Surface calls this as it draws, so the follower feeds it from then until it closes;
+ * only the first call after a close wakes the follower
+ */
+pub fn watch() {
+    if !WATCHED.swap(true, Ordering::Relaxed) {
+        send(Event::Watch);
+    }
+}
+
+// a press on the Media Surface; the bus call happens on the follower, never in the view
+pub fn control(control: Control) {
+    send(Event::Control(control));
+}
+
+fn send(event: Event) {
+    if let Some(events) = EVENTS.get() {
+        let _ = events.send(event);
+    }
+}
+
+// watched, and still open; a closed Surface stops being watched until it draws again
+fn watching() -> bool {
+    if !WATCHED.load(Ordering::Relaxed) {
+        return false;
+    }
+
+    let open = IslandService::read().surface() == Some(Surface::Media);
+
+    if !open {
+        WATCHED.store(false, Ordering::Relaxed);
+    }
+
+    open
+}
+
 /*
  * runs on its own thread for good, blocked until the bus has news or a pause runs out. Without a
  * session bus it ends at once, and Media never shows
@@ -303,9 +515,14 @@ pub fn follow() {
     );
     forward(
         bus.signals(PROPERTIES, "PropertiesChanged"),
-        send,
+        send.clone(),
         |signal| Event::changed(signal.sender(), signal.path(), signal.arguments()),
     );
+    forward(bus.signals(PLAYER, "Seeked"), send.clone(), |signal| {
+        Event::seeked(signal.sender(), signal.path())
+    });
+
+    let _ = EVENTS.set(send);
 
     let mut players = Players::default();
 
@@ -316,13 +533,20 @@ pub fn follow() {
     }
 
     let mut follower = Follower::default();
+    let mut watcher = Watcher::default();
 
     loop {
         let now = Instant::now();
 
         post(follower.step(players.choose(), now), now);
+        watcher.show(&players, now);
 
-        let event = match follower.deadline() {
+        let deadline = [follower.deadline(), watcher.tick]
+            .into_iter()
+            .flatten()
+            .min();
+
+        let event = match deadline {
             Some(deadline) => events.recv_timeout(deadline.saturating_duration_since(now)),
             None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
@@ -340,15 +564,33 @@ pub fn follow() {
             }
             Ok(Event::Changed { owner }) => {
                 for name in players.owned_by(&owner) {
-                    let identity = players.open[&name].identity.clone();
-                    let properties = get_all(bus, &name, PLAYER);
-
-                    players
-                        .open
-                        .insert(name, Player::of(&owner, &identity, &properties));
+                    refresh(bus, &mut players, &name);
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Ok(Event::Watch) => {}
+            Ok(Event::Control(control)) => {
+                let (method, name) = match control {
+                    Control::Toggle(name) => ("PlayPause", name),
+                    Control::Previous(name) => ("Previous", name),
+                    Control::Next(name) => ("Next", name),
+                    Control::Select(name) => {
+                        watcher.selected = Some(name);
+                        continue;
+                    }
+                };
+
+                // the player announces what changed, read back here too for an answer this frame
+                bus.call(&name, PATH, PLAYER, method, &[]);
+                refresh(bus, &mut players, &name);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if watcher.due(Instant::now())
+                    && let Some((name, _)) = watcher.shown(&players)
+                {
+                    let name = name.clone();
+                    refresh(bus, &mut players, &name);
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("kanade: session bus unreachable, no Media Activity");
                 post(follower.step(None, now), now);
@@ -421,7 +663,20 @@ fn read(bus: Bus, name: &str, owner: &str) -> Player {
         owner,
         identity.get("Identity").text(),
         &get_all(bus, name, PLAYER),
+        Instant::now(),
     )
+}
+
+// an open player read again, keeping who it is
+fn refresh(bus: Bus, players: &mut Players, name: &str) {
+    let Some(player) = players.open.get(name) else {
+        return;
+    };
+
+    let properties = get_all(bus, name, PLAYER);
+    let player = Player::of(&player.owner, &player.identity, &properties, Instant::now());
+
+    players.open.insert(name.to_owned(), player);
 }
 
 // every property of an interface in one call, as a map
@@ -661,7 +916,7 @@ mod tests {
             ("Metadata", map([("xesam:title", text(title))])),
         ]);
 
-        Player::of(owner, "mpv", &properties)
+        Player::of(owner, "mpv", &properties, Instant::now())
     }
 
     #[test]
@@ -710,7 +965,7 @@ mod tests {
 
         let seen = Seen::of(
             "org.mpris.MediaPlayer2.mpv",
-            &Player::of(":1.4", "mpv", &properties),
+            &Player::of(":1.4", "mpv", &properties, Instant::now()),
         );
 
         assert_eq!(seen.status, Status::Playing);
@@ -729,7 +984,7 @@ mod tests {
     fn a_player_with_nothing_to_say_names_itself() {
         let seen = Seen::of(
             "org.mpris.MediaPlayer2.mpv",
-            &Player::of(":1.4", "mpv", &Value::Nothing),
+            &Player::of(":1.4", "mpv", &Value::Nothing, Instant::now()),
         );
 
         assert_eq!(seen.status, Status::Stopped);

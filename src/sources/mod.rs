@@ -9,4 +9,5 @@ mod network;
 pub mod niri;
 pub mod notifications;
 pub mod osd;
+pub mod playback;
 pub mod workspace;

@@ -14,6 +14,7 @@ use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::notifications::Daemon;
+use crate::surfaces;
 use crate::theme;
 
 // one island window per monitor; the window stays put and only the body morphs inside it
@@ -54,7 +55,9 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
-        && let Some(form) = small_form(&content).or_else(|| placeholder(&content))
+        && let Some(form) = small_form(&content)
+            .or_else(|| surface(&content, island.surface(), now))
+            .or_else(|| placeholder(&content))
     {
         body = body.child(form.opacity(opacity));
     }
@@ -237,6 +240,19 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
             .align_child(Center, Center)
             .child(Text::new(label).size(size).color(theme::FG).weight(500)),
     )
+}
+
+/*
+ * the open Surface's own content; `open` is the Surface open now, which differs from the content's
+ * while it fades out
+ */
+fn surface(content: &Content, open: Option<Surface>, now: Instant) -> Option<Rectangle> {
+    match content.presentation {
+        Presentation::Expanded(Surface::Media) => {
+            Some(surfaces::media::surface(open == Some(Surface::Media), now))
+        }
+        _ => None,
+    }
 }
 
 // content is laid out at its Presentation's final size, which the morph reveals
@@ -633,7 +649,7 @@ fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
 
     let tone = if level.quiet { theme::MUTED } else { theme::FG };
 
-    let bar = bar(width, level.percent, tone);
+    let bar = bar(width, f32::from(level.percent) / 100.0, tone);
 
     let middle: Box<dyn Widget> = match presentation {
         Presentation::Peek => Box::new(
@@ -681,9 +697,10 @@ fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
     )
 }
 
-fn bar(width: f32, percent: u8, tone: Color) -> Stack {
+// `fraction` of it filled, 0 to 1
+pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
     let height = 6.0;
-    let filled = width * f32::from(percent.min(100)) / 100.0;
+    let filled = width * fraction.clamp(0.0, 1.0);
 
     let track = Rectangle::new()
         .width(width)
@@ -709,7 +726,7 @@ fn bar(width: f32, percent: u8, tone: Color) -> Stack {
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
 #[derive(Clone, Copy)]
-enum Icon {
+pub(crate) enum Icon {
     // waves by level: none silent, one up to half, two above
     Speaker(u8),
     SpeakerMuted,
@@ -731,7 +748,7 @@ impl Icon {
         }
     }
 
-    fn draw(self, side: f32) -> Canvas {
+    pub(crate) fn draw(self, side: f32) -> Canvas {
         self.canvas(side, false)
     }
 
@@ -1000,7 +1017,7 @@ fn media_peek(track: &Track) -> Rectangle {
  * the cover over a quiet tile with a note, so the tile shows while it decodes, when it never
  * will, and for web art, all at the same size
  */
-fn art(track: &Track, side: f32, radius: f32) -> Stack {
+pub(crate) fn art(track: &Track, side: f32, radius: f32) -> Stack {
     tile(track.art.as_deref(), "\u{266a}", side, radius)
 }
 

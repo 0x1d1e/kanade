@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
-use super::activity::{Activity, Frame, Id, Interrupt, Scope};
+use super::activity::{Activity, Frame, Id, Interrupt, Lifetime, Scope};
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::Crossfade;
@@ -193,6 +193,11 @@ impl IslandService {
         self.arbiter.contains(id)
     }
 
+    // the Surface open on any island; at most one island is Expanded
+    pub fn surface(&self) -> Option<Surface> {
+        self.presentations.expanded().map(|(_, surface)| surface)
+    }
+
     pub fn expanded(&self, monitor: &str) -> bool {
         matches!(self.presentation(monitor), Presentation::Expanded(_))
     }
@@ -267,9 +272,23 @@ impl IslandService {
      * Surface reopened over it stays
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
+        let global = activity.scope() == Scope::Global;
+
+        // a Transient the open Surface already shows would only wait behind it as a badge
+        let absorbed = self
+            .presentations
+            .expanded()
+            .is_some_and(|(monitor, surface)| {
+                matches!(activity.lifetime(), Lifetime::Transient(_))
+                    && (global || self.focused(monitor))
+                    && surface.shows(&activity)
+            });
+        if absorbed {
+            return;
+        }
+
         let arrives = activity.interrupt() == Interrupt::Preempt
             && !self.arbiter.preempting(activity.id(), now);
-        let global = activity.scope() == Scope::Global;
 
         self.change(|arbiter| arbiter.post(activity, now));
 
@@ -989,19 +1008,20 @@ mod tests {
         assert_eq!(shown(settled + ms(1_000)), [(media, 1.0)]);
     }
 
-    // Media and Launcher share one shape, so only the spring's in-place leg can time the fade
+    // Notifications and Launcher share one shape, so only the spring's in-place leg can time the fade
     #[test]
     fn same_shape_surface_switch_still_crossfades() {
         let now = Instant::now();
         let mut island = compact(now);
 
         island.input(MONITOR, Input::Click, now);
+        island.input(MONITOR, Input::Open(Surface::Notifications), now);
 
-        let media = Presentation::Expanded(Surface::Media);
+        let notifications = Presentation::Expanded(Surface::Notifications);
         let launcher = Presentation::Expanded(Surface::Launcher);
         let switch = now + Duration::from_secs(1);
 
-        assert_eq!(island.presentation(MONITOR), media);
+        assert_eq!(island.presentation(MONITOR), notifications);
         assert!(island.settled(MONITOR, switch));
 
         let shape = island.shape(MONITOR, switch);
@@ -1009,18 +1029,18 @@ mod tests {
         island.input(MONITOR, Input::Open(Surface::Launcher), switch);
 
         assert_eq!(island.presentation(MONITOR), launcher);
-        assert_eq!(geometry::shape(media), geometry::shape(launcher));
+        assert_eq!(geometry::shape(notifications), geometry::shape(launcher));
         assert!(!island.settled(MONITOR, switch));
 
         let shown = |at| presentations(&island, at);
 
-        assert_eq!(shown(switch), [(media, 1.0)]);
+        assert_eq!(shown(switch), [(notifications, 1.0)]);
 
         /*
-         * Media fades out to nothing, then Launcher fades in from nothing; never back, never both.
-         * Nothing shows only at the instant of the handover, so each side of it is near empty
+         * Notifications fades out to nothing, then Launcher fades in from nothing; never back, never
+         * both. Nothing shows only at the instant of the handover, so each side of it is near empty
          */
-        let mut last = (media, 1.0);
+        let mut last = (notifications, 1.0);
         let mut handover = None;
         let mut step = 0;
 
@@ -1030,11 +1050,11 @@ mod tests {
             assert_eq!(island.shape(MONITOR, at), shape);
 
             if let [now] = shown(at)[..] {
-                match (last.0 == media, now.0 == media) {
-                    (true, true) => assert!(now.1 <= last.1, "Media grew at {step} ms"),
+                match (last.0 == notifications, now.0 == notifications) {
+                    (true, true) => assert!(now.1 <= last.1, "Notifications grew at {step} ms"),
                     (false, false) => assert!(now.1 >= last.1, "Launcher dipped at {step} ms"),
                     (true, false) => handover = Some((last.1, now.1)),
-                    (false, true) => panic!("Media came back at {step} ms"),
+                    (false, true) => panic!("Notifications came back at {step} ms"),
                 }
 
                 last = now;
@@ -1484,6 +1504,29 @@ mod tests {
                 ))
             ]
         );
+    }
+
+    // the Media Surface sets the speaker volume, so its Transient never queues behind it
+    #[test]
+    fn the_open_surface_absorbs_what_it_shows() {
+        let level = |device| {
+            volume().with_detail(Detail::Volume(Volume {
+                device,
+                percent: 40,
+                muted: false,
+            }))
+        };
+
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        run(&mut island, Command::Open(Surface::Media), now);
+
+        island.post(level(Device::Speaker), now + ms(100));
+        assert!(!island.contains(level(Device::Speaker).id()));
+
+        island.post(level(Device::Microphone), now + ms(200));
+        assert!(island.contains(level(Device::Microphone).id()));
+        assert_eq!(island.surface(), Some(Surface::Media));
     }
 
     #[test]
