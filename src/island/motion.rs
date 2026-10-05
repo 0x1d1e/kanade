@@ -60,8 +60,8 @@ impl<const N: usize> Spring<N> {
 
     /*
      * a new target starts from where it is and how fast it moves now, so a changed mind never jumps.
-     * From rest or turning back it never overshoots. Only a new target closer along the current
-     * motion than speed / w can be passed, since keeping the velocity leaves no other way to stop
+     * No overshoot from rest or on a reversal toward the other endpoint. A same-direction target
+     * closer than speed / w may be passed, since keeping the velocity leaves no other way to stop
      */
     pub fn to(&mut self, target: [f32; N], now: Instant) {
         if target == self.target {
