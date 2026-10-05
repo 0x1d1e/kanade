@@ -38,7 +38,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 | `Workspaces` supports niri/Hyprland/Sway: id, index, name, output, active, focused, urgent, windows. No focused window, no fullscreen | Kanade needs its own `niri.rs` source |
 | `Notifications`: daemon starts on first `read()`, only one daemon allowed (`running()`), timeouts ignored, items persist until dismissed. API: `click/invoke/dismiss/clear`. No DND, no history flag | Toast expiry, DND, and history semantics are Kanade policy |
 | `Media`: MPRIS, polled 1/s, active player auto-chosen, `file://` art only (`https://` cannot be drawn) | Timeline is 1 Hz truth, interpolated locally. Art fallback needed |
-| `Audio`: speaker + mic volume/mute, follows default sink, event-driven | Mic mute usable for Controls. No capture/privacy info |
+| `Audio`: speaker + mic volume/mute, follows default sink, event-driven | Mic mute usable for Controls. No capture/privacy info. No speaker/mic presence: a missing device reads as 0 / unmuted, so Controls cannot show it disabled (upstream limit, not worked around in Kanade) |
 | IPC: `App::ipc(name, handler(&[String]) -> String)`, socket `$XDG_RUNTIME_DIR/amane.sock`, handler runs on the draw thread, args cannot contain newlines | One handler `island` with verb args. Handlers only post, never work |
 | Only one Amane shell per session | Kanade is the Amane shell. It cannot run beside another Amane bar. Document in README |
 | `Workspaces` carries no window focus, fullscreen, or cast data | See Niri rows below |
