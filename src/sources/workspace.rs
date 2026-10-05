@@ -6,17 +6,11 @@
 
 use std::time::Duration;
 
-use super::niri::Seen;
+use super::niri::{Change, Seen};
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority};
 
 // plan 5.2: 1000-1400 ms from the last switch, the same as volume
 const OSD: Duration = Duration::from_millis(1200);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Change {
-    Post(Activity),
-    Withdraw(Id),
-}
 
 /*
  * what the island does about niri going from `before` to `now`. Only a switch on the output that
@@ -63,6 +57,7 @@ mod tests {
                     name: None,
                 },
             }),
+            casting: false,
         }
     }
 

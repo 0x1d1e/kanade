@@ -145,28 +145,38 @@ fn satellites(frame: &Frame, body: Rect, shape: Shape) -> Vec<Box<dyn Widget>> {
         return Vec::new();
     }
 
-    let labels = frame
+    let marks = frame
         .satellites
         .iter()
-        .map(satellite_label)
-        .chain((frame.overflow > 0).then(|| (format!("+{}", frame.overflow), theme::FG)));
+        .map(satellite_mark)
+        .chain((frame.overflow > 0).then(|| label(format!("+{}", frame.overflow), theme::FG)));
 
-    labels
+    marks
         .enumerate()
-        .map(|(index, (label, tone))| {
+        .map(|(index, mark)| {
             let at = geometry::satellite(body, index);
 
-            Box::new(dot(at, label, tone).opacity(opacity)) as Box<dyn Widget>
+            Box::new(dot(at, mark).opacity(opacity)) as Box<dyn Widget>
         })
         .collect()
 }
 
-// a battery shows its number in its tone (plan 7), the rest their Kind
-fn satellite_label(activity: &Activity) -> (String, Color) {
+/*
+ * a battery shows its number in its tone, a screen capture its glyph in amber (plan 7), the rest
+ * their Kind
+ */
+fn satellite_mark(activity: &Activity) -> Box<dyn Widget> {
     match activity.detail() {
-        Detail::Battery(charge) => (charge.percent.to_string(), charge_tone(charge)),
-        _ => (abbreviation(activity.kind()).to_owned(), theme::FG),
+        Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
+        _ if activity.kind() == Kind::ScreenCast => {
+            Box::new(Icon::Capture.on(16.0, theme::AMBER, theme::DOT))
+        }
+        _ => label(abbreviation(activity.kind()).to_owned(), theme::FG),
     }
+}
+
+fn label(text: String, tone: Color) -> Box<dyn Widget> {
+    Box::new(Text::new(text).size(12.0).color(tone).weight(600))
 }
 
 /*
@@ -188,10 +198,10 @@ fn queued(frame: &Frame, body: Rect, shape: Shape) -> Option<Rectangle> {
         height: geometry::SATELLITE,
     };
 
-    Some(dot(at, frame.queued.len().to_string(), theme::FG).opacity(opacity))
+    Some(dot(at, label(frame.queued.len().to_string(), theme::FG)).opacity(opacity))
 }
 
-fn dot(at: Rect, label: String, tone: Color) -> Rectangle {
+fn dot(at: Rect, mark: Box<dyn Widget>) -> Rectangle {
     Rectangle::new()
         .width(at.width)
         .height(at.height)
@@ -199,7 +209,7 @@ fn dot(at: Rect, label: String, tone: Color) -> Rectangle {
         .fill(theme::DOT)
         .align_child(Center, Center)
         .translate(at.x, at.y)
-        .child(Text::new(label).size(12.0).color(tone).weight(600))
+        .child(Row::new(vec![mark]))
 }
 
 // stand-in for each Kind's glyph (#21-#33), distinct per Kind
@@ -284,6 +294,10 @@ fn sized(presentation: Presentation) -> Rectangle {
 
 // an Activity's own Compact or Peek, drawn from its Detail; none leaves it to the placeholder
 fn small_form(content: &Content) -> Option<Rectangle> {
+    if content.activity.as_ref().map(Activity::kind) == Some(Kind::ScreenCast) {
+        return capture(content.presentation);
+    }
+
     let detail = content.activity.as_ref().map(Activity::detail);
 
     match (content.presentation, detail) {
@@ -305,6 +319,43 @@ fn small_form(content: &Content) -> Option<Rectangle> {
         (presentation, Some(Detail::Bluetooth(peer))) => link(presentation, Link::bluetooth(peer)),
         _ => None,
     }
+}
+
+/*
+ * the glyph and a word, both amber, so it never rests on color alone and never reads as the low
+ * battery's amber (plan 7). Niri cannot say why the screen is captured, so it never says
+ * "Recording" or "Sharing" (plan 5.3)
+ */
+fn capture(presentation: Presentation) -> Option<Rectangle> {
+    let (icon, text, size, inset) = match presentation {
+        Presentation::Compact => (18.0, "CAPTURE", 13.0, 15.0),
+        Presentation::Peek => (24.0, "Screen capture active", 15.0, 20.0),
+        _ => return None,
+    };
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right: inset,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(
+                Row::new(children![
+                    Icon::Capture.on(icon, theme::AMBER, theme::BODY),
+                    Text::new(text)
+                        .size(size)
+                        .color(theme::AMBER)
+                        .weight(600)
+                        .elide()
+                ])
+                .width(Parent)
+                .gap(11.0)
+                .align(Center),
+            ),
+    )
 }
 
 // amber while low, red once critical, and never color alone: the number and the words say it too
@@ -767,6 +818,9 @@ pub(crate) enum Icon {
 
     // the Launcher's magnifier
     Search,
+
+    // ▣, a screen with something captured off it
+    Capture,
 }
 
 impl Icon {
@@ -1001,6 +1055,29 @@ impl Icon {
                     .close()
                     .fill(ink)
             ],
+            // rounded like the body, the inner square solid so it reads at a Satellite's size
+            Icon::Capture => {
+                let square = |from: f32, to: f32, radius: f32| {
+                    let (from, to, radius) = (from * u, to * u, radius * u);
+
+                    Path::new()
+                        .move_to(from + radius, from)
+                        .line_to(to - radius, from)
+                        .quad_to(to, from, to, from + radius)
+                        .line_to(to, to - radius)
+                        .quad_to(to, to, to - radius, to)
+                        .line_to(from + radius, to)
+                        .quad_to(from, to, from, to - radius)
+                        .line_to(from, from + radius)
+                        .quad_to(from, from, from + radius, from)
+                        .close()
+                };
+
+                shapes![
+                    square(3.0, 17.0, 3.5).stroke(line, ink),
+                    square(7.0, 13.0, 1.5).fill(ink),
+                ]
+            }
             Icon::Search => shapes![
                 Circle::new()
                     .center(8.5 * u, 8.5 * u)
