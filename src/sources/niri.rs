@@ -1,8 +1,8 @@
 //! Kanade's own niri EventStream (plan 3, 5.3): Amane's niri backend is private and tracks neither
 //! the overview nor casts. Hands the core a plain focused output and whether the overview is open,
-//! and `workspace` the focused workspace.
+//! `workspace` the focused workspace, and `cast` whether anything captures the screen.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -11,8 +11,8 @@ use std::time::Instant;
 use amane::Service;
 
 use super::json::Json;
-use super::workspace::{self, Change};
-use crate::island::activity::Workspace;
+use super::{cast, workspace};
+use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
 
 // what the core gets from niri; the default is also what a lost socket degrades to
@@ -25,6 +25,16 @@ pub struct Seen {
 
     // none while unknown, like focus
     pub workspace: Option<Focused>,
+
+    // niri has at least one cast, paused ones included
+    pub casting: bool,
+}
+
+// what the island does about a change niri made
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    Post(Activity),
+    Withdraw(Id),
 }
 
 // the focused workspace, as niri last said
@@ -58,10 +68,13 @@ struct Niri {
     focused: Option<u64>,
 
     overview: bool,
+
+    // every cast by stream id
+    casts: HashSet<u64>,
 }
 
 impl Niri {
-    // anything niri sends that is not about workspaces, focus or the overview changes nothing
+    // anything niri sends that is not about workspaces, focus, the overview or casts changes nothing
     fn apply(&mut self, event: &Json) {
         if let Some(changed) = event.get("WorkspacesChanged") {
             let workspaces = changed.get("workspaces").and_then(Json::as_array);
@@ -99,6 +112,20 @@ impl Niri {
             && let Some(open) = overview.get("is_open").and_then(Json::as_bool)
         {
             self.overview = open;
+        } else if let Some(changed) = event.get("CastsChanged") {
+            let casts = changed.get("casts").and_then(Json::as_array);
+
+            self.casts = casts
+                .unwrap_or_default()
+                .iter()
+                .filter_map(stream)
+                .collect();
+        } else if let Some(started) = event.get("CastStartedOrChanged") {
+            self.casts.extend(started.get("cast").and_then(stream));
+        } else if let Some(stopped) = event.get("CastStopped")
+            && let Some(id) = stopped.get("stream_id").and_then(Json::as_u64)
+        {
+            self.casts.remove(&id);
         }
     }
 
@@ -121,6 +148,7 @@ impl Niri {
             focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
             workspace,
+            casting: !self.casts.is_empty(),
         }
     }
 
@@ -134,6 +162,11 @@ impl Niri {
 
         count.try_into().unwrap_or(u32::MAX)
     }
+}
+
+// a cast's stream id, which niri stops it by
+fn stream(cast: &Json) -> Option<u64> {
+    cast.get("stream_id").and_then(Json::as_u64)
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -209,14 +242,18 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &S
 }
 
 /*
- * the core hears of focus and the overview only when they change, and of the focused workspace only
- * as a switch, so a list that only renumbers wakes nothing
+ * the core hears of focus and the overview only when they change, of the focused workspace only
+ * as a switch, so a list that only renumbers wakes nothing, and of casts only as the first starts
+ * or the last stops
  */
 fn post(before: &Seen, seen: &Seen) {
     let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
-    let change = workspace::change(before, seen);
+    let changes: Vec<Change> = [workspace::change(before, seen), cast::change(before, seen)]
+        .into_iter()
+        .flatten()
+        .collect();
 
-    if !focus && change.is_none() {
+    if !focus && changes.is_empty() {
         return;
     }
 
@@ -227,10 +264,11 @@ fn post(before: &Seen, seen: &Seen) {
         island.set_niri(seen.focused_output.clone(), seen.overview, now);
     }
 
-    match change {
-        Some(Change::Post(activity)) => island.post(activity, now),
-        Some(Change::Withdraw(id)) => island.withdraw(&id, now),
-        None => {}
+    for change in changes {
+        match change {
+            Change::Post(activity) => island.post(activity, now),
+            Change::Withdraw(id) => island.withdraw(&id, now),
+        }
     }
 }
 
@@ -286,6 +324,7 @@ mod tests {
             focused_output: Some(output.into()),
             overview: false,
             workspace: None,
+            casting: false,
         }
     }
 
@@ -423,6 +462,53 @@ mod tests {
         assert_eq!(posts, []);
     }
 
+    fn cast(stream: u64) -> String {
+        format!(
+            r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":{stream},"session_id":1,"kind":"PipeWire","target":{{"Output":{{"name":"eDP-1"}}}},"is_dynamic_target":false,"is_active":true,"pid":null,"pw_node_id":null}}}}}}"#
+        )
+    }
+
+    fn stopped(stream: u64) -> String {
+        format!(r#"{{"CastStopped":{{"stream_id":{stream}}}}}"#)
+    }
+
+    // whether each post says something casts
+    fn casting(posts: &[Seen]) -> Vec<bool> {
+        posts.iter().map(|seen| seen.casting).collect()
+    }
+
+    // a share and a recording at once are one capture, until both stop
+    #[test]
+    fn casting_lasts_from_the_first_cast_to_the_last() {
+        let (posts, _) = posts(&[OK, &cast(1), &cast(2), &stopped(1), &cast(2), &stopped(2)]);
+
+        assert_eq!(casting(&posts), [true, false]);
+    }
+
+    #[test]
+    fn a_cast_list_replaces_the_casts_known() {
+        let list = |streams: &str| {
+            format!(
+                r#"{{"CastsChanged":{{"casts":[{}]}}}}"#,
+                streams
+                    .split(',')
+                    .filter(|stream| !stream.is_empty())
+                    .map(|stream| format!(r#"{{"stream_id":{stream}}}"#))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+
+        let replaced = posts(&[OK, &list("3"), &stopped(9), &list("4,5"), &list("")]).0;
+
+        assert_eq!(casting(&replaced), [true, false]);
+
+        // a stop for a cast the list no longer has changes nothing
+        let forgotten = posts(&[OK, &cast(1), &list("2"), &stopped(1)]).0;
+
+        assert_eq!(casting(&forgotten), [true]);
+    }
+
     #[test]
     fn a_refused_request_ends_the_stream() {
         let (posts, lost) = posts(&[r#"{"Err":"nope"}"#, WORKSPACES]);
@@ -440,13 +526,14 @@ mod tests {
     // the core is told once, then niri is gone for good
     #[test]
     fn losing_the_stream_degrades_to_every_monitor_focused() {
-        let text = [OK, WORKSPACES, &overview(true)].join("\n");
+        let text = [OK, WORKSPACES, &overview(true), &cast(1)].join("\n");
         let mut posts = Vec::new();
 
         run(Ok(text.as_bytes()), |_, seen| posts.push(seen.clone()));
 
+        // nobody can say a cast still runs, so its capture goes too
         assert_eq!(posts.last(), Some(&Seen::default()));
-        assert_eq!(posts.len(), 3);
+        assert_eq!(posts.len(), 4);
 
         // nothing was posted, so nothing has to be taken back
         let mut posts = Vec::new();

@@ -2,6 +2,7 @@
 
 pub mod battery;
 pub mod bluetooth;
+mod cast;
 mod json;
 pub mod media;
 pub mod network;
