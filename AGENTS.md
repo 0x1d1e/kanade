@@ -2,6 +2,8 @@
 
 Niri Dynamic Island built on Amane. Design: `docs/plan.md`.
 
+Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
+
 ## Commands
 
 Run from repo root.
