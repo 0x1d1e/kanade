@@ -182,7 +182,7 @@ Why: no compositor configure round trip per frame, transparent area stays click-
 
 Body sizes (starting values): rest ~150x32, compact ~220x38, peek ~300x52, expanded up to ~520x330. Rounded corners are approximated by the rectangular `InputArea`; accepted.
 
-Keyboard: `Keyboard::None` normally. Escape and Launcher typing need focus, so Expanded uses `OnDemand` (focus after click; the click that expands gives focus) and Launcher uses `Exclusive` or `OnDemand`. Amane re-sends keyboard mode per frame, so one window suffices. Phase 0 checks that a keybind-opened Surface (no click) can still receive Escape; if not, IPC-opened Surfaces use `Exclusive` until the first pointer interaction.
+Keyboard: `Keyboard::None` normally. Escape and Launcher typing need focus, so Expanded uses `Exclusive` (measured in #2 on niri: `OnDemand` never focuses on the expanding click, whose press lands while the mode is still `None`) and Launcher uses `Exclusive` or `OnDemand`. Amane re-sends keyboard mode per frame, so one window suffices. Phase 0 checks that a keybind-opened Surface (no click) can still receive Escape; if not, IPC-opened Surfaces use `Exclusive` until the first pointer interaction.
 
 This choice is a candidate ADR: hard to reverse (touches geometry, input, and every surface), surprising (a large invisible window), real alternative (resize the layer window).
 
