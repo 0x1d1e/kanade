@@ -174,8 +174,11 @@ impl Activity {
 pub struct Frame {
     pub primary: Option<Activity>,
 
-    // Persistent Activities beside the primary, bounded (#18)
+    // Ongoing and Critical Persistent Activities beside the primary, highest first, bounded
     pub satellites: Vec<Activity>,
+
+    // the Satellites past the bound, shown only as a count
+    pub overflow: usize,
 
     pub transient: Option<Activity>,
 }

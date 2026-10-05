@@ -1,7 +1,8 @@
-//! The Arbiter (CONTEXT.md, plan 5.1 rules 1, 2, 7). Pure: posts and now in, Frame out.
+//! The Arbiter (CONTEXT.md, plan 5.1 rules 1, 2, 3, 7). Pure: posts and now in, Frame out.
 //!
 //! Persistent Activities compete for the primary, Transient ones for the transient that shows
-//! over it. Each slot takes the highest Priority, tie by the newest post. Expired Activities
+//! over it. Each slot takes the highest Priority, tie by the newest post. The Ongoing and Critical
+//! Persistent ones that lose the primary become Satellites. Expired Activities
 //! stay registered until `expire`, but never reach a Frame, so the primary returns on its own.
 
 #![cfg_attr(
@@ -9,10 +10,14 @@
     expect(dead_code, reason = "IslandService wires the Arbiter in, #20")
 )]
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use super::activity::{Activity, Frame, Id, Lifetime};
+use super::activity::{Activity, Frame, Id, Lifetime, Priority};
+
+// beside the primary at once; the rest only count (plan 5.1 rule 3)
+pub const SATELLITES: usize = 2;
 
 #[derive(Debug, Default)]
 pub struct Arbiter {
@@ -82,18 +87,32 @@ impl Arbiter {
     }
 
     pub fn frame(&self, now: Instant) -> Frame {
-        let top = |transient: bool| {
-            self.activities
+        // highest first, so the primary leads and Satellites keep the same order
+        let ranked = |transient: bool| {
+            let mut entries: Vec<&Entry> = self
+                .activities
                 .values()
                 .filter(|entry| entry.live(now) && entry.expiry().is_some() == transient)
-                .max_by_key(|entry| (entry.activity.priority(), entry.post))
-                .map(|entry| entry.activity.clone())
+                .collect();
+            entries.sort_by_key(|entry| Reverse((entry.activity.priority(), entry.post)));
+            entries.into_iter().map(|entry| entry.activity.clone())
         };
 
+        let mut persistent = ranked(false);
+        let primary = persistent.next();
+        let mut satellites: Vec<Activity> = persistent
+            .filter(|activity| {
+                matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
+            })
+            .collect();
+        let overflow = satellites.len().saturating_sub(SATELLITES);
+        satellites.truncate(SATELLITES);
+
         Frame {
-            primary: top(false),
-            satellites: Vec::new(),
-            transient: top(true),
+            primary,
+            satellites,
+            overflow,
+            transient: ranked(true).next(),
         }
     }
 }
@@ -103,7 +122,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::island::activity::{Kind, Priority};
+    use crate::island::activity::Kind;
 
     const OSD: Duration = Duration::from_millis(1200);
 
@@ -325,5 +344,104 @@ mod tests {
         // gone for good: an earlier now cannot bring it back
         assert_eq!(transient(&arbiter, t0), None);
         assert_eq!(primary(&arbiter, t0), Some(media("spotify").id().clone()));
+    }
+
+    fn ongoing(key: &str) -> Activity {
+        Activity::persistent(Id::new(Kind::Timer, key), Priority::Ongoing)
+    }
+
+    fn satellites(arbiter: &Arbiter, now: Instant) -> (Vec<Id>, usize) {
+        let frame = arbiter.frame(now);
+        let ids = frame
+            .satellites
+            .iter()
+            .map(|activity| activity.id().clone())
+            .collect();
+
+        (ids, frame.overflow)
+    }
+
+    #[test]
+    fn ongoing_and_critical_beside_the_primary_become_satellites() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
+        let wifi = Activity::persistent(Id::new(Kind::Network, "wlan0"), Priority::Passive);
+
+        arbiter.post(battery.clone(), t0);
+        arbiter.post(cast(), t0);
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(wifi, t0);
+
+        // the primary is not repeated, Media and Passive never become Satellites
+        assert_eq!(primary(&arbiter, t0), Some(battery.id().clone()));
+        assert_eq!(satellites(&arbiter, t0), (vec![cast().id().clone()], 0));
+    }
+
+    #[test]
+    fn transients_are_never_satellites() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(call, t0);
+
+        assert_eq!(satellites(&arbiter, t0), (vec![], 0));
+    }
+
+    #[test]
+    fn satellites_cap_and_count_the_overflow() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        for key in ["a", "b", "c", "d"] {
+            arbiter.post(ongoing(key), t0);
+        }
+
+        // "d" is the newest, so the primary; three left for two places
+        let (shown, overflow) = satellites(&arbiter, t0);
+        assert_eq!(shown.len(), SATELLITES);
+        assert_eq!(overflow, 1);
+
+        assert!(arbiter.withdraw(ongoing("a").id()));
+        assert_eq!(satellites(&arbiter, t0).1, 0);
+    }
+
+    #[test]
+    fn satellites_are_highest_first_then_newest() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
+        let privacy = Activity::persistent(Id::new(Kind::Privacy, "mic"), Priority::Critical);
+
+        arbiter.post(privacy.clone(), t0);
+        arbiter.post(ongoing("old"), t0);
+        arbiter.post(ongoing("new"), t0 + ms(10));
+        arbiter.post(battery.clone(), t0 + ms(20));
+
+        // battery is the newest Critical, so the primary
+        assert_eq!(primary(&arbiter, t0 + ms(20)), Some(battery.id().clone()));
+        assert_eq!(
+            satellites(&arbiter, t0 + ms(20)),
+            (vec![privacy.id().clone(), ongoing("new").id().clone()], 1)
+        );
+    }
+
+    #[test]
+    fn a_satellite_is_promoted_when_the_primary_is_withdrawn() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
+
+        arbiter.post(battery.clone(), t0);
+        arbiter.post(cast(), t0);
+        arbiter.post(ongoing("timer"), t0 + ms(10));
+
+        assert!(arbiter.withdraw(battery.id()));
+
+        assert_eq!(primary(&arbiter, t0), Some(ongoing("timer").id().clone()));
+        assert_eq!(satellites(&arbiter, t0), (vec![cast().id().clone()], 0));
     }
 }
