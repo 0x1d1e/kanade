@@ -8,3 +8,9 @@ pub const FG: Color = Color::rgb(242, 242, 247);
 
 // a Satellite or a badge, a step above the body so it reads beside it
 pub const DOT: Color = Color::rgb(44, 44, 50);
+
+// secondary text, like an artist under a title
+pub const MUTED: Color = Color::rgb(152, 152, 160);
+
+// where cover art goes while there is none to draw
+pub const ART: Color = Color::rgb(44, 44, 50);

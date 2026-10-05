@@ -165,12 +165,49 @@ pub struct Action {
     pub label: String,
 }
 
+/*
+ * what the source knows that the island draws, typed per Kind. Not identity: a repost with new
+ * Detail replaces the Activity, so its small form crossfades to the new one
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Detail {
+    // drawn as its Kind and key, as fake Activities are
+    #[default]
+    None,
+
+    Media(Track),
+}
+
+impl Detail {
+    // the one Kind it can describe, none for any
+    fn kind(&self) -> Option<Kind> {
+        match self {
+            Detail::None => None,
+            Detail::Media(_) => Some(Kind::Media),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Track {
+    pub title: String,
+
+    // empty when the player names none
+    pub artist: String,
+
+    // a local file, the only art Amane can draw
+    pub art: Option<String>,
+
+    pub playing: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Activity {
     id: Id,
     priority: Priority,
     lifetime: Lifetime,
     actions: Vec<Action>,
+    detail: Detail,
 }
 
 impl Activity {
@@ -180,6 +217,7 @@ impl Activity {
             priority,
             lifetime: Lifetime::Persistent,
             actions: Vec::new(),
+            detail: Detail::None,
         }
     }
 
@@ -189,11 +227,24 @@ impl Activity {
             priority,
             lifetime: Lifetime::Transient(duration),
             actions: Vec::new(),
+            detail: Detail::None,
         }
     }
 
     pub fn with_actions(mut self, actions: Vec<Action>) -> Activity {
         self.actions = actions;
+        self
+    }
+
+    // a Detail of another Kind is a source's bug, caught here rather than drawn wrong
+    pub fn with_detail(mut self, detail: Detail) -> Activity {
+        assert!(
+            detail.kind().is_none_or(|kind| kind == self.kind()),
+            "{detail:?} does not describe a {:?} Activity",
+            self.kind()
+        );
+
+        self.detail = detail;
         self
     }
 
@@ -215,6 +266,10 @@ impl Activity {
 
     pub fn actions(&self) -> &[Action] {
         &self.actions
+    }
+
+    pub fn detail(&self) -> &Detail {
+        &self.detail
     }
 
     // Transients are for the output the user is looking at
@@ -331,6 +386,26 @@ mod tests {
 
         assert_eq!(toast.kind(), Kind::Notification);
         assert_eq!(toast.actions().len(), 1);
+    }
+
+    #[test]
+    fn detail_belongs_to_its_kind() {
+        let media = Activity::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
+        let track = Detail::Media(Track {
+            title: String::from("Song"),
+            ..Track::default()
+        });
+
+        assert_eq!(media.detail(), &Detail::None);
+        assert_eq!(media.clone().with_detail(track.clone()).detail(), &track);
+        assert_ne!(media.clone().with_detail(track.clone()), media);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not describe")]
+    fn detail_of_another_kind_is_refused() {
+        let _ = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical)
+            .with_detail(Detail::Media(Track::default()));
     }
 
     #[test]
