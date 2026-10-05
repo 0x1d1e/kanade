@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use proc_macro2::{TokenStream, TokenTree};
 use syn::visit::{self, Visit};
-use syn::{Attribute, ItemMod, ItemUse, Macro, MetaList, Path as SynPath, UseTree};
+use syn::{Attribute, ItemMod, ItemUse, Macro, Meta, MetaList, Path as SynPath, UseTree};
 
 const SERVICE: &str = "service";
 
@@ -180,8 +180,21 @@ impl<'ast> Visit<'ast> for Checker {
     }
 }
 
+// `#[path = ..]` directly or smuggled in `#[cfg_attr(.., path = ..)]`, however deeply nested
 fn has_path_attr(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| attr.path().is_ident("path"))
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("path")
+            || attr.path().is_ident("cfg_attr")
+                && matches!(&attr.meta, Meta::List(list) if mentions_path(list.tokens.clone()))
+    })
+}
+
+fn mentions_path(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Ident(ident) => ident == "path",
+        TokenTree::Group(group) => mentions_path(group.stream()),
+        _ => false,
+    })
 }
 
 // violations in one file, `depth` is the file's module depth below `island`
@@ -282,6 +295,22 @@ mod checker {
         assert!(flagged("#[path = \"../view.rs\"] mod v;", 1));
         assert!(flagged("#[path = \"../view.rs\"] mod v;", 0));
         assert!(flagged(
+            "#[cfg_attr(test, path = \"../view.rs\")] mod v;",
+            1
+        ));
+        assert!(flagged(
+            "#[cfg_attr(test, path = \"../view.rs\")] mod v;",
+            0
+        ));
+        assert!(flagged(
+            "#[cfg_attr(a, cfg_attr(b, path = \"../view.rs\"))] mod v;",
+            1
+        ));
+        assert!(flagged(
+            "mod inner { #[cfg_attr(test, path = \"../view.rs\")] mod v; }",
+            1
+        ));
+        assert!(flagged(
             "fn f() { let _ = matches!(crate::view::x(), _); }",
             1
         ));
@@ -331,5 +360,7 @@ mod checker {
         ));
         assert!(!flagged("#[derive(Debug, Clone)] struct S;", 1));
         assert!(!flagged("pub mod service;", 0));
+        assert!(!flagged("#[cfg_attr(test, derive(Debug))] struct S;", 1));
+        assert!(!flagged("#[cfg(test)] mod tests {}", 1));
     }
 }
