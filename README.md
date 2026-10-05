@@ -2,9 +2,9 @@
 
 A top-center Dynamic Island for niri, built with [Amane](https://github.com/MystiaFin/amane).
 
-<video src="assets/preview.mp4" controls muted width="640"></video>
+https://github.com/user-attachments/assets/27e6837e-8cf1-4faa-8815-e5b14cdd631b
 
-[Preview video](assets/preview.mp4) (AI-generated concept, not a capture of the current build)
+AI-generated concept, not a capture of the current build.
 
 ## Limitations
 
