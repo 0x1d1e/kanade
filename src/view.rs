@@ -1,11 +1,12 @@
 use std::time::Instant;
 
 use amane::{
-    Button, Center, Horizontal, InputArea, Key, Layer, LayerWindow, Monitor, Parent, Rectangle,
-    Scroll, Service, Stack, Start, Text, Vertical, Widget, Zone, request_frame,
+    Button, Center, Column, End, Horizontal, Image, InputArea, Key, Layer, LayerWindow, Monitor,
+    Padding, Parent, Rectangle, Row, Scroll, Service, Stack, Start, Text, Vertical, Widget, Zone,
+    children, request_frame,
 };
 
-use crate::island::activity::{Activity, Frame, Kind};
+use crate::island::activity::{Activity, Detail, Frame, Kind, Track};
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation};
 use crate::island::service::IslandService;
@@ -49,18 +50,9 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
-        && let Some(placeholder) = placeholder(&content)
+        && let Some(form) = small_form(&content).or_else(|| placeholder(&content))
     {
-        let size = geometry::shape(content.presentation);
-
-        body = body.child(
-            Rectangle::new()
-                .width(size.width)
-                .height(size.height)
-                .opacity(opacity)
-                .align_child(Center, Center)
-                .child(placeholder),
-        );
+        body = body.child(form.opacity(opacity));
     }
 
     /*
@@ -209,7 +201,7 @@ fn abbreviation(kind: Kind) -> &'static str {
  * a small form shows, or the open Surface, so the crossfade and the clipping can be seen. Short,
  * so sized to its letters and centered; Rest shows nothing
  */
-fn placeholder(content: &Content) -> Option<Text> {
+fn placeholder(content: &Content) -> Option<Rectangle> {
     let name = |activity: &Option<Activity>| {
         activity.as_ref().map_or_else(String::new, |activity| {
             format!("{} {}", activity.kind().name(), activity.id().key())
@@ -223,7 +215,157 @@ fn placeholder(content: &Content) -> Option<Text> {
         Presentation::Expanded(surface) => (format!("{surface:?}"), 17.0),
     };
 
-    Some(Text::new(label).size(size).color(theme::FG).weight(500))
+    Some(
+        sized(content.presentation)
+            .align_child(Center, Center)
+            .child(Text::new(label).size(size).color(theme::FG).weight(500)),
+    )
+}
+
+// content is laid out at its Presentation's final size, which the morph reveals
+fn sized(presentation: Presentation) -> Rectangle {
+    let size = geometry::shape(presentation);
+
+    Rectangle::new().width(size.width).height(size.height)
+}
+
+// an Activity's own Compact or Peek, drawn from its Detail; none leaves it to the placeholder
+fn small_form(content: &Content) -> Option<Rectangle> {
+    let detail = content.activity.as_ref().map(Activity::detail);
+
+    match (content.presentation, detail) {
+        (Presentation::Compact, Some(Detail::Media(track))) => Some(media_compact(track)),
+        (Presentation::Peek, Some(Detail::Media(track))) => Some(media_peek(track)),
+        _ => None,
+    }
+}
+
+/*
+ * art, title, then whether it plays. The art's inset matches top, left and bottom, so it sits
+ * concentric with the body's round end; the state mark keeps clear of the other end
+ */
+fn media_compact(track: &Track) -> Rectangle {
+    let shape = geometry::shape(Presentation::Compact);
+    let inset = 7.0;
+
+    sized(Presentation::Compact)
+        .padding(Padding {
+            top: 0.0,
+            right: 15.0,
+            bottom: 0.0,
+            left: inset,
+        })
+        .align_child(Start, Center)
+        .child(
+            Row::new(children![
+                art(track, shape.height - 2.0 * inset, 6.0),
+                Text::new(&track.title)
+                    .size(13.0)
+                    .color(theme::FG)
+                    .weight(500)
+                    .elide(),
+                state(track.playing),
+            ])
+            .width(Parent)
+            .gap(9.0)
+            .align(Center),
+        )
+}
+
+// the Compact with room for the artist under the title
+fn media_peek(track: &Track) -> Rectangle {
+    let shape = geometry::shape(Presentation::Peek);
+    let inset = 7.0;
+
+    let mut lines = children![
+        Text::new(&track.title)
+            .size(14.0)
+            .color(theme::FG)
+            .weight(600)
+            .elide()
+    ];
+
+    // with no artist the title centers alone
+    if !track.artist.is_empty() {
+        lines.push(Box::new(
+            Text::new(&track.artist)
+                .size(12.0)
+                .color(theme::MUTED)
+                .weight(500)
+                .elide(),
+        ));
+    }
+
+    let lines = Column::new(lines).width(Parent).gap(1.0);
+
+    sized(Presentation::Peek)
+        .padding(Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: inset,
+        })
+        .align_child(Start, Center)
+        .child(
+            Row::new(children![
+                art(track, shape.height - 2.0 * inset, 9.0),
+                lines,
+                state(track.playing),
+            ])
+            .width(Parent)
+            .gap(11.0)
+            .align(Center),
+        )
+}
+
+/*
+ * the cover over a quiet tile with a note, so the tile shows while it decodes, when it never
+ * will, and for web art, all at the same size
+ */
+fn art(track: &Track, side: f32, radius: f32) -> Stack {
+    let tile = Rectangle::new()
+        .width(side)
+        .height(side)
+        .radius(radius)
+        .fill(theme::ART)
+        .align_child(Center, Center)
+        .child(Text::new("\u{266a}").size(side * 0.5).color(theme::MUTED));
+
+    let mut layers = children![tile];
+
+    if let Some(path) = &track.art {
+        // decoded at twice its size, crisp at scale 2, and the cache keeps no full-size covers
+        let pixels = (side * 2.0) as u32;
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(side)
+                .height(side)
+                .radius(radius)
+                .fill(Image::cover(path).thumbnail(pixels, pixels)),
+        ));
+    }
+
+    Stack::new(layers).width(side).height(side)
+}
+
+// three bars while it plays, a pause mark while it does not; still, so playing draws no frames
+fn state(playing: bool) -> Row {
+    let bar = |height: f32| {
+        Rectangle::new()
+            .width(3.0)
+            .height(height)
+            .radius(1.5)
+            .fill(theme::FG)
+    };
+
+    let bars = if playing {
+        children![bar(8.0), bar(13.0), bar(10.0)]
+    } else {
+        children![bar(11.0), bar(11.0)]
+    };
+
+    Row::new(bars).height(13.0).gap(2.0).align(End)
 }
 
 // a write wakes the window even when nothing changed, so only write a real change
