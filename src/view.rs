@@ -119,26 +119,10 @@ fn open(monitor: &str) {
     }
 }
 
-// pointer out disarms now and collapses after the grace, IslandService::listen times it (#5)
+// in starts the hover delay, out disarms now and starts the grace; IslandService::listen times both
 fn hover(monitor: &str, inside: bool) {
-    let island = IslandService::read();
-
-    let changed = if inside {
-        island.leaving(monitor)
-    } else {
-        island.armed(monitor) || island.expanded(monitor) && !island.leaving(monitor)
-    };
-
-    drop(island);
-
-    if !changed {
-        return;
-    }
-
-    if inside {
-        IslandService::write().enter(monitor);
-    } else {
-        IslandService::write().leave(monitor, Instant::now());
+    if IslandService::read().inside(monitor) != inside {
+        IslandService::write().hover(monitor, inside, Instant::now());
     }
 }
 
