@@ -86,6 +86,16 @@ impl Arbiter {
         self.activities.contains_key(id)
     }
 
+    /*
+     * whether `id` is up and preempting at `now`: a repost of it is no new arrival, while an
+     * escalation to Critical or a repost of an expired one not yet swept is
+     */
+    pub fn preempting(&self, id: &Id, now: Instant) -> bool {
+        self.activities.get(id).is_some_and(|entry| {
+            entry.live(now) && entry.activity.interrupt() == Interrupt::Preempt
+        })
+    }
+
     // whether it was registered
     pub fn withdraw(&mut self, id: &Id) -> bool {
         self.activities.remove(id).is_some()
@@ -572,6 +582,32 @@ mod tests {
         let open = arbiter.frame(t0, EXPANDED);
         assert_eq!(open.transient, Some(call()));
         assert_eq!(open.queued, [toast("7", Priority::Actionable)]);
+    }
+
+    #[test]
+    fn preempting_is_a_live_critical() {
+        let now = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let battery = Id::new(Kind::Battery, "BAT0");
+
+        assert!(!arbiter.preempting(&battery, now));
+
+        arbiter.post(
+            Activity::persistent(battery.clone(), Priority::Ongoing),
+            now,
+        );
+        assert!(!arbiter.preempting(&battery, now));
+
+        arbiter.post(
+            Activity::persistent(battery.clone(), Priority::Critical),
+            now,
+        );
+        assert!(arbiter.preempting(&battery, now));
+
+        // registered until expire() sweeps it, but no longer up
+        arbiter.post(call(), now);
+        assert!(arbiter.preempting(call().id(), now + OSD - ms(1)));
+        assert!(!arbiter.preempting(call().id(), now + OSD));
     }
 
     #[test]

@@ -257,12 +257,13 @@ impl IslandService {
     }
 
     /*
-     * a Critical Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4); a
-     * repost of one already up does not, so a Surface reopened over it stays
+     * a Critical Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
+     * existing one escalated to Critical included; a repost of one already up does not, so a
+     * Surface reopened over it stays
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
-        let arrives =
-            activity.interrupt() == Interrupt::Preempt && !self.arbiter.contains(activity.id());
+        let arrives = activity.interrupt() == Interrupt::Preempt
+            && !self.arbiter.preempting(activity.id(), now);
         let global = activity.scope() == Scope::Global;
 
         self.change(|arbiter| arbiter.post(activity, now));
@@ -1530,6 +1531,40 @@ mod tests {
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Controls)
         );
+    }
+
+    // the same Id escalated to Critical arrives, though it was registered all along
+    #[test]
+    fn ongoing_activity_becoming_critical_preempts_open_surface() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let low = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Ongoing);
+
+        island.post(low, now);
+        island.open(MONITOR, Surface::Controls, now + ms(100));
+        island.post(battery(), now + ms(200));
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(shown(&island, MONITOR, now + ms(200)), Some(battery()));
+    }
+
+    // past its expiry it is gone, even before expire() sweeps it, so a repost arrives again
+    #[test]
+    fn expired_critical_reposted_preempts_again() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+
+        island.post(call.clone(), now);
+
+        let expiry = now + OSD;
+
+        island.open(MONITOR, Surface::Controls, expiry);
+        island.post(call.clone(), expiry);
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(shown(&island, MONITOR, expiry), Some(call));
     }
 
     #[test]
