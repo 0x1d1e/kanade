@@ -123,6 +123,7 @@ fn follow(events: &Receiver<Event>) {
         let now = Instant::now();
 
         if let Some(countdown) = running.take_if(|countdown| countdown.ends <= now) {
+            forget();
             IslandService::write().withdraw(&id(), now);
             notify(&countdown);
         }
@@ -153,11 +154,13 @@ fn follow(events: &Receiver<Event>) {
                 };
 
                 running = Some(countdown);
+                forget();
                 IslandService::write().post(activity(countdown), now);
             }
             Ok(Event::Stop) => {
                 // stopping no timer changes nothing, so it writes nothing
                 if running.take().is_some() {
+                    forget();
                     IslandService::write().withdraw(&id(), Instant::now());
                 }
             }
@@ -210,6 +213,16 @@ pub fn clock(countdown: &Countdown, now: Instant) -> String {
 // what is left in a Satellite's few characters, like 45s, 25m or 3h, asking for a redraw likewise
 pub fn short(countdown: &Countdown, now: Instant) -> String {
     read(&SHORT, countdown, now)
+}
+
+/*
+ * drops the redraws the old timer's readings asked for; the island change that follows draws their
+ * windows anyway, and they ask again for what they then read
+ */
+fn forget() {
+    for form in [&CLOCK, &SHORT] {
+        *form.lock() = None;
+    }
 }
 
 fn read(form: &Form, countdown: &Countdown, now: Instant) -> String {
