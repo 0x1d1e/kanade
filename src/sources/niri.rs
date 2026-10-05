@@ -149,10 +149,7 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen)) -
 }
 
 fn post(seen: &Seen) {
-    let mut island = IslandService::write();
-
-    island.set_focused_output(seen.focused_output.clone());
-    island.set_overview(seen.overview, Instant::now());
+    IslandService::write().set_niri(seen.focused_output.clone(), seen.overview, Instant::now());
 }
 
 #[cfg(test)]

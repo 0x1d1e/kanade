@@ -143,12 +143,13 @@ impl IslandService {
             .is_none_or(|focused| focused == monitor)
     }
 
-    pub fn set_focused_output(&mut self, output: Option<String>) {
-        self.focused_output = output;
-    }
-
-    pub fn set_overview(&mut self, open: bool, now: Instant) {
-        self.presentations.set_overview(open);
+    /*
+     * everything niri tells the core, in one update reconciled once; focus changes no Presentation
+     * yet, but will through the Arbiter's scope filter (#19)
+     */
+    pub fn set_niri(&mut self, focused_output: Option<String>, overview: bool, now: Instant) {
+        self.focused_output = focused_output;
+        self.presentations.set_overview(overview);
         self.sync(now);
     }
 
@@ -770,14 +771,15 @@ mod tests {
 
     #[test]
     fn every_monitor_is_focused_until_niri_says_which() {
+        let now = Instant::now();
         let mut island = IslandService::new();
 
         assert!(island.focused(MONITOR) && island.focused("HDMI-A-1"));
 
-        island.set_focused_output(Some(String::from("HDMI-A-1")));
+        island.set_niri(Some(String::from("HDMI-A-1")), false, now);
         assert!(!island.focused(MONITOR) && island.focused("HDMI-A-1"));
 
-        island.set_focused_output(None);
+        island.set_niri(None, false, now);
         assert!(island.focused(MONITOR) && island.focused("HDMI-A-1"));
     }
 
@@ -792,7 +794,7 @@ mod tests {
         island.hover(MONITOR, false, now);
         assert_eq!(island.deadline(), Some(now + GRACE));
 
-        island.set_overview(true, later);
+        island.set_niri(None, true, later);
 
         assert!(island.overview());
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
@@ -808,7 +810,7 @@ mod tests {
 
         // the primary comes back, the open Surface does not
         let closed = later + Duration::from_secs(1);
-        island.set_overview(false, closed);
+        island.set_niri(None, false, closed);
 
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
         assert!(!island.settled(MONITOR, closed + ms(1)));
