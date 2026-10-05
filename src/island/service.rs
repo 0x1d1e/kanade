@@ -23,6 +23,13 @@ const HOVER_DELAY: Duration = Duration::from_millis(120);
 const GRACE: Duration = Duration::from_millis(250);
 
 /*
+ * an island opened without a press holds the keyboard until it collapses (#4), so it collapses on
+ * its own after this unless the pointer comes onto it (#48). Keys do not extend it: someone typing
+ * into a window who missed the island would hold it forever
+ */
+const HOLD: Duration = Duration::from_secs(5);
+
+/*
  * a deadline change nudges listen(), which otherwise sleeps until the next deadline (#5);
  * one pending nudge is enough, since listen() reads every deadline again when it wakes
  */
@@ -297,13 +304,23 @@ impl IslandService {
         }
     }
 
-    // expands without a press, so the island holds the keyboard to still get Escape
+    // expands without a press, so the island holds the keyboard to still get Escape, for a while
     pub fn open(&mut self, monitor: &str, surface: Surface, now: Instant) {
         self.input(monitor, Input::Open(surface), now);
 
         // nothing opens while the overview is, and a hold without a Surface would starve the keyboard
         let expanded = self.expanded(monitor);
-        self.island(monitor).held = expanded;
+        let island = self.island(monitor);
+        island.held = expanded;
+
+        // a pointer already on it collapses after the grace once it leaves instead
+        if expanded && !island.inside {
+            island.due = Some(Due {
+                at: now + HOLD,
+                input: Input::Collapse,
+            });
+            nudge();
+        }
     }
 
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
@@ -479,6 +496,77 @@ mod tests {
 
     fn ms(value: u64) -> Duration {
         Duration::from_millis(value)
+    }
+
+    #[test]
+    fn ignored_held_island_collapses_after_the_hold() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.open(MONITOR, Surface::Controls, now);
+        assert_eq!(island.deadline(), Some(now + HOLD));
+
+        island.expire(now + HOLD - ms(1));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+
+        island.expire(now + HOLD);
+        assert!(!island.expanded(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn escape_within_the_hold_ends_it() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.input(MONITOR, Input::Collapse, now + ms(100));
+
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn pointer_on_a_held_island_trades_the_hold_for_the_grace() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.hover(MONITOR, true, now + ms(100));
+        assert_eq!(island.deadline(), None);
+
+        // resting on it past the hold keeps it open
+        island.expire(now + HOLD);
+        assert!(island.expanded(MONITOR));
+
+        let out = now + HOLD + ms(100);
+        island.hover(MONITOR, false, out);
+        assert_eq!(island.deadline(), Some(out + GRACE));
+    }
+
+    #[test]
+    fn opening_under_the_pointer_sets_no_hold() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.hover(MONITOR, true, now);
+        island.open(MONITOR, Surface::Controls, now);
+
+        assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn switching_the_surface_restarts_the_hold() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+        let later = now + ms(2000);
+
+        island.open(MONITOR, Surface::Media, now);
+        island.open(MONITOR, Surface::Controls, later);
+
+        assert_eq!(island.deadline(), Some(later + HOLD));
     }
 
     // the pointer is on the open island
