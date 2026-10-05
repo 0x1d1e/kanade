@@ -1,37 +1,35 @@
 //! Content crossfade (CONTEXT.md: a Presentation change is geometry plus content crossfade in one
-//! motion). Driven by the morph's progress, not a timer of its own: the old content fades out over
+//! motion), over anything the body shows: a Presentation, or what one shows of an Activity. Driven by the morph's progress, not a timer of its own: the old content fades out over
 //! the first half of the morph and the new fades in over the second, so at most one shows at once.
 //! A morph that changes its mind takes over whatever shows, at its current opacity, so nothing pops.
 
-use super::presentation::Presentation;
-
-#[derive(Debug, Clone, Copy)]
-pub struct Crossfade {
+#[derive(Debug, Clone)]
+pub struct Crossfade<T> {
     // what showed when the current leg began, and how strongly
-    from: Option<(Presentation, f32)>,
+    from: Option<(T, f32)>,
 
-    to: Presentation,
+    to: T,
 
     // how strongly `to` already showed when the leg began, nonzero only on a way back
     start: f32,
 }
 
-impl Crossfade {
-    // settled on `presentation`
-    pub fn new(presentation: Presentation) -> Self {
+impl<T: Clone + PartialEq> Crossfade<T> {
+    // settled on `content`
+    pub fn new(content: T) -> Self {
         Self {
             from: None,
-            to: presentation,
+            to: content,
             start: 1.0,
         }
     }
 
-    pub fn target(&self) -> Presentation {
-        self.to
+    pub fn target(&self) -> &T {
+        &self.to
     }
 
     // a new leg toward `next`, begun at `progress` of the current one
-    pub fn to(&mut self, next: Presentation, progress: f32) {
+    pub fn to(&mut self, next: T, progress: f32) {
         if next == self.to {
             return;
         }
@@ -40,7 +38,7 @@ impl Crossfade {
 
         (self.from, self.start) = match showing {
             // back to what still shows, it only has to grow back from here
-            Some((presentation, opacity)) if presentation == next => (None, opacity),
+            Some((content, opacity)) if content == next => (None, opacity),
             showing => (showing, 0.0),
         };
 
@@ -48,41 +46,42 @@ impl Crossfade {
     }
 
     // what shows at `progress` of the current leg, and how strongly; never both at once
-    pub fn shown(&self, progress: f32) -> [Option<(Presentation, f32)>; 2] {
+    pub fn shown(&self, progress: f32) -> [Option<(T, f32)>; 2] {
         let out = (1.0 - 2.0 * progress).clamp(0.0, 1.0);
         let into = (2.0 * progress - 1.0).clamp(0.0, 1.0);
 
         let from = self
             .from
-            .map(|(presentation, opacity)| (presentation, opacity * out));
-        let to = (self.to, self.start + (1.0 - self.start) * into);
+            .clone()
+            .map(|(content, opacity)| (content, opacity * out));
+        let to = (self.to.clone(), self.start + (1.0 - self.start) * into);
 
         [from, Some(to)].map(|shown| shown.filter(|&(_, opacity)| opacity > 0.0))
     }
 }
 
 // an untouched island rests, with nothing to show
-impl Default for Crossfade {
+impl<T: Clone + PartialEq + Default> Default for Crossfade<T> {
     fn default() -> Self {
-        Self::new(Presentation::Rest)
+        Self::new(T::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::presentation::Surface;
+    use crate::island::presentation::{Presentation, Surface};
 
     use Presentation::{Compact, Expanded, Peek, Rest};
 
     const MEDIA: Presentation = Expanded(Surface::Media);
 
-    fn shown(fade: &Crossfade, progress: f32) -> Vec<(Presentation, f32)> {
+    fn shown(fade: &Crossfade<Presentation>, progress: f32) -> Vec<(Presentation, f32)> {
         fade.shown(progress).into_iter().flatten().collect()
     }
 
     // the opacity `presentation` shows with, 0 when it does not show
-    fn opacity(fade: &Crossfade, presentation: Presentation, progress: f32) -> f32 {
+    fn opacity(fade: &Crossfade<Presentation>, presentation: Presentation, progress: f32) -> f32 {
         shown(fade, progress)
             .into_iter()
             .find(|&(shown, _)| shown == presentation)

@@ -22,6 +22,43 @@ pub enum Kind {
     Privacy,
 }
 
+impl Kind {
+    pub const ALL: [Kind; 11] = [
+        Kind::Media,
+        Kind::Notification,
+        Kind::Volume,
+        Kind::Brightness,
+        Kind::Workspace,
+        Kind::Battery,
+        Kind::Network,
+        Kind::Bluetooth,
+        Kind::ScreenCast,
+        Kind::Timer,
+        Kind::Privacy,
+    ];
+
+    // as IPC names it
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Media => "media",
+            Kind::Notification => "notification",
+            Kind::Volume => "volume",
+            Kind::Brightness => "brightness",
+            Kind::Workspace => "workspace",
+            Kind::Battery => "battery",
+            Kind::Network => "network",
+            Kind::Bluetooth => "bluetooth",
+            Kind::ScreenCast => "screen-cast",
+            Kind::Timer => "timer",
+            Kind::Privacy => "privacy",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+}
+
 // lowest first, so Critical is the greatest
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
@@ -39,6 +76,35 @@ pub enum Priority {
 
     // low battery, privacy, call
     Critical,
+}
+
+impl Priority {
+    pub const ALL: [Priority; 6] = [
+        Priority::Passive,
+        Priority::Media,
+        Priority::Osd,
+        Priority::Ongoing,
+        Priority::Actionable,
+        Priority::Critical,
+    ];
+
+    // as IPC names it
+    pub fn name(self) -> &'static str {
+        match self {
+            Priority::Passive => "passive",
+            Priority::Media => "media",
+            Priority::Osd => "osd",
+            Priority::Ongoing => "ongoing",
+            Priority::Actionable => "actionable",
+            Priority::Critical => "critical",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Priority> {
+        Priority::ALL
+            .into_iter()
+            .find(|priority| priority.name() == name)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,5 +331,19 @@ mod tests {
 
         assert_eq!(toast.kind(), Kind::Notification);
         assert_eq!(toast.actions().len(), 1);
+    }
+
+    #[test]
+    fn names_parse_back() {
+        for kind in Kind::ALL {
+            assert_eq!(Kind::parse(kind.name()), Some(kind));
+        }
+
+        for priority in Priority::ALL {
+            assert_eq!(Priority::parse(priority.name()), Some(priority));
+        }
+
+        assert_eq!(Kind::parse("ScreenCast"), None);
+        assert_eq!(Priority::parse(""), None);
     }
 }

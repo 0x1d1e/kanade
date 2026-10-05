@@ -45,6 +45,10 @@ pub const EXPANDED_MAX: Shape = Shape {
     radius: 32.0,
 };
 
+// a Satellite's diameter, and the gap before each one
+pub const SATELLITE: f32 = 28.0;
+pub const SATELLITE_GAP: f32 = 6.0;
+
 // where the body of an island in this Presentation morphs to
 pub fn shape(presentation: Presentation) -> Shape {
     match presentation {
@@ -132,6 +136,27 @@ pub fn input_area(body: Rect) -> Rect {
     let bottom = (body.bottom() + HOVER_PADDING).ceil().min(CANVAS_HEIGHT);
 
     Rect::from_edges(left, top, right, bottom)
+}
+
+/*
+ * the `index`th Satellite, right of the body and centered on it. Past a Peek a body that grows on
+ * only covers them, so they stay inside the canvas while they fade out
+ */
+pub fn satellite(body: Rect, index: usize) -> Rect {
+    let left = body.right().min(self::body(PEEK).right());
+    let height = body.height.min(PEEK.height);
+
+    Rect {
+        x: left + SATELLITE_GAP + index as f32 * (SATELLITE + SATELLITE_GAP),
+        y: body.y + (height - SATELLITE) / 2.0,
+        width: SATELLITE,
+        height: SATELLITE,
+    }
+}
+
+// Satellites belong to the small forms: whole up to a Peek, gone by the smallest Surface
+pub fn satellite_opacity(shape: Shape) -> f32 {
+    1.0 - ((shape.height - PEEK.height) / (CONTROLS.height - PEEK.height)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -316,5 +341,44 @@ mod tests {
         };
 
         assert_eq!(input_area(rect), Rect::from_edges(92.0, 2.0, 159.0, 39.0));
+    }
+
+    #[test]
+    fn satellites_line_up_right_of_the_small_forms() {
+        for small in [COMPACT, PEEK] {
+            let body = body(small);
+            let first = satellite(body, 0);
+            let second = satellite(body, 1);
+
+            assert_eq!(first.x, body.right() + SATELLITE_GAP);
+            assert_eq!(second.x, first.right() + SATELLITE_GAP);
+            assert_eq!(first.y - body.y, body.bottom() - first.bottom());
+            assert_eq!(second.y, first.y);
+        }
+    }
+
+    // the cap plus the overflow count, through any morph
+    #[test]
+    fn satellites_stay_inside_the_canvas() {
+        for shape in shapes() {
+            let last = satellite(body(shape), crate::island::arbiter::SATELLITES);
+
+            assert!(contains(canvas(), last), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn satellites_fade_out_toward_a_surface() {
+        assert_eq!(satellite_opacity(REST), 1.0);
+        assert_eq!(satellite_opacity(COMPACT), 1.0);
+        assert_eq!(satellite_opacity(PEEK), 1.0);
+        assert_eq!(satellite_opacity(CONTROLS), 0.0);
+        assert_eq!(satellite_opacity(EXPANDED_MAX), 0.0);
+
+        let halfway = Shape {
+            height: (PEEK.height + CONTROLS.height) / 2.0,
+            ..PEEK
+        };
+        assert_eq!(satellite_opacity(halfway), 0.5);
     }
 }

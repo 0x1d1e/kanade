@@ -8,11 +8,6 @@
 //! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
 //! it, never withdraw one. DND (rule 5) hides the toasts already up and drops those posted during it.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "IslandService wires the Arbiter in, #20")
-)]
-
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -87,6 +82,10 @@ impl Arbiter {
         );
     }
 
+    pub fn contains(&self, id: &Id) -> bool {
+        self.activities.contains_key(id)
+    }
+
     // whether it was registered
     pub fn withdraw(&mut self, id: &Id) -> bool {
         self.activities.remove(id).is_some()
@@ -101,13 +100,12 @@ impl Arbiter {
         self.activities.len() != before
     }
 
-    // the next expiry after now, of any live Transient, hidden or not; the Frame may not change then
-    pub fn deadline(&self, now: Instant) -> Option<Instant> {
-        self.activities
-            .values()
-            .filter(|entry| entry.live(now))
-            .filter_map(Entry::expiry)
-            .min()
+    /*
+     * when `expire` next drops something: the earliest expiry of any registered Transient, hidden
+     * or not, so the Frame may not change then. Past once one expired and waits for `expire`
+     */
+    pub fn deadline(&self) -> Option<Instant> {
+        self.activities.values().filter_map(Entry::expiry).min()
     }
 
     // DND silences Notification toasts, not the Notifications, and never a Critical one (rule 5)
@@ -216,7 +214,7 @@ mod tests {
         let arbiter = Arbiter::default();
 
         assert_eq!(arbiter.frame(Instant::now(), FOCUSED), Frame::default());
-        assert_eq!(arbiter.deadline(Instant::now()), None);
+        assert_eq!(arbiter.deadline(), None);
     }
 
     #[test]
@@ -290,7 +288,7 @@ mod tests {
             transient(&arbiter, t0 + ms(2000)),
             Some(volume().id().clone())
         );
-        assert_eq!(arbiter.deadline(t0 + ms(2000)), Some(t0 + ms(2200)));
+        assert_eq!(arbiter.deadline(), Some(t0 + ms(2200)));
         assert_eq!(transient(&arbiter, t0 + ms(2200)), None);
     }
 
@@ -358,11 +356,11 @@ mod tests {
         let expiry = t0 + OSD;
         assert!(transient(&arbiter, expiry - Duration::from_nanos(1)).is_some());
         assert_eq!(transient(&arbiter, expiry), None);
-        assert_eq!(
-            arbiter.deadline(expiry - Duration::from_nanos(1)),
-            Some(expiry)
-        );
-        assert_eq!(arbiter.deadline(expiry), None);
+        assert_eq!(arbiter.deadline(), Some(expiry));
+
+        // still due until expire drops it, so a late wake still expires it
+        assert!(arbiter.expire(expiry));
+        assert_eq!(arbiter.deadline(), None);
     }
 
     #[test]
@@ -376,12 +374,14 @@ mod tests {
         );
 
         arbiter.post(media("spotify"), t0);
-        assert_eq!(arbiter.deadline(t0), None);
+        assert_eq!(arbiter.deadline(), None);
 
         arbiter.post(toast, t0);
         arbiter.post(volume(), t0);
-        assert_eq!(arbiter.deadline(t0), Some(t0 + OSD));
-        assert_eq!(arbiter.deadline(t0 + OSD), Some(t0 + ms(5000)));
+        assert_eq!(arbiter.deadline(), Some(t0 + OSD));
+
+        arbiter.expire(t0 + OSD);
+        assert_eq!(arbiter.deadline(), Some(t0 + ms(5000)));
     }
 
     #[test]
@@ -631,7 +631,7 @@ mod tests {
 
         assert!(!arbiter.dnd());
         assert_eq!(arbiter.frame(t0 + ms(1000), FOCUSED).transient, None);
-        assert_eq!(arbiter.deadline(t0), None);
+        assert_eq!(arbiter.deadline(), None);
     }
 
     #[test]
@@ -646,7 +646,7 @@ mod tests {
 
         // inside the first post's Lifetime, which the repost ended
         assert_eq!(arbiter.frame(t0 + ms(2000), FOCUSED).transient, None);
-        assert_eq!(arbiter.deadline(t0 + ms(2000)), None);
+        assert_eq!(arbiter.deadline(), None);
     }
 
     #[test]

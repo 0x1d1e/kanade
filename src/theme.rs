@@ -5,3 +5,6 @@ pub const BODY: Color = Color::rgb(12, 12, 14);
 
 // high-contrast foreground for text on the body
 pub const FG: Color = Color::rgb(242, 242, 247);
+
+// a Satellite or a badge, a step above the body so it reads beside it
+pub const DOT: Color = Color::rgb(44, 44, 50);
