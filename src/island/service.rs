@@ -290,7 +290,8 @@ impl IslandService {
             .or(open.map(|(monitor, _)| monitor))
             .ok_or(NoFocus)?;
 
-        if self.presentation(monitor) == Presentation::Expanded(surface) {
+        // opening the Surface already showing still restarts the hold, which a pointer on it has none of
+        if self.presentation(monitor) == Presentation::Expanded(surface) && self.inside(monitor) {
             return Ok(None);
         }
 
@@ -1028,12 +1029,11 @@ mod tests {
     }
 
     #[test]
-    fn open_switches_the_surface_and_skips_the_one_showing() {
+    fn open_switches_the_surface() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
         run(&mut island, Command::Open(Surface::Media), now);
-        assert_eq!(run(&mut island, Command::Open(Surface::Media), now), None);
 
         assert_eq!(
             run(&mut island, Command::Open(Surface::Launcher), now),
@@ -1043,6 +1043,39 @@ mod tests {
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Launcher)
         );
+    }
+
+    #[test]
+    fn opening_the_surface_showing_restarts_the_hold() {
+        let now = Instant::now();
+        let later = now + ms(4000);
+        let mut island = focused_on(MONITOR, now);
+
+        run(&mut island, Command::Open(Surface::Media), now);
+
+        assert_eq!(
+            run(&mut island, Command::Open(Surface::Media), later),
+            Some(Effect::Open(MONITOR.to_owned(), Surface::Media))
+        );
+        assert_eq!(island.deadline(), Some(later + HOLD));
+
+        island.expire(now + HOLD);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Media)
+        );
+    }
+
+    // under the pointer there is no hold to restart, so a repeat changes nothing and never writes
+    #[test]
+    fn opening_the_surface_showing_under_the_pointer_is_skipped() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.hover(MONITOR, true, now);
+        run(&mut island, Command::Open(Surface::Media), now);
+
+        assert_eq!(island.resolve(Command::Open(Surface::Media)), Ok(None));
     }
 
     #[test]
