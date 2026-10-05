@@ -659,6 +659,70 @@ mod tests {
         assert_eq!(shown(settled + ms(1_000)), [(media, 1.0)]);
     }
 
+    // Media and Launcher share one shape, so only the spring's in-place leg can time the fade
+    #[test]
+    fn same_shape_surface_switch_still_crossfades() {
+        let now = Instant::now();
+        let mut island = compact(now);
+
+        island.input(MONITOR, Input::Click, now);
+
+        let media = Presentation::Expanded(Surface::Media);
+        let launcher = Presentation::Expanded(Surface::Launcher);
+        let switch = now + Duration::from_secs(1);
+
+        assert_eq!(island.presentation(MONITOR), media);
+        assert!(island.settled(MONITOR, switch));
+
+        let shape = island.shape(MONITOR, switch);
+
+        island.input(MONITOR, Input::Open(Surface::Launcher), switch);
+
+        assert_eq!(island.presentation(MONITOR), launcher);
+        assert_eq!(geometry::shape(media), geometry::shape(launcher));
+        assert!(!island.settled(MONITOR, switch));
+
+        let shown = |at| -> Vec<_> { island.content(MONITOR, at).into_iter().flatten().collect() };
+
+        assert_eq!(shown(switch), [(media, 1.0)]);
+
+        /*
+         * Media fades out to nothing, then Launcher fades in from nothing; never back, never both.
+         * Nothing shows only at the instant of the handover, so each side of it is near empty
+         */
+        let mut last = (media, 1.0);
+        let mut handover = None;
+        let mut step = 0;
+
+        while !island.settled(MONITOR, switch + ms(step)) {
+            let at = switch + ms(step);
+
+            assert_eq!(island.shape(MONITOR, at), shape);
+
+            if let [now] = shown(at)[..] {
+                match (last.0 == media, now.0 == media) {
+                    (true, true) => assert!(now.1 <= last.1, "Media grew at {step} ms"),
+                    (false, false) => assert!(now.1 >= last.1, "Launcher dipped at {step} ms"),
+                    (true, false) => handover = Some((last.1, now.1)),
+                    (false, true) => panic!("Media came back at {step} ms"),
+                }
+
+                last = now;
+            } else {
+                assert_eq!(shown(at), [], "both at {step} ms");
+            }
+
+            step += 1;
+
+            assert!(step < 1_000, "never settled");
+        }
+
+        let (out, into) = handover.expect("never handed over to Launcher");
+
+        assert!(out < 0.1 && into < 0.1, "handed over at {out} -> {into}");
+        assert_eq!(shown(switch + ms(step)), [(launcher, 1.0)]);
+    }
+
     // input that changes no Presentation starts no motion
     #[test]
     fn unchanged_presentation_stays_settled() {
