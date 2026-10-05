@@ -201,7 +201,8 @@ Own critically damped spring, closed form (no integrator jitter): `x(t) = target
 - One spring group animates width, height, radius together (same `w`), so geometry is one object. Content opacity and translation derive from progress, not separate timers.
 - Frames are requested only until the spring settles (`request_frame()`), then the window rests.
 - Upstream `Easing::Bezier` or spring to Amane later; not a v0.1 dependency.
-- Reduced-motion config: snap geometry, 80 ms opacity only.
+- Reduced-motion config: `KANADE_REDUCED_MOTION=1` snaps geometry, 80 ms opacity only (#36).
+- Each leg takes its own response (#36): expand and collapse 180 ms, a Surface replacing another 220 ms.
 - Never: collapse old, fade out, resize, fade in new.
 
 ## 7. UX requirements

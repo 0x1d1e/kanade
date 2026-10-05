@@ -296,22 +296,18 @@ mod tests {
     #[test]
     fn input_area_holds_through_a_retargeted_spring() {
         let start = Instant::now();
-        let mut spring = Spring::new(
-            REST.into(),
-            Mode::Spring {
-                response: Duration::from_millis(180),
-            },
-        );
+        let response = Duration::from_millis(180);
+        let mut spring = Spring::new(REST.into(), Mode::Spring);
 
         let mut now = start;
 
         for from in PRESENTATIONS {
             for to in PRESENTATIONS {
-                spring.to(shape(from).into(), now);
+                spring.to(shape(from).into(), response, now);
 
                 // change of mind 60 ms in, then follow every millisecond until it rests
                 now += Duration::from_millis(60);
-                spring.to(shape(to).into(), now);
+                spring.to(shape(to).into(), response, now);
 
                 while !spring.settled(now) {
                     let shape = Shape::from(spring.at(now));
