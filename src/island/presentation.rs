@@ -35,10 +35,18 @@ pub enum Presentation {
     Expanded(Surface),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Wheel carries a scroll delta, so no Eq
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Input {
     // left click on the body
     Click,
+
+    /*
+     * routed but meaning nothing yet: right click is context and pin (#31), the wheel belongs to
+     * the Surface under it, Media volume first (#27); positive scrolls down
+     */
+    RightClick,
+    Wheel(f32),
 
     // IPC or keybind asking for a Surface
     Open(Surface),
@@ -56,6 +64,14 @@ pub enum Input {
         expect(dead_code, reason = "the Arbiter decides preemption, #19")
     )]
     Preempt,
+}
+
+impl Input {
+    // false for input no Presentation reacts to yet, so it neither ends a pending Peek or grace
+    // nor needs writing at all
+    pub fn decides(self) -> bool {
+        !matches!(self, Input::RightClick | Input::Wheel(_))
+    }
 }
 
 // what the user holds an island in, beyond what its primary Activity gives it
@@ -133,6 +149,8 @@ impl Presentations {
 
             // only an island with a primary has a larger small form to peek into
             (Input::Hover, Presentation::Compact) => island.held = Some(Held::Peek),
+
+            (Input::RightClick | Input::Wheel(_), _) => {}
 
             _ => {}
         }
@@ -274,6 +292,21 @@ mod tests {
             after(&[Input::Click, Input::Unhover], Some(Media)),
             Expanded(Media)
         );
+    }
+
+    #[test]
+    fn right_click_and_wheel_change_nothing_yet() {
+        for setup in [&[][..], &[Input::Hover], &[Input::Click]] {
+            for primary in [None, Some(Media)] {
+                let before = after(setup, primary);
+
+                for input in [Input::RightClick, Input::Wheel(1.0), Input::Wheel(-1.0)] {
+                    let inputs = [setup, &[input]].concat();
+
+                    assert_eq!(after(&inputs, primary), before, "{inputs:?} {primary:?}");
+                }
+            }
+        }
     }
 
     #[test]

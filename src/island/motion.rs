@@ -16,6 +16,9 @@ const RESPONSE_FACTOR: f32 = 4.744;
 const SETTLE_DISTANCE: f32 = 0.5;
 const SETTLE_SPEED: f32 = 5.0;
 
+// and not before a move from rest would be this close, below one step of 8-bit opacity
+const SETTLE_SHARE: f32 = 1.0 / 256.0;
+
 // reduced motion: geometry snaps, only the derived opacity still fades (plan 6.4)
 pub const REDUCED_FADE: Duration = Duration::from_millis(80);
 
@@ -59,15 +62,12 @@ impl<const N: usize> Spring<N> {
     }
 
     /*
-     * a new target starts from where it is and how fast it moves now, so a changed mind never jumps.
+     * a new leg starts from where it is and how fast it moves now, so a changed mind never jumps.
      * No overshoot from rest or on a reversal toward the other endpoint. A same-direction target
-     * closer than speed / w may be passed, since keeping the velocity leaves no other way to stop
+     * closer than speed / w may be passed, since keeping the velocity leaves no other way to stop.
+     * The same target keeps the motion but still starts a leg, for content that changes in place
      */
     pub fn to(&mut self, target: [f32; N], now: Instant) {
-        if target == self.target {
-            return;
-        }
-
         let position = self.at(now);
         let velocity = self.velocity(now);
 
@@ -118,6 +118,10 @@ impl<const N: usize> Spring<N> {
 
         let decay = (-self.w * t).exp();
 
+        if (1.0 + self.w * t) * decay > SETTLE_SHARE {
+            return false;
+        }
+
         (0..N).all(|i| {
             let left = (self.a[i] + self.b[i] * t) * decay;
             let speed = (self.w * (self.a[i] + self.b[i] * t) - self.b[i]) * decay;
@@ -129,12 +133,9 @@ impl<const N: usize> Spring<N> {
     /*
      * 0 when the current leg starts, 1 once it arrives; measured on the dimension that has the
      * furthest to go, and starting over at 0 on every `to`, when the content changes anyway.
+     * A leg that goes nowhere runs as a move from rest would, so content still fades in step.
      * Reduced motion: geometry is already there, this fades linearly over REDUCED_FADE
      */
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "for Surface content, which does not exist yet")
-    )]
     pub fn progress(&self, now: Instant) -> f32 {
         if self.settled(now) {
             return 1.0;
@@ -146,15 +147,17 @@ impl<const N: usize> Spring<N> {
             return t / REDUCED_FADE.as_secs_f32();
         }
 
-        let Some(i) = (0..N).max_by(|&i, &j| self.a[i].abs().total_cmp(&self.a[j].abs())) else {
-            return 1.0;
+        let decay = (-self.w * t).exp();
+
+        let furthest = (0..N)
+            .max_by(|&i, &j| self.a[i].abs().total_cmp(&self.a[j].abs()))
+            .filter(|&i| self.a[i] != 0.0);
+
+        let Some(i) = furthest else {
+            return 1.0 - (1.0 + self.w * t) * decay;
         };
 
-        if self.a[i] == 0.0 {
-            return 1.0;
-        }
-
-        let left = (self.a[i] + self.b[i] * t) * (-self.w * t).exp();
+        let left = (self.a[i] + self.b[i] * t) * decay;
 
         (1.0 - left / self.a[i]).clamp(0.0, 1.0)
     }
@@ -204,14 +207,49 @@ mod tests {
     }
 
     #[test]
-    fn same_target_changes_nothing() {
+    fn same_target_keeps_the_motion_and_starts_a_leg() {
         let now = Instant::now();
         let mut spring = Spring::new([150.0], SPRING);
 
         spring.to([440.0], now);
-        spring.to([440.0], now + ms(90));
 
-        assert_eq!(spring.start, Some(now));
+        let turn = now + ms(60);
+        let later = now + ms(120);
+        let before = spring.at(later);
+
+        spring.to([440.0], turn);
+
+        assert_eq!(spring.progress(turn), 0.0);
+        assert!((spring.at(later)[0] - before[0]).abs() < 1e-2);
+    }
+
+    // content that changes within one shape fades as a move from rest of that shape would
+    #[test]
+    fn leg_in_place_runs_like_a_move_from_rest() {
+        let now = Instant::now();
+        let mut moving = Spring::new([150.0], SPRING);
+        let mut still = Spring::new([150.0], SPRING);
+
+        moving.to([440.0], now);
+        still.to([150.0], now);
+
+        assert_eq!(still.progress(now), 0.0);
+
+        for &t in &walk(&moving, now) {
+            assert_eq!(still.at(t), [150.0]);
+            assert!(
+                (still.progress(t) - moving.progress(t)).abs() <= SETTLE_SHARE,
+                "at {:?}: {} vs {}",
+                t - now,
+                still.progress(t),
+                moving.progress(t)
+            );
+        }
+
+        let end = *walk(&still, now).last().unwrap();
+
+        assert!(end - now > RESPONSE, "{:?}", end - now);
+        assert_eq!(still.progress(end), 1.0);
     }
 
     #[test]
