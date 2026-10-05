@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod boundary;
+mod ipc;
 mod island;
 mod sources;
 mod surfaces;
@@ -15,6 +16,6 @@ fn main() {
 
     App::new()
         .window_per_monitor(view::island)
-        .ipc("island", view::ipc)
+        .ipc("island", ipc::island)
         .run();
 }

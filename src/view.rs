@@ -115,17 +115,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         )
 }
 
-// `amane ipc call island <verb> <monitor>`, runs on the draw thread; only posts
-pub fn ipc(arguments: &[String]) -> String {
-    match arguments {
-        [verb, monitor] if verb == "open" => open(monitor),
-        [verb, monitor] if verb == "collapse" => collapse(monitor),
-        _ => return String::from("usage: island open|collapse <monitor>"),
-    }
-
-    String::new()
-}
-
 /*
  * stand-in content until the Surfaces and the Frame exist (#20, #27-#30): names what shows, so the
  * crossfade and the clipping can be seen. Short and fixed, so sized to its letters and centered;
@@ -152,13 +141,6 @@ fn expand(monitor: &str) {
 fn collapse(monitor: &str) {
     if IslandService::read().expanded(monitor) {
         IslandService::write().input(monitor, Input::Collapse, Instant::now());
-    }
-}
-
-// no press, so the island holds the keyboard until it collapses (#4)
-fn open(monitor: &str) {
-    if !IslandService::read().expanded(monitor) {
-        IslandService::write().open(monitor, Instant::now());
     }
 }
 

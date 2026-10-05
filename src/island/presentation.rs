@@ -8,22 +8,35 @@ use std::collections::HashMap;
 // full interactive content of an Expanded island
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "opened once Media Activities exist")
-    )]
     Media,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "opened once Notifications exist")
-    )]
     Notifications,
     Controls,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "opened by IPC verbs that do not exist yet")
-    )]
     Launcher,
+}
+
+impl Surface {
+    pub const ALL: [Surface; 4] = [
+        Surface::Media,
+        Surface::Notifications,
+        Surface::Controls,
+        Surface::Launcher,
+    ];
+
+    // as IPC names it
+    pub fn name(self) -> &'static str {
+        match self {
+            Surface::Media => "media",
+            Surface::Notifications => "notifications",
+            Surface::Controls => "controls",
+            Surface::Launcher => "launcher",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Surface> {
+        Surface::ALL
+            .into_iter()
+            .find(|surface| surface.name() == name)
+    }
 }
 
 // Expanded always carries a Surface, there is no surface-less expanded form
@@ -190,6 +203,16 @@ impl Presentations {
         }
 
         self.island(monitor).held = Some(Held::Expanded(surface));
+    }
+
+    // the one Expanded island and its Surface, if any
+    pub fn expanded(&self) -> Option<(&str, Surface)> {
+        self.islands
+            .keys()
+            .find_map(|monitor| match self.get(monitor) {
+                Presentation::Expanded(surface) => Some((monitor.as_str(), surface)),
+                _ => None,
+            })
     }
 
     fn island(&mut self, monitor: &str) -> &mut Island {
@@ -433,6 +456,33 @@ mod tests {
         presentations.set_overview(false);
 
         assert_eq!(presentations.get(MONITOR), Peek);
+    }
+
+    #[test]
+    fn surface_names_round_trip() {
+        for surface in Surface::ALL {
+            assert_eq!(Surface::parse(surface.name()), Some(surface));
+        }
+
+        assert_eq!(Surface::parse("Media"), None);
+        assert_eq!(Surface::parse(""), None);
+    }
+
+    #[test]
+    fn expanded_names_the_open_island() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+        assert_eq!(presentations.expanded(), None);
+
+        presentations.input(OTHER, Input::Open(Launcher));
+        assert_eq!(presentations.expanded(), Some((OTHER, Launcher)));
+
+        presentations.input(MONITOR, Input::Click);
+        assert_eq!(presentations.expanded(), Some((MONITOR, Media)));
+
+        presentations.set_overview(true);
+        assert_eq!(presentations.expanded(), None);
     }
 
     #[test]
