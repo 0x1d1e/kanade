@@ -16,6 +16,7 @@ fn main() {
     thread::spawn(sources::battery::follow);
     thread::spawn(sources::media::follow);
     thread::spawn(sources::osd::follow);
+    thread::spawn(sources::notifications::follow);
 
     App::new()
         .window_per_monitor(view::island)
