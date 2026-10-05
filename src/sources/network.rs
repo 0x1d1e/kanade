@@ -6,9 +6,9 @@ use amane::{Argument, Bus, Service, Value};
 use super::connectivity::{Radio, SHOWN};
 use crate::island::activity::{Activity, Connection, Detail, Id, Kind, Priority, Uplink};
 
-const NAME: &str = "org.freedesktop.NetworkManager";
+pub const NAME: &str = "org.freedesktop.NetworkManager";
 
-const ROOT: &str = "/org/freedesktop/NetworkManager";
+pub const ROOT: &str = "/org/freedesktop/NetworkManager";
 
 const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 

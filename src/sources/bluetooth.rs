@@ -6,7 +6,7 @@ use amane::{Bus, Service, Value};
 use super::connectivity::{Radio, SHOWN};
 use crate::island::activity::{Activity, Detail, Id, Kind, Peer, Priority};
 
-const BLUEZ: &str = "org.bluez";
+pub const BLUEZ: &str = "org.bluez";
 
 const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
@@ -31,7 +31,12 @@ impl Service for Adapter {
 
 // the adapter powering, a device connecting, renamed, or its battery
 pub fn concerns(path: &str, interface: &str) -> bool {
-    path.starts_with("/org/bluez/") && matches!(interface, ADAPTER | DEVICE | BATTERY)
+    object(path) && matches!(interface, ADAPTER | DEVICE | BATTERY)
+}
+
+// one of BlueZ's adapters or devices
+pub fn object(path: &str) -> bool {
+    path.starts_with("/org/bluez/")
 }
 
 // one call lists the adapter and every device at once; nothing when BlueZ is not running
