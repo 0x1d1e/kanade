@@ -40,7 +40,7 @@ pub struct IslandService {
 
 #[derive(Default)]
 struct Island {
-    // the pointer is on the body, so a press there can take keyboard focus
+    // the pointer is in the input region and has not pressed Escape, so a press can take focus
     armed: bool,
 
     // opened without a press (IPC, keybind), so OnDemand never got focus; held until collapse,
@@ -251,8 +251,9 @@ impl IslandService {
     }
 
     /*
-     * the pointer entered or left the input region. In, a Compact island peeks after the hover
-     * delay; out, a Peek or an open Surface collapses after the grace; either edge cancels the other
+     * the pointer entered or left the input region, which arms or disarms the keyboard. In, a
+     * Compact island peeks after the hover delay; out, a Peek or an open Surface collapses after the
+     * grace; either edge cancels the other
      */
     pub fn hover(&mut self, monitor: &str, inside: bool, now: Instant) {
         let presentation = self.presentation(monitor);
@@ -262,11 +263,9 @@ impl IslandService {
             return;
         }
 
+        // on before any press, since OnDemand focuses only on one (#2)
         island.inside = inside;
-
-        if !inside {
-            island.armed = false;
-        }
+        island.armed = inside;
 
         let due = match (inside, presentation) {
             (true, Presentation::Compact) => Some((HOVER_DELAY, Input::Hover)),
@@ -370,7 +369,6 @@ mod tests {
         let mut island = IslandService::new();
 
         island.hover(MONITOR, true, now);
-        island.set_armed(MONITOR, true);
         island.input(MONITOR, Input::Click, now);
 
         island
@@ -399,6 +397,21 @@ mod tests {
         island.expire(now + HOVER_DELAY);
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
         assert_eq!(island.deadline(), None);
+    }
+
+    // a Peek grows under a still pointer, which must already have the keyboard for the press
+    #[test]
+    fn pointer_in_arms_the_keyboard_through_the_peek() {
+        let now = Instant::now();
+        let mut island = compact(now);
+
+        assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+
+        island.expire(now + HOVER_DELAY);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+
+        island.hover(MONITOR, false, now + ms(500));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
     }
 
     #[test]

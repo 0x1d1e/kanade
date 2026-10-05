@@ -29,7 +29,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let area = geometry::input_area(body);
 
     let clicked = monitor.name.clone();
-    let entered = monitor.name.clone();
     let moved = monitor.name.clone();
     let hovered = monitor.name.clone();
     let pressed = monitor.name.clone();
@@ -39,19 +38,13 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .height(body.height)
         .radius(shape.radius)
         .fill(theme::BODY)
-        .translate(body.x - area.x, body.y - area.y)
-        .on_click(move |button| {
-            if button == Button::Left {
-                expand(&clicked);
-            }
-        })
-        .on_hover(move |inside| set_armed(&entered, inside))
-        // Escape disarms without the pointer leaving, the next move arms again
-        .on_move(move |_| set_armed(&moved, true));
+        .translate(body.x - area.x, body.y - area.y);
 
     /*
      * exactly the input region, so leaving it is leaving the island; niri also sends the leave
-     * when the region shrinks away from a still pointer (#3), which is what reports it here
+     * when the region shrinks away from a still pointer (#3), which is what reports it here.
+     * Hover, click and arming all take this one target: Amane hit-tests only on pointer events,
+     * so a body that grows under a still pointer (Peek) would never report it on the body
      */
     let hover = Rectangle::new()
         .width(area.width)
@@ -59,6 +52,13 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .translate(area.x, area.y)
         .align_child(Start, Start)
         .on_hover(move |inside| hover(&hovered, inside))
+        // Escape disarms without the pointer leaving, the next move arms again
+        .on_move(move |_| set_armed(&moved, true))
+        .on_click(move |button| {
+            if button == Button::Left {
+                expand(&clicked);
+            }
+        })
         .child(body);
 
     LayerWindow::new()
@@ -119,7 +119,7 @@ fn open(monitor: &str) {
     }
 }
 
-// in starts the hover delay, out disarms now and starts the grace; IslandService::listen times both
+// in arms and starts the hover delay, out disarms and starts the grace; IslandService::listen times both
 fn hover(monitor: &str, inside: bool) {
     if IslandService::read().inside(monitor) != inside {
         IslandService::write().hover(monitor, inside, Instant::now());
