@@ -15,6 +15,9 @@ pub const MUTED: Color = Color::rgb(152, 152, 160);
 // a notification on the body, a quieter step than a Satellite so text on it keeps its contrast
 pub const CARD: Color = Color::rgb(28, 28, 32);
 
+// the ring of a pinned island, quiet enough not to read as an alert
+pub const PIN: Color = Color::rgb(96, 96, 106);
+
 // where cover art goes while there is none to draw
 pub const ART: Color = Color::rgb(44, 44, 50);
 

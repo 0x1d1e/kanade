@@ -1,7 +1,7 @@
 //! Per-island Presentation (CONTEXT.md, plan 5.2). Pure: primary changes and input in, Presentation out.
 //!
-//! Each island keeps its primary and what the user raised it to: a Peek or an open Surface.
-//! Rest or Compact follows from the primary alone.
+//! Each island keeps its primary and what the user raised it to: a Peek or an open Surface, pinned
+//! or not. Rest or Compact follows from the primary alone.
 
 use std::collections::HashMap;
 
@@ -136,11 +136,11 @@ pub enum Input {
     // left click on the body
     Click,
 
-    /*
-     * routed but meaning nothing yet: right click is context and pin (#31), the wheel belongs to
-     * the Surface under it, Media volume first (#27); positive scrolls down
-     */
+    // pins or unpins a Peek or an open Surface, peeking pinned from Compact
     RightClick,
+
+    // routed but meaning nothing yet: the wheel belongs to the Surface under it (#27); positive
+    // scrolls down
     Wheel(f32),
 
     // IPC or keybind asking for a Surface
@@ -161,7 +161,7 @@ impl Input {
     // false for input no Presentation reacts to yet, so it neither ends a pending Peek or grace
     // nor needs writing at all
     pub fn decides(self) -> bool {
-        !matches!(self, Input::RightClick | Input::Wheel(_))
+        !matches!(self, Input::Wheel(_))
     }
 }
 
@@ -179,6 +179,12 @@ struct Island {
 
     // a Peek only ever exists with a primary, set_primary ends it on withdrawal
     raised: Option<Raised>,
+
+    /*
+     * the pointer leaving does not end what the user raised it to. Only ever with `raised`, and
+     * any change to that ends it, so nothing pinned outlives the Peek or Surface it kept open
+     */
+    pinned: bool,
 }
 
 // every island's Presentation by monitor
@@ -199,6 +205,14 @@ pub struct Presentations {
 impl Presentations {
     pub fn get(&self, monitor: &str) -> Presentation {
         self.of(self.islands.get(monitor).unwrap_or(&self.untouched))
+    }
+
+    pub fn pinned(&self, monitor: &str) -> bool {
+        !self.overview
+            && self
+                .islands
+                .get(monitor)
+                .is_some_and(|island| island.pinned)
     }
 
     // what every untouched island shows
@@ -241,7 +255,7 @@ impl Presentations {
 
         if open {
             for island in self.islands.values_mut() {
-                island.raised = None;
+                island.raise(None);
             }
         }
     }
@@ -270,13 +284,23 @@ impl Presentations {
 
             (Input::Open(surface), _) => self.expand(monitor, surface),
 
-            (Input::Collapse | Input::Preempt, Presentation::Expanded(_))
-            | (Input::Unhover, Presentation::Peek) => island.raised = None,
+            (Input::Collapse | Input::Preempt, Presentation::Expanded(_)) => island.raise(None),
+
+            // a pinned Peek waits for Escape or another right click, not for the pointer
+            (Input::Collapse, Presentation::Peek) if island.pinned => island.raise(None),
+            (Input::Unhover, Presentation::Peek) if !island.pinned => island.raise(None),
 
             // only an island with a primary has a larger small form to peek into
-            (Input::Hover, Presentation::Compact) => island.raised = Some(Raised::Peek),
+            (Input::Hover, Presentation::Compact) => island.raise(Some(Raised::Peek)),
 
-            (Input::RightClick | Input::Wheel(_), _) => {}
+            // Rest has nothing to keep open, and a click there already opens Controls
+            (Input::RightClick, Presentation::Compact) => {
+                island.raise(Some(Raised::Peek));
+                island.pinned = true;
+            }
+            (Input::RightClick, Presentation::Peek | Presentation::Expanded(_)) => {
+                island.pinned = !island.pinned;
+            }
 
             _ => {}
         }
@@ -286,11 +310,11 @@ impl Presentations {
     fn expand(&mut self, monitor: &str, surface: Surface) {
         for island in self.islands.values_mut() {
             if matches!(island.raised, Some(Raised::Expanded(_))) {
-                island.raised = None;
+                island.raise(None);
             }
         }
 
-        self.island(monitor).raised = Some(Raised::Expanded(surface));
+        self.island(monitor).raise(Some(Raised::Expanded(surface)));
         self.visits += 1;
     }
 
@@ -325,8 +349,14 @@ impl Island {
         self.primary = primary;
 
         if primary.is_none() && self.raised == Some(Raised::Peek) {
-            self.raised = None;
+            self.raise(None);
         }
+    }
+
+    // a pin keeps one Peek or one Surface open, so a new one, or none, starts unpinned
+    fn raise(&mut self, raised: Option<Raised>) {
+        self.raised = raised;
+        self.pinned = false;
     }
 }
 
@@ -556,18 +586,155 @@ mod tests {
     }
 
     #[test]
-    fn right_click_and_wheel_change_nothing_yet() {
+    fn wheel_changes_nothing_yet() {
         for setup in [&[][..], &[Input::Hover], &[Input::Click]] {
             for primary in [None, Some(Media)] {
                 let before = after(setup, primary);
 
-                for input in [Input::RightClick, Input::Wheel(1.0), Input::Wheel(-1.0)] {
+                for input in [Input::Wheel(1.0), Input::Wheel(-1.0)] {
                     let inputs = [setup, &[input]].concat();
 
                     assert_eq!(after(&inputs, primary), before, "{inputs:?} {primary:?}");
                 }
             }
         }
+    }
+
+    // the island on MONITOR after these inputs with a Media primary, and whether it is pinned
+    fn pinned_after(inputs: &[Input]) -> (Presentation, bool) {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+
+        for &input in inputs {
+            presentations.input(MONITOR, input);
+        }
+
+        (presentations.get(MONITOR), presentations.pinned(MONITOR))
+    }
+
+    #[test]
+    fn right_click_at_rest_does_nothing() {
+        let mut presentations = Presentations::default();
+
+        presentations.input(MONITOR, Input::RightClick);
+
+        assert_eq!(presentations.get(MONITOR), Rest);
+        assert!(!presentations.pinned(MONITOR));
+    }
+
+    #[test]
+    fn right_click_peeks_pinned_from_compact() {
+        assert_eq!(pinned_after(&[Input::RightClick]), (Peek, true));
+        assert_eq!(
+            pinned_after(&[Input::Hover, Input::RightClick]),
+            (Peek, true)
+        );
+    }
+
+    #[test]
+    fn right_click_pins_and_unpins_an_open_surface() {
+        assert_eq!(
+            pinned_after(&[Input::Click, Input::RightClick]),
+            (Expanded(Media), true)
+        );
+        assert_eq!(
+            pinned_after(&[Input::Click, Input::RightClick, Input::RightClick]),
+            (Expanded(Media), false)
+        );
+        assert_eq!(
+            pinned_after(&[Input::RightClick, Input::RightClick]),
+            (Peek, false)
+        );
+    }
+
+    #[test]
+    fn a_pinned_peek_outlasts_the_pointer_until_escape() {
+        assert_eq!(
+            pinned_after(&[Input::RightClick, Input::Unhover]),
+            (Peek, true)
+        );
+        assert_eq!(
+            pinned_after(&[Input::RightClick, Input::Collapse]),
+            (Compact, false)
+        );
+
+        // unpinned, it is an ordinary Peek again
+        assert_eq!(
+            pinned_after(&[Input::RightClick, Input::RightClick, Input::Unhover]),
+            (Compact, false)
+        );
+    }
+
+    // no remembered state: whatever ends or replaces the pinned Peek or Surface ends the pin
+    #[test]
+    fn a_pin_ends_with_what_it_kept_open() {
+        assert_eq!(
+            pinned_after(&[Input::RightClick, Input::Click]),
+            (Expanded(Media), false)
+        );
+        assert_eq!(
+            pinned_after(&[Input::Click, Input::RightClick, Input::Open(Launcher)]),
+            (Expanded(Launcher), false)
+        );
+
+        for end in [Input::Collapse, Input::Preempt] {
+            let inputs = [Input::Click, Input::RightClick, end];
+
+            assert_eq!(pinned_after(&inputs), (Compact, false), "{end:?}");
+            assert_eq!(
+                pinned_after(&[&inputs[..], &[Input::Click]].concat()),
+                (Expanded(Media), false),
+                "{end:?}"
+            );
+        }
+
+        // a pinned Peek stays through a Critical, which only displaces a Surface
+        assert_eq!(
+            pinned_after(&[Input::RightClick, Input::Preempt]),
+            (Peek, true)
+        );
+    }
+
+    #[test]
+    fn withdrawal_and_other_islands_end_a_pin() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::RightClick);
+        presentations.set_primary(MONITOR, None);
+
+        assert_eq!(presentations.get(MONITOR), Rest);
+        assert!(!presentations.pinned(MONITOR));
+
+        presentations.set_primary(MONITOR, Some(Media));
+        assert_eq!(presentations.get(MONITOR), Compact);
+
+        // opening another island collapses a pinned one too
+        presentations.input(MONITOR, Input::Click);
+        presentations.input(MONITOR, Input::RightClick);
+        presentations.input(OTHER, Input::Open(Launcher));
+
+        assert_eq!(presentations.get(MONITOR), Compact);
+        assert!(!presentations.pinned(MONITOR));
+    }
+
+    #[test]
+    fn overview_ends_a_pin() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::RightClick);
+        presentations.set_overview(true);
+
+        assert!(!presentations.pinned(MONITOR));
+
+        // and right click does not pin under it
+        presentations.input(MONITOR, Input::RightClick);
+        presentations.set_overview(false);
+
+        assert_eq!(presentations.get(MONITOR), Compact);
+        assert!(!presentations.pinned(MONITOR));
     }
 
     #[test]

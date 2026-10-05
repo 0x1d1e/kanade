@@ -7,8 +7,8 @@
 use std::time::Instant;
 
 use amane::{
-    Apps, Button, Center, Column, Cursor, DesktopApp, Image, Key, Padding, Parent, Rectangle, Row,
-    Scroll, Service, Size, Stack, Start, Text, Widget, children,
+    Apps, Center, Column, Cursor, DesktopApp, Image, Key, Padding, Parent, Rectangle, Row, Scroll,
+    Service, Size, Stack, Start, Text, Widget, children,
 };
 
 use crate::island::geometry;
@@ -478,11 +478,9 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
     let monitor = monitor.to_owned();
     let app = app.clone();
 
-    row.on_click(move |button| {
-        if button == Button::Left {
-            launch(&monitor, &app);
-        }
-    })
+    row.on_click(super::on_left(move || {
+        launch(&monitor, &app);
+    }))
 }
 
 /*

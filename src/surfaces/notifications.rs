@@ -7,7 +7,7 @@ use std::cmp::Reverse;
 use std::time::{Instant, SystemTime};
 
 use amane::{
-    Button, Canvas, Cap, Center, Column, Cursor, Key, Line, Notification, Notifications, Padding,
+    Canvas, Cap, Center, Column, Cursor, Key, Line, Notification, Notifications, Padding,
     Rectangle, Row, Scroll, Service, Shape as _, Size, SpaceBetween, Stack, Start, Text, Urgency,
     Widget, children, shapes,
 };
@@ -619,11 +619,9 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         .padding(CARD_INSET)
         .align_child(Start, Start)
         .cursor(Cursor::Pointer)
-        .on_click(move |button| {
-            if button == Button::Left {
-                click(&monitor, press.clone());
-            }
-        })
+        .on_click(super::on_left(move || {
+            click(&monitor, press.clone());
+        }))
         .child(Column::new(parts).gap(8.0))
         .border_if(ring == Some(0))
 }
@@ -692,11 +690,9 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
-        .on_click(move |button| {
-            if button == Button::Left {
-                click(&monitor, Press::Dismiss(id));
-            }
-        })
+        .on_click(super::on_left(move || {
+            click(&monitor, Press::Dismiss(id));
+        }))
         .child(cross)
         .border_if(ring)
 }
@@ -796,11 +792,11 @@ fn pill(
     let monitor = monitor.to_owned();
 
     match press {
-        Some(press) => pill.cursor(Cursor::Pointer).on_click(move |button| {
-            if button == Button::Left {
+        Some(press) => pill
+            .cursor(Cursor::Pointer)
+            .on_click(super::on_left(move || {
                 click(&monitor, press.clone());
-            }
-        }),
+            })),
         None => pill.opacity(DISABLED),
     }
 }

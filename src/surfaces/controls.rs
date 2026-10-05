@@ -6,8 +6,8 @@
 use std::time::Instant;
 
 use amane::{
-    Audio, Brightness, Button, Center, Color, Column, Cursor, End, Network, Padding, Rectangle,
-    Row, Scroll, Service, Start, Text, Widget, children,
+    Audio, Brightness, Center, Color, Column, Cursor, End, Network, Padding, Rectangle, Row,
+    Scroll, Service, Start, Text, Widget, children,
 };
 
 use super::slider::Slider;
@@ -250,11 +250,11 @@ fn switch(item: Switch, width: f32) -> Rectangle {
         .child(Row::new(children![knob, words]).gap(ICON_GAP).align(Center));
 
     match item.press {
-        Some(press) => switch.cursor(Cursor::Pointer).on_click(move |button| {
-            if button == Button::Left {
+        Some(press) => switch
+            .cursor(Cursor::Pointer)
+            .on_click(super::on_left(move || {
                 run(press.clone());
-            }
-        }),
+            })),
         None => switch.opacity(DISABLED),
     }
 }
@@ -283,11 +283,9 @@ fn levels() -> Column {
         .height(TARGET)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
-        .on_click(|button| {
-            if button == Button::Left {
-                Audio::toggle_mute();
-            }
-        })
+        .on_click(super::on_left(|| {
+            Audio::toggle_mute();
+        }))
         .child(if muted {
             Icon::SpeakerMuted.draw(20.0)
         } else {
@@ -420,11 +418,11 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool) -> Recta
     if active {
         segment.fill(theme::DOT)
     } else if available {
-        segment.cursor(Cursor::Pointer).on_click(move |button| {
-            if button == Button::Left {
+        segment
+            .cursor(Cursor::Pointer)
+            .on_click(super::on_left(move || {
                 power::set(profile);
-            }
-        })
+            }))
     } else {
         segment.opacity(DISABLED)
     }
