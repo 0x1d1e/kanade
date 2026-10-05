@@ -176,6 +176,11 @@ pub enum Detail {
     None,
 
     Media(Track),
+
+    Volume(Volume),
+
+    // 0 to 100
+    Brightness(u8),
 }
 
 impl Detail {
@@ -184,7 +189,17 @@ impl Detail {
         match self {
             Detail::None => None,
             Detail::Media(_) => Some(Kind::Media),
+            Detail::Volume(_) => Some(Kind::Volume),
+            Detail::Brightness(_) => Some(Kind::Brightness),
         }
+    }
+
+    /*
+     * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
+     * where it stands: a held volume key slides one bar, where a new track crossfades
+     */
+    pub fn is_level(&self) -> bool {
+        matches!(self, Detail::Volume(_) | Detail::Brightness(_))
     }
 }
 
@@ -199,6 +214,23 @@ pub struct Track {
     pub art: Option<String>,
 
     pub playing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Volume {
+    pub device: Device,
+
+    // 0 to 100
+    pub percent: u8,
+
+    pub muted: bool,
+}
+
+// the default sound device a Volume is for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Speaker,
+    Microphone,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +431,20 @@ mod tests {
         assert_eq!(media.detail(), &Detail::None);
         assert_eq!(media.clone().with_detail(track.clone()).detail(), &track);
         assert_ne!(media.clone().with_detail(track.clone()), media);
+    }
+
+    #[test]
+    fn only_levels_move_in_place() {
+        let volume = Detail::Volume(Volume {
+            device: Device::Speaker,
+            percent: 40,
+            muted: false,
+        });
+
+        assert!(volume.is_level());
+        assert!(Detail::Brightness(70).is_level());
+        assert!(!Detail::Media(Track::default()).is_level());
+        assert!(!Detail::None.is_level());
     }
 
     #[test]

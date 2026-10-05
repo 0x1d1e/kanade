@@ -14,7 +14,15 @@ pub struct Crossfade<T> {
     start: f32,
 }
 
-impl<T: Clone + PartialEq> Crossfade<T> {
+// what a Crossfade can show
+pub trait InPlace: Clone + PartialEq {
+    // `next` is this content changed where it stands, like a level that moved, so it does not fade
+    fn in_place(&self, next: &Self) -> bool {
+        self == next
+    }
+}
+
+impl<T: InPlace> Crossfade<T> {
     // settled on `content`
     pub fn new(content: T) -> Self {
         Self {
@@ -28,21 +36,26 @@ impl<T: Clone + PartialEq> Crossfade<T> {
         &self.to
     }
 
-    // a new leg toward `next`, begun at `progress` of the current one
-    pub fn to(&mut self, next: T, progress: f32) {
-        if next == self.to {
-            return;
+    /*
+     * a new leg toward `next`, begun at `progress` of the current one, and whether it began one:
+     * content changed in place takes over the current leg's place as it is
+     */
+    pub fn to(&mut self, next: T, progress: f32) -> bool {
+        if self.to.in_place(&next) {
+            self.to = next;
+            return false;
         }
 
         let showing = self.shown(progress).into_iter().flatten().next();
 
         (self.from, self.start) = match showing {
             // back to what still shows, it only has to grow back from here
-            Some((content, opacity)) if content == next => (None, opacity),
+            Some((content, opacity)) if content.in_place(&next) => (None, opacity),
             showing => (showing, 0.0),
         };
 
         self.to = next;
+        true
     }
 
     // what shows at `progress` of the current leg, and how strongly; never both at once
@@ -61,7 +74,7 @@ impl<T: Clone + PartialEq> Crossfade<T> {
 }
 
 // an untouched island rests, with nothing to show
-impl<T: Clone + PartialEq + Default> Default for Crossfade<T> {
+impl<T: InPlace + Default> Default for Crossfade<T> {
     fn default() -> Self {
         Self::new(T::default())
     }
@@ -73,6 +86,8 @@ mod tests {
     use crate::island::presentation::{Presentation, Surface};
 
     use Presentation::{Compact, Expanded, Peek, Rest};
+
+    impl InPlace for Presentation {}
 
     const MEDIA: Presentation = Expanded(Surface::Media);
 
@@ -183,5 +198,37 @@ mod tests {
         fade.to(MEDIA, 0.7);
 
         assert_eq!(shown(&fade, 0.25), [(Compact, 0.5)]);
+    }
+
+    // a level and the Activity it belongs to; same Activity, other level, is in place
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Level(char, u8);
+
+    impl InPlace for Level {
+        fn in_place(&self, next: &Self) -> bool {
+            self.0 == next.0
+        }
+    }
+
+    #[test]
+    fn in_place_takes_over_without_a_leg() {
+        let mut fade = Crossfade::new(Level('v', 40));
+
+        fade.to(Level('m', 0), 1.0);
+        assert!(!fade.to(Level('m', 10), 0.6));
+
+        // still fading the same leg, now toward the moved level
+        assert_eq!(fade.shown(0.25), [Some((Level('v', 40), 0.5)), None]);
+        assert_eq!(fade.shown(0.75), [None, Some((Level('m', 10), 0.5))]);
+    }
+
+    #[test]
+    fn way_back_to_a_moved_level_grows_it() {
+        let mut fade = Crossfade::new(Level('v', 40));
+
+        fade.to(Level('m', 0), 1.0);
+        assert!(fade.to(Level('v', 45), 0.2));
+
+        assert_eq!(fade.shown(0.0), [None, Some((Level('v', 45), 0.6))]);
     }
 }

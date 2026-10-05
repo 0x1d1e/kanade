@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use super::activity::{Activity, Kind};
+use super::fade::InPlace;
 
 // full interactive content of an Expanded island
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,18 @@ impl Content {
             presentation,
             activity: shown.filter(|_| small),
         }
+    }
+}
+
+// the same Activity in the same form with its level moved redraws where it stands
+impl InPlace for Content {
+    fn in_place(&self, next: &Content) -> bool {
+        let moved = match (&self.activity, &next.activity) {
+            (Some(shown), Some(next)) => shown.id() == next.id() && next.detail().is_level(),
+            (shown, next) => shown == next,
+        };
+
+        self.presentation == next.presentation && moved
     }
 }
 
