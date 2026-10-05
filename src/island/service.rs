@@ -26,8 +26,8 @@ const GRACE: Duration = Duration::from_millis(250);
 
 /*
  * an island opened without a press holds the keyboard until it collapses (#4), so it collapses on
- * its own after this unless the pointer comes onto it (#48). Keys do not extend it: someone typing
- * into a window who missed the island would hold it forever
+ * its own after this unless the pointer comes onto it (#48). Only keys the open Surface consumes
+ * restart it (`attend`): someone typing into a window who missed the island would hold it forever
  */
 const HOLD: Duration = Duration::from_secs(5);
 
@@ -247,8 +247,14 @@ impl IslandService {
         self.get(monitor).shape.as_ref()
     }
 
-    fn held(&self, monitor: &str) -> bool {
+    // opened without a press, so it holds the keyboard until it collapses
+    pub fn held(&self, monitor: &str) -> bool {
         self.get(monitor).held
+    }
+
+    // this opening of a Surface, see `Presentations::visit`
+    pub fn visit(&self) -> u64 {
+        self.presentations.visit()
     }
 
     /*
@@ -395,6 +401,25 @@ impl IslandService {
 
         // a pointer already on it collapses after the grace once it leaves instead
         if expanded && !island.inside {
+            island.due = Some(Due {
+                at: now + HOLD,
+                input: Input::Collapse,
+            });
+            nudge();
+        }
+    }
+
+    /*
+     * a key the open Surface consumed: someone is using it, so a held island the pointer is not on
+     * waits the whole hold again. Keys it ignores never get here, so they still do not extend it
+     */
+    pub fn attend(&mut self, monitor: &str, now: Instant) {
+        let island = self.island(monitor);
+
+        if island.held
+            && !island.inside
+            && island.due.is_some_and(|due| due.input == Input::Collapse)
+        {
             island.due = Some(Due {
                 at: now + HOLD,
                 input: Input::Collapse,
@@ -717,6 +742,40 @@ mod tests {
         island.open(MONITOR, Surface::Controls, later);
 
         assert_eq!(island.deadline(), Some(later + HOLD));
+    }
+
+    #[test]
+    fn a_consumed_key_restarts_the_hold() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+        let later = now + ms(4000);
+
+        island.open(MONITOR, Surface::Notifications, now);
+        island.attend(MONITOR, later);
+        assert_eq!(island.deadline(), Some(later + HOLD));
+
+        island.expire(now + HOLD);
+        assert!(island.expanded(MONITOR));
+    }
+
+    #[test]
+    fn a_key_holds_nothing_the_pointer_opened_or_rests_on() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.input(MONITOR, Input::Open(Surface::Notifications), now);
+        island.attend(MONITOR, now + ms(100));
+        assert_eq!(island.deadline(), None);
+
+        island.open(MONITOR, Surface::Notifications, now);
+        island.hover(MONITOR, true, now + ms(100));
+        island.attend(MONITOR, now + ms(200));
+        assert_eq!(island.deadline(), None);
+
+        // and nothing once it collapsed
+        island.input(MONITOR, Input::Collapse, now + ms(300));
+        island.attend(MONITOR, now + ms(400));
+        assert_eq!(island.deadline(), None);
     }
 
     // the pointer is on the open island
