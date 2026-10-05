@@ -198,6 +198,11 @@ impl IslandService {
         self.presentations.expanded().map(|(_, surface)| surface)
     }
 
+    // the monitor of the one Expanded island, if any
+    pub fn expanded_on(&self) -> Option<&str> {
+        self.presentations.expanded().map(|(monitor, _)| monitor)
+    }
+
     pub fn expanded(&self, monitor: &str) -> bool {
         matches!(self.presentation(monitor), Presentation::Expanded(_))
     }
@@ -245,6 +250,11 @@ impl IslandService {
 
     fn spring(&self, monitor: &str) -> Option<&Spring<3>> {
         self.get(monitor).shape.as_ref()
+    }
+
+    // right clicked to stay open after the pointer leaves
+    pub fn pinned(&self, monitor: &str) -> bool {
+        self.presentations.pinned(monitor)
     }
 
     // opened without a press, so it holds the keyboard until it collapses
@@ -439,6 +449,20 @@ impl IslandService {
         }
 
         self.presentations.input(monitor, input);
+
+        /*
+         * a pinned island stays open with nobody on it, so it waits for nothing and gives back a
+         * held keyboard: holding it unattended would starve every other window (#48)
+         */
+        if self.presentations.pinned(monitor) {
+            let island = self.island(monitor);
+            island.held = false;
+
+            if island.due.take().is_some() {
+                nudge();
+            }
+        }
+
         self.sync(now);
     }
 
@@ -503,10 +527,11 @@ impl IslandService {
     /*
      * the pointer entered or left the input region, which arms or disarms the keyboard. In, a
      * Compact island peeks after the hover delay; out, a Peek or an open Surface collapses after the
-     * grace; either edge cancels the other
+     * grace unless pinned; either edge cancels the other
      */
     pub fn hover(&mut self, monitor: &str, inside: bool, now: Instant) {
         let presentation = self.presentation(monitor);
+        let pinned = self.pinned(monitor);
         let island = self.island(monitor);
 
         if island.inside == inside {
@@ -519,8 +544,8 @@ impl IslandService {
 
         let due = match (inside, presentation) {
             (true, Presentation::Compact) => Some((HOVER_DELAY, Input::Hover)),
-            (false, Presentation::Peek) => Some((GRACE, Input::Unhover)),
-            (false, Presentation::Expanded(_)) => Some((GRACE, Input::Collapse)),
+            (false, Presentation::Peek) if !pinned => Some((GRACE, Input::Unhover)),
+            (false, Presentation::Expanded(_)) if !pinned => Some((GRACE, Input::Collapse)),
             _ => None,
         };
 
@@ -1005,24 +1030,93 @@ mod tests {
     }
 
     #[test]
-    fn right_click_and_wheel_leave_the_timers_and_the_motion_alone() {
+    fn wheel_leaves_the_timers_and_the_motion_alone() {
         let now = Instant::now();
         let later = now + Duration::from_secs(1);
 
-        for input in [Input::RightClick, Input::Wheel(3.0)] {
-            let mut island = compact(now);
+        let mut island = compact(now);
 
-            island.input(MONITOR, input, now + ms(60));
-            assert_eq!(island.deadline(), Some(now + HOVER_DELAY));
+        island.input(MONITOR, Input::Wheel(3.0), now + ms(60));
+        assert_eq!(island.deadline(), Some(now + HOVER_DELAY));
 
-            let mut island = expanded(now);
+        let mut island = expanded(now);
 
-            island.hover(MONITOR, false, later);
-            island.input(MONITOR, input, later);
+        island.hover(MONITOR, false, later);
+        island.input(MONITOR, Input::Wheel(3.0), later);
 
-            assert_eq!(island.deadline(), Some(later + GRACE));
-            assert!(island.settled(MONITOR, later));
-        }
+        assert_eq!(island.deadline(), Some(later + GRACE));
+        assert!(island.settled(MONITOR, later));
+    }
+
+    #[test]
+    fn a_pinned_surface_outlasts_the_pointer() {
+        let now = Instant::now();
+        let mut island = expanded(now);
+
+        island.input(MONITOR, Input::RightClick, now);
+        island.hover(MONITOR, false, now + ms(10));
+
+        assert_eq!(island.deadline(), None);
+        assert!(island.pinned(MONITOR));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
+
+        // unpinned, leaving collapses after the grace again
+        let back = now + ms(20);
+        island.hover(MONITOR, true, back);
+        island.input(MONITOR, Input::RightClick, back);
+        island.hover(MONITOR, false, back);
+
+        assert_eq!(island.deadline(), Some(back + GRACE));
+    }
+
+    #[test]
+    fn right_click_during_the_hover_delay_peeks_pinned_at_once() {
+        let now = Instant::now();
+        let mut island = compact(now);
+
+        island.input(MONITOR, Input::RightClick, now + ms(60));
+        assert_eq!(island.deadline(), None);
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+
+        island.hover(MONITOR, false, now + ms(80));
+        island.expire(now + Duration::from_secs(10));
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+
+        // Escape ends it
+        island.input(MONITOR, Input::Collapse, now + Duration::from_secs(10));
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert!(!island.pinned(MONITOR));
+    }
+
+    // a pinned island stays open by itself, so a held keyboard would never come back to anyone
+    #[test]
+    fn pinning_a_held_island_gives_the_keyboard_back() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        island.open(MONITOR, Surface::Launcher, now);
+        island.hover(MONITOR, true, now + ms(10));
+        island.input(MONITOR, Input::RightClick, now + ms(20));
+
+        assert!(!island.held(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+
+        island.hover(MONITOR, false, now + ms(30));
+        island.expire(now + HOLD + GRACE);
+
+        assert_eq!(island.deadline(), None);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Launcher)
+        );
+
+        // unpinning does not bring the hold back
+        island.input(MONITOR, Input::RightClick, now + HOLD + GRACE);
+        assert!(!island.held(MONITOR));
     }
 
     // the old content fades out with the start of the morph, the new one in toward its end

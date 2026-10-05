@@ -111,7 +111,7 @@ Input:
 |---|---|
 | hover | Peek |
 | left click | Expand per the table above |
-| right click | context / pin |
+| right click | pin (decided in #31, see Pin in `CONTEXT.md`) |
 | wheel | contextual adjustment (volume on Media, etc.) |
 | Escape | collapse |
 | pointer out | collapse after grace |

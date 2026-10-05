@@ -52,6 +52,11 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .align_child(Center, Start)
         .translate(body_rect.x - area.x, body_rect.y - area.y);
 
+    // a pinned island says why it stays open with nobody on it
+    if island.pinned(&monitor.name) {
+        body = body.border(1.0, theme::PIN);
+    }
+
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
         && let Some(form) = small_form(&content)
@@ -1245,8 +1250,13 @@ fn expand(monitor: &str) {
     }
 }
 
+// closes an open Surface or ends a pinned Peek
 pub(crate) fn collapse(monitor: &str) {
-    if IslandService::read().expanded(monitor) {
+    let island = IslandService::read();
+    let raised = island.expanded(monitor) || island.pinned(monitor);
+    drop(island);
+
+    if raised {
         IslandService::write().input(monitor, Input::Collapse, Instant::now());
     }
 }
@@ -1258,10 +1268,19 @@ fn hover(monitor: &str, inside: bool) {
     }
 }
 
-// right click and wheel reach no Presentation yet, so nothing is written for them (#27, #31)
+// the wheel reaches no Presentation yet, so nothing is written for it (#27)
 fn route(monitor: &str, input: Input) {
     if input.decides() {
         IslandService::write().input(monitor, input, Instant::now());
+    }
+}
+
+// a right click on the open Surface's own targets, which only the Expanded island shows
+pub(crate) fn pin() {
+    let monitor = IslandService::read().expanded_on().map(str::to_owned);
+
+    if let Some(monitor) = monitor {
+        route(&monitor, Input::RightClick);
     }
 }
 

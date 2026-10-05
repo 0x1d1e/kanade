@@ -53,5 +53,14 @@ Small secondary indicator beside the primary island: screen cast, mic/camera, ti
 ## Hold
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
 - **Invariant:** only an island opened without a press holds. The hold ends when the island collapses.
-- **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; only keys the open Surface consumes restart the bound, and typing into a held Surface that does not type collapses it. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/plan.md` §6.1.
+- **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; only keys the open Surface consumes restart the bound, and typing into a held Surface that does not type collapses it. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. A Pin ends it. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/plan.md` §6.1.
 - **Avoid:** hold for a Peek or Surface the user opened. That is the island's Presentation.
+
+## Pin
+A right click keeps an island's Peek or open Surface up after the pointer leaves, with no leave grace. The body shows a ring while pinned.
+- Right click on Compact peeks pinned, on a Peek or open Surface pins or unpins it, at Rest does nothing (a click already opens Controls). On a Surface's own control it pins too and never presses it.
+- Escape ends a pin only while the island has keyboard focus (a pinned island gives it back, see below); IPC `collapse` and `toggle` close a pinned Surface.
+- **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The primary's withdrawal clears a pinned Peek; Preempt clears a pinned Surface. Nothing pinned is remembered.
+- **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.
+- No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
+- **Avoid:** sticky, lock (lock is the screen locker)

@@ -6,8 +6,8 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use amane::{
-    Audio, Button, Canvas, Center, Color, Column, Cursor, End, Padding, Path, Rectangle, Row,
-    Scroll, Service, Shape as _, SpaceBetween, Stack, Start, Text, Widget, children, shapes,
+    Audio, Canvas, Center, Color, Column, Cursor, End, Padding, Path, Rectangle, Row, Scroll,
+    Service, Shape as _, SpaceBetween, Stack, Start, Text, Widget, children, shapes,
 };
 
 use super::slider::Slider;
@@ -192,11 +192,9 @@ fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Wi
         })
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
-        .on_click(move |button| {
-            if button == Button::Left {
-                media::control(control.clone());
-            }
-        })
+        .on_click(super::on_left(move || {
+            media::control(control.clone());
+        }))
         .child(
             Text::new(label)
                 .size(12.0)
@@ -375,11 +373,11 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
     };
 
     match control {
-        Some(control) => button.cursor(Cursor::Pointer).on_click(move |pressed| {
-            if pressed == Button::Left {
+        Some(control) => button
+            .cursor(Cursor::Pointer)
+            .on_click(super::on_left(move || {
                 media::control(control.clone());
-            }
-        }),
+            })),
         None => button.opacity(DISABLED),
     }
 }
@@ -401,11 +399,9 @@ fn volume(width: f32, accent: Color) -> Row {
         .height(TARGET)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
-        .on_click(|button| {
-            if button == Button::Left {
-                Audio::toggle_mute();
-            }
-        })
+        .on_click(super::on_left(|| {
+            Audio::toggle_mute();
+        }))
         .child(icon.draw(20.0));
 
     let tone = if muted { theme::MUTED } else { accent };
