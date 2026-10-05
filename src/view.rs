@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use amane::{
     Button, Horizontal, InputArea, Key, Layer, LayerWindow, Monitor, Parent, Rectangle, Service,
     Start, Vertical, Zone,
@@ -48,12 +50,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .height(area.height)
         .translate(area.x, area.y)
         .align_child(Start, Start)
-        .on_hover(move |inside| {
-            if !inside {
-                set_expanded(&hovered, false);
-                set_armed(&hovered, false);
-            }
-        })
+        .on_hover(move |inside| hover(&hovered, inside))
         .child(body);
 
     LayerWindow::new()
@@ -105,6 +102,29 @@ fn set_expanded(monitor: &str, expanded: bool) {
 fn open(monitor: &str) {
     if !IslandService::read().expanded(monitor) {
         IslandService::write().open(monitor);
+    }
+}
+
+// pointer out disarms now and collapses after the grace, IslandService::listen times it (#5)
+fn hover(monitor: &str, inside: bool) {
+    let island = IslandService::read();
+
+    let changed = if inside {
+        island.leaving(monitor)
+    } else {
+        island.armed(monitor) || island.expanded(monitor) && !island.leaving(monitor)
+    };
+
+    drop(island);
+
+    if !changed {
+        return;
+    }
+
+    if inside {
+        IslandService::write().enter(monitor);
+    } else {
+        IslandService::write().leave(monitor, Instant::now());
     }
 }
 
