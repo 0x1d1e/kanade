@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::env;
+use std::ffi::OsStr;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -13,10 +15,10 @@ use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Surface};
 
-// plan 5.2 starting values, expand and collapse take the same time
-const MORPH: Mode = Mode::Spring {
-    response: Duration::from_millis(180),
-};
+// plan 5.2: how long a morph takes, by what it changes, see `response`
+const EXPAND: Duration = Duration::from_millis(180);
+const SURFACE_CHANGE: Duration = Duration::from_millis(220);
+const COLLAPSE: Duration = Duration::from_millis(180);
 
 // plan 5.2: a pointer resting on a Compact island for 100-140 ms peeks
 const HOVER_DELAY: Duration = Duration::from_millis(120);
@@ -58,6 +60,9 @@ pub struct IslandService {
 
     // from niri; none while unknown or without niri, which counts every monitor as focused
     focused_output: Option<String>,
+
+    // KANADE_REDUCED_MOTION, read once at start
+    motion: Mode,
 }
 
 #[derive(Clone, Default)]
@@ -109,6 +114,7 @@ impl Service for IslandService {
             arbiter: Arbiter::default(),
             presentations: Presentations::default(),
             focused_output: None,
+            motion: motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()),
         }
     }
 
@@ -507,6 +513,7 @@ impl IslandService {
         follow(
             &mut self.untouched,
             Content::new(presentation, untouched),
+            self.motion,
             now,
         );
 
@@ -514,7 +521,7 @@ impl IslandService {
             let presentation = self.presentations.get(&monitor);
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                follow(island, Content::new(presentation, shown), now);
+                follow(island, Content::new(presentation, shown), self.motion, now);
             }
         }
     }
@@ -595,7 +602,7 @@ impl IslandService {
 }
 
 // the island morphs to `content`, unless it is already headed there
-fn follow(island: &mut Island, content: Content, now: Instant) {
+fn follow(island: &mut Island, content: Content, motion: Mode, now: Instant) {
     let presentation = content.presentation;
     let expanded = matches!(presentation, Presentation::Expanded(_));
 
@@ -617,10 +624,43 @@ fn follow(island: &mut Island, content: Content, now: Instant) {
      */
     let spring = island
         .shape
-        .get_or_insert_with(|| Spring::new(REST.into(), MORPH));
+        .get_or_insert_with(|| Spring::new(REST.into(), motion));
+
+    let from = island.content.target().presentation;
 
     if island.content.to(content, spring.progress(now)) {
-        spring.to(geometry::shape(presentation).into(), now);
+        spring.to(
+            geometry::shape(presentation).into(),
+            response(from, presentation),
+            now,
+        );
+    }
+}
+
+/*
+ * a Surface replacing another changes the most at once, so it takes longest; down to a smaller
+ * form collapses, anything else expands, a new Activity in the same form included
+ */
+fn response(from: Presentation, to: Presentation) -> Duration {
+    let rank = |presentation| match presentation {
+        Presentation::Rest => 0,
+        Presentation::Compact => 1,
+        Presentation::Peek => 2,
+        Presentation::Expanded(_) => 3,
+    };
+
+    match (from, to) {
+        (Presentation::Expanded(from), Presentation::Expanded(to)) if from != to => SURFACE_CHANGE,
+        _ if rank(to) < rank(from) => COLLAPSE,
+        _ => EXPAND,
+    }
+}
+
+// reduced motion: KANADE_REDUCED_MOTION set to anything but empty or 0 (plan 6.4)
+fn motion(reduced: Option<&OsStr>) -> Mode {
+    match reduced {
+        Some(value) if !value.is_empty() && value != "0" => Mode::Reduced,
+        _ => Mode::Spring,
     }
 }
 
@@ -1120,6 +1160,87 @@ mod tests {
         // unpinning does not bring the hold back
         island.input(MONITOR, Input::RightClick, now + HOLD + GRACE);
         assert!(!island.held(MONITOR));
+    }
+
+    #[test]
+    fn morph_takes_the_time_of_what_it_changes() {
+        use Presentation::{Compact, Expanded, Peek, Rest};
+
+        let media = Expanded(Surface::Media);
+        let controls = Expanded(Surface::Controls);
+
+        assert_eq!(response(Rest, Compact), EXPAND);
+        assert_eq!(response(Compact, Peek), EXPAND);
+        assert_eq!(response(Peek, media), EXPAND);
+        assert_eq!(response(Rest, controls), EXPAND);
+        assert_eq!(response(media, controls), SURFACE_CHANGE);
+        assert_eq!(response(media, Compact), COLLAPSE);
+        assert_eq!(response(Peek, Compact), COLLAPSE);
+        assert_eq!(response(Compact, Rest), COLLAPSE);
+
+        // a new Activity in the same form
+        assert_eq!(response(Compact, Compact), EXPAND);
+    }
+
+    #[test]
+    fn surface_change_is_still_moving_when_an_expand_is_there() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        island.open(MONITOR, Surface::Controls, now);
+        let expanded = island.shape(MONITOR, now + EXPAND);
+
+        island.open(MONITOR, Surface::Media, now + ms(1_000));
+        let changed = island.shape(MONITOR, now + ms(1_000) + EXPAND);
+
+        // both 95% of their way by their own response, the slower one not yet
+        let share = |from: Shape, at: Shape, to: Shape| {
+            (at.height - from.height) / (to.height - from.height)
+        };
+
+        let expand = share(REST, expanded, geometry::CONTROLS);
+        let change = share(geometry::CONTROLS, changed, geometry::MEDIA);
+
+        assert!((expand - 0.95).abs() < 0.01, "{expand}");
+        assert!(change < 0.93, "{change}");
+    }
+
+    #[test]
+    fn reduced_motion_is_an_opt_in() {
+        assert_eq!(motion(None), Mode::Spring);
+        assert_eq!(motion(Some(OsStr::new(""))), Mode::Spring);
+        assert_eq!(motion(Some(OsStr::new("0"))), Mode::Spring);
+        assert_eq!(motion(Some(OsStr::new("1"))), Mode::Reduced);
+        assert_eq!(motion(Some(OsStr::new("yes"))), Mode::Reduced);
+    }
+
+    // geometry is there at once, the content still crossfades and asks for frames for 80 ms
+    #[test]
+    fn reduced_motion_snaps_the_shape_and_fades_the_content() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+        island.motion = Mode::Reduced;
+
+        island.open(MONITOR, Surface::Controls, now);
+
+        assert_eq!(island.shape(MONITOR, now), geometry::CONTROLS);
+        assert!(!island.settled(MONITOR, now + ms(40)));
+        assert!(island.settled(MONITOR, now + ms(80)));
+
+        let content = |at| -> Vec<_> {
+            island
+                .content(MONITOR, at)
+                .into_iter()
+                .flatten()
+                .map(|(content, _)| content.presentation)
+                .collect()
+        };
+
+        assert_eq!(content(now + ms(10)), [Presentation::Rest]);
+        assert_eq!(
+            content(now + ms(70)),
+            [Presentation::Expanded(Surface::Controls)]
+        );
     }
 
     // the old content fades out with the start of the morph, the new one in toward its end

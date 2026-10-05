@@ -3,6 +3,7 @@
 //!
 //! The dimensions of one `Spring` share `w`, so a group (width, height, radius) moves as one
 //! object. Content opacity and translation derive from `progress`, not from timers of their own.
+//! Each leg takes its own response, so a collapse and a Surface change can take different times.
 
 use std::time::{Duration, Instant};
 
@@ -22,15 +23,18 @@ const SETTLE_SHARE: f32 = 1.0 / 256.0;
 // reduced motion: geometry snaps, only the derived opacity still fades (plan 6.4)
 pub const REDUCED_FADE: Duration = Duration::from_millis(80);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
-    Spring { response: Duration },
+    #[default]
+    Spring,
     Reduced,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Spring<const N: usize> {
     mode: Mode,
+
+    // of the current leg, from its response; 0 under reduced motion, which never moves
     w: f32,
 
     target: [f32; N],
@@ -46,14 +50,9 @@ pub struct Spring<const N: usize> {
 impl<const N: usize> Spring<N> {
     // at rest on `value`, nothing moves until `to`
     pub fn new(value: [f32; N], mode: Mode) -> Self {
-        let w = match mode {
-            Mode::Spring { response } => RESPONSE_FACTOR / response.as_secs_f32(),
-            Mode::Reduced => 0.0,
-        };
-
         Self {
             mode,
-            w,
+            w: 0.0,
             target: value,
             a: [0.0; N],
             b: [0.0; N],
@@ -65,11 +64,17 @@ impl<const N: usize> Spring<N> {
      * a new leg starts from where it is and how fast it moves now, so a changed mind never jumps.
      * No overshoot from rest or on a reversal toward the other endpoint. A same-direction target
      * closer than speed / w may be passed, since keeping the velocity leaves no other way to stop.
-     * The same target keeps the motion but still starts a leg, for content that changes in place
+     * The same target keeps the motion but still starts a leg, for content that changes in place.
+     * The leg covers 95% of its way in `response`; reduced motion ignores it
      */
-    pub fn to(&mut self, target: [f32; N], now: Instant) {
+    pub fn to(&mut self, target: [f32; N], response: Duration, now: Instant) {
         let position = self.at(now);
         let velocity = self.velocity(now);
+
+        self.w = match self.mode {
+            Mode::Spring => RESPONSE_FACTOR / response.as_secs_f32(),
+            Mode::Reduced => 0.0,
+        };
 
         for i in 0..N {
             // x(0) = target - a, x'(0) = w a - b
@@ -174,7 +179,6 @@ mod tests {
     use super::*;
 
     const RESPONSE: Duration = Duration::from_millis(180);
-    const SPRING: Mode = Mode::Spring { response: RESPONSE };
     const STEP: Duration = Duration::from_millis(1);
 
     fn ms(value: u64) -> Duration {
@@ -196,7 +200,7 @@ mod tests {
     #[test]
     fn at_rest_until_retargeted() {
         let now = Instant::now();
-        let spring = Spring::new([150.0, 32.0], SPRING);
+        let spring = Spring::new([150.0, 32.0], Mode::Spring);
 
         assert!(spring.settled(now));
         assert_eq!(spring.at(now + ms(500)), [150.0, 32.0]);
@@ -209,15 +213,15 @@ mod tests {
     #[test]
     fn same_target_keeps_the_motion_and_starts_a_leg() {
         let now = Instant::now();
-        let mut spring = Spring::new([150.0], SPRING);
+        let mut spring = Spring::new([150.0], Mode::Spring);
 
-        spring.to([440.0], now);
+        spring.to([440.0], RESPONSE, now);
 
         let turn = now + ms(60);
         let later = now + ms(120);
         let before = spring.at(later);
 
-        spring.to([440.0], turn);
+        spring.to([440.0], RESPONSE, turn);
 
         assert_eq!(spring.progress(turn), 0.0);
         assert!((spring.at(later)[0] - before[0]).abs() < 1e-2);
@@ -227,11 +231,11 @@ mod tests {
     #[test]
     fn leg_in_place_runs_like_a_move_from_rest() {
         let now = Instant::now();
-        let mut moving = Spring::new([150.0], SPRING);
-        let mut still = Spring::new([150.0], SPRING);
+        let mut moving = Spring::new([150.0], Mode::Spring);
+        let mut still = Spring::new([150.0], Mode::Spring);
 
-        moving.to([440.0], now);
-        still.to([150.0], now);
+        moving.to([440.0], RESPONSE, now);
+        still.to([150.0], RESPONSE, now);
 
         assert_eq!(still.progress(now), 0.0);
 
@@ -253,24 +257,32 @@ mod tests {
     }
 
     #[test]
-    fn covers_95_percent_in_the_response_time() {
+    fn covers_95_percent_in_each_legs_response() {
         let now = Instant::now();
-        let mut spring = Spring::new([0.0], SPRING);
+        let mut spring = Spring::new([0.0], Mode::Spring);
 
-        spring.to([100.0], now);
+        spring.to([100.0], RESPONSE, now);
 
         let [x] = spring.at(now + RESPONSE);
 
         assert!((x - 95.0).abs() < 0.1, "{x}");
+
+        // a slower leg from rest again
+        let later = now + ms(1_000);
+        spring.to([0.0], ms(220), later);
+
+        let [x] = spring.at(later + ms(220));
+
+        assert!((x - 5.0).abs() < 0.1, "{x}");
     }
 
     #[test]
     fn moves_without_overshoot_and_settles_on_the_target() {
         let now = Instant::now();
-        let mut spring = Spring::new([150.0, 32.0, 16.0], SPRING);
+        let mut spring = Spring::new([150.0, 32.0, 16.0], Mode::Spring);
 
         let target = [440.0, 160.0, 32.0];
-        spring.to(target, now);
+        spring.to(target, RESPONSE, now);
 
         let times = walk(&spring, now);
         let mut last = spring.at(now);
@@ -298,9 +310,9 @@ mod tests {
     #[test]
     fn group_dimensions_arrive_together() {
         let now = Instant::now();
-        let mut spring = Spring::new([150.0, 32.0, 16.0], SPRING);
+        let mut spring = Spring::new([150.0, 32.0, 16.0], Mode::Spring);
 
-        spring.to([440.0, 160.0, 32.0], now);
+        spring.to([440.0, 160.0, 32.0], RESPONSE, now);
 
         // from rest, every dimension is the same share of its way at any moment
         for t in (0..400).step_by(20) {
@@ -318,18 +330,19 @@ mod tests {
         }
     }
 
+    // a leg of another response too, like a Surface change taking over an expand
     #[test]
     fn retarget_keeps_position_and_velocity() {
         let now = Instant::now();
-        let mut spring = Spring::new([150.0, 32.0], SPRING);
+        let mut spring = Spring::new([150.0, 32.0], Mode::Spring);
 
-        spring.to([440.0, 160.0], now);
+        spring.to([440.0, 160.0], RESPONSE, now);
 
         let turn = now + ms(70);
         let position = spring.at(turn);
         let velocity = spring.velocity(turn);
 
-        spring.to([150.0, 32.0], turn);
+        spring.to([150.0, 32.0], ms(220), turn);
 
         assert_eq!(spring.at(turn), position);
 
@@ -351,12 +364,12 @@ mod tests {
     #[test]
     fn reversal_mid_flight_does_not_overshoot() {
         let now = Instant::now();
-        let mut spring = Spring::new([150.0], SPRING);
+        let mut spring = Spring::new([150.0], Mode::Spring);
 
-        spring.to([440.0], now);
+        spring.to([440.0], RESPONSE, now);
 
         let turn = now + ms(60);
-        spring.to([150.0], turn);
+        spring.to([150.0], RESPONSE, turn);
 
         // still moving out, it turns once and then comes straight back, never past 150
         let mut turns = 0;
@@ -385,9 +398,9 @@ mod tests {
     #[test]
     fn progress_runs_from_zero_to_one_per_leg() {
         let now = Instant::now();
-        let mut spring = Spring::new([150.0, 32.0], SPRING);
+        let mut spring = Spring::new([150.0, 32.0], Mode::Spring);
 
-        spring.to([440.0, 160.0], now);
+        spring.to([440.0, 160.0], RESPONSE, now);
         assert_eq!(spring.progress(now), 0.0);
 
         let mut last = 0.0;
@@ -403,7 +416,7 @@ mod tests {
 
         assert_eq!(last, 1.0);
 
-        spring.to([150.0, 32.0], now + ms(1_000));
+        spring.to([150.0, 32.0], RESPONSE, now + ms(1_000));
         assert_eq!(spring.progress(now + ms(1_000)), 0.0);
     }
 
@@ -412,7 +425,7 @@ mod tests {
         let now = Instant::now();
         let mut spring = Spring::new([150.0, 32.0], Mode::Reduced);
 
-        spring.to([440.0, 160.0], now);
+        spring.to([440.0, 160.0], RESPONSE, now);
 
         assert_eq!(spring.at(now), [440.0, 160.0]);
         assert_eq!(spring.velocity(now), [0.0; 2]);
@@ -428,9 +441,9 @@ mod tests {
     #[test]
     fn time_before_the_leg_counts_as_its_start() {
         let now = Instant::now();
-        let mut spring = Spring::new([0.0], SPRING);
+        let mut spring = Spring::new([0.0], Mode::Spring);
 
-        spring.to([100.0], now + ms(10));
+        spring.to([100.0], RESPONSE, now + ms(10));
 
         assert_eq!(spring.at(now), [0.0]);
     }
