@@ -13,12 +13,15 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let island = IslandService::read();
 
     let expanded = island.expanded(&monitor.name);
+    let armed = island.armed(&monitor.name);
     let shape = island.shape(&monitor.name);
 
     let body = geometry::body(shape);
     let area = geometry::input_area(body);
 
     let clicked = monitor.name.clone();
+    let entered = monitor.name.clone();
+    let moved = monitor.name.clone();
     let hovered = monitor.name.clone();
     let pressed = monitor.name.clone();
 
@@ -32,7 +35,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
             if button == Button::Left {
                 set_expanded(&clicked, true);
             }
-        });
+        })
+        .on_hover(move |inside| set_armed(&entered, inside))
+        // Escape disarms without the pointer leaving, the next move arms again
+        .on_move(move |_| set_armed(&moved, true));
 
     // exactly the input region, so leaving it is leaving the island
     let hover = Rectangle::new()
@@ -43,16 +49,18 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .on_hover(move |inside| {
             if !inside {
                 set_expanded(&hovered, false);
+                set_armed(&hovered, false);
             }
         })
         .child(body);
 
     /*
-     * Escape needs focus; OnDemand only focuses on a press, and the press that expands lands
-     * while the mode is still None, so Exclusive takes it until the island collapses
+     * Escape needs focus, and OnDemand only takes it on a press, so it must be on before the
+     * press that expands; Exclusive would keep the keyboard from overlays opened later (niri
+     * gives it to the first mapped exclusive surface)
      */
-    let keyboard = if expanded {
-        Keyboard::Exclusive
+    let keyboard = if expanded || armed {
+        Keyboard::OnDemand
     } else {
         Keyboard::None
     };
@@ -69,6 +77,9 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .on_key(move |key| {
             if key == Key::Escape {
                 set_expanded(&pressed, false);
+
+                // OnDemand would keep the focus the press gave while the pointer rests on the pill
+                set_armed(&pressed, false);
             }
         })
         .input_region(vec![input_area(area)])
@@ -85,6 +96,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 fn set_expanded(monitor: &str, expanded: bool) {
     if IslandService::read().expanded(monitor) != expanded {
         IslandService::write().set_expanded(monitor, expanded);
+    }
+}
+
+fn set_armed(monitor: &str, armed: bool) {
+    if IslandService::read().armed(monitor) != armed {
+        IslandService::write().set_armed(monitor, armed);
     }
 }
 

@@ -14,9 +14,15 @@ pub struct IslandService {
     islands: HashMap<String, Island>,
 }
 
+#[derive(Default)]
 struct Island {
     expanded: bool,
-    shape: Animation<Shape>,
+
+    // the pointer is on the body, so a press there can take keyboard focus
+    armed: bool,
+
+    // none until the first morph, a new Animation counts as moving for its whole duration
+    shape: Option<Animation<Shape>>,
 }
 
 impl Service for IslandService {
@@ -41,21 +47,31 @@ impl IslandService {
     pub fn shape(&self, monitor: &str) -> Shape {
         self.islands
             .get(monitor)
-            .map_or(REST, |island| island.shape.value())
+            .and_then(|island| island.shape.as_ref())
+            .map_or(REST, Animation::value)
+    }
+
+    pub fn armed(&self, monitor: &str) -> bool {
+        self.islands.get(monitor).is_some_and(|island| island.armed)
     }
 
     pub fn set_expanded(&mut self, monitor: &str, expanded: bool) {
-        let island = self
-            .islands
-            .entry(monitor.to_owned())
-            .or_insert_with(|| Island {
-                expanded: false,
-                shape: Animation::new(REST).duration(MORPH),
-            });
+        let island = self.island(monitor);
 
         island.expanded = expanded;
 
-        island.shape.to(if expanded { EXPANDED } else { REST });
+        island
+            .shape
+            .get_or_insert_with(|| Animation::new(REST).duration(MORPH))
+            .to(if expanded { EXPANDED } else { REST });
+    }
+
+    pub fn set_armed(&mut self, monitor: &str, armed: bool) {
+        self.island(monitor).armed = armed;
+    }
+
+    fn island(&mut self, monitor: &str) -> &mut Island {
+        self.islands.entry(monitor.to_owned()).or_default()
     }
 }
 
