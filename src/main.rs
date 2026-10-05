@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod boundary;
+mod icon;
 mod ipc;
 mod island;
 mod sources;

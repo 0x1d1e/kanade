@@ -1,11 +1,12 @@
 use std::time::Instant;
 
 use amane::{
-    Arc, Button, Canvas, Cap, Center, Circle, Color, Column, End, Horizontal, Image, InputArea,
-    Key, Layer, LayerWindow, Line, Monitor, Padding, Parent, Path, Rectangle, Row, Scroll, Service,
-    Shape as _, Stack, Start, Text, Vertical, Widget, Zone, children, request_frame, shapes,
+    Button, Center, Color, Column, End, Horizontal, Image, InputArea, Key, Layer, LayerWindow,
+    Monitor, Padding, Parent, Rectangle, Row, Scroll, Service, Stack, Start, Text, Vertical,
+    Widget, Zone, children, request_frame,
 };
 
+use crate::icon::Icon;
 use crate::island::activity::{
     Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Sensors, Toast,
     Track, Uplink, Volume, Workspace,
@@ -170,10 +171,8 @@ fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), theme::FG),
-        Detail::Privacy(sensors) => Box::new(sensor(sensors).on(16.0, theme::GREEN, theme::DOT)),
-        _ if activity.kind() == Kind::ScreenCast => {
-            Box::new(Icon::Capture.on(16.0, theme::AMBER, theme::DOT))
-        }
+        Detail::Privacy(sensors) => Box::new(sensor(sensors).on(16.0, theme::GREEN)),
+        _ if activity.kind() == Kind::ScreenCast => Box::new(Icon::Capture.on(16.0, theme::AMBER)),
         _ => label(abbreviation(activity.kind()).to_owned(), theme::FG),
     }
 }
@@ -349,7 +348,7 @@ fn capture(presentation: Presentation) -> Option<Rectangle> {
             .align_child(Start, Center)
             .child(
                 Row::new(children![
-                    Icon::Capture.on(icon, theme::AMBER, theme::BODY),
+                    Icon::Capture.on(icon, theme::AMBER),
                     Text::new(text)
                         .size(size)
                         .color(theme::AMBER)
@@ -421,7 +420,7 @@ fn privacy(presentation: Presentation, sensors: &Sensors) -> Option<Rectangle> {
             .align_child(Start, Center)
             .child(
                 Row::new(vec![
-                    Box::new(sensor(sensors).on(icon, theme::GREEN, theme::BODY)),
+                    Box::new(sensor(sensors).on(icon, theme::GREEN)),
                     words,
                 ])
                 .width(Parent)
@@ -934,342 +933,6 @@ pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
     }
 
     Stack::new(layers).width(width).height(height)
-}
-
-// drawn, not a font's glyph, so it looks the same whatever fonts the machine has
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum Icon {
-    // waves by level: none silent, one up to half, two above
-    Speaker(u8),
-    SpeakerMuted,
-    Microphone,
-    MicrophoneMuted,
-    Sun,
-    Wifi,
-    Wired,
-    Shield,
-    Bluetooth,
-    Bell,
-
-    // Do Not Disturb, cut out of the ground's color like the slash
-    Moon,
-
-    // a power profile
-    Bolt,
-
-    // the Launcher's magnifier
-    Search,
-
-    // ▣, a screen with something captured off it
-    Capture,
-
-    // a face with a hand and the crown it starts by
-    Stopwatch,
-
-    // a video camera, its lens to the right
-    Camera,
-}
-
-impl Icon {
-    fn muted(self) -> Icon {
-        match self {
-            Icon::Speaker(_) => Icon::SpeakerMuted,
-            Icon::Microphone => Icon::MicrophoneMuted,
-            icon => icon,
-        }
-    }
-
-    pub(crate) fn draw(self, side: f32) -> Canvas {
-        self.canvas(side, false, theme::FG, theme::BODY)
-    }
-
-    // struck through, for something gone or off
-    pub(crate) fn crossed(self, side: f32) -> Canvas {
-        self.canvas(side, true, theme::FG, theme::BODY)
-    }
-
-    // in `ink` on `ground`, like the body's color on a filled button
-    pub(crate) fn on(self, side: f32, ink: Color, ground: Color) -> Canvas {
-        self.canvas(side, false, ink, ground)
-    }
-
-    // on a 20 unit grid, scaled to `side`; cuts take the color of the `ground` it sits on
-    fn canvas(self, side: f32, crossed: bool, ink: Color, ground: Color) -> Canvas {
-        let u = side / 20.0;
-        let line = 1.7 * u;
-        let stroke = |shape: Line| shape.stroke(line, ink).cap(Cap::Round);
-
-        // cut out of the icon by a ground-colored edge, then drawn
-        let slash = || {
-            let from = (3.5 * u, 2.5 * u);
-            let to = (16.5 * u, 17.5 * u);
-
-            shapes![
-                Line::new()
-                    .from(from.0, from.1)
-                    .to(to.0, to.1)
-                    .stroke(line + 3.0 * u, ground)
-                    .cap(Cap::Round),
-                stroke(Line::new().from(from.0, from.1).to(to.0, to.1)),
-            ]
-        };
-
-        let speaker = || {
-            Path::new()
-                .move_to(2.5 * u, 7.5 * u)
-                .line_to(6.0 * u, 7.5 * u)
-                .line_to(10.5 * u, 3.5 * u)
-                .line_to(10.5 * u, 16.5 * u)
-                .line_to(6.0 * u, 12.5 * u)
-                .line_to(2.5 * u, 12.5 * u)
-                .close()
-                .fill(ink)
-        };
-
-        let wave = |radius: f32| {
-            Arc::new()
-                .center(10.5 * u, 10.0 * u)
-                .radius(radius * u)
-                .start(50.0)
-                .sweep(80.0)
-                .stroke(line, ink)
-                .cap(Cap::Round)
-        };
-
-        let microphone = || {
-            shapes![
-                Path::new()
-                    .move_to(7.0 * u, 5.0 * u)
-                    .arc(10.0 * u, 5.0 * u, 3.0 * u, 270.0, 180.0)
-                    .line_to(13.0 * u, 9.0 * u)
-                    .arc(10.0 * u, 9.0 * u, 3.0 * u, 90.0, 180.0)
-                    .close()
-                    .fill(ink),
-                Arc::new()
-                    .center(10.0 * u, 9.0 * u)
-                    .radius(5.5 * u)
-                    .start(90.0)
-                    .sweep(180.0)
-                    .stroke(line, ink)
-                    .cap(Cap::Round),
-                stroke(Line::new().from(10.0 * u, 14.5 * u).to(10.0 * u, 17.5 * u)),
-            ]
-        };
-
-        let mut shapes = match self {
-            Icon::Speaker(percent) => {
-                let mut shapes = shapes![speaker()];
-
-                if percent > 0 {
-                    shapes.push(Box::new(wave(3.5)));
-                }
-
-                if percent > 50 {
-                    shapes.push(Box::new(wave(7.0)));
-                }
-
-                shapes
-            }
-            Icon::SpeakerMuted => shapes![
-                speaker(),
-                stroke(Line::new().from(13.5 * u, 7.5 * u).to(18.5 * u, 12.5 * u)),
-                stroke(Line::new().from(18.5 * u, 7.5 * u).to(13.5 * u, 12.5 * u)),
-            ],
-            Icon::Microphone => microphone(),
-            Icon::MicrophoneMuted => microphone(),
-            Icon::Sun => {
-                let mut shapes = shapes![
-                    Circle::new()
-                        .center(10.0 * u, 10.0 * u)
-                        .radius(3.5 * u)
-                        .fill(ink)
-                ];
-
-                for ray in 0..8 {
-                    let angle = (ray as f32 * 45.0).to_radians();
-                    let (x, y) = (angle.sin(), -angle.cos());
-
-                    shapes.push(Box::new(stroke(
-                        Line::new()
-                            .from((10.0 + 6.0 * x) * u, (10.0 + 6.0 * y) * u)
-                            .to((10.0 + 8.0 * x) * u, (10.0 + 8.0 * y) * u),
-                    )));
-                }
-
-                shapes
-            }
-            Icon::Wifi => {
-                let mut shapes = shapes![
-                    Circle::new()
-                        .center(10.0 * u, 15.5 * u)
-                        .radius(1.6 * u)
-                        .fill(ink)
-                ];
-
-                for radius in [4.5, 8.0, 11.5] {
-                    shapes.push(Box::new(
-                        Arc::new()
-                            .center(10.0 * u, 16.0 * u)
-                            .radius(radius * u)
-                            .start(315.0)
-                            .sweep(90.0)
-                            .stroke(line, ink)
-                            .cap(Cap::Round),
-                    ));
-                }
-
-                shapes
-            }
-            // an Ethernet port: the socket and its latch
-            Icon::Wired => shapes![
-                Path::new()
-                    .move_to(3.5 * u, 7.0 * u)
-                    .line_to(7.0 * u, 7.0 * u)
-                    .line_to(7.0 * u, 4.5 * u)
-                    .line_to(13.0 * u, 4.5 * u)
-                    .line_to(13.0 * u, 7.0 * u)
-                    .line_to(16.5 * u, 7.0 * u)
-                    .line_to(16.5 * u, 15.5 * u)
-                    .line_to(3.5 * u, 15.5 * u)
-                    .close()
-                    .stroke(line, ink),
-                stroke(Line::new().from(7.5 * u, 11.5 * u).to(7.5 * u, 12.5 * u)),
-                stroke(Line::new().from(10.0 * u, 11.5 * u).to(10.0 * u, 12.5 * u)),
-                stroke(Line::new().from(12.5 * u, 11.5 * u).to(12.5 * u, 12.5 * u)),
-            ],
-            // a shield, as VPNs are drawn
-            Icon::Shield => shapes![
-                Path::new()
-                    .move_to(10.0 * u, 2.5 * u)
-                    .line_to(16.0 * u, 5.0 * u)
-                    .line_to(16.0 * u, 9.5 * u)
-                    .quad_to(16.0 * u, 15.0 * u, 10.0 * u, 17.5 * u)
-                    .quad_to(4.0 * u, 15.0 * u, 4.0 * u, 9.5 * u)
-                    .line_to(4.0 * u, 5.0 * u)
-                    .close()
-                    .stroke(line, ink)
-            ],
-            // the rune
-            Icon::Bluetooth => shapes![
-                Path::new()
-                    .move_to(5.5 * u, 6.5 * u)
-                    .line_to(14.0 * u, 13.5 * u)
-                    .line_to(10.0 * u, 17.0 * u)
-                    .line_to(10.0 * u, 3.0 * u)
-                    .line_to(14.0 * u, 6.5 * u)
-                    .line_to(5.5 * u, 13.5 * u)
-                    .stroke(line, ink)
-                    .cap(Cap::Round)
-            ],
-            Icon::Bell => shapes![
-                Path::new()
-                    .move_to(3.5 * u, 14.5 * u)
-                    .line_to(16.5 * u, 14.5 * u)
-                    .line_to(15.0 * u, 12.5 * u)
-                    .line_to(15.0 * u, 8.5 * u)
-                    .quad_to(15.0 * u, 3.5 * u, 10.0 * u, 3.5 * u)
-                    .quad_to(5.0 * u, 3.5 * u, 5.0 * u, 8.5 * u)
-                    .line_to(5.0 * u, 12.5 * u)
-                    .close()
-                    .stroke(line, ink)
-                    .cap(Cap::Round),
-                Arc::new()
-                    .center(10.0 * u, 15.5 * u)
-                    .radius(2.0 * u)
-                    .start(90.0)
-                    .sweep(180.0)
-                    .stroke(line, ink)
-                    .cap(Cap::Round),
-            ],
-            Icon::Moon => shapes![
-                Circle::new()
-                    .center(10.0 * u, 10.0 * u)
-                    .radius(7.0 * u)
-                    .fill(ink),
-                Circle::new()
-                    .center(14.0 * u, 6.5 * u)
-                    .radius(6.0 * u)
-                    .fill(ground),
-            ],
-            Icon::Bolt => shapes![
-                Path::new()
-                    .move_to(11.5 * u, 2.0 * u)
-                    .line_to(4.5 * u, 11.0 * u)
-                    .line_to(9.5 * u, 11.0 * u)
-                    .line_to(8.5 * u, 18.0 * u)
-                    .line_to(15.5 * u, 9.0 * u)
-                    .line_to(10.5 * u, 9.0 * u)
-                    .close()
-                    .fill(ink)
-            ],
-            // rounded like the body, the inner square solid so it reads at a Satellite's size
-            Icon::Capture => {
-                let square = |from: f32, to: f32, radius: f32| {
-                    let (from, to, radius) = (from * u, to * u, radius * u);
-
-                    Path::new()
-                        .move_to(from + radius, from)
-                        .line_to(to - radius, from)
-                        .quad_to(to, from, to, from + radius)
-                        .line_to(to, to - radius)
-                        .quad_to(to, to, to - radius, to)
-                        .line_to(from + radius, to)
-                        .quad_to(from, to, from, to - radius)
-                        .line_to(from, from + radius)
-                        .quad_to(from, from, from + radius, from)
-                        .close()
-                };
-
-                shapes![
-                    square(3.0, 17.0, 3.5).stroke(line, ink),
-                    square(7.0, 13.0, 1.5).fill(ink),
-                ]
-            }
-            Icon::Stopwatch => shapes![
-                Circle::new()
-                    .center(10.0 * u, 11.5 * u)
-                    .radius(6.5 * u)
-                    .stroke(line, ink),
-                stroke(Line::new().from(10.0 * u, 11.5 * u).to(10.0 * u, 8.0 * u)),
-                stroke(Line::new().from(10.0 * u, 5.0 * u).to(10.0 * u, 3.0 * u)),
-                stroke(Line::new().from(8.0 * u, 2.5 * u).to(12.0 * u, 2.5 * u)),
-            ],
-            Icon::Camera => shapes![
-                Path::new()
-                    .move_to(4.0 * u, 5.0 * u)
-                    .line_to(11.0 * u, 5.0 * u)
-                    .quad_to(13.5 * u, 5.0 * u, 13.5 * u, 7.5 * u)
-                    .line_to(13.5 * u, 12.5 * u)
-                    .quad_to(13.5 * u, 15.0 * u, 11.0 * u, 15.0 * u)
-                    .line_to(4.0 * u, 15.0 * u)
-                    .quad_to(1.5 * u, 15.0 * u, 1.5 * u, 12.5 * u)
-                    .line_to(1.5 * u, 7.5 * u)
-                    .quad_to(1.5 * u, 5.0 * u, 4.0 * u, 5.0 * u)
-                    .close()
-                    .fill(ink),
-                Path::new()
-                    .move_to(14.5 * u, 8.5 * u)
-                    .line_to(18.5 * u, 6.0 * u)
-                    .line_to(18.5 * u, 14.0 * u)
-                    .line_to(14.5 * u, 11.5 * u)
-                    .close()
-                    .fill(ink),
-            ],
-            Icon::Search => shapes![
-                Circle::new()
-                    .center(8.5 * u, 8.5 * u)
-                    .radius(5.5 * u)
-                    .stroke(line, ink),
-                stroke(Line::new().from(12.5 * u, 12.5 * u).to(16.5 * u, 16.5 * u)),
-            ],
-        };
-
-        if crossed || matches!(self, Icon::MicrophoneMuted) {
-            shapes.extend(slash());
-        }
-
-        Canvas::new().width(side).height(side).shapes(shapes)
-    }
 }
 
 /*

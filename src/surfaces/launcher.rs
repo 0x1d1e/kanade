@@ -11,11 +11,12 @@ use amane::{
     Service, Size, Stack, Start, Text, Widget, children,
 };
 
+use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::theme;
-use crate::view::{self, Icon};
+use crate::view;
 
 const INSET: f32 = 20.0;
 
@@ -170,6 +171,18 @@ fn reveal(offset: f32, row: usize) -> f32 {
     offset.min(top).max(top + ROW - LIST)
 }
 
+/*
+ * the rows any part of shows at `offset`, as a range; only these are built, so a morph doesn't
+ * lay out and draw every app each frame (#36)
+ */
+fn shown(offset: f32, count: usize) -> (usize, usize) {
+    let step = ROW + ROW_GAP;
+    let first = (offset / step).floor() as usize;
+    let end = ((offset + LIST) / step).ceil() as usize;
+
+    (first.min(count), end.min(count))
+}
+
 // the first and last rows that show whole at `offset`
 fn whole(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
@@ -321,7 +334,7 @@ fn field(query: &str) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::MUTED, theme::CARD)) as Box<dyn Widget>,
+                Box::new(Icon::Search.on(TARGET, theme::MUTED)) as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)
@@ -383,11 +396,13 @@ fn state(title: &str, detail: &str) -> Rectangle {
  * do not all fit
  */
 fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
+    let (first, end) = shown(search.offset, found.len());
+
     let column = Column::new(
-        found
+        found[first..end]
             .iter()
-            .enumerate()
-            .map(|(index, app)| {
+            .zip(first..)
+            .map(|(app, index)| {
                 Box::new(row(monitor, app, index == search.selected)) as Box<dyn Widget>
             })
             .collect(),
@@ -404,9 +419,9 @@ fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
         .child(
             Rectangle::new()
                 .width(WIDTH)
-                .height(content(found.len()))
+                .height(content(end - first))
                 .align_child(Start, Start)
-                .translate(0.0, -search.offset)
+                .translate(0.0, top(first) - search.offset)
                 .child(column),
         );
 
@@ -720,6 +735,20 @@ mod tests {
 
         let (search, _) = search.step(Key::Home, 20).unwrap();
         assert_eq!(search.offset, 0.0);
+    }
+
+    #[test]
+    fn only_the_rows_in_the_list_are_built() {
+        let step = ROW + ROW_GAP;
+
+        assert_eq!(shown(0.0, 200), (0, ROWS));
+        assert_eq!(shown(0.0, 3), (0, 3));
+        assert_eq!(shown(0.0, 0), (0, 0));
+
+        // a row cut at either edge still shows
+        assert_eq!(shown(step * 0.5, 200), (0, ROWS + 1));
+        assert_eq!(shown(step * 2.0, 200), (2, ROWS + 2));
+        assert_eq!(shown(most(7), 7), (2, 7));
     }
 
     #[test]

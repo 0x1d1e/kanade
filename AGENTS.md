@@ -21,6 +21,7 @@ scripts/dev               # check-amane, then `AMANE_CONFIG=$PWD amane dev` (reb
 - So: `src/` uses only `amane` and std outside `#[cfg(test)]` (`src/boundary.rs` is test-only), and `island/` stays std-only.
 - Only one Amane shell per session. Stop any other (`amane: amane is already running`) first.
 - Zero idle frames check: `AMANE_FRAMES=1 scripts/dev` prints frames only when something draws.
+- Morph smoothness (#36): with `AMANE_FRAMES=1 scripts/dev > LOG 2>&1` running, `scripts/frames LOG` prints frame gaps per Surface transition; mean gap should match the refresh interval.
 
 ## Amane pin
 

@@ -11,6 +11,7 @@ use amane::{
 };
 
 use super::slider::Slider;
+use crate::icon::Icon;
 use crate::island::activity::Uplink;
 use crate::island::geometry;
 use crate::island::service::IslandService;
@@ -19,7 +20,7 @@ use crate::sources::network::Connectivity;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::system::Radio;
 use crate::theme;
-use crate::view::{Icon, bar};
+use crate::view::bar;
 
 const INSET: f32 = 20.0;
 
@@ -217,7 +218,7 @@ fn switch(item: Switch, width: f32) -> Rectangle {
         .radius(KNOB / 2.0)
         .fill(fill)
         .align_child(Center, Center)
-        .child(item.icon.on(18.0, ink, fill));
+        .child(item.icon.on(18.0, ink));
 
     let right = 16.0;
     let words = Column::new(children![
