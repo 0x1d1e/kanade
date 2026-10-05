@@ -1,6 +1,8 @@
 //! Where the island body sits inside the fixed canvas, and which part of the canvas takes the
 //! pointer. The window never resizes (plan 6.1), only the body moves inside it.
 
+use super::presentation::{Presentation, Surface};
+
 // the layer window, sized once for the largest body plus room for its shadow
 pub const CANVAS_WIDTH: f32 = 560.0;
 pub const CANVAS_HEIGHT: f32 = 380.0;
@@ -11,17 +13,50 @@ pub const TOP: f32 = 8.0;
 // the pointer counts as on the body this far outside it, so grazing an edge does not flicker
 pub const HOVER_PADDING: f32 = 8.0;
 
+// plan 6.1 starting values; the small forms are pills, radius half the height
 pub const REST: Shape = Shape {
     width: 150.0,
     height: 32.0,
     radius: 16.0,
 };
 
-pub const EXPANDED: Shape = Shape {
+pub const COMPACT: Shape = Shape {
+    width: 220.0,
+    height: 38.0,
+    radius: 19.0,
+};
+
+pub const PEEK: Shape = Shape {
+    width: 300.0,
+    height: 52.0,
+    radius: 26.0,
+};
+
+pub const CONTROLS: Shape = Shape {
     width: 440.0,
     height: 160.0,
     radius: 32.0,
 };
+
+// the largest body; Surfaces without a size of their own yet take it (#27, #28, #30)
+pub const EXPANDED_MAX: Shape = Shape {
+    width: 520.0,
+    height: 330.0,
+    radius: 32.0,
+};
+
+// where the body of an island in this Presentation morphs to
+pub fn shape(presentation: Presentation) -> Shape {
+    match presentation {
+        Presentation::Rest => REST,
+        Presentation::Compact => COMPACT,
+        Presentation::Peek => PEEK,
+        Presentation::Expanded(Surface::Controls) => CONTROLS,
+        Presentation::Expanded(Surface::Media | Surface::Notifications | Surface::Launcher) => {
+            EXPANDED_MAX
+        }
+    }
+}
 
 // the body's size and corner radius, animated as one value so they always move together
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -101,7 +136,10 @@ pub fn input_area(body: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::*;
+    use crate::island::motion::{Mode, Spring};
 
     fn canvas() -> Rect {
         Rect::from_edges(0.0, 0.0, CANVAS_WIDTH, CANVAS_HEIGHT)
@@ -118,18 +156,69 @@ mod tests {
         value.fract() == 0.0
     }
 
-    // every shape on the way between rest and expanded, including fractional mid-animation ones
-    fn shapes() -> impl Iterator<Item = Shape> {
-        (0..=100).map(|step| {
-            let amount = step as f32 / 100.0;
-            let blend = |from: f32, to: f32| from + (to - from) * amount;
+    const PRESENTATIONS: [Presentation; 7] = [
+        Presentation::Rest,
+        Presentation::Compact,
+        Presentation::Peek,
+        Presentation::Expanded(Surface::Media),
+        Presentation::Expanded(Surface::Notifications),
+        Presentation::Expanded(Surface::Controls),
+        Presentation::Expanded(Surface::Launcher),
+    ];
 
-            Shape {
-                width: blend(REST.width, EXPANDED.width),
-                height: blend(REST.height, EXPANDED.height),
-                radius: blend(REST.radius, EXPANDED.radius),
-            }
+    /*
+     * every Presentation's shape and every shape on the way between any two of them, fractional
+     * mid-spring ones included; a spring between two targets stays within them (motion)
+     */
+    fn shapes() -> impl Iterator<Item = Shape> {
+        PRESENTATIONS.into_iter().flat_map(|from| {
+            PRESENTATIONS.into_iter().flat_map(move |to| {
+                let (from, to) = (shape(from), shape(to));
+
+                (0..=100).map(move |step| {
+                    let amount = step as f32 / 100.0;
+                    let blend = |from: f32, to: f32| from + (to - from) * amount;
+
+                    Shape {
+                        width: blend(from.width, to.width),
+                        height: blend(from.height, to.height),
+                        radius: blend(from.radius, to.radius),
+                    }
+                })
+            })
         })
+    }
+
+    fn padded(body: Rect) -> Rect {
+        Rect::from_edges(
+            body.x - HOVER_PADDING,
+            body.y - HOVER_PADDING,
+            body.right() + HOVER_PADDING,
+            body.bottom() + HOVER_PADDING,
+        )
+    }
+
+    #[test]
+    fn small_forms_grow_and_are_pills() {
+        let small = [REST, COMPACT, PEEK];
+
+        for pair in small.windows(2) {
+            assert!(pair[0].width < pair[1].width && pair[0].height < pair[1].height);
+        }
+
+        for shape in small {
+            assert_eq!(shape.radius, shape.height / 2.0, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn no_body_is_larger_than_the_largest() {
+        for presentation in PRESENTATIONS {
+            let shape = shape(presentation);
+
+            assert!(shape.width <= EXPANDED_MAX.width, "{presentation:?}");
+            assert!(shape.height <= EXPANDED_MAX.height, "{presentation:?}");
+        }
     }
 
     #[test]
@@ -144,41 +233,76 @@ mod tests {
     #[test]
     fn every_body_fits_the_canvas_with_its_padding() {
         for shape in shapes() {
-            let rect = body(shape);
-            let padded = Rect::from_edges(
-                rect.x - HOVER_PADDING,
-                rect.y - HOVER_PADDING,
-                rect.right() + HOVER_PADDING,
-                rect.bottom() + HOVER_PADDING,
-            );
-
-            assert!(contains(canvas(), padded), "{shape:?}");
+            assert!(contains(canvas(), padded(body(shape))), "{shape:?}");
         }
     }
 
+    // nothing is clamped, since every padded body fits; only the rounding out to whole pixels
     #[test]
-    fn input_area_is_whole_pixels_inside_the_canvas_around_the_body() {
+    fn input_area_is_the_body_plus_padding_in_whole_pixels_inside_the_canvas() {
         for shape in shapes() {
-            let rect = body(shape);
-            let area = input_area(rect);
+            let padded = padded(body(shape));
+            let area = input_area(body(shape));
 
             assert!(contains(canvas(), area), "{shape:?}");
-            assert!(contains(area, rect), "{shape:?}");
+            assert!(contains(area, padded), "{shape:?}");
 
-            for value in [area.x, area.y, area.width, area.height] {
-                assert!(whole(value), "{shape:?}: {area:?}");
+            for (edge, exact) in [
+                (area.x, padded.x),
+                (area.y, padded.y),
+                (area.right(), padded.right()),
+                (area.bottom(), padded.bottom()),
+            ] {
+                assert!(
+                    whole(edge) && (edge - exact).abs() < 1.0,
+                    "{shape:?}: {area:?}"
+                );
+            }
+        }
+    }
+
+    // the real spring, retargeted mid-flight between every pair of Presentations
+    #[test]
+    fn input_area_holds_through_a_retargeted_spring() {
+        let start = Instant::now();
+        let mut spring = Spring::new(
+            REST.into(),
+            Mode::Spring {
+                response: Duration::from_millis(180),
+            },
+        );
+
+        let mut now = start;
+
+        for from in PRESENTATIONS {
+            for to in PRESENTATIONS {
+                spring.to(shape(from).into(), now);
+
+                // change of mind 60 ms in, then follow every millisecond until it rests
+                now += Duration::from_millis(60);
+                spring.to(shape(to).into(), now);
+
+                while !spring.settled(now) {
+                    let shape = Shape::from(spring.at(now));
+                    let area = input_area(body(shape));
+
+                    assert!(contains(canvas(), area), "{shape:?}");
+                    assert!(contains(area, padded(body(shape))), "{shape:?}");
+
+                    now += Duration::from_millis(1);
+                }
             }
         }
     }
 
     #[test]
-    fn input_area_is_the_body_plus_padding() {
-        let area = input_area(body(EXPANDED));
+    fn input_area_of_a_whole_pixel_body_is_exact() {
+        let area = input_area(body(CONTROLS));
 
-        // 440 wide in 560 leaves 60 on each side, the top padding stops at the canvas edge
+        // 440 wide in 560 leaves 60 on each side, the top padding ends at the canvas edge
         assert_eq!(
             area,
-            Rect::from_edges(52.0, 0.0, 508.0, TOP + EXPANDED.height + HOVER_PADDING)
+            Rect::from_edges(52.0, 0.0, 508.0, TOP + CONTROLS.height + HOVER_PADDING)
         );
     }
 
