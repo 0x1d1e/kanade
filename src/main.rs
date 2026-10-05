@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod boundary;
 mod island;
 mod sources;
 mod surfaces;

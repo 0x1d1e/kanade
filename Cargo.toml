@@ -9,3 +9,8 @@ publish = false
 # Keep this rev and the CLI rev in AGENTS.md identical.
 [dependencies]
 amane = { git = "https://github.com/MystiaFin/amane", rev = "30800248fc51a663ec1f852047818641d6218786" }
+
+# test-only, so `amane dev` (std + amane only) is unaffected
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
