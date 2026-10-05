@@ -1,4 +1,4 @@
-//! Network and Bluetooth (plan 2, 5.1, 7): one thread follows the system bus for both. Joining or
+//! Network and Bluetooth (plan 2, 5.1, 7): `follow` watches the system bus for both. Joining or
 //! leaving a network, or a Bluetooth device connecting or going away, shows as a short Transient on
 //! the focused island; nothing about them stays on it, so there is never a permanent Wi-Fi
 //! indicator. The latest state is kept in `Connectivity` and `Adapter` for the Controls Surface.
