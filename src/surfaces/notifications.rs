@@ -825,25 +825,15 @@ impl Ring for Rectangle {
  * open for another hold
  */
 pub fn key(monitor: &str, key: Key) -> bool {
-    let (visit, held, inside) = {
+    let (visit, held) = {
         let island = IslandService::read();
 
         if island.presentation(monitor) != Presentation::Expanded(Surface::Notifications) {
             return false;
         }
 
-        (island.visit(), island.held(monitor), island.inside(monitor))
+        (island.visit(), island.held(monitor))
     };
-
-    /*
-     * nothing here types, so typing into a held island the pointer never reached was meant for
-     * the window beneath; letting go of the keyboard before a Space or Enter presses anything
-     */
-    if held && !inside && matches!(key, Key::Character(_)) {
-        view::collapse(monitor);
-
-        return true;
-    }
 
     let cards = cards();
     let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();

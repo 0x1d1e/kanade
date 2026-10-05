@@ -1,9 +1,11 @@
-//! BlueZ for `connectivity.rs`: the adapter and the devices it knows, and the Transient a device
+//! BlueZ for `system.rs`: the adapter and the devices it knows, and the Transient a device
 //! connecting or going away shows.
 
-use amane::{Bus, Service, Value};
+use std::thread;
 
-use super::connectivity::{Radio, SHOWN};
+use amane::{Argument, Bus, Service, Value};
+
+use super::system::{Radio, SHOWN};
 use crate::island::activity::{Activity, Detail, Id, Kind, Peer, Priority};
 
 pub const BLUEZ: &str = "org.bluez";
@@ -12,10 +14,13 @@ const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
 const BATTERY: &str = "org.bluez.Battery1";
 
-// Bluetooth as the Controls Surface (#29) shows it; written only by `connectivity::follow`
+// Bluetooth as the Controls Surface shows it; written only by `system::follow`
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Adapter {
     pub radio: Radio,
+
+    // BlueZ's object for it, empty while Missing
+    pub path: String,
 
     // paired or connected, connected first, then by name
     pub devices: Vec<Peer>,
@@ -61,6 +66,7 @@ pub fn read() -> Adapter {
         // the first wins, most machines have one
         if properties != &Value::Nothing && adapter.radio == Radio::Missing {
             adapter.radio = Radio::of(true, properties.get("Powered").bool());
+            adapter.path.clone_from(path);
         }
 
         if let Some(peer) = peer(path, interfaces) {
@@ -73,6 +79,13 @@ pub fn read() -> Adapter {
         .sort_by_key(|peer| (!peer.connected, peer.name.to_lowercase()));
 
     adapter
+}
+
+// BlueZ answers with the change, which `system::follow` reads back
+pub fn power(adapter: String, on: bool) {
+    thread::spawn(move || {
+        Bus::system().set_property(BLUEZ, &adapter, ADAPTER, "Powered", Argument::from(on));
+    });
 }
 
 // a device worth showing: one nearby that was only seen in a scan is not
@@ -159,6 +172,7 @@ mod tests {
     fn with(devices: Vec<Peer>) -> Adapter {
         Adapter {
             radio: Radio::On,
+            path: "/org/bluez/hci0".into(),
             devices,
         }
     }

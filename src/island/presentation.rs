@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::activity::{Activity, Detail, Device, Kind, Priority, Volume};
+use super::activity::{Activity, Connection, Detail, Device, Kind, Priority, Uplink, Volume};
 use super::fade::InPlace;
 
 // full interactive content of an Expanded island
@@ -68,6 +68,18 @@ impl Surface {
             (Surface::Notifications, Detail::Notification(_)) => {
                 activity.priority() != Priority::Critical
             }
+
+            // both levels, the microphone's mute, the Wi-Fi network and the Bluetooth devices
+            (
+                Surface::Controls,
+                Detail::Volume(_)
+                | Detail::Brightness(_)
+                | Detail::Bluetooth(_)
+                | Detail::Network(Connection {
+                    uplink: Uplink::Wifi(_),
+                    ..
+                }),
+            ) => true,
 
             _ => false,
         }
@@ -342,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_media_surface_shows_the_speaker_volume() {
+    fn media_and_controls_show_the_speaker_volume() {
         use super::super::activity::{Id, Priority};
 
         let level = |device| {
@@ -360,8 +372,47 @@ mod tests {
 
         assert!(Media.shows(&level(Device::Speaker)));
         assert!(!Media.shows(&level(Device::Microphone)));
-        assert!(!Controls.shows(&level(Device::Speaker)));
+        assert!(Controls.shows(&level(Device::Speaker)));
+        assert!(Controls.shows(&level(Device::Microphone)));
         assert!(!Notifications.shows(&level(Device::Speaker)));
+    }
+
+    #[test]
+    fn controls_shows_wifi_and_bluetooth_but_not_other_uplinks() {
+        use super::super::activity::{Id, Peer, Priority};
+
+        let transient = |kind, detail| {
+            Activity::transient(
+                Id::new(kind, "key"),
+                Priority::Passive,
+                std::time::Duration::from_secs(2),
+            )
+            .with_detail(detail)
+        };
+        let network = |uplink| {
+            transient(
+                Kind::Network,
+                Detail::Network(Connection {
+                    uplink,
+                    connected: true,
+                }),
+            )
+        };
+
+        assert!(Controls.shows(&network(Uplink::Wifi("home".into()))));
+        assert!(!Controls.shows(&network(Uplink::Wired)));
+        assert!(!Controls.shows(&network(Uplink::Other("vpn".into()))));
+        assert!(Controls.shows(&transient(
+            Kind::Bluetooth,
+            Detail::Bluetooth(Peer {
+                path: "/org/bluez/hci0/dev_buds".into(),
+                name: "buds".into(),
+                connected: true,
+                battery: None,
+            })
+        )));
+        assert!(Controls.shows(&transient(Kind::Brightness, Detail::Brightness(40))));
+        assert!(!Media.shows(&transient(Kind::Brightness, Detail::Brightness(40))));
     }
 
     #[test]
