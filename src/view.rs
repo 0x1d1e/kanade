@@ -7,11 +7,12 @@ use amane::{
 };
 
 use crate::island::activity::{
-    Activity, Charge, Detail, Device, Frame, Kind, Track, Volume, Workspace,
+    Activity, Charge, Detail, Device, Frame, Kind, Toast, Track, Volume, Workspace,
 };
 use crate::island::geometry::{self, Rect, Shape};
-use crate::island::presentation::{Content, Input, Presentation};
+use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::sources::notifications::Daemon;
 use crate::theme;
 
 // one island window per monitor; the window stays put and only the body morphs inside it
@@ -222,6 +223,11 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
         Presentation::Rest => return None,
         Presentation::Compact => (name(&content.activity), 13.0),
         Presentation::Peek => (name(&content.activity), 15.0),
+        // the error state, until the Notifications Surface draws it (#28)
+        Presentation::Expanded(Surface::Notifications) => match &*Daemon::read() {
+            Daemon::Conflict(other) => (format!("{other} is the notification daemon"), 15.0),
+            _ => (String::from("Notifications"), 17.0),
+        },
         Presentation::Expanded(surface) => (format!("{surface:?}"), 17.0),
     };
 
@@ -246,6 +252,8 @@ fn small_form(content: &Content) -> Option<Rectangle> {
     match (content.presentation, detail) {
         (Presentation::Compact, Some(Detail::Media(track))) => Some(media_compact(track)),
         (Presentation::Peek, Some(Detail::Media(track))) => Some(media_peek(track)),
+        (Presentation::Compact, Some(Detail::Notification(toast))) => Some(toast_compact(toast)),
+        (Presentation::Peek, Some(Detail::Notification(toast))) => Some(toast_peek(toast)),
         (presentation, Some(Detail::Volume(volume))) => level(presentation, Level::volume(volume)),
         (presentation, Some(&Detail::Brightness(percent))) => {
             level(presentation, Level::brightness(percent))
@@ -788,17 +796,22 @@ fn media_peek(track: &Track) -> Rectangle {
  * will, and for web art, all at the same size
  */
 fn art(track: &Track, side: f32, radius: f32) -> Stack {
+    tile(track.art.as_deref(), "\u{266a}", side, radius)
+}
+
+// a picture over a quiet tile with a mark, like `art`
+fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) -> Stack {
     let tile = Rectangle::new()
         .width(side)
         .height(side)
         .radius(radius)
         .fill(theme::ART)
         .align_child(Center, Center)
-        .child(Text::new("\u{266a}").size(side * 0.5).color(theme::MUTED));
+        .child(Text::new(mark).size(side * 0.5).color(theme::MUTED));
 
     let mut layers = children![tile];
 
-    if let Some(path) = &track.art {
+    if let Some(path) = picture {
         // decoded at twice its size, crisp at scale 2, and the cache keeps no full-size covers
         let pixels = (side * 2.0) as u32;
 
@@ -812,6 +825,98 @@ fn art(track: &Track, side: f32, radius: f32) -> Stack {
     }
 
     Stack::new(layers).width(side).height(side)
+}
+
+// the sender's picture, or its initial on the quiet tile
+fn toast_tile(toast: &Toast, side: f32, radius: f32) -> Stack {
+    let sender = if toast.app.is_empty() {
+        &toast.summary
+    } else {
+        &toast.app
+    };
+    let initial = sender
+        .chars()
+        .next()
+        .map_or_else(String::new, |initial| initial.to_uppercase().collect());
+
+    tile(toast.image.as_deref(), &initial, side, radius)
+}
+
+// picture, then the summary, laid out like the media Compact
+fn toast_compact(toast: &Toast) -> Rectangle {
+    let shape = geometry::shape(Presentation::Compact);
+    let inset = 7.0;
+
+    sized(Presentation::Compact)
+        .padding(Padding {
+            top: 0.0,
+            right: 15.0,
+            bottom: 0.0,
+            left: inset,
+        })
+        .align_child(Start, Center)
+        .child(
+            Row::new(children![
+                toast_tile(toast, shape.height - 2.0 * inset, 6.0),
+                Text::new(&toast.summary)
+                    .size(13.0)
+                    .color(theme::FG)
+                    .weight(500)
+                    .elide(),
+            ])
+            .width(Parent)
+            .gap(9.0)
+            .align(Center),
+        )
+}
+
+// the Compact with the body under the summary, or the sender when the summary is not its name
+fn toast_peek(toast: &Toast) -> Rectangle {
+    let shape = geometry::shape(Presentation::Peek);
+    let inset = 7.0;
+
+    let mut lines = children![
+        Text::new(&toast.summary)
+            .size(14.0)
+            .color(theme::FG)
+            .weight(600)
+            .elide()
+    ];
+
+    let second = if toast.body.is_empty() && toast.app != toast.summary {
+        &toast.app
+    } else {
+        &toast.body
+    };
+
+    // with nothing more to say the summary centers alone
+    if !second.is_empty() {
+        lines.push(Box::new(
+            Text::new(second)
+                .size(12.0)
+                .color(theme::MUTED)
+                .weight(500)
+                .elide(),
+        ));
+    }
+
+    sized(Presentation::Peek)
+        .padding(Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: inset,
+        })
+        .align_child(Start, Center)
+        .child(
+            Row::new(children![
+                toast_tile(toast, shape.height - 2.0 * inset, 9.0),
+                Column::new(lines).width(Parent).gap(1.0),
+            ])
+            .width(Parent)
+            .gap(11.0)
+            .align(Center),
+        )
 }
 
 // three bars while it plays, a pause mark while it does not; still, so playing draws no frames

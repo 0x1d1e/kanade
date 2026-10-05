@@ -185,6 +185,8 @@ pub enum Detail {
     Battery(Charge),
 
     Workspace(Workspace),
+
+    Notification(Toast),
 }
 
 impl Detail {
@@ -197,6 +199,7 @@ impl Detail {
             Detail::Brightness(_) => Some(Kind::Brightness),
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
+            Detail::Notification(_) => Some(Kind::Notification),
         }
     }
 
@@ -264,6 +267,22 @@ pub struct Workspace {
 
     // none unless named in niri's config
     pub name: Option<String>,
+}
+
+// a notification as its toast shows it, plain text
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Toast {
+    // the sender, like "Firefox"; may be empty
+    pub app: String,
+
+    // the one-line title, the app's name when the sender gave none
+    pub summary: String,
+
+    // markup and line breaks taken out; may be empty
+    pub body: String,
+
+    // a local file, like a sender's avatar
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -492,6 +511,7 @@ mod tests {
             .is_level()
         );
         assert!(!Detail::Media(Track::default()).is_level());
+        assert!(!Detail::Notification(Toast::default()).is_level());
         assert!(!Detail::None.is_level());
     }
 

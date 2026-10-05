@@ -4,5 +4,6 @@ pub mod battery;
 mod json;
 pub mod media;
 pub mod niri;
+pub mod notifications;
 pub mod osd;
 pub mod workspace;

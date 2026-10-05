@@ -188,6 +188,11 @@ impl IslandService {
         self.arbiter.dnd()
     }
 
+    // registered, live or not yet swept; a source checks this so withdrawing nothing never writes
+    pub fn contains(&self, id: &Id) -> bool {
+        self.arbiter.contains(id)
+    }
+
     pub fn expanded(&self, monitor: &str) -> bool {
         matches!(self.presentation(monitor), Presentation::Expanded(_))
     }
