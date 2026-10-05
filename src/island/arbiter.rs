@@ -66,10 +66,12 @@ impl Entry {
 impl Arbiter {
     /*
      * a post with a known Id replaces that Activity and restarts its Lifetime. A toast DND
-     * silences is dropped, so turning DND off does not show what arrived during it
+     * silences still replaces, then is dropped, so turning DND off shows neither it nor the one
+     * it replaced
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
         if self.silenced(&activity) {
+            self.activities.remove(activity.id());
             return;
         }
 
@@ -630,6 +632,21 @@ mod tests {
         assert!(!arbiter.dnd());
         assert_eq!(arbiter.frame(t0 + ms(1000), FOCUSED).transient, None);
         assert_eq!(arbiter.deadline(t0), None);
+    }
+
+    #[test]
+    fn a_toast_reposted_during_dnd_replaces_the_one_already_up() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(toast("7", Priority::Passive), t0);
+        arbiter.set_dnd(true);
+        arbiter.post(toast("7", Priority::Passive), t0 + ms(1000));
+        arbiter.set_dnd(false);
+
+        // inside the first post's Lifetime, which the repost ended
+        assert_eq!(arbiter.frame(t0 + ms(2000), FOCUSED).transient, None);
+        assert_eq!(arbiter.deadline(t0 + ms(2000)), None);
     }
 
     #[test]
