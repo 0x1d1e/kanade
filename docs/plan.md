@@ -223,7 +223,7 @@ Surfaces (v0.1):
 - Controls: Wi-Fi, Bluetooth, volume, mic, brightness, DND, power profile. Not a settings app.
 - Launcher: search + `Apps`. Keyboard focus only while open.
 
-IPC (`amane ipc call island <verb> [args]`): `open <surface>`, `toggle <surface>`, `collapse`, `dnd toggle`, `timer start <duration>`, `timer stop`. Unknown verb returns usage text. Handlers only post to `IslandService`.
+IPC (`amane ipc call island <verb> [args]`): `open <surface>`, `toggle <surface>`, `collapse`, `dnd toggle`, `timer start <duration>`, `timer stop`. Unknown verb returns usage text. Handlers only post to `IslandService`, except the timer verbs, which they hand to the timer source that owns the countdown and posts its Activity.
 
 ## 8. Alternatives considered
 

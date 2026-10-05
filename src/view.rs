@@ -7,12 +7,13 @@ use amane::{
 };
 
 use crate::island::activity::{
-    Activity, Charge, Connection, Detail, Device, Frame, Kind, Peer, Toast, Track, Uplink, Volume,
-    Workspace,
+    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Toast, Track,
+    Uplink, Volume, Workspace,
 };
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::sources::timer;
 use crate::surfaces;
 use crate::theme;
 
@@ -59,7 +60,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
-        && let Some(form) = small_form(&content)
+        && let Some(form) = small_form(&content, now)
             .or_else(|| surface(&monitor.name, &content, &island, now))
             .or_else(|| placeholder(&content))
     {
@@ -92,7 +93,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let mut layers = if island.overview() {
         Vec::new()
     } else {
-        satellites(&frame, body_rect, shape)
+        satellites(&frame, body_rect, shape, now)
     };
 
     layers.push(Box::new(hover));
@@ -138,7 +139,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 }
 
 // the Satellites, then the ones past the cap as one "+N"
-fn satellites(frame: &Frame, body: Rect, shape: Shape) -> Vec<Box<dyn Widget>> {
+fn satellites(frame: &Frame, body: Rect, shape: Shape, now: Instant) -> Vec<Box<dyn Widget>> {
     let opacity = geometry::satellite_opacity(shape);
 
     if opacity == 0.0 {
@@ -148,7 +149,7 @@ fn satellites(frame: &Frame, body: Rect, shape: Shape) -> Vec<Box<dyn Widget>> {
     let marks = frame
         .satellites
         .iter()
-        .map(satellite_mark)
+        .map(|activity| satellite_mark(activity, now))
         .chain((frame.overflow > 0).then(|| label(format!("+{}", frame.overflow), theme::FG)));
 
     marks
@@ -162,12 +163,13 @@ fn satellites(frame: &Frame, body: Rect, shape: Shape) -> Vec<Box<dyn Widget>> {
 }
 
 /*
- * a battery shows its number in its tone, a screen capture its glyph in amber (plan 7), the rest
- * their Kind
+ * a battery shows its number in its tone, a screen capture its glyph in amber (plan 7), a timer
+ * what is left, the rest their Kind
  */
-fn satellite_mark(activity: &Activity) -> Box<dyn Widget> {
+fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
+        Detail::Timer(countdown) => label(timer::short(countdown, now), theme::FG),
         _ if activity.kind() == Kind::ScreenCast => {
             Box::new(Icon::Capture.on(16.0, theme::AMBER, theme::DOT))
         }
@@ -293,7 +295,7 @@ fn sized(presentation: Presentation) -> Rectangle {
 }
 
 // an Activity's own Compact or Peek, drawn from its Detail; none leaves it to the placeholder
-fn small_form(content: &Content) -> Option<Rectangle> {
+fn small_form(content: &Content, now: Instant) -> Option<Rectangle> {
     if content.activity.as_ref().map(Activity::kind) == Some(Kind::ScreenCast) {
         return capture(content.presentation);
     }
@@ -317,6 +319,7 @@ fn small_form(content: &Content) -> Option<Rectangle> {
             link(presentation, Link::network(connection))
         }
         (presentation, Some(Detail::Bluetooth(peer))) => link(presentation, Link::bluetooth(peer)),
+        (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
         _ => None,
     }
 }
@@ -353,6 +356,66 @@ fn capture(presentation: Presentation) -> Option<Rectangle> {
                 ])
                 .width(Parent)
                 .gap(11.0)
+                .align(Center),
+            ),
+    )
+}
+
+/*
+ * the stopwatch, what it is, then what is left; Peek also says how long it was started for. The
+ * clock has a fixed width, so a second ticking by redraws it in place
+ */
+fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Option<Rectangle> {
+    // h:mm:ss once the timer was started for an hour or more, m:ss below
+    let hours = countdown.length.as_secs() >= 3600;
+
+    let (icon, size, inset, clock) = match (presentation, hours) {
+        (Presentation::Compact, false) => (18.0, 13.0, 15.0, 40.0),
+        (Presentation::Compact, true) => (18.0, 13.0, 15.0, 56.0),
+        (Presentation::Peek, false) => (24.0, 17.0, 20.0, 52.0),
+        (Presentation::Peek, true) => (24.0, 17.0, 20.0, 72.0),
+        _ => return None,
+    };
+
+    let gap = 11.0;
+    let width = geometry::shape(presentation).width - 2.0 * inset - icon - clock - 2.0 * gap;
+
+    let mut words = children![Text::new("Timer").size(13.0).color(theme::FG).weight(600)];
+
+    if presentation == Presentation::Peek {
+        words.push(Box::new(
+            Text::new(format!("{} timer", timer::length(countdown)))
+                .size(12.0)
+                .color(theme::MUTED)
+                .weight(500),
+        ));
+    }
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right: inset,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(
+                Row::new(children![
+                    Icon::Stopwatch.draw(icon),
+                    Column::new(words).width(width).gap(3.0),
+                    Rectangle::new()
+                        .width(clock)
+                        .height(size)
+                        .align_child(End, Center)
+                        .child(
+                            Text::new(timer::clock(countdown, now))
+                                .size(size)
+                                .color(theme::FG)
+                                .weight(600),
+                        ),
+                ])
+                .gap(gap)
                 .align(Center),
             ),
     )
@@ -821,6 +884,9 @@ pub(crate) enum Icon {
 
     // ▣, a screen with something captured off it
     Capture,
+
+    // a face with a hand and the crown it starts by
+    Stopwatch,
 }
 
 impl Icon {
@@ -1078,6 +1144,15 @@ impl Icon {
                     square(7.0, 13.0, 1.5).fill(ink),
                 ]
             }
+            Icon::Stopwatch => shapes![
+                Circle::new()
+                    .center(10.0 * u, 11.5 * u)
+                    .radius(6.5 * u)
+                    .stroke(line, ink),
+                stroke(Line::new().from(10.0 * u, 11.5 * u).to(10.0 * u, 8.0 * u)),
+                stroke(Line::new().from(10.0 * u, 5.0 * u).to(10.0 * u, 3.0 * u)),
+                stroke(Line::new().from(8.0 * u, 2.5 * u).to(12.0 * u, 2.5 * u)),
+            ],
             Icon::Search => shapes![
                 Circle::new()
                     .center(8.5 * u, 8.5 * u)

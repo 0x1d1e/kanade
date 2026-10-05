@@ -364,6 +364,9 @@ impl IslandService {
             }
             Command::ToggleDnd => return Ok(Some(Effect::Dnd(!self.dnd()))),
 
+            // the timer's own source runs these, the island only shows what it posts
+            Command::StartTimer(_) | Command::StopTimer => return Ok(None),
+
             // nothing is open or opens while the overview is
             _ if self.overview() => return Ok(None),
 
