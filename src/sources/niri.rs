@@ -1,5 +1,6 @@
 //! Kanade's own niri EventStream (plan 3, 5.3): Amane's niri backend is private and tracks neither
-//! the overview nor casts. Hands the core a plain focused output and whether the overview is open.
+//! the overview nor casts. Hands the core a plain focused output and whether the overview is open,
+//! and `workspace` the focused workspace.
 
 use std::collections::HashMap;
 use std::env;
@@ -10,6 +11,8 @@ use std::time::Instant;
 use amane::Service;
 
 use super::json::Json;
+use super::workspace::{self, Change};
+use crate::island::activity::Workspace;
 use crate::island::service::IslandService;
 
 // what the core gets from niri; the default is also what a lost socket degrades to
@@ -19,13 +22,38 @@ pub struct Seen {
     pub focused_output: Option<String>,
 
     pub overview: bool,
+
+    // none while unknown, like focus
+    pub workspace: Option<Focused>,
+}
+
+// the focused workspace, as niri last said
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Focused {
+    // niri's id, which stays with the workspace when it moves or another one comes or goes
+    pub id: u64,
+
+    pub output: Option<String>,
+
+    pub workspace: Workspace,
+}
+
+// a workspace as niri lists it
+#[derive(Debug)]
+struct Listed {
+    output: Option<String>,
+
+    // 1 based, on its output
+    index: u32,
+
+    name: Option<String>,
 }
 
 // niri's events only say what changed, so the rest is remembered here
 #[derive(Debug, Default)]
 struct Niri {
-    // every workspace by id, and the output it is on, if any
-    outputs: HashMap<u64, Option<String>>,
+    // every workspace by id
+    workspaces: HashMap<u64, Listed>,
 
     focused: Option<u64>,
 
@@ -33,12 +61,12 @@ struct Niri {
 }
 
 impl Niri {
-    // anything niri sends that is not about focus or the overview changes nothing
+    // anything niri sends that is not about workspaces, focus or the overview changes nothing
     fn apply(&mut self, event: &Json) {
         if let Some(changed) = event.get("WorkspacesChanged") {
             let workspaces = changed.get("workspaces").and_then(Json::as_array);
 
-            self.outputs.clear();
+            self.workspaces.clear();
             self.focused = None;
 
             for workspace in workspaces.unwrap_or_default() {
@@ -46,9 +74,17 @@ impl Niri {
                     continue;
                 };
 
-                let output = workspace.get("output").and_then(Json::as_str);
+                let text = |key| workspace.get(key).and_then(Json::as_str).map(String::from);
+                let index = workspace.get("idx").and_then(Json::as_u64);
 
-                self.outputs.insert(id, output.map(String::from));
+                self.workspaces.insert(
+                    id,
+                    Listed {
+                        output: text("output"),
+                        index: index.and_then(|index| index.try_into().ok()).unwrap_or(0),
+                        name: text("name"),
+                    },
+                );
 
                 if workspace.get("is_focused").and_then(Json::as_bool) == Some(true) {
                     self.focused = Some(id);
@@ -67,12 +103,36 @@ impl Niri {
     }
 
     fn seen(&self) -> Seen {
+        let focused = self
+            .focused
+            .and_then(|id| Some((id, self.workspaces.get(&id)?)));
+
+        let workspace = focused.map(|(id, listed)| Focused {
+            id,
+            output: listed.output.clone(),
+            workspace: Workspace {
+                index: listed.index,
+                count: self.on(&listed.output),
+                name: listed.name.clone(),
+            },
+        });
+
         Seen {
-            focused_output: self
-                .focused
-                .and_then(|id| self.outputs.get(&id).cloned().flatten()),
+            focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
+            workspace,
         }
+    }
+
+    // how many workspaces `output` has
+    fn on(&self, output: &Option<String>) -> u32 {
+        let count = self
+            .workspaces
+            .values()
+            .filter(|listed| listed.output == *output)
+            .count();
+
+        count.try_into().unwrap_or(u32::MAX)
     }
 }
 
@@ -81,7 +141,7 @@ pub fn follow() {
     run(connect().map(BufReader::new), post);
 }
 
-fn run(stream: io::Result<impl BufRead>, mut post: impl FnMut(&Seen)) {
+fn run(stream: io::Result<impl BufRead>, mut post: impl FnMut(&Seen, &Seen)) {
     let mut posted = Seen::default();
 
     let lost = match stream {
@@ -93,7 +153,7 @@ fn run(stream: io::Result<impl BufRead>, mut post: impl FnMut(&Seen)) {
     eprintln!("kanade: niri event stream lost ({lost}), every monitor counts as focused");
 
     if posted != Seen::default() {
-        post(&Seen::default());
+        post(&posted, &Seen::default());
     }
 }
 
@@ -108,10 +168,10 @@ fn connect() -> io::Result<UnixStream> {
 }
 
 /*
- * follows niri until the stream ends, posting only what changes, so workspace switches on one
- * output and the stream of window events wake nothing; returns why it ended
+ * follows niri until the stream ends, posting what changes as it was and is now, so the stream of
+ * window events wakes nothing; returns why it ended
  */
-fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen)) -> io::Error {
+fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &Seen)) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Niri::default();
 
@@ -140,7 +200,7 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen)) -
         let seen = niri.seen();
 
         if seen != *posted {
-            post(&seen);
+            post(posted, &seen);
             *posted = seen;
         }
     }
@@ -148,8 +208,30 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen)) -
     io::ErrorKind::UnexpectedEof.into()
 }
 
-fn post(seen: &Seen) {
-    IslandService::write().set_niri(seen.focused_output.clone(), seen.overview, Instant::now());
+/*
+ * the core hears of focus and the overview only when they change, and of the focused workspace only
+ * as a switch, so a list that only renumbers wakes nothing
+ */
+fn post(before: &Seen, seen: &Seen) {
+    let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
+    let change = workspace::change(before, seen);
+
+    if !focus && change.is_none() {
+        return;
+    }
+
+    let now = Instant::now();
+    let mut island = IslandService::write();
+
+    if focus {
+        island.set_niri(seen.focused_output.clone(), seen.overview, now);
+    }
+
+    match change {
+        Some(Change::Post(activity)) => island.post(activity, now),
+        Some(Change::Withdraw(id)) => island.withdraw(&id, now),
+        None => {}
+    }
 }
 
 #[cfg(test)]
@@ -175,7 +257,8 @@ mod tests {
         let mut posted = Seen::default();
 
         let text = lines.join("\n");
-        let lost = watch(text.as_bytes(), &mut posted, &mut |seen| {
+        let lost = watch(text.as_bytes(), &mut posted, &mut |before, seen| {
+            assert_eq!(before, posts.last().unwrap_or(&Seen::default()));
             posts.push(seen.clone())
         });
 
@@ -184,10 +267,45 @@ mod tests {
         (posts, lost.kind())
     }
 
+    // what set_niri hears of these posts: only focus and the overview, and only as they change
+    fn focus(posts: &[Seen]) -> Vec<Seen> {
+        let mut focus: Vec<Seen> = posts
+            .iter()
+            .map(|seen| Seen {
+                workspace: None,
+                ..seen.clone()
+            })
+            .collect();
+
+        focus.dedup();
+        focus
+    }
+
     fn focused(output: &str) -> Seen {
         Seen {
             focused_output: Some(output.into()),
             overview: false,
+            workspace: None,
+        }
+    }
+
+    // the focused workspace of each post
+    fn workspaces(posts: &[Seen]) -> Vec<Option<(u64, Workspace)>> {
+        posts
+            .iter()
+            .map(|seen| {
+                let focused = seen.workspace.clone()?;
+
+                Some((focused.id, focused.workspace))
+            })
+            .collect()
+    }
+
+    fn workspace(index: u32, count: u32, name: Option<&str>) -> Workspace {
+        Workspace {
+            index,
+            count,
+            name: name.map(String::from),
         }
     }
 
@@ -196,16 +314,49 @@ mod tests {
         let (posts, _) = posts(&[OK, WORKSPACES, &activated(3, true), &activated(1, true)]);
 
         assert_eq!(
-            posts,
+            focus(&posts),
             [focused("eDP-1"), focused("HDMI-A-1"), focused("eDP-1")]
+        );
+        assert_eq!(
+            workspaces(&posts)[1],
+            Some((3, workspace(1, 1, Some("web"))))
         );
     }
 
     #[test]
-    fn switching_workspaces_on_one_output_posts_nothing() {
+    fn switching_workspaces_on_one_output_keeps_the_focus() {
         let (posts, _) = posts(&[OK, WORKSPACES, &activated(2, true), &activated(1, true)]);
 
-        assert_eq!(posts, [focused("eDP-1")]);
+        assert_eq!(focus(&posts), [focused("eDP-1")]);
+        assert_eq!(
+            workspaces(&posts),
+            [
+                Some((1, workspace(1, 2, None))),
+                Some((2, workspace(2, 2, None))),
+                Some((1, workspace(1, 2, None))),
+            ]
+        );
+    }
+
+    // niri adds an empty workspace below the one a window first opens on
+    #[test]
+    fn a_workspace_coming_renumbers_the_focused_one() {
+        let added = WORKSPACES.replacen(
+            "[",
+            r#"[{"id":4,"idx":3,"name":null,"output":"eDP-1","is_focused":false},"#,
+            1,
+        );
+
+        let (posts, _) = posts(&[OK, WORKSPACES, &added]);
+
+        assert_eq!(focus(&posts), [focused("eDP-1")]);
+        assert_eq!(
+            workspaces(&posts),
+            [
+                Some((1, workspace(1, 2, None))),
+                Some((1, workspace(1, 3, None))),
+            ]
+        );
     }
 
     // activated without focus only changed what an output shows
@@ -213,7 +364,8 @@ mod tests {
     fn unfocused_activation_keeps_the_focus() {
         let (posts, _) = posts(&[OK, WORKSPACES, &activated(3, false)]);
 
-        assert_eq!(posts, [focused("eDP-1")]);
+        assert_eq!(focus(&posts), [focused("eDP-1")]);
+        assert_eq!(posts.len(), 1);
     }
 
     #[test]
@@ -222,7 +374,7 @@ mod tests {
 
         let (posts, _) = posts(&[OK, WORKSPACES, &moved]);
 
-        assert_eq!(posts, [focused("eDP-1"), focused("HDMI-A-1")]);
+        assert_eq!(focus(&posts), [focused("eDP-1"), focused("HDMI-A-1")]);
     }
 
     // a fresh list replaces the old one whole: gone workspaces and a focus nobody has are unknown
@@ -233,12 +385,14 @@ mod tests {
             r#"{"WorkspacesChanged":{"workspaces":[{"id":1,"output":"eDP-1","is_focused":true}]}}"#;
 
         assert_eq!(
-            posts(&[OK, WORKSPACES, &unfocused]).0,
-            [focused("eDP-1"), Seen::default()]
+            posts(&[OK, WORKSPACES, &unfocused]).0.last(),
+            Some(&Seen::default())
         );
         assert_eq!(
-            posts(&[OK, WORKSPACES, without_web, &activated(3, true)]).0,
-            [focused("eDP-1"), Seen::default()]
+            posts(&[OK, WORKSPACES, without_web, &activated(3, true)])
+                .0
+                .last(),
+            Some(&Seen::default())
         );
     }
 
@@ -251,7 +405,7 @@ mod tests {
             ..focused("eDP-1")
         };
 
-        assert_eq!(posts, [focused("eDP-1"), open, focused("eDP-1")]);
+        assert_eq!(focus(&posts), [focused("eDP-1"), open, focused("eDP-1")]);
     }
 
     #[test]
@@ -289,7 +443,7 @@ mod tests {
         let text = [OK, WORKSPACES, &overview(true)].join("\n");
         let mut posts = Vec::new();
 
-        run(Ok(text.as_bytes()), |seen| posts.push(seen.clone()));
+        run(Ok(text.as_bytes()), |_, seen| posts.push(seen.clone()));
 
         assert_eq!(posts.last(), Some(&Seen::default()));
         assert_eq!(posts.len(), 3);
@@ -297,10 +451,11 @@ mod tests {
         // nothing was posted, so nothing has to be taken back
         let mut posts = Vec::new();
 
-        run(Err::<&[u8], _>(io::ErrorKind::NotFound.into()), |seen| {
-            posts.push(seen.clone())
-        });
-        run(Ok(OK.as_bytes()), |seen| posts.push(seen.clone()));
+        run(
+            Err::<&[u8], _>(io::ErrorKind::NotFound.into()),
+            |_, seen| posts.push(seen.clone()),
+        );
+        run(Ok(OK.as_bytes()), |_, seen| posts.push(seen.clone()));
 
         assert_eq!(posts, []);
     }
