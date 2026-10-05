@@ -24,5 +24,8 @@ pub const ART: Color = Color::rgb(44, 44, 50);
 // a low battery, a warning that waits (plan 7)
 pub const AMBER: Color = Color::rgb(255, 176, 32);
 
+// reserved for a microphone or camera in use, which green reads as (plan 7)
+pub const GREEN: Color = Color::rgb(48, 209, 88);
+
 // reserved for critical, like a battery about to die (plan 7)
 pub const RED: Color = Color::rgb(255, 69, 58);

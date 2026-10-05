@@ -18,6 +18,7 @@ fn main() {
     thread::spawn(sources::osd::follow);
     thread::spawn(sources::notifications::follow);
     thread::spawn(sources::system::follow);
+    thread::spawn(sources::privacy::follow);
     sources::timer::spawn();
 
     // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list

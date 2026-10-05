@@ -10,7 +10,7 @@ Built on [Amane](https://github.com/MystiaFin/amane) (Rust, MIT, 0.1.0, experime
 
 v0.1 target:
 
-> A top-center Niri island built with Amane that presents media, notifications, volume/brightness, workspaces, battery, and screen capture state (mic/camera privacy if the Phase 5 spike lands), and grows into Media, Notifications, Controls, or Launcher.
+> A top-center Niri island built with Amane that presents media, notifications, volume/brightness, workspaces, battery, and screen capture state, mic/camera privacy, and grows into Media, Notifications, Controls, or Launcher.
 
 ## 2. Goals and non-goals
 
@@ -126,7 +126,7 @@ Timings (starting values, tune in Phase 6): hover 100-140 ms, expand ~180 ms, su
 - Focused output = output of the workspace with `is_focused` (from `WorkspaceActivated`/`WorkspacesChanged`).
 - Fullscreen on an output: rule 6. The island is on `Layer::Overlay`, above fullscreen, so suppression is Kanade's job, not the compositor's. Deferred from v0.1: the size heuristic misfires on maximized windows, so it waits for niri to report fullscreen state over IPC. See [ADR 0002](adr/0002-defer-fullscreen-suppression.md).
 - Overview open (`OverviewOpenedOrClosed`): collapse to Rest, hide transients.
-- Screen capture: niri only says a cast exists, not why. `CastStartedOrChanged` posts a Persistent `ScreenCast` Activity; `CastStopped` withdraws it. Label: "CAPTURE" compact, "Screen capture active" expanded. Never "Recording" or "Sharing" until attribution is reliable; those would be future specializations of `ScreenCast`. Concurrent casts stay one Activity (identity unchanged), shown from the first cast until the last stops; a paused cast still counts. A `count` field can be added later without touching identity. A lost Niri socket withdraws it, since nobody can say a cast still runs. Mic/camera use is not covered by niri (Phase 5 spike).
+- Screen capture: niri only says a cast exists, not why. `CastStartedOrChanged` posts a Persistent `ScreenCast` Activity; `CastStopped` withdraws it. Label: "CAPTURE" compact, "Screen capture active" expanded. Never "Recording" or "Sharing" until attribution is reliable; those would be future specializations of `ScreenCast`. Concurrent casts stay one Activity (identity unchanged), shown from the first cast until the last stops; a paused cast still counts. A `count` field can be added later without touching identity. A lost Niri socket withdraws it, since nobody can say a cast still runs. Mic/camera use is not covered by niri; it comes from the PipeWire graph ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)).
 - If the Niri socket is lost, degrade to "every monitor is focused", no error toast, log it.
 
 ## 6. Architecture
@@ -209,7 +209,7 @@ Own critically damped spring, closed form (no integrator jitter): `x(t) = target
 Task: glance at live state, act in one gesture, get out of the way.
 
 - Attention budget: only Critical, privacy, and actionable notifications interrupt. Media never interrupts. Toasts never take keyboard focus.
-- Color communicates state, not decoration: neutral, media accent from artwork, ScreenCast amber/orange, battery low amber (critical red). Green is reserved for mic/camera privacy if that Kind ships, since green reads as camera/permission. Red is reserved for critical. Never color alone: ScreenCast shows the ▣ glyph and "CAPTURE" text, battery shows a number. That also separates the two amber cases.
+- Color communicates state, not decoration: neutral, media accent from artwork, ScreenCast amber/orange, battery low amber (critical red). Green is reserved for mic/camera privacy, since green reads as camera/permission. Red is reserved for critical. Never color alone: ScreenCast shows the ▣ glyph and "CAPTURE" text, battery shows a number. That also separates the two amber cases.
 - Visual: near-black or palette-derived body, high-contrast foreground, one accent, subtle shadow, no heavy glass. Quiet at rest.
 - Every Surface defines these states: empty (Media: "Nothing playing"), loading/partial (art not loaded: placeholder, no layout shift), error (notification daemon not running: surface says so and names the conflict), disabled (Controls item unavailable).
 - Keyboard: every Surface reachable via IPC and a compositor keybind; Escape collapses; arrow keys and Enter work in Notifications and Launcher; focus visible; Launcher focus exists only while Launcher is open.
@@ -287,7 +287,7 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 | Amane 0.1.0 breaks | Pin git rev; keep Amane calls in `main.rs`, `view.rs`, `sources/`, `surfaces/`; `island/` is Amane-free except `service.rs` |
 | Pointer-leave lost when region shrinks | Answered in #3: niri delivers it. If another compositor does not, keep the region at the larger of current and target during collapse grace |
 | Another notification daemon running | Notifications surface shows the error state; README says to stop mako/dunst |
-| Screen capture is covered by niri casts; mic/camera has no source | Phase 5 spike on PipeWire streams. Mic/camera privacy may slip out of v0.1, ScreenCast does not |
+| Screen capture is covered by niri casts; mic/camera has no source | Answered in #34: active PipeWire capture links via `pw-dump --monitor` ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)). Direct v4l2/ALSA users are not seen |
 | Niri exposes no fullscreen flag | Checked in #13: the heuristic misfires, so rule 6 is deferred until niri IPC reports fullscreen ([ADR 0002](adr/0002-defer-fullscreen-suppression.md)) |
 | Source polling wakes the CPU at idle | Prefer `listen()`; any poll returns `false` unless changed |
 | Island nags | Attention budget in section 7 is a review gate for every new Kind |
@@ -295,10 +295,9 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 ## 12. Open questions
 
 1. Phase 0 items in section 3.
-2. Mic/camera detection source (PipeWire streams vs portal)?
-3. Can a cast be attributed (recorder vs share) reliably, e.g. via cast target or the requesting app? If yes, split `ScreenCast` into `Recording` and `ScreenSharing` later.
+2. Can a cast be attributed (recorder vs share) reliably, e.g. via cast target or the requesting app? If yes, split `ScreenCast` into `Recording` and `ScreenSharing` later.
 
-Decided: Rest click opens Controls (section 5.2). Satellite cap is 2 plus an overflow count (rule 3). Niri casts are `ScreenCast`, not "Recording" (section 5.3).
+Decided: Rest click opens Controls (section 5.2). Satellite cap is 2 plus an overflow count (rule 3). Niri casts are `ScreenCast`, not "Recording" (section 5.3). Mic/camera come from PipeWire streams, not the portal ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)).
 
 ## 13. Documentation plan
 

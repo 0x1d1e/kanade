@@ -1,5 +1,6 @@
-//! Just enough JSON for niri's event lines: `amane dev` builds with std and Amane only, and Amane
-//! keeps its serde_json to itself. Numbers stay f64, which holds niri's ids exactly.
+//! Just enough JSON for niri's event lines and pw-dump's prints: `amane dev` builds with std and
+//! Amane only, and Amane keeps its serde_json to itself. Numbers stay f64, which holds their ids
+//! exactly.
 
 use std::iter::Peekable;
 use std::str::Chars;

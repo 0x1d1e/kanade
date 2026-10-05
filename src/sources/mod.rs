@@ -11,6 +11,7 @@ pub mod notifications;
 pub mod osd;
 pub mod playback;
 pub mod power;
+pub mod privacy;
 pub mod system;
 pub mod timer;
 pub mod workspace;
