@@ -6,7 +6,9 @@ use amane::{
     Shape as _, Stack, Start, Text, Vertical, Widget, Zone, children, request_frame, shapes,
 };
 
-use crate::island::activity::{Activity, Charge, Detail, Device, Frame, Kind, Track, Volume};
+use crate::island::activity::{
+    Activity, Charge, Detail, Device, Frame, Kind, Track, Volume, Workspace,
+};
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation};
 use crate::island::service::IslandService;
@@ -249,6 +251,9 @@ fn small_form(content: &Content) -> Option<Rectangle> {
             level(presentation, Level::brightness(percent))
         }
         (presentation, Some(Detail::Battery(charge))) => battery(presentation, charge),
+        (presentation, Some(Detail::Workspace(workspace))) => {
+            self::workspace(presentation, workspace)
+        }
         _ => None,
     }
 }
@@ -360,6 +365,87 @@ fn battery_icon(width: f32, percent: u8, tone: Color) -> Row {
         .width(width)
         .gap(1.0)
         .align(Center)
+}
+
+// past this many workspaces on an output the pager would not fit, so the numbers say it instead
+const PAGER: u32 = 10;
+
+/*
+ * the workspace's name, then where it is among its output's workspaces; Peek says its number
+ * under a name. The pager has a fixed width, so a switch moves its mark and nothing else
+ */
+fn workspace(presentation: Presentation, workspace: &Workspace) -> Option<Rectangle> {
+    let (size, dot, inset) = match presentation {
+        Presentation::Compact => (13.0, 6.0, 17.0),
+        Presentation::Peek => (15.0, 7.0, 22.0),
+        _ => return None,
+    };
+
+    let number = format!("Workspace {}", workspace.index);
+
+    let mut words = children![
+        Text::new(workspace.name.as_deref().unwrap_or(&number))
+            .size(size)
+            .color(theme::FG)
+            .weight(600)
+            .elide()
+    ];
+
+    if presentation == Presentation::Peek && workspace.name.is_some() {
+        words.push(Box::new(
+            Text::new(number).size(12.0).color(theme::MUTED).weight(500),
+        ));
+    }
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right: inset,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(
+                Row::new(vec![
+                    Box::new(Column::new(words).width(Parent).gap(1.0)) as Box<dyn Widget>,
+                    pager(workspace, dot),
+                ])
+                .width(Parent)
+                .gap(12.0)
+                .align(Center),
+            ),
+    )
+}
+
+// a dot per workspace and a longer mark for the focused one, or its number past `PAGER`
+fn pager(workspace: &Workspace, dot: f32) -> Box<dyn Widget> {
+    let (mark, gap) = (dot * 8.0 / 3.0, dot * 5.0 / 6.0);
+
+    if workspace.count > PAGER {
+        return Box::new(
+            Text::new(format!("{} / {}", workspace.index, workspace.count))
+                .size(13.0)
+                .color(theme::MUTED)
+                .weight(600),
+        );
+    }
+
+    let dots = (1..=workspace.count)
+        .map(|index| {
+            let focused = index == workspace.index;
+
+            Box::new(
+                Rectangle::new()
+                    .width(if focused { mark } else { dot })
+                    .height(dot)
+                    .radius(dot / 2.0)
+                    .fill(if focused { theme::FG } else { theme::MUTED }),
+            ) as Box<dyn Widget>
+        })
+        .collect();
+
+    Box::new(Row::new(dots).gap(gap).align(Center))
 }
 
 // a Volume or Brightness as one bar, the same layout for both

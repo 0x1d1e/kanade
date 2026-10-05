@@ -183,6 +183,8 @@ pub enum Detail {
     Brightness(u8),
 
     Battery(Charge),
+
+    Workspace(Workspace),
 }
 
 impl Detail {
@@ -194,18 +196,19 @@ impl Detail {
             Detail::Volume(_) => Some(Kind::Volume),
             Detail::Brightness(_) => Some(Kind::Brightness),
             Detail::Battery(_) => Some(Kind::Battery),
+            Detail::Workspace(_) => Some(Kind::Workspace),
         }
     }
 
     /*
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
-     * where it stands: a held volume key slides one bar, a draining battery ticks its number, where
-     * a new track crossfades
+     * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
+     * workspace switch moves the pager's mark, where a new track crossfades
      */
     pub fn is_level(&self) -> bool {
         matches!(
             self,
-            Detail::Volume(_) | Detail::Brightness(_) | Detail::Battery(_)
+            Detail::Volume(_) | Detail::Brightness(_) | Detail::Battery(_) | Detail::Workspace(_)
         )
     }
 }
@@ -248,6 +251,19 @@ pub struct Charge {
 
     // low enough to preempt, drawn red rather than amber
     pub critical: bool,
+}
+
+// the workspace focused on its output, as niri numbers it there
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    // 1 based, among the workspaces on its output
+    pub index: u32,
+
+    // how many workspaces its output has, niri's empty one at the end included
+    pub count: u32,
+
+    // none unless named in niri's config
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -464,6 +480,14 @@ mod tests {
             Detail::Battery(Charge {
                 percent: 15,
                 critical: false
+            })
+            .is_level()
+        );
+        assert!(
+            Detail::Workspace(Workspace {
+                index: 2,
+                count: 3,
+                name: None
             })
             .is_level()
         );
