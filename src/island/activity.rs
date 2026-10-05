@@ -193,6 +193,8 @@ pub enum Detail {
     Bluetooth(Peer),
 
     Timer(Countdown),
+
+    Privacy(Sensors),
 }
 
 impl Detail {
@@ -209,6 +211,7 @@ impl Detail {
             Detail::Network(_) => Some(Kind::Network),
             Detail::Bluetooth(_) => Some(Kind::Bluetooth),
             Detail::Timer(_) => Some(Kind::Timer),
+            Detail::Privacy(_) => Some(Kind::Privacy),
         }
     }
 
@@ -336,6 +339,16 @@ pub struct Peer {
 pub struct Countdown {
     pub ends: Instant,
     pub length: Duration,
+}
+
+// the microphone or camera an app captures from, at least one of them
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sensors {
+    pub microphone: bool,
+    pub camera: bool,
+
+    // the apps capturing, by the name they give, sorted; may be empty
+    pub apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

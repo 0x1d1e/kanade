@@ -7,8 +7,8 @@ use amane::{
 };
 
 use crate::island::activity::{
-    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Toast, Track,
-    Uplink, Volume, Workspace,
+    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Sensors, Toast,
+    Track, Uplink, Volume, Workspace,
 };
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
@@ -163,13 +163,14 @@ fn satellites(frame: &Frame, body: Rect, shape: Shape, now: Instant) -> Vec<Box<
 }
 
 /*
- * a battery shows its number in its tone, a screen capture its glyph in amber (plan 7), a timer
- * what is left, the rest their Kind
+ * a battery shows its number in its tone, a screen capture its glyph in amber, a microphone or
+ * camera in use its glyph in green (plan 7), a timer what is left, the rest their Kind
  */
 fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), theme::FG),
+        Detail::Privacy(sensors) => Box::new(sensor(sensors).on(16.0, theme::GREEN, theme::DOT)),
         _ if activity.kind() == Kind::ScreenCast => {
             Box::new(Icon::Capture.on(16.0, theme::AMBER, theme::DOT))
         }
@@ -320,6 +321,7 @@ fn small_form(content: &Content, now: Instant) -> Option<Rectangle> {
         }
         (presentation, Some(Detail::Bluetooth(peer))) => link(presentation, Link::bluetooth(peer)),
         (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
+        (presentation, Some(Detail::Privacy(sensors))) => privacy(presentation, sensors),
         _ => None,
     }
 }
@@ -359,6 +361,82 @@ fn capture(presentation: Presentation) -> Option<Rectangle> {
                 .align(Center),
             ),
     )
+}
+
+// the camera when it is in use, being the more private one, else the microphone
+fn sensor(sensors: &Sensors) -> Icon {
+    if sensors.camera {
+        Icon::Camera
+    } else {
+        Icon::Microphone
+    }
+}
+
+/*
+ * the sensor's glyph and what is in use, both green, so it never rests on color alone (plan 7);
+ * Peek also names the apps capturing
+ */
+fn privacy(presentation: Presentation, sensors: &Sensors) -> Option<Rectangle> {
+    let (icon, inset) = match presentation {
+        Presentation::Compact => (18.0, 15.0),
+        Presentation::Peek => (24.0, 20.0),
+        _ => return None,
+    };
+
+    let words: Box<dyn Widget> = match (presentation, sensors.microphone, sensors.camera) {
+        (Presentation::Compact, true, true) => Box::new(green("CAMERA + MIC", 13.0)),
+        (Presentation::Compact, false, _) => Box::new(green("CAMERA", 13.0)),
+        (Presentation::Compact, _, false) => Box::new(green("MIC", 13.0)),
+        (_, microphone, camera) => {
+            let what = match (microphone, camera) {
+                (true, true) => "Camera and microphone in use",
+                (false, _) => "Camera in use",
+                (_, false) => "Microphone in use",
+            };
+
+            let mut lines = children![green(what, 15.0)];
+
+            if !sensors.apps.is_empty() {
+                lines.push(Box::new(
+                    Text::new(sensors.apps.join(", "))
+                        .size(12.0)
+                        .color(theme::MUTED)
+                        .weight(500)
+                        .elide(),
+                ));
+            }
+
+            Box::new(Column::new(lines).width(Parent).gap(3.0))
+        }
+    };
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right: inset,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(
+                Row::new(vec![
+                    Box::new(sensor(sensors).on(icon, theme::GREEN, theme::BODY)),
+                    words,
+                ])
+                .width(Parent)
+                .gap(11.0)
+                .align(Center),
+            ),
+    )
+}
+
+fn green(text: &str, size: f32) -> Text {
+    Text::new(text)
+        .size(size)
+        .color(theme::GREEN)
+        .weight(600)
+        .elide()
 }
 
 /*
@@ -887,6 +965,9 @@ pub(crate) enum Icon {
 
     // a face with a hand and the crown it starts by
     Stopwatch,
+
+    // a video camera, its lens to the right
+    Camera,
 }
 
 impl Icon {
@@ -1152,6 +1233,27 @@ impl Icon {
                 stroke(Line::new().from(10.0 * u, 11.5 * u).to(10.0 * u, 8.0 * u)),
                 stroke(Line::new().from(10.0 * u, 5.0 * u).to(10.0 * u, 3.0 * u)),
                 stroke(Line::new().from(8.0 * u, 2.5 * u).to(12.0 * u, 2.5 * u)),
+            ],
+            Icon::Camera => shapes![
+                Path::new()
+                    .move_to(4.0 * u, 5.0 * u)
+                    .line_to(11.0 * u, 5.0 * u)
+                    .quad_to(13.5 * u, 5.0 * u, 13.5 * u, 7.5 * u)
+                    .line_to(13.5 * u, 12.5 * u)
+                    .quad_to(13.5 * u, 15.0 * u, 11.0 * u, 15.0 * u)
+                    .line_to(4.0 * u, 15.0 * u)
+                    .quad_to(1.5 * u, 15.0 * u, 1.5 * u, 12.5 * u)
+                    .line_to(1.5 * u, 7.5 * u)
+                    .quad_to(1.5 * u, 5.0 * u, 4.0 * u, 5.0 * u)
+                    .close()
+                    .fill(ink),
+                Path::new()
+                    .move_to(14.5 * u, 8.5 * u)
+                    .line_to(18.5 * u, 6.0 * u)
+                    .line_to(18.5 * u, 14.0 * u)
+                    .line_to(14.5 * u, 11.5 * u)
+                    .close()
+                    .fill(ink),
             ],
             Icon::Search => shapes![
                 Circle::new()
