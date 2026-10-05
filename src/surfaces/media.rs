@@ -60,10 +60,10 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
     let width = shape.width - 2.0 * INSET;
 
     let deck = playback.shown.as_ref();
-    let accent = deck.map_or(theme::FG, |deck| deck.accent_at(now));
+    let accent = deck.map_or(theme::FG, |deck| deck.accent.at(now));
 
-    // the dissolve is the follower's, so the Surface asks for frames until it rests
-    if deck.is_some_and(|deck| !deck.track.settled(now)) {
+    // the dissolve and the tint are the follower's, so the Surface asks for frames until they rest
+    if deck.is_some_and(|deck| !deck.track.settled(now) || !deck.accent.settled(now)) {
         request_frame();
     }
 
@@ -103,23 +103,19 @@ fn header(
 ) -> Row {
     let words = width - ART - GAP;
 
-    let mut lines = children![
+    // the artist's line is there even when it names none, like the Peek's
+    let lines = children![
         track
             .line(|track| &track.title, theme::FG)
             .size(16.0)
             .weight(600)
-            .elide()
+            .elide(),
+        track
+            .line(|track| &track.artist, theme::MUTED)
+            .size(13.0)
+            .weight(500)
+            .elide(),
     ];
-
-    if !track.shown().artist.is_empty() {
-        lines.push(Box::new(
-            track
-                .line(|track| &track.artist, theme::MUTED)
-                .size(13.0)
-                .weight(500)
-                .elide(),
-        ));
-    }
 
     let shown = deck.map(|deck| deck.name.as_str());
 
@@ -456,6 +452,7 @@ mod tests {
     use super::*;
     use crate::island::fade::Dissolve;
     use crate::island::motion::Mode;
+    use crate::sources::playback::Tint;
 
     // the room choices() gets on the Surface
     const WORDS: f32 = geometry::MEDIA.width - 2.0 * INSET - ART - GAP;
@@ -518,8 +515,7 @@ mod tests {
                 length: Duration::ZERO,
                 rate: 0.0,
             },
-            accent: None,
-            before: theme::FG,
+            accent: Tint::new(theme::FG, Mode::Spring),
             can_play,
             can_pause,
             can_previous: false,

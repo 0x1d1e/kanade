@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
 
-use super::playback::{self, Deck, Playback, Timeline};
+use super::playback::{self, Deck, Playback, Timeline, Tint};
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
 use crate::island::fade::Dissolve;
 use crate::island::motion::Mode;
@@ -392,7 +392,7 @@ struct Watcher {
     // when to ask the shown player where it is next
     tick: Option<Instant>,
 
-    // the island's, for the Surface's dissolve
+    // the island's, for the Surface's dissolve and tint
     motion: Mode,
 }
 
@@ -421,28 +421,29 @@ impl Watcher {
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
             let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
+            let accent = accent.unwrap_or(theme::FG);
 
             // a track shown before dissolves to this one, a Surface just opened shows it at once
-            let (track, before) = match last {
+            let (track, tint) = match last {
                 Some(last) => {
-                    let shown = last.accent_at(now);
-                    let mut track = last.track;
+                    let (mut track, mut tint) = (last.track, last.accent);
 
-                    if track.to(seen.track, TRACK_CHANGE, now) {
-                        (track, shown)
-                    } else {
-                        (track, last.before)
-                    }
+                    track.to(seen.track, TRACK_CHANGE, now);
+                    tint.to(accent, TRACK_CHANGE, now);
+
+                    (track, tint)
                 }
-                None => (Dissolve::new(seen.track, self.motion), theme::FG),
+                None => (
+                    Dissolve::new(seen.track, self.motion),
+                    Tint::new(accent, self.motion),
+                ),
             };
 
             Deck {
                 name: name.clone(),
                 track,
-                before,
                 timeline: player.timeline,
-                accent,
+                accent: tint,
                 can_play: player.can_play,
                 can_pause: player.can_pause,
                 can_previous: player.can_previous,
@@ -1156,6 +1157,54 @@ mod tests {
 
         watcher.show(&on("Three"), true, now + secs(3));
         assert!(deck(&watcher).track.settled(now + secs(3)));
+    }
+
+    // #37: artwork not readable yet is read again on a later show, and the accent it then gives
+    // turns the tint from where it is, the track long settled
+    #[test]
+    fn an_accent_read_on_a_later_show_turns_the_tint_smoothly() {
+        let now = Instant::now();
+        let mut watcher = Watcher::default();
+        let mut players = Players::default();
+        let properties = map([
+            ("PlaybackStatus", text("Playing")),
+            (
+                "Metadata",
+                map([
+                    ("xesam:title", text("Song")),
+                    ("mpris:artUrl", text("file:///nonexistent/kanade-37.png")),
+                ]),
+            ),
+        ]);
+        players.open.insert(
+            String::from("mpv"),
+            Player::of(":1.4", "mpv", &properties, now),
+        );
+        let deck = |watcher: &Watcher| {
+            watcher
+                .published
+                .as_ref()
+                .and_then(|published| published.shown.clone())
+                .unwrap()
+        };
+
+        watcher.show(&players, true, now);
+        assert_eq!(deck(&watcher).accent.at(now), theme::FG);
+        assert_eq!(watcher.accent, None);
+
+        // the file turned up and gave its accent
+        let art = deck(&watcher).track.target().art.clone().unwrap();
+        let blue = Color::rgb(0, 0, 255);
+        watcher.accent = Some((art, Some(blue)));
+
+        let later = now + secs(1);
+        watcher.show(&players, true, later);
+
+        let tint = deck(&watcher).accent;
+        assert_eq!(tint.at(later), theme::FG);
+        assert!(!tint.settled(later));
+        assert_ne!(tint.at(later + Duration::from_millis(16)), blue);
+        assert_eq!(tint.at(later + secs(2)), blue);
     }
 
     #[test]

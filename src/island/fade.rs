@@ -118,28 +118,25 @@ impl<T: InPlace> Dissolve<T> {
     }
 
     /*
-     * a new rise toward `next`, and whether it started the rise over: content changed in place
-     * is swapped where it stands. A change of mind before the rise is halfway keeps its old one
+     * a new rise toward `next`: content changed in place is swapped where it stands. A change of mind before the rise is halfway keeps its old one
      * beneath and its rise, so the old one still fades as it did; past halfway, the one mostly
      * showing goes beneath and the rise starts over
      */
-    pub fn to(&mut self, next: T, response: Duration, now: Instant) -> bool {
+    pub fn to(&mut self, next: T, response: Duration, now: Instant) {
         if self.to.in_place(&next) {
             self.to = next;
-            return false;
+            return;
         }
 
         let previous = std::mem::replace(&mut self.to, next);
 
         if self.from(now).is_some() && self.rise(now) < 0.5 {
-            return false;
+            return;
         }
 
         self.from = Some(previous);
         self.rise = Spring::new([0.0], self.rise.mode());
         self.rise.to([1.0], response, now);
-
-        true
     }
 
     // what still shows beneath at `now`, none once the new one covers it
@@ -342,7 +339,7 @@ mod tests {
         let now = Instant::now();
         let mut dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
 
-        assert!(dissolve.to(Level('b', 0), RISE, now));
+        dissolve.to(Level('b', 0), RISE, now);
         assert_eq!(dissolve.target(), &Level('b', 0));
         assert_eq!(dissolve.from(now), Some(&Level('a', 0)));
         assert_eq!(dissolve.rise(now), 0.0);
@@ -365,7 +362,7 @@ mod tests {
         let now = Instant::now();
         let mut dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
 
-        assert!(!dissolve.to(Level('a', 9), RISE, now));
+        dissolve.to(Level('a', 9), RISE, now);
         assert_eq!(dissolve.target(), &Level('a', 9));
         assert!(dissolve.settled(now));
     }
@@ -380,7 +377,7 @@ mod tests {
         let rise = dissolve.rise(early);
         assert!(rise < 0.5, "{rise}");
 
-        assert!(!dissolve.to(Level('c', 0), RISE, early));
+        dissolve.to(Level('c', 0), RISE, early);
         assert_eq!(dissolve.target(), &Level('c', 0));
         assert_eq!(dissolve.from(early), Some(&Level('a', 0)));
         assert_eq!(dissolve.rise(early), rise);
@@ -398,7 +395,7 @@ mod tests {
             .unwrap();
         assert!(!dissolve.settled(late));
 
-        assert!(dissolve.to(Level('c', 0), RISE, late));
+        dissolve.to(Level('c', 0), RISE, late);
         assert_eq!(dissolve.from(late), Some(&Level('b', 0)));
         assert_eq!(dissolve.rise(late), 0.0);
     }

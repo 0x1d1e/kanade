@@ -8,6 +8,7 @@ use amane::{Color, Service};
 
 use crate::island::activity::Track;
 use crate::island::fade::Dissolve;
+use crate::island::motion::{Mode, Spring};
 use crate::theme;
 
 // the timeline and volume fills stand on theme::DOT, so an accent must stand out from it
@@ -56,11 +57,8 @@ pub struct Deck {
 
     pub timeline: Timeline,
 
-    // from the artwork; none without art or for grey art
-    pub accent: Option<Color>,
-
-    // the accent the track before showed, which this one's rises from with it
-    pub before: Color,
+    // toward the artwork's accent, or the neutral foreground without art or for grey art
+    pub accent: Tint,
 
     // MPRIS keeps these apart: a live stream may play but not pause
     pub can_play: bool,
@@ -69,17 +67,69 @@ pub struct Deck {
     pub can_next: bool,
 }
 
-impl Deck {
-    // the accent at `now`, blended from the one before as the track rises
-    pub fn accent_at(&self, now: Instant) -> Color {
-        let accent = self.accent.unwrap_or(theme::FG);
+/*
+ * the accent as it changes, on its own spring: with the track, and again whenever the artwork's
+ * accent turns up late, since a file not there yet is read again on a later tick. A change of
+ * mind goes on from where it is and how fast it moves, so it never jumps; under reduced motion it
+ * fades from where it is over motion::REDUCED_FADE
+ */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    // what showed when the current leg began, for the reduced motion fade
+    from: Color,
 
-        if self.track.settled(now) {
-            accent
-        } else {
-            mix(self.before, accent, self.track.rise(now))
+    to: Color,
+
+    // 0 to 255 per channel
+    rgb: Spring<3>,
+}
+
+impl Tint {
+    // at rest on `color`
+    pub fn new(color: Color, mode: Mode) -> Self {
+        Self {
+            from: color,
+            to: color,
+            rgb: Spring::new(rgb(color), mode),
         }
     }
+
+    // a new leg toward `color` unless it already heads there
+    pub fn to(&mut self, color: Color, response: Duration, now: Instant) {
+        if self.to == color {
+            return;
+        }
+
+        self.from = self.at(now);
+        self.to = color;
+        self.rgb.to(rgb(color), response, now);
+    }
+
+    pub fn at(&self, now: Instant) -> Color {
+        if self.rgb.settled(now) {
+            return self.to;
+        }
+
+        match self.rgb.mode() {
+            Mode::Spring => {
+                let [r, g, b] = self
+                    .rgb
+                    .at(now)
+                    .map(|channel| channel.round().clamp(0.0, 255.0) as u8);
+
+                Color::rgb(r, g, b)
+            }
+            Mode::Reduced => mix(self.from, self.to, self.rgb.progress(now)),
+        }
+    }
+
+    pub fn settled(&self, now: Instant) -> bool {
+        self.rgb.settled(now)
+    }
+}
+
+fn rgb(color: Color) -> [f32; 3] {
+    channels(color).map(|channel| channel * 255.0)
 }
 
 /*
@@ -226,6 +276,7 @@ fn channels(color: Color) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::island::motion::REDUCED_FADE;
 
     fn timeline(position: u64, rate: f64, at: Instant) -> Timeline {
         Timeline {
@@ -236,48 +287,92 @@ mod tests {
         }
     }
 
-    // #37: the accent rises from the one before with the track, then rests on its own
+    const RED: Color = Color::rgb(255, 0, 0);
+    const BLUE: Color = Color::rgb(0, 0, 255);
+    const TINT: Duration = Duration::from_millis(300);
+
+    fn ms(value: u64) -> Duration {
+        Duration::from_millis(value)
+    }
+
+    // the most any channel moves in one millisecond from `from` until it rests
+    fn steepest(tint: &Tint, from: Instant) -> u8 {
+        (0..2_000)
+            .map(|step| {
+                let [a, b] = [step, step + 1].map(|step| channels(tint.at(from + ms(step))));
+
+                (0..3)
+                    .map(|i| ((a[i] - b[i]).abs() * 255.0).round() as u8)
+                    .max()
+                    .unwrap()
+            })
+            .max()
+            .unwrap()
+    }
+
     #[test]
-    fn the_accent_blends_from_the_one_before_as_the_track_rises() {
-        use crate::island::motion::Mode;
-
+    fn the_tint_moves_to_the_new_accent_and_rests_there() {
         let now = Instant::now();
-        let red = Color::rgb(255, 0, 0);
-        let blue = Color::rgb(0, 0, 255);
-        let track = |title: &str| Track {
-            title: title.into(),
-            ..Track::default()
-        };
+        let mut tint = Tint::new(RED, Mode::Spring);
+        assert!(tint.settled(now));
 
-        let mut dissolve = Dissolve::new(track("a"), Mode::Spring);
-        dissolve.to(track("b"), Duration::from_millis(300), now);
+        tint.to(BLUE, TINT, now);
+        assert_eq!(tint.at(now), RED);
 
-        let deck = Deck {
-            name: "mpv".into(),
-            track: dissolve,
-            timeline: timeline(0, 1.0, now),
-            accent: Some(blue),
-            before: red,
-            can_play: true,
-            can_pause: true,
-            can_previous: true,
-            can_next: true,
-        };
+        let mid = tint.at(now + ms(60));
+        assert!(mid != RED && mid != BLUE, "{mid:?}");
+        assert!(steepest(&tint, now) <= 8);
 
-        assert_eq!(deck.accent_at(now), red);
+        assert_eq!(tint.at(now + ms(2_000)), BLUE);
+        assert!(tint.settled(now + ms(2_000)));
+    }
 
-        let mid = deck.accent_at(now + Duration::from_millis(60));
-        assert!(mid != red && mid != blue, "{mid:?}");
+    // #37: the artwork not readable yet heads for the neutral foreground; its accent turning up a
+    // tick later turns the tint from where it is, mid-leg or at rest
+    #[test]
+    fn an_accent_found_late_goes_on_from_where_the_tint_is() {
+        let now = Instant::now();
 
-        assert_eq!(deck.accent_at(now + Duration::from_secs(2)), blue);
-        assert_eq!(
-            Deck {
-                accent: None,
-                ..deck
-            }
-            .accent_at(now + Duration::from_secs(2)),
-            theme::FG
-        );
+        for found in [ms(60), ms(2_000)] {
+            let mut tint = Tint::new(RED, Mode::Spring);
+            tint.to(theme::FG, TINT, now);
+
+            let late = now + found;
+            let before = tint.at(late);
+            tint.to(BLUE, TINT, late);
+
+            assert_eq!(tint.at(late), before, "found after {found:?}");
+            assert!(steepest(&tint, now) <= 8, "found after {found:?}");
+            assert_eq!(tint.at(late + ms(2_000)), BLUE);
+        }
+    }
+
+    #[test]
+    fn the_same_accent_again_keeps_the_leg() {
+        let now = Instant::now();
+        let mut tint = Tint::new(RED, Mode::Spring);
+        tint.to(BLUE, TINT, now);
+
+        let leg = tint;
+        tint.to(BLUE, TINT, now + ms(60));
+
+        assert_eq!(tint, leg);
+    }
+
+    #[test]
+    fn under_reduced_motion_the_tint_fades_from_where_it_is() {
+        let now = Instant::now();
+        let mut tint = Tint::new(RED, Mode::Reduced);
+        tint.to(theme::FG, TINT, now);
+
+        let late = now + ms(40);
+        let before = tint.at(late);
+        assert!(before != RED && before != theme::FG, "{before:?}");
+
+        tint.to(BLUE, TINT, late);
+        assert_eq!(tint.at(late), before);
+        assert_eq!(tint.at(late + REDUCED_FADE), BLUE);
+        assert!(tint.settled(late + REDUCED_FADE));
     }
 
     #[test]

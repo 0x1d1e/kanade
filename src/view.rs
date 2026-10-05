@@ -986,27 +986,6 @@ fn media_peek(change: Change) -> Rectangle {
     let shape = geometry::shape(Presentation::Peek);
     let inset = 7.0;
 
-    let mut lines = children![
-        change
-            .line(|track| &track.title, theme::FG)
-            .size(14.0)
-            .weight(600)
-            .elide()
-    ];
-
-    // with no artist the title centers alone, swapped while neither shows
-    if !change.shown().artist.is_empty() {
-        lines.push(Box::new(
-            change
-                .line(|track| &track.artist, theme::MUTED)
-                .size(12.0)
-                .weight(500)
-                .elide(),
-        ));
-    }
-
-    let lines = Column::new(lines).width(Parent).gap(1.0);
-
     sized(Presentation::Peek)
         .padding(Padding {
             top: 0.0,
@@ -1018,13 +997,34 @@ fn media_peek(change: Change) -> Rectangle {
         .child(
             Row::new(children![
                 change.art(shape.height - 2.0 * inset, 9.0),
-                lines,
+                peek_lines(change),
                 state(change.to.playing),
             ])
             .width(Parent)
             .gap(11.0)
             .align(Center),
         )
+}
+
+/*
+ * the title over the artist; the artist's line is there even when it names none, so a track
+ * without one stands where the one before it did and nothing moves
+ */
+fn peek_lines(change: Change) -> Column {
+    Column::new(children![
+        change
+            .line(|track| &track.title, theme::FG)
+            .size(14.0)
+            .weight(600)
+            .elide(),
+        change
+            .line(|track| &track.artist, theme::MUTED)
+            .size(12.0)
+            .weight(500)
+            .elide(),
+    ])
+    .width(Parent)
+    .gap(1.0)
 }
 
 /*
@@ -1055,11 +1055,6 @@ impl<'a> Change<'a> {
         }
     }
 
-    // whichever of the two its lines show now
-    pub(crate) fn shown(self) -> &'a Track {
-        swap(self.from, self.to, self.rise).0
-    }
-
     // the new cover rises over the old, so no tile shows between them and nothing dips
     pub(crate) fn art(self, side: f32, radius: f32) -> Stack {
         let to = Rectangle::new()
@@ -1076,9 +1071,16 @@ impl<'a> Change<'a> {
         Stack::new(layers).width(side).height(side)
     }
 
+    // what one line shows and how strongly; a line both tracks share stays as it is
+    fn text(self, line: fn(&Track) -> &str) -> (&'a str, f32) {
+        let from = self.from.map(line).filter(|&from| from != line(self.to));
+
+        swap(from, line(self.to), self.rise)
+    }
+
     // one line of text, the old fading out before the new fades in at the same place
     pub(crate) fn line(self, line: fn(&Track) -> &str, color: Color) -> Text {
-        let (text, opacity) = swap(self.from.map(line), line(self.to), self.rise);
+        let (text, opacity) = self.text(line);
 
         Text::new(text).color(theme::faded(color, opacity))
     }
@@ -1303,5 +1305,74 @@ fn input_area(area: Rect) -> InputArea {
         y: area.y as i32,
         width: area.width as i32,
         height: area.height as i32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(title: &str, artist: &str) -> Track {
+        Track {
+            title: title.into(),
+            artist: artist.into(),
+            ..Track::default()
+        }
+    }
+
+    fn rises() -> impl Iterator<Item = f32> {
+        (0..=20).map(|step| step as f32 / 20.0)
+    }
+
+    // #37: the Peek's lines stand still while a track with an artist dissolves to one without
+    #[test]
+    fn the_peek_lines_keep_their_height_whether_an_artist_shows_or_not() {
+        let with = track("a", "Alpha");
+        let without = track("b", "");
+        let settled = |to| Widget::height(&peek_lines(Change::of(to, None, Instant::now())));
+
+        assert_eq!(settled(&with), settled(&without));
+
+        for (from, to) in [(&with, &without), (&without, &with)] {
+            for rise in rises() {
+                let change = Change {
+                    from: Some(from),
+                    to,
+                    rise,
+                };
+
+                assert_eq!(
+                    Widget::height(&peek_lines(change)),
+                    settled(&with),
+                    "{} -> {} at {rise}",
+                    from.title,
+                    to.title
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_both_tracks_share_never_dips() {
+        let from = track("Same", "Alpha");
+        let to = track("Same", "Beta");
+
+        for rise in rises() {
+            let change = Change {
+                from: Some(&from),
+                to: &to,
+                rise,
+            };
+
+            assert_eq!(change.text(|track| &track.title), ("Same", 1.0));
+        }
+
+        let change = |rise| Change {
+            from: Some(&from),
+            to: &to,
+            rise,
+        };
+        assert_eq!(change(0.25).text(|track| &track.artist), ("Alpha", 0.5));
+        assert_eq!(change(0.75).text(|track| &track.artist), ("Beta", 0.5));
     }
 }
