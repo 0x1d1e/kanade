@@ -3,12 +3,14 @@
 //! notification, which toasts and stays in the history like any other. Starting it again restarts it.
 //!
 //! The Activity says when the timer runs out, and the view reads it at the time it draws, so nothing
-//! reposts it each second. A window that draws a reading asks to be drawn again when the reading
-//! changes, and one that stops drawing it stops asking: a hidden timer draws no frames.
+//! reposts it each second. A window that draws a reading asks to be drawn again when that reading
+//! changes, and one that stops drawing it stops asking: a hidden timer draws no frames. Clocks and
+//! Satellite readings change at their own pace, so each redraws only the windows that drew one.
 
 use std::collections::BTreeMap;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Service};
@@ -20,11 +22,43 @@ use crate::island::service::IslandService;
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
 
-// where IPC and the readings reach the thread, once it runs
+// where IPC and the readings reach the thread, set before IPC can take a command
 static EVENTS: OnceLock<Sender<Event>> = OnceLock::new();
 
-// the earliest moment a drawn reading changes, until the windows are drawn again for it
-static REDRAW: Mutex<Option<Instant>> = Mutex::new(None);
+static CLOCK: Form = Form {
+    redraw: Mutex::new(None),
+    at: clock_at,
+    subscribe: || drop(Clocks::read()),
+    invalidate: || drop(Clocks::write()),
+};
+
+static SHORT: Form = Form {
+    redraw: Mutex::new(None),
+    at: short_at,
+    subscribe: || drop(Shorts::read()),
+    invalidate: || drop(Shorts::write()),
+};
+
+// one way to read what is left, with the windows that drew it
+struct Form {
+    // the earliest moment a drawn reading changes, until the windows are drawn again for it
+    redraw: Mutex<Option<Instant>>,
+
+    // the text for the seconds left, with the seconds left at which it next reads otherwise
+    at: fn(u64) -> (String, Option<u64>),
+
+    // subscribes the window drawing a reading to its redraw
+    subscribe: fn(),
+
+    // draws the windows that drew a reading again
+    invalidate: fn(),
+}
+
+impl Form {
+    fn lock(&self) -> MutexGuard<'_, Option<Instant>> {
+        self.redraw.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 enum Event {
     Start(Duration),
@@ -35,14 +69,25 @@ enum Event {
 }
 
 /*
- * written when a drawn reading changes, so only the windows that read it draw again; it holds
+ * written when a drawn clock changes, so only the windows that drew one draw again; it holds
  * nothing, since the reading follows from the time a window draws at
  */
-pub struct Readings;
+pub struct Clocks;
 
-impl Service for Readings {
+impl Service for Clocks {
     fn new() -> Self {
-        Readings
+        Clocks
+    }
+
+    fn listen() {}
+}
+
+// likewise for Satellite readings, which change far less often than a clock beside them
+pub struct Shorts;
+
+impl Service for Shorts {
+    fn new() -> Self {
+        Shorts
     }
 
     fn listen() {}
@@ -62,11 +107,16 @@ fn send(event: Event) {
     }
 }
 
-// runs on its own thread for good, asleep until IPC, the end of the timer, or a reading changes
-pub fn follow() {
+// called before IPC runs, so no command finds the thread missing
+pub fn spawn() {
     let (send, events) = mpsc::channel();
     let _ = EVENTS.set(send);
 
+    thread::spawn(move || follow(&events));
+}
+
+// runs for good, asleep until IPC, the end of the timer, or a reading changes
+fn follow(events: &Receiver<Event>) {
     let mut running: Option<Countdown> = None;
 
     loop {
@@ -77,14 +127,16 @@ pub fn follow() {
             notify(&countdown);
         }
 
-        if lock().take_if(|redraw| *redraw <= now).is_some() {
-            drop(Readings::write());
+        for form in [&CLOCK, &SHORT] {
+            if form.lock().take_if(|redraw| *redraw <= now).is_some() {
+                (form.invalidate)();
+            }
         }
 
         let deadline = running
             .map(|countdown| countdown.ends)
             .into_iter()
-            .chain(*lock())
+            .chain([&CLOCK, &SHORT].into_iter().filter_map(|form| *form.lock()))
             .min();
 
         let event = match deadline {
@@ -113,10 +165,6 @@ pub fn follow() {
             Err(RecvTimeoutError::Disconnected) => return,
         }
     }
-}
-
-fn lock() -> MutexGuard<'static, Option<Instant>> {
-    REDRAW.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 // Ongoing, so it becomes a Satellite beside a higher primary, and the primary over Media
@@ -156,30 +204,29 @@ pub fn length(countdown: &Countdown) -> String {
 
 // what is left as a clock, like 4:59 or 1:04:59, asking for a redraw when it next changes
 pub fn clock(countdown: &Countdown, now: Instant) -> String {
-    read(countdown, now, clock_at)
+    read(&CLOCK, countdown, now)
 }
 
 // what is left in a Satellite's few characters, like 45s, 25m or 3h, asking for a redraw likewise
 pub fn short(countdown: &Countdown, now: Instant) -> String {
-    read(countdown, now, short_at)
+    read(&SHORT, countdown, now)
 }
 
-fn read(countdown: &Countdown, now: Instant, form: fn(u64) -> (String, Option<u64>)) -> String {
-    // subscribes the window drawing it to the redraw
-    drop(Readings::read());
+fn read(form: &Form, countdown: &Countdown, now: Instant) -> String {
+    (form.subscribe)();
 
-    let (text, next) = form(left(countdown, now));
+    let (text, next) = (form.at)(left(countdown, now));
 
     if let Some(at) = next.and_then(|next| countdown.ends.checked_sub(Duration::from_secs(next))) {
-        redraw_at(at);
+        redraw_at(form, at);
     }
 
     text
 }
 
 // only an earlier redraw wakes the thread, the one it waits for covers any later one
-fn redraw_at(at: Instant) {
-    let mut redraw = lock();
+fn redraw_at(form: &Form, at: Instant) {
+    let mut redraw = form.lock();
 
     if redraw.is_some_and(|redraw| redraw <= at) {
         return;
