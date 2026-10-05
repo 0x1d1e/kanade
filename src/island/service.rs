@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{LazyLock, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use amane::{Animation, Blend, Keyboard, Service};
 
@@ -7,6 +9,19 @@ use super::geometry::{EXPANDED, REST, Shape};
 
 // plan 5.2 starting values, expand and collapse take the same time
 const MORPH: Duration = Duration::from_millis(180);
+
+// plan 5.2: pointer out collapses after 200-300 ms, back in before that keeps the island open
+const GRACE: Duration = Duration::from_millis(250);
+
+/*
+ * a deadline change nudges listen(), which otherwise sleeps until the next deadline (#5);
+ * one pending nudge is enough, since listen() reads every deadline again when it wakes
+ */
+static NUDGE: LazyLock<(SyncSender<()>, Mutex<Receiver<()>>)> = LazyLock::new(|| {
+    let (sender, receiver) = mpsc::sync_channel(1);
+
+    (sender, Mutex::new(receiver))
+});
 
 // the one Amane-facing piece of island/: owns the Arbiter and per-monitor Presentation
 pub struct IslandService {
@@ -27,6 +42,9 @@ struct Island {
 
     // none until the first morph, a new Animation counts as moving for its whole duration
     shape: Option<Animation<Shape>>,
+
+    // the pointer left the expanded body, it collapses then unless it comes back
+    collapse_at: Option<Instant>,
 }
 
 impl Service for IslandService {
@@ -36,8 +54,34 @@ impl Service for IslandService {
         }
     }
 
-    // changes only through input and sources, nothing to poll
-    fn listen() {}
+    /*
+     * sleeps until the next deadline or a nudge, so an idle island never wakes (#5);
+     * a nudge sent between the read and the wait is still queued, so the wait never misses it
+     */
+    fn listen() {
+        let receiver = NUDGE.1.lock().unwrap_or_else(PoisonError::into_inner);
+
+        loop {
+            // no deadline waits forever, recv_timeout falls back to recv on overflow
+            let wait = Self::read().deadline().map_or(Duration::MAX, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+
+            if receiver.recv_timeout(wait) != Err(RecvTimeoutError::Timeout) {
+                continue;
+            }
+
+            let now = Instant::now();
+
+            // Write cannot be made quiet from here, so only write when something expires
+            if Self::read()
+                .deadline()
+                .is_some_and(|deadline| deadline <= now)
+            {
+                Self::write().expire(now);
+            }
+        }
+    }
 }
 
 impl IslandService {
@@ -57,6 +101,21 @@ impl IslandService {
 
     pub fn armed(&self, monitor: &str) -> bool {
         self.islands.get(monitor).is_some_and(|island| island.armed)
+    }
+
+    // the pointer is out and the grace is running
+    pub fn leaving(&self, monitor: &str) -> bool {
+        self.islands
+            .get(monitor)
+            .is_some_and(|island| island.collapse_at.is_some())
+    }
+
+    // the earliest moment some island changes on its own
+    fn deadline(&self) -> Option<Instant> {
+        self.islands
+            .values()
+            .filter_map(|island| island.collapse_at)
+            .min()
     }
 
     fn held(&self, monitor: &str) -> bool {
@@ -90,6 +149,11 @@ impl IslandService {
         island.expanded = expanded;
         island.held &= expanded;
 
+        // explicit input decides right away, a pending grace no longer applies
+        if island.collapse_at.take().is_some() {
+            nudge();
+        }
+
         island
             .shape
             .get_or_insert_with(|| Animation::new(REST).duration(MORPH))
@@ -100,9 +164,51 @@ impl IslandService {
         self.island(monitor).armed = armed;
     }
 
+    // disarms right away, collapses only after the grace
+    pub fn leave(&mut self, monitor: &str, now: Instant) {
+        let island = self.island(monitor);
+
+        island.armed = false;
+
+        if island.expanded && island.collapse_at.is_none() {
+            island.collapse_at = Some(now + GRACE);
+            nudge();
+        }
+    }
+
+    // back in before the grace ran out
+    pub fn enter(&mut self, monitor: &str) {
+        if self.island(monitor).collapse_at.take().is_some() {
+            nudge();
+        }
+    }
+
+    // collapses every island whose grace ran out by now
+    pub fn expire(&mut self, now: Instant) {
+        let due: Vec<String> = self
+            .islands
+            .iter_mut()
+            .filter(|(_, island)| island.collapse_at.is_some_and(|at| at <= now))
+            .map(|(monitor, island)| {
+                // cleared here, so the collapse below does not nudge listen() for its own deadline
+                island.collapse_at = None;
+                monitor.clone()
+            })
+            .collect();
+
+        for monitor in due {
+            self.set_expanded(&monitor, false);
+        }
+    }
+
     fn island(&mut self, monitor: &str) -> &mut Island {
         self.islands.entry(monitor.to_owned()).or_default()
     }
+}
+
+// never blocks: a nudge already queued wakes listen() just the same
+fn nudge() {
+    let _ = NUDGE.0.try_send(());
 }
 
 impl Blend for Shape {
@@ -160,5 +266,92 @@ mod tests {
         // a later pointer expand does not bring the hold back
         island.set_expanded(MONITOR, true);
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+    }
+
+    #[test]
+    fn pointer_out_collapses_when_the_grace_runs_out() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.set_armed(MONITOR, true);
+        island.set_expanded(MONITOR, true);
+        island.leave(MONITOR, now);
+
+        assert!(!island.armed(MONITOR));
+        assert_eq!(island.deadline(), Some(now + GRACE));
+
+        island.expire(now + GRACE - Duration::from_millis(1));
+        assert!(island.expanded(MONITOR));
+
+        island.expire(now + GRACE);
+        assert!(!island.expanded(MONITOR));
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn pointer_back_in_keeps_the_island_open() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.set_expanded(MONITOR, true);
+        island.leave(MONITOR, now);
+        island.enter(MONITOR);
+
+        assert_eq!(island.deadline(), None);
+
+        island.expire(now + GRACE);
+        assert!(island.expanded(MONITOR));
+    }
+
+    #[test]
+    fn repeated_leave_keeps_the_first_deadline() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.set_expanded(MONITOR, true);
+        island.leave(MONITOR, now);
+        island.leave(MONITOR, now + Duration::from_millis(100));
+
+        assert_eq!(island.deadline(), Some(now + GRACE));
+    }
+
+    #[test]
+    fn leaving_a_collapsed_island_sets_no_deadline() {
+        let mut island = IslandService::new();
+
+        island.leave(MONITOR, Instant::now());
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn explicit_collapse_cancels_the_grace() {
+        let mut island = IslandService::new();
+
+        island.set_expanded(MONITOR, true);
+        island.leave(MONITOR, Instant::now());
+        island.set_expanded(MONITOR, false);
+
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn deadline_is_the_earliest_across_monitors() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.set_expanded(MONITOR, true);
+        island.set_expanded("HDMI-A-1", true);
+        island.leave("HDMI-A-1", now);
+        island.leave(MONITOR, now + Duration::from_millis(50));
+
+        assert_eq!(island.deadline(), Some(now + GRACE));
+
+        island.expire(now + GRACE);
+        assert!(!island.expanded("HDMI-A-1"));
+        assert!(island.expanded(MONITOR));
+        assert_eq!(
+            island.deadline(),
+            Some(now + Duration::from_millis(50) + GRACE)
+        );
     }
 }
