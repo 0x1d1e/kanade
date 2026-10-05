@@ -12,4 +12,5 @@ pub mod osd;
 pub mod playback;
 pub mod power;
 pub mod system;
+pub mod timer;
 pub mod workspace;

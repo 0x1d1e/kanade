@@ -5,7 +5,7 @@
 
 #![expect(dead_code, reason = "the Arbiter and the sources use these, #17-#33")]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -191,6 +191,8 @@ pub enum Detail {
     Network(Connection),
 
     Bluetooth(Peer),
+
+    Timer(Countdown),
 }
 
 impl Detail {
@@ -206,6 +208,7 @@ impl Detail {
             Detail::Notification(_) => Some(Kind::Notification),
             Detail::Network(_) => Some(Kind::Network),
             Detail::Bluetooth(_) => Some(Kind::Bluetooth),
+            Detail::Timer(_) => Some(Kind::Timer),
         }
     }
 
@@ -323,6 +326,16 @@ pub struct Peer {
 
     // 0 to 100, only for devices that report it
     pub battery: Option<u8>,
+}
+
+/*
+ * a timer running out at `ends`, started `length` before. What it reads follows from the time it is
+ * drawn at, so the Activity never changes while it counts down
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Countdown {
+    pub ends: Instant,
+    pub length: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
