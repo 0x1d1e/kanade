@@ -87,6 +87,7 @@ struct Player {
 
     timeline: Timeline,
     can_play: bool,
+    can_pause: bool,
     can_previous: bool,
     can_next: bool,
 }
@@ -136,7 +137,8 @@ impl Player {
             },
 
             // CanControl false means none of the others hold, whatever they say
-            can_play: able("CanControl") && (able("CanPlay") || able("CanPause")),
+            can_play: able("CanControl") && able("CanPlay"),
+            can_pause: able("CanControl") && able("CanPause"),
             can_previous: able("CanControl") && able("CanGoPrevious"),
             can_next: able("CanControl") && able("CanGoNext"),
         }
@@ -243,7 +245,8 @@ enum Event {
 // what the Media Surface asks of a player, by its bus name
 #[derive(Debug, Clone, PartialEq)]
 pub enum Control {
-    Toggle(String),
+    Play(String),
+    Pause(String),
     Previous(String),
     Next(String),
 
@@ -392,10 +395,9 @@ impl Watcher {
     }
 
     // writes what the open Surface shows when it changed, and times the next tick
-    fn show(&mut self, players: &Players, now: Instant) {
-        if !watching() {
-            self.selected = None;
-            self.tick = None;
+    fn show(&mut self, players: &Players, watching: bool, now: Instant) {
+        if !watching {
+            self.close();
             return;
         }
 
@@ -409,6 +411,7 @@ impl Watcher {
                 timeline: player.timeline,
                 accent,
                 can_play: player.can_play,
+                can_pause: player.can_pause,
                 can_previous: player.can_previous,
                 can_next: player.can_next,
             }
@@ -457,8 +460,26 @@ impl Watcher {
         accent
     }
 
-    fn due(&self, now: Instant) -> bool {
-        self.tick.is_some_and(|tick| tick <= now)
+    /*
+     * the player to ask where it is, once its tick is due; none once the Surface closed, even with
+     * a tick still set, since only a Surface on screen polls
+     */
+    fn poll(&mut self, players: &Players, watching: bool, now: Instant) -> Option<String> {
+        if !watching {
+            self.close();
+            return None;
+        }
+
+        if !self.tick.is_some_and(|tick| tick <= now) {
+            return None;
+        }
+
+        self.shown(players).map(|(name, _)| name.clone())
+    }
+
+    fn close(&mut self) {
+        self.selected = None;
+        self.tick = None;
     }
 }
 
@@ -539,7 +560,7 @@ pub fn follow() {
         let now = Instant::now();
 
         post(follower.step(players.choose(), now), now);
-        watcher.show(&players, now);
+        watcher.show(&players, watching(), now);
 
         let deadline = [follower.deadline(), watcher.tick]
             .into_iter()
@@ -570,7 +591,8 @@ pub fn follow() {
             Ok(Event::Watch) => {}
             Ok(Event::Control(control)) => {
                 let (method, name) = match control {
-                    Control::Toggle(name) => ("PlayPause", name),
+                    Control::Play(name) => ("Play", name),
+                    Control::Pause(name) => ("Pause", name),
                     Control::Previous(name) => ("Previous", name),
                     Control::Next(name) => ("Next", name),
                     Control::Select(name) => {
@@ -584,10 +606,7 @@ pub fn follow() {
                 refresh(bus, &mut players, &name);
             }
             Err(RecvTimeoutError::Timeout) => {
-                if watcher.due(Instant::now())
-                    && let Some((name, _)) = watcher.shown(&players)
-                {
-                    let name = name.clone();
+                if let Some(name) = watcher.poll(&players, watching(), Instant::now()) {
                     refresh(bus, &mut players, &name);
                 }
             }
@@ -977,6 +996,58 @@ mod tests {
                 art: Some(String::from("/tmp/a.png")),
                 playing: true,
             }
+        );
+    }
+
+    #[test]
+    fn play_and_pause_are_separate_abilities() {
+        let able = |status: &str, play: bool, pause: bool| {
+            let properties = map([
+                ("PlaybackStatus", text(status)),
+                ("CanControl", Value::Bool(true)),
+                ("CanPlay", Value::Bool(play)),
+                ("CanPause", Value::Bool(pause)),
+            ]);
+            let player = Player::of(":1.4", "mpv", &properties, Instant::now());
+
+            (player.can_play, player.can_pause)
+        };
+
+        // a live stream that plays but cannot pause
+        assert_eq!(able("Playing", true, false), (true, false));
+        assert_eq!(able("Paused", false, true), (false, true));
+
+        // CanControl false overrules both
+        let properties = map([
+            ("CanPlay", Value::Bool(true)),
+            ("CanPause", Value::Bool(true)),
+        ]);
+        let player = Player::of(":1.4", "mpv", &properties, Instant::now());
+        assert_eq!((player.can_play, player.can_pause), (false, false));
+    }
+
+    #[test]
+    fn a_tick_due_after_the_surface_closed_polls_nothing() {
+        let now = Instant::now();
+        let mut players = Players::default();
+        players
+            .open
+            .insert(String::from("mpv"), player(":1.4", "Song", "Playing"));
+
+        // the open Surface timed its next tick, then closed before it fell due
+        let mut watcher = Watcher {
+            tick: Some(now + secs(1)),
+            ..Watcher::default()
+        };
+        assert_eq!(watcher.poll(&players, true, now), None);
+        assert_eq!(watcher.poll(&players, false, now + secs(1)), None);
+        assert_eq!(watcher.tick, None);
+
+        // open, the same tick asks the shown player
+        watcher.tick = Some(now + secs(1));
+        assert_eq!(
+            watcher.poll(&players, true, now + secs(1)),
+            Some(String::from("mpv"))
         );
     }
 

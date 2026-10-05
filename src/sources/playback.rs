@@ -52,7 +52,9 @@ pub struct Deck {
     // from the artwork; none without art or for grey art
     pub accent: Option<Color>,
 
+    // MPRIS keeps these apart: a live stream may play but not pause
     pub can_play: bool,
+    pub can_pause: bool,
     pub can_previous: bool,
     pub can_next: bool,
 }

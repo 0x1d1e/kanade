@@ -2,6 +2,7 @@
 //! and which player it shows. Every part keeps its place in every state, so nothing moves when a
 //! player opens, art loads, or a title runs long.
 
+use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -30,6 +31,10 @@ const BADGE: f32 = 36.0;
 
 const CHIP: f32 = 24.0;
 const CHIP_WIDTH: f32 = 110.0;
+const CHIP_GAP: f32 = 6.0;
+
+// as narrow as a chip gets and still reads a short name like "mpv 2"
+const CHIP_MIN: f32 = 64.0;
 
 const BUTTON: f32 = 36.0;
 const PLAY: f32 = 44.0;
@@ -128,7 +133,8 @@ fn header(track: &Track, players: &[Choice], deck: Option<&Deck>, width: f32) ->
 
 /*
  * one player says its name; more each get a chip, the shown one filled, pressed to show that one
- * until the Surface closes
+ * until the Surface closes. Past what fits, a page of them around the shown one and a "+N" chip
+ * that turns to the next page
  */
 fn choices(players: &[Choice], shown: Option<&str>, width: f32) -> Row {
     if let [only] = players {
@@ -142,50 +148,106 @@ fn choices(players: &[Choice], shown: Option<&str>, width: f32) -> Row {
         .width(width);
     }
 
-    let gap = 6.0;
-    let count = players.len().max(1) as f32;
-    let chip = ((width - gap * (count - 1.0)) / count).min(CHIP_WIDTH);
-
-    let chips = players
+    let index = players
         .iter()
-        .map(|player| {
-            let selected = shown == Some(player.name.as_str());
-            let name = player.name.clone();
+        .position(|player| shown == Some(player.name.as_str()));
+    let chips = Chips::of(players.len(), index, width);
 
-            let chip = Rectangle::new()
-                .width(chip)
-                .height(CHIP)
-                .radius(CHIP / 2.0)
-                .padding(Padding {
-                    top: 0.0,
-                    right: 10.0,
-                    bottom: 0.0,
-                    left: 10.0,
-                })
-                .align_child(Center, Center)
-                .cursor(Cursor::Pointer)
-                .on_click(move |button| {
-                    if button == Button::Left {
-                        media::control(Control::Select(name.clone()));
-                    }
-                })
-                .child(
-                    Text::new(&player.identity)
-                        .size(12.0)
-                        .color(if selected { theme::FG } else { theme::MUTED })
-                        .weight(600)
-                        .elide(),
-                );
+    let page = players[chips.page.clone()].iter().map(|player| {
+        let selected = shown == Some(player.name.as_str());
 
-            Box::new(if selected {
-                chip.fill(theme::DOT)
-            } else {
-                chip.border(1.0, theme::DOT)
-            }) as Box<dyn Widget>
+        chip(&player.identity, chips.width, selected, &player.name)
+    });
+
+    let more = chips.more.map(|next| {
+        let hidden = players.len() - chips.page.len();
+
+        chip(
+            &format!("+{hidden}"),
+            chips.width,
+            false,
+            &players[next].name,
+        )
+    });
+
+    Row::new(page.chain(more).collect()).gap(CHIP_GAP)
+}
+
+fn chip(label: &str, width: f32, selected: bool, name: &str) -> Box<dyn Widget> {
+    let name = name.to_owned();
+
+    let chip = Rectangle::new()
+        .width(width)
+        .height(CHIP)
+        .radius(CHIP / 2.0)
+        .padding(Padding {
+            top: 0.0,
+            right: 10.0,
+            bottom: 0.0,
+            left: 10.0,
         })
-        .collect();
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .on_click(move |button| {
+            if button == Button::Left {
+                media::control(Control::Select(name.clone()));
+            }
+        })
+        .child(
+            Text::new(label)
+                .size(12.0)
+                .color(if selected { theme::FG } else { theme::MUTED })
+                .weight(600)
+                .elide(),
+        );
 
-    Row::new(chips).gap(gap)
+    Box::new(if selected {
+        chip.fill(theme::DOT)
+    } else {
+        chip.border(1.0, theme::DOT)
+    })
+}
+
+// which player chips show, and how wide each is
+#[derive(Debug, PartialEq)]
+struct Chips {
+    page: Range<usize>,
+
+    // the first player of the next page, the last page turning back to the first
+    more: Option<usize>,
+
+    width: f32,
+}
+
+impl Chips {
+    fn of(count: usize, shown: Option<usize>, width: f32) -> Chips {
+        let slots = (((width + CHIP_GAP) / (CHIP_MIN + CHIP_GAP)) as usize).max(2);
+
+        if count <= slots {
+            return Chips {
+                page: 0..count,
+                more: None,
+                width: chip_width(width, count),
+            };
+        }
+
+        let per = slots - 1;
+        let start = shown.unwrap_or(0) / per * per;
+        let end = (start + per).min(count);
+
+        // every page as wide as the full ones, so turning the last one moves nothing
+        Chips {
+            page: start..end,
+            more: Some(if end < count { end } else { 0 }),
+            width: chip_width(width, slots),
+        }
+    }
+}
+
+fn chip_width(width: f32, slots: usize) -> f32 {
+    let slots = slots.max(1) as f32;
+
+    ((width - CHIP_GAP * (slots - 1.0)) / slots).min(CHIP_WIDTH)
 }
 
 // how far along, with the time played and the time left; times only once the player says them
@@ -232,7 +294,6 @@ fn clock(time: Duration) -> String {
 
 // previous, play or pause, next; then the speaker, pressed to mute, and its level
 fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
-    let playing = deck.is_some_and(|deck| deck.track.playing);
     let able = |can: fn(&Deck) -> bool| deck.filter(|deck| can(deck)).map(|deck| deck.name.clone());
 
     let transport = Row::new(children![
@@ -242,16 +303,11 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
             None,
             able(|deck| deck.can_previous).map(Control::Previous)
         ),
-        button(
-            if playing {
-                Transport::Pause
-            } else {
-                Transport::Play
-            },
-            PLAY,
-            Some(theme::FG),
-            able(|deck| deck.can_play).map(Control::Toggle)
-        ),
+        {
+            let (glyph, control) = play_pause(deck);
+
+            button(glyph, PLAY, Some(theme::FG), control)
+        },
         button(
             Transport::Next,
             BUTTON,
@@ -269,6 +325,21 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
         .width(width)
         .gap(gap)
         .align(Center)
+}
+
+// a playing player pauses, any other plays; each only when the player says it can
+fn play_pause(deck: Option<&Deck>) -> (Transport, Option<Control>) {
+    match deck {
+        Some(deck) if deck.track.playing => (
+            Transport::Pause,
+            deck.can_pause.then(|| Control::Pause(deck.name.clone())),
+        ),
+        deck => (
+            Transport::Play,
+            deck.filter(|deck| deck.can_play)
+                .map(|deck| Control::Play(deck.name.clone())),
+        ),
+    }
 }
 
 /*
@@ -393,7 +464,7 @@ fn set_volume(percent: u8) {
     Audio::set_volume(percent);
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Transport {
     Previous,
     Play,
@@ -441,6 +512,81 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // the room choices() gets on the Surface
+    const WORDS: f32 = geometry::MEDIA.width - 2.0 * INSET - ART - GAP;
+
+    #[test]
+    fn every_player_chip_stays_pressable_however_many_players() {
+        for count in 2..=24 {
+            for shown in 0..count {
+                let chips = Chips::of(count, Some(shown), WORDS);
+                let shown_chips = chips.page.len() + usize::from(chips.more.is_some());
+                let used = shown_chips as f32 * chips.width + (shown_chips - 1) as f32 * CHIP_GAP;
+
+                assert!(chips.width >= CHIP_MIN.max(TARGET), "{count} players");
+                assert!(used <= WORDS, "{count} players overflow");
+                assert!(chips.page.contains(&shown), "{count} players hide {shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_more_chip_turns_the_page_and_back() {
+        let first = Chips::of(11, Some(0), WORDS);
+        assert_eq!(first.page, 0..3);
+        assert_eq!(first.more, Some(3));
+
+        let last = Chips::of(11, Some(10), WORDS);
+        assert_eq!(last.page, 9..11);
+        assert_eq!(last.more, Some(0));
+        assert_eq!(last.width, first.width);
+
+        // what fits shows whole
+        assert_eq!(Chips::of(3, Some(2), WORDS).more, None);
+    }
+
+    #[test]
+    fn a_playing_player_pauses_and_a_paused_one_plays_only_if_it_can() {
+        let deck = |playing: bool, can_play: bool, can_pause: bool| Deck {
+            name: String::from("mpv"),
+            track: Track {
+                playing,
+                ..Track::default()
+            },
+            timeline: crate::sources::playback::Timeline {
+                position: Duration::ZERO,
+                at: Instant::now(),
+                length: Duration::ZERO,
+                rate: 0.0,
+            },
+            accent: None,
+            can_play,
+            can_pause,
+            can_previous: false,
+            can_next: false,
+        };
+        let pause = Some(Control::Pause(String::from("mpv")));
+        let play = Some(Control::Play(String::from("mpv")));
+
+        assert_eq!(
+            play_pause(Some(&deck(true, false, true))),
+            (Transport::Pause, pause)
+        );
+        assert_eq!(
+            play_pause(Some(&deck(true, true, false))),
+            (Transport::Pause, None)
+        );
+        assert_eq!(
+            play_pause(Some(&deck(false, true, false))),
+            (Transport::Play, play)
+        );
+        assert_eq!(
+            play_pause(Some(&deck(false, false, true))),
+            (Transport::Play, None)
+        );
+        assert_eq!(play_pause(None), (Transport::Play, None));
+    }
 
     #[test]
     fn clocks_read_like_a_player() {
