@@ -31,6 +31,23 @@ pub struct Shape {
     pub radius: f32,
 }
 
+// as one spring group, see motion
+impl From<Shape> for [f32; 3] {
+    fn from(shape: Shape) -> Self {
+        [shape.width, shape.height, shape.radius]
+    }
+}
+
+impl From<[f32; 3]> for Shape {
+    fn from([width, height, radius]: [f32; 3]) -> Self {
+        Self {
+            width,
+            height,
+            radius,
+        }
+    }
+}
+
 // in canvas coordinates, from its top left corner
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {

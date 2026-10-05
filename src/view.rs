@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use amane::{
     Button, Horizontal, InputArea, Key, Layer, LayerWindow, Monitor, Parent, Rectangle, Service,
-    Start, Vertical, Zone,
+    Start, Vertical, Zone, request_frame,
 };
 
 use crate::island::geometry::{self, Rect};
@@ -14,8 +14,15 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to island changes
     let island = IslandService::read();
 
+    let now = Instant::now();
+
     let keyboard = island.keyboard(&monitor.name);
-    let shape = island.shape(&monitor.name);
+    let shape = island.shape(&monitor.name, now);
+
+    // the spring is ours, not an Amane Animation, so the view asks for frames until it rests
+    if !island.settled(&monitor.name, now) {
+        request_frame();
+    }
 
     let body = geometry::body(shape);
     let area = geometry::input_area(body);
@@ -94,14 +101,14 @@ pub fn ipc(arguments: &[String]) -> String {
 // a write wakes the window even when nothing changed, so only write a real change
 fn set_expanded(monitor: &str, expanded: bool) {
     if IslandService::read().expanded(monitor) != expanded {
-        IslandService::write().set_expanded(monitor, expanded);
+        IslandService::write().set_expanded(monitor, expanded, Instant::now());
     }
 }
 
 // no press, so the island holds the keyboard until it collapses (#4)
 fn open(monitor: &str) {
     if !IslandService::read().expanded(monitor) {
-        IslandService::write().open(monitor);
+        IslandService::write().open(monitor, Instant::now());
     }
 }
 

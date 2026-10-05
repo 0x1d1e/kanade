@@ -2,4 +2,5 @@
 //! The boundary is enforced structurally by `crate::boundary` (test-only).
 
 pub mod geometry;
+pub mod motion;
 pub mod service;
