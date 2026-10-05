@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use super::activity::{Activity, Kind};
+
 // full interactive content of an Expanded island
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -37,15 +39,44 @@ impl Surface {
             .into_iter()
             .find(|surface| surface.name() == name)
     }
+
+    // what a click on an island showing this Kind opens; a Kind without a Surface of its own has its control there
+    pub fn of(kind: Kind) -> Surface {
+        match kind {
+            Kind::Media => Surface::Media,
+            Kind::Notification => Surface::Notifications,
+            _ => Surface::Controls,
+        }
+    }
 }
 
 // Expanded always carries a Surface, there is no surface-less expanded form
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Presentation {
+    #[default]
     Rest,
     Compact,
     Peek,
     Expanded(Surface),
+}
+
+// what the body shows: the Presentation, and in a small form the Activity it is the form of
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Content {
+    pub presentation: Presentation,
+    pub activity: Option<Activity>,
+}
+
+impl Content {
+    // an open Surface shows itself, not the Activity, and Rest shows nothing
+    pub fn new(presentation: Presentation, shown: Option<Activity>) -> Self {
+        let small = matches!(presentation, Presentation::Compact | Presentation::Peek);
+
+        Self {
+            presentation,
+            activity: shown.filter(|_| small),
+        }
+    }
 }
 
 // Wheel carries a scroll delta, so no Eq
@@ -72,10 +103,6 @@ pub enum Input {
     Unhover,
 
     // a Critical Activity displaces an open Surface (plan 5.1 rule 4)
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Arbiter decides preemption, #19")
-    )]
     Preempt,
 }
 
@@ -94,7 +121,7 @@ enum Raised {
     Expanded(Surface),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct Island {
     // the Surface of the island's primary Activity, none without one
     primary: Option<Surface>,
@@ -103,10 +130,13 @@ struct Island {
     raised: Option<Raised>,
 }
 
-// every island's Presentation by monitor; an island nobody touched rests
+// every island's Presentation by monitor
 #[derive(Debug, Default)]
 pub struct Presentations {
     islands: HashMap<String, Island>,
+
+    // every island no input reached yet: one primary for all of them, never raised
+    untouched: Island,
 
     // niri's overview is open, every island rests and takes no input (plan 5.3)
     overview: bool,
@@ -114,9 +144,18 @@ pub struct Presentations {
 
 impl Presentations {
     pub fn get(&self, monitor: &str) -> Presentation {
-        let Some(island) = self.islands.get(monitor).filter(|_| !self.overview) else {
+        self.of(self.islands.get(monitor).unwrap_or(&self.untouched))
+    }
+
+    // what every untouched island shows
+    pub fn untouched(&self) -> Presentation {
+        self.of(&self.untouched)
+    }
+
+    fn of(&self, island: &Island) -> Presentation {
+        if self.overview {
             return Presentation::Rest;
-        };
+        }
 
         match (island.raised, island.primary) {
             (Some(Raised::Expanded(surface)), _) => Presentation::Expanded(surface),
@@ -130,18 +169,13 @@ impl Presentations {
      * Rest --Activity posted--> Compact and back on withdrawal. A withdrawal also ends a Peek,
      * which showed that primary, so a later post starts at Compact again. An open Surface stays
      */
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Arbiter provides the primary, #20")
-    )]
     pub fn set_primary(&mut self, monitor: &str, primary: Option<Surface>) {
-        let island = self.island(monitor);
+        self.island(monitor).set_primary(primary);
+    }
 
-        island.primary = primary;
-
-        if primary.is_none() && island.raised == Some(Raised::Peek) {
-            island.raised = None;
-        }
+    // for every island not touched yet, which then starts from it
+    pub fn set_untouched(&mut self, primary: Option<Surface>) {
+        self.untouched.set_primary(primary);
     }
 
     /*
@@ -215,8 +249,21 @@ impl Presentations {
             })
     }
 
+    // the first touch starts from what every untouched island shows
     fn island(&mut self, monitor: &str) -> &mut Island {
-        self.islands.entry(monitor.to_owned()).or_default()
+        self.islands
+            .entry(monitor.to_owned())
+            .or_insert_with(|| self.untouched.clone())
+    }
+}
+
+impl Island {
+    fn set_primary(&mut self, primary: Option<Surface>) {
+        self.primary = primary;
+
+        if primary.is_none() && self.raised == Some(Raised::Peek) {
+            self.raised = None;
+        }
     }
 }
 
@@ -456,6 +503,52 @@ mod tests {
         presentations.set_overview(false);
 
         assert_eq!(presentations.get(MONITOR), Peek);
+    }
+
+    #[test]
+    fn untouched_islands_share_one_primary_until_touched() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_untouched(Some(Media));
+        assert_eq!(presentations.get(MONITOR), Compact);
+        assert_eq!(presentations.untouched(), Compact);
+
+        // a touched island starts from it, then goes its own way
+        presentations.input(MONITOR, Input::Hover);
+        presentations.set_untouched(None);
+
+        assert_eq!(presentations.get(MONITOR), Peek);
+        assert_eq!(presentations.get(OTHER), Rest);
+
+        presentations.input(OTHER, Input::Click);
+        assert_eq!(presentations.get(OTHER), Expanded(Controls));
+    }
+
+    #[test]
+    fn content_names_the_activity_only_in_a_small_form() {
+        use crate::island::activity::{Id, Priority};
+
+        let media = Activity::persistent(Id::new(Kind::Media, "spotify"), Priority::Media);
+
+        for presentation in [Compact, Peek] {
+            let content = Content::new(presentation, Some(media.clone()));
+            assert_eq!(content.activity.as_ref(), Some(&media));
+        }
+
+        for presentation in [Rest, Expanded(Media)] {
+            assert_eq!(
+                Content::new(presentation, Some(media.clone())).activity,
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_kind_opens_its_own_surface_or_controls() {
+        assert_eq!(Surface::of(Kind::Media), Media);
+        assert_eq!(Surface::of(Kind::Notification), Notifications);
+        assert_eq!(Surface::of(Kind::Volume), Controls);
+        assert_eq!(Surface::of(Kind::ScreenCast), Controls);
     }
 
     #[test]

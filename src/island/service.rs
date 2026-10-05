@@ -5,11 +5,13 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
+use super::activity::{Activity, Frame, Id, Interrupt, Scope};
+use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::Crossfade;
 use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
-use super::presentation::{Input, Presentation, Presentations, Surface};
+use super::presentation::{Content, Input, Presentation, Presentations, Surface};
 
 // plan 5.2 starting values, expand and collapse take the same time
 const MORPH: Mode = Mode::Spring {
@@ -41,8 +43,16 @@ static NUDGE: LazyLock<(SyncSender<()>, Mutex<Receiver<()>>)> = LazyLock::new(||
 
 // the one Amane-facing piece of island/: owns the Arbiter and per-monitor Presentation
 pub struct IslandService {
-    // by monitor name, an island nobody touched yet is at rest
+    // by monitor name, from the first input or focus on it
     islands: HashMap<String, Island>,
+
+    /*
+     * every island not in `islands`: unfocused while niri names the focused output, which it
+     * touches, and never raised, so they all show one Frame and morph as one
+     */
+    untouched: Island,
+
+    arbiter: Arbiter,
 
     presentations: Presentations,
 
@@ -50,7 +60,7 @@ pub struct IslandService {
     focused_output: Option<String>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Island {
     // the pointer is in the input region and has not pressed Escape, so a press can take focus
     armed: bool,
@@ -66,7 +76,7 @@ struct Island {
     shape: Option<Spring<3>>,
 
     // the content, faded by the shape's progress so both change in one motion
-    content: Crossfade,
+    content: Crossfade<Content>,
 
     // what the pointer started: a Peek after the hover delay, or a collapse after the grace
     due: Option<Due>,
@@ -95,6 +105,8 @@ impl Service for IslandService {
     fn new() -> Self {
         Self {
             islands: HashMap::new(),
+            untouched: Island::default(),
+            arbiter: Arbiter::default(),
             presentations: Presentations::default(),
             focused_output: None,
         }
@@ -119,7 +131,7 @@ impl Service for IslandService {
 
             let now = Instant::now();
 
-            // Write cannot be made quiet from here, so only write when something expires
+            // Write cannot be made quiet from here, so only write when something falls due
             if Self::read()
                 .deadline()
                 .is_some_and(|deadline| deadline <= now)
@@ -148,13 +160,32 @@ impl IslandService {
     }
 
     /*
-     * everything niri tells the core, in one update reconciled once; focus changes no Presentation
-     * yet, but will through the Arbiter's scope filter (#19)
+     * everything niri tells the core, in one update reconciled once. Focus moves the
+     * FocusedOutput Activities; the focused island is touched, so every untouched one is unfocused
      */
     pub fn set_niri(&mut self, focused_output: Option<String>, overview: bool, now: Instant) {
+        if let Some(monitor) = &focused_output {
+            self.island(monitor);
+        }
+
         self.focused_output = focused_output;
         self.presentations.set_overview(overview);
         self.sync(now);
+    }
+
+    // what the Arbiter shows on this island at `now`
+    pub fn frame(&self, monitor: &str, now: Instant) -> Frame {
+        self.arbiter.frame(
+            now,
+            arbiter::Island {
+                focused: self.focused(monitor),
+                expanded: self.expanded(monitor),
+            },
+        )
+    }
+
+    pub fn dnd(&self) -> bool {
+        self.arbiter.dnd()
     }
 
     pub fn expanded(&self, monitor: &str) -> bool {
@@ -168,10 +199,8 @@ impl IslandService {
     }
 
     // what shows at `now` and how strongly, at most one of them visible
-    pub fn content(&self, monitor: &str, now: Instant) -> [Option<(Presentation, f32)>; 2] {
-        let Some(island) = self.islands.get(monitor) else {
-            return Crossfade::default().shown(1.0);
-        };
+    pub fn content(&self, monitor: &str, now: Instant) -> [Option<(Content, f32)>; 2] {
+        let island = self.get(monitor);
 
         let progress = island
             .shape
@@ -188,31 +217,28 @@ impl IslandService {
     }
 
     pub fn armed(&self, monitor: &str) -> bool {
-        self.islands.get(monitor).is_some_and(|island| island.armed)
+        self.get(monitor).armed
     }
 
     pub fn inside(&self, monitor: &str) -> bool {
-        self.islands
-            .get(monitor)
-            .is_some_and(|island| island.inside)
+        self.get(monitor).inside
     }
 
-    // the earliest moment some island changes on its own
+    // the earliest moment some island or the Arbiter changes on its own
     fn deadline(&self) -> Option<Instant> {
         self.islands
             .values()
             .filter_map(|island| island.due.map(|due| due.at))
+            .chain(self.arbiter.deadline())
             .min()
     }
 
     fn spring(&self, monitor: &str) -> Option<&Spring<3>> {
-        self.islands
-            .get(monitor)
-            .and_then(|island| island.shape.as_ref())
+        self.get(monitor).shape.as_ref()
     }
 
     fn held(&self, monitor: &str) -> bool {
-        self.islands.get(monitor).is_some_and(|island| island.held)
+        self.get(monitor).held
     }
 
     /*
@@ -231,30 +257,51 @@ impl IslandService {
     }
 
     /*
-     * stand-ins until the Arbiter decides each island's primary from posted Activities (#20);
-     * the caller names the island and the Surface of its primary
+     * a Critical Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
+     * existing one escalated to Critical included; a repost of one already up does not, so a
+     * Surface reopened over it stays
      */
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "sources post once the Arbiter is wired in, #20")
-    )]
-    pub fn post(&mut self, monitor: &str, primary: Surface, now: Instant) {
-        self.island(monitor);
-        self.presentations.set_primary(monitor, Some(primary));
+    pub fn post(&mut self, activity: Activity, now: Instant) {
+        let arrives = activity.interrupt() == Interrupt::Preempt
+            && !self.arbiter.preempting(activity.id(), now);
+        let global = activity.scope() == Scope::Global;
+
+        self.change(|arbiter| arbiter.post(activity, now));
+
+        let open = self
+            .presentations
+            .expanded()
+            .map(|(monitor, _)| monitor.to_owned());
+
+        match open {
+            Some(monitor) if arrives && (global || self.focused(&monitor)) => {
+                self.input(&monitor, Input::Preempt, now);
+            }
+            _ => self.sync(now),
+        }
+    }
+
+    pub fn withdraw(&mut self, id: &Id, now: Instant) {
+        self.change(|arbiter| {
+            arbiter.withdraw(id);
+        });
         self.sync(now);
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "sources withdraw once the Arbiter is wired in, #20"
-        )
-    )]
-    pub fn withdraw(&mut self, monitor: &str, now: Instant) {
-        self.island(monitor);
-        self.presentations.set_primary(monitor, None);
+    pub fn set_dnd(&mut self, dnd: bool, now: Instant) {
+        self.arbiter.set_dnd(dnd);
         self.sync(now);
+    }
+
+    // changes the Arbiter, telling listen() when that moves its deadline
+    fn change(&mut self, change: impl FnOnce(&mut Arbiter)) {
+        let before = self.arbiter.deadline();
+
+        change(&mut self.arbiter);
+
+        if self.arbiter.deadline() != before {
+            nudge();
+        }
     }
 
     /*
@@ -263,11 +310,6 @@ impl IslandService {
      * the open island, and with none open there is nowhere to open
      */
     pub fn resolve(&self, command: Command) -> Result<Option<Effect>, NoFocus> {
-        // nothing is open or opens while the overview is
-        if self.overview() {
-            return Ok(None);
-        }
-
         let open = self.presentations.expanded();
 
         // an island open on another output is not the focused one's to close
@@ -275,6 +317,16 @@ impl IslandService {
         let collapse = || Ok(focused.map(|(monitor, _)| Effect::Collapse(monitor.to_owned())));
 
         let surface = match command {
+            // Activities and DND reach the Arbiter whatever the islands show
+            Command::Post(activity) => return Ok(Some(Effect::Post(activity))),
+            Command::Withdraw(id) => {
+                return Ok(self.arbiter.contains(&id).then_some(Effect::Withdraw(id)));
+            }
+            Command::ToggleDnd => return Ok(Some(Effect::Dnd(!self.dnd()))),
+
+            // nothing is open or opens while the overview is
+            _ if self.overview() => return Ok(None),
+
             Command::Collapse => return collapse(),
 
             Command::Toggle(surface) if focused.is_some_and(|(_, shown)| shown == surface) => {
@@ -302,6 +354,9 @@ impl IslandService {
         match effect {
             Effect::Open(monitor, surface) => self.open(&monitor, surface, now),
             Effect::Collapse(monitor) => self.input(&monitor, Input::Collapse, now),
+            Effect::Post(activity) => self.post(activity, now),
+            Effect::Withdraw(id) => self.withdraw(&id, now),
+            Effect::Dnd(dnd) => self.set_dnd(dnd, now),
         }
     }
 
@@ -325,43 +380,71 @@ impl IslandService {
     }
 
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
-        self.presentations.input(monitor, input);
+        // touched before the Presentation is, so sync gives it its own Frame from now on
+        let island = self.island(monitor);
 
         // input that decides something ends a pending Peek or grace; scrolling an open island the
         // pointer just left, which decides nothing yet, still lets it collapse
-        if input.decides() && self.island(monitor).due.take().is_some() {
+        if input.decides() && island.due.take().is_some() {
             nudge();
         }
 
+        self.presentations.input(monitor, input);
         self.sync(now);
     }
 
-    // every island follows its Presentation, since opening one collapses any other
+    /*
+     * every island follows its Frame and its Presentation, since a post reaches many islands and
+     * opening one collapses any other. The primary of a Presentation is what shows: the
+     * Transient over the primary Activity, or that one
+     */
     fn sync(&mut self, now: Instant) {
-        for (monitor, island) in &mut self.islands {
-            let presentation = self.presentations.get(monitor);
-            let expanded = matches!(presentation, Presentation::Expanded(_));
-            let target = geometry::shape(presentation);
+        let showing = |frame: Frame| frame.transient.or(frame.primary);
 
-            island.held &= expanded;
+        let untouched = showing(self.arbiter.frame(
+            now,
+            arbiter::Island {
+                focused: self.focused_output.is_none(),
+                expanded: false,
+            },
+        ));
 
-            if island.due.is_some_and(|due| !due.applies(presentation)) {
-                island.due = None;
-                nudge();
-            }
+        self.presentations.set_untouched(
+            untouched
+                .as_ref()
+                .map(|activity| Surface::of(activity.kind())),
+        );
 
-            if presentation == island.content.target() {
-                continue;
-            }
+        let shown: Vec<(String, Option<Activity>)> = self
+            .islands
+            .keys()
+            .map(|monitor| (monitor.clone(), showing(self.frame(monitor, now))))
+            .collect();
 
-            // content and shape start the leg together; an island that never changed has no spring
-            let spring = island
-                .shape
-                .get_or_insert_with(|| Spring::new(REST.into(), MORPH));
+        for (monitor, shown) in &shown {
+            let primary = shown.as_ref().map(|activity| Surface::of(activity.kind()));
 
-            island.content.to(presentation, spring.progress(now));
-            spring.to(target.into(), now);
+            self.presentations.set_primary(monitor, primary);
         }
+
+        let presentation = self.presentations.untouched();
+        follow(
+            &mut self.untouched,
+            Content::new(presentation, untouched),
+            now,
+        );
+
+        for (monitor, shown) in shown {
+            let presentation = self.presentations.get(&monitor);
+
+            if let Some(island) = self.islands.get_mut(&monitor) {
+                follow(island, Content::new(presentation, shown), now);
+            }
+        }
+    }
+
+    fn get(&self, monitor: &str) -> &Island {
+        self.islands.get(monitor).unwrap_or(&self.untouched)
     }
 
     pub fn set_armed(&mut self, monitor: &str, armed: bool) {
@@ -403,7 +486,7 @@ impl IslandService {
         }
     }
 
-    // applies every input that fell due by now
+    // applies every input that fell due by now, and drops the Transients that expired
     pub fn expire(&mut self, now: Instant) {
         let due: Vec<(String, Input)> = self
             .islands
@@ -419,18 +502,57 @@ impl IslandService {
         for (monitor, input) in due {
             self.input(&monitor, input, now);
         }
+
+        // they were out of every Frame from their expiry on, the next sync shows that
+        if self.arbiter.expire(now) {
+            self.sync(now);
+        }
     }
 
+    // the first touch starts from where every untouched island is, mid-morph included
     fn island(&mut self, monitor: &str) -> &mut Island {
-        self.islands.entry(monitor.to_owned()).or_default()
+        self.islands
+            .entry(monitor.to_owned())
+            .or_insert_with(|| self.untouched.clone())
     }
 }
 
-// an IPC command's change to one island, from IslandService::resolve
+// the island morphs to `content`, unless it is already headed there
+fn follow(island: &mut Island, content: Content, now: Instant) {
+    let presentation = content.presentation;
+    let expanded = matches!(presentation, Presentation::Expanded(_));
+
+    island.held &= expanded;
+
+    if island.due.is_some_and(|due| !due.applies(presentation)) {
+        island.due = None;
+        nudge();
+    }
+
+    if content == *island.content.target() {
+        return;
+    }
+
+    /*
+     * content and shape start the leg together, the same shape too, so a new Activity in the same
+     * form still crossfades; an island that never changed has no spring
+     */
+    let spring = island
+        .shape
+        .get_or_insert_with(|| Spring::new(REST.into(), MORPH));
+
+    island.content.to(content, spring.progress(now));
+    spring.to(geometry::shape(presentation).into(), now);
+}
+
+// an IPC command's change, from IslandService::resolve
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Open(String, Surface),
     Collapse(String),
+    Post(Activity),
+    Withdraw(Id),
+    Dnd(bool),
 }
 
 // niri has not said which output is focused and no island is open to stand in for it
@@ -451,6 +573,7 @@ fn nudge() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::island::activity::{Kind, Priority};
 
     const MONITOR: &str = "eDP-1";
 
@@ -580,14 +703,28 @@ mod tests {
         island
     }
 
+    fn media() -> Activity {
+        Activity::persistent(Id::new(Kind::Media, "spotify"), Priority::Media)
+    }
+
     // the pointer is on a Compact island
     fn compact(now: Instant) -> IslandService {
         let mut island = IslandService::new();
 
-        island.post(MONITOR, Surface::Media, now);
+        island.post(media(), now);
         island.hover(MONITOR, true, now);
 
         island
+    }
+
+    // the Presentations showing at `at` and how strongly
+    fn presentations(island: &IslandService, at: Instant) -> Vec<(Presentation, f32)> {
+        island
+            .content(MONITOR, at)
+            .into_iter()
+            .flatten()
+            .map(|(content, opacity)| (content.presentation, opacity))
+            .collect()
     }
 
     #[test]
@@ -692,7 +829,7 @@ mod tests {
         let now = Instant::now();
         let mut island = compact(now);
 
-        island.withdraw(MONITOR, now + ms(60));
+        island.withdraw(media().id(), now + ms(60));
         assert_eq!(island.deadline(), None);
 
         // a Peek the pointer left rests at once, its grace has nothing to return to
@@ -700,7 +837,7 @@ mod tests {
 
         island.expire(now + HOVER_DELAY);
         island.hover(MONITOR, false, now + ms(500));
-        island.withdraw(MONITOR, now + ms(600));
+        island.withdraw(media().id(), now + ms(600));
 
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
         assert_eq!(island.deadline(), None);
@@ -812,13 +949,16 @@ mod tests {
         let settled = now + Duration::from_secs(1);
         assert_eq!(
             island.content(MONITOR, settled),
-            [None, Some((Presentation::Compact, 1.0))]
+            [
+                None,
+                Some((Content::new(Presentation::Compact, Some(media())), 1.0))
+            ]
         );
 
         island.input(MONITOR, Input::Click, settled);
 
         let media = Presentation::Expanded(Surface::Media);
-        let shown = |at| -> Vec<_> { island.content(MONITOR, at).into_iter().flatten().collect() };
+        let shown = |at| presentations(&island, at);
 
         assert_eq!(shown(settled), [(Presentation::Compact, 1.0)]);
 
@@ -865,7 +1005,7 @@ mod tests {
         assert_eq!(geometry::shape(media), geometry::shape(launcher));
         assert!(!island.settled(MONITOR, switch));
 
-        let shown = |at| -> Vec<_> { island.content(MONITOR, at).into_iter().flatten().collect() };
+        let shown = |at| presentations(&island, at);
 
         assert_eq!(shown(switch), [(media, 1.0)]);
 
@@ -914,7 +1054,10 @@ mod tests {
         let later = now + Duration::from_secs(1);
 
         island.input(MONITOR, Input::Click, later);
-        island.post(MONITOR, Surface::Notifications, later);
+        island.post(
+            Activity::persistent(Id::new(Kind::Notification, "7"), Priority::Actionable),
+            later,
+        );
 
         assert!(island.settled(MONITOR, later));
     }
@@ -1196,11 +1339,313 @@ mod tests {
             Command::Toggle(Surface::Media),
             Command::Collapse,
         ] {
-            assert_eq!(island.resolve(command), Ok(None), "{command:?}");
+            assert_eq!(island.resolve(command.clone()), Ok(None), "{command:?}");
         }
 
         // the overview collapsed the island for good, so without niri nothing stands in for focus
         island.set_niri(None, false, now);
         assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
+    }
+
+    fn volume() -> Activity {
+        Activity::transient(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD)
+    }
+
+    fn battery() -> Activity {
+        Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical)
+    }
+
+    const OSD: Duration = Duration::from_millis(1200);
+
+    fn shown(island: &IslandService, monitor: &str, now: Instant) -> Option<Activity> {
+        let frame = island.frame(monitor, now);
+
+        frame.transient.or(frame.primary)
+    }
+
+    // the accept case of #20: shows, expires, and the persistent one returns with no re-post
+    #[test]
+    fn transient_over_a_persistent_shows_expires_and_returns() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.post(volume(), now + ms(100));
+
+        let expiry = now + ms(100) + OSD;
+
+        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(volume()));
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.deadline(), Some(expiry));
+
+        island.expire(expiry - ms(1));
+        assert_eq!(
+            island.get(MONITOR).content.target().activity,
+            Some(volume())
+        );
+
+        island.expire(expiry);
+        assert_eq!(shown(&island, MONITOR, expiry), Some(media()));
+        assert_eq!(island.get(MONITOR).content.target().activity, Some(media()));
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.deadline(), None);
+    }
+
+    // Compact to Compact keeps the shape, so only the spring's in-place leg times the crossfade
+    #[test]
+    fn a_new_activity_in_the_same_form_crossfades() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        assert!(island.settled(MONITOR, later));
+
+        island.post(volume(), later);
+
+        assert!(!island.settled(MONITOR, later + ms(1)));
+        assert_eq!(island.shape(MONITOR, later + ms(50)), geometry::COMPACT);
+        assert_eq!(
+            island.content(MONITOR, later)[0]
+                .as_ref()
+                .map(|(content, _)| content.activity.clone()),
+            Some(Some(media()))
+        );
+
+        // a repost of the same Activity changes nothing on screen
+        let settled = later + Duration::from_secs(1);
+        island.post(volume(), settled);
+        assert!(island.settled(MONITOR, settled));
+    }
+
+    #[test]
+    fn transient_shows_only_on_the_focused_island() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(volume(), now);
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.presentation(OTHER), Presentation::Rest);
+
+        // focus moves it, an untouched island included
+        island.set_niri(Some(OTHER.to_owned()), false, now + ms(100));
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert_eq!(island.presentation(OTHER), Presentation::Compact);
+        assert_eq!(island.presentation("DP-1"), Presentation::Rest);
+    }
+
+    #[test]
+    fn global_post_morphs_every_island_touched_or_not() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+
+        for monitor in [MONITOR, OTHER, "DP-1"] {
+            assert_eq!(island.presentation(monitor), Presentation::Compact);
+            assert!(!island.settled(monitor, now + ms(1)), "{monitor}");
+            assert_eq!(island.shape(monitor, later), geometry::COMPACT, "{monitor}");
+        }
+
+        // touching one mid-morph keeps its motion
+        let mid = now + ms(60);
+        let shape = island.shape(OTHER, mid);
+
+        island.hover(OTHER, true, mid);
+        assert_eq!(island.shape(OTHER, mid), shape);
+
+        island.withdraw(media().id(), later);
+
+        for monitor in [MONITOR, OTHER, "DP-1"] {
+            assert_eq!(
+                island.presentation(monitor),
+                Presentation::Rest,
+                "{monitor}"
+            );
+        }
+    }
+
+    #[test]
+    fn click_opens_the_surface_of_what_shows() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let toast = Activity::transient(
+            Id::new(Kind::Notification, "7"),
+            Priority::Actionable,
+            Duration::from_secs(5),
+        );
+
+        island.post(media(), now);
+        island.post(toast, now);
+        island.input(MONITOR, Input::Click, now);
+
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+    }
+
+    // plan 5.1 rule 4: a toast waits behind an open Surface and shows once it closes
+    #[test]
+    fn queued_transient_shows_after_the_surface_closes() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.input(MONITOR, Input::Click, now);
+        island.post(volume(), now + ms(100));
+
+        assert!(island.expanded(MONITOR));
+        assert_eq!(island.frame(MONITOR, now + ms(100)).queued, [volume()]);
+
+        island.input(MONITOR, Input::Collapse, now + ms(200));
+
+        assert_eq!(shown(&island, MONITOR, now + ms(200)), Some(volume()));
+        assert_eq!(
+            island.get(MONITOR).content.target().activity,
+            Some(volume())
+        );
+    }
+
+    #[test]
+    fn critical_arriving_collapses_the_open_surface_once() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.open(MONITOR, Surface::Media, now);
+        island.post(battery(), now + ms(100));
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(battery()));
+
+        // reopened over it, a repost of the same Activity leaves it open
+        island.input(MONITOR, Input::Click, now + ms(200));
+        island.post(battery(), now + ms(300));
+
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
+    }
+
+    // the same Id escalated to Critical arrives, though it was registered all along
+    #[test]
+    fn ongoing_activity_becoming_critical_preempts_open_surface() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let low = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Ongoing);
+
+        island.post(low, now);
+        island.open(MONITOR, Surface::Controls, now + ms(100));
+        island.post(battery(), now + ms(200));
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(shown(&island, MONITOR, now + ms(200)), Some(battery()));
+    }
+
+    // past its expiry it is gone, even before expire() sweeps it, so a repost arrives again
+    #[test]
+    fn expired_critical_reposted_preempts_again() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+
+        island.post(call.clone(), now);
+
+        let expiry = now + OSD;
+
+        island.open(MONITOR, Surface::Controls, expiry);
+        island.post(call.clone(), expiry);
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(shown(&island, MONITOR, expiry), Some(call));
+    }
+
+    #[test]
+    fn critical_transient_preempts_only_the_focused_island() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+
+        island.input(OTHER, Input::Click, now);
+        island.post(call.clone(), now);
+        assert!(island.expanded(OTHER));
+
+        island.withdraw(call.id(), now);
+        island.set_niri(Some(OTHER.to_owned()), false, now);
+        island.post(call, now);
+        assert!(!island.expanded(OTHER));
+    }
+
+    #[test]
+    fn critical_never_preempts_under_the_overview() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.set_niri(Some(MONITOR.to_owned()), true, now);
+        island.post(battery(), now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+
+        island.set_niri(Some(MONITOR.to_owned()), false, now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+    }
+
+    #[test]
+    fn debug_commands_post_withdraw_and_toggle_dnd() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        assert_eq!(
+            island.resolve(Command::Withdraw(media().id().clone())),
+            Ok(None)
+        );
+
+        run(&mut island, Command::Post(media()), now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+
+        run(&mut island, Command::Withdraw(media().id().clone()), now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+
+        assert_eq!(
+            run(&mut island, Command::ToggleDnd, now),
+            Some(Effect::Dnd(true))
+        );
+        assert!(island.dnd());
+        assert_eq!(
+            run(&mut island, Command::ToggleDnd, now),
+            Some(Effect::Dnd(false))
+        );
+        assert!(!island.dnd());
+
+        // the overview hides what they post, it does not refuse them
+        island.set_niri(Some(MONITOR.to_owned()), true, now);
+        assert_eq!(
+            island.resolve(Command::Post(media())),
+            Ok(Some(Effect::Post(media())))
+        );
+    }
+
+    #[test]
+    fn dnd_hides_a_toast_and_brings_it_back() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let toast = Activity::transient(
+            Id::new(Kind::Notification, "7"),
+            Priority::Passive,
+            Duration::from_secs(5),
+        );
+
+        island.post(toast.clone(), now);
+        island.set_dnd(true, now + ms(100));
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+
+        island.set_dnd(false, now + ms(200));
+        assert_eq!(shown(&island, MONITOR, now + ms(200)), Some(toast));
     }
 }
