@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
+use super::fade::Crossfade;
 use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
 use super::presentation::{Input, Presentation, Presentations, Surface};
@@ -52,6 +53,9 @@ struct Island {
 
     // none until the first morph; width, height and radius as one spring group
     shape: Option<Spring<3>>,
+
+    // the content, faded by the shape's progress so both change in one motion
+    content: Crossfade,
 
     // what the pointer started: a Peek after the hover delay, or a collapse after the grace
     due: Option<Due>,
@@ -127,6 +131,20 @@ impl IslandService {
     pub fn shape(&self, monitor: &str, now: Instant) -> Shape {
         self.spring(monitor)
             .map_or(REST, |spring| Shape::from(spring.at(now)))
+    }
+
+    // what shows at `now` and how strongly, at most one of them visible
+    pub fn content(&self, monitor: &str, now: Instant) -> [Option<(Presentation, f32)>; 2] {
+        let Some(island) = self.islands.get(monitor) else {
+            return Crossfade::default().shown(1.0);
+        };
+
+        let progress = island
+            .shape
+            .as_ref()
+            .map_or(1.0, |spring| spring.progress(now));
+
+        island.content.shown(progress)
     }
 
     // false while the view has to keep asking for frames
@@ -214,8 +232,9 @@ impl IslandService {
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
         self.presentations.input(monitor, input);
 
-        // explicit input decides right away, a pending Peek or grace no longer applies
-        if self.island(monitor).due.take().is_some() {
+        // input that decides something ends a pending Peek or grace; scrolling an open island the
+        // pointer just left, which decides nothing yet, still lets it collapse
+        if input.decides() && self.island(monitor).due.take().is_some() {
             nudge();
         }
 
@@ -236,13 +255,17 @@ impl IslandService {
                 nudge();
             }
 
-            // an island that never morphed stays at rest without a spring
-            if island.shape.is_some() || target != REST {
-                island
-                    .shape
-                    .get_or_insert_with(|| Spring::new(REST.into(), MORPH))
-                    .to(target.into(), now);
+            if presentation == island.content.target() {
+                continue;
             }
+
+            // content and shape start the leg together; an island that never changed has no spring
+            let spring = island
+                .shape
+                .get_or_insert_with(|| Spring::new(REST.into(), MORPH));
+
+            island.content.to(presentation, spring.progress(now));
+            spring.to(target.into(), now);
         }
     }
 
@@ -574,6 +597,143 @@ mod tests {
         // Escape with the pointer still on the body; it has to leave and come back to peek
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
         assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn right_click_and_wheel_leave_the_timers_and_the_motion_alone() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+
+        for input in [Input::RightClick, Input::Wheel(3.0)] {
+            let mut island = compact(now);
+
+            island.input(MONITOR, input, now + ms(60));
+            assert_eq!(island.deadline(), Some(now + HOVER_DELAY));
+
+            let mut island = expanded(now);
+
+            island.hover(MONITOR, false, later);
+            island.input(MONITOR, input, later);
+
+            assert_eq!(island.deadline(), Some(later + GRACE));
+            assert!(island.settled(MONITOR, later));
+        }
+    }
+
+    // the old content fades out with the start of the morph, the new one in toward its end
+    #[test]
+    fn content_crossfades_with_the_morph() {
+        let now = Instant::now();
+        let mut island = compact(now);
+
+        let settled = now + Duration::from_secs(1);
+        assert_eq!(
+            island.content(MONITOR, settled),
+            [None, Some((Presentation::Compact, 1.0))]
+        );
+
+        island.input(MONITOR, Input::Click, settled);
+
+        let media = Presentation::Expanded(Surface::Media);
+        let shown = |at| -> Vec<_> { island.content(MONITOR, at).into_iter().flatten().collect() };
+
+        assert_eq!(shown(settled), [(Presentation::Compact, 1.0)]);
+
+        let mut seen_media = false;
+
+        for step in 0..400 {
+            let at = settled + ms(step);
+            let content = shown(at);
+
+            assert!(content.len() <= 1, "{content:?}");
+
+            if let [(presentation, _)] = content[..] {
+                assert!(
+                    !seen_media || presentation == media,
+                    "{content:?} at {step}"
+                );
+                seen_media |= presentation == media;
+            }
+        }
+
+        assert_eq!(shown(settled + ms(1_000)), [(media, 1.0)]);
+    }
+
+    // Media and Launcher share one shape, so only the spring's in-place leg can time the fade
+    #[test]
+    fn same_shape_surface_switch_still_crossfades() {
+        let now = Instant::now();
+        let mut island = compact(now);
+
+        island.input(MONITOR, Input::Click, now);
+
+        let media = Presentation::Expanded(Surface::Media);
+        let launcher = Presentation::Expanded(Surface::Launcher);
+        let switch = now + Duration::from_secs(1);
+
+        assert_eq!(island.presentation(MONITOR), media);
+        assert!(island.settled(MONITOR, switch));
+
+        let shape = island.shape(MONITOR, switch);
+
+        island.input(MONITOR, Input::Open(Surface::Launcher), switch);
+
+        assert_eq!(island.presentation(MONITOR), launcher);
+        assert_eq!(geometry::shape(media), geometry::shape(launcher));
+        assert!(!island.settled(MONITOR, switch));
+
+        let shown = |at| -> Vec<_> { island.content(MONITOR, at).into_iter().flatten().collect() };
+
+        assert_eq!(shown(switch), [(media, 1.0)]);
+
+        /*
+         * Media fades out to nothing, then Launcher fades in from nothing; never back, never both.
+         * Nothing shows only at the instant of the handover, so each side of it is near empty
+         */
+        let mut last = (media, 1.0);
+        let mut handover = None;
+        let mut step = 0;
+
+        while !island.settled(MONITOR, switch + ms(step)) {
+            let at = switch + ms(step);
+
+            assert_eq!(island.shape(MONITOR, at), shape);
+
+            if let [now] = shown(at)[..] {
+                match (last.0 == media, now.0 == media) {
+                    (true, true) => assert!(now.1 <= last.1, "Media grew at {step} ms"),
+                    (false, false) => assert!(now.1 >= last.1, "Launcher dipped at {step} ms"),
+                    (true, false) => handover = Some((last.1, now.1)),
+                    (false, true) => panic!("Media came back at {step} ms"),
+                }
+
+                last = now;
+            } else {
+                assert_eq!(shown(at), [], "both at {step} ms");
+            }
+
+            step += 1;
+
+            assert!(step < 1_000, "never settled");
+        }
+
+        let (out, into) = handover.expect("never handed over to Launcher");
+
+        assert!(out < 0.1 && into < 0.1, "handed over at {out} -> {into}");
+        assert_eq!(shown(switch + ms(step)), [(launcher, 1.0)]);
+    }
+
+    // input that changes no Presentation starts no motion
+    #[test]
+    fn unchanged_presentation_stays_settled() {
+        let now = Instant::now();
+        let mut island = expanded(now);
+        let later = now + Duration::from_secs(1);
+
+        island.input(MONITOR, Input::Click, later);
+        island.post(MONITOR, Surface::Notifications, later);
+
+        assert!(island.settled(MONITOR, later));
     }
 
     #[test]
