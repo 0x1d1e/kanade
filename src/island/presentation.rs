@@ -1,8 +1,7 @@
-//! Per-island Presentation (plan 4, 5.2). Pure: input and the island's primary in, Presentation out.
+//! Per-island Presentation (plan 4, 5.2). Pure: primary changes and input in, Presentation out.
 //!
-//! Only what the user did is stored: peeking or an open Surface. Rest or Compact follows from
-//! whether the island has a primary Activity, so posting or withdrawing one needs no transition
-//! of its own and cannot leave a stale level behind.
+//! Each island keeps its primary and what the user holds it in: a Peek or an open Surface.
+//! Rest or Compact follows from the primary alone.
 
 use std::collections::HashMap;
 
@@ -68,47 +67,74 @@ enum Held {
     Expanded(Surface),
 }
 
-// every island's Presentation by monitor; an island nobody touched holds nothing
+#[derive(Debug, Default)]
+struct Island {
+    // the Surface of the island's primary Activity, none without one
+    primary: Option<Surface>,
+
+    // a Peek only ever exists with a primary, set_primary ends it on withdrawal
+    held: Option<Held>,
+}
+
+// every island's Presentation by monitor; an island nobody touched rests
 #[derive(Debug, Default)]
 pub struct Presentations {
-    held: HashMap<String, Held>,
+    islands: HashMap<String, Island>,
 }
 
 impl Presentations {
-    // `primary` is the Surface of this island's primary Activity, none without one
-    pub fn get(&self, monitor: &str, primary: Option<Surface>) -> Presentation {
-        match (self.held.get(monitor), primary) {
-            (Some(&Held::Expanded(surface)), _) => Presentation::Expanded(surface),
-            (Some(Held::Peek), Some(_)) => Presentation::Peek,
-            (_, Some(_)) => Presentation::Compact,
-            (_, None) => Presentation::Rest,
+    pub fn get(&self, monitor: &str) -> Presentation {
+        let Some(island) = self.islands.get(monitor) else {
+            return Presentation::Rest;
+        };
+
+        match (island.held, island.primary) {
+            (Some(Held::Expanded(surface)), _) => Presentation::Expanded(surface),
+            (Some(Held::Peek), _) => Presentation::Peek,
+            (None, Some(_)) => Presentation::Compact,
+            (None, None) => Presentation::Rest,
         }
     }
 
-    pub fn input(&mut self, monitor: &str, input: Input, primary: Option<Surface>) {
-        let now = self.get(monitor, primary);
+    /*
+     * Rest --Activity posted--> Compact and back on withdrawal. A withdrawal also ends a Peek,
+     * which showed that primary, so a later post starts at Compact again. An open Surface stays
+     */
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the Arbiter provides the primary, #20")
+    )]
+    pub fn set_primary(&mut self, monitor: &str, primary: Option<Surface>) {
+        let island = self.island(monitor);
+
+        island.primary = primary;
+
+        if primary.is_none() && island.held == Some(Held::Peek) {
+            island.held = None;
+        }
+    }
+
+    pub fn input(&mut self, monitor: &str, input: Input) {
+        let now = self.get(monitor);
+        let island = self.island(monitor);
 
         match (input, now) {
             // a click inside an open Surface belongs to the Surface
             (Input::Click, Presentation::Expanded(_)) => {}
 
             // the primary's Surface; Rest has no primary and no remembered last Surface, so Controls
-            (Input::Click, _) => self.expand(monitor, primary.unwrap_or(Surface::Controls)),
+            (Input::Click, _) => {
+                let surface = island.primary.unwrap_or(Surface::Controls);
+                self.expand(monitor, surface);
+            }
 
             (Input::Open(surface), _) => self.expand(monitor, surface),
 
-            (Input::Collapse | Input::Preempt, Presentation::Expanded(_)) => {
-                self.held.remove(monitor);
-            }
+            (Input::Collapse | Input::Preempt, Presentation::Expanded(_))
+            | (Input::Unhover, Presentation::Peek) => island.held = None,
 
             // only an island with a primary has a larger small form to peek into
-            (Input::Hover, Presentation::Compact) => {
-                self.held.insert(monitor.to_owned(), Held::Peek);
-            }
-
-            (Input::Unhover, _) if self.held.get(monitor) == Some(&Held::Peek) => {
-                self.held.remove(monitor);
-            }
+            (Input::Hover, Presentation::Compact) => island.held = Some(Held::Peek),
 
             _ => {}
         }
@@ -116,11 +142,17 @@ impl Presentations {
 
     // at most one island is Expanded, opening one collapses any other
     fn expand(&mut self, monitor: &str, surface: Surface) {
-        self.held
-            .retain(|other, held| other == monitor || !matches!(held, Held::Expanded(_)));
+        for island in self.islands.values_mut() {
+            if matches!(island.held, Some(Held::Expanded(_))) {
+                island.held = None;
+            }
+        }
 
-        self.held
-            .insert(monitor.to_owned(), Held::Expanded(surface));
+        self.island(monitor).held = Some(Held::Expanded(surface));
+    }
+
+    fn island(&mut self, monitor: &str) -> &mut Island {
+        self.islands.entry(monitor.to_owned()).or_default()
     }
 }
 
@@ -138,11 +170,13 @@ mod tests {
     fn after(inputs: &[Input], primary: Option<Surface>) -> Presentation {
         let mut presentations = Presentations::default();
 
+        presentations.set_primary(MONITOR, primary);
+
         for &input in inputs {
-            presentations.input(MONITOR, input, primary);
+            presentations.input(MONITOR, input);
         }
 
-        presentations.get(MONITOR, primary)
+        presentations.get(MONITOR)
     }
 
     #[test]
@@ -153,12 +187,13 @@ mod tests {
 
     #[test]
     fn activity_posted_and_withdrawn() {
-        let presentations = Presentations::default();
+        let mut presentations = Presentations::default();
 
-        // Rest --Activity posted--> Compact, and back once it is withdrawn
-        assert_eq!(presentations.get(MONITOR, None), Rest);
-        assert_eq!(presentations.get(MONITOR, Some(Media)), Compact);
-        assert_eq!(presentations.get(MONITOR, None), Rest);
+        presentations.set_primary(MONITOR, Some(Media));
+        assert_eq!(presentations.get(MONITOR), Compact);
+
+        presentations.set_primary(MONITOR, None);
+        assert_eq!(presentations.get(MONITOR), Rest);
     }
 
     #[test]
@@ -244,19 +279,49 @@ mod tests {
     }
 
     #[test]
-    fn withdrawn_primary_ends_a_peek() {
+    fn withdrawn_primary_ends_a_peek_for_good() {
         let mut presentations = Presentations::default();
 
-        presentations.input(MONITOR, Input::Hover, Some(Media));
-        assert_eq!(presentations.get(MONITOR, None), Rest);
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::Hover);
+        assert_eq!(presentations.get(MONITOR), Peek);
+
+        presentations.set_primary(MONITOR, None);
+        assert_eq!(presentations.get(MONITOR), Rest);
+
+        // Rest --Activity posted--> Compact, whichever Activity it is
+        for primary in [Media, Notifications] {
+            presentations.set_primary(MONITOR, Some(primary));
+            assert_eq!(presentations.get(MONITOR), Compact);
+        }
+    }
+
+    #[test]
+    fn replaced_primary_keeps_a_peek() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::Hover);
+        presentations.set_primary(MONITOR, Some(Notifications));
+
+        assert_eq!(presentations.get(MONITOR), Peek);
+
+        presentations.input(MONITOR, Input::Click);
+        assert_eq!(presentations.get(MONITOR), Expanded(Notifications));
     }
 
     #[test]
     fn open_surface_outlives_its_primary() {
         let mut presentations = Presentations::default();
 
-        presentations.input(MONITOR, Input::Click, Some(Media));
-        assert_eq!(presentations.get(MONITOR, None), Expanded(Media));
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::Click);
+        presentations.set_primary(MONITOR, None);
+
+        assert_eq!(presentations.get(MONITOR), Expanded(Media));
+
+        presentations.input(MONITOR, Input::Collapse);
+        assert_eq!(presentations.get(MONITOR), Rest);
     }
 
     #[test]
@@ -274,16 +339,19 @@ mod tests {
     fn at_most_one_island_is_expanded() {
         let mut presentations = Presentations::default();
 
-        presentations.input(OTHER, Input::Open(Launcher), None);
-        presentations.input(MONITOR, Input::Click, Some(Media));
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.set_primary(OTHER, Some(Media));
 
-        assert_eq!(presentations.get(MONITOR, Some(Media)), Expanded(Media));
-        assert_eq!(presentations.get(OTHER, Some(Media)), Compact);
+        presentations.input(OTHER, Input::Open(Launcher));
+        presentations.input(MONITOR, Input::Click);
+
+        assert_eq!(presentations.get(MONITOR), Expanded(Media));
+        assert_eq!(presentations.get(OTHER), Compact);
 
         // a peek elsewhere is not an expansion and stays
-        presentations.input(OTHER, Input::Hover, Some(Media));
-        presentations.input(MONITOR, Input::Open(Controls), Some(Media));
+        presentations.input(OTHER, Input::Hover);
+        presentations.input(MONITOR, Input::Open(Controls));
 
-        assert_eq!(presentations.get(OTHER, Some(Media)), Peek);
+        assert_eq!(presentations.get(OTHER), Peek);
     }
 }

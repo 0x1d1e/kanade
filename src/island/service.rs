@@ -17,9 +17,6 @@ const MORPH: Mode = Mode::Spring {
 // plan 5.2: pointer out collapses after 200-300 ms, back in before that keeps the island open
 const GRACE: Duration = Duration::from_millis(250);
 
-// no Arbiter yet (#20), so no island has a primary Activity
-const PRIMARY: Option<Surface> = None;
-
 /*
  * a deadline change nudges listen(), which otherwise sleeps until the next deadline (#5);
  * one pending nudge is enough, since listen() reads every deadline again when it wakes
@@ -94,7 +91,7 @@ impl Service for IslandService {
 
 impl IslandService {
     pub fn presentation(&self, monitor: &str) -> Presentation {
-        self.presentations.get(monitor, PRIMARY)
+        self.presentations.get(monitor)
     }
 
     pub fn expanded(&self, monitor: &str) -> bool {
@@ -164,7 +161,7 @@ impl IslandService {
     }
 
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
-        self.presentations.input(monitor, input, PRIMARY);
+        self.presentations.input(monitor, input);
 
         // explicit input decides right away, a pending grace no longer applies
         if self.island(monitor).collapse_at.take().is_some() {
@@ -177,10 +174,7 @@ impl IslandService {
     // every island follows its Presentation, since opening one collapses any other
     fn sync(&mut self, now: Instant) {
         for (monitor, island) in &mut self.islands {
-            let expanded = matches!(
-                self.presentations.get(monitor, PRIMARY),
-                Presentation::Expanded(_)
-            );
+            let expanded = matches!(self.presentations.get(monitor), Presentation::Expanded(_));
 
             island.held &= expanded;
 
