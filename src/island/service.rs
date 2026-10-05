@@ -37,6 +37,9 @@ pub struct IslandService {
     islands: HashMap<String, Island>,
 
     presentations: Presentations,
+
+    // from niri; none while unknown or without niri, which counts every monitor as focused
+    focused_output: Option<String>,
 }
 
 #[derive(Default)]
@@ -85,6 +88,7 @@ impl Service for IslandService {
         Self {
             islands: HashMap::new(),
             presentations: Presentations::default(),
+            focused_output: None,
         }
     }
 
@@ -121,6 +125,32 @@ impl Service for IslandService {
 impl IslandService {
     pub fn presentation(&self, monitor: &str) -> Presentation {
         self.presentations.get(monitor)
+    }
+
+    // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
+    pub fn overview(&self) -> bool {
+        self.presentations.overview()
+    }
+
+    // where FocusedOutput Activities show; every monitor while niri does not say
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the Arbiter filters by scope, #19")
+    )]
+    pub fn focused(&self, monitor: &str) -> bool {
+        self.focused_output
+            .as_deref()
+            .is_none_or(|focused| focused == monitor)
+    }
+
+    /*
+     * everything niri tells the core, in one update reconciled once; focus changes no Presentation
+     * yet, but will through the Arbiter's scope filter (#19)
+     */
+    pub fn set_niri(&mut self, focused_output: Option<String>, overview: bool, now: Instant) {
+        self.focused_output = focused_output;
+        self.presentations.set_overview(overview);
+        self.sync(now);
     }
 
     pub fn expanded(&self, monitor: &str) -> bool {
@@ -226,7 +256,10 @@ impl IslandService {
     // expands without a press, so the island holds the keyboard to still get Escape
     pub fn open(&mut self, monitor: &str, now: Instant) {
         self.input(monitor, Input::Open(Surface::Controls), now);
-        self.island(monitor).held = true;
+
+        // nothing opens while the overview is, and a hold without a Surface would starve the keyboard
+        let expanded = self.expanded(monitor);
+        self.island(monitor).held = expanded;
     }
 
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
@@ -734,6 +767,57 @@ mod tests {
         island.post(MONITOR, Surface::Notifications, later);
 
         assert!(island.settled(MONITOR, later));
+    }
+
+    #[test]
+    fn every_monitor_is_focused_until_niri_says_which() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        assert!(island.focused(MONITOR) && island.focused("HDMI-A-1"));
+
+        island.set_niri(Some(String::from("HDMI-A-1")), false, now);
+        assert!(!island.focused(MONITOR) && island.focused("HDMI-A-1"));
+
+        island.set_niri(None, false, now);
+        assert!(island.focused(MONITOR) && island.focused("HDMI-A-1"));
+    }
+
+    // an open island under the pointer, with its grace running, morphs to rest and lets go of all
+    #[test]
+    fn overview_collapses_to_rest_and_drops_the_hold_and_the_timers() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let mut island = compact(now);
+
+        island.open(MONITOR, now);
+        island.hover(MONITOR, false, now);
+        assert_eq!(island.deadline(), Some(now + GRACE));
+
+        island.set_niri(None, true, later);
+
+        assert!(island.overview());
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(island.deadline(), None);
+        assert!(!island.settled(MONITOR, later + ms(1)));
+        assert_eq!(island.shape(MONITOR, later + Duration::from_secs(1)), REST);
+
+        // IPC cannot open it meanwhile, nor take the keyboard
+        island.open(MONITOR, later);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+
+        // the primary comes back, the open Surface does not
+        let closed = later + Duration::from_secs(1);
+        island.set_niri(None, false, closed);
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert!(!island.settled(MONITOR, closed + ms(1)));
+        assert_eq!(
+            island.shape(MONITOR, closed + Duration::from_secs(1)),
+            geometry::COMPACT
+        );
     }
 
     #[test]

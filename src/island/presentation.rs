@@ -94,11 +94,14 @@ struct Island {
 #[derive(Debug, Default)]
 pub struct Presentations {
     islands: HashMap<String, Island>,
+
+    // niri's overview is open, every island rests and takes no input (plan 5.3)
+    overview: bool,
 }
 
 impl Presentations {
     pub fn get(&self, monitor: &str) -> Presentation {
-        let Some(island) = self.islands.get(monitor) else {
+        let Some(island) = self.islands.get(monitor).filter(|_| !self.overview) else {
             return Presentation::Rest;
         };
 
@@ -128,7 +131,29 @@ impl Presentations {
         }
     }
 
+    /*
+     * opening collapses every open Surface and Peek for good; primaries stay, so Compact comes back
+     * on close (preemption never destroys)
+     */
+    pub fn set_overview(&mut self, open: bool) {
+        self.overview = open;
+
+        if open {
+            for island in self.islands.values_mut() {
+                island.held = None;
+            }
+        }
+    }
+
+    pub fn overview(&self) -> bool {
+        self.overview
+    }
+
     pub fn input(&mut self, monitor: &str, input: Input) {
+        if self.overview {
+            return;
+        }
+
         let now = self.get(monitor);
         let island = self.island(monitor);
 
@@ -364,6 +389,50 @@ mod tests {
             ),
             Expanded(Controls)
         );
+    }
+
+    #[test]
+    fn overview_rests_every_island_until_it_closes() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::Click);
+        presentations.set_primary(OTHER, Some(Media));
+        presentations.input(OTHER, Input::Hover);
+
+        presentations.set_overview(true);
+
+        assert_eq!(presentations.get(MONITOR), Rest);
+        assert_eq!(presentations.get(OTHER), Rest);
+        assert_eq!(presentations.get("DP-1"), Rest);
+
+        // nothing opens, peeks or comes back while it is open
+        for input in [Input::Click, Input::Open(Launcher), Input::Hover] {
+            presentations.input(MONITOR, input);
+            assert_eq!(presentations.get(MONITOR), Rest, "{input:?}");
+        }
+
+        // a primary posted meanwhile counts once it closes
+        presentations.set_primary("DP-1", Some(Notifications));
+        presentations.set_overview(false);
+
+        assert_eq!(presentations.get(MONITOR), Compact);
+        assert_eq!(presentations.get(OTHER), Compact);
+        assert_eq!(presentations.get("DP-1"), Compact);
+
+        presentations.input(MONITOR, Input::Click);
+        assert_eq!(presentations.get(MONITOR), Expanded(Media));
+    }
+
+    #[test]
+    fn closed_overview_changes_nothing() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_primary(MONITOR, Some(Media));
+        presentations.input(MONITOR, Input::Hover);
+        presentations.set_overview(false);
+
+        assert_eq!(presentations.get(MONITOR), Peek);
     }
 
     #[test]
