@@ -1,6 +1,6 @@
 use amane::{
-    Button, Horizontal, InputArea, Key, Keyboard, Layer, LayerWindow, Monitor, Parent, Rectangle,
-    Service, Start, Vertical, Zone,
+    Button, Horizontal, InputArea, Key, Layer, LayerWindow, Monitor, Parent, Rectangle, Service,
+    Start, Vertical, Zone,
 };
 
 use crate::island::geometry::{self, Rect};
@@ -12,8 +12,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     // reading subscribes this window to island changes
     let island = IslandService::read();
 
-    let expanded = island.expanded(&monitor.name);
-    let armed = island.armed(&monitor.name);
+    let keyboard = island.keyboard(&monitor.name);
     let shape = island.shape(&monitor.name);
 
     let body = geometry::body(shape);
@@ -57,17 +56,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         })
         .child(body);
 
-    /*
-     * Escape needs focus, and OnDemand only takes it on a press, so it must be on before the
-     * press that expands; Exclusive would keep the keyboard from overlays opened later (niri
-     * gives it to the first mapped exclusive surface)
-     */
-    let keyboard = if expanded || armed {
-        Keyboard::OnDemand
-    } else {
-        Keyboard::None
-    };
-
     LayerWindow::new()
         .width(geometry::CANVAS_WIDTH)
         .height(geometry::CANVAS_HEIGHT)
@@ -95,10 +83,28 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         )
 }
 
+// `amane ipc call island <verb> <monitor>`, runs on the draw thread; only posts
+pub fn ipc(arguments: &[String]) -> String {
+    match arguments {
+        [verb, monitor] if verb == "open" => open(monitor),
+        [verb, monitor] if verb == "collapse" => set_expanded(monitor, false),
+        _ => return String::from("usage: island open|collapse <monitor>"),
+    }
+
+    String::new()
+}
+
 // a write wakes the window even when nothing changed, so only write a real change
 fn set_expanded(monitor: &str, expanded: bool) {
     if IslandService::read().expanded(monitor) != expanded {
         IslandService::write().set_expanded(monitor, expanded);
+    }
+}
+
+// no press, so the island holds the keyboard until it collapses (#4)
+fn open(monitor: &str) {
+    if !IslandService::read().expanded(monitor) {
+        IslandService::write().open(monitor);
     }
 }
 
