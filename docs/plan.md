@@ -50,7 +50,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 | Verified: Amane's `compositor` module is private; its niri backend only tracks workspaces and window-to-workspace | Kanade opens its own `$NIRI_SOCKET` `"EventStream"` connection (JSON lines) |
 | Verified on niri 26.04: event stream has `WindowFocusChanged`, `WorkspaceActivated`, `WindowLayoutsChanged`, `OverviewOpenedOrClosed`, `CastsChanged`/`CastStartedOrChanged`/`CastStopped`. Window JSON has no `is_fullscreen` | Focused output = output of the focused workspace. Screen capture comes from casts. Fullscreen only by heuristic (window size equals output logical size), see 5.3 |
 | Verified (`cli/src/project.rs`): `amane dev` builds a generated crate around `~/.config/amane/src/main.rs` (multi-file `src/` is hashed and supported) against the unpacked library | Develop Kanade as a multi-file config `src/`. A standalone crate depending on `amane` by git rev is the fallback if the CLI constrains layout |
-| Unverified: pointer-leave delivery once the pointer exits the input region | Phase 0. Grace-period design assumes `on_hover(false)` still arrives when the region shrinks under the pointer |
+| Verified on niri 26.04 (#3): a still pointer that the input region shrinks away from gets `wl_pointer.leave`, 20-100 ms after Escape, while the morph is still running. Amane hit-tests hover only on pointer enter/motion/leave, so this leave is what fires `on_hover(false)` | Grace-period design holds. No fallback region needed |
 
 ## 4. Domain language
 
@@ -322,7 +322,7 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 | Risk | Mitigation |
 |---|---|
 | Amane 0.1.0 breaks | Pin git rev; keep Amane calls in `main.rs`, `view.rs`, `sources/`, `surfaces/`; `island/` is Amane-free except `service.rs` |
-| Pointer-leave lost when region shrinks | Phase 0. Fallback: keep the region at the larger of current and target during collapse grace |
+| Pointer-leave lost when region shrinks | Answered in #3: niri delivers it. If another compositor does not, keep the region at the larger of current and target during collapse grace |
 | Another notification daemon running | Notifications surface shows the error state; README says to stop mako/dunst |
 | Screen capture is covered by niri casts; mic/camera has no source | Phase 5 spike on PipeWire streams. Mic/camera privacy may slip out of v0.1, ScreenCast does not |
 | Niri exposes no fullscreen flag | Heuristic with a false-positive check in Phase 1, else drop rule 6 for v0.1 |
