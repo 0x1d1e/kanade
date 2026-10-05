@@ -100,7 +100,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
                 set_armed(&pressed, false);
             }
         })
-        .input_region(vec![input_area(area)])
+        // empty under niri's overview, so the pointer reaches the overview beneath
+        .input_region(if island.overview() {
+            vec![]
+        } else {
+            vec![input_area(area)]
+        })
         .child(
             Rectangle::new()
                 .width(Parent)
