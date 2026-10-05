@@ -72,7 +72,7 @@ impl Arbiter {
         self.activities.len() != before
     }
 
-    // the next expiry after now, when the Frame changes on its own
+    // the next expiry after now, of any live Transient, hidden or not; the Frame may not change then
     pub fn deadline(&self, now: Instant) -> Option<Instant> {
         self.activities
             .values()
