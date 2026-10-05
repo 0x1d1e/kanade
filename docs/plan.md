@@ -287,7 +287,7 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 | Amane 0.1.0 breaks | Pin git rev; keep Amane calls in `main.rs`, `view.rs`, `sources/`, `surfaces/`; `island/` is Amane-free except `service.rs` |
 | Pointer-leave lost when region shrinks | Answered in #3: niri delivers it. If another compositor does not, keep the region at the larger of current and target during collapse grace |
 | Another notification daemon running | Notifications surface shows the error state; README says to stop mako/dunst |
-| Screen capture is covered by niri casts; mic/camera has no source | Answered in #34: PipeWire capture links via `pw-dump --monitor` ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)). Direct v4l2/ALSA users are not seen |
+| Screen capture is covered by niri casts; mic/camera has no source | Answered in #34: active PipeWire capture links via `pw-dump --monitor` ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)). Direct v4l2/ALSA users are not seen |
 | Niri exposes no fullscreen flag | Checked in #13: the heuristic misfires, so rule 6 is deferred until niri IPC reports fullscreen ([ADR 0002](adr/0002-defer-fullscreen-suppression.md)) |
 | Source polling wakes the CPU at idle | Prefer `listen()`; any poll returns `false` unless changed |
 | Island nags | Attention budget in section 7 is a review gate for every new Kind |

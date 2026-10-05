@@ -20,7 +20,7 @@ Measured in #34 on PipeWire 1.6.9 with WirePlumber:
 
 ## Decision
 
-`src/sources/privacy.rs` runs `pw-dump --monitor --no-colors` and follows its output with the existing std-only JSON parser. A capture is a link from an `Audio/Source*` or `Video/Source*` node to a `Stream/Input/*` node without `stream.monitor`. While any capture exists, one Persistent Critical Privacy Activity shows which sensors are in use and the apps using them. If pw-dump exits, the Activity is withdrawn and pw-dump restarts with backoff. If pw-dump cannot be started, there is no indicator.
+`src/sources/privacy.rs` runs `pw-dump --monitor --no-colors` and follows its output with the existing std-only JSON parser. A capture is an `active` link from an `Audio/Source*` or `Video/Source*` node to a `Stream/Input/*` node without `stream.monitor`. A link is `negotiating` before it carries media and `paused` while its nodes stop, so an app that holds a capture open but paused does not count. While any capture exists, one Persistent Critical Privacy Activity shows which sensors are in use and the apps using them. If pw-dump exits, the Activity is withdrawn and pw-dump restarts after 1s, doubling up to 60s while each run lasts under 60s. If pw-dump cannot be started, there is no indicator.
 
 ## Alternatives
 

@@ -1,12 +1,12 @@
-//! Microphone and camera privacy (plan 5.1, 7, #34): one Persistent Critical Privacy Activity while
-//! any app captures from a microphone or a camera, green, saying which and who. It withdraws when the
-//! last capture stops.
+//! Microphone and camera privacy (plan 5.1, 7, #34): one Persistent Critical Privacy Activity
+//! while any app captures from a microphone or a camera, green, saying which and who. It withdraws
+//! when the last capture stops.
 //!
-//! PipeWire is the only place that knows: the portal has no signal for a microphone, and apps outside
-//! a sandbox skip it. `pw-dump --monitor` prints PipeWire's graph, then every object that changes, so
-//! this blocks on its output and wakes only when the graph does. An app capturing is a stream node
-//! linked from a source node. A camera an app opens directly (`/dev/video*`) bypasses PipeWire and is
-//! not seen.
+//! PipeWire is the only place that knows: the portal has no signal for a microphone, and apps
+//! outside a sandbox skip it. `pw-dump --monitor` prints PipeWire's graph, then every object that
+//! changes, so this blocks on its output and wakes only when the graph does. An app capturing is a
+//! stream node with an active link from a source node; a link still negotiating or paused moves
+//! nothing. A camera an app opens directly (`/dev/video*`) bypasses PipeWire and is not seen.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead, BufReader};
@@ -20,9 +20,13 @@ use super::json::Json;
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Sensors};
 use crate::island::service::IslandService;
 
-// how long until pw-dump runs again after it ended, doubling up to `LAST_RETRY` while it keeps failing
+// how long until pw-dump runs again after it ended, doubling up to `LAST_RETRY` while it keeps
+// failing
 const FIRST_RETRY: Duration = Duration::from_secs(1);
 const LAST_RETRY: Duration = Duration::from_secs(60);
+
+// how long pw-dump must have run for its end to count as PipeWire going away rather than failing
+const HEALTHY: Duration = Duration::from_secs(60);
 
 const NODE: &str = "PipeWire:Interface:Node";
 const LINK: &str = "PipeWire:Interface:Link";
@@ -59,7 +63,8 @@ impl Node {
 struct Graph {
     nodes: HashMap<u64, Node>,
 
-    // output node to input node, by link id; a link per channel, so one capture has several
+    // output node to input node, by link id, of the links media flows over; a link per channel, so
+    // one capture has several
     links: HashMap<u64, (u64, u64)>,
 }
 
@@ -96,7 +101,9 @@ impl Graph {
                     );
                 }
             }
-            Some(LINK) => {
+            // a link is negotiating before it is active and paused while its nodes stop, both
+            // moving nothing
+            Some(LINK) if info.get("state").and_then(Json::as_str) == Some("active") => {
                 let node = |key| info.get(key).and_then(Json::as_u64);
 
                 if let (Some(output), Some(input)) = (node("output-node-id"), node("input-node-id"))
@@ -169,11 +176,12 @@ pub fn follow() {
             }
         };
 
+        let started = Instant::now();
         let mut shown = None;
         let output = child.stdout.take().map(BufReader::new);
-        let (lost, followed) = match output {
+        let lost = match output {
             Some(output) => watch(output, &mut shown, &mut post),
-            None => (io::Error::other("no output"), false),
+            None => io::Error::other("no output"),
         };
 
         drop(child.kill());
@@ -184,11 +192,7 @@ pub fn follow() {
             post(None);
         }
 
-        // a PipeWire that was followed and went away retries soon, one that never came backs off
-        if followed {
-            wait = FIRST_RETRY;
-        }
-
+        wait = retry(wait, started.elapsed());
         eprintln!("kanade: lost PipeWire ({lost}), following it again in {wait:?}");
 
         thread::sleep(wait);
@@ -196,24 +200,30 @@ pub fn follow() {
     }
 }
 
+// how long to wait before running pw-dump again: soon after a run long enough to have followed
+// PipeWire, else as long as the backoff has grown, so one that dies right after its first print
+// still backs off
+fn retry(wait: Duration, ran: Duration) -> Duration {
+    if ran >= HEALTHY { FIRST_RETRY } else { wait }
+}
+
 /*
  * follows pw-dump until its output ends, posting what changes the Sensors, so the graph changing
- * otherwise wakes nothing; returns why it ended and whether any graph came. Each print is a JSON
- * array whose closing bracket alone on a line ends it, the objects inside being indented
+ * otherwise wakes nothing; returns why it ended. Each print is a JSON array whose closing bracket
+ * alone on a line ends it, the objects inside being indented
  */
 fn watch(
     lines: impl BufRead,
     shown: &mut Option<Sensors>,
     post: &mut impl FnMut(Option<&Sensors>),
-) -> (io::Error, bool) {
+) -> io::Error {
     let mut graph = Graph::default();
     let mut print = String::new();
-    let mut followed = false;
 
     for line in lines.lines() {
         let line = match line {
             Ok(line) => line,
-            Err(error) => return (error, followed),
+            Err(error) => return error,
         };
 
         print.push_str(&line);
@@ -231,7 +241,6 @@ fn watch(
         };
 
         print.clear();
-        followed = true;
 
         for object in objects.as_array().unwrap_or_default() {
             graph.apply(object);
@@ -245,7 +254,7 @@ fn watch(
         }
     }
 
-    (io::ErrorKind::UnexpectedEof.into(), followed)
+    io::ErrorKind::UnexpectedEof.into()
 }
 
 fn post(sensors: Option<&Sensors>) {
@@ -289,6 +298,10 @@ mod tests {
     }
 
     fn link(id: u64, output: u64, input: u64) -> String {
+        link_in(id, output, input, "active")
+    }
+
+    fn link_in(id: u64, output: u64, input: u64, state: &str) -> String {
         format!(
             r#"  {{
     "id": {id},
@@ -296,7 +309,7 @@ mod tests {
     "info": {{
       "output-node-id": {output},
       "input-node-id": {input},
-      "state": "active"
+      "state": "{state}"
     }}
   }}"#
         )
@@ -333,7 +346,7 @@ mod tests {
         let mut shown = None;
 
         let text = prints.concat();
-        let (lost, _) = watch(text.as_bytes(), &mut shown, &mut |sensors| {
+        let lost = watch(text.as_bytes(), &mut shown, &mut |sensors| {
             posts.push(sensors.cloned())
         });
 
@@ -463,15 +476,67 @@ mod tests {
         assert_eq!(posts, vec![sensors(true, false, &["Firefox"])]);
     }
 
+    // links as PipeWire makes them for a capture, then as the app pauses and resumes it
+    fn capture_in(state: &str) -> String {
+        print(&[
+            link_in(174, MICROPHONE, 74, state),
+            link_in(274, MICROPHONE, 74, state),
+        ])
+    }
+
+    fn stream() -> String {
+        print(&[node(74, "Stream/Input/Audio", Some("Firefox"), false)])
+    }
+
     #[test]
-    fn whether_a_graph_came() {
-        let mut shown = None;
+    fn only_active_links_capture() {
+        for state in [
+            "init",
+            "negotiating",
+            "allocating",
+            "paused",
+            "error",
+            "unlinked",
+        ] {
+            let posts = posts(&[devices(), stream(), capture_in(state)]);
 
-        let (_, followed) = watch(&b""[..], &mut shown, &mut |_| {});
-        assert!(!followed);
+            assert_eq!(posts, vec![], "{state}");
+        }
+    }
 
-        let (_, followed) = watch(devices().as_bytes(), &mut shown, &mut |_| {});
-        assert!(followed);
+    #[test]
+    fn a_capture_shows_while_active() {
+        let posts = posts(&[
+            devices(),
+            stream(),
+            capture_in("negotiating"),
+            capture_in("active"),
+            capture_in("paused"),
+            capture_in("active"),
+        ]);
+
+        let firefox = sensors(true, false, &["Firefox"]);
+        assert_eq!(posts, vec![firefox.clone(), None, firefox]);
+    }
+
+    #[test]
+    fn a_capture_shows_while_one_of_its_links_is_active() {
+        let posts = posts(&[
+            devices(),
+            stream(),
+            capture_in("active"),
+            print(&[link_in(174, MICROPHONE, 74, "paused")]),
+        ]);
+
+        assert_eq!(posts, vec![sensors(true, false, &["Firefox"])]);
+    }
+
+    #[test]
+    fn retries_back_off_until_a_run_is_healthy() {
+        let short = Duration::from_millis(50);
+
+        assert_eq!(retry(Duration::from_secs(8), short), Duration::from_secs(8));
+        assert_eq!(retry(Duration::from_secs(8), HEALTHY), FIRST_RETRY);
     }
 
     #[test]
