@@ -6,6 +6,7 @@ use amane::{
 };
 
 use crate::island::geometry::{self, Rect};
+use crate::island::presentation::Input;
 use crate::island::service::IslandService;
 use crate::theme;
 
@@ -41,7 +42,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .translate(body.x - area.x, body.y - area.y)
         .on_click(move |button| {
             if button == Button::Left {
-                set_expanded(&clicked, true);
+                expand(&clicked);
             }
         })
         .on_hover(move |inside| set_armed(&entered, inside))
@@ -71,7 +72,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .keyboard(keyboard)
         .on_key(move |key| {
             if key == Key::Escape {
-                set_expanded(&pressed, false);
+                collapse(&pressed);
 
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
@@ -91,7 +92,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 pub fn ipc(arguments: &[String]) -> String {
     match arguments {
         [verb, monitor] if verb == "open" => open(monitor),
-        [verb, monitor] if verb == "collapse" => set_expanded(monitor, false),
+        [verb, monitor] if verb == "collapse" => collapse(monitor),
         _ => return String::from("usage: island open|collapse <monitor>"),
     }
 
@@ -99,9 +100,15 @@ pub fn ipc(arguments: &[String]) -> String {
 }
 
 // a write wakes the window even when nothing changed, so only write a real change
-fn set_expanded(monitor: &str, expanded: bool) {
-    if IslandService::read().expanded(monitor) != expanded {
-        IslandService::write().set_expanded(monitor, expanded, Instant::now());
+fn expand(monitor: &str) {
+    if !IslandService::read().expanded(monitor) {
+        IslandService::write().input(monitor, Input::Click, Instant::now());
+    }
+}
+
+fn collapse(monitor: &str) {
+    if IslandService::read().expanded(monitor) {
+        IslandService::write().input(monitor, Input::Collapse, Instant::now());
     }
 }
 

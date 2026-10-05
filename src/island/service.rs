@@ -7,6 +7,7 @@ use amane::{Keyboard, Service};
 
 use super::geometry::{EXPANDED, REST, Shape};
 use super::motion::{Mode, Spring};
+use super::presentation::{Input, Presentation, Presentations, Surface};
 
 // plan 5.2 starting values, expand and collapse take the same time
 const MORPH: Mode = Mode::Spring {
@@ -30,12 +31,12 @@ static NUDGE: LazyLock<(SyncSender<()>, Mutex<Receiver<()>>)> = LazyLock::new(||
 pub struct IslandService {
     // by monitor name, an island nobody touched yet is at rest
     islands: HashMap<String, Island>,
+
+    presentations: Presentations,
 }
 
 #[derive(Default)]
 struct Island {
-    expanded: bool,
-
     // the pointer is on the body, so a press there can take keyboard focus
     armed: bool,
 
@@ -54,6 +55,7 @@ impl Service for IslandService {
     fn new() -> Self {
         Self {
             islands: HashMap::new(),
+            presentations: Presentations::default(),
         }
     }
 
@@ -88,10 +90,12 @@ impl Service for IslandService {
 }
 
 impl IslandService {
+    pub fn presentation(&self, monitor: &str) -> Presentation {
+        self.presentations.get(monitor)
+    }
+
     pub fn expanded(&self, monitor: &str) -> bool {
-        self.islands
-            .get(monitor)
-            .is_some_and(|island| island.expanded)
+        matches!(self.presentation(monitor), Presentation::Expanded(_))
     }
 
     // read in the view at the frame's time
@@ -152,25 +156,40 @@ impl IslandService {
 
     // expands without a press, so the island holds the keyboard to still get Escape
     pub fn open(&mut self, monitor: &str, now: Instant) {
-        self.set_expanded(monitor, true, now);
+        self.input(monitor, Input::Open(Surface::Controls), now);
         self.island(monitor).held = true;
     }
 
-    pub fn set_expanded(&mut self, monitor: &str, expanded: bool, now: Instant) {
-        let island = self.island(monitor);
-
-        island.expanded = expanded;
-        island.held &= expanded;
+    pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
+        self.presentations.input(monitor, input);
 
         // explicit input decides right away, a pending grace no longer applies
-        if island.collapse_at.take().is_some() {
+        if self.island(monitor).collapse_at.take().is_some() {
             nudge();
         }
 
-        island
-            .shape
-            .get_or_insert_with(|| Spring::new(REST.into(), MORPH))
-            .to(if expanded { EXPANDED } else { REST }.into(), now);
+        self.sync(now);
+    }
+
+    // every island follows its Presentation, since opening one collapses any other
+    fn sync(&mut self, now: Instant) {
+        for (monitor, island) in &mut self.islands {
+            let expanded = matches!(self.presentations.get(monitor), Presentation::Expanded(_));
+
+            island.held &= expanded;
+
+            if !expanded && island.collapse_at.take().is_some() {
+                nudge();
+            }
+
+            // an island that never morphed stays at rest without a spring
+            if island.shape.is_some() || expanded {
+                island
+                    .shape
+                    .get_or_insert_with(|| Spring::new(REST.into(), MORPH))
+                    .to(if expanded { EXPANDED } else { REST }.into(), now);
+            }
+        }
     }
 
     pub fn set_armed(&mut self, monitor: &str, armed: bool) {
@@ -179,11 +198,12 @@ impl IslandService {
 
     // disarms right away, collapses only after the grace
     pub fn leave(&mut self, monitor: &str, now: Instant) {
+        let expanded = self.expanded(monitor);
         let island = self.island(monitor);
 
         island.armed = false;
 
-        if island.expanded && island.collapse_at.is_none() {
+        if expanded && island.collapse_at.is_none() {
             island.collapse_at = Some(now + GRACE);
             nudge();
         }
@@ -210,7 +230,7 @@ impl IslandService {
             .collect();
 
         for monitor in due {
-            self.set_expanded(&monitor, false, now);
+            self.input(&monitor, Input::Collapse, now);
         }
     }
 
@@ -242,7 +262,7 @@ mod tests {
         island.set_armed(MONITOR, true);
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
 
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
     }
 
@@ -254,7 +274,7 @@ mod tests {
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
 
         island.set_armed(MONITOR, true);
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
     }
 
@@ -263,11 +283,11 @@ mod tests {
         let mut island = IslandService::new();
 
         island.open(MONITOR, Instant::now());
-        island.set_expanded(MONITOR, false, Instant::now());
+        island.input(MONITOR, Input::Collapse, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
 
         // a later pointer expand does not bring the hold back
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
     }
 
@@ -277,7 +297,7 @@ mod tests {
         let now = Instant::now();
 
         island.set_armed(MONITOR, true);
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         island.leave(MONITOR, now);
 
         assert!(!island.armed(MONITOR));
@@ -296,7 +316,7 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         island.leave(MONITOR, now);
         island.enter(MONITOR);
 
@@ -311,7 +331,7 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         island.leave(MONITOR, now);
         island.leave(MONITOR, now + Duration::from_millis(100));
 
@@ -330,31 +350,30 @@ mod tests {
     fn explicit_collapse_cancels_the_grace() {
         let mut island = IslandService::new();
 
-        island.set_expanded(MONITOR, true, Instant::now());
+        island.input(MONITOR, Input::Click, Instant::now());
         island.leave(MONITOR, Instant::now());
-        island.set_expanded(MONITOR, false, Instant::now());
+        island.input(MONITOR, Input::Collapse, Instant::now());
 
         assert_eq!(island.deadline(), None);
     }
 
     #[test]
-    fn deadline_is_the_earliest_across_monitors() {
+    fn opening_another_island_collapses_this_one() {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.set_expanded(MONITOR, true, Instant::now());
-        island.set_expanded("HDMI-A-1", true, Instant::now());
-        island.leave("HDMI-A-1", now);
-        island.leave(MONITOR, now + Duration::from_millis(50));
+        island.open(MONITOR, now);
+        island.leave(MONITOR, now);
+        let later = now + Duration::from_millis(100);
+        island.input("HDMI-A-1", Input::Click, later);
 
-        assert_eq!(island.deadline(), Some(now + GRACE));
+        assert!(island.expanded("HDMI-A-1"));
+        assert!(!island.expanded(MONITOR));
 
-        island.expire(now + GRACE);
-        assert!(!island.expanded("HDMI-A-1"));
-        assert!(island.expanded(MONITOR));
-        assert_eq!(
-            island.deadline(),
-            Some(now + Duration::from_millis(50) + GRACE)
-        );
+        // its hold and its grace go with it, and it morphs back to rest
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(island.deadline(), None);
+        assert!(!island.settled(MONITOR, later + Duration::from_millis(1)));
+        assert_eq!(island.shape(MONITOR, later + Duration::from_secs(1)), REST);
     }
 }
