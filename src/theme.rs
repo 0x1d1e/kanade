@@ -1,3 +1,4 @@
-// fixed canvas, the island body animates inside it (plan 6.1)
-pub const CANVAS_WIDTH: f32 = 560.0;
-pub const CANVAS_HEIGHT: f32 = 380.0;
+use amane::Color;
+
+// near-black body, quiet at rest (plan 7); no drop shadow yet, a morphing one drops frames (#2)
+pub const BODY: Color = Color::rgb(12, 12, 14);
