@@ -3,12 +3,15 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use amane::{Animation, Blend, Keyboard, Service};
+use amane::{Keyboard, Service};
 
 use super::geometry::{EXPANDED, REST, Shape};
+use super::motion::{Mode, Spring};
 
 // plan 5.2 starting values, expand and collapse take the same time
-const MORPH: Duration = Duration::from_millis(180);
+const MORPH: Mode = Mode::Spring {
+    response: Duration::from_millis(180),
+};
 
 // plan 5.2: pointer out collapses after 200-300 ms, back in before that keeps the island open
 const GRACE: Duration = Duration::from_millis(250);
@@ -40,8 +43,8 @@ struct Island {
     // since niri drops the focus on any switch to OnDemand, even right after a press (#4)
     held: bool,
 
-    // none until the first morph, a new Animation counts as moving for its whole duration
-    shape: Option<Animation<Shape>>,
+    // none until the first morph; width, height and radius as one spring group
+    shape: Option<Spring<3>>,
 
     // the pointer left the expanded body, it collapses then unless it comes back
     collapse_at: Option<Instant>,
@@ -91,12 +94,16 @@ impl IslandService {
             .is_some_and(|island| island.expanded)
     }
 
-    // read in the view, keeps the window drawing until the morph arrives
-    pub fn shape(&self, monitor: &str) -> Shape {
-        self.islands
-            .get(monitor)
-            .and_then(|island| island.shape.as_ref())
-            .map_or(REST, Animation::value)
+    // read in the view at the frame's time
+    pub fn shape(&self, monitor: &str, now: Instant) -> Shape {
+        self.spring(monitor)
+            .map_or(REST, |spring| Shape::from(spring.at(now)))
+    }
+
+    // false while the view has to keep asking for frames
+    pub fn settled(&self, monitor: &str, now: Instant) -> bool {
+        self.spring(monitor)
+            .is_none_or(|spring| spring.settled(now))
     }
 
     pub fn armed(&self, monitor: &str) -> bool {
@@ -116,6 +123,12 @@ impl IslandService {
             .values()
             .filter_map(|island| island.collapse_at)
             .min()
+    }
+
+    fn spring(&self, monitor: &str) -> Option<&Spring<3>> {
+        self.islands
+            .get(monitor)
+            .and_then(|island| island.shape.as_ref())
     }
 
     fn held(&self, monitor: &str) -> bool {
@@ -138,12 +151,12 @@ impl IslandService {
     }
 
     // expands without a press, so the island holds the keyboard to still get Escape
-    pub fn open(&mut self, monitor: &str) {
-        self.set_expanded(monitor, true);
+    pub fn open(&mut self, monitor: &str, now: Instant) {
+        self.set_expanded(monitor, true, now);
         self.island(monitor).held = true;
     }
 
-    pub fn set_expanded(&mut self, monitor: &str, expanded: bool) {
+    pub fn set_expanded(&mut self, monitor: &str, expanded: bool, now: Instant) {
         let island = self.island(monitor);
 
         island.expanded = expanded;
@@ -156,8 +169,8 @@ impl IslandService {
 
         island
             .shape
-            .get_or_insert_with(|| Animation::new(REST).duration(MORPH))
-            .to(if expanded { EXPANDED } else { REST });
+            .get_or_insert_with(|| Spring::new(REST.into(), MORPH))
+            .to(if expanded { EXPANDED } else { REST }.into(), now);
     }
 
     pub fn set_armed(&mut self, monitor: &str, armed: bool) {
@@ -197,7 +210,7 @@ impl IslandService {
             .collect();
 
         for monitor in due {
-            self.set_expanded(&monitor, false);
+            self.set_expanded(&monitor, false, now);
         }
     }
 
@@ -209,16 +222,6 @@ impl IslandService {
 // never blocks: a nudge already queued wakes listen() just the same
 fn nudge() {
     let _ = NUDGE.0.try_send(());
-}
-
-impl Blend for Shape {
-    fn blend(from: Self, to: Self, amount: f32) -> Self {
-        Self {
-            width: f32::blend(from.width, to.width, amount),
-            height: f32::blend(from.height, to.height, amount),
-            radius: f32::blend(from.radius, to.radius, amount),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -239,7 +242,7 @@ mod tests {
         island.set_armed(MONITOR, true);
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
 
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
     }
 
@@ -247,11 +250,11 @@ mod tests {
     fn opened_island_holds_the_keyboard_through_pointer_input() {
         let mut island = IslandService::new();
 
-        island.open(MONITOR);
+        island.open(MONITOR, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
 
         island.set_armed(MONITOR, true);
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
     }
 
@@ -259,12 +262,12 @@ mod tests {
     fn collapse_releases_a_held_keyboard() {
         let mut island = IslandService::new();
 
-        island.open(MONITOR);
-        island.set_expanded(MONITOR, false);
+        island.open(MONITOR, Instant::now());
+        island.set_expanded(MONITOR, false, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
 
         // a later pointer expand does not bring the hold back
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
     }
 
@@ -274,7 +277,7 @@ mod tests {
         let now = Instant::now();
 
         island.set_armed(MONITOR, true);
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         island.leave(MONITOR, now);
 
         assert!(!island.armed(MONITOR));
@@ -293,7 +296,7 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         island.leave(MONITOR, now);
         island.enter(MONITOR);
 
@@ -308,7 +311,7 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         island.leave(MONITOR, now);
         island.leave(MONITOR, now + Duration::from_millis(100));
 
@@ -327,9 +330,9 @@ mod tests {
     fn explicit_collapse_cancels_the_grace() {
         let mut island = IslandService::new();
 
-        island.set_expanded(MONITOR, true);
+        island.set_expanded(MONITOR, true, Instant::now());
         island.leave(MONITOR, Instant::now());
-        island.set_expanded(MONITOR, false);
+        island.set_expanded(MONITOR, false, Instant::now());
 
         assert_eq!(island.deadline(), None);
     }
@@ -339,8 +342,8 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.set_expanded(MONITOR, true);
-        island.set_expanded("HDMI-A-1", true);
+        island.set_expanded(MONITOR, true, Instant::now());
+        island.set_expanded("HDMI-A-1", true, Instant::now());
         island.leave("HDMI-A-1", now);
         island.leave(MONITOR, now + Duration::from_millis(50));
 
