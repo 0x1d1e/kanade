@@ -847,39 +847,60 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
     let cards = cards();
     let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
-    let mut focus = Focus::read().of(visit, held);
-    let place = At::place(focus.at, &shapes);
 
-    let press = match key {
-        Key::Enter | Key::Space => Some(press(&cards, &shapes, place)),
-        Key::Backspace => cards.get(place.row).map(|card| Press::Dismiss(card.id)),
-        _ => None,
+    let Some((focus, press)) = Focus::read().of(visit, held).step(key, &cards, &shapes) else {
+        return false;
     };
 
-    let moved = place.moved(key, &shapes);
-
-    if press.is_none() && moved.is_none() {
-        return false;
-    }
-
-    if !focus.shown {
-        focus.shown = true;
-    } else if let Some(moved) = moved {
-        focus.at = Some(At::on(moved, &shapes));
-        focus.offset = reveal(focus.offset.clamp(0.0, most(&shapes)), &shapes, moved.row);
-    }
-
-    let shown = focus.shown;
     set(focus);
 
     IslandService::write().attend(monitor, Instant::now());
 
-    // a press the ring was not showing on waits for the ring
-    if shown && let Some(press) = press {
+    if let Some(press) = press {
         run(monitor, press);
     }
 
     true
+}
+
+impl Focus {
+    /*
+     * the focus after a key and what it presses, none when the key is not for the Surface. A key
+     * while the ring is hidden only shows it, so nothing is pressed that the ring was not on
+     */
+    fn step(
+        mut self,
+        key: Key,
+        cards: &[Card],
+        shapes: &[Shape],
+    ) -> Option<(Focus, Option<Press>)> {
+        let place = At::place(self.at, shapes);
+
+        let press = match key {
+            Key::Enter | Key::Space => Some(press(cards, shapes, place)),
+            Key::Backspace => cards.get(place.row).map(|card| Press::Dismiss(card.id)),
+            _ => None,
+        };
+
+        let moved = place.moved(key, shapes);
+
+        if press.is_none() && moved.is_none() {
+            return None;
+        }
+
+        if !self.shown {
+            self.shown = true;
+
+            return Some((self, None));
+        }
+
+        if let Some(moved) = moved {
+            self.at = Some(At::on(moved, shapes));
+            self.offset = reveal(self.offset.clamp(0.0, most(shapes)), shapes, moved.row);
+        }
+
+        Some((self, press))
+    }
 }
 
 fn press(cards: &[Card], shapes: &[Shape], place: Place) -> Press {
@@ -968,6 +989,63 @@ mod tests {
     // three cards, the middle one with two actions
     fn three() -> Vec<Shape> {
         vec![card(3, 0), card(2, 2), card(1, 0)]
+    }
+
+    fn toast(id: u32, default: bool) -> Card {
+        Card {
+            id,
+            toast: Toast::default(),
+            critical: false,
+            default,
+            actions: vec![],
+            received: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn a_hidden_ring_takes_the_first_press_and_the_second_presses() {
+        let cards = vec![toast(7, true)];
+        let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
+
+        for key in [Key::Enter, Key::Space, Key::Backspace] {
+            let hidden = Focus::default().of(1, false);
+
+            let (shown, first) = hidden.step(key, &cards, &shapes).unwrap();
+            assert!(shown.shown);
+            assert_eq!(first, None);
+
+            let (_, second) = shown.step(key, &cards, &shapes).unwrap();
+            assert!(second.is_some());
+        }
+
+        // with no cards the first press would otherwise flip Do Not Disturb
+        let (shown, first) = Focus::default()
+            .of(1, false)
+            .step(Key::Enter, &[], &[])
+            .unwrap();
+        assert_eq!(first, None);
+        assert_eq!(
+            shown.step(Key::Enter, &[], &[]).unwrap().1,
+            Some(Press::Dnd)
+        );
+    }
+
+    #[test]
+    fn a_ring_shown_from_the_keyboard_presses_at_once() {
+        let cards = vec![toast(7, true)];
+        let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
+
+        let (_, press) = Focus::default()
+            .of(1, true)
+            .step(Key::Enter, &cards, &shapes)
+            .unwrap();
+        assert_eq!(
+            press,
+            Some(Press::Open {
+                id: 7,
+                default: true
+            })
+        );
     }
 
     #[test]
