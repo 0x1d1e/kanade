@@ -46,10 +46,8 @@ pub enum Input {
     // Escape, pointer out after the grace, IPC collapse
     Collapse,
 
-    // the pointer rested on the body for the hover delay, and left it again
-    #[cfg_attr(not(test), expect(dead_code, reason = "hover delay is #10"))]
+    // the pointer stayed on the island for the hover delay, then off it for the grace
     Hover,
-    #[cfg_attr(not(test), expect(dead_code, reason = "hover delay is #10"))]
     Unhover,
 
     // a Critical Activity displaces an open Surface (plan 5.1 rule 4)
