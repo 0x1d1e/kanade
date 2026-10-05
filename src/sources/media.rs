@@ -18,10 +18,13 @@ use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
 
-use super::playback::{self, Deck, Playback, Timeline};
+use super::playback::{self, Deck, Playback, Timeline, Tint};
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
+use crate::island::fade::Dissolve;
+use crate::island::motion::Mode;
 use crate::island::presentation::Surface;
-use crate::island::service::IslandService;
+use crate::island::service::{IslandService, TRACK_CHANGE};
+use crate::theme;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
 const PAUSED: Duration = Duration::from_secs(30);
@@ -388,6 +391,9 @@ struct Watcher {
 
     // when to ask the shown player where it is next
     tick: Option<Instant>,
+
+    // the island's, for the Surface's dissolve and tint
+    motion: Mode,
 }
 
 impl Watcher {
@@ -407,15 +413,37 @@ impl Watcher {
             return;
         }
 
+        let last = self
+            .published
+            .as_ref()
+            .and_then(|published| published.shown.clone());
+
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
             let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
+            let accent = accent.unwrap_or(theme::FG);
+
+            // a track shown before dissolves to this one, a Surface just opened shows it at once
+            let (track, tint) = match last {
+                Some(last) => {
+                    let (mut track, mut tint) = (last.track, last.accent);
+
+                    track.to(seen.track, TRACK_CHANGE, now);
+                    tint.to(accent, TRACK_CHANGE, now);
+
+                    (track, tint)
+                }
+                None => (
+                    Dissolve::new(seen.track, self.motion),
+                    Tint::new(accent, self.motion),
+                ),
+            };
 
             Deck {
                 name: name.clone(),
-                track: seen.track,
+                track,
                 timeline: player.timeline,
-                accent,
+                accent: tint,
                 can_play: player.can_play,
                 can_pause: player.can_pause,
                 can_previous: player.can_previous,
@@ -502,10 +530,12 @@ impl Watcher {
         }
     }
 
+    // what it shows next time starts over, with nothing to dissolve from
     fn close(&mut self) {
         self.selected = None;
         self.page = None;
         self.tick = None;
+        self.published = None;
     }
 }
 
@@ -580,7 +610,10 @@ pub fn follow() {
     }
 
     let mut follower = Follower::default();
-    let mut watcher = Watcher::default();
+    let mut watcher = Watcher {
+        motion: IslandService::read().motion(),
+        ..Watcher::default()
+    };
 
     loop {
         let now = Instant::now();
@@ -1086,6 +1119,92 @@ mod tests {
             watcher.poll(&players, true, now + secs(1)),
             Some(String::from("mpv"))
         );
+    }
+
+    // #37: the open Surface dissolves to another track; reopened, it shows the track at once
+    #[test]
+    fn the_open_surface_dissolves_to_a_new_track_and_a_reopened_one_does_not() {
+        let now = Instant::now();
+        let mut watcher = Watcher::default();
+        let on = |title| {
+            let mut players = Players::default();
+            players
+                .open
+                .insert(String::from("mpv"), player(":1.4", title, "Playing"));
+            players
+        };
+        let deck = |watcher: &Watcher| {
+            watcher
+                .published
+                .as_ref()
+                .and_then(|published| published.shown.clone())
+                .unwrap()
+        };
+
+        watcher.show(&on("One"), true, now);
+        assert!(deck(&watcher).track.settled(now));
+
+        watcher.show(&on("Two"), true, now + secs(1));
+        let track = deck(&watcher).track;
+        assert_eq!(track.target().title, "Two");
+        assert_eq!(
+            track.from(now + secs(1)).map(|t| t.title.as_str()),
+            Some("One")
+        );
+
+        watcher.show(&on("Two"), false, now + secs(2));
+        assert_eq!(watcher.published, None);
+
+        watcher.show(&on("Three"), true, now + secs(3));
+        assert!(deck(&watcher).track.settled(now + secs(3)));
+    }
+
+    // #37: artwork not readable yet is read again on a later show, and the accent it then gives
+    // turns the tint from where it is, the track long settled
+    #[test]
+    fn an_accent_read_on_a_later_show_turns_the_tint_smoothly() {
+        let now = Instant::now();
+        let mut watcher = Watcher::default();
+        let mut players = Players::default();
+        let properties = map([
+            ("PlaybackStatus", text("Playing")),
+            (
+                "Metadata",
+                map([
+                    ("xesam:title", text("Song")),
+                    ("mpris:artUrl", text("file:///nonexistent/kanade-37.png")),
+                ]),
+            ),
+        ]);
+        players.open.insert(
+            String::from("mpv"),
+            Player::of(":1.4", "mpv", &properties, now),
+        );
+        let deck = |watcher: &Watcher| {
+            watcher
+                .published
+                .as_ref()
+                .and_then(|published| published.shown.clone())
+                .unwrap()
+        };
+
+        watcher.show(&players, true, now);
+        assert_eq!(deck(&watcher).accent.at(now), theme::FG);
+        assert_eq!(watcher.accent, None);
+
+        // the file turned up and gave its accent
+        let art = deck(&watcher).track.target().art.clone().unwrap();
+        let blue = Color::rgb(0, 0, 255);
+        watcher.accent = Some((art, Some(blue)));
+
+        let later = now + secs(1);
+        watcher.show(&players, true, later);
+
+        let tint = deck(&watcher).accent;
+        assert_eq!(tint.at(later), theme::FG);
+        assert!(!tint.settled(later));
+        assert_ne!(tint.at(later + Duration::from_millis(16)), blue);
+        assert_eq!(tint.at(later + secs(2)), blue);
     }
 
     #[test]

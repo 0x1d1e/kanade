@@ -7,18 +7,22 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
-use super::activity::{Activity, Frame, Id, Interrupt, Lifetime, Scope};
+use super::activity::{Activity, Detail, Frame, Id, Interrupt, Lifetime, Scope, Track};
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
-use super::fade::Crossfade;
+use super::fade::{Crossfade, Dissolve};
 use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Surface};
+use super::satellites::{Mark, Satellites};
 
 // plan 5.2: how long a morph takes, by what it changes, see `response`
 const EXPAND: Duration = Duration::from_millis(180);
 const SURFACE_CHANGE: Duration = Duration::from_millis(220);
 const COLLAPSE: Duration = Duration::from_millis(180);
+
+// a new track dissolves in about as long as a Surface takes to replace another
+pub const TRACK_CHANGE: Duration = SURFACE_CHANGE;
 
 // plan 5.2: a pointer resting on a Compact island for 100-140 ms peeks
 const HOVER_DELAY: Duration = Duration::from_millis(120);
@@ -82,6 +86,12 @@ struct Island {
 
     // the content, faded by the shape's progress so both change in one motion
     content: Crossfade<Content>,
+
+    // the track the content shows, while it is a Media Activity's, dissolving to each new one
+    track: Option<Dissolve<Track>>,
+
+    // beside the body, coming out from under it and tucking back
+    satellites: Satellites,
 
     // what the pointer started: a Peek after the hover delay, or a collapse after the grace
     due: Option<Due>,
@@ -151,6 +161,11 @@ impl Service for IslandService {
 impl IslandService {
     pub fn presentation(&self, monitor: &str) -> Presentation {
         self.presentations.get(monitor)
+    }
+
+    // for motion outside the island, like the Media Surface's own dissolve
+    pub fn motion(&self) -> Mode {
+        self.motion
     }
 
     // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
@@ -231,10 +246,28 @@ impl IslandService {
         island.content.shown(progress)
     }
 
+    /*
+     * the track the content shows dissolving to the current one; the view checks it is the one it
+     * draws, since a Crossfade fading a Media Activity out has already moved on from it
+     */
+    pub fn track(&self, monitor: &str) -> Option<&Dissolve<Track>> {
+        self.get(monitor).track.as_ref()
+    }
+
     // false while the view has to keep asking for frames
     pub fn settled(&self, monitor: &str, now: Instant) -> bool {
-        self.spring(monitor)
+        let island = self.get(monitor);
+
+        island
+            .shape
+            .as_ref()
             .is_none_or(|spring| spring.settled(now))
+            && island.track.as_ref().is_none_or(|track| track.settled(now))
+            && island.satellites.settled(now)
+    }
+
+    pub fn satellites(&self, monitor: &str) -> &Satellites {
+        &self.get(monitor).satellites
     }
 
     pub fn armed(&self, monitor: &str) -> bool {
@@ -481,9 +514,9 @@ impl IslandService {
      * Transient over the primary Activity, or that one
      */
     fn sync(&mut self, now: Instant) {
-        let showing = |frame: Frame| frame.transient.or(frame.primary);
+        let showing = |frame: Frame| (Mark::of(&frame), frame.transient.or(frame.primary));
 
-        let untouched = showing(self.arbiter.frame(
+        let (marks, untouched) = showing(self.arbiter.frame(
             now,
             arbiter::Island {
                 focused: self.focused_output.is_none(),
@@ -497,13 +530,17 @@ impl IslandService {
                 .map(|activity| Surface::of(activity.kind())),
         );
 
-        let shown: Vec<(String, Option<Activity>)> = self
+        let shown: Vec<_> = self
             .islands
             .keys()
-            .map(|monitor| (monitor.clone(), showing(self.frame(monitor, now))))
+            .map(|monitor| {
+                let (marks, shown) = showing(self.frame(monitor, now));
+
+                (monitor.clone(), marks, shown)
+            })
             .collect();
 
-        for (monitor, shown) in &shown {
+        for (monitor, _, shown) in &shown {
             let primary = shown.as_ref().map(|activity| Surface::of(activity.kind()));
 
             self.presentations.set_primary(monitor, primary);
@@ -513,15 +550,18 @@ impl IslandService {
         follow(
             &mut self.untouched,
             Content::new(presentation, untouched),
+            marks,
             self.motion,
             now,
         );
 
-        for (monitor, shown) in shown {
+        for (monitor, marks, shown) in shown {
             let presentation = self.presentations.get(&monitor);
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                follow(island, Content::new(presentation, shown), self.motion, now);
+                let content = Content::new(presentation, shown);
+
+                follow(island, content, marks, self.motion, now);
             }
         }
     }
@@ -601,10 +641,14 @@ impl IslandService {
     }
 }
 
-// the island morphs to `content`, unless it is already headed there
-fn follow(island: &mut Island, content: Content, motion: Mode, now: Instant) {
+// the island morphs to `content` and its Satellites to `marks`, unless already headed there
+fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, motion: Mode, now: Instant) {
     let presentation = content.presentation;
     let expanded = matches!(presentation, Presentation::Expanded(_));
+
+    island
+        .satellites
+        .follow(marks, EXPAND, COLLAPSE, motion, now);
 
     island.held &= expanded;
 
@@ -627,6 +671,10 @@ fn follow(island: &mut Island, content: Content, motion: Mode, now: Instant) {
         .get_or_insert_with(|| Spring::new(REST.into(), motion));
 
     let from = island.content.target().presentation;
+    let track = match content.activity.as_ref().map(Activity::detail) {
+        Some(Detail::Media(track)) => Some(track.clone()),
+        _ => None,
+    };
 
     if island.content.to(content, spring.progress(now)) {
         spring.to(
@@ -634,6 +682,11 @@ fn follow(island: &mut Island, content: Content, motion: Mode, now: Instant) {
             response(from, presentation),
             now,
         );
+
+        // new content fades in whole, its track with it
+        island.track = track.map(|track| Dissolve::new(track, motion));
+    } else if let (Some(dissolve), Some(track)) = (&mut island.track, track) {
+        dissolve.to(track, TRACK_CHANGE, now);
     }
 }
 
@@ -692,7 +745,7 @@ fn nudge() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::{Detail, Device, Kind, Priority, Volume};
+    use crate::island::activity::{Detail, Device, Kind, Priority, Track, Volume};
 
     const MONITOR: &str = "eDP-1";
 
@@ -1720,6 +1773,70 @@ mod tests {
         let settled = later + Duration::from_secs(1);
         island.post(volume(), settled);
         assert!(island.settled(MONITOR, settled));
+    }
+
+    // #37: another song in the same Media Activity dissolves in place, no crossfade leg, no morph
+    #[test]
+    fn a_new_track_dissolves_where_it_stands() {
+        let song = |title: &str, playing| {
+            media().with_detail(Detail::Media(Track {
+                title: title.into(),
+                artist: "Artist".into(),
+                art: None,
+                playing,
+            }))
+        };
+        let shown = |island: &IslandService, at| {
+            island
+                .content(MONITOR, at)
+                .map(|shown| shown.map(|(content, opacity)| (content.activity, opacity)))
+        };
+
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(song("a", true), now);
+
+        let later = now + Duration::from_secs(1);
+        assert!(island.settled(MONITOR, later));
+
+        island.post(song("b", true), later);
+
+        assert_eq!(
+            shown(&island, later),
+            [None, Some((Some(song("b", true)), 1.0))]
+        );
+        assert_eq!(island.shape(MONITOR, later + ms(50)), geometry::COMPACT);
+
+        let dissolve = island.track(MONITOR).unwrap();
+        assert_eq!(dissolve.target().title, "b");
+        assert_eq!(dissolve.from(later).map(|t| t.title.as_str()), Some("a"));
+        assert!(!island.settled(MONITOR, later + ms(1)));
+
+        // played or paused, it redraws where it stands
+        let settled = later + Duration::from_secs(1);
+        assert!(island.settled(MONITOR, settled));
+
+        island.post(song("b", false), settled);
+        assert!(island.settled(MONITOR, settled));
+        assert!(!island.track(MONITOR).unwrap().target().playing);
+    }
+
+    // a Satellite coming out keeps the island asking for frames until it is in place
+    #[test]
+    fn a_satellite_coming_out_is_not_settled() {
+        let timer = |key| Activity::persistent(Id::new(Kind::Timer, key), Priority::Ongoing);
+
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(timer("a"), now);
+
+        let later = now + Duration::from_secs(1);
+        assert!(island.settled(MONITOR, later));
+
+        island.post(timer("b"), later);
+        assert_eq!(island.frame(MONITOR, later).satellites.len(), 1);
+        assert!(!island.settled(MONITOR, later + ms(1)));
+        assert!(island.settled(MONITOR, later + Duration::from_secs(1)));
     }
 
     // a held volume key: each step redraws the bar where it stands, mid-morph or settled

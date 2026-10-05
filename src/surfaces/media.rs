@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use amane::{
     Audio, Center, Color, Column, Cursor, End, Padding, Rectangle, Row, Scroll, Service,
-    SpaceBetween, Stack, Start, Text, Widget, children,
+    SpaceBetween, Stack, Start, Text, Widget, children, request_frame,
 };
 
 use super::slider::Slider;
@@ -17,7 +17,7 @@ use crate::island::geometry;
 use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
 use crate::theme;
-use crate::view::{art, bar};
+use crate::view::{Change, bar};
 
 const INSET: f32 = 20.0;
 
@@ -60,12 +60,21 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
     let width = shape.width - 2.0 * INSET;
 
     let deck = playback.shown.as_ref();
-    let accent = deck.and_then(|deck| deck.accent).unwrap_or(theme::FG);
+    let accent = deck.map_or(theme::FG, |deck| deck.accent.at(now));
+
+    // the dissolve and the tint are the follower's, so the Surface asks for frames until they rest
+    if deck.is_some_and(|deck| !deck.track.settled(now) || !deck.accent.settled(now)) {
+        request_frame();
+    }
 
     let nothing = Track {
         title: String::from("Nothing playing"),
         ..Track::default()
     };
+
+    let track = deck.map_or(Change::of(&nothing, None, now), |deck| {
+        Change::of(deck.track.target(), Some(&deck.track), now)
+    });
 
     Rectangle::new()
         .width(shape.width)
@@ -75,13 +84,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
         .on_scroll(|Scroll { y, .. }| Slider::Speaker.wheel(y))
         .child(
             Column::new(children![
-                header(
-                    deck.map_or(&nothing, |deck| &deck.track),
-                    &playback.players,
-                    deck,
-                    playback.page,
-                    width
-                ),
+                header(track, &playback.players, deck, playback.page, width),
                 timeline(deck, accent, width, now),
                 controls(deck, accent, width),
             ])
@@ -92,7 +95,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
 
 // art, then title and artist, then the players to choose from
 fn header(
-    track: &Track,
+    track: Change,
     players: &[Choice],
     deck: Option<&Deck>,
     page: Option<usize>,
@@ -100,28 +103,24 @@ fn header(
 ) -> Row {
     let words = width - ART - GAP;
 
-    let mut lines = children![
-        Text::new(&track.title)
+    // the artist's line is there even when it names none, like the Peek's
+    let lines = children![
+        track
+            .line(|track| &track.title, theme::FG)
             .size(16.0)
-            .color(theme::FG)
             .weight(600)
-            .elide()
+            .elide(),
+        track
+            .line(|track| &track.artist, theme::MUTED)
+            .size(13.0)
+            .weight(500)
+            .elide(),
     ];
-
-    if !track.artist.is_empty() {
-        lines.push(Box::new(
-            Text::new(&track.artist)
-                .size(13.0)
-                .color(theme::MUTED)
-                .weight(500)
-                .elide(),
-        ));
-    }
 
     let shown = deck.map(|deck| deck.name.as_str());
 
     Row::new(children![
-        art(track, ART, ART_RADIUS),
+        track.art(ART, ART_RADIUS),
         Stack::new(children![
             Column::new(lines).width(words - BADGE).gap(3.0),
             Rectangle::new()
@@ -338,7 +337,7 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
 // a playing player pauses, any other plays; each only when the player says it can
 fn play_pause(deck: Option<&Deck>) -> (Transport, Option<Control>) {
     match deck {
-        Some(deck) if deck.track.playing => (
+        Some(deck) if deck.track.target().playing => (
             Transport::Pause,
             deck.can_pause.then(|| Control::Pause(deck.name.clone())),
         ),
@@ -451,6 +450,9 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::island::fade::Dissolve;
+    use crate::island::motion::Mode;
+    use crate::sources::playback::Tint;
 
     // the room choices() gets on the Surface
     const WORDS: f32 = geometry::MEDIA.width - 2.0 * INSET - ART - GAP;
@@ -500,17 +502,20 @@ mod tests {
     fn a_playing_player_pauses_and_a_paused_one_plays_only_if_it_can() {
         let deck = |playing: bool, can_play: bool, can_pause: bool| Deck {
             name: String::from("mpv"),
-            track: Track {
-                playing,
-                ..Track::default()
-            },
+            track: Dissolve::new(
+                Track {
+                    playing,
+                    ..Track::default()
+                },
+                Mode::Spring,
+            ),
             timeline: crate::sources::playback::Timeline {
                 position: Duration::ZERO,
                 at: Instant::now(),
                 length: Duration::ZERO,
                 rate: 0.0,
             },
-            accent: None,
+            accent: Tint::new(theme::FG, Mode::Spring),
             can_play,
             can_pause,
             can_previous: false,

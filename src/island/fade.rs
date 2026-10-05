@@ -1,7 +1,15 @@
 //! Content crossfade (CONTEXT.md: a Presentation change is geometry plus content crossfade in one
-//! motion), over anything the body shows: a Presentation, or what one shows of an Activity. Driven by the morph's progress, not a timer of its own: the old content fades out over
+//! motion), over anything the body shows: a Presentation, or what one shows of an Activity.
+//! Driven by the morph's progress, not a timer of its own: the old content fades out over
 //! the first half of the morph and the new fades in over the second, so at most one shows at once.
 //! A morph that changes its mind takes over whatever shows, at its current opacity, so nothing pops.
+//!
+//! A `Dissolve` is for content that changes inside a form that stays put, like a new track's art:
+//! the new rises over the old on its own spring, so the old still shows beneath it and nothing dips.
+
+use std::time::{Duration, Instant};
+
+use super::motion::{Mode, Spring};
 
 #[derive(Debug, Clone)]
 pub struct Crossfade<T> {
@@ -77,6 +85,84 @@ impl<T: InPlace> Crossfade<T> {
 impl<T: InPlace + Default> Default for Crossfade<T> {
     fn default() -> Self {
         Self::new(T::default())
+    }
+}
+
+/*
+ * the new content rising over the old in place, both showing until it arrives. Its own spring,
+ * since the body does not move; under reduced motion it still fades, see motion::REDUCED_FADE
+ */
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dissolve<T> {
+    // what shows beneath, until the new one covers it
+    from: Option<T>,
+
+    to: T,
+
+    // 0 to 1, how far `to` has risen
+    rise: Spring<1>,
+}
+
+impl<T: InPlace> Dissolve<T> {
+    // settled on `content`
+    pub fn new(content: T, mode: Mode) -> Self {
+        Self {
+            from: None,
+            to: content,
+            rise: Spring::new([1.0], mode),
+        }
+    }
+
+    pub fn target(&self) -> &T {
+        &self.to
+    }
+
+    /*
+     * a new rise toward `next`: content changed in place is swapped where it stands. A change of mind before the rise is halfway keeps its old one
+     * beneath and its rise, so the old one still fades as it did; past halfway, the one mostly
+     * showing goes beneath and the rise starts over
+     */
+    pub fn to(&mut self, next: T, response: Duration, now: Instant) {
+        if self.to.in_place(&next) {
+            self.to = next;
+            return;
+        }
+
+        let previous = std::mem::replace(&mut self.to, next);
+
+        if self.from(now).is_some() && self.rise(now) < 0.5 {
+            return;
+        }
+
+        self.from = Some(previous);
+        self.rise = Spring::new([0.0], self.rise.mode());
+        self.rise.to([1.0], response, now);
+    }
+
+    // what still shows beneath at `now`, none once the new one covers it
+    pub fn from(&self, now: Instant) -> Option<&T> {
+        self.from.as_ref().filter(|_| !self.rise.settled(now))
+    }
+
+    // how strongly the new one shows over it, 0 to 1
+    pub fn rise(&self, now: Instant) -> f32 {
+        self.rise.progress(now)
+    }
+
+    pub fn settled(&self, now: Instant) -> bool {
+        self.rise.settled(now)
+    }
+}
+
+/*
+ * one thing that changes where it stands, like a title, swapped through nothing: the old fades out
+ * over the first half of the rise, the new in over the second
+ */
+pub fn swap<T>(from: Option<T>, to: T, rise: f32) -> (T, f32) {
+    match from {
+        Some(from) if rise < 0.5 => (from, 1.0 - 2.0 * rise),
+        Some(_) => (to, 2.0 * rise - 1.0),
+        None => (to, 1.0),
     }
 }
 
@@ -230,5 +316,108 @@ mod tests {
         assert!(fade.to(Level('v', 45), 0.2));
 
         assert_eq!(fade.shown(0.0), [None, Some((Level('v', 45), 0.6))]);
+    }
+
+    const RISE: Duration = Duration::from_millis(300);
+
+    fn ms(value: u64) -> Duration {
+        Duration::from_millis(value)
+    }
+
+    #[test]
+    fn a_new_dissolve_rests_on_its_content() {
+        let now = Instant::now();
+        let dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
+
+        assert_eq!(dissolve.from(now), None);
+        assert_eq!(dissolve.rise(now), 1.0);
+        assert!(dissolve.settled(now));
+    }
+
+    #[test]
+    fn the_new_one_rises_over_the_old() {
+        let now = Instant::now();
+        let mut dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
+
+        dissolve.to(Level('b', 0), RISE, now);
+        assert_eq!(dissolve.target(), &Level('b', 0));
+        assert_eq!(dissolve.from(now), Some(&Level('a', 0)));
+        assert_eq!(dissolve.rise(now), 0.0);
+
+        let mut last = 0.0;
+        for step in 1..=20 {
+            let rise = dissolve.rise(now + ms(step * 15));
+            assert!(rise >= last, "dipped at {step}: {rise}");
+            last = rise;
+        }
+
+        let late = now + ms(2_000);
+        assert!(dissolve.settled(late));
+        assert_eq!(dissolve.from(late), None);
+        assert_eq!(dissolve.rise(late), 1.0);
+    }
+
+    #[test]
+    fn in_place_swaps_without_a_rise() {
+        let now = Instant::now();
+        let mut dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
+
+        dissolve.to(Level('a', 9), RISE, now);
+        assert_eq!(dissolve.target(), &Level('a', 9));
+        assert!(dissolve.settled(now));
+    }
+
+    #[test]
+    fn a_change_of_mind_before_halfway_keeps_the_old_one_beneath() {
+        let now = Instant::now();
+        let mut dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
+        dissolve.to(Level('b', 0), RISE, now);
+
+        let early = now + ms(10);
+        let rise = dissolve.rise(early);
+        assert!(rise < 0.5, "{rise}");
+
+        dissolve.to(Level('c', 0), RISE, early);
+        assert_eq!(dissolve.target(), &Level('c', 0));
+        assert_eq!(dissolve.from(early), Some(&Level('a', 0)));
+        assert_eq!(dissolve.rise(early), rise);
+    }
+
+    #[test]
+    fn a_change_of_mind_past_halfway_starts_over_from_the_new_one() {
+        let now = Instant::now();
+        let mut dissolve = Dissolve::new(Level('a', 0), Mode::Spring);
+        dissolve.to(Level('b', 0), RISE, now);
+
+        let late = (1..)
+            .map(|step| now + ms(step))
+            .find(|&at| dissolve.rise(at) >= 0.5)
+            .unwrap();
+        assert!(!dissolve.settled(late));
+
+        dissolve.to(Level('c', 0), RISE, late);
+        assert_eq!(dissolve.from(late), Some(&Level('b', 0)));
+        assert_eq!(dissolve.rise(late), 0.0);
+    }
+
+    #[test]
+    fn reduced_motion_still_dissolves() {
+        let now = Instant::now();
+        let mut dissolve = Dissolve::new(Level('a', 0), Mode::Reduced);
+        dissolve.to(Level('b', 0), RISE, now);
+
+        let rise = dissolve.rise(now + ms(40));
+        assert!(0.0 < rise && rise < 1.0, "{rise}");
+        assert!(dissolve.settled(now + crate::island::motion::REDUCED_FADE));
+    }
+
+    #[test]
+    fn swap_goes_through_nothing() {
+        assert_eq!(swap(Some('a'), 'b', 0.0), ('a', 1.0));
+        assert_eq!(swap(Some('a'), 'b', 0.25), ('a', 0.5));
+        assert_eq!(swap(Some('a'), 'b', 0.5), ('b', 0.0));
+        assert_eq!(swap(Some('a'), 'b', 0.75), ('b', 0.5));
+        assert_eq!(swap(Some('a'), 'b', 1.0), ('b', 1.0));
+        assert_eq!(swap(None, 'b', 0.0), ('b', 1.0));
     }
 }

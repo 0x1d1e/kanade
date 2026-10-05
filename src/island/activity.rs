@@ -5,6 +5,7 @@
 
 #![expect(dead_code, reason = "the Arbiter and the sources use these, #17-#33")]
 
+use super::fade::InPlace;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -167,7 +168,8 @@ pub struct Action {
 
 /*
  * what the source knows that the island draws, typed per Kind. Not identity: a repost with new
- * Detail replaces the Activity, so its small form crossfades to the new one
+ * Detail replaces the Activity, so its small form crossfades to the new one unless it stays in
+ * place (`InPlace for Content`)
  */
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Detail {
@@ -218,7 +220,7 @@ impl Detail {
     /*
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
      * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
-     * workspace switch moves the pager's mark, where a new track crossfades
+     * workspace switch moves the pager's mark. A new track stays in place too, but dissolves
      */
     pub fn is_level(&self) -> bool {
         matches!(
@@ -239,6 +241,13 @@ pub struct Track {
     pub art: Option<String>,
 
     pub playing: bool,
+}
+
+// the same song played or paused redraws its mark where it stands; another one dissolves in
+impl InPlace for Track {
+    fn in_place(&self, next: &Track) -> bool {
+        self.title == next.title && self.artist == next.artist && self.art == next.art
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +471,39 @@ mod tests {
     use super::*;
 
     const OSD: Duration = Duration::from_millis(1200);
+
+    #[test]
+    fn a_track_played_or_paused_is_in_place_another_is_not() {
+        let track = Track {
+            title: "a".into(),
+            artist: "x".into(),
+            art: Some("/a.png".into()),
+            playing: true,
+        };
+        let paused = Track {
+            playing: false,
+            ..track.clone()
+        };
+
+        assert!(track.in_place(&paused));
+
+        for next in [
+            Track {
+                title: "b".into(),
+                ..track.clone()
+            },
+            Track {
+                artist: "y".into(),
+                ..track.clone()
+            },
+            Track {
+                art: None,
+                ..track.clone()
+            },
+        ] {
+            assert!(!track.in_place(&next), "{next:?}");
+        }
+    }
 
     #[test]
     fn priority_orders_critical_first() {

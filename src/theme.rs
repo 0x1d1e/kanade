@@ -29,3 +29,10 @@ pub const GREEN: Color = Color::rgb(48, 209, 88);
 
 // reserved for critical, like a battery about to die (plan 7)
 pub const RED: Color = Color::rgb(255, 69, 58);
+
+// `color` at `opacity`, to fade a single text without a group of its own
+pub fn faded(color: Color, opacity: f32) -> Color {
+    let alpha = (f32::from(color.alpha()) * opacity.clamp(0.0, 1.0)).round() as u8;
+
+    Color::rgba(color.red(), color.green(), color.blue(), alpha)
+}

@@ -8,4 +8,5 @@ pub mod fade;
 pub mod geometry;
 pub mod motion;
 pub mod presentation;
+pub mod satellites;
 pub mod service;
