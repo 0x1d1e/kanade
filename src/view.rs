@@ -40,7 +40,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         // Escape disarms without the pointer leaving, the next move arms again
         .on_move(move |_| set_armed(&moved, true));
 
-    // exactly the input region, so leaving it is leaving the island
+    /*
+     * exactly the input region, so leaving it is leaving the island; niri also sends the leave
+     * when the region shrinks away from a still pointer (#3), which is what reports it here
+     */
     let hover = Rectangle::new()
         .width(area.width)
         .height(area.height)
