@@ -145,15 +145,19 @@ pub fn input_area(body: Rect) -> Rect {
 }
 
 /*
- * the `index`th Satellite, right of the body and centered on it. Past a Peek a body that grows on
- * only covers them, so they stay inside the canvas while they fade out
+ * the Satellite in `slot`, right of the body and centered on it, between places while it slides.
+ * Past a Peek a body that grows on only covers them, so they stay inside the canvas while they
+ * fade out. At `presence` 0 it is tucked under the body's end, as it comes out and goes back (#37)
  */
-pub fn satellite(body: Rect, index: usize) -> Rect {
-    let left = body.right().min(self::body(PEEK).right());
+pub fn satellite(body: Rect, slot: f32, presence: f32) -> Rect {
+    let end = body.right().min(self::body(PEEK).right());
     let height = body.height.min(PEEK.height);
 
+    let placed = end + SATELLITE_GAP + slot * (SATELLITE + SATELLITE_GAP);
+    let tucked = end - SATELLITE;
+
     Rect {
-        x: left + SATELLITE_GAP + index as f32 * (SATELLITE + SATELLITE_GAP),
+        x: tucked + (placed - tucked) * presence,
         y: body.y + (height - SATELLITE) / 2.0,
         width: SATELLITE,
         height: SATELLITE,
@@ -349,8 +353,8 @@ mod tests {
     fn satellites_line_up_right_of_the_small_forms() {
         for small in [COMPACT, PEEK] {
             let body = body(small);
-            let first = satellite(body, 0);
-            let second = satellite(body, 1);
+            let first = satellite(body, 0.0, 1.0);
+            let second = satellite(body, 1.0, 1.0);
 
             assert_eq!(first.x, body.right() + SATELLITE_GAP);
             assert_eq!(second.x, first.right() + SATELLITE_GAP);
@@ -363,9 +367,23 @@ mod tests {
     #[test]
     fn satellites_stay_inside_the_canvas() {
         for shape in shapes() {
-            let last = satellite(body(shape), crate::island::arbiter::SATELLITES);
+            let last = satellite(body(shape), crate::island::arbiter::SATELLITES as f32, 1.0);
 
             assert!(contains(canvas(), last), "{shape:?}");
+        }
+    }
+
+    // under the body, so it hides one coming out or going back, as tall as it is at Rest
+    #[test]
+    fn a_tucked_satellite_hides_under_the_body() {
+        for small in [REST, COMPACT, PEEK] {
+            let body = body(small);
+
+            for slot in [0.0, 2.0] {
+                let tucked = satellite(body, slot, 0.0);
+
+                assert!(contains(body, tucked), "{small:?} {slot}");
+            }
         }
     }
 

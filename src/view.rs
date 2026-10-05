@@ -11,8 +11,10 @@ use crate::island::activity::{
     Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Sensors, Toast,
     Track, Uplink, Volume, Workspace,
 };
+use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
+use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
 use crate::sources::timer;
 use crate::surfaces;
@@ -61,7 +63,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
-        && let Some(form) = small_form(&content, now)
+        && let Some(form) = small_form(&content, island.track(&monitor.name), now)
             .or_else(|| surface(&monitor.name, &content, &island, now))
             .or_else(|| placeholder(&content))
     {
@@ -94,7 +96,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let mut layers = if island.overview() {
         Vec::new()
     } else {
-        satellites(&frame, body_rect, shape, now)
+        satellites(island.satellites(&monitor.name), body_rect, shape, now)
     };
 
     layers.push(Box::new(hover));
@@ -140,25 +142,29 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 }
 
 // the Satellites, then the ones past the cap as one "+N"
-fn satellites(frame: &Frame, body: Rect, shape: Shape, now: Instant) -> Vec<Box<dyn Widget>> {
+fn satellites(
+    satellites: &Satellites,
+    body: Rect,
+    shape: Shape,
+    now: Instant,
+) -> Vec<Box<dyn Widget>> {
     let opacity = geometry::satellite_opacity(shape);
 
     if opacity == 0.0 {
         return Vec::new();
     }
 
-    let marks = frame
-        .satellites
-        .iter()
-        .map(|activity| satellite_mark(activity, now))
-        .chain((frame.overflow > 0).then(|| label(format!("+{}", frame.overflow), theme::FG)));
+    satellites
+        .shown(now)
+        .into_iter()
+        .map(|shown| {
+            let mark = match shown.mark {
+                Mark::Activity(activity) => satellite_mark(activity, now),
+                Mark::Overflow(count) => label(format!("+{count}"), theme::FG),
+            };
+            let at = geometry::satellite(body, shown.slot, shown.presence);
 
-    marks
-        .enumerate()
-        .map(|(index, mark)| {
-            let at = geometry::satellite(body, index);
-
-            Box::new(dot(at, mark).opacity(opacity)) as Box<dyn Widget>
+            Box::new(dot(at, mark).opacity(opacity * shown.opacity)) as Box<dyn Widget>
         })
         .collect()
 }
@@ -295,7 +301,11 @@ fn sized(presentation: Presentation) -> Rectangle {
 }
 
 // an Activity's own Compact or Peek, drawn from its Detail; none leaves it to the placeholder
-fn small_form(content: &Content, now: Instant) -> Option<Rectangle> {
+fn small_form(
+    content: &Content,
+    track: Option<&Dissolve<Track>>,
+    now: Instant,
+) -> Option<Rectangle> {
     if content.activity.as_ref().map(Activity::kind) == Some(Kind::ScreenCast) {
         return capture(content.presentation);
     }
@@ -303,8 +313,12 @@ fn small_form(content: &Content, now: Instant) -> Option<Rectangle> {
     let detail = content.activity.as_ref().map(Activity::detail);
 
     match (content.presentation, detail) {
-        (Presentation::Compact, Some(Detail::Media(track))) => Some(media_compact(track)),
-        (Presentation::Peek, Some(Detail::Media(track))) => Some(media_peek(track)),
+        (Presentation::Compact, Some(Detail::Media(shown))) => {
+            Some(media_compact(Change::of(shown, track, now)))
+        }
+        (Presentation::Peek, Some(Detail::Media(shown))) => {
+            Some(media_peek(Change::of(shown, track, now)))
+        }
         (Presentation::Compact, Some(Detail::Notification(toast))) => Some(toast_compact(toast)),
         (Presentation::Peek, Some(Detail::Notification(toast))) => Some(toast_peek(toast)),
         (presentation, Some(Detail::Volume(volume))) => level(presentation, Level::volume(volume)),
@@ -939,7 +953,7 @@ pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
  * art, title, then whether it plays. The art's inset matches top, left and bottom, so it sits
  * concentric with the body's round end; the state mark keeps clear of the other end
  */
-fn media_compact(track: &Track) -> Rectangle {
+fn media_compact(change: Change) -> Rectangle {
     let shape = geometry::shape(Presentation::Compact);
     let inset = 7.0;
 
@@ -953,13 +967,13 @@ fn media_compact(track: &Track) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                art(track, shape.height - 2.0 * inset, 6.0),
-                Text::new(&track.title)
+                change.art(shape.height - 2.0 * inset, 6.0),
+                change
+                    .line(|track| &track.title, theme::FG)
                     .size(13.0)
-                    .color(theme::FG)
                     .weight(500)
                     .elide(),
-                state(track.playing),
+                state(change.to.playing),
             ])
             .width(Parent)
             .gap(9.0)
@@ -968,24 +982,24 @@ fn media_compact(track: &Track) -> Rectangle {
 }
 
 // the Compact with room for the artist under the title
-fn media_peek(track: &Track) -> Rectangle {
+fn media_peek(change: Change) -> Rectangle {
     let shape = geometry::shape(Presentation::Peek);
     let inset = 7.0;
 
     let mut lines = children![
-        Text::new(&track.title)
+        change
+            .line(|track| &track.title, theme::FG)
             .size(14.0)
-            .color(theme::FG)
             .weight(600)
             .elide()
     ];
 
-    // with no artist the title centers alone
-    if !track.artist.is_empty() {
+    // with no artist the title centers alone, swapped while neither shows
+    if !change.shown().artist.is_empty() {
         lines.push(Box::new(
-            Text::new(&track.artist)
+            change
+                .line(|track| &track.artist, theme::MUTED)
                 .size(12.0)
-                .color(theme::MUTED)
                 .weight(500)
                 .elide(),
         ));
@@ -1003,14 +1017,71 @@ fn media_peek(track: &Track) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                art(track, shape.height - 2.0 * inset, 9.0),
+                change.art(shape.height - 2.0 * inset, 9.0),
                 lines,
-                state(track.playing),
+                state(change.to.playing),
             ])
             .width(Parent)
             .gap(11.0)
             .align(Center),
         )
+}
+
+/*
+ * a track as it dissolves where it stands (#37): the one it replaces still beneath, and how far
+ * the new one has risen over it. Only a dissolve to the track drawn counts, since a Media Activity
+ * that fades out whole has a Crossfade that moved on from it
+ */
+#[derive(Clone, Copy)]
+pub(crate) struct Change<'a> {
+    from: Option<&'a Track>,
+    to: &'a Track,
+    rise: f32,
+}
+
+impl<'a> Change<'a> {
+    pub(crate) fn of(to: &'a Track, dissolve: Option<&'a Dissolve<Track>>, now: Instant) -> Self {
+        match dissolve.filter(|dissolve| dissolve.target().in_place(to)) {
+            Some(dissolve) => Self {
+                from: dissolve.from(now),
+                to,
+                rise: dissolve.rise(now),
+            },
+            None => Self {
+                from: None,
+                to,
+                rise: 1.0,
+            },
+        }
+    }
+
+    // whichever of the two its lines show now
+    pub(crate) fn shown(self) -> &'a Track {
+        swap(self.from, self.to, self.rise).0
+    }
+
+    // the new cover rises over the old, so no tile shows between them and nothing dips
+    pub(crate) fn art(self, side: f32, radius: f32) -> Stack {
+        let to = Rectangle::new()
+            .width(side)
+            .height(side)
+            .opacity(self.rise)
+            .child(art(self.to, side, radius));
+
+        let layers = match self.from {
+            Some(from) => children![art(from, side, radius), to],
+            None => children![to],
+        };
+
+        Stack::new(layers).width(side).height(side)
+    }
+
+    // one line of text, the old fading out before the new fades in at the same place
+    pub(crate) fn line(self, line: fn(&Track) -> &str, color: Color) -> Text {
+        let (text, opacity) = swap(self.from.map(line), line(self.to), self.rise);
+
+        Text::new(text).color(theme::faded(color, opacity))
+    }
 }
 
 /*

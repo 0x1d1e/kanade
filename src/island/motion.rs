@@ -30,7 +30,7 @@ pub enum Mode {
     Reduced,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spring<const N: usize> {
     mode: Mode,
 
@@ -84,6 +84,10 @@ impl<const N: usize> Spring<N> {
 
         self.target = target;
         self.start = Some(now);
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
     pub fn at(&self, now: Instant) -> [f32; N] {

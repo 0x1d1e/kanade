@@ -115,13 +115,20 @@ impl Content {
     }
 }
 
-// the same Activity in the same form with its level moved redraws where it stands; a level that
-// first appears is new content, so it crossfades in
+/*
+ * the same Activity in the same form with its level moved redraws where it stands, and a new track
+ * dissolves where it stands (`Dissolve`); a level that first appears is new content, so it
+ * crossfades in
+ */
 impl InPlace for Content {
     fn in_place(&self, next: &Content) -> bool {
         let moved = match (&self.activity, &next.activity) {
             (Some(shown), Some(next)) => {
-                shown.id() == next.id() && shown.detail().is_level() && next.detail().is_level()
+                shown.id() == next.id()
+                    && match (shown.detail(), next.detail()) {
+                        (Detail::Media(_), Detail::Media(_)) => true,
+                        (shown, next) => shown.is_level() && next.is_level(),
+                    }
             }
             (shown, next) => shown == next,
         };

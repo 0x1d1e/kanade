@@ -20,8 +20,11 @@ use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
 
 use super::playback::{self, Deck, Playback, Timeline};
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
+use crate::island::fade::Dissolve;
+use crate::island::motion::Mode;
 use crate::island::presentation::Surface;
-use crate::island::service::IslandService;
+use crate::island::service::{IslandService, TRACK_CHANGE};
+use crate::theme;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
 const PAUSED: Duration = Duration::from_secs(30);
@@ -388,6 +391,9 @@ struct Watcher {
 
     // when to ask the shown player where it is next
     tick: Option<Instant>,
+
+    // the island's, for the Surface's dissolve
+    motion: Mode,
 }
 
 impl Watcher {
@@ -407,13 +413,34 @@ impl Watcher {
             return;
         }
 
+        let last = self
+            .published
+            .as_ref()
+            .and_then(|published| published.shown.clone());
+
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
             let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
 
+            // a track shown before dissolves to this one, a Surface just opened shows it at once
+            let (track, before) = match last {
+                Some(last) => {
+                    let shown = last.accent_at(now);
+                    let mut track = last.track;
+
+                    if track.to(seen.track, TRACK_CHANGE, now) {
+                        (track, shown)
+                    } else {
+                        (track, last.before)
+                    }
+                }
+                None => (Dissolve::new(seen.track, self.motion), theme::FG),
+            };
+
             Deck {
                 name: name.clone(),
-                track: seen.track,
+                track,
+                before,
                 timeline: player.timeline,
                 accent,
                 can_play: player.can_play,
@@ -502,10 +529,12 @@ impl Watcher {
         }
     }
 
+    // what it shows next time starts over, with nothing to dissolve from
     fn close(&mut self) {
         self.selected = None;
         self.page = None;
         self.tick = None;
+        self.published = None;
     }
 }
 
@@ -580,7 +609,10 @@ pub fn follow() {
     }
 
     let mut follower = Follower::default();
-    let mut watcher = Watcher::default();
+    let mut watcher = Watcher {
+        motion: IslandService::read().motion(),
+        ..Watcher::default()
+    };
 
     loop {
         let now = Instant::now();
@@ -1086,6 +1118,44 @@ mod tests {
             watcher.poll(&players, true, now + secs(1)),
             Some(String::from("mpv"))
         );
+    }
+
+    // #37: the open Surface dissolves to another track; reopened, it shows the track at once
+    #[test]
+    fn the_open_surface_dissolves_to_a_new_track_and_a_reopened_one_does_not() {
+        let now = Instant::now();
+        let mut watcher = Watcher::default();
+        let on = |title| {
+            let mut players = Players::default();
+            players
+                .open
+                .insert(String::from("mpv"), player(":1.4", title, "Playing"));
+            players
+        };
+        let deck = |watcher: &Watcher| {
+            watcher
+                .published
+                .as_ref()
+                .and_then(|published| published.shown.clone())
+                .unwrap()
+        };
+
+        watcher.show(&on("One"), true, now);
+        assert!(deck(&watcher).track.settled(now));
+
+        watcher.show(&on("Two"), true, now + secs(1));
+        let track = deck(&watcher).track;
+        assert_eq!(track.target().title, "Two");
+        assert_eq!(
+            track.from(now + secs(1)).map(|t| t.title.as_str()),
+            Some("One")
+        );
+
+        watcher.show(&on("Two"), false, now + secs(2));
+        assert_eq!(watcher.published, None);
+
+        watcher.show(&on("Three"), true, now + secs(3));
+        assert!(deck(&watcher).track.settled(now + secs(3)));
     }
 
     #[test]

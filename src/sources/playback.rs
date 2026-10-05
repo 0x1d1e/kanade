@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use amane::{Color, Service};
 
 use crate::island::activity::Track;
+use crate::island::fade::Dissolve;
 use crate::theme;
 
 // the timeline and volume fills stand on theme::DOT, so an accent must stand out from it
@@ -49,17 +50,36 @@ pub struct Choice {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Deck {
     pub name: String,
-    pub track: Track,
+
+    // dissolving from the track shown before, of this player or the one chosen before it
+    pub track: Dissolve<Track>,
+
     pub timeline: Timeline,
 
     // from the artwork; none without art or for grey art
     pub accent: Option<Color>,
+
+    // the accent the track before showed, which this one's rises from with it
+    pub before: Color,
 
     // MPRIS keeps these apart: a live stream may play but not pause
     pub can_play: bool,
     pub can_pause: bool,
     pub can_previous: bool,
     pub can_next: bool,
+}
+
+impl Deck {
+    // the accent at `now`, blended from the one before as the track rises
+    pub fn accent_at(&self, now: Instant) -> Color {
+        let accent = self.accent.unwrap_or(theme::FG);
+
+        if self.track.settled(now) {
+            accent
+        } else {
+            mix(self.before, accent, self.track.rise(now))
+        }
+    }
 }
 
 /*
@@ -214,6 +234,50 @@ mod tests {
             length: Duration::from_secs(180),
             rate,
         }
+    }
+
+    // #37: the accent rises from the one before with the track, then rests on its own
+    #[test]
+    fn the_accent_blends_from_the_one_before_as_the_track_rises() {
+        use crate::island::motion::Mode;
+
+        let now = Instant::now();
+        let red = Color::rgb(255, 0, 0);
+        let blue = Color::rgb(0, 0, 255);
+        let track = |title: &str| Track {
+            title: title.into(),
+            ..Track::default()
+        };
+
+        let mut dissolve = Dissolve::new(track("a"), Mode::Spring);
+        dissolve.to(track("b"), Duration::from_millis(300), now);
+
+        let deck = Deck {
+            name: "mpv".into(),
+            track: dissolve,
+            timeline: timeline(0, 1.0, now),
+            accent: Some(blue),
+            before: red,
+            can_play: true,
+            can_pause: true,
+            can_previous: true,
+            can_next: true,
+        };
+
+        assert_eq!(deck.accent_at(now), red);
+
+        let mid = deck.accent_at(now + Duration::from_millis(60));
+        assert!(mid != red && mid != blue, "{mid:?}");
+
+        assert_eq!(deck.accent_at(now + Duration::from_secs(2)), blue);
+        assert_eq!(
+            Deck {
+                accent: None,
+                ..deck
+            }
+            .accent_at(now + Duration::from_secs(2)),
+            theme::FG
+        );
     }
 
     #[test]
