@@ -258,7 +258,7 @@ pub fn follow() {
 
             if let Daemon::Conflict(other) = &next {
                 eprintln!(
-                    "kanade: {other} is the notification daemon, stop it to get notifications"
+                    "kanade: {other} is the notification daemon, stop it and restart Kanade to get notifications"
                 );
             }
 
