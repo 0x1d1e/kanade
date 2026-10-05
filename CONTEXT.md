@@ -24,7 +24,7 @@ Pure function of (registered Activities, now, focused output) to a Frame. Owns p
 - **Invariant:** preemption never destroys. A Persistent Activity hidden by a Transient shows again when the Transient expires, with no re-post.
 
 ## Frame
-The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `transient: Option<Activity>`. Global, then filtered per island by Scope.
+The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `overflow` (the Satellites past the bound, as a count), `transient: Option<Activity>`. Global, then filtered per island by Scope.
 - Not a rendered frame (Amane's `request_frame`, `AMANE_FRAMES`).
 
 ## Scope
@@ -45,7 +45,8 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite
-Small secondary indicator beside the primary island: screen cast, mic/camera, timer, VPN, critical battery. Persistent Activities only.
+Small secondary indicator beside the primary island: screen cast, mic/camera, timer, VPN, critical battery.
+- **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 
 ## Hold
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
