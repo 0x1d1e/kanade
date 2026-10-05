@@ -3,11 +3,12 @@
 //! Parsed with syn, so aliases (`use amane as ui`), nesting, and test code are all covered.
 
 use std::fs;
+use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{TokenStream, TokenTree};
 use syn::visit::{self, Visit};
-use syn::{Attribute, ItemMod, ItemUse, Macro, Path as SynPath, UseTree};
+use syn::{Attribute, ItemMod, ItemUse, Macro, MetaList, Path as SynPath, UseTree};
 
 const SERVICE: &str = "service";
 
@@ -49,17 +50,51 @@ impl Checker {
         }
     }
 
+    // macro bodies are opaque to syn, so rebuild the `a::b::c` paths from tokens and apply
+    // the same rules; a lone `amane` identifier is rejected anywhere
     fn check_tokens(&mut self, tokens: TokenStream) {
-        for token in tokens {
+        let mut tokens = tokens.into_iter().peekable();
+
+        while let Some(token) = tokens.next() {
             match token {
-                TokenTree::Ident(ident) if ident == "amane" => {
-                    self.violations.push("macro mentions amane".into());
+                TokenTree::Ident(ident) => {
+                    let mut segments = vec![ident.to_string()];
+
+                    while let Some(next) = take_path_segment(&mut tokens) {
+                        segments.push(next);
+                    }
+
+                    if segments.len() == 1 && segments[0] == "amane" {
+                        self.violations.push("macro mentions amane".into());
+                    }
+
+                    self.check_segments(&segments);
                 }
                 TokenTree::Group(group) => self.check_tokens(group.stream()),
                 _ => {}
             }
         }
     }
+}
+
+// consumes `:: ident` if it comes next
+fn take_path_segment(tokens: &mut Peekable<proc_macro2::token_stream::IntoIter>) -> Option<String> {
+    let mut lookahead = tokens.clone();
+
+    let colon =
+        |token: Option<TokenTree>| matches!(token, Some(TokenTree::Punct(p)) if p.as_char() == ':');
+
+    if !colon(lookahead.next()) || !colon(lookahead.next()) {
+        return None;
+    }
+
+    let Some(TokenTree::Ident(ident)) = lookahead.next() else {
+        return None;
+    };
+
+    *tokens = lookahead;
+
+    Some(ident.to_string())
 }
 
 fn flatten(tree: &UseTree, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
@@ -104,7 +139,25 @@ impl<'ast> Visit<'ast> for Checker {
     fn visit_macro(&mut self, mac: &'ast Macro) {
         self.visit_path(&mac.path);
 
+        // include! pulls in a file the checker never sees
+        if mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|s| s.ident == "include")
+        {
+            self.violations
+                .push("include! escapes the checked tree".into());
+        }
+
         self.check_tokens(mac.tokens.clone());
+    }
+
+    // `#[derive(a::B)]`, `#[cfg_attr(..)]` and friends carry paths as tokens
+    fn visit_meta_list(&mut self, list: &'ast MetaList) {
+        self.visit_path(&list.path);
+
+        self.check_tokens(list.tokens.clone());
     }
 
     fn visit_item_mod(&mut self, item: &'ast ItemMod) {
@@ -182,15 +235,11 @@ fn island_is_pure() {
 
     assert!(!files.is_empty());
 
-    // service.rs is the only exception, and `pub mod service;` in island/mod.rs declares it
+    // service.rs is the only exception, `pub mod service;` in island/mod.rs needs none
     for (path, depth) in files {
         let source = fs::read_to_string(&path).unwrap();
 
-        let mut found = violations(&source, depth);
-
-        if path.ends_with("island/mod.rs") {
-            found.retain(|v| v != "#[path] module escapes the checked tree");
-        }
+        let found = violations(&source, depth);
 
         assert!(found.is_empty(), "{}: {found:?}", path.display());
     }
@@ -231,6 +280,29 @@ mod checker {
             1
         ));
         assert!(flagged("#[path = \"../view.rs\"] mod v;", 1));
+        assert!(flagged("#[path = \"../view.rs\"] mod v;", 0));
+        assert!(flagged(
+            "fn f() { let _ = matches!(crate::view::x(), _); }",
+            1
+        ));
+        assert!(flagged(
+            "fn f() { let _ = format!(\"{}\", crate::theme::CANVAS_WIDTH); }",
+            1
+        ));
+        assert!(flagged(
+            "fn f() { let _ = format!(\"{}\", service::X); }",
+            1
+        ));
+        assert!(flagged(
+            "fn f() { let _ = vec![[super::super::theme::X]]; }",
+            1
+        ));
+        assert!(flagged("include!(\"../view.rs\");", 1));
+        assert!(flagged(
+            "macro_rules! m { () => { $crate::view::x() }; }",
+            1
+        ));
+        assert!(flagged("#[derive(amane::Thing)] struct S;", 1));
     }
 
     #[test]
@@ -249,5 +321,15 @@ mod checker {
         assert!(!flagged("use crate::island::activity::Activity;", 1));
         assert!(!flagged("fn f(service: u8) -> u8 { service }", 1));
         assert!(!flagged("mod inner { use super::Thing; }", 1));
+        assert!(!flagged(
+            "fn f() { let _ = format!(\"{}\", crate::island::x::Y); }",
+            1
+        ));
+        assert!(!flagged(
+            "fn f(service: u8) { let _ = format!(\"{}\", service); }",
+            1
+        ));
+        assert!(!flagged("#[derive(Debug, Clone)] struct S;", 1));
+        assert!(!flagged("pub mod service;", 0));
     }
 }
