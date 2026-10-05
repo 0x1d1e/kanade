@@ -1,0 +1,16 @@
+[package]
+name = "kanade"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# `amane dev` ignores this file and builds src/ against the library inside the installed CLI.
+# This rev is the single source of truth: `scripts/check-amane` verifies the installed CLI embeds it.
+[dependencies]
+amane = { git = "https://github.com/MystiaFin/amane", rev = "30800248fc51a663ec1f852047818641d6218786" }
+
+# test-only, so `amane dev` (std + amane only) is unaffected
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"

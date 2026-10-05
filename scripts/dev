@@ -1,0 +1,6 @@
+#!/bin/sh
+# amane dev against this checkout, refusing to run on a CLI that does not match the pinned Amane
+set -e
+root=$(cd "$(dirname "$0")/.." && pwd)
+"$root/scripts/check-amane"
+AMANE_CONFIG=$root exec amane dev
