@@ -111,7 +111,9 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
-            } else if !surfaces::notifications::key(&pressed, key) {
+            } else if !surfaces::notifications::key(&pressed, key)
+                && !surfaces::launcher::key(&pressed, key)
+            {
                 stray(&pressed, key);
             }
         })
@@ -264,7 +266,7 @@ fn surface(
             island.dnd(),
         )),
         Surface::Controls => Some(surfaces::controls::surface(island.dnd())),
-        Surface::Launcher => None,
+        Surface::Launcher => Some(surfaces::launcher::surface(monitor, island.visit())),
     }
 }
 
@@ -757,6 +759,9 @@ pub(crate) enum Icon {
 
     // a power profile
     Bolt,
+
+    // the Launcher's magnifier
+    Search,
 }
 
 impl Icon {
@@ -991,6 +996,13 @@ impl Icon {
                     .close()
                     .fill(ink)
             ],
+            Icon::Search => shapes![
+                Circle::new()
+                    .center(8.5 * u, 8.5 * u)
+                    .radius(5.5 * u)
+                    .stroke(line, ink),
+                stroke(Line::new().from(12.5 * u, 12.5 * u).to(16.5 * u, 16.5 * u)),
+            ],
         };
 
         if crossed || matches!(self, Icon::MicrophoneMuted) {
@@ -1088,7 +1100,7 @@ pub(crate) fn art(track: &Track, side: f32, radius: f32) -> Stack {
 }
 
 // a picture over a quiet tile with a mark, like `art`
-fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) -> Stack {
+pub(crate) fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) -> Stack {
     let tile = Rectangle::new()
         .width(side)
         .height(side)
@@ -1254,8 +1266,8 @@ fn route(monitor: &str, input: Input) {
 }
 
 /*
- * no open Surface types yet (Launcher will, #30), so a character typed into a held island the
- * pointer never reached was meant for the window beneath: the island lets go of the keyboard
+ * only the Launcher takes typing, and it consumes its keys first, so a character typed into any
+ * other held island the pointer never reached was meant for the window beneath: the island lets go of the keyboard
  * before a Space or Enter presses anything
  */
 fn stray(monitor: &str, key: Key) {

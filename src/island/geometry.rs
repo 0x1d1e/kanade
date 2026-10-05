@@ -45,7 +45,7 @@ pub const MEDIA: Shape = Shape {
     radius: 32.0,
 };
 
-// the largest body; Surfaces without a size of their own yet take it (#28, #30)
+// the largest body, for the Surfaces with a list: Notifications and the Launcher
 pub const EXPANDED_MAX: Shape = Shape {
     width: 520.0,
     height: 330.0,

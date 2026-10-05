@@ -9,7 +9,7 @@ mod view;
 
 use std::thread;
 
-use amane::App;
+use amane::{App, Apps, Service};
 
 fn main() {
     thread::spawn(sources::niri::follow);
@@ -18,6 +18,9 @@ fn main() {
     thread::spawn(sources::osd::follow);
     thread::spawn(sources::notifications::follow);
     thread::spawn(sources::system::follow);
+
+    // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list
+    thread::spawn(|| drop(Apps::read()));
 
     App::new()
         .window_per_monitor(view::island)
