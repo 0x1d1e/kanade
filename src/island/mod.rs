@@ -2,6 +2,7 @@
 //! The boundary is enforced structurally by `crate::boundary` (test-only).
 
 pub mod activity;
+pub mod arbiter;
 pub mod command;
 pub mod fade;
 pub mod geometry;
