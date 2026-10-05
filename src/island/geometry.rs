@@ -167,8 +167,8 @@ mod tests {
     ];
 
     /*
-     * every Presentation's shape and every shape on the way between any two of them, fractional
-     * mid-spring ones included; a spring between two targets stays within them (motion)
+     * every Presentation's shape and every straight blend between any two of them, fractional
+     * ones included. A retargeted spring can leave these blends, see the real-spring test below
      */
     fn shapes() -> impl Iterator<Item = Shape> {
         PRESENTATIONS.into_iter().flat_map(|from| {
