@@ -59,8 +59,8 @@ The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind ope
 ## Pin
 A right click keeps an island's Peek or open Surface up after the pointer leaves, with no leave grace. The body shows a ring while pinned.
 - Right click on Compact peeks pinned, on a Peek or open Surface pins or unpins it, at Rest does nothing (a click already opens Controls). On a Surface's own control it pins too and never presses it.
-- Escape ends a pinned Peek or Surface; IPC `collapse` and `toggle` close a pinned Surface.
-- **Invariant:** a pin lasts one Peek or one Surface opening. Whatever ends or replaces it ends the pin: collapse, a click expanding the Peek, another Surface opening, Preempt, the overview, another island expanding, the primary's withdrawal. Nothing pinned is remembered.
+- Escape ends a pin only while the island has keyboard focus (a pinned island gives it back, see below); IPC `collapse` and `toggle` close a pinned Surface.
+- **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The primary's withdrawal clears a pinned Peek; Preempt clears a pinned Surface. Nothing pinned is remembered.
 - **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
 - **Avoid:** sticky, lock (lock is the screen locker)
