@@ -110,7 +110,7 @@ fn activity(notification: u32, urgency: Urgency, actions: Vec<Action>, toast: To
         .with_detail(Detail::Notification(toast))
 }
 
-fn toast(notification: &Notification) -> Toast {
+pub(crate) fn toast(notification: &Notification) -> Toast {
     let summary = match plain(notification.summary()) {
         summary if summary.is_empty() => notification.app_name().to_owned(),
         summary => summary,

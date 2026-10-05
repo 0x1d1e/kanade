@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::activity::{Activity, Detail, Device, Kind, Volume};
+use super::activity::{Activity, Detail, Device, Kind, Priority, Volume};
 use super::fade::InPlace;
 
 // full interactive content of an Expanded island
@@ -55,16 +55,22 @@ impl Surface {
      * Surface sets: a Transient saying it again would only wait as a badge
      */
     pub fn shows(self, activity: &Activity) -> bool {
-        matches!(
-            (self, activity.detail()),
+        match (self, activity.detail()) {
             (
                 Surface::Media,
                 Detail::Volume(Volume {
                     device: Device::Speaker,
                     ..
-                })
-            )
-        )
+                }),
+            ) => true,
+
+            // its history lists every notification; a Critical one still preempts (plan 5.1 rule 4)
+            (Surface::Notifications, Detail::Notification(_)) => {
+                activity.priority() != Priority::Critical
+            }
+
+            _ => false,
+        }
     }
 }
 
@@ -173,6 +179,9 @@ pub struct Presentations {
 
     // niri's overview is open, every island rests and takes no input (plan 5.3)
     overview: bool,
+
+    // how many times a Surface opened, so state kept for one opening ends with it
+    visits: u64,
 }
 
 impl Presentations {
@@ -270,6 +279,15 @@ impl Presentations {
         }
 
         self.island(monitor).raised = Some(Raised::Expanded(surface));
+        self.visits += 1;
+    }
+
+    /*
+     * this opening of a Surface, new each time one opens or another replaces it, so a Surface's
+     * focus and scroll last one visit without anything resetting them on close
+     */
+    pub fn visit(&self) -> u64 {
+        self.visits
     }
 
     // the one Expanded island and its Surface, if any
@@ -343,6 +361,48 @@ mod tests {
         assert!(Media.shows(&level(Device::Speaker)));
         assert!(!Media.shows(&level(Device::Microphone)));
         assert!(!Controls.shows(&level(Device::Speaker)));
+        assert!(!Notifications.shows(&level(Device::Speaker)));
+    }
+
+    #[test]
+    fn the_notifications_surface_shows_every_toast_but_a_critical_one() {
+        use super::super::activity::{Id, Toast};
+
+        let toast = |priority| {
+            Activity::transient(
+                Id::new(Kind::Notification, "7"),
+                priority,
+                std::time::Duration::from_secs(5),
+            )
+            .with_detail(Detail::Notification(Toast::default()))
+        };
+
+        assert!(Notifications.shows(&toast(Priority::Passive)));
+        assert!(Notifications.shows(&toast(Priority::Actionable)));
+        assert!(!Notifications.shows(&toast(Priority::Critical)));
+        assert!(!Media.shows(&toast(Priority::Passive)));
+    }
+
+    #[test]
+    fn every_opening_is_a_new_visit() {
+        let mut presentations = Presentations::default();
+        let first = presentations.visit();
+
+        presentations.input(MONITOR, Input::Open(Notifications));
+        let open = presentations.visit();
+        assert_ne!(open, first);
+
+        // a click inside keeps the visit, a Surface replacing it starts another
+        presentations.input(MONITOR, Input::Click);
+        assert_eq!(presentations.visit(), open);
+
+        presentations.input(MONITOR, Input::Open(Launcher));
+        assert_ne!(presentations.visit(), open);
+        let launcher = presentations.visit();
+
+        presentations.input(MONITOR, Input::Collapse);
+        presentations.input(MONITOR, Input::Open(Notifications));
+        assert_ne!(presentations.visit(), launcher);
     }
 
     #[test]

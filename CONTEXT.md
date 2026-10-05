@@ -43,7 +43,7 @@ An island's visual level: `Rest | Compact | Peek | Expanded(Surface)`.
 Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher`.
 - Media and Notifications are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface.
 - Controls and Launcher have no Activity. They open only by user action.
-- **Invariant:** a Transient the open Surface already shows is dropped, not queued (Volume while Media is open, `Surface::shows`).
+- **Invariant:** a Transient the open Surface already shows is dropped, not queued (Volume while Media is open, a non-Critical notification while Notifications is open, `Surface::shows`).
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite
@@ -53,5 +53,5 @@ Small secondary indicator beside the primary island: screen cast, mic/camera, ti
 ## Hold
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
 - **Invariant:** only an island opened without a press holds. The hold ends when the island collapses.
-- **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; keys never extend the bound. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/plan.md` §6.1.
+- **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; only keys the open Surface consumes restart the bound, and typing into a held Surface that does not type collapses it. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/plan.md` §6.1.
 - **Avoid:** hold for a Peek or Surface the user opened. That is the island's Presentation.

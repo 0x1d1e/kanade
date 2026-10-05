@@ -13,7 +13,6 @@ use crate::island::activity::{
 use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::sources::notifications::Daemon;
 use crate::surfaces;
 use crate::theme;
 
@@ -56,7 +55,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
         && let Some(form) = small_form(&content)
-            .or_else(|| surface(&content, island.surface(), now))
+            .or_else(|| surface(&monitor.name, &content, &island, now))
             .or_else(|| placeholder(&content))
     {
         body = body.child(form.opacity(opacity));
@@ -112,6 +111,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
+            } else {
+                surfaces::notifications::key(&pressed, key);
             }
         })
         // empty under niri's overview, so the pointer reaches the overview beneath
@@ -227,11 +228,6 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
         Presentation::Rest => return None,
         Presentation::Compact => (name(&content.activity), 13.0),
         Presentation::Peek => (name(&content.activity), 15.0),
-        // the error state, until the Notifications Surface draws it (#28)
-        Presentation::Expanded(Surface::Notifications) => match &*Daemon::read() {
-            Daemon::Conflict(other) => (format!("{other} is the notification daemon"), 15.0),
-            _ => (String::from("Notifications"), 17.0),
-        },
         Presentation::Expanded(surface) => (format!("{surface:?}"), 17.0),
     };
 
@@ -243,14 +239,30 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
 }
 
 /*
- * the open Surface's own content; `open` is the Surface open now, which differs from the content's
- * while it fades out
+ * the open Surface's own content, from the view's read of the island; the Surface open now differs
+ * from the content's while it fades out
  */
-fn surface(content: &Content, open: Option<Surface>, now: Instant) -> Option<Rectangle> {
-    match content.presentation {
-        Presentation::Expanded(Surface::Media) => {
-            Some(surfaces::media::surface(open == Some(Surface::Media), now))
-        }
+fn surface(
+    monitor: &str,
+    content: &Content,
+    island: &IslandService,
+    now: Instant,
+) -> Option<Rectangle> {
+    let Presentation::Expanded(surface) = content.presentation else {
+        return None;
+    };
+
+    let open = island.surface() == Some(surface);
+
+    match surface {
+        Surface::Media => Some(surfaces::media::surface(open, now)),
+        Surface::Notifications => Some(surfaces::notifications::surface(
+            monitor,
+            open,
+            island.visit(),
+            island.held(monitor),
+            island.dnd(),
+        )),
         _ => None,
     }
 }
@@ -737,6 +749,10 @@ pub(crate) enum Icon {
     Wired,
     Shield,
     Bluetooth,
+    Bell,
+
+    // Do Not Disturb, cut out of the body's color like the slash
+    Moon,
 }
 
 impl Icon {
@@ -753,7 +769,7 @@ impl Icon {
     }
 
     // struck through, for something gone or off
-    fn crossed(self, side: f32) -> Canvas {
+    pub(crate) fn crossed(self, side: f32) -> Canvas {
         self.canvas(side, true)
     }
 
@@ -925,6 +941,36 @@ impl Icon {
                     .stroke(line, theme::FG)
                     .cap(Cap::Round)
             ],
+            Icon::Bell => shapes![
+                Path::new()
+                    .move_to(3.5 * u, 14.5 * u)
+                    .line_to(16.5 * u, 14.5 * u)
+                    .line_to(15.0 * u, 12.5 * u)
+                    .line_to(15.0 * u, 8.5 * u)
+                    .quad_to(15.0 * u, 3.5 * u, 10.0 * u, 3.5 * u)
+                    .quad_to(5.0 * u, 3.5 * u, 5.0 * u, 8.5 * u)
+                    .line_to(5.0 * u, 12.5 * u)
+                    .close()
+                    .stroke(line, theme::FG)
+                    .cap(Cap::Round),
+                Arc::new()
+                    .center(10.0 * u, 15.5 * u)
+                    .radius(2.0 * u)
+                    .start(90.0)
+                    .sweep(180.0)
+                    .stroke(line, theme::FG)
+                    .cap(Cap::Round),
+            ],
+            Icon::Moon => shapes![
+                Circle::new()
+                    .center(10.0 * u, 10.0 * u)
+                    .radius(7.0 * u)
+                    .fill(theme::FG),
+                Circle::new()
+                    .center(14.0 * u, 6.5 * u)
+                    .radius(6.0 * u)
+                    .fill(theme::BODY),
+            ],
         };
 
         if crossed || matches!(self, Icon::MicrophoneMuted) {
@@ -1050,7 +1096,7 @@ fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) -> Stack {
 }
 
 // the sender's picture, or its initial on the quiet tile
-fn toast_tile(toast: &Toast, side: f32, radius: f32) -> Stack {
+pub(crate) fn toast_tile(toast: &Toast, side: f32, radius: f32) -> Stack {
     let sender = if toast.app.is_empty() {
         &toast.summary
     } else {
@@ -1167,7 +1213,7 @@ fn expand(monitor: &str) {
     }
 }
 
-fn collapse(monitor: &str) {
+pub(crate) fn collapse(monitor: &str) {
     if IslandService::read().expanded(monitor) {
         IslandService::write().input(monitor, Input::Collapse, Instant::now());
     }
