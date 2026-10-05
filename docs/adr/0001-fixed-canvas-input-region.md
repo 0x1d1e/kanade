@@ -14,7 +14,7 @@ Each monitor gets one layer window with a fixed canvas: top-center, `Layer::Over
 
 ## Alternatives
 
-**Resize the layer window per frame.** Every size change is a `set_size`, a commit, and a configure from the compositor, so each animation frame waits on a compositor round trip. The window edge and the drawn body are then expected to drift a frame apart and jitter (not measured, since the fixed canvas made it moot). Shadows and content that grow past the current size are clipped.
+**Resize the layer window per frame.** Every size change sends `set_size` plus a commit and is applied after an asynchronous compositor configure. During animation this adds a compositor-mediated resize/configure cycle per size change. Whether that causes visible jitter was not measured. Until configure arrives, Amane may still draw at the previous configured size, so growing content can be clipped.
 
 **A separate popup window per surface.** The pill and its expanded surface become different windows, so one shape cannot morph into the other. It also breaks the goal of one body showing many contexts.
 
