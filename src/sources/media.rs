@@ -252,6 +252,9 @@ pub enum Control {
 
     // show this player until the Surface closes; the Activity keeps following the playing one
     Select(String),
+
+    // turn the player chips to this page until the Surface closes, the shown player unchanged
+    Page(usize),
 }
 
 impl Event {
@@ -374,6 +377,9 @@ struct Watcher {
     // the player chosen on the Surface, until it closes
     selected: Option<String>,
 
+    // the chip page turned to, until it closes
+    page: Option<usize>,
+
     // the artwork last read, and the accent it gave
     accent: Option<(String, Option<Color>)>,
 
@@ -432,6 +438,7 @@ impl Watcher {
                     .map(|(name, player)| (name.clone(), player.identity.clone())),
             ),
             shown: deck,
+            page: self.page,
         };
 
         if self.published.as_ref() != Some(&playback) {
@@ -477,8 +484,27 @@ impl Watcher {
         self.shown(players).map(|(name, _)| name.clone())
     }
 
+    // what a press asks of the shown player's bus name; choosing and paging stay on the Surface
+    fn take(&mut self, control: Control) -> Option<(&'static str, String)> {
+        match control {
+            Control::Play(name) => Some(("Play", name)),
+            Control::Pause(name) => Some(("Pause", name)),
+            Control::Previous(name) => Some(("Previous", name)),
+            Control::Next(name) => Some(("Next", name)),
+            Control::Select(name) => {
+                self.selected = Some(name);
+                None
+            }
+            Control::Page(page) => {
+                self.page = Some(page);
+                None
+            }
+        }
+    }
+
     fn close(&mut self) {
         self.selected = None;
+        self.page = None;
         self.tick = None;
     }
 }
@@ -590,15 +616,8 @@ pub fn follow() {
             }
             Ok(Event::Watch) => {}
             Ok(Event::Control(control)) => {
-                let (method, name) = match control {
-                    Control::Play(name) => ("Play", name),
-                    Control::Pause(name) => ("Pause", name),
-                    Control::Previous(name) => ("Previous", name),
-                    Control::Next(name) => ("Next", name),
-                    Control::Select(name) => {
-                        watcher.selected = Some(name);
-                        continue;
-                    }
+                let Some((method, name)) = watcher.take(control) else {
+                    continue;
                 };
 
                 // the player announces what changed, read back here too for an answer this frame
@@ -1024,6 +1043,24 @@ mod tests {
         ]);
         let player = Player::of(":1.4", "mpv", &properties, Instant::now());
         assert_eq!((player.can_play, player.can_pause), (false, false));
+    }
+
+    #[test]
+    fn turning_the_page_keeps_the_shown_player_until_close() {
+        let mut watcher = Watcher::default();
+
+        assert_eq!(watcher.take(Control::Select(String::from("mpv"))), None);
+        assert_eq!(watcher.take(Control::Page(1)), None);
+        assert_eq!(watcher.selected.as_deref(), Some("mpv"));
+        assert_eq!(watcher.page, Some(1));
+
+        assert_eq!(
+            watcher.take(Control::Next(String::from("mpv"))),
+            Some(("Next", String::from("mpv")))
+        );
+
+        watcher.close();
+        assert_eq!((watcher.selected, watcher.page), (None, None));
     }
 
     #[test]

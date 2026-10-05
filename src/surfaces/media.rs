@@ -81,6 +81,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
                     deck.map_or(&nothing, |deck| &deck.track),
                     &playback.players,
                     deck,
+                    playback.page,
                     width
                 ),
                 timeline(deck, accent, width, now),
@@ -92,7 +93,13 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
 }
 
 // art, then title and artist, then the players to choose from
-fn header(track: &Track, players: &[Choice], deck: Option<&Deck>, width: f32) -> Row {
+fn header(
+    track: &Track,
+    players: &[Choice],
+    deck: Option<&Deck>,
+    page: Option<usize>,
+    width: f32,
+) -> Row {
     let words = width - ART - GAP;
 
     let mut lines = children![
@@ -123,7 +130,7 @@ fn header(track: &Track, players: &[Choice], deck: Option<&Deck>, width: f32) ->
                 .width(words)
                 .height(ART)
                 .align_child(Start, End)
-                .child(choices(players, shown, words)),
+                .child(choices(players, shown, page, words)),
         ])
         .width(words)
         .height(ART),
@@ -133,10 +140,10 @@ fn header(track: &Track, players: &[Choice], deck: Option<&Deck>, width: f32) ->
 
 /*
  * one player says its name; more each get a chip, the shown one filled, pressed to show that one
- * until the Surface closes. Past what fits, a page of them around the shown one and a "+N" chip
- * that turns to the next page
+ * until the Surface closes. Past what fits, a page of them, first the one with the shown player,
+ * and a "+N" chip that only turns to the next page
  */
-fn choices(players: &[Choice], shown: Option<&str>, width: f32) -> Row {
+fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: f32) -> Row {
     if let [only] = players {
         return Row::new(children![
             Text::new(&only.identity)
@@ -151,12 +158,14 @@ fn choices(players: &[Choice], shown: Option<&str>, width: f32) -> Row {
     let index = players
         .iter()
         .position(|player| shown == Some(player.name.as_str()));
-    let chips = Chips::of(players.len(), index, width);
+    let chips = Chips::of(players.len(), index, page, width);
 
     let page = players[chips.page.clone()].iter().map(|player| {
         let selected = shown == Some(player.name.as_str());
 
-        chip(&player.identity, chips.width, selected, &player.name)
+        let select = Control::Select(player.name.clone());
+
+        chip(&player.identity, chips.width, selected, select)
     });
 
     let more = chips.more.map(|next| {
@@ -166,16 +175,14 @@ fn choices(players: &[Choice], shown: Option<&str>, width: f32) -> Row {
             &format!("+{hidden}"),
             chips.width,
             false,
-            &players[next].name,
+            Control::Page(next),
         )
     });
 
     Row::new(page.chain(more).collect()).gap(CHIP_GAP)
 }
 
-fn chip(label: &str, width: f32, selected: bool, name: &str) -> Box<dyn Widget> {
-    let name = name.to_owned();
-
+fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Widget> {
     let chip = Rectangle::new()
         .width(width)
         .height(CHIP)
@@ -190,7 +197,7 @@ fn chip(label: &str, width: f32, selected: bool, name: &str) -> Box<dyn Widget> 
         .cursor(Cursor::Pointer)
         .on_click(move |button| {
             if button == Button::Left {
-                media::control(Control::Select(name.clone()));
+                media::control(control.clone());
             }
         })
         .child(
@@ -213,14 +220,15 @@ fn chip(label: &str, width: f32, selected: bool, name: &str) -> Box<dyn Widget> 
 struct Chips {
     page: Range<usize>,
 
-    // the first player of the next page, the last page turning back to the first
+    // the next page, the last turning back to the first
     more: Option<usize>,
 
     width: f32,
 }
 
 impl Chips {
-    fn of(count: usize, shown: Option<usize>, width: f32) -> Chips {
+    // on `page` when turned to one, else on the page with the shown player
+    fn of(count: usize, shown: Option<usize>, page: Option<usize>, width: f32) -> Chips {
         let slots = (((width + CHIP_GAP) / (CHIP_MIN + CHIP_GAP)) as usize).max(2);
 
         if count <= slots {
@@ -232,13 +240,17 @@ impl Chips {
         }
 
         let per = slots - 1;
-        let start = shown.unwrap_or(0) / per * per;
+        let pages = count.div_ceil(per);
+
+        // a page left behind by players closing is the last one there still is
+        let page = page.unwrap_or(shown.unwrap_or(0) / per).min(pages - 1);
+        let start = page * per;
         let end = (start + per).min(count);
 
         // every page as wide as the full ones, so turning the last one moves nothing
         Chips {
             page: start..end,
-            more: Some(if end < count { end } else { 0 }),
+            more: Some((page + 1) % pages),
             width: chip_width(width, slots),
         }
     }
@@ -520,7 +532,7 @@ mod tests {
     fn every_player_chip_stays_pressable_however_many_players() {
         for count in 2..=24 {
             for shown in 0..count {
-                let chips = Chips::of(count, Some(shown), WORDS);
+                let chips = Chips::of(count, Some(shown), None, WORDS);
                 let shown_chips = chips.page.len() + usize::from(chips.more.is_some());
                 let used = shown_chips as f32 * chips.width + (shown_chips - 1) as f32 * CHIP_GAP;
 
@@ -533,17 +545,28 @@ mod tests {
 
     #[test]
     fn the_more_chip_turns_the_page_and_back() {
-        let first = Chips::of(11, Some(0), WORDS);
+        let first = Chips::of(11, Some(0), None, WORDS);
         assert_eq!(first.page, 0..3);
-        assert_eq!(first.more, Some(3));
+        assert_eq!(first.more, Some(1));
 
-        let last = Chips::of(11, Some(10), WORDS);
+        let last = Chips::of(11, Some(10), None, WORDS);
         assert_eq!(last.page, 9..11);
         assert_eq!(last.more, Some(0));
         assert_eq!(last.width, first.width);
 
         // what fits shows whole
-        assert_eq!(Chips::of(3, Some(2), WORDS).more, None);
+        assert_eq!(Chips::of(3, Some(2), None, WORDS).more, None);
+    }
+
+    #[test]
+    fn a_turned_page_shows_whatever_player_is_shown() {
+        // the shown player is on the first page, the second is turned to
+        let turned = Chips::of(11, Some(0), Some(1), WORDS);
+        assert_eq!(turned.page, 3..6);
+        assert_eq!(turned.more, Some(2));
+
+        // players closed under a page past the end leave the last one
+        assert_eq!(Chips::of(5, Some(0), Some(3), WORDS).page, 3..5);
     }
 
     #[test]

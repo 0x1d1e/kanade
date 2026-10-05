@@ -22,6 +22,9 @@ pub struct Playback {
 
     // none while no player is open: "Nothing playing"
     pub shown: Option<Deck>,
+
+    // the chip page turned to; none shows the page with the shown player
+    pub page: Option<usize>,
 }
 
 // written only by `media::follow`, read by the Media Surface
