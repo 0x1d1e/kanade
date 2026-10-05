@@ -38,7 +38,14 @@ pub const CONTROLS: Shape = Shape {
     radius: 32.0,
 };
 
-// the largest body; Surfaces without a size of their own yet take it (#27, #28, #30)
+// as wide as Controls, so the two Surfaces line up when one replaces the other
+pub const MEDIA: Shape = Shape {
+    width: 440.0,
+    height: 216.0,
+    radius: 32.0,
+};
+
+// the largest body; Surfaces without a size of their own yet take it (#28, #30)
 pub const EXPANDED_MAX: Shape = Shape {
     width: 520.0,
     height: 330.0,
@@ -56,9 +63,8 @@ pub fn shape(presentation: Presentation) -> Shape {
         Presentation::Compact => COMPACT,
         Presentation::Peek => PEEK,
         Presentation::Expanded(Surface::Controls) => CONTROLS,
-        Presentation::Expanded(Surface::Media | Surface::Notifications | Surface::Launcher) => {
-            EXPANDED_MAX
-        }
+        Presentation::Expanded(Surface::Media) => MEDIA,
+        Presentation::Expanded(Surface::Notifications | Surface::Launcher) => EXPANDED_MAX,
     }
 }
 

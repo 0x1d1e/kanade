@@ -43,6 +43,7 @@ An island's visual level: `Rest | Compact | Peek | Expanded(Surface)`.
 Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher`.
 - Media and Notifications are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface.
 - Controls and Launcher have no Activity. They open only by user action.
+- **Invariant:** a Transient the open Surface already shows is dropped, not queued (Volume while Media is open, `Surface::shows`).
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite

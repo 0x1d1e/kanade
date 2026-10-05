@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::activity::{Activity, Kind};
+use super::activity::{Activity, Detail, Device, Kind, Volume};
 use super::fade::InPlace;
 
 // full interactive content of an Expanded island
@@ -48,6 +48,23 @@ impl Surface {
             Kind::Notification => Surface::Notifications,
             _ => Surface::Controls,
         }
+    }
+
+    /*
+     * whether this Surface already shows what the Activity says, like the speaker volume the Media
+     * Surface sets: a Transient saying it again would only wait as a badge
+     */
+    pub fn shows(self, activity: &Activity) -> bool {
+        matches!(
+            (self, activity.detail()),
+            (
+                Surface::Media,
+                Detail::Volume(Volume {
+                    device: Device::Speaker,
+                    ..
+                })
+            )
+        )
     }
 }
 
@@ -304,6 +321,28 @@ mod tests {
         }
 
         presentations.get(MONITOR)
+    }
+
+    #[test]
+    fn only_the_media_surface_shows_the_speaker_volume() {
+        use super::super::activity::{Id, Priority};
+
+        let level = |device| {
+            Activity::transient(
+                Id::new(Kind::Volume, "volume"),
+                Priority::Osd,
+                std::time::Duration::from_secs(1),
+            )
+            .with_detail(Detail::Volume(Volume {
+                device,
+                percent: 40,
+                muted: false,
+            }))
+        };
+
+        assert!(Media.shows(&level(Device::Speaker)));
+        assert!(!Media.shows(&level(Device::Microphone)));
+        assert!(!Controls.shows(&level(Device::Speaker)));
     }
 
     #[test]

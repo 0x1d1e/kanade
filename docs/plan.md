@@ -79,7 +79,7 @@ Arbiter rules (each is a unit test):
 1. Highest priority non-expired Activity is primary. Tie: newest.
 2. Transient is shown over the primary for its lifetime, then the primary returns.
 3. Persistent Ongoing/Critical Activities that are not primary become Satellites (cap 2; overflow collapses into a count).
-4. Only `Preempt` (Critical) may displace a user-opened Expanded surface. Everything else queues as a satellite badge. A toast never steals a surface the user is using.
+4. Only `Preempt` (Critical) may displace a user-opened Expanded surface. Everything else queues as a satellite badge. A toast never steals a surface the user is using. A Transient the open Surface already shows (volume on Media) is dropped, not queued.
 5. DND suppresses Notification toasts, not the Notification, and never Critical Activities.
 6. If fullscreen suppression ships (Phase 5), fullscreen on the focused output: only Critical and privacy Activities render, as Satellite-sized.
 7. Time is an input. The Arbiter never reads a clock.
