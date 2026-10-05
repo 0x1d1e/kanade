@@ -111,8 +111,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
-            } else {
-                surfaces::notifications::key(&pressed, key);
+            } else if !surfaces::notifications::key(&pressed, key) {
+                stray(&pressed, key);
             }
         })
         // empty under niri's overview, so the pointer reaches the overview beneath
@@ -263,7 +263,8 @@ fn surface(
             island.held(monitor),
             island.dnd(),
         )),
-        _ => None,
+        Surface::Controls => Some(surfaces::controls::surface(island.dnd())),
+        Surface::Launcher => None,
     }
 }
 
@@ -737,7 +738,7 @@ pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
 }
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Icon {
     // waves by level: none silent, one up to half, two above
     Speaker(u8),
@@ -751,8 +752,11 @@ pub(crate) enum Icon {
     Bluetooth,
     Bell,
 
-    // Do Not Disturb, cut out of the body's color like the slash
+    // Do Not Disturb, cut out of the ground's color like the slash
     Moon,
+
+    // a power profile
+    Bolt,
 }
 
 impl Icon {
@@ -765,21 +769,26 @@ impl Icon {
     }
 
     pub(crate) fn draw(self, side: f32) -> Canvas {
-        self.canvas(side, false)
+        self.canvas(side, false, theme::FG, theme::BODY)
     }
 
     // struck through, for something gone or off
     pub(crate) fn crossed(self, side: f32) -> Canvas {
-        self.canvas(side, true)
+        self.canvas(side, true, theme::FG, theme::BODY)
     }
 
-    // on a 20 unit grid, scaled to `side`
-    fn canvas(self, side: f32, crossed: bool) -> Canvas {
+    // in `ink` on `ground`, like the body's color on a filled button
+    pub(crate) fn on(self, side: f32, ink: Color, ground: Color) -> Canvas {
+        self.canvas(side, false, ink, ground)
+    }
+
+    // on a 20 unit grid, scaled to `side`; cuts take the color of the `ground` it sits on
+    fn canvas(self, side: f32, crossed: bool, ink: Color, ground: Color) -> Canvas {
         let u = side / 20.0;
         let line = 1.7 * u;
-        let stroke = |shape: Line| shape.stroke(line, theme::FG).cap(Cap::Round);
+        let stroke = |shape: Line| shape.stroke(line, ink).cap(Cap::Round);
 
-        // cut out of the icon by a body-colored edge, then drawn
+        // cut out of the icon by a ground-colored edge, then drawn
         let slash = || {
             let from = (3.5 * u, 2.5 * u);
             let to = (16.5 * u, 17.5 * u);
@@ -788,7 +797,7 @@ impl Icon {
                 Line::new()
                     .from(from.0, from.1)
                     .to(to.0, to.1)
-                    .stroke(line + 3.0 * u, theme::BODY)
+                    .stroke(line + 3.0 * u, ground)
                     .cap(Cap::Round),
                 stroke(Line::new().from(from.0, from.1).to(to.0, to.1)),
             ]
@@ -803,7 +812,7 @@ impl Icon {
                 .line_to(6.0 * u, 12.5 * u)
                 .line_to(2.5 * u, 12.5 * u)
                 .close()
-                .fill(theme::FG)
+                .fill(ink)
         };
 
         let wave = |radius: f32| {
@@ -812,7 +821,7 @@ impl Icon {
                 .radius(radius * u)
                 .start(50.0)
                 .sweep(80.0)
-                .stroke(line, theme::FG)
+                .stroke(line, ink)
                 .cap(Cap::Round)
         };
 
@@ -824,13 +833,13 @@ impl Icon {
                     .line_to(13.0 * u, 9.0 * u)
                     .arc(10.0 * u, 9.0 * u, 3.0 * u, 90.0, 180.0)
                     .close()
-                    .fill(theme::FG),
+                    .fill(ink),
                 Arc::new()
                     .center(10.0 * u, 9.0 * u)
                     .radius(5.5 * u)
                     .start(90.0)
                     .sweep(180.0)
-                    .stroke(line, theme::FG)
+                    .stroke(line, ink)
                     .cap(Cap::Round),
                 stroke(Line::new().from(10.0 * u, 14.5 * u).to(10.0 * u, 17.5 * u)),
             ]
@@ -862,7 +871,7 @@ impl Icon {
                     Circle::new()
                         .center(10.0 * u, 10.0 * u)
                         .radius(3.5 * u)
-                        .fill(theme::FG)
+                        .fill(ink)
                 ];
 
                 for ray in 0..8 {
@@ -883,7 +892,7 @@ impl Icon {
                     Circle::new()
                         .center(10.0 * u, 15.5 * u)
                         .radius(1.6 * u)
-                        .fill(theme::FG)
+                        .fill(ink)
                 ];
 
                 for radius in [4.5, 8.0, 11.5] {
@@ -893,7 +902,7 @@ impl Icon {
                             .radius(radius * u)
                             .start(315.0)
                             .sweep(90.0)
-                            .stroke(line, theme::FG)
+                            .stroke(line, ink)
                             .cap(Cap::Round),
                     ));
                 }
@@ -912,7 +921,7 @@ impl Icon {
                     .line_to(16.5 * u, 15.5 * u)
                     .line_to(3.5 * u, 15.5 * u)
                     .close()
-                    .stroke(line, theme::FG),
+                    .stroke(line, ink),
                 stroke(Line::new().from(7.5 * u, 11.5 * u).to(7.5 * u, 12.5 * u)),
                 stroke(Line::new().from(10.0 * u, 11.5 * u).to(10.0 * u, 12.5 * u)),
                 stroke(Line::new().from(12.5 * u, 11.5 * u).to(12.5 * u, 12.5 * u)),
@@ -927,7 +936,7 @@ impl Icon {
                     .quad_to(4.0 * u, 15.0 * u, 4.0 * u, 9.5 * u)
                     .line_to(4.0 * u, 5.0 * u)
                     .close()
-                    .stroke(line, theme::FG)
+                    .stroke(line, ink)
             ],
             // the rune
             Icon::Bluetooth => shapes![
@@ -938,7 +947,7 @@ impl Icon {
                     .line_to(10.0 * u, 3.0 * u)
                     .line_to(14.0 * u, 6.5 * u)
                     .line_to(5.5 * u, 13.5 * u)
-                    .stroke(line, theme::FG)
+                    .stroke(line, ink)
                     .cap(Cap::Round)
             ],
             Icon::Bell => shapes![
@@ -951,25 +960,36 @@ impl Icon {
                     .quad_to(5.0 * u, 3.5 * u, 5.0 * u, 8.5 * u)
                     .line_to(5.0 * u, 12.5 * u)
                     .close()
-                    .stroke(line, theme::FG)
+                    .stroke(line, ink)
                     .cap(Cap::Round),
                 Arc::new()
                     .center(10.0 * u, 15.5 * u)
                     .radius(2.0 * u)
                     .start(90.0)
                     .sweep(180.0)
-                    .stroke(line, theme::FG)
+                    .stroke(line, ink)
                     .cap(Cap::Round),
             ],
             Icon::Moon => shapes![
                 Circle::new()
                     .center(10.0 * u, 10.0 * u)
                     .radius(7.0 * u)
-                    .fill(theme::FG),
+                    .fill(ink),
                 Circle::new()
                     .center(14.0 * u, 6.5 * u)
                     .radius(6.0 * u)
-                    .fill(theme::BODY),
+                    .fill(ground),
+            ],
+            Icon::Bolt => shapes![
+                Path::new()
+                    .move_to(11.5 * u, 2.0 * u)
+                    .line_to(4.5 * u, 11.0 * u)
+                    .line_to(9.5 * u, 11.0 * u)
+                    .line_to(8.5 * u, 18.0 * u)
+                    .line_to(15.5 * u, 9.0 * u)
+                    .line_to(10.5 * u, 9.0 * u)
+                    .close()
+                    .fill(ink)
             ],
         };
 
@@ -1230,6 +1250,24 @@ fn hover(monitor: &str, inside: bool) {
 fn route(monitor: &str, input: Input) {
     if input.decides() {
         IslandService::write().input(monitor, input, Instant::now());
+    }
+}
+
+/*
+ * no open Surface types yet (Launcher will, #30), so a character typed into a held island the
+ * pointer never reached was meant for the window beneath: the island lets go of the keyboard
+ * before a Space or Enter presses anything
+ */
+fn stray(monitor: &str, key: Key) {
+    let island = IslandService::read();
+    let stray = island.expanded(monitor)
+        && island.held(monitor)
+        && !island.inside(monitor)
+        && matches!(key, Key::Character(_));
+    drop(island);
+
+    if stray {
+        collapse(monitor);
     }
 }
 

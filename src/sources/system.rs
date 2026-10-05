@@ -1,12 +1,13 @@
-//! Network and Bluetooth (plan 2, 5.1, 7): `follow` watches the system bus for both. Joining or
-//! leaving a network, or a Bluetooth device connecting or going away, shows as a short Transient on
-//! the focused island; nothing about them stays on it, so there is never a permanent Wi-Fi
-//! indicator. The latest state is kept in `Connectivity` and `Adapter` for the Controls Surface.
+//! Network, Bluetooth and power profiles (plan 2, 5.1, 7): `follow` watches the system bus for
+//! all three. Joining or leaving a network, or a Bluetooth device connecting or going away, shows
+//! as a short Transient on the focused island; nothing about them stays on it, so there is never a
+//! permanent Wi-Fi indicator. The latest state is kept in `Connectivity`, `Adapter` and `Profiles`
+//! for the Controls Surface.
 //!
 //! Amane's Network and Bluetooth poll every second or two for good once read, so this never reads
-//! them. It waits on signals instead and asks NetworkManager or BlueZ again only when one of their
-//! objects changes, comes or goes, or the daemon itself starts or stops: at idle its threads sleep,
-//! and a signal about anything else, like an access point's strength, is dropped without a call.
+//! them. It waits on signals instead and asks a daemon again only when one of its objects changes,
+//! comes or goes, or the daemon itself starts or stops: at idle its threads sleep, and a signal
+//! about anything else, like an access point's strength, is dropped without a call.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,7 @@ use std::{iter, thread};
 
 use amane::{Bus, Service, Value};
 
-use super::{bluetooth, network};
+use super::{bluetooth, network, power};
 use crate::island::activity::Activity;
 use crate::island::service::IslandService;
 
@@ -50,6 +51,7 @@ impl Radio {
 enum Daemon {
     NetworkManager,
     BlueZ,
+    PowerProfiles,
 }
 
 // the signals that can say so, each followed on its own
@@ -96,6 +98,7 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
     match watch {
         Watch::Properties if network::concerns(path, first) => Some(Daemon::NetworkManager),
         Watch::Properties if bluetooth::concerns(path, first) => Some(Daemon::BlueZ),
+        Watch::Properties if power::concerns(path, first) => Some(Daemon::PowerProfiles),
 
         // the first argument is the object
         Watch::Added | Watch::Removed if bluetooth::object(first) => Some(Daemon::BlueZ),
@@ -103,6 +106,7 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
         // only the bus itself says who owns a name, the first argument
         Watch::Owner if sender == BUS && first == network::NAME => Some(Daemon::NetworkManager),
         Watch::Owner if sender == BUS && first == bluetooth::BLUEZ => Some(Daemon::BlueZ),
+        Watch::Owner if sender == BUS && first == power::NAME => Some(Daemon::PowerProfiles),
 
         _ => None,
     }
@@ -144,6 +148,7 @@ pub fn follow() {
     // the first reads only set where things start, so starting the shell shows nothing
     *network::Connectivity::write() = network::read();
     *bluetooth::Adapter::write() = bluetooth::read();
+    *power::Profiles::write() = power::read();
 
     while let Ok(first) = changed.recv() {
         // a burst, or what came during the last read, asks once
@@ -155,6 +160,11 @@ pub fn follow() {
 
         if daemons.contains(&Daemon::BlueZ) {
             refresh(bluetooth::read(), bluetooth::changes);
+        }
+
+        // a profile switched shows on Controls only
+        if daemons.contains(&Daemon::PowerProfiles) {
+            refresh(power::read(), |_, _| Vec::new());
         }
     }
 }
@@ -227,6 +237,20 @@ mod tests {
         assert_eq!(
             changed("/org/bluez/hci0", "org.bluez.Adapter1"),
             Some(Daemon::BlueZ)
+        );
+    }
+
+    #[test]
+    fn power_profiles_go_to_their_daemon() {
+        let changed = |path, interface| route(Watch::Properties, ":1.7", path, &text(&[interface]));
+
+        assert_eq!(
+            changed(power::PATH, power::NAME),
+            Some(Daemon::PowerProfiles)
+        );
+        assert_eq!(
+            owner(BUS, power::NAME, "", ":1.85"),
+            Some(Daemon::PowerProfiles)
         );
     }
 

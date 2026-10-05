@@ -1,9 +1,9 @@
-//! NetworkManager for `connectivity.rs`: what the machine is online through, and the Transient
+//! NetworkManager for `system.rs`: what the machine is online through, and the Transient
 //! that joining or leaving it shows.
 
 use amane::{Argument, Bus, Service, Value};
 
-use super::connectivity::{Radio, SHOWN};
+use super::system::{Radio, SHOWN};
 use crate::island::activity::{Activity, Connection, Detail, Id, Kind, Priority, Uplink};
 
 pub const NAME: &str = "org.freedesktop.NetworkManager";
@@ -16,7 +16,7 @@ const ACTIVE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const ACTIVATED: f64 = 2.0;
 const WIFI_DEVICE: f64 = 2.0;
 
-// the network as the Controls Surface (#29) shows it; written only by `connectivity::follow`
+// the network as the Controls Surface shows it; written only by `system::follow`
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Connectivity {
     // none while offline

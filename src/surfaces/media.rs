@@ -3,7 +3,6 @@
 //! player opens, art loads, or a title runs long.
 
 use std::ops::Range;
-use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use amane::{
@@ -11,6 +10,7 @@ use amane::{
     Scroll, Service, Shape as _, SpaceBetween, Stack, Start, Text, Widget, children, shapes,
 };
 
+use super::slider::Slider;
 use crate::island::activity::Track;
 use crate::island::geometry;
 use crate::sources::media::{self, Control};
@@ -45,9 +45,6 @@ const TARGET: f32 = 24.0;
 // a control the player cannot do now
 const DISABLED: f32 = 0.35;
 
-// percent per wheel line
-const WHEEL: f32 = 5.0;
-
 /*
  * `open` says the Surface is open rather than fading out, so only then does it ask the follower
  * to keep it fed
@@ -74,7 +71,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
-        .on_scroll(|Scroll { y, .. }| wheel(y))
+        .on_scroll(|Scroll { y, .. }| Slider::Speaker.wheel(y))
         .child(
             Column::new(children![
                 header(
@@ -413,67 +410,9 @@ fn volume(width: f32, accent: Color) -> Row {
 
     let tone = if muted { theme::MUTED } else { accent };
 
-    let level = Rectangle::new()
-        .width(width)
-        .height(TARGET)
-        .align_child(Start, Center)
-        .cursor(Cursor::Pointer)
-        .on_drag(move |point| set_volume((point.x / width * 100.0).round().clamp(0.0, 100.0) as u8))
-        .child(bar(width, f32::from(percent) / 100.0, tone));
+    let level = Slider::Speaker.bar(width, f32::from(percent) / 100.0, tone);
 
     Row::new(children![speaker, level]).gap(10.0).align(Center)
-}
-
-/*
- * the level last asked for and when, since the speaker reports it only after a moment: a wheel
- * spun faster than that steps on from what it asked, not from the old level. And the part of a
- * line too small to move a percent, which a touchpad scrolls in, kept for the next one
- */
-struct Asked {
-    percent: u8,
-    at: Instant,
-    carry: f32,
-}
-
-static ASKED: Mutex<Option<Asked>> = Mutex::new(None);
-
-// how long an asked level stands for the speaker's own
-const ASKED_FOR: Duration = Duration::from_millis(300);
-
-// down is quieter
-fn wheel(lines: f32) {
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
-    let now = Instant::now();
-
-    let (from, carry) = match asked.as_ref() {
-        Some(asked) if now.duration_since(asked.at) < ASKED_FOR => (asked.percent, asked.carry),
-        _ => (Audio::read().volume(), 0.0),
-    };
-
-    let steps = carry - lines * WHEEL;
-    let whole = steps.trunc();
-    let percent = (f32::from(from) + whole).clamp(0.0, 100.0) as u8;
-
-    *asked = Some(Asked {
-        percent,
-        at: now,
-        carry: steps - whole,
-    });
-    drop(asked);
-
-    if percent != from {
-        Audio::set_volume(percent);
-    }
-}
-
-fn set_volume(percent: u8) {
-    *ASKED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Asked {
-        percent,
-        at: Instant::now(),
-        carry: 0.0,
-    });
-
-    Audio::set_volume(percent);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

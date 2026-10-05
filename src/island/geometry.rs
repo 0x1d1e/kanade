@@ -34,7 +34,7 @@ pub const PEEK: Shape = Shape {
 
 pub const CONTROLS: Shape = Shape {
     width: 440.0,
-    height: 160.0,
+    height: 290.0,
     radius: 32.0,
 };
 
@@ -162,7 +162,7 @@ pub fn satellite(body: Rect, index: usize) -> Rect {
 
 // Satellites belong to the small forms: whole up to a Peek, gone by the smallest Surface
 pub fn satellite_opacity(shape: Shape) -> f32 {
-    1.0 - ((shape.height - PEEK.height) / (CONTROLS.height - PEEK.height)).clamp(0.0, 1.0)
+    1.0 - ((shape.height - PEEK.height) / (MEDIA.height - PEEK.height)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -373,16 +373,25 @@ mod tests {
         }
     }
 
+    // satellite_opacity fades them out by Media, so it must be the smallest Surface
+    #[test]
+    fn media_is_the_smallest_surface() {
+        for surface in Surface::ALL {
+            assert!(MEDIA.height <= shape(Presentation::Expanded(surface)).height);
+        }
+    }
+
     #[test]
     fn satellites_fade_out_toward_a_surface() {
         assert_eq!(satellite_opacity(REST), 1.0);
         assert_eq!(satellite_opacity(COMPACT), 1.0);
         assert_eq!(satellite_opacity(PEEK), 1.0);
+        assert_eq!(satellite_opacity(MEDIA), 0.0);
         assert_eq!(satellite_opacity(CONTROLS), 0.0);
         assert_eq!(satellite_opacity(EXPANDED_MAX), 0.0);
 
         let halfway = Shape {
-            height: (PEEK.height + CONTROLS.height) / 2.0,
+            height: (PEEK.height + MEDIA.height) / 2.0,
             ..PEEK
         };
         assert_eq!(satellite_opacity(halfway), 0.5);

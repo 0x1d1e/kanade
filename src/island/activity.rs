@@ -313,7 +313,7 @@ pub struct Connection {
 // a Bluetooth device the machine knows, like a headset
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
-    // BlueZ's object for it, stable across renames, so it keys the device and Controls connects by it
+    // BlueZ's object for it, stable across renames, so it keys the device
     pub path: String,
 
     // its alias, or the address when it names none
