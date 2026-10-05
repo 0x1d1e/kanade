@@ -1,6 +1,6 @@
-//! Per-island Presentation (plan 4, 5.2). Pure: primary changes and input in, Presentation out.
+//! Per-island Presentation (CONTEXT.md, plan 5.2). Pure: primary changes and input in, Presentation out.
 //!
-//! Each island keeps its primary and what the user holds it in: a Peek or an open Surface.
+//! Each island keeps its primary and what the user raised it to: a Peek or an open Surface.
 //! Rest or Compact follows from the primary alone.
 
 use std::collections::HashMap;
@@ -87,9 +87,9 @@ impl Input {
     }
 }
 
-// what the user holds an island in, beyond what its primary Activity gives it
+// what the user raised an island to, beyond what its primary Activity gives it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Held {
+enum Raised {
     Peek,
     Expanded(Surface),
 }
@@ -100,7 +100,7 @@ struct Island {
     primary: Option<Surface>,
 
     // a Peek only ever exists with a primary, set_primary ends it on withdrawal
-    held: Option<Held>,
+    raised: Option<Raised>,
 }
 
 // every island's Presentation by monitor; an island nobody touched rests
@@ -118,9 +118,9 @@ impl Presentations {
             return Presentation::Rest;
         };
 
-        match (island.held, island.primary) {
-            (Some(Held::Expanded(surface)), _) => Presentation::Expanded(surface),
-            (Some(Held::Peek), _) => Presentation::Peek,
+        match (island.raised, island.primary) {
+            (Some(Raised::Expanded(surface)), _) => Presentation::Expanded(surface),
+            (Some(Raised::Peek), _) => Presentation::Peek,
             (None, Some(_)) => Presentation::Compact,
             (None, None) => Presentation::Rest,
         }
@@ -139,8 +139,8 @@ impl Presentations {
 
         island.primary = primary;
 
-        if primary.is_none() && island.held == Some(Held::Peek) {
-            island.held = None;
+        if primary.is_none() && island.raised == Some(Raised::Peek) {
+            island.raised = None;
         }
     }
 
@@ -153,7 +153,7 @@ impl Presentations {
 
         if open {
             for island in self.islands.values_mut() {
-                island.held = None;
+                island.raised = None;
             }
         }
     }
@@ -183,10 +183,10 @@ impl Presentations {
             (Input::Open(surface), _) => self.expand(monitor, surface),
 
             (Input::Collapse | Input::Preempt, Presentation::Expanded(_))
-            | (Input::Unhover, Presentation::Peek) => island.held = None,
+            | (Input::Unhover, Presentation::Peek) => island.raised = None,
 
             // only an island with a primary has a larger small form to peek into
-            (Input::Hover, Presentation::Compact) => island.held = Some(Held::Peek),
+            (Input::Hover, Presentation::Compact) => island.raised = Some(Raised::Peek),
 
             (Input::RightClick | Input::Wheel(_), _) => {}
 
@@ -197,12 +197,12 @@ impl Presentations {
     // at most one island is Expanded, opening one collapses any other
     fn expand(&mut self, monitor: &str, surface: Surface) {
         for island in self.islands.values_mut() {
-            if matches!(island.held, Some(Held::Expanded(_))) {
-                island.held = None;
+            if matches!(island.raised, Some(Raised::Expanded(_))) {
+                island.raised = None;
             }
         }
 
-        self.island(monitor).held = Some(Held::Expanded(surface));
+        self.island(monitor).raised = Some(Raised::Expanded(surface));
     }
 
     // the one Expanded island and its Surface, if any

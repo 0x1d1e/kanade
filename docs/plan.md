@@ -54,44 +54,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 
 ## 4. Domain language
 
-Proposed `CONTEXT.md` entries. Avoid the listed synonyms in code, tests, and docs.
-
-### Island
-The single physical surface on one monitor. One per monitor.
-- **Avoid:** pill (as a type name; fine in prose for the compact shape), widget, popup, dropdown
-
-### Activity
-Something happening that may deserve attention. Has identity, Kind, Priority, Lifetime, Scope, Actions.
-- **Invariant:** posting an Activity with an existing id replaces it and refreshes its lifetime (volume key repeat extends one OSD, not a queue of OSDs).
-- **Avoid:** event, notification (a Notification is one Kind of Activity), OSD (use Transient)
-
-### Lifetime
-`Persistent` (lives until withdrawn: media playing, screen cast, timer, privacy, low battery) or `Transient(duration)` (volume, brightness, workspace switch, notification toast).
-
-### Arbiter
-Pure function of (registered Activities, now, focused output) to a Frame. Owns priority, preemption, expiry, satellite selection.
-- **Invariant:** preemption never destroys. A Persistent Activity hidden by a Transient is shown again when the Transient expires, with no re-post.
-
-### Frame
-Arbiter output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `transient: Option<Activity>`. Global, then filtered per monitor by Scope.
-
-### Scope
-`Global` (shown on every island) or `FocusedOutput` (shown only on the island of the focused monitor). Transients are FocusedOutput.
-
-### Presentation
-Per-island visual level: `Rest | Compact | Peek | Expanded(Surface)`. Not called "state" because Amane already uses state for Services.
-- **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
-- **Invariant:** which Surface opens is a pure function of (Presentation, primary Activity, request). No remembered last-used Surface.
-- **Invariant:** at most one island is Expanded at a time.
-- **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow.
-
-### Surface
-Full interactive content hosted by an Expanded island: `Media | Notifications | Controls | Launcher`.
-- Media and Notifications are also Activity Kinds. Compact/Peek are the Activity's own small form, and Expanded is its Surface. That is the "predictable enlargement" rule.
-- Controls and Launcher have no Activity. They open only by user action.
-
-### Satellite
-Small secondary indicator beside the primary island (screen cast, mic/camera, timer, VPN, critical battery). Persistent Activities only.
+Moved to [`CONTEXT.md`](../CONTEXT.md), which owns the terms, avoid-lists and invariants.
 
 Presentation changes from the earlier draft: the old 5 states (`Rest, Compact, Peek, Expanded, Surface`) had two ways to be big. Collapsed into 4. Reason: with Expanded media at 440x150 and Media surface at 520x330 there were two competing "media, bigger" forms and no rule for which one a click opens.
 

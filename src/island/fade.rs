@@ -1,4 +1,4 @@
-//! Content crossfade (plan 4: a Presentation change is geometry plus content crossfade in one
+//! Content crossfade (CONTEXT.md: a Presentation change is geometry plus content crossfade in one
 //! motion). Driven by the morph's progress, not a timer of its own: the old content fades out over
 //! the first half of the morph and the new fades in over the second, so at most one shows at once.
 //! A morph that changes its mind takes over whatever shows, at its current opacity, so nothing pops.
