@@ -254,7 +254,7 @@ E2E (nested Niri session, `amane dev`):
 - Satellite overflow: ScreenCast + mic + timer shows 2 satellites plus a "+1" count.
 - Two monitors: transient on focused only; hot-unplug and replug.
 - Screenshot every Presentation and Surface and inspect pixel by pixel (padding, radius, clipping, elision, fallback art). Fix visual defects found even if unrelated.
-- Timing under 60 and 120 Hz: no stutter on expand/collapse.
+- Timing under 60 Hz and 120+ Hz: no stutter on expand/collapse.
 
 Lint and tests stay green at every phase.
 
@@ -265,7 +265,7 @@ Each phase ends with its acceptance criteria met. No phase starts on unanswered 
 **Phase 0 - spike (answers a question, then throwaway or hardened deliberately)**
 Pill, hover, click, 32 px to 440x160 morph, input-region tracking, Escape.
 Answers: pointer-leave delivery when the region shrinks; Escape focus for keybind-opened Surfaces; per-frame region cost during a spring; `listen()` with `recv_timeout` deadlines; layout under `amane dev`. (Per-frame region/keyboard updates and service semantics are already verified in Amane source, see section 3.)
-Accept: smooth 60/120 Hz, no pointer blocking outside body, no resize jitter, zero idle frames.
+Accept: smooth at 60 Hz and 120+ Hz, no pointer blocking outside body, no resize jitter, zero idle frames.
 
 **Phase 1 - shell**: `island/` presentation, geometry, motion; rest/compact/peek/expanded; multi-monitor; `niri.rs` focused-output routing; IPC.
 
