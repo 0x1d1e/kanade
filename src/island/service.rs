@@ -263,16 +263,15 @@ impl IslandService {
 
         let open = self.presentations.expanded();
 
-        let surface = match command {
-            Command::Collapse => {
-                return Ok(open.map(|(monitor, _)| Effect::Collapse(monitor.to_owned())));
-            }
+        // an island open on another output is not the focused one's to close
+        let focused = open.filter(|&(monitor, _)| self.focused(monitor));
+        let collapse = || Ok(focused.map(|(monitor, _)| Effect::Collapse(monitor.to_owned())));
 
-            Command::Toggle(surface)
-                if open
-                    .is_some_and(|(monitor, shown)| shown == surface && self.focused(monitor)) =>
-            {
-                return Ok(open.map(|(monitor, _)| Effect::Collapse(monitor.to_owned())));
+        let surface = match command {
+            Command::Collapse => return collapse(),
+
+            Command::Toggle(surface) if focused.is_some_and(|(_, shown)| shown == surface) => {
+                return collapse();
             }
 
             Command::Open(surface) | Command::Toggle(surface) => surface,
@@ -1014,14 +1013,17 @@ mod tests {
     }
 
     #[test]
-    fn collapse_closes_the_open_island_wherever_it_is() {
+    fn collapse_closes_only_the_focused_island() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
         assert_eq!(run(&mut island, Command::Collapse, now), None);
 
         island.input(OTHER, Input::Click, now);
+        assert_eq!(run(&mut island, Command::Collapse, now), None);
+        assert!(island.expanded(OTHER));
 
+        island.set_niri(Some(OTHER.to_owned()), false, now);
         assert_eq!(
             run(&mut island, Command::Collapse, now),
             Some(Effect::Collapse(OTHER.to_owned()))
@@ -1052,6 +1054,12 @@ mod tests {
             Some(Effect::Collapse(OTHER.to_owned()))
         );
         assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
+
+        island.input(OTHER, Input::Click, now);
+        assert_eq!(
+            run(&mut island, Command::Collapse, now),
+            Some(Effect::Collapse(OTHER.to_owned()))
+        );
     }
 
     #[test]
