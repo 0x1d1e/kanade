@@ -68,13 +68,13 @@ pub enum Priority {
     // volume, brightness, workspace
     Osd,
 
-    // screen cast, timer
+    // screen cast, timer, low battery
     Ongoing,
 
     // a notification with actions
     Actionable,
 
-    // low battery, privacy, call
+    // critical battery, privacy, call
     Critical,
 }
 
@@ -181,6 +181,8 @@ pub enum Detail {
 
     // 0 to 100
     Brightness(u8),
+
+    Battery(Charge),
 }
 
 impl Detail {
@@ -191,15 +193,20 @@ impl Detail {
             Detail::Media(_) => Some(Kind::Media),
             Detail::Volume(_) => Some(Kind::Volume),
             Detail::Brightness(_) => Some(Kind::Brightness),
+            Detail::Battery(_) => Some(Kind::Battery),
         }
     }
 
     /*
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
-     * where it stands: a held volume key slides one bar, where a new track crossfades
+     * where it stands: a held volume key slides one bar, a draining battery ticks its number, where
+     * a new track crossfades
      */
     pub fn is_level(&self) -> bool {
-        matches!(self, Detail::Volume(_) | Detail::Brightness(_))
+        matches!(
+            self,
+            Detail::Volume(_) | Detail::Brightness(_) | Detail::Battery(_)
+        )
     }
 }
 
@@ -231,6 +238,16 @@ pub struct Volume {
 pub enum Device {
     Speaker,
     Microphone,
+}
+
+// a battery running low, from where it shows until the charger goes in
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Charge {
+    // 0 to 100
+    pub percent: u8,
+
+    // low enough to preempt, drawn red rather than amber
+    pub critical: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,6 +460,13 @@ mod tests {
 
         assert!(volume.is_level());
         assert!(Detail::Brightness(70).is_level());
+        assert!(
+            Detail::Battery(Charge {
+                percent: 15,
+                critical: false
+            })
+            .is_level()
+        );
         assert!(!Detail::Media(Track::default()).is_level());
         assert!(!Detail::None.is_level());
     }
