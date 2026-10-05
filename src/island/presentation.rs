@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use super::activity::{Activity, Kind};
+use super::fade::InPlace;
 
 // full interactive content of an Expanded island
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,21 @@ impl Content {
             presentation,
             activity: shown.filter(|_| small),
         }
+    }
+}
+
+// the same Activity in the same form with its level moved redraws where it stands; a level that
+// first appears is new content, so it crossfades in
+impl InPlace for Content {
+    fn in_place(&self, next: &Content) -> bool {
+        let moved = match (&self.activity, &next.activity) {
+            (Some(shown), Some(next)) => {
+                shown.id() == next.id() && shown.detail().is_level() && next.detail().is_level()
+            }
+            (shown, next) => shown == next,
+        };
+
+        self.presentation == next.presentation && moved
     }
 }
 
@@ -541,6 +557,31 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn only_a_shown_level_moves_in_place() {
+        use crate::island::activity::{Detail, Device, Id, Priority, Volume};
+
+        let content = |detail| {
+            let speaker = Activity::persistent(Id::new(Kind::Volume, "speaker"), Priority::Osd)
+                .with_detail(detail);
+
+            Content::new(Compact, Some(speaker))
+        };
+
+        let level = |percent| {
+            content(Detail::Volume(Volume {
+                device: Device::Speaker,
+                percent,
+                muted: false,
+            }))
+        };
+
+        assert!(level(40).in_place(&level(45)));
+        assert!(!content(Detail::None).in_place(&level(45)));
+        assert!(!level(40).in_place(&content(Detail::None)));
+        assert!(!level(40).in_place(&Content::new(Peek, level(45).activity)));
     }
 
     #[test]

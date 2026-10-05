@@ -3,3 +3,4 @@
 mod json;
 pub mod media;
 pub mod niri;
+pub mod osd;

@@ -14,6 +14,7 @@ use amane::App;
 fn main() {
     thread::spawn(sources::niri::follow);
     thread::spawn(sources::media::follow);
+    thread::spawn(sources::osd::follow);
 
     App::new()
         .window_per_monitor(view::island)

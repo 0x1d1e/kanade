@@ -535,14 +535,16 @@ fn follow(island: &mut Island, content: Content, now: Instant) {
 
     /*
      * content and shape start the leg together, the same shape too, so a new Activity in the same
-     * form still crossfades; an island that never changed has no spring
+     * form still crossfades; a level that moved starts none. An island that never changed has no
+     * spring
      */
     let spring = island
         .shape
         .get_or_insert_with(|| Spring::new(REST.into(), MORPH));
 
-    island.content.to(content, spring.progress(now));
-    spring.to(geometry::shape(presentation).into(), now);
+    if island.content.to(content, spring.progress(now)) {
+        spring.to(geometry::shape(presentation).into(), now);
+    }
 }
 
 // an IPC command's change, from IslandService::resolve
@@ -573,7 +575,7 @@ fn nudge() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::{Kind, Priority};
+    use crate::island::activity::{Detail, Device, Kind, Priority, Volume};
 
     const MONITOR: &str = "eDP-1";
 
@@ -1416,6 +1418,67 @@ mod tests {
         let settled = later + Duration::from_secs(1);
         island.post(volume(), settled);
         assert!(island.settled(MONITOR, settled));
+    }
+
+    // a held volume key: each step redraws the bar where it stands, mid-morph or settled
+    #[test]
+    fn a_moved_level_redraws_in_place() {
+        let level = |percent| {
+            volume().with_detail(Detail::Volume(Volume {
+                device: Device::Speaker,
+                percent,
+                muted: false,
+            }))
+        };
+        let showing = |island: &IslandService, at| {
+            island.content(MONITOR, at).map(|shown| {
+                shown.map(|(content, opacity)| {
+                    (content.activity.map(|a| a.detail().clone()), opacity)
+                })
+            })
+        };
+
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.post(level(40), now + ms(500));
+
+        // mid-morph, the step only changes what fades in
+        let mid = now + ms(560);
+        let before = showing(&island, mid);
+        island.post(level(45), mid);
+        let after = showing(&island, mid);
+
+        assert_eq!(before[0], after[0]);
+        assert_eq!(
+            before[1].as_ref().map(|(_, o)| *o),
+            after[1].as_ref().map(|(_, o)| *o)
+        );
+        assert_eq!(
+            island.get(MONITOR).content.target().activity,
+            Some(level(45))
+        );
+
+        let settled = now + Duration::from_secs(1);
+        assert!(island.settled(MONITOR, settled));
+
+        island.post(level(50), settled);
+        assert!(island.settled(MONITOR, settled));
+        assert_eq!(
+            showing(&island, settled),
+            [
+                None,
+                Some((
+                    Some(Detail::Volume(Volume {
+                        device: Device::Speaker,
+                        percent: 50,
+                        muted: false,
+                    })),
+                    1.0
+                ))
+            ]
+        );
     }
 
     #[test]

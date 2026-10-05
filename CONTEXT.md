@@ -10,7 +10,7 @@ The single physical surface on one monitor. One per monitor.
 ## Activity
 Something happening that may deserve attention. Has identity, Kind, Priority, Lifetime, Scope, Interrupt, Actions, Detail.
 - Identity is Kind plus a key, so keys from different Kinds never collide.
-- Detail is what its small form draws, typed per Kind (a Media Activity's track). It is not identity: a repost with new Detail replaces the Activity.
+- Detail is what its small form draws, typed per Kind (a Media Activity's track, a Volume's level). It is not identity: a repost with new Detail replaces the Activity. A new track crossfades; a level that moves redraws in place.
 - **Invariant:** Scope and Interrupt follow from Lifetime and Priority. Only a Critical Activity preempts; any other Transient shows over the primary.
 - **Invariant:** posting an Activity with an existing id replaces it and refreshes its Lifetime. A repeated volume key extends one Transient, not a queue of them.
 - **Avoid:** event, notification (a Notification is one Kind of Activity), OSD (use Transient)
