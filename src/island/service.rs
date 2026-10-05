@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
-use super::geometry::{EXPANDED, REST, Shape};
+use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
 use super::presentation::{Input, Presentation, Presentations, Surface};
 
@@ -174,7 +174,9 @@ impl IslandService {
     // every island follows its Presentation, since opening one collapses any other
     fn sync(&mut self, now: Instant) {
         for (monitor, island) in &mut self.islands {
-            let expanded = matches!(self.presentations.get(monitor), Presentation::Expanded(_));
+            let presentation = self.presentations.get(monitor);
+            let expanded = matches!(presentation, Presentation::Expanded(_));
+            let target = geometry::shape(presentation);
 
             island.held &= expanded;
 
@@ -183,11 +185,11 @@ impl IslandService {
             }
 
             // an island that never morphed stays at rest without a spring
-            if island.shape.is_some() || expanded {
+            if island.shape.is_some() || target != REST {
                 island
                     .shape
                     .get_or_insert_with(|| Spring::new(REST.into(), MORPH))
-                    .to(if expanded { EXPANDED } else { REST }.into(), now);
+                    .to(target.into(), now);
             }
         }
     }
