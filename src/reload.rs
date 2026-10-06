@@ -311,8 +311,16 @@ fn layers(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-// an event the watch it came from wants; one from a watch already replaced wants nothing
+/*
+ * an event the watch it came from wants; one from a watch already replaced wants nothing. An
+ * overflow, which comes from no watch, may have dropped an edit, so every layer is read again
+ */
 fn relevant(watches: &HashMap<WatchDescriptor, Vec<Want>>, event: &inotify::Event<&OsStr>) -> bool {
+    if event.mask.contains(EventMask::Q_OVERFLOW) {
+        eprintln!("kanade: config watch missed events, reading the config again");
+        return true;
+    }
+
     let Some(wants) = watches.get(&event.wd) else {
         return false;
     };
@@ -446,6 +454,50 @@ mod tests {
         assert!(changed(), "the settings file written");
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /*
+     * against the kernel: past its queue limit inotify drops events and says so once, with no
+     * watch, so an edit may be among those lost and only a reread of every layer is sure
+     */
+    #[test]
+    fn a_queue_overflow_rereads_every_layer() {
+        let root = env_dir("overflow");
+        let limit: usize = fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        let mut inotify = Inotify::init().unwrap();
+        let watches = arm(
+            &mut inotify,
+            &[Place::Directory(root.clone())],
+            HashMap::new(),
+        );
+
+        // three events a file, none read: a create, a close after writing and a delete
+        for at in 0..limit / 3 + 100 {
+            let file = root.join(format!("{at}.txt"));
+            fs::write(&file, "").unwrap();
+            fs::remove_file(&file).unwrap();
+        }
+
+        let mut buffer = [0; 4096];
+        let mut overflowed = false;
+
+        while let Ok(events) = inotify.read_events(&mut buffer) {
+            for event in events {
+                if event.mask.contains(EventMask::Q_OVERFLOW) {
+                    overflowed = true;
+                    assert!(relevant(&watches, &event));
+                }
+            }
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(overflowed, "the queue overflowed");
     }
 
     fn env_dir(name: &str) -> PathBuf {
