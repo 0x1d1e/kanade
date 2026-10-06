@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use amane::{Audio, Brightness, Service};
 
 use super::wake::{Announcer, Pace, Wakes};
-use crate::island::activity::{Activity, Detail, Device, Id, Kind, Priority, Volume};
+use crate::island::activity::{
+    Activity, Detail, Device, Id, Interrupt, Kind, Lifetime, Priority, Scope, Volume,
+};
 use crate::island::service::IslandService;
 use crate::{config, supervise};
 
@@ -105,12 +107,7 @@ fn changes(before: Option<Levels>, now: Levels) -> Vec<Activity> {
         && now.brightness != before.brightness
     {
         changes.push(
-            Activity::transient(
-                Id::new(Kind::Brightness, "backlight"),
-                Priority::Osd,
-                config::get().osd,
-            )
-            .with_detail(Detail::Brightness(percent)),
+            level(Id::new(Kind::Brightness, "backlight")).with_detail(Detail::Brightness(percent)),
         );
     }
 
@@ -124,8 +121,19 @@ fn volume(volume: Volume) -> Activity {
         Device::Microphone => "microphone",
     };
 
-    Activity::transient(Id::new(Kind::Volume, key), Priority::Osd, config::get().osd)
-        .with_detail(Detail::Volume(volume))
+    level(Id::new(Kind::Volume, key)).with_detail(Detail::Volume(volume))
+}
+
+// a level change, shown over the primary on the island the user is looking at
+fn level(id: Id) -> Activity {
+    Activity::new(
+        id,
+        Priority::Osd,
+        Lifetime::Transient(config::get().osd),
+        Scope::FocusedOutput,
+        Interrupt::Transient,
+    )
+    .expect("the config bounds osd above zero")
 }
 
 // runs on its own thread for good

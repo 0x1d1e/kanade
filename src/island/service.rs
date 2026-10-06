@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
 
-use super::activity::{Activity, Detail, Frame, Id, Interrupt, Lifetime, Scope, Track};
+use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Scope, Track};
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
 use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
-use super::presentation::{Content, Input, Presentation, Presentations, Surface};
+use super::presentation::{Content, Input, Presentation, Presentations, Prior, Surface};
 use super::satellites::{Mark, Satellites};
 
 // plan 5.2: how long a morph takes, by what it changes, see `response`
@@ -101,6 +101,23 @@ pub struct IslandService {
 
     // from `configure`, else the defaults
     timings: Timings,
+
+    // an AutoExpand's Surface open, until it gives the islands back or the user takes them
+    auto: Option<Auto>,
+}
+
+// what an `Interrupt::AutoExpand` opened, and what it puts back at `until`
+#[derive(Debug)]
+struct Auto {
+    // the island it opened on
+    monitor: String,
+
+    until: Instant,
+
+    prior: Prior,
+
+    // the islands that held the keyboard before, so hold it again once restored
+    held: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -159,6 +176,7 @@ impl Service for IslandService {
             presentations: Presentations::default(),
             focused_output: None,
             timings: TIMINGS.get().copied().unwrap_or_default(),
+            auto: None,
         }
     }
 
@@ -222,6 +240,11 @@ impl IslandService {
     pub fn set_niri(&mut self, focused_output: Option<String>, overview: bool, now: Instant) {
         if let Some(monitor) = &focused_output {
             self.island(monitor);
+        }
+
+        // the overview ends every open Surface, so there is nothing to give back once it closes
+        if overview && self.auto.take().is_some() {
+            nudge();
         }
 
         self.focused_output = focused_output;
@@ -319,6 +342,7 @@ impl IslandService {
             .values()
             .filter_map(|island| island.due.map(|due| due.at))
             .chain(self.arbiter.deadline())
+            .chain(self.auto.as_ref().map(|auto| auto.until))
             .min()
     }
 
@@ -357,20 +381,28 @@ impl IslandService {
     }
 
     /*
-     * a Critical Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
-     * existing one escalated to Critical included; a repost of one already up does not, so a
-     * Surface reopened over it stays
+     * a Preempt Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
+     * existing one turned Preempt included; a repost of one already up does not, so a Surface
+     * reopened over it stays. An AutoExpand one arriving opens its own Surface, as `auto_expand`
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
         let global = activity.scope() == Scope::Global;
+        let id = activity.id().clone();
+        let kind = activity.kind();
 
-        // a Transient the open Surface already shows would only wait behind it as a badge
-        if matches!(activity.lifetime(), Lifetime::Transient(_)) && self.absorbs()(&activity) {
+        // a transient the open Surface already shows would only wait behind it as a badge
+        if activity.interrupt() == Interrupt::Transient && self.absorbs()(&activity) {
             return;
         }
 
-        let arrives = activity.interrupt() == Interrupt::Preempt
-            && !self.arbiter.preempting(activity.id(), now);
+        let up = self.arbiter.interrupt(&id, now);
+        let arrives = activity.interrupt() == Interrupt::Preempt && up != Some(Interrupt::Preempt);
+        let expands = match activity.interrupt() {
+            Interrupt::AutoExpand(duration) if !matches!(up, Some(Interrupt::AutoExpand(_))) => {
+                Some(duration)
+            }
+            _ => None,
+        };
 
         self.change(|arbiter| arbiter.post(activity, now));
 
@@ -385,6 +417,129 @@ impl IslandService {
             }
             _ => self.sync(now),
         }
+
+        // DND may have dropped it
+        if let Some(duration) = expands.filter(|_| self.arbiter.contains(&id)) {
+            self.auto_expand(kind, duration, now);
+        }
+    }
+
+    /*
+     * opens the Kind's own Surface on the focused island for `duration`, then gives every island
+     * it changed back what it showed. Another arriving meanwhile keeps the first's prior and
+     * takes its own duration; nothing opens while the overview is or with no island to open on
+     */
+    fn auto_expand(&mut self, kind: Kind, duration: Duration, now: Instant) {
+        let Some(surface) = Surface::own(kind) else {
+            return;
+        };
+        let Some(monitor) = self
+            .focused_output
+            .clone()
+            .or_else(|| self.expanded_on().map(str::to_owned))
+        else {
+            return;
+        };
+
+        self.island(&monitor);
+
+        let Some(prior) = self.presentations.auto_expand(&monitor, surface) else {
+            return;
+        };
+
+        let (prior, mut held) = match self.auto.take() {
+            Some(auto) => (auto.prior.and(prior), auto.held),
+            None => (prior, Vec::new()),
+        };
+
+        // nobody opened it, so it waits for nothing and holds no keyboard until it gives back
+        for name in prior.monitors() {
+            let island = self.island(name);
+
+            if island.held && !held.iter().any(|other| other == name) {
+                held.push(name.to_owned());
+            }
+            island.held = false;
+            island.due = None;
+        }
+
+        self.auto = Some(Auto {
+            monitor,
+            until: now + duration,
+            prior,
+            held,
+        });
+        nudge();
+
+        self.absorb();
+        self.sync(now);
+    }
+
+    /*
+     * the AutoExpand's time ran out: every island it changed shows what it did before, and waits
+     * as it would have, holding the keyboard again or collapsing after the grace with nobody on it
+     */
+    fn restore(&mut self, now: Instant) {
+        let Some(auto) = self.auto.take() else {
+            return;
+        };
+        let monitors: Vec<String> = auto.prior.monitors().map(str::to_owned).collect();
+
+        self.presentations.restore(auto.prior);
+
+        for monitor in monitors {
+            let presentation = self.presentation(&monitor);
+            let pinned = self.pinned(&monitor);
+            let grace = self.timings.grace;
+            let was_held = auto.held.contains(&monitor);
+            let island = self.island(&monitor);
+
+            let expanded = matches!(presentation, Presentation::Expanded(_));
+            island.held = was_held && expanded;
+
+            island.due = match presentation {
+                _ if island.inside || pinned => None,
+                Presentation::Peek => Some((grace, Input::Unhover)),
+                Presentation::Expanded(_) if island.held => Some((HOLD, Input::Collapse)),
+                Presentation::Expanded(_) => Some((grace, Input::Collapse)),
+                _ => None,
+            }
+            .map(|(delay, input)| Due {
+                at: now + delay,
+                input,
+            });
+        }
+
+        nudge();
+        self.absorb();
+        self.sync(now);
+    }
+
+    /*
+     * the user acted on the islands, so their choice owns them: a pending AutoExpand gives nothing
+     * back, and its Surface waits like one the user opened, collapsing after the grace with nobody on it
+     */
+    pub fn claim(&mut self, now: Instant) {
+        let Some(auto) = self.auto.take() else {
+            return;
+        };
+        let expanded = self.expanded(&auto.monitor) && !self.pinned(&auto.monitor);
+        let grace = self.timings.grace;
+        let island = self.island(&auto.monitor);
+
+        if expanded && !island.inside && island.due.is_none() {
+            island.due = Some(Due {
+                at: now + grace,
+                input: Input::Collapse,
+            });
+        }
+
+        nudge();
+    }
+
+    // an AutoExpand's Surface is open until it gives the islands back, so a click claims it
+    pub fn auto(&self) -> bool {
+        self.auto.is_some()
     }
 
     // what the open Surface already shows, on the island each Activity reaches
@@ -475,7 +630,10 @@ impl IslandService {
             .ok_or(NoFocus)?;
 
         // opening the Surface already showing still restarts the hold, which a pointer on it has none of
-        if self.presentation(monitor) == Presentation::Expanded(surface) && self.inside(monitor) {
+        if self.presentation(monitor) == Presentation::Expanded(surface)
+            && self.inside(monitor)
+            && self.auto.is_none()
+        {
             return Ok(None);
         }
 
@@ -516,6 +674,8 @@ impl IslandService {
      * waits the whole hold again. Keys it ignores never get here, so they still do not extend it
      */
     pub fn attend(&mut self, monitor: &str, now: Instant) {
+        self.claim(now);
+
         let island = self.island(monitor);
 
         if island.held
@@ -530,7 +690,17 @@ impl IslandService {
         }
     }
 
+    // the user's input, or an IPC command, which ends a pending AutoExpand
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
+        if input.decides() {
+            self.claim(now);
+        }
+
+        self.give(monitor, input, now);
+    }
+
+    // an input to the Presentation, the user's or one the island gives itself
+    fn give(&mut self, monitor: &str, input: Input, now: Instant) {
         // touched before the Presentation is, so sync gives it its own Frame from now on
         let island = self.island(monitor);
 
@@ -632,7 +802,13 @@ impl IslandService {
      */
     pub fn hover(&mut self, monitor: &str, inside: bool, now: Instant) {
         let presentation = self.presentation(monitor);
-        let pinned = self.pinned(monitor);
+
+        // nobody opened an AutoExpand's Surface, so the pointer leaving it is not a pointer leaving
+        let pinned = self.pinned(monitor)
+            || self
+                .auto
+                .as_ref()
+                .is_some_and(|auto| auto.monitor == monitor);
         let Timings { hover, grace, .. } = self.timings;
         let island = self.island(monitor);
 
@@ -676,7 +852,11 @@ impl IslandService {
             .collect();
 
         for (monitor, input) in due {
-            self.input(&monitor, input, now);
+            self.give(&monitor, input, now);
+        }
+
+        if self.auto.as_ref().is_some_and(|auto| auto.until <= now) {
+            self.restore(now);
         }
 
         // they were out of every Frame from their expiry on, the next sync shows that
@@ -792,7 +972,8 @@ fn nudge() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::{Detail, Device, Kind, Priority, Toast, Track, Volume};
+    use crate::island::activity::fixture;
+    use crate::island::activity::{Detail, Device, Lifetime, Priority, Toast, Track, Volume};
 
     const MONITOR: &str = "eDP-1";
 
@@ -957,7 +1138,7 @@ mod tests {
     }
 
     fn media() -> Activity {
-        Activity::persistent(Id::new(Kind::Media, "spotify"), Priority::Media)
+        fixture::persistent(Id::new(Kind::Media, "spotify"), Priority::Media)
     }
 
     // the pointer is on a Compact island
@@ -1477,7 +1658,7 @@ mod tests {
 
         island.input(MONITOR, Input::Click, later);
         island.post(
-            Activity::persistent(Id::new(Kind::Notification, "7"), Priority::Actionable),
+            fixture::persistent(Id::new(Kind::Notification, "7"), Priority::Actionable),
             later,
         );
 
@@ -1770,11 +1951,30 @@ mod tests {
     }
 
     fn volume() -> Activity {
-        Activity::transient(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD)
+        fixture::shown(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD)
     }
 
     fn battery() -> Activity {
-        Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical)
+        Activity::new(
+            Id::new(Kind::Battery, "BAT0"),
+            Priority::Critical,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::Preempt,
+        )
+        .unwrap()
+    }
+
+    // brief, on the focused island, preempting
+    fn call() -> Activity {
+        Activity::new(
+            Id::new(Kind::Privacy, "call"),
+            Priority::Critical,
+            Lifetime::Transient(OSD),
+            Scope::FocusedOutput,
+            Interrupt::Preempt,
+        )
+        .unwrap()
     }
 
     const OSD: Duration = Duration::from_millis(1200);
@@ -1889,7 +2089,7 @@ mod tests {
     // a Satellite coming out keeps the island asking for frames until it is in place
     #[test]
     fn a_satellite_coming_out_is_not_settled() {
-        let timer = |key| Activity::persistent(Id::new(Kind::Timer, key), Priority::Ongoing);
+        let timer = |key| fixture::persistent(Id::new(Kind::Timer, key), Priority::Ongoing);
 
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
@@ -2042,7 +2242,7 @@ mod tests {
     fn click_opens_the_surface_of_what_shows() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        let toast = Activity::transient(
+        let toast = fixture::shown(
             Id::new(Kind::Notification, "7"),
             Priority::Actionable,
             Duration::from_secs(5),
@@ -2085,7 +2285,7 @@ mod tests {
     fn opening_a_surface_drops_the_transients_it_shows() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        let toast = Activity::transient(
+        let toast = fixture::shown(
             Id::new(Kind::Notification, "7"),
             Priority::Actionable,
             Duration::from_secs(5),
@@ -2138,7 +2338,7 @@ mod tests {
     fn ongoing_activity_becoming_critical_preempts_open_surface() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        let low = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Ongoing);
+        let low = fixture::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Ongoing);
 
         island.post(low, now);
         island.open(MONITOR, Surface::Controls, now + ms(100));
@@ -2154,7 +2354,7 @@ mod tests {
     fn expired_critical_reposted_preempts_again() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+        let call = call();
 
         island.post(call.clone(), now);
 
@@ -2168,10 +2368,10 @@ mod tests {
     }
 
     #[test]
-    fn critical_transient_preempts_only_the_focused_island() {
+    fn a_focused_output_preempt_preempts_only_the_focused_island() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+        let call = call();
 
         island.input(OTHER, Input::Click, now);
         island.post(call.clone(), now);
@@ -2235,7 +2435,7 @@ mod tests {
     fn dnd_hides_a_toast_and_brings_it_back() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        let toast = Activity::transient(
+        let toast = fixture::shown(
             Id::new(Kind::Notification, "7"),
             Priority::Passive,
             Duration::from_secs(5),
@@ -2247,5 +2447,274 @@ mod tests {
 
         island.set_dnd(false, now + ms(200));
         assert_eq!(shown(&island, MONITOR, now + ms(200)), Some(toast));
+    }
+
+    const AUTO: Duration = Duration::from_secs(3);
+
+    // a Notification that opens its own Surface for AUTO
+    fn arriving(key: &str, priority: Priority, lifetime: Lifetime) -> Activity {
+        Activity::new(
+            Id::new(Kind::Notification, key),
+            priority,
+            lifetime,
+            Scope::Global,
+            Interrupt::AutoExpand(AUTO),
+        )
+        .unwrap()
+    }
+
+    fn auto(key: &str) -> Activity {
+        arriving(key, Priority::Passive, Lifetime::Persistent)
+    }
+
+    #[test]
+    fn auto_expand_opens_its_surface_then_restores() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.post(auto("7"), now);
+
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+
+        // nobody opened it, so it holds no keyboard and nothing but its own time closes it
+        assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+        assert_eq!(island.deadline(), Some(now + AUTO));
+
+        island.expire(now + AUTO - ms(1));
+        assert!(island.expanded(MONITOR));
+
+        island.expire(now + AUTO);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.deadline(), None);
+    }
+
+    #[test]
+    fn auto_expand_gives_back_a_surface_the_user_had_open() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.post(auto("7"), now + ms(100));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+        assert!(!island.held(MONITOR));
+
+        let until = now + ms(100) + AUTO;
+        island.expire(until);
+
+        // as it was: held, and collapsing after a whole hold again
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
+        assert!(island.held(MONITOR));
+        assert_eq!(island.deadline(), Some(until + HOLD));
+    }
+
+    #[test]
+    fn auto_expand_gives_back_the_island_it_collapsed() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.hover(OTHER, true, now);
+        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::RightClick, now);
+        island.post(auto("7"), now);
+
+        // the Notification is Global, so the collapsed island shows it
+        assert_eq!(island.presentation(OTHER), Presentation::Compact);
+        assert!(island.expanded(MONITOR));
+
+        island.expire(now + AUTO);
+
+        assert_eq!(
+            island.presentation(OTHER),
+            Presentation::Expanded(Surface::Controls)
+        );
+        assert!(island.pinned(OTHER));
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+    }
+
+    #[test]
+    fn auto_expand_gives_back_a_peek_only_with_its_primary() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.input(MONITOR, Input::RightClick, now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+
+        island.post(auto("7"), now);
+        island.expire(now + AUTO);
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+        assert!(island.pinned(MONITOR));
+
+        island.post(auto("8"), now + AUTO);
+        island.withdraw(media().id(), now + AUTO);
+        island.withdraw(auto("7").id(), now + AUTO);
+        island.withdraw(auto("8").id(), now + AUTO);
+        island.expire(now + AUTO * 2);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+    }
+
+    // the pointer coming and going is no choice, so the Surface still goes back
+    #[test]
+    fn hover_alone_keeps_the_restore() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.post(auto("7"), now);
+        island.hover(MONITOR, true, now + ms(100));
+        island.hover(MONITOR, false, now + ms(200));
+
+        assert_eq!(island.deadline(), Some(now + AUTO));
+
+        island.expire(now + AUTO);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+    }
+
+    type Act = fn(&mut IslandService, Instant);
+
+    // any explicit action takes the islands over: nothing is given back
+    #[test]
+    fn a_user_action_meanwhile_keeps_their_choice() {
+        let now = Instant::now();
+        let later = now + ms(100);
+        let actions: [(&str, Act); 6] = [
+            ("click", |island, now| {
+                island.input(MONITOR, Input::Click, now)
+            }),
+            ("pin", |island, now| {
+                island.input(MONITOR, Input::RightClick, now)
+            }),
+            ("collapse", |island, now| {
+                island.input(MONITOR, Input::Collapse, now)
+            }),
+            ("open", |island, now| {
+                island.open(MONITOR, Surface::Launcher, now)
+            }),
+            ("key", |island, now| island.attend(MONITOR, now)),
+            ("press", |island, now| island.claim(now)),
+        ];
+
+        for (action, act) in actions {
+            let mut island = focused_on(MONITOR, now);
+
+            island.post(media(), now);
+            island.post(auto("7"), now);
+            island.hover(MONITOR, true, now);
+            act(&mut island, later);
+
+            let chosen = island.presentation(MONITOR);
+            assert!(!island.auto(), "{action}");
+
+            // under the pointer, nothing closes what the user chose
+            island.expire(now + AUTO);
+            assert_eq!(island.presentation(MONITOR), chosen, "{action}");
+        }
+    }
+
+    // claimed with the pointer away, it waits like one the user opened and left
+    #[test]
+    fn a_claimed_surface_collapses_after_the_grace() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.post(auto("7"), now);
+        island.claim(now + ms(100));
+
+        assert_eq!(island.deadline(), Some(now + ms(100) + GRACE));
+
+        island.expire(now + ms(100) + GRACE);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+    }
+
+    // a repost is no new arrival, so a Surface the user closed stays closed
+    #[test]
+    fn a_repost_does_not_expand_again() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(auto("7"), now);
+        island.input(MONITOR, Input::Collapse, now + ms(100));
+        island.post(auto("7"), now + ms(200));
+
+        assert!(!island.expanded(MONITOR));
+    }
+
+    // a second gives back what was there before the first, at its own end
+    #[test]
+    fn a_second_auto_expand_keeps_the_first_prior() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.post(auto("7"), now);
+
+        let media = Activity::new(
+            Id::new(Kind::Media, "spotify"),
+            Priority::Media,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::AutoExpand(AUTO),
+        )
+        .unwrap();
+        island.post(media, now + ms(1000));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Media)
+        );
+
+        island.expire(now + AUTO);
+        assert!(island.expanded(MONITOR));
+
+        island.expire(now + ms(1000) + AUTO);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
+    }
+
+    #[test]
+    fn no_auto_expand_under_the_overview_or_dnd() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.set_niri(Some(MONITOR.to_owned()), true, now);
+        island.post(auto("7"), now);
+        island.set_niri(Some(MONITOR.to_owned()), false, now);
+        assert!(!island.expanded(MONITOR));
+        assert_eq!(island.deadline(), None);
+
+        // DND drops the toast, so nothing arrived to open anything
+        island.set_dnd(true, now);
+        island.post(
+            arriving("8", Priority::Passive, Lifetime::Transient(OSD)),
+            now,
+        );
+        assert!(!island.expanded(MONITOR));
+    }
+
+    // the overview opening ends the Surface for good, so nothing comes back after it
+    #[test]
+    fn the_overview_ends_a_pending_restore() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.post(auto("7"), now);
+        island.set_niri(Some(MONITOR.to_owned()), true, now + ms(100));
+        island.set_niri(Some(MONITOR.to_owned()), false, now + ms(200));
+        island.expire(now + AUTO);
+
+        assert!(!island.expanded(MONITOR));
     }
 }

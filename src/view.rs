@@ -1303,6 +1303,15 @@ fn state(playing: bool) -> Row {
 fn expand(monitor: &str) {
     if !IslandService::read().expanded(monitor) {
         IslandService::write().input(monitor, Input::Click, Instant::now());
+    } else {
+        claim();
+    }
+}
+
+// a press on an AutoExpand's Surface makes it the user's, so it is not given back (ADR 0009)
+pub(crate) fn claim() {
+    if IslandService::read().auto() {
+        IslandService::write().claim(Instant::now());
     }
 }
 

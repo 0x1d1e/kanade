@@ -4,15 +4,17 @@ use std::time::Instant;
 
 use amane::Service;
 
-use crate::island::command::Command;
+use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::timer;
 
 pub fn island(arguments: &[String]) -> String {
-    let Some(command) = Command::parse(arguments) else {
-        return Command::usage();
+    let command = match Command::parse(arguments) {
+        Ok(command) => command,
+        Err(Unparsed::Invalid(invalid)) => return invalid.to_string(),
+        Err(Unparsed::Usage) => return Command::usage(),
     };
 
     if let Some(module) = needs(&command).filter(|&module| !modules::on(module)) {

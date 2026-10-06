@@ -6,7 +6,9 @@ use std::thread;
 use amane::{Argument, Bus, Service, Value};
 
 use super::system::{Radio, SHOWN};
-use crate::island::activity::{Activity, Detail, Id, Kind, Peer, Priority};
+use crate::island::activity::{
+    Activity, Detail, Id, Interrupt, Kind, Lifetime, Peer, Priority, Scope,
+};
 
 pub const BLUEZ: &str = "org.bluez";
 
@@ -152,7 +154,15 @@ pub fn changes(before: &Adapter, now: &Adapter) -> Vec<Activity> {
 fn activity(peer: Peer) -> Activity {
     let id = Id::new(Kind::Bluetooth, peer.path.clone());
 
-    Activity::transient(id, Priority::Passive, SHOWN).with_detail(Detail::Bluetooth(peer))
+    Activity::new(
+        id,
+        Priority::Passive,
+        Lifetime::Transient(SHOWN),
+        Scope::FocusedOutput,
+        Interrupt::Transient,
+    )
+    .expect("SHOWN is no zero Lifetime")
+    .with_detail(Detail::Bluetooth(peer))
 }
 
 #[cfg(test)]
