@@ -138,8 +138,13 @@ struct Timer {
 }
 
 impl Timer {
-    // a pause or resume without a timer does nothing
+    /*
+     * a pause or resume without a timer does nothing; one that ran out by `now` ends first, so a
+     * request just past its end, before the thread woke for it, still sends its notification
+     */
     fn apply(&mut self, request: Request, now: Instant) {
+        self.expire(now);
+
         self.running = match request {
             Request::Start(length) => Some(Countdown::new(length, now)),
             Request::Pause => self.running.map(|countdown| countdown.pause(now)),
@@ -483,6 +488,32 @@ mod tests {
         timer.apply(Request::Start(60 * second), start);
         timer.apply(Request::Cancel, start);
         assert_eq!(timer.running, None);
+    }
+
+    // the thread may take a request that came in after the end before it wakes for the end
+    #[test]
+    fn a_request_after_the_end_still_ends_the_timer() {
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+
+        for request in [
+            Request::Pause,
+            Request::Resume,
+            Request::Cancel,
+            Request::Start(60 * second),
+        ] {
+            let mut timer = Timer::default();
+            timer.apply(Request::Start(second), start);
+
+            let started = timer.running;
+            timer.apply(request, start + 2 * second);
+
+            assert_eq!(timer.ended, started, "{request:?}");
+
+            let restarted = matches!(request, Request::Start(_))
+                .then(|| Countdown::new(60 * second, start + 2 * second));
+            assert_eq!(timer.running, restarted, "{request:?}");
+        }
     }
 
     #[test]
