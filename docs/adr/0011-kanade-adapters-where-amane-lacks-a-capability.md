@@ -20,15 +20,19 @@ Amane is third party (ADR 0004). A change there lands on its schedule, and Kanad
 When the pinned Amane lacks a capability a Module needs, Kanade builds an adapter for it and does not wait for Amane. Prefer, in order:
 
 1. **D-Bus through Amane's `Bus`**, when the service speaks D-Bus and `Bus` carries what it needs. The tray's watcher and host.
-2. **An external tool** from the package that owns the capability, run and followed as ADRs 0003 and 0004 do: `pw-dump` and `wpctl` for audio, `wl-paste` and `wl-copy` for the clipboard, `systemd-inhibit` for idle inhibit.
+2. **An external tool** from the package that owns the capability: `pw-dump` and `wpctl` for audio, `wl-paste` and `wl-copy` for the clipboard, `systemd-inhibit` for idle inhibit.
 3. **A normal Rust crate**, when neither of the above is sound and the crate deepens Kanade. Never a Wayland or render crate.
 
 Every adapter keeps these rules:
 
 - **The Wayland boundary holds.** No Wayland client outside `src/doctor/`, enforced by `src/boundary.rs`. A capability reachable only through a Wayland protocol, like wlr data-control for the clipboard, goes through an external tool that speaks it.
 - **External semantics stop at the adapter.** It hands the rest of Kanade Kanade types, through a Service or `Island::write()`. Tool output, D-Bus paths and PipeWire ids go no further. `island/` stays unaware of it.
-- **No idle cost.** It wakes on announcements, not a timer (ADR 0004). A child process runs under `wake::run`: `setpriv --pdeathsig KILL` and restart with backoff.
-- **A missing tool or service is a soft capability.** The Module degrades with a named reason in `kanade doctor`; the shell stays up. A disabled Module starts no process and opens no bus name (ADR 0008).
+- **No idle cost.** It wakes on announcements, not a timer (ADR 0004).
+- **A child process's lifetime follows its role.** Every one dies with Kanade (`setpriv --pdeathsig KILL`) and stays in the foreground, so the kernel can kill it.
+  - A **follower** reads announcements for as long as its Module is on (`pw-dump --monitor`, `wl-paste --watch`). It runs under `wake::run`, which restarts it with backoff when its output ends, as ADRs 0003 and 0004 do.
+  - An **action** does one thing and exits (`wpctl set-volume`, `wpctl set-default`). It is never restarted; a failure is reported to whoever asked.
+  - A **holder** is state: it lives exactly as long as what it stands for (`systemd-inhibit` while caffeine is on, `wl-copy --foreground` while its entry owns the selection). The adapter starts and stops it. When it exits on its own, the state has ended and the adapter says so; it never restarts it, which could hold a lock nobody asked for or put back a stale selection.
+- **A missing adapter dependency never takes down the shell.** It follows the Module rules in `docs/design.md`: a Module's required backend missing disables that Module with a named reason (`clipboard` without `wl-paste`, `caffeine` without `systemd-inhibit`); one that provides only an optional capability degrades it (`audio` without `wpctl` keeps Amane's master volume and mute). `kanade doctor` reports either case. A disabled Module starts no process and opens no bus name (ADR 0008).
 
 When a later pin of Amane gains a capability, Kanade may drop its adapter in that bump. It does not have to.
 
@@ -46,6 +50,6 @@ When a later pin of Amane gains a capability, Kanade may drop its adapter in tha
 
 - `docs/design.md` Runtime + dependencies points here instead of "Extend Amane first".
 - #132, #134, #136 and #141 build adapters under this ADR.
-- `wpctl` (WirePlumber), `wl-paste` and `wl-copy` (wl-clipboard) and `systemd-inhibit` (systemd) become optional runtime tools, listed by `kanade doctor` as their Module's needs.
-- More child processes, each blocked on a read while idle.
+- `wpctl` (WirePlumber), `wl-paste` and `wl-copy` (wl-clipboard) and `systemd-inhibit` (systemd) become runtime tools, each a required backend or an optional capability of its Module, listed by `kanade doctor`.
+- More child processes: followers blocked on a read while idle, holders idle until their state ends.
 - Kanade owns more protocol knowledge (SNI, PipeWire graph, clipboard MIME types) than a fuller Amane would ask of it.
