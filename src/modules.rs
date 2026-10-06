@@ -17,7 +17,7 @@ use crate::sources::{
     battery, bluetooth, media, network, niri, notifications, osd, power, privacy, system, timer,
     wake,
 };
-use crate::{cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
+use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
 pub struct Module {
     pub name: &'static str,
@@ -144,10 +144,11 @@ pub const ALL: &[Module] = &[
             clock::spawn();
             shadow::prepare(shadow::ShadowStyle::island());
 
-            // Kanade's own niri stream, which `workspace` and `privacy` also read when on
+            // Kanade's own niri stream, which `workspace`, `privacy` and `banners` also read when on
             let posts = niri::Posts {
                 workspace: on("workspace"),
                 privacy: on("privacy"),
+                banners: on("banners"),
             };
             supervise::spawn("niri", move || niri::follow(posts));
 
@@ -315,6 +316,16 @@ notifications dnd on|off|toggle",
             supervise::spawn("notifications", notifications::follow);
             app
         },
+    },
+    Module {
+        name: "banners",
+        requires: &["notifications"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[],
+        start: |app| app.window_per_monitor(banners::window),
     },
     // the three share one system bus watcher, which follows only the daemons of those that are on
     Module {

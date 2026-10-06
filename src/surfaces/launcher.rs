@@ -523,7 +523,13 @@ fn icon(app: &DesktopApp) -> Box<dyn Widget> {
             .next()
             .map_or_else(String::new, |initial| initial.to_uppercase().collect());
 
-        return Box::new(view::tile(None, &initial, ICON, radius::ICON));
+        return Box::new(view::tile(
+            None,
+            &initial,
+            ICON,
+            radius::ICON,
+            &theme::ISLAND,
+        ));
     };
 
     // decoded at twice its size, crisp at scale 2

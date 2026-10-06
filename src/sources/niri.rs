@@ -13,6 +13,7 @@ use amane::Service;
 use super::json::Json;
 use super::privacy::Privacy;
 use super::workspace;
+use crate::banners::Banners;
 use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
 use crate::supervise;
@@ -176,6 +177,7 @@ fn stream(cast: &Json) -> Option<u64> {
 pub struct Posts {
     pub workspace: bool,
     pub privacy: bool,
+    pub banners: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -263,11 +265,15 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &S
 /*
  * the core hears of focus and the overview only when they change, of the focused workspace only
  * as a switch, so a list that only renumbers wakes nothing; the privacy cluster hears of casts
- * only as the first starts or the last stops
+ * only as the first starts or the last stops, the Banners of focus only as it moves
  */
 fn post(posts: Posts, before: &Seen, seen: &Seen) {
     if posts.privacy && before.casting != seen.casting {
         Privacy::write().casting = seen.casting;
+    }
+
+    if posts.banners && before.focused_output != seen.focused_output {
+        Banners::write().focus(seen.focused_output.clone(), Instant::now());
     }
 
     let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);

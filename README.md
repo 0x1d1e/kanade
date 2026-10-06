@@ -53,7 +53,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `... toggle` | opens it, or collapses it when it is already open there |
 | `island collapse` | collapses the open island on the focused output |
 | `notifications clear` | dismisses every notification |
-| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification toasts stop showing, Critical ones still do |
+| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification toasts and Banners stop showing, Critical ones still do |
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
 | `timer pause\|resume\|cancel` | pauses, resumes or cancels it |
 | `config reload` | reads the config again now |
@@ -96,9 +96,9 @@ toast = 5000         # a notification shown as a Transient
 # media = false
 ```
 
-- `theme.palette`: the theme roles for what draws beside the island, like the coming Banners and OSD, take their tone from this image and follow it when the file changes. The island itself stays black and white whatever the wallpaper, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning. Nothing draws the roles yet, so for now the setting changes nothing on screen; it tinted the island before #106.
+- `theme.palette`: the theme roles for what draws beside the island, like the Banners and the coming OSD, take their tone from this image and follow it when the file changes. The island itself stays black and white whatever the wallpaper, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning.
 - `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
-- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
+- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `banners` (notification cards top-right on the focused output; requires `notifications`), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
 - `schema_version`: the config layout a file is written in, per file, `1` without one. When a Kanade release changes the layout, it migrates older files in memory as it reads them and leaves them as they are on disk. A file with a version newer than this Kanade reads, or one that is not a version, is skipped whole, so a downgrade never applies settings it cannot read.
 - Problems are reported on stderr with file and line. At start, a key that is unknown or a value out of range is skipped, keeping what the layers below gave it, and a file that is not valid TOML, like one that sets a key twice, is skipped whole.
 - A change while running applies without a restart, except `modules`, which stays as it started and is reported pending restart. A change with any problem applies nothing: the config in effect stays whole, and stderr and `status` report why.

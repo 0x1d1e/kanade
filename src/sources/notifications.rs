@@ -18,11 +18,12 @@ use amane::{Apps, Bus, Notification, Notifications, Service, Urgency};
 
 use super::bus;
 use super::wake::{Announcer, Pace, Wakes};
+use crate::banners::{Banner, Banners};
 use crate::island::activity::{
     Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Toast,
 };
 use crate::island::service::IslandService;
-use crate::{config, supervise};
+use crate::{banners, config, modules, supervise};
 
 const PACE: Pace = Pace {
     // a toast shows within this of arriving
@@ -231,11 +232,21 @@ fn announces(line: &str) -> bool {
     )
 }
 
+// DND quiets the island's toasts and the Banners alike, never the history
+pub fn set_dnd(dnd: bool, now: Instant) {
+    IslandService::write().set_dnd(dnd, now);
+
+    if dnd {
+        banners::silence(now);
+    }
+}
+
 // runs on its own thread for good
 pub fn follow() {
     let mut wakes = Wakes::new(PACE, vec![BUS]);
     let mut before: Vec<Version> = Vec::new();
     let mut daemon = Daemon::Starting;
+    let shows_banners = modules::on("banners");
 
     supervise::run("notifications", || {
         loop {
@@ -253,12 +264,25 @@ pub fn follow() {
             let changed = !posted.is_empty() || !gone.is_empty();
 
             // read here, so they are of the same list
-            let posted: Vec<Activity> = notifications
+            let arrived: Vec<&Notification> = notifications
                 .list()
                 .iter()
                 .filter(|notification| {
                     posted.contains(&(notification.id(), notification.received()))
                 })
+                .collect();
+
+            let shown: Vec<Banner> = if shows_banners {
+                arrived
+                    .iter()
+                    .map(|notification| Banner::of(notification))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            let posted: Vec<Activity> = arrived
+                .into_iter()
                 .map(|notification| {
                     let actions = notification
                         .actions()
@@ -296,6 +320,29 @@ pub fn follow() {
                 }
             }
 
+            let dnd = IslandService::read().dnd();
+
+            /*
+             * a Banner DND drops that replaces none, or one already put away, changes nothing, so
+             * neither writes for nothing
+             */
+            let (shown, closed): (Vec<Banner>, Vec<u32>) = if shows_banners {
+                let banners = Banners::read();
+
+                (
+                    shown
+                        .into_iter()
+                        .filter(|banner| !dnd || banner.critical() || banners.contains(banner.id))
+                        .collect(),
+                    gone.iter()
+                        .copied()
+                        .filter(|id| banners.contains(*id))
+                        .collect(),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
             // a toast that already expired is not registered, so withdrawing it would write for nothing
             let gone: Vec<Id> = {
                 let island = IslandService::read();
@@ -316,6 +363,19 @@ pub fn follow() {
 
                 for id in &gone {
                     island.withdraw(id, now);
+                }
+            }
+
+            if !shown.is_empty() || !closed.is_empty() {
+                let now = Instant::now();
+                let mut banners = Banners::write();
+
+                for banner in shown {
+                    banners.arrive(banner, dnd, now);
+                }
+
+                for id in closed {
+                    banners.close(id, now);
                 }
             }
 

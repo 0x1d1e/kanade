@@ -16,10 +16,10 @@ use crate::cluster;
 use crate::icon::Icon;
 use crate::island::activity::Uplink;
 use crate::island::geometry;
-use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::bluetooth::{self, Adapter};
 use crate::sources::network::Connectivity;
+use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::Privacy;
 use crate::sources::system::Radio;
@@ -311,7 +311,7 @@ fn run(press: Press) {
         Press::Wifi(on) => Network::set_wifi(on),
         Press::Bluetooth { adapter, on } => bluetooth::power(adapter, on),
         Press::Microphone => Audio::toggle_microphone_mute(),
-        Press::Dnd(on) => IslandService::write().set_dnd(on, Instant::now()),
+        Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
     }
 }
 
