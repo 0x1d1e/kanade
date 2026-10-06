@@ -1,6 +1,8 @@
 // view code for the full interactive Surfaces; read-only, never write() a Service
 
-use amane::Button;
+use amane::{Button, Rectangle};
+
+use crate::theme;
 
 pub mod controls;
 pub mod launcher;
@@ -17,5 +19,23 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
         Button::Left => press(),
         Button::Right => crate::view::pin(),
         _ => {}
+    }
+}
+
+// the keyboard focus, thick enough to see on any part
+const RING: f32 = 2.0;
+
+// the one focus mark every Surface draws, so the keyboard reads the same everywhere
+trait Ring {
+    fn border_if(self, ring: bool) -> Self;
+}
+
+impl Ring for Rectangle {
+    fn border_if(self, ring: bool) -> Self {
+        if ring {
+            self.border(RING, theme::FG)
+        } else {
+            self
+        }
     }
 }

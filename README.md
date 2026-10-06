@@ -10,8 +10,34 @@ AI-generated concept, not a capture of the current build.
 
 - `KANADE_REDUCED_MOTION=1`: the island snaps to its new shape and only fades its content, over 80 ms.
 
+## Keyboard
+
+Every Surface opens from `amane ipc call island <verb>`, so a niri keybind reaches it. Add these to the `binds` block of `~/.config/niri/config.kdl`:
+
+```kdl
+binds {
+    Mod+Alt+Space hotkey-overlay-title="Island: Launcher" { spawn "amane" "ipc" "call" "island" "toggle" "launcher"; }
+    Mod+Alt+N hotkey-overlay-title="Island: Notifications" { spawn "amane" "ipc" "call" "island" "toggle" "notifications"; }
+    Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "amane" "ipc" "call" "island" "toggle" "media"; }
+    Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "amane" "ipc" "call" "island" "toggle" "controls"; }
+    Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "amane" "ipc" "call" "island" "collapse"; }
+}
+```
+
+`amane ipc call island` with no verb prints every verb.
+
+An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
+
+| Where | Keys |
+|---|---|
+| Any Surface | Escape collapses. A pinned island gives the keyboard back, so the `collapse` bind closes it |
+| Notifications | arrows and Tab move the ring, Enter or Space presses what it is on, Backspace dismisses the card |
+| Launcher | typing searches, Up/Down/Home/End move the selection, Enter starts it |
+| Media, Controls | a typed character collapses an island opened from a keybind, so it goes to the window beneath |
+
 ## Limitations
 
+- No screen reader support. Amane draws with the GPU and builds no accessibility tree, so the island never registers on the AT-SPI bus and Orca cannot see it. Checked on niri with `Atspi.get_desktop(0)`: every other app is listed, `amane-shell` is not.
 - The island stays visible over fullscreen windows. niri 26.04 does not report fullscreen state, and guessing it from window size also catches maximized windows, so suppression waits for [niri#2836](https://github.com/niri-wm/niri/pull/2836). See [ADR 0002](docs/adr/0002-defer-fullscreen-suppression.md).
 - The Launcher cannot tell when an app fails to start. Amane's `DesktopApp::launch` runs the entry through `sh -c` and reports nothing back, so a broken `Exec` line just closes the island.
 - The Launcher shows "Finding apps" forever on a system with no launchable `.desktop` entries. Amane's `Apps` is empty both while scanning and after finding nothing, and exposes no scan-complete state.
