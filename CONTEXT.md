@@ -33,6 +33,7 @@ The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (
 
 ## Presentation
 An island's visual level: `Rest | Compact | Peek | Expanded(Surface)`.
+- Rest has no primary Activity and shows the local time.
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
 - **Invariant:** which Surface opens is a pure function of (Presentation, primary Activity, request). No remembered last-used Surface: a click at Rest opens Controls.
 - **Invariant:** at most one island is Expanded at a time.

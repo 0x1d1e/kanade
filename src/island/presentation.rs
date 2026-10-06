@@ -104,7 +104,7 @@ pub struct Content {
 }
 
 impl Content {
-    // an open Surface shows itself, not the Activity, and Rest shows nothing
+    // an open Surface shows itself, not the Activity, and Rest shows the time, not an Activity
     pub fn new(presentation: Presentation, shown: Option<Activity>) -> Self {
         let small = matches!(presentation, Presentation::Compact | Presentation::Peek);
 

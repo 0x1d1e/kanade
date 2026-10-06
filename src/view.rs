@@ -6,6 +6,8 @@ use amane::{
     Widget, Zone, children, request_frame,
 };
 
+use crate::clock;
+use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
     Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Sensors, Toast,
@@ -66,6 +68,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     if let Some((content, opacity)) = content.into_iter().flatten().next()
         && let Some(form) = small_form(&content, island.track(&monitor.name), now)
             .or_else(|| surface(&monitor.name, &content, &island, now))
+            .or_else(|| rest(&content))
             .or_else(|| placeholder(&content))
     {
         body = body.child(form.opacity(opacity));
@@ -246,9 +249,28 @@ fn abbreviation(kind: Kind) -> &'static str {
 }
 
 /*
+ * the local time while nothing is happening; an Activity's small form crossfades over it, and
+ * only a window that draws it redraws when the minute turns
+ */
+fn rest(content: &Content) -> Option<Rectangle> {
+    if content.presentation != Presentation::Rest {
+        return None;
+    }
+
+    Some(
+        sized(Presentation::Rest).align_child(Center, Center).child(
+            Text::new(clock::now(config::get().clock))
+                .size(13.0)
+                .color(theme::fg())
+                .weight(600),
+        ),
+    )
+}
+
+/*
  * stand-in content until the sources and the Surfaces draw their own (#21-#33): names the Activity
  * a small form shows, or the open Surface, so the crossfade and the clipping can be seen. Short,
- * so sized to its letters and centered; Rest shows nothing
+ * so sized to its letters and centered
  */
 fn placeholder(content: &Content) -> Option<Rectangle> {
     let name = |activity: &Option<Activity>| {

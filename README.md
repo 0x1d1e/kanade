@@ -14,6 +14,9 @@ Kanade reads `$XDG_CONFIG_HOME/kanade/config.toml` (else `~/.config/kanade/confi
 # the island snaps to its new shape and only fades its content, over 80 ms
 reduced_motion = false
 
+# the time an idle island shows: "24h" (14:05) or "12h" (2:05 PM)
+clock = "24h"
+
 [timings]            # milliseconds, 1-60000
 hover = 120          # pointer resting on a Compact island before it peeks
 expand = 180         # morph to a larger form
