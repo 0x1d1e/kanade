@@ -1,6 +1,6 @@
 # Kanade
 
-Niri Dynamic Island built on Amane. Design: `docs/plan.md`.
+Niri Dynamic Island built on Amane. Original design: `docs/plan.md` (archived after v0.1, not kept in sync; decisions since are ADRs in `docs/adr/`).
 
 Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
 
@@ -17,7 +17,7 @@ scripts/dev               # cargo build, restart the shell on each save; a faile
 ```
 
 - `Cargo.toml` and `Cargo.lock` are authoritative for every build. Add dependencies there as needed; none speculatively.
-- Only one Amane shell per session. Stop any other (`amane: amane is already running`) first.
+- Only one Amane shell per session. Stop any other (`failed to listen: amane is already running`) first.
 - Zero idle frames check: `AMANE_FRAMES=1 scripts/dev` prints frames only when something draws.
 - Idle wakeups (#40): diff `voluntary_ctxt_switches` of each `/proc/$(pgrep -x kanade)/task/*/status` over 30 s at rest; expected numbers in `docs/adr/0004-wake-sources-on-announcements.md`.
 - Morph smoothness (#36): with `AMANE_FRAMES=1 scripts/dev > LOG 2>&1` running, `scripts/frames LOG` prints frame gaps per Surface transition; mean gap should match the refresh interval.

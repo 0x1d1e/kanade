@@ -1,6 +1,6 @@
 # Kanade - design plan
 
-Status: draft, pre-implementation. Archive as historical once v0.1 ships. Durable parts move to `CONTEXT.md` (glossary below) and ADRs.
+Status: archived after v0.1, kept as history and no longer edited to match the code. Current terms and invariants are in `CONTEXT.md`, decisions in `docs/adr/`, usage in `README.md`.
 
 ## 1. Problem
 

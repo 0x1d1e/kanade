@@ -6,13 +6,59 @@ https://github.com/user-attachments/assets/27e6837e-8cf1-4faa-8815-e5b14cdd631b
 
 AI-generated concept, not a capture of the current build.
 
-## Run
+## What it is
+
+One pill at the top center of each monitor that changes shape for what is happening: the clock at rest, the playing track, volume, brightness and workspace changes, notifications, battery, screen capture, microphone and camera use, a timer. Hovering it while it shows something peeks, a click expands it into one of four Surfaces: Media, Notifications, Controls and Launcher. It is also the session's notification daemon. At rest it draws one frame a minute, for the clock, and nothing else.
+
+It is not a bar, dock, wallpaper, lock screen or settings app, and it shows no permanent Wi-Fi, CPU or RAM indicators. It follows niri's focused output and workspaces; Hyprland and Sway are not supported, even though Amane runs there.
+
+## Install
+
+Kanade needs:
+
+- niri, which it talks to over `$NIRI_SOCKET`.
+- A Rust toolchain and the system libraries Amane builds against: a C compiler, pkg-config, wayland, libxkbcommon, fontconfig, freetype, expat, vulkan-loader, libpulseaudio and linux-pam, with their headers. Amane's `install.sh` installs them with pacman, apt or dnf, see [Amane's README](https://github.com/MystiaFin/amane#installation).
+- The `amane` CLI, only to send IPC verbs (`amane ipc call island ...`). Any version works.
+- Optional, see Limitations: `pactl`, `udevadm`, `dbus-monitor`, `setpriv` (util-linux) and `pw-dump` (pipewire).
 
 ```sh
-cargo run
+cargo install --locked --path .
 ```
 
-Only one Amane shell runs per session. `scripts/dev` rebuilds and restarts Kanade on every save.
+This puts `kanade` in `~/.cargo/bin`.
+
+Kanade must be the only notification daemon. Stop mako, dunst or any other one and keep it from starting again, for example `systemctl --user disable --now mako` and removing it from niri's `spawn-at-startup`. Otherwise the Notifications Surface says which daemon has the bus name, and no notification reaches the island until it is stopped and Kanade restarted.
+
+Only one Amane shell runs per session. A second one, Kanade or any other, stops at start with `failed to listen: amane is already running`.
+
+## Run
+
+Start it with niri, in `~/.config/niri/config.kdl`, using the full path if `~/.cargo/bin` is not on niri's `PATH`:
+
+```kdl
+spawn-at-startup "kanade"
+```
+
+Starting early also keeps D-Bus from activating another notification daemon for the first notification of the session.
+
+From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it on every save.
+
+## IPC
+
+```sh
+amane ipc call island <verb>
+```
+
+| Verb | Does |
+|---|---|
+| `open <surface>` | opens `media`, `notifications`, `controls` or `launcher` on the focused output |
+| `toggle <surface>` | opens it, or collapses it when it is already open there |
+| `collapse` | collapses the open island on the focused output |
+| `dnd toggle` | turns Do Not Disturb on or off: notification toasts stop showing, Critical ones still do |
+| `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
+| `timer stop` | stops it |
+
+With no verb it prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities.
 
 ## Configuration
 
@@ -44,7 +90,7 @@ toast = 5000         # a notification shown as a Transient
 
 ## Keyboard
 
-Every Surface opens from `amane ipc call island <verb>`, so a niri keybind reaches it. Add these lines inside the `binds` block of `~/.config/niri/config.kdl`:
+Every Surface opens from an IPC verb, so a niri keybind reaches it. Add these lines inside the `binds` block of `~/.config/niri/config.kdl`:
 
 ```kdl
 Mod+Alt+Space hotkey-overlay-title="Island: Launcher" { spawn "amane" "ipc" "call" "island" "toggle" "launcher"; }
@@ -53,8 +99,6 @@ Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "amane" "ipc" "call" "isl
 Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "amane" "ipc" "call" "island" "toggle" "controls"; }
 Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "amane" "ipc" "call" "island" "collapse"; }
 ```
-
-`amane ipc call island` with no verb prints every verb.
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
 
@@ -67,6 +111,7 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 
 ## Limitations
 
+- niri only. Hyprland and Sway are not supported: focused-output routing, workspace changes and screen capture come from niri IPC.
 - No screen reader support. Amane draws with the GPU and builds no accessibility tree, so the island never registers on the AT-SPI bus and Orca cannot see it. Checked on niri with `Atspi.get_desktop(0)`: every other app is listed, Kanade is not.
 - The island stays visible over fullscreen windows. niri 26.04 does not report fullscreen state, and guessing it from window size also catches maximized windows, so suppression waits for [niri#2836](https://github.com/niri-wm/niri/pull/2836). See [ADR 0002](docs/adr/0002-defer-fullscreen-suppression.md).
 - The Launcher cannot tell when an app fails to start. Amane's `DesktopApp::launch` runs the entry through `sh -c` and reports nothing back, so a broken `Exec` line just closes the island.

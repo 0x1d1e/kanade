@@ -364,15 +364,7 @@ impl IslandService {
         let global = activity.scope() == Scope::Global;
 
         // a Transient the open Surface already shows would only wait behind it as a badge
-        let absorbed = self
-            .presentations
-            .expanded()
-            .is_some_and(|(monitor, surface)| {
-                matches!(activity.lifetime(), Lifetime::Transient(_))
-                    && (global || self.focused(monitor))
-                    && surface.shows(&activity)
-            });
-        if absorbed {
+        if matches!(activity.lifetime(), Lifetime::Transient(_)) && self.absorbs()(&activity) {
             return;
         }
 
@@ -392,6 +384,29 @@ impl IslandService {
             }
             _ => self.sync(now),
         }
+    }
+
+    // what the open Surface already shows, on the island each Activity reaches
+    fn absorbs(&self) -> impl Fn(&Activity) -> bool + use<> {
+        let open = self
+            .presentations
+            .expanded()
+            .map(|(monitor, surface)| (self.focused(monitor), surface));
+
+        move |activity| {
+            open.is_some_and(|(focused, surface)| {
+                (focused || activity.scope() == Scope::Global) && surface.shows(activity)
+            })
+        }
+    }
+
+    // drops the Transients up that a Surface just opened shows, as `post` drops those posted after
+    fn absorb(&mut self) {
+        let absorbs = self.absorbs();
+
+        self.change(|arbiter| {
+            arbiter.absorb(absorbs);
+        });
     }
 
     pub fn withdraw(&mut self, id: &Id, now: Instant) {
@@ -525,6 +540,7 @@ impl IslandService {
         }
 
         self.presentations.input(monitor, input);
+        self.absorb();
 
         /*
          * a pinned island stays open with nobody on it, so it waits for nothing and gives back a
@@ -775,7 +791,7 @@ fn nudge() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::{Detail, Device, Kind, Priority, Track, Volume};
+    use crate::island::activity::{Detail, Device, Kind, Priority, Toast, Track, Volume};
 
     const MONITOR: &str = "eDP-1";
 
@@ -2061,6 +2077,36 @@ mod tests {
             island.get(MONITOR).content.target().activity,
             Some(volume())
         );
+    }
+
+    // a toast up when its Surface opens is in the list, not also a badge
+    #[test]
+    fn opening_a_surface_drops_the_transients_it_shows() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let toast = Activity::transient(
+            Id::new(Kind::Notification, "7"),
+            Priority::Actionable,
+            Duration::from_secs(5),
+        )
+        .with_detail(Detail::Notification(Toast::default()));
+
+        island.post(media(), now);
+        island.post(toast.clone(), now);
+        island.input(MONITOR, Input::Click, now);
+        island.post(volume(), now);
+
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+        assert_eq!(island.frame(MONITOR, now).queued, [volume()]);
+
+        // nor does it return once the Surface closes
+        island.input(MONITOR, Input::Collapse, now + ms(100));
+
+        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(volume()));
+        assert!(!island.arbiter.contains(toast.id()));
     }
 
     #[test]

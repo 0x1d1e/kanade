@@ -6,7 +6,7 @@
 //! stay registered until `expire`, but never reach a Frame, so the primary returns on its own.
 //!
 //! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
-//! it, never withdraw one. DND (rule 5) hides the toasts already up and drops those posted during it.
+//! it, never withdraw one; dropping the Transients an open Surface already shows is `absorb`. DND (rule 5) hides the toasts already up and drops those posted during it.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -99,6 +99,17 @@ impl Arbiter {
     // whether it was registered
     pub fn withdraw(&mut self, id: &Id) -> bool {
         self.activities.remove(id).is_some()
+    }
+
+    // drops the Transients `drop` picks, an open Surface showing them already; whether any were
+    pub fn absorb(&mut self, drop: impl Fn(&Activity) -> bool) -> bool {
+        let before = self.activities.len();
+
+        self.activities.retain(|_, entry| {
+            !(matches!(entry.activity.lifetime(), Lifetime::Transient(_)) && drop(&entry.activity))
+        });
+
+        self.activities.len() != before
     }
 
     // drops what expired by now; whether anything did
