@@ -15,12 +15,11 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::theme;
+use crate::theme::space::{INSET, TARGET};
+use crate::theme::{self, radius};
 use crate::view;
 
 use super::Ring;
-
-const INSET: f32 = 20.0;
 
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
@@ -39,17 +38,12 @@ const ROWS: usize = 5;
 const ROW_GAP: f32 = 6.0;
 const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 const ROW_INSET: f32 = 8.0;
-const ROW_RADIUS: f32 = 12.0;
 
 const ICON: f32 = 28.0;
-const ICON_RADIUS: f32 = 7.0;
 const ICON_GAP: f32 = 12.0;
 
-// a pressable target never smaller than plan 7's 24 px
-const TARGET: f32 = 24.0;
-
 // the typed text's size, and the caret after it
-const QUERY: f32 = 16.0;
+const QUERY: f32 = theme::text::TITLE;
 const CARET: f32 = 1.5;
 
 // pixels per wheel line
@@ -305,7 +299,7 @@ fn field(query: &str) -> Rectangle {
     let caret = Rectangle::new()
         .width(CARET)
         .height(QUERY + 4.0)
-        .fill(theme::fg());
+        .fill(theme::ISLAND.on_surface);
 
     let typed: Box<dyn Widget> = if query.is_empty() {
         Box::new(
@@ -313,8 +307,8 @@ fn field(query: &str) -> Rectangle {
                 caret,
                 Text::new("Search apps")
                     .size(QUERY)
-                    .color(theme::muted())
-                    .weight(500),
+                    .color(theme::ISLAND.on_surface_variant)
+                    .weight(theme::text::MEDIUM),
             ])
             .align(Center),
         )
@@ -326,7 +320,7 @@ fn field(query: &str) -> Rectangle {
         .width(width)
         .height(FIELD)
         .radius(FIELD / 2.0)
-        .fill(theme::card())
+        .fill(theme::ISLAND.surface_container)
         .padding(Padding {
             top: 0.0,
             right: FIELD_INSET,
@@ -336,7 +330,8 @@ fn field(query: &str) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::muted())) as Box<dyn Widget>,
+                Box::new(Icon::Search.on(TARGET, theme::ISLAND.on_surface_variant))
+                    as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)
@@ -346,7 +341,12 @@ fn field(query: &str) -> Rectangle {
 
 // the end of `query` that fits in `width`, an ellipsis before it when the start is cut
 fn tail(query: &str, width: f32) -> Text {
-    let text = |shown: &str| Text::new(shown).size(QUERY).color(theme::fg()).weight(500);
+    let text = |shown: &str| {
+        Text::new(shown)
+            .size(QUERY)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::MEDIUM)
+    };
     let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
 
     let whole = text(query);
@@ -372,14 +372,17 @@ fn tail(query: &str, width: f32) -> Text {
 fn state(title: &str, detail: &str) -> Rectangle {
     let mut lines = children![
         Icon::Search.draw(28.0),
-        Text::new(title).size(14.0).color(theme::fg()).weight(600),
+        Text::new(title)
+            .size(theme::text::BODY)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD),
     ];
 
     if !detail.is_empty() {
         let text = Text::new(detail)
-            .size(12.0)
-            .color(theme::muted())
-            .weight(500);
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::ISLAND.on_surface_variant)
+            .weight(theme::text::MEDIUM);
 
         // centred while it fits, elided only when a long query does not, since elided text fills
         // its width
@@ -442,8 +445,8 @@ fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
             Rectangle::new()
                 .width(3.0)
                 .height(length)
-                .radius(1.5)
-                .fill(theme::dot())
+                .radius(radius::HAIRLINE)
+                .fill(theme::ISLAND.surface_container_high)
                 .translate(WIDTH + 7.0, at),
         ));
     }
@@ -455,18 +458,18 @@ fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
 fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
     let mut lines = children![
         Text::new(app.name())
-            .size(14.0)
-            .color(theme::fg())
-            .weight(600)
+            .size(theme::text::BODY)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
             .elide()
     ];
 
     if let Some(description) = app.description().filter(|text| !text.is_empty()) {
         lines.push(Box::new(
             Text::new(description)
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM)
                 .elide(),
         ));
     }
@@ -474,7 +477,7 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
     let row = Rectangle::new()
         .width(WIDTH)
         .height(ROW)
-        .radius(ROW_RADIUS)
+        .radius(radius::ROW)
         .padding(Padding {
             top: 0.0,
             right: ROW_INSET + 4.0,
@@ -494,7 +497,7 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
         );
 
     let row = if selected {
-        row.fill(theme::card())
+        row.fill(theme::ISLAND.surface_container)
     } else {
         row
     };
@@ -520,7 +523,7 @@ fn icon(app: &DesktopApp) -> Box<dyn Widget> {
             .next()
             .map_or_else(String::new, |initial| initial.to_uppercase().collect());
 
-        return Box::new(view::tile(None, &initial, ICON, ICON_RADIUS));
+        return Box::new(view::tile(None, &initial, ICON, radius::ICON));
     };
 
     // decoded at twice its size, crisp at scale 2

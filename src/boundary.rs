@@ -2,14 +2,19 @@
 //! must not name Amane, the service module, or anything in Kanade outside `island/`.
 //! Parsed with syn, so aliases (`use amane as ui`), nesting, and test code are all covered.
 //! And `wayland_client` stays in `doctor/`: Amane owns Kanade's Wayland, doctor only inspects it.
+//! And no color literal outside `theme.rs` (#106): components draw theme tokens. Test code may.
 
+use std::collections::HashSet;
 use std::fs;
 use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{TokenStream, TokenTree};
 use syn::visit::{self, Visit};
-use syn::{Attribute, ItemMod, ItemUse, Macro, Meta, MetaList, Path as SynPath, UseTree};
+use syn::{
+    Attribute, Expr, ExprCall, ExprPath, ImplItemFn, Item, ItemMod, ItemUse, LitStr, Macro, Meta,
+    MetaList, Path as SynPath, UseRename, UseTree,
+};
 
 const SERVICE: &str = "service";
 
@@ -303,9 +308,219 @@ fn wayland_stays_in_doctor() {
     assert!(mentions(doctor.parse().unwrap(), WAYLAND));
 }
 
+// Amane's color type, and what makes one from literals
+const COLOR: &str = "Color";
+const CONSTRUCTORS: [&str; 3] = ["rgb", "rgba", "from"];
+
+// finds colors written as literals: `Color::WHITE`, `Color::rgb(1, 2, 3)`, `"#fff"`
+struct Literals {
+    // `Color` and whatever a `use` renamed it to
+    names: HashSet<String>,
+    found: Vec<String>,
+}
+
+impl Literals {
+    // `segments` name a constant of the color type, like `Color::WHITE` or `amane::Color::BLACK`
+    fn constant(&self, segments: &[String]) -> bool {
+        let [.., ty, name] = segments else {
+            return false;
+        };
+
+        self.names.contains(ty) && name.starts_with(|c: char| c.is_ascii_uppercase())
+    }
+
+    // `segments` name a constructor of the color type, like `Color::rgb`
+    fn constructor(&self, segments: &[String]) -> bool {
+        let [.., ty, name] = segments else {
+            return false;
+        };
+
+        self.names.contains(ty) && CONSTRUCTORS.contains(&name.as_str())
+    }
+
+    // macro bodies are opaque to syn, so the same rules run on their tokens
+    fn check_tokens(&mut self, tokens: TokenStream) {
+        let mut tokens = tokens.into_iter().peekable();
+
+        while let Some(token) = tokens.next() {
+            match token {
+                TokenTree::Ident(ident) => {
+                    let mut segments = vec![ident.to_string()];
+
+                    while let Some(next) = take_path_segment(&mut tokens) {
+                        segments.push(next);
+                    }
+
+                    let literal_arguments = matches!(
+                        tokens.peek(),
+                        Some(TokenTree::Group(group)) if group.stream().into_iter().any(|token| {
+                            matches!(token, TokenTree::Literal(_))
+                        })
+                    );
+
+                    if self.constant(&segments) || self.constructor(&segments) && literal_arguments
+                    {
+                        self.found
+                            .push(format!("in a macro: {}", segments.join("::")));
+                    }
+                }
+                TokenTree::Literal(literal) => {
+                    if let Ok(text) = syn::parse_str::<LitStr>(&literal.to_string())
+                        && hex(&text.value())
+                    {
+                        self.found.push(format!("in a macro: {literal}"));
+                    }
+                }
+                TokenTree::Group(group) => self.check_tokens(group.stream()),
+                TokenTree::Punct(_) => {}
+            }
+        }
+    }
+}
+
+// `#rgb`, `#rrggbb` and friends, which Amane's `Color::from` reads
+fn hex(text: &str) -> bool {
+    text.strip_prefix('#').is_some_and(|digits| {
+        [3, 4, 6, 8].contains(&digits.len()) && digits.chars().all(|c| c.is_ascii_hexdigit())
+    })
+}
+
+// `#[test]` or `#[cfg(test)]`
+fn test_only(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("test")
+            || attr.path().is_ident("cfg")
+                && matches!(&attr.meta, Meta::List(list) if list.tokens.to_string() == "test")
+    })
+}
+
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+// an argument that is a literal, also negated, cast or in parentheses
+fn literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(_) => true,
+        Expr::Unary(unary) => literal(&unary.expr),
+        Expr::Cast(cast) => literal(&cast.expr),
+        Expr::Paren(paren) => literal(&paren.expr),
+        _ => false,
+    }
+}
+
+fn segments(path: &SynPath) -> Vec<String> {
+    path.segments.iter().map(|s| s.ident.to_string()).collect()
+}
+
+// every `use .. Color as X`, so `X::WHITE` is caught too
+struct Renames(HashSet<String>);
+
+impl<'ast> Visit<'ast> for Renames {
+    fn visit_use_rename(&mut self, rename: &'ast UseRename) {
+        if rename.ident == COLOR {
+            self.0.insert(rename.rename.to_string());
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for Literals {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !test_only(item_attrs(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast ImplItemFn) {
+        if !test_only(&item.attrs) {
+            visit::visit_impl_item_fn(self, item);
+        }
+    }
+
+    fn visit_expr_path(&mut self, expr: &'ast ExprPath) {
+        let segments = segments(&expr.path);
+
+        if self.constant(&segments) {
+            self.found.push(segments.join("::"));
+        }
+
+        visit::visit_expr_path(self, expr);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if let Expr::Path(func) = &*call.func {
+            let segments = segments(&func.path);
+
+            if self.constructor(&segments) && call.args.iter().any(literal) {
+                self.found.push(format!("{}(..)", segments.join("::")));
+            }
+        }
+
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_lit_str(&mut self, lit: &'ast LitStr) {
+        if hex(&lit.value()) {
+            self.found.push(format!("{:?}", lit.value()));
+        }
+    }
+
+    fn visit_macro(&mut self, mac: &'ast Macro) {
+        self.check_tokens(mac.tokens.clone());
+    }
+}
+
+// color literals in one file's non-test code
+pub fn color_literals(source: &str) -> Vec<String> {
+    let file = syn::parse_file(source).expect("source file must parse");
+
+    let mut renames = Renames(HashSet::from([COLOR.to_owned()]));
+    renames.visit_file(&file);
+
+    let mut literals = Literals {
+        names: renames.0,
+        found: Vec::new(),
+    };
+    literals.visit_file(&file);
+
+    literals.found
+}
+
+#[test]
+fn colors_stay_in_theme() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let theme = src.join("theme.rs");
+
+    let mut files = Vec::new();
+
+    rust_files(&src, &theme, &mut files);
+
+    assert!(files.iter().any(|path| path.ends_with("view.rs")));
+
+    for path in files {
+        let found = color_literals(&fs::read_to_string(&path).unwrap());
+
+        assert!(found.is_empty(), "{}: {found:?}", path.display());
+    }
+
+    assert!(!color_literals(&fs::read_to_string(theme).unwrap()).is_empty());
+}
+
 #[cfg(test)]
 mod checker {
-    use super::{WAYLAND, mentions, violations};
+    use super::{WAYLAND, color_literals, mentions, violations};
 
     fn flagged(source: &str, depth: usize) -> bool {
         !violations(source, depth).is_empty()
@@ -400,6 +615,59 @@ mod checker {
         assert!(!named(
             "// wayland_client\nfn f() { let _ = \"wayland_client\"; }"
         ));
+    }
+
+    #[test]
+    fn catches_color_literals_however_written() {
+        let caught = |source: &str| !color_literals(source).is_empty();
+
+        assert!(caught("const C: Color = Color::rgb(1, 2, 3);"));
+        assert!(caught("fn f() -> Color { Color::rgba(0, 0, 0, 89) }"));
+        assert!(caught("fn f() -> Color { amane::Color::WHITE }"));
+        assert!(caught(
+            "use amane::Color as Ink; fn f() -> Ink { Ink::BLACK }"
+        ));
+        assert!(caught(
+            "fn f() -> Color { Color::rgb(c.red(), 0, c.blue()) }"
+        ));
+        assert!(caught("fn f() -> Color { Color::rgb(-1 as u8, 0, 0) }"));
+        assert!(caught("fn f() -> Color { Color::from(\"#ff0000\") }"));
+        assert!(caught("fn f() -> Color { \"#fff\".into() }"));
+        assert!(caught("fn f() { let _ = vec![Color::TRANSPARENT]; }"));
+        assert!(caught(
+            "fn f() { let _ = vec![Text::new(\"\").color(Color::rgb(1, 2, 3))]; }"
+        ));
+        assert!(caught(
+            "fn f() { let _ = children![x.color(\"#123456\".into())]; }"
+        ));
+        assert!(caught("impl S { fn f() -> Color { Color::RED } }"));
+        assert!(caught("#[cfg(not(test))] fn f() -> Color { Color::RED }"));
+        assert!(caught("mod inner { const C: Color = Color::GREEN; }"));
+    }
+
+    #[test]
+    fn allows_tokens_and_test_code() {
+        let caught = |source: &str| !color_literals(source).is_empty();
+
+        assert!(!caught("fn f() -> Color { theme::ISLAND.surface }"));
+        assert!(!caught(
+            "fn f(r: u8, g: u8, b: u8) -> Color { Color::rgb(r, g, b) }"
+        ));
+        assert!(!caught(
+            "fn f(c: Color) -> Color { theme::faded(c, theme::DISABLED) }"
+        ));
+        assert!(!caught("fn f() { let _ = format!(\"#{}\", 1); }"));
+        assert!(!caught("fn f() { let _ = \"#tag\"; }"));
+        assert!(!caught(
+            "#[cfg(test)] mod tests { const C: Color = Color::RED; }"
+        ));
+        assert!(!caught(
+            "#[test] fn t() { assert_ne!(Color::RED, Color::rgb(1, 2, 3)); }"
+        ));
+        assert!(!caught(
+            "impl S { #[cfg(test)] fn f() -> Color { Color::RED } }"
+        ));
+        assert!(!caught("// Color::WHITE\nfn f() {}"));
     }
 
     #[test]

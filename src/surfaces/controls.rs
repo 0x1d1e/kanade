@@ -23,10 +23,9 @@ use crate::sources::network::Connectivity;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::Privacy;
 use crate::sources::system::Radio;
-use crate::theme;
+use crate::theme::space::{INSET, TARGET};
+use crate::theme::{self, DISABLED};
 use crate::view::bar;
-
-const INSET: f32 = 20.0;
 
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
@@ -43,8 +42,6 @@ const SWITCH_GAP: f32 = 8.0;
 const KNOB: f32 = 32.0;
 const KNOB_INSET: f32 = (SWITCH - KNOB) / 2.0;
 
-// a pressable target never smaller than plan 7's 24 px
-const TARGET: f32 = 24.0;
 const ICON_GAP: f32 = 10.0;
 const LEVEL_GAP: f32 = 8.0;
 
@@ -54,9 +51,6 @@ const NUMBER: f32 = 30.0;
 // the power profiles' track, their segments a target high inside it
 const TRACK: f32 = 28.0;
 const TRACK_INSET: f32 = (TRACK - TARGET) / 2.0;
-
-// what this machine cannot do now
-const DISABLED: f32 = 0.35;
 
 // the Surface's height, which geometry::CONTROLS is
 #[cfg(test)]
@@ -85,9 +79,9 @@ pub fn surface(dnd: Option<bool>) -> Rectangle {
 fn header() -> Row {
     let mut header = children![
         Text::new("Controls")
-            .size(16.0)
-            .color(theme::fg())
-            .weight(600)
+            .size(theme::text::TITLE)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
     ];
 
     // the cluster takes no pointer, so the apps behind its glyphs are named here
@@ -120,9 +114,9 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
     {
         row.push(Box::new(
             Text::new(sensors.apps.join(", "))
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM)
                 .elide(),
         ));
     }
@@ -256,9 +250,12 @@ fn dnd(on: Option<bool>) -> Switch {
 // its knob filled while on, then its name and status
 fn switch(item: Switch, width: f32) -> Rectangle {
     let (fill, ink) = if item.on {
-        (theme::fg(), theme::body())
+        (theme::ISLAND.primary, theme::ISLAND.on_primary)
     } else {
-        (theme::dot(), theme::fg())
+        (
+            theme::ISLAND.surface_container_high,
+            theme::ISLAND.on_surface,
+        )
     };
 
     let knob = Rectangle::new()
@@ -272,14 +269,14 @@ fn switch(item: Switch, width: f32) -> Rectangle {
     let right = 16.0;
     let words = Column::new(children![
         Text::new(item.name)
-            .size(13.0)
-            .color(theme::fg())
-            .weight(600)
+            .size(theme::text::LABEL)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
             .elide(),
         Text::new(&item.status)
-            .size(12.0)
-            .color(theme::muted())
-            .weight(500)
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::ISLAND.on_surface_variant)
+            .weight(theme::text::MEDIUM)
             .elide(),
     ])
     .width(width - KNOB_INSET - KNOB - ICON_GAP - right)
@@ -289,7 +286,7 @@ fn switch(item: Switch, width: f32) -> Rectangle {
         .width(width)
         .height(SWITCH)
         .radius(SWITCH / 2.0)
-        .fill(theme::card())
+        .fill(theme::ISLAND.surface_container)
         .padding(Padding {
             top: 0.0,
             right,
@@ -342,7 +339,11 @@ fn levels() -> Column {
             Icon::Speaker(volume).draw(20.0)
         });
 
-    let tone = if muted { theme::muted() } else { theme::fg() };
+    let tone = if muted {
+        theme::ISLAND.on_surface_variant
+    } else {
+        theme::ISLAND.on_surface
+    };
 
     let volume = level(speaker, Some(Slider::Speaker), Some(volume), tone);
 
@@ -353,7 +354,12 @@ fn levels() -> Column {
         .child(Icon::Sun.draw(20.0));
 
     // a desktop monitor has no backlight to set
-    let brightness = level(sun, screen.map(|_| Slider::Brightness), screen, theme::fg());
+    let brightness = level(
+        sun,
+        screen.map(|_| Slider::Brightness),
+        screen,
+        theme::ISLAND.on_surface,
+    );
 
     Column::new(children![volume, brightness]).gap(LEVEL_GAP)
 }
@@ -381,9 +387,9 @@ fn level(icon: Rectangle, slider: Option<Slider>, percent: Option<u8>, tone: Col
         .align_child(End, Center)
         .child(
             Text::new(percent.map_or_else(String::new, |percent| percent.to_string()))
-                .size(12.0)
-                .color(theme::muted())
-                .weight(600),
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::SEMIBOLD),
         );
 
     let row = Rectangle::new()
@@ -428,7 +434,7 @@ fn profiles() -> Rectangle {
         .width(width)
         .height(TRACK)
         .radius(TRACK / 2.0)
-        .fill(theme::card())
+        .fill(theme::ISLAND.surface_container)
         .padding(TRACK_INSET)
         .align_child(Start, Center)
         .child(Row::new(segments));
@@ -460,13 +466,17 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool) -> Recta
         .align_child(Center, Center)
         .child(
             Text::new(profile.label())
-                .size(12.0)
-                .color(if active { theme::fg() } else { theme::muted() })
-                .weight(600),
+                .size(theme::text::LABEL_SMALL)
+                .color(if active {
+                    theme::ISLAND.on_surface
+                } else {
+                    theme::ISLAND.on_surface_variant
+                })
+                .weight(theme::text::SEMIBOLD),
         );
 
     if active {
-        segment.fill(theme::dot())
+        segment.fill(theme::ISLAND.surface_container_high)
     } else if available {
         segment
             .cursor(Cursor::Pointer)

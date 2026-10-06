@@ -6,10 +6,8 @@ use std::time::{Duration, Instant};
 
 use amane::{Audio, Brightness, Center, Color, Cursor, Rectangle, Service, Start};
 
+use crate::theme::space::TARGET;
 use crate::view::bar;
-
-// a pressable target never smaller than plan 7's 24 px
-const TARGET: f32 = 24.0;
 
 // percent per wheel line
 const WHEEL: f32 = 5.0;

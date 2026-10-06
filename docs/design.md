@@ -170,7 +170,7 @@ No literal theme colors in components.
 - `ThemeRoles`: changing M3-like roles.
 - `SemanticColors`: `privacy`, `capture`, `warning`, `critical`, `island_surface`, `on_island_surface`.
 - Island semantics = black/white, independent of mode/wallpaper.
-- radii/spacing/type/motion = tokens too.
+- radii/spacing/type/motion = tokens too; in `src/theme.rs`, motion in `island::service::Timings` + `island::motion` (`island/` stays pure).
 - v0.1 source = Amane `Palette`.
 - later = matugen template; cache key = wallpaper hash + scheme + contrast + mode + matugen version.
 - matugen fail → last good → black/white.

@@ -69,7 +69,7 @@ pub struct Config {
     // how long a notification shows as a Transient
     pub toast: Duration,
 
-    // the image the theme is taken from, usually the wallpaper; none keeps the near-black body
+    // the image the theme roles are taken from, usually the wallpaper; the Island stays black and white
     pub palette: Option<String>,
 
     // how the time reads at Rest

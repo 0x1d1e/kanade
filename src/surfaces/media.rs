@@ -16,14 +16,12 @@ use crate::island::activity::Track;
 use crate::island::geometry;
 use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
-use crate::theme;
+use crate::theme::space::{INSET, TARGET};
+use crate::theme::{self, DISABLED, radius};
 use crate::view::{Change, bar};
-
-const INSET: f32 = 20.0;
 
 // with INSET, concentric with the body's corner
 const ART: f32 = 80.0;
-const ART_RADIUS: f32 = 12.0;
 
 const GAP: f32 = 14.0;
 
@@ -40,12 +38,6 @@ const CHIP_MIN: f32 = 64.0;
 const BUTTON: f32 = 36.0;
 const PLAY: f32 = 44.0;
 
-// a pressable target never smaller than plan 7's 24 px
-const TARGET: f32 = 24.0;
-
-// a control the player cannot do now
-const DISABLED: f32 = 0.35;
-
 /*
  * `open` says the Surface is open rather than fading out, so only then does it ask the follower
  * to keep it fed
@@ -60,7 +52,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
     let width = shape.width - 2.0 * INSET;
 
     let deck = playback.shown.as_ref();
-    let accent = deck.map_or(theme::fg(), |deck| deck.accent.at(now));
+    let accent = deck.map_or(theme::ISLAND.on_surface, |deck| deck.accent.at(now));
 
     // the dissolve and the tint are the follower's, so the Surface asks for frames until they rest
     if deck.is_some_and(|deck| !deck.track.settled(now) || !deck.accent.settled(now)) {
@@ -106,21 +98,21 @@ fn header(
     // the artist's line is there even when it names none, like the Peek's
     let lines = children![
         track
-            .line(|track| &track.title, theme::fg())
-            .size(16.0)
-            .weight(600)
+            .line(|track| &track.title, theme::ISLAND.on_surface)
+            .size(theme::text::TITLE)
+            .weight(theme::text::SEMIBOLD)
             .elide(),
         track
-            .line(|track| &track.artist, theme::muted())
-            .size(13.0)
-            .weight(500)
+            .line(|track| &track.artist, theme::ISLAND.on_surface_variant)
+            .size(theme::text::LABEL)
+            .weight(theme::text::MEDIUM)
             .elide(),
     ];
 
     let shown = deck.map(|deck| deck.name.as_str());
 
     Row::new(children![
-        track.art(ART, ART_RADIUS),
+        track.art(ART, radius::ROW),
         Stack::new(children![
             Column::new(lines).width(words - BADGE).gap(3.0),
             Rectangle::new()
@@ -144,9 +136,9 @@ fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: 
     if let [only] = players {
         return Row::new(children![
             Text::new(&only.identity)
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM)
                 .elide()
         ])
         .width(width);
@@ -197,20 +189,20 @@ fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Wi
         }))
         .child(
             Text::new(label)
-                .size(12.0)
+                .size(theme::text::LABEL_SMALL)
                 .color(if selected {
-                    theme::fg()
+                    theme::ISLAND.on_surface
                 } else {
-                    theme::muted()
+                    theme::ISLAND.on_surface_variant
                 })
-                .weight(600)
+                .weight(theme::text::SEMIBOLD)
                 .elide(),
         );
 
     Box::new(if selected {
-        chip.fill(theme::dot())
+        chip.fill(theme::ISLAND.surface_container_high)
     } else {
-        chip.border(1.0, theme::dot())
+        chip.border(1.0, theme::ISLAND.surface_container_high)
     })
 }
 
@@ -278,7 +270,12 @@ fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant) -> Col
         }
     });
 
-    let time = |text: String| Text::new(text).size(12.0).color(theme::muted()).weight(500);
+    let time = |text: String| {
+        Text::new(text)
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::ISLAND.on_surface_variant)
+            .weight(theme::text::MEDIUM)
+    };
 
     Column::new(children![
         bar(width, fraction, accent),
@@ -317,7 +314,7 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
         {
             let (glyph, control) = play_pause(deck);
 
-            button(glyph, PLAY, Some(theme::fg()), control)
+            button(glyph, PLAY, Some(theme::ISLAND.primary), control)
         },
         button(
             Transport::Next,
@@ -366,9 +363,9 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
     };
 
     let tone = if fill.is_some() {
-        theme::body()
+        theme::ISLAND.on_primary
     } else {
-        fade(theme::fg())
+        fade(theme::ISLAND.on_surface)
     };
 
     let button = Rectangle::new()
@@ -395,9 +392,7 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
 
 // as if drawn at DISABLED opacity
 fn faded(color: Color) -> Color {
-    let alpha = (f32::from(color.alpha()) * DISABLED).round() as u8;
-
-    Color::rgba(color.red(), color.green(), color.blue(), alpha)
+    theme::faded(color, DISABLED)
 }
 
 // the speaker's icon and its level `width` wide, set by a press or a drag along it
@@ -422,7 +417,11 @@ fn volume(width: f32, accent: Color) -> Row {
         }))
         .child(icon.draw(20.0));
 
-    let tone = if muted { theme::muted() } else { accent };
+    let tone = if muted {
+        theme::ISLAND.on_surface_variant
+    } else {
+        accent
+    };
 
     let level = Slider::Speaker.bar(width, f32::from(percent) / 100.0, tone);
 
@@ -519,7 +518,7 @@ mod tests {
                 length: Duration::ZERO,
                 rate: 0.0,
             },
-            accent: Tint::new(theme::fg(), Mode::Spring),
+            accent: Tint::new(theme::ISLAND.on_surface, Mode::Spring),
             can_play,
             can_pause,
             can_previous: false,

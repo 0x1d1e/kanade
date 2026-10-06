@@ -59,7 +59,7 @@ pub fn window(_: &Monitor) -> LayerWindow {
                         .width(width)
                         .height(HEIGHT)
                         .radius(HEIGHT / 2.0)
-                        .fill(theme::body())
+                        .fill(theme::ISLAND.surface)
                         .align_child(Center, Center)
                         .child(Row::new(glyphs).gap(GAP).align(Center)),
                 ),
@@ -77,14 +77,14 @@ pub fn glyphs(privacy: &Privacy) -> Vec<Box<dyn Widget>> {
         (
             sensors.is_some_and(|sensors| sensors.microphone),
             Icon::Microphone,
-            theme::GREEN,
+            theme::SEMANTIC.privacy,
         ),
         (
             sensors.is_some_and(|sensors| sensors.camera),
             Icon::Camera,
-            theme::GREEN,
+            theme::SEMANTIC.privacy,
         ),
-        (privacy.casting, Icon::Capture, theme::AMBER),
+        (privacy.casting, Icon::Capture, theme::SEMANTIC.capture),
     ]
     .into_iter()
     .filter(|(on, _, _)| *on)
