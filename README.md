@@ -9,7 +9,7 @@ AI-generated concept, not a capture of the current build.
 ## Run
 
 ```sh
-cargo run --release
+cargo run
 ```
 
 Only one Amane shell runs per session. `scripts/dev` rebuilds and restarts Kanade on every save.
