@@ -383,7 +383,8 @@ impl IslandService {
     /*
      * a Preempt Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
      * existing one turned Preempt included; a repost of one already up does not, so a Surface
-     * reopened over it stays. An AutoExpand one arriving opens its own Surface, as `auto_expand`
+     * reopened over it stays. A pending AutoExpand gives the islands back first. An AutoExpand one
+     * arriving opens its own Surface, as `auto_expand`
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
         let global = activity.scope() == Scope::Global;
@@ -406,6 +407,11 @@ impl IslandService {
 
         self.change(|arbiter| arbiter.post(activity, now));
 
+        // the islands go back first, so it preempts what it would have without the AutoExpand
+        if arrives {
+            self.restore(now);
+        }
+
         let open = self
             .presentations
             .expanded()
@@ -413,7 +419,7 @@ impl IslandService {
 
         match open {
             Some(monitor) if arrives && (global || self.focused(&monitor)) => {
-                self.input(&monitor, Input::Preempt, now);
+                self.give(&monitor, Input::Preempt, now);
             }
             _ => self.sync(now),
         }
@@ -690,9 +696,9 @@ impl IslandService {
         }
     }
 
-    // the user's input, or an IPC command, which ends a pending AutoExpand
+    // the user's input, or an IPC command, which takes a pending AutoExpand over
     pub fn input(&mut self, monitor: &str, input: Input, now: Instant) {
-        if input.decides() {
+        if input.claims() {
             self.claim(now);
         }
 
@@ -855,8 +861,13 @@ impl IslandService {
             self.give(&monitor, input, now);
         }
 
-        if self.auto.as_ref().is_some_and(|auto| auto.until <= now) {
-            self.restore(now);
+        // the pointer still on its Surface keeps it open, as on one the user opened
+        let ended = self.auto.as_ref().filter(|auto| auto.until <= now);
+
+        match ended.map(|auto| self.inside(&auto.monitor)) {
+            Some(true) => self.claim(now),
+            Some(false) => self.restore(now),
+            None => {}
         }
 
         // they were out of every Frame from their expiry on, the next sync shows that
@@ -2578,6 +2589,78 @@ mod tests {
 
         island.expire(now + AUTO);
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+    }
+
+    // the pointer still on it at its end keeps it open, then it waits like one the user opened
+    #[test]
+    fn the_pointer_on_it_at_the_deadline_keeps_it_open() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.post(media(), now);
+        island.post(auto("7"), now);
+        island.hover(MONITOR, true, now + ms(100));
+
+        island.expire(now + AUTO);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+        assert!(!island.auto());
+        assert_eq!(island.deadline(), None);
+
+        let out = now + AUTO + ms(500);
+        island.hover(MONITOR, false, out);
+        assert_eq!(island.deadline(), Some(out + GRACE));
+
+        island.expire(out + GRACE);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+    }
+
+    // a Preempt is policy, not choice: the islands go back, then it preempts as it would have
+    #[test]
+    fn a_preempt_meanwhile_preempts_what_was_there() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.post(auto("7"), now);
+        island.post(battery(), now + ms(100));
+
+        assert!(!island.auto());
+        assert!(!island.expanded(MONITOR));
+        assert!(!island.held(MONITOR));
+        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(battery()));
+
+        island.expire(now + AUTO);
+        assert!(!island.expanded(MONITOR));
+    }
+
+    // one on the focused island gives back an island it does not reach, which then stays
+    #[test]
+    fn a_focused_output_preempt_meanwhile_gives_back_the_other_island() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.hover(OTHER, true, now);
+        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::RightClick, now);
+        island.post(auto("7"), now);
+        island.post(call(), now + ms(100));
+
+        assert!(!island.auto());
+        assert!(!island.expanded(MONITOR));
+        assert_eq!(
+            island.presentation(OTHER),
+            Presentation::Expanded(Surface::Controls)
+        );
+        assert!(island.pinned(OTHER));
+
+        island.expire(now + AUTO);
+        assert_eq!(
+            island.presentation(OTHER),
+            Presentation::Expanded(Surface::Controls)
+        );
     }
 
     type Act = fn(&mut IslandService, Instant);

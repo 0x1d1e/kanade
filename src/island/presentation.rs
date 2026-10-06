@@ -175,6 +175,12 @@ impl Input {
     pub fn decides(self) -> bool {
         !matches!(self, Input::Wheel(_))
     }
+
+    // the user's own choice, which takes a pending AutoExpand over; the island's timers and a
+    // Preempt are policy, not choice
+    pub fn claims(self) -> bool {
+        self.decides() && !matches!(self, Input::Hover | Input::Unhover | Input::Preempt)
+    }
 }
 
 // what the user raised an island to, beyond what its primary Activity gives it
