@@ -577,13 +577,13 @@ impl IslandService {
 
     pub fn withdraw(&mut self, id: &Id, now: Instant) {
         self.change(|arbiter| {
-            arbiter.withdraw(id);
+            arbiter.withdraw(id, now);
         });
         self.sync(now);
     }
 
     pub fn set_dnd(&mut self, dnd: bool, now: Instant) {
-        self.arbiter.set_dnd(dnd);
+        self.change(|arbiter| arbiter.set_dnd(dnd, now));
         self.sync(now);
     }
 
@@ -2267,6 +2267,32 @@ mod tests {
         island.post(toast, now);
         island.input(MONITOR, Input::Click, now);
 
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+    }
+
+    // listen() wakes when the primary's dwell ends, and the island moves on to the newer one
+    #[test]
+    fn the_island_follows_the_primary_once_its_dwell_ends() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let history = fixture::persistent(Id::new(Kind::Notification, "7"), Priority::Media);
+
+        island.post(media(), now);
+        island.post(history, now + ms(100));
+        assert_eq!(island.deadline(), Some(now + arbiter::DWELL));
+
+        island.input(MONITOR, Input::Click, now + ms(200));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Media)
+        );
+        island.input(MONITOR, Input::Collapse, now + ms(300));
+
+        island.expire(now + arbiter::DWELL);
+        island.input(MONITOR, Input::Click, now + arbiter::DWELL);
         assert_eq!(
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Notifications)
