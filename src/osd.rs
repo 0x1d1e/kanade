@@ -80,13 +80,11 @@ impl Service for Osd {
                 continue;
             }
 
+            // a write wakes every OSD window, so only one that hides it
             let now = Instant::now();
 
-            if Self::read()
-                .deadline()
-                .is_some_and(|deadline| deadline <= now)
-            {
-                Self::write().shown = None;
+            if Self::read().due(now) {
+                Self::write().expire(now);
             }
         }
     }
@@ -102,6 +100,20 @@ impl Osd {
     // the OSD follows the focus to its output
     pub fn focus(&mut self, output: Option<String>) {
         self.focused_output = output;
+    }
+
+    /*
+     * hides it once its time is up, checked under the write lock: a change shown since the time
+     * was read has its own, later time and stays
+     */
+    fn expire(&mut self, now: Instant) {
+        if self.due(now) {
+            self.shown = None;
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.deadline().is_some_and(|deadline| deadline <= now)
     }
 
     fn deadline(&self) -> Option<Instant> {
@@ -270,6 +282,25 @@ mod tests {
 
         assert_eq!(osd.shown_on("eDP-1"), Some(Level::Brightness(40)));
         assert_eq!(osd.deadline(), Some(later + config::get().osd));
+    }
+
+    // a change shown after listen() found the time up, but before it hid the OSD, keeps it showing
+    #[test]
+    fn a_change_shown_as_the_time_runs_out_stays() {
+        let now = Instant::now();
+        let up = now + config::get().osd;
+        let mut osd = Osd::new();
+
+        osd.show(LOUD, now);
+        assert!(osd.due(up));
+
+        osd.show(Level::Brightness(40), up);
+        osd.expire(up);
+
+        assert_eq!(osd.shown_on("eDP-1"), Some(Level::Brightness(40)));
+
+        osd.expire(up + config::get().osd);
+        assert_eq!(osd.shown_on("eDP-1"), None);
     }
 
     #[test]

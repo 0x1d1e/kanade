@@ -69,12 +69,11 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
         Change::of(deck.track.target(), Some(&deck.track), now)
     });
 
-    Rectangle::new()
+    let surface = Rectangle::new()
         .width(shape.width)
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
-        .on_scroll(|Scroll { y, .. }| Slider::Speaker.wheel(y))
         .child(
             Column::new(children![
                 header(track, &playback.players, deck, playback.page, width),
@@ -83,7 +82,14 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
             ])
             .width(width)
             .gap(12.0),
-        )
+        );
+
+    // the wheel anywhere on it sets the volume, unless `audio` is off
+    if modules::on("audio") {
+        surface.on_scroll(|Scroll { y, .. }| Slider::Speaker.wheel(y))
+    } else {
+        surface
+    }
 }
 
 // art, then title and artist, then the players to choose from
