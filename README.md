@@ -6,6 +6,14 @@ https://github.com/user-attachments/assets/27e6837e-8cf1-4faa-8815-e5b14cdd631b
 
 AI-generated concept, not a capture of the current build.
 
+## Run
+
+```sh
+cargo run --release
+```
+
+Only one Amane shell runs per session. `scripts/dev` rebuilds and restarts Kanade on every save.
+
 ## Configuration
 
 Kanade reads `$XDG_CONFIG_HOME/kanade/config.toml` (else `~/.config/kanade/config.toml`) once at start. Kanade accepts the TOML subset shown below: table headers, booleans, millisecond integers, double-quoted strings (only `\"` and `\\` escapes), and comments. Every key is optional; these are the defaults:
@@ -59,7 +67,7 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 
 ## Limitations
 
-- No screen reader support. Amane draws with the GPU and builds no accessibility tree, so the island never registers on the AT-SPI bus and Orca cannot see it. Checked on niri with `Atspi.get_desktop(0)`: every other app is listed, `amane-shell` is not.
+- No screen reader support. Amane draws with the GPU and builds no accessibility tree, so the island never registers on the AT-SPI bus and Orca cannot see it. Checked on niri with `Atspi.get_desktop(0)`: every other app is listed, Kanade is not.
 - The island stays visible over fullscreen windows. niri 26.04 does not report fullscreen state, and guessing it from window size also catches maximized windows, so suppression waits for [niri#2836](https://github.com/niri-wm/niri/pull/2836). See [ADR 0002](docs/adr/0002-defer-fullscreen-suppression.md).
 - The Launcher cannot tell when an app fails to start. Amane's `DesktopApp::launch` runs the entry through `sh -c` and reports nothing back, so a broken `Exec` line just closes the island.
 - The Launcher shows "Finding apps" forever on a system with no launchable `.desktop` entries. Amane's `Apps` is empty both while scanning and after finding nothing, and exposes no scan-complete state.

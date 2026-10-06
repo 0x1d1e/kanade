@@ -49,7 +49,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 | Verified (`ARCHITECTURE.md`): `write()` is for input handlers and service threads, never views; IPC handlers run on the main thread | IPC verbs may call `Island::write()` |
 | Verified: Amane's `compositor` module is private; its niri backend only tracks workspaces and window-to-workspace | Kanade opens its own `$NIRI_SOCKET` `"EventStream"` connection (JSON lines) |
 | Verified on niri 26.04: event stream has `WindowFocusChanged`, `WorkspaceActivated`, `WindowLayoutsChanged`, `OverviewOpenedOrClosed`, `CastsChanged`/`CastStartedOrChanged`/`CastStopped`. Window JSON has no `is_fullscreen` | Focused output = output of the focused workspace. Screen capture comes from casts. Fullscreen only by heuristic (window size equals output logical size), see 5.3 |
-| Verified (`cli/src/project.rs`): `amane dev` builds a generated crate around `~/.config/amane/src/main.rs` (multi-file `src/` is hashed and supported) against the unpacked library | Develop Kanade as a multi-file config `src/`. A standalone crate depending on `amane` by git rev is the fallback if the CLI constrains layout |
+| Amane 0.1.1's `amane dev` rewrites `$AMANE_CONFIG/Cargo.toml`, and builds against the library embedded in the CLI with no other crates (#87) | Kanade is a standalone crate depending on `amane` by exact git rev. `scripts/dev` rebuilds and restarts it with cargo |
 | Verified on niri 26.04 (#3): a still pointer that the input region shrinks away from gets `wl_pointer.leave`, 20-100 ms after Escape, while the morph is still running. Amane hit-tests hover only on pointer enter/motion/leave, so this leave is what fires `on_hover(false)` | Grace-period design holds. No fallback region needed |
 
 ## 4. Domain language
@@ -247,7 +247,7 @@ Unit (pure, injected time):
 - Geometry: input region is always inside the canvas and equals body rect plus padding, for every Presentation and mid-spring value.
 - Motion: no overshoot, settles, retarget keeps velocity continuous.
 
-E2E (nested Niri session, `amane dev`):
+E2E (nested Niri session, `scripts/dev`):
 - Idle: `AMANE_FRAMES=1` prints no frames at rest and after every transition settles, except one per minute per island showing the clock.
 - Idle wakeups: at rest no Kanade thread wakes, except battery every 5 s and the clock once a minute; what remains is Amane's own polling ([ADR 0004](adr/0004-wake-sources-on-announcements.md)).
 - Click-through: pointer outside body reaches the window below.

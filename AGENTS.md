@@ -12,21 +12,19 @@ Run from repo root.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test                # unit tests, incl. the island/ purity check
-scripts/check-amane       # installed `amane` CLI must embed the pinned Amane
-scripts/dev               # check-amane, then `AMANE_CONFIG=$PWD amane dev` (rebuilds on save in src/)
+cargo run                 # the shell against the pinned Amane
+scripts/dev               # cargo build, restart the shell on each save; a failed build keeps the old one
 ```
 
-- `cargo` commands use the root `Cargo.toml` (`amane` by git rev, plus test-only `syn`).
-- `amane dev` ignores `Cargo.toml` and `Cargo.lock`. It builds `$AMANE_CONFIG/src/main.rs` against the library embedded in the installed CLI, with `amane` as the only dependency, and never runs tests.
-- So: `src/` uses only `amane` and std outside `#[cfg(test)]` (`src/boundary.rs` is test-only), and `island/` stays std-only.
+- `Cargo.toml` and `Cargo.lock` are authoritative for every build. Add dependencies there as needed; none speculatively.
 - Only one Amane shell per session. Stop any other (`amane: amane is already running`) first.
 - Zero idle frames check: `AMANE_FRAMES=1 scripts/dev` prints frames only when something draws.
-- Idle wakeups (#40): diff `voluntary_ctxt_switches` of each `/proc/$(pgrep -x amane-shell)/task/*/status` over 30 s at rest; expected numbers in `docs/adr/0004-wake-sources-on-announcements.md`.
+- Idle wakeups (#40): diff `voluntary_ctxt_switches` of each `/proc/$(pgrep -x kanade)/task/*/status` over 30 s at rest; expected numbers in `docs/adr/0004-wake-sources-on-announcements.md`.
 - Morph smoothness (#36): with `AMANE_FRAMES=1 scripts/dev > LOG 2>&1` running, `scripts/frames LOG` prints frame gaps per Surface transition; mean gap should match the refresh interval.
 
 ## Amane pin
 
-Single source of truth: the `rev` of `amane` in `Cargo.toml`. `amane dev` runs the library embedded in the CLI, not that rev, so `scripts/check-amane` compares the CLI binary byte for byte with the pinned checkout and prints the exact `cargo install --rev ... amane-cli` command on mismatch. Run it after bumping the rev or reinstalling the CLI.
+The exact `rev` of `amane` in `Cargo.toml`. Bump it deliberately; never follow Amane `main`. The installed `amane` CLI is only needed for `amane ipc call`, and its version does not matter.
 
 ## Rules
 

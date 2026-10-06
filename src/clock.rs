@@ -3,7 +3,7 @@
 //! they arm it for the minute after. A window that stops drawing it stops arming it, so with no
 //! island at Rest nothing wakes.
 //!
-//! std has no local time and `amane dev` allows no crates, so this asks libc, which std links
+//! std has no local time, so this asks libc, which std links
 //! anyway: `localtime_r` for the time zone and its daylight saving, and a `CLOCK_REALTIME` timerfd
 //! for the minute. A monotonic deadline would fall behind across a suspend or a clock step; the
 //! timerfd fires at the wall minute after a resume, and a step cancels it, which redraws at once.

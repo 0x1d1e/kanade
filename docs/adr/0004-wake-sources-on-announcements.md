@@ -43,7 +43,7 @@ All four flush each line through a pipe.
 
 At idle the source blocks until a line announces a change. Then it reads at `poll` until `settle` passes without an announcement or a changed reading. This is needed because Amane's service learns of the change on its own thread, maybe after the announcement: `Brightness` reads the backlight every 500 ms and `Battery` every 5 s, so settle outlasts each. Battery still reads every 5 s at idle, because a draining battery does not announce its percent on every laptop.
 
-An announcer that cannot run, or is between restarts, leaves its source blind, and a blind source polls at `poll` as before. Announcers restart with the backoff ADR 0003 gave pw-dump, which now shares `wake::run`. Each runs under `setpriv --pdeathsig KILL`, so the kernel kills it when Kanade dies, even by SIGKILL or an `amane dev` rebuild. Without setpriv it runs directly and may outlive Kanade.
+An announcer that cannot run, or is between restarts, leaves its source blind, and a blind source polls at `poll` as before. Announcers restart with the backoff ADR 0003 gave pw-dump, which now shares `wake::run`. Each runs under `setpriv --pdeathsig KILL`, so the kernel kills it when Kanade dies, even by SIGKILL or a `scripts/dev` restart. Without setpriv it runs directly and may outlive Kanade.
 
 ## Alternatives
 
