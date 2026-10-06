@@ -58,7 +58,7 @@ amane ipc call island <verb>
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
 | `timer stop` | stops it |
 
-With no verb it prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities.
+A verb of a Module turned off in the config answers `module <name> is off`. With no verb it prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities.
 
 ## Configuration
 
@@ -82,10 +82,14 @@ toast = 5000         # a notification shown as a Transient
 
 [theme]
 # palette = "~/Pictures/wallpaper.jpg"
+
+[modules]            # every Module is on unless set to false here
+# media = false
 ```
 
 - `theme.palette`: the body and text take their tone from this image, and follow it when the file changes, so a wallpaper script that overwrites it re-themes the island. The body stays near-black and both stay near grey, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning. Unset, the body is near-black.
 - `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
+- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its IPC verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
 - A bad line keeps its default and is reported on stderr, naming the line.
 
 ## Keyboard

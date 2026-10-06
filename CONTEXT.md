@@ -66,3 +66,13 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 - **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
 - **Avoid:** sticky, lock (lock is the screen locker)
+
+## Module
+A feature the user can turn off in `[modules]` of the config: `src/modules.rs` lists every one, with the Modules it requires and those it can do without.
+- `island` is the core and cannot be turned off; every other Module requires it.
+- **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its IPC verbs with `module <name> is off`. An Amane Service only it reads stays cold.
+- **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
+- A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).
+- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable.
+- Which Modules run is decided once at start; a change takes a restart.
+- **Avoid:** plugin (not built), feature flag, Service (an Amane `Service` is shared state a Module reads)

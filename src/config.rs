@@ -19,6 +19,9 @@
 //!
 //! [theme]
 //! palette = "~/Pictures/wallpaper.jpg"
+//!
+//! [modules]   # every Module is on unless turned off here; `island` cannot be
+//! media = false
 //! ```
 
 use std::env;
@@ -32,6 +35,7 @@ use std::time::Duration;
 use crate::clock::Hours;
 use crate::island::motion::Mode;
 use crate::island::service::Timings;
+use crate::modules;
 
 // plan 5.2: a level change shows for 1000-1400 ms, a toast for 4000-6000 ms
 const OSD: Duration = Duration::from_millis(1200);
@@ -56,6 +60,15 @@ pub struct Config {
 
     // how the time reads at Rest
     pub clock: Hours,
+
+    // the Modules turned off, each once
+    pub off: Vec<&'static str>,
+}
+
+impl Config {
+    pub fn off(&self, module: &str) -> bool {
+        self.off.contains(&module)
+    }
 }
 
 impl Default for Config {
@@ -66,6 +79,7 @@ impl Default for Config {
             toast: TOAST,
             palette: None,
             clock: Hours::default(),
+            off: Vec::new(),
         }
     }
 }
@@ -171,7 +185,7 @@ fn parse(text: &str, home: Option<&str>) -> (Config, Vec<String>) {
         {
             section = name.trim().to_owned();
 
-            if !matches!(section.as_str(), "timings" | "theme") {
+            if !matches!(section.as_str(), "timings" | "theme" | "modules") {
                 problem(format!("unknown section [{section}]"));
             }
 
@@ -327,6 +341,22 @@ fn set(
         ("theme", "palette", Value::String(path)) => {
             config.palette = Some(expand(&path, home));
         }
+        ("modules", modules::CORE, Value::Boolean(false)) => {
+            return Err(format!(
+                "modules.{key}: the core module cannot be turned off"
+            ));
+        }
+        ("modules", key, Value::Boolean(on)) => {
+            let Some(module) = modules::ALL.iter().find(|module| module.name == key) else {
+                return Err(format!("unknown module {}", place(section)));
+            };
+
+            config.off.retain(|&name| name != module.name);
+
+            if !on {
+                config.off.push(module.name);
+            }
+        }
         ("", "reduced_motion", _) => {
             return Err(String::from("reduced_motion: expected true or false"));
         }
@@ -335,6 +365,7 @@ fn set(
         ("theme", "palette", _) => {
             return Err(String::from("theme.palette: expected a \"path\""));
         }
+        ("modules", _, _) => return Err(format!("{}: expected true or false", place(section))),
         _ => return Err(format!("unknown key {}", place(section))),
     }
 
@@ -380,6 +411,12 @@ mod tests {
 
             [theme]
             palette = "~/Pictures/wall # 1.jpg"
+
+            [modules]
+            media = false
+            timer = false
+            timer = true
+            island = true
         "#;
 
         let (config, problems) = parse(text, Some("/home/you"));
@@ -400,8 +437,11 @@ mod tests {
                 toast: ms(6000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
+                off: vec!["media"],
             }
         );
+        assert!(config.off("media"));
+        assert!(!config.off("timer"));
     }
 
     // a bad line keeps its default and names itself, the rest still applies
@@ -445,6 +485,22 @@ palette = "a\nb"
                 "11: expected `key = value`, found `nonsense`",
                 "13: theme.palette: expected a \"path\"",
                 "14: palette: unsupported escape \\n",
+            ]
+        );
+    }
+
+    #[test]
+    fn modules_turn_off_by_name_except_the_core() {
+        let text = "[modules]\nisland = false\nweather = false\nmedia = 0\nbattery = false";
+        let (config, problems) = parse(text, None);
+
+        assert_eq!(config.off, ["battery"]);
+        assert_eq!(
+            problems,
+            [
+                "2: modules.island: the core module cannot be turned off",
+                "3: unknown module modules.weather",
+                "4: modules.media: expected true or false",
             ]
         );
     }

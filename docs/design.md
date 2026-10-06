@@ -56,7 +56,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | --- | --- |
 | Core | `island` |
 | Activities | `media`, `timer`, `battery`, `workspace` |
-| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `windows`, `clipboard`, `calendar`, `weather` |
+| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `weather` |
 | Overlays | `privacy`, `banners`, `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface` |
 | Utilities | `capture`, `caffeine`, `doctor` |

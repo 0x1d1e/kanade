@@ -169,9 +169,18 @@ fn stream(cast: &Json) -> Option<u64> {
     cast.get("stream_id").and_then(Json::as_u64)
 }
 
+// which Modules beside the core hear from niri; one that is off posts nothing
+#[derive(Debug, Clone, Copy)]
+pub struct Posts {
+    pub workspace: bool,
+    pub cast: bool,
+}
+
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
-pub fn follow() {
-    run(connect().map(BufReader::new), post);
+pub fn follow(posts: Posts) {
+    run(connect().map(BufReader::new), |before, seen| {
+        post(posts, before, seen);
+    });
 }
 
 fn run(stream: io::Result<impl BufRead>, mut post: impl FnMut(&Seen, &Seen)) {
@@ -246,12 +255,16 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &S
  * as a switch, so a list that only renumbers wakes nothing, and of casts only as the first starts
  * or the last stops
  */
-fn post(before: &Seen, seen: &Seen) {
+fn post(posts: Posts, before: &Seen, seen: &Seen) {
     let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
-    let changes: Vec<Change> = [workspace::change(before, seen), cast::change(before, seen)]
-        .into_iter()
-        .flatten()
-        .collect();
+    let changes: Vec<Change> = [
+        posts.workspace.then(|| workspace::change(before, seen)),
+        posts.cast.then(|| cast::change(before, seen)),
+    ]
+    .into_iter()
+    .flatten()
+    .flatten()
+    .collect();
 
     if !focus && changes.is_empty() {
         return;
