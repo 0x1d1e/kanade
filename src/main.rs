@@ -10,6 +10,7 @@ mod icon;
 mod ipc;
 mod island;
 mod modules;
+mod osd;
 mod raster;
 mod reload;
 mod shadow;

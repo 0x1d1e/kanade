@@ -16,6 +16,7 @@ use super::workspace;
 use crate::banners::Banners;
 use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
+use crate::osd::Osd;
 use crate::supervise;
 
 // what the core gets from niri; the default is also what a lost socket degrades to
@@ -178,6 +179,7 @@ pub struct Posts {
     pub workspace: bool,
     pub privacy: bool,
     pub banners: bool,
+    pub osd: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -265,7 +267,7 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &S
 /*
  * the core hears of focus and the overview only when they change, of the focused workspace only
  * as a switch, so a list that only renumbers wakes nothing; the privacy cluster hears of casts
- * only as the first starts or the last stops, the Banners of focus only as it moves
+ * only as the first starts or the last stops, the Banners and the OSD of focus only as it moves
  */
 fn post(posts: Posts, before: &Seen, seen: &Seen) {
     if posts.privacy && before.casting != seen.casting {
@@ -274,6 +276,10 @@ fn post(posts: Posts, before: &Seen, seen: &Seen) {
 
     if posts.banners && before.focused_output != seen.focused_output {
         Banners::write().focus(seen.focused_output.clone(), Instant::now());
+    }
+
+    if posts.osd && before.focused_output != seen.focused_output {
+        Osd::write().focus(seen.focused_output.clone());
     }
 
     let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);

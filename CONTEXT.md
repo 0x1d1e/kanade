@@ -13,7 +13,7 @@ Something happening that may deserve attention. Has identity, Kind, Priority, Li
 - Detail is what its small form draws, typed per Kind (a Media Activity's track, a Volume's level). It is not identity: a repost with new Detail replaces the Activity. A new track dissolves in place, the new art and text rising over the old without the form moving; a level that moves redraws in place.
 - **Invariant:** Lifetime, Priority, Scope and Interrupt are independent: the source sets each, and none implies another (ADR 0009). `Activity::new` refuses only what cannot be carried out: `Transient(0)`, and `AutoExpand` for a Kind with no Surface of its own (only Media and Notification have one). Unusual combinations, like a Persistent FocusedOutput or a Critical that interrupts nothing, stand.
 - **Invariant:** posting an Activity with an existing id replaces it and refreshes its Lifetime. A repeated volume key extends one Transient, not a queue of them.
-- **Avoid:** event, notification (a Notification is one Kind of Activity), OSD (use Transient)
+- **Avoid:** event, notification (a Notification is one Kind of Activity), OSD (the Overlay window, not an Activity; the island's is a Transient)
 
 ## Privacy cluster
 The microphone, camera and screen capture in use, in its own Overlay window per monitor, so no fullscreen window covers it (ADR 0005). It takes no pointer; the Controls Surface names the apps.
@@ -27,6 +27,12 @@ A notification card in the top-right corner of the focused output, in its own To
 - **Invariant:** under DND only Critical Banners show; DND coming on drops the rest, queued too.
 - Until #109 a notification also shows as an island toast.
 - **Avoid:** toast (the island's Transient), popup
+
+## OSD
+A volume, brightness or microphone mute change, bottom centre of the focused output, in its own Overlay window per monitor (ADR 0007). The `osd` Module reads `audio` and `brightness` only while they are on, and shows nothing for one that is off.
+- **Invariant:** one OSD at a time: a change while one shows takes its place and starts its time (`osd` in the config) again, so a held key extends one OSD.
+- Until #109 a change also shows as an island Transient.
+- **Avoid:** popup, toast
 
 ## Lifetime
 `Persistent` lives until withdrawn: media playing, timer, low battery.

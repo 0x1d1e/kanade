@@ -888,6 +888,11 @@ fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
 
 // `fraction` of it filled, 0 to 1
 pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
+    bar_on(width, fraction, tone, &theme::ISLAND)
+}
+
+// `bar`, its track in `roles`, for what draws beside the island
+pub(crate) fn bar_on(width: f32, fraction: f32, tone: Color, roles: &ThemeRoles) -> Stack {
     let height = 6.0;
     let filled = width * fraction.clamp(0.0, 1.0);
 
@@ -895,7 +900,7 @@ pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
         .width(width)
         .height(height)
         .radius(height / 2.0)
-        .fill(theme::ISLAND.surface_container_high);
+        .fill(roles.surface_container_high);
 
     let mut layers = children![track];
 
