@@ -13,7 +13,10 @@ use crate::cli::{Call, Verb};
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
-use crate::sources::{battery, media, niri, notifications, osd, privacy, system, timer};
+use crate::sources::{
+    battery, bluetooth, media, network, niri, notifications, osd, power, privacy, system, timer,
+    wake,
+};
 use crate::{cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
 pub struct Module {
@@ -28,6 +31,9 @@ pub struct Module {
     // what the user loses with it off, said at start whenever it is, since that loss is easy to miss
     pub warns: Option<&'static str>,
 
+    // what outside Kanade it runs worse without, for `kanade doctor`
+    pub needs: &'static [Need],
+
     // the config keys it owns, which others may read too; a key no Module owns is unknown
     pub settings: &'static [config::Setting],
 
@@ -41,6 +47,28 @@ pub struct Module {
     pub start: fn(App) -> App,
 }
 
+// something outside Kanade a Module runs worse without, never refusing to start
+pub struct Need {
+    pub on: Provider,
+
+    // what the user loses while it is missing
+    pub without: &'static str,
+}
+
+pub enum Provider {
+    // a helper program on PATH
+    Program(&'static str),
+
+    // a system bus service, running or started on demand
+    SystemService(&'static str),
+
+    // a session bus name Kanade takes, which no other program may hold
+    SessionName(&'static str),
+}
+
+// what a source that waits on an announcer does without it (`sources::wake`)
+const POLLS: &str = "it polls instead, waking Kanade more often";
+
 // the one Module that cannot be turned off: without it no window opens, and Amane needs one
 pub const CORE: &str = "island";
 
@@ -51,6 +79,10 @@ pub const ALL: &[Module] = &[
         requires: &[],
         optional: &[],
         warns: None,
+        needs: &[Need {
+            on: Provider::Program(wake::SETPRIV),
+            without: "a helper program may outlive Kanade when it is killed",
+        }],
         settings: config::ISLAND,
         verbs: &[
             Verb {
@@ -132,6 +164,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[],
         settings: &[],
         verbs: &[],
         start: |app| app,
@@ -143,6 +176,10 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: Some("microphone, camera and screen cast indicators will not show"),
+        needs: &[Need {
+            on: Provider::Program(privacy::DUMP),
+            without: "microphone and camera indicators will not show",
+        }],
         settings: &[],
         verbs: &[],
         start: |app| {
@@ -155,6 +192,10 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[Need {
+            on: Provider::Program(battery::POWER.program),
+            without: POLLS,
+        }],
         settings: &[],
         verbs: &[],
         start: |app| {
@@ -167,6 +208,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[],
         settings: &[],
         verbs: &[Verb {
             name: "media",
@@ -187,6 +229,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[],
         settings: &[],
         verbs: &[Verb {
             name: "timer",
@@ -217,6 +260,16 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(osd::PULSE.program),
+                without: POLLS,
+            },
+            Need {
+                on: Provider::Program(osd::BACKLIGHT.program),
+                without: POLLS,
+            },
+        ],
         settings: &[],
         verbs: &[],
         start: |app| {
@@ -229,6 +282,16 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[
+            Need {
+                on: Provider::SessionName(notifications::NAME),
+                without: "no notifications arrive",
+            },
+            Need {
+                on: Provider::Program(notifications::BUS.program),
+                without: POLLS,
+            },
+        ],
         settings: config::NOTIFICATIONS,
         // Do Not Disturb only quiets notifications, so it goes with them
         verbs: &[Verb {
@@ -259,6 +322,10 @@ notifications dnd on|off|toggle",
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[Need {
+            on: Provider::SystemService(network::NAME),
+            without: "no network state or Wi-Fi controls",
+        }],
         settings: &[],
         verbs: &[],
         start: |app| {
@@ -271,6 +338,10 @@ notifications dnd on|off|toggle",
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[Need {
+            on: Provider::SystemService(bluetooth::BLUEZ),
+            without: "no Bluetooth state or controls",
+        }],
         settings: &[],
         verbs: &[],
         start: |app| {
@@ -284,6 +355,10 @@ notifications dnd on|off|toggle",
         requires: &[CORE],
         optional: &[],
         warns: None,
+        needs: &[Need {
+            on: Provider::SystemService(power::NAME),
+            without: "no power profile in Controls",
+        }],
         settings: &[],
         verbs: &[],
         start: |app| {
@@ -524,6 +599,7 @@ mod tests {
             requires,
             optional: &[],
             warns: None,
+            needs: &[],
             settings: &[],
             verbs: &[],
             start: |app| app,

@@ -52,6 +52,9 @@ pub struct Sensors {
     pub apps: Vec<String>,
 }
 
+// prints the PipeWire graph, and each change to it
+pub const DUMP: &str = "pw-dump";
+
 const NODE: &str = "PipeWire:Interface:Node";
 const LINK: &str = "PipeWire:Interface:Link";
 
@@ -175,7 +178,7 @@ pub fn follow() {
 
     let stop = wake::Stop::default();
 
-    let error = wake::run("pw-dump", &["--monitor", "--no-colors"], &stop, |output| {
+    let error = wake::run(DUMP, &["--monitor", "--no-colors"], &stop, |output| {
         let lost = watch(output, &mut shown, &mut show);
 
         // nobody can say any more whether something captures

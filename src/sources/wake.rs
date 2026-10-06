@@ -24,6 +24,9 @@ const LAST_RETRY: Duration = Duration::from_secs(60);
 // failing
 const HEALTHY: Duration = Duration::from_secs(60);
 
+// ties each program's life to Kanade's (`spawn`)
+pub const SETPRIV: &str = "setpriv";
+
 // what setpriv exits with when it cannot find the program, like a shell
 const NOT_FOUND: i32 = 127;
 
@@ -120,7 +123,7 @@ fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
     };
 
     let guarded = spawn(
-        Command::new("setpriv")
+        Command::new(SETPRIV)
             .args(["--pdeathsig", "KILL", program])
             .args(args),
     );

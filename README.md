@@ -59,7 +59,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `config reload` | reads the config again now |
 | `config validate` | says what a reload would find, without applying it |
 | `status` | the config generation, the last reload error and the keys pending restart |
-| `doctor` | checks the shell is running and the config is valid; works without a shell |
+| `doctor` | read-only diagnostics: Amane and niri versions, Wayland protocols, buses and sockets, the config, and what each Module on runs worse without, like a missing `pw-dump` or another notification daemon; works without a shell, exits 1 on a failure |
 
 `kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused or no shell, 2 not a verb.
 

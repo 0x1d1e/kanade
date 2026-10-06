@@ -3,7 +3,8 @@
 
 pub mod battery;
 pub mod bluetooth;
-mod json;
+pub mod bus;
+pub mod json;
 pub mod media;
 pub mod network;
 pub mod niri;
@@ -14,5 +15,5 @@ pub mod power;
 pub mod privacy;
 pub mod system;
 pub mod timer;
-mod wake;
+pub mod wake;
 pub mod workspace;

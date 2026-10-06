@@ -7,6 +7,9 @@ publish = false
 
 [dependencies]
 amane = { git = "https://github.com/MystiaFin/amane", rev = "6ace43e5c69cd4b39bb06b28c20fc4b883422519" }
+# Amane already builds it; only `kanade doctor` lists the compositor's globals with it (#105),
+# Amane owns every other use of Wayland
+wayland-client = "0.31"
 # Amane already builds it; for the config watch (#102)
 inotify = { version = "0.11", default-features = false }
 serde = "1"

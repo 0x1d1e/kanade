@@ -1,6 +1,7 @@
-//! Test-only structural check that `island/` is pure: every file except `island/service.rs`
+//! Test-only structural checks. `island/` is pure: every file except `island/service.rs`
 //! must not name Amane, the service module, or anything in Kanade outside `island/`.
 //! Parsed with syn, so aliases (`use amane as ui`), nesting, and test code are all covered.
+//! And `wayland_client` stays in `doctor/`: Amane owns Kanade's Wayland, doctor only inspects it.
 
 use std::fs;
 use std::iter::Peekable;
@@ -185,14 +186,15 @@ fn has_path_attr(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("path")
             || attr.path().is_ident("cfg_attr")
-                && matches!(&attr.meta, Meta::List(list) if mentions_path(list.tokens.clone()))
+                && matches!(&attr.meta, Meta::List(list) if mentions(list.tokens.clone(), "path"))
     })
 }
 
-fn mentions_path(tokens: TokenStream) -> bool {
+// whether any identifier, in a macro too, is `name`; comments are no tokens
+fn mentions(tokens: TokenStream, name: &str) -> bool {
     tokens.into_iter().any(|token| match token {
-        TokenTree::Ident(ident) => ident == "path",
-        TokenTree::Group(group) => mentions_path(group.stream()),
+        TokenTree::Ident(ident) => ident == name,
+        TokenTree::Group(group) => mentions(group.stream(), name),
         _ => false,
     })
 }
@@ -258,9 +260,52 @@ fn island_is_pure() {
     }
 }
 
+// every .rs under `folder`, outside `skip`
+fn rust_files(folder: &Path, skip: &Path, out: &mut Vec<PathBuf>) {
+    for path in fs::read_dir(folder).unwrap().map(|e| e.unwrap().path()) {
+        if path == skip {
+            continue;
+        }
+
+        if path.is_dir() {
+            rust_files(&path, skip, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+// a crate is reached only by its name, `extern crate wayland_client as w` too
+const WAYLAND: &str = "wayland_client";
+
+#[test]
+fn wayland_stays_in_doctor() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    let mut files = Vec::new();
+
+    rust_files(&src, &src.join("doctor"), &mut files);
+
+    assert!(files.iter().any(|path| path.ends_with("main.rs")));
+
+    for path in files {
+        let tokens: TokenStream = fs::read_to_string(&path).unwrap().parse().unwrap();
+
+        assert!(
+            !mentions(tokens, WAYLAND),
+            "{} uses {WAYLAND}",
+            path.display()
+        );
+    }
+
+    let doctor = fs::read_to_string(src.join("doctor/wayland.rs")).unwrap();
+
+    assert!(mentions(doctor.parse().unwrap(), WAYLAND));
+}
+
 #[cfg(test)]
 mod checker {
-    use super::violations;
+    use super::{WAYLAND, mentions, violations};
 
     fn flagged(source: &str, depth: usize) -> bool {
         !violations(source, depth).is_empty()
@@ -341,6 +386,20 @@ mod checker {
         // island/mod.rs is depth 0, so its `super` is the crate root
         assert!(flagged("use super::theme::CANVAS_WIDTH;", 0));
         assert!(flagged("use super::super::theme::CANVAS_WIDTH;", 1));
+    }
+
+    #[test]
+    fn finds_a_crate_named_anywhere_but_in_comments() {
+        let named = |source: &str| mentions(source.parse().unwrap(), WAYLAND);
+
+        assert!(named("use wayland_client::Connection;"));
+        assert!(named("extern crate wayland_client as w;"));
+        assert!(named(
+            "fn f() { let _ = vec![::wayland_client::Connection::connect_to_env()]; }"
+        ));
+        assert!(!named(
+            "// wayland_client\nfn f() { let _ = \"wayland_client\"; }"
+        ));
     }
 
     #[test]

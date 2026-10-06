@@ -234,7 +234,7 @@ osd volume|brightness
 
 `status`: protocol/config versions, module/Service state, pending restart, last errors.
 
-`doctor`: read-only diagnostics by default: Amane/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state.
+`doctor`: read-only diagnostics by default: Amane/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. PAM/logind, awww/matugen and capture checks land with their Modules.
 
 ## Runtime + dependencies
 
@@ -247,6 +247,7 @@ osd volume|brightness
 - add normal Rust crates when they deepen Kanade.
 - no second shell/UI framework: no Quickshell/Qt/GTK/Iced/Slint alongside Amane.
 - do not directly add low-level Wayland/render deps for behavior Amane should own. Extend Amane first; bypass only when seam belongs to Kanade.
+- Amane owns Kanade's Wayland runtime/UI seam. Direct Wayland deps only for isolated diagnostics/preflight that implement no shell behavior: `wayland-client` lives only in `src/doctor/` (registry globals for `kanade doctor`), enforced by `src/boundary.rs`.
 - switch from Amane only if it blocks core invariant: privacy Overlay, secure lock, focus/input, zero-idle rendering, required protocol access.
 
 References, not dependencies: Suzuha = Amane full-shell proof; Noctalia v5 = native-shell/config/plugin architecture; DMS = UI/backend service split; iNiR = Niri/Island UX + deferred surfaces; Caelestia = visual/motion/launcher reference.

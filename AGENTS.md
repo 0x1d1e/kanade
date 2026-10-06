@@ -32,6 +32,7 @@ The exact `rev` of `amane` in `Cargo.toml`. Bump it deliberately; never follow A
 
 - `island/` is Amane-free except `island/service.rs`; enforced by `src/boundary.rs` (syn-based, covers aliases, nested modules, macros, `super`/`crate` escapes).
   `island/` may not depend on the rest of Kanade.
+- Amane owns the Wayland runtime/UI seam. `wayland-client` only in `src/doctor/` (diagnostics, no shell behavior); enforced by `src/boundary.rs`.
 - Never `write()` a Service in a view. Sources post via `Island::write()`.
 - Arbiter takes time as an input, never reads a clock.
 - `src/clock.rs` is the platform boundary: the only `unsafe` and hand-kept libc ABI (`tm`, `timespec`, timerfd constants). Keep new FFI there.
