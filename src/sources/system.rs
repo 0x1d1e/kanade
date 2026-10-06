@@ -1,8 +1,7 @@
 //! Network, Bluetooth and power profiles (plan 2, 5.1, 7): `follow` watches the system bus for
-//! all three. Joining or leaving a network, or a Bluetooth device connecting or going away, shows
-//! as a short Transient on the focused island; nothing about them stays on it, so there is never a
-//! permanent Wi-Fi indicator. The latest state is kept in `Connectivity`, `Adapter` and `Profiles`
-//! for the Controls Surface. Each daemon belongs to its own Module (`network`, `bluetooth`,
+//! all three. None of it shows on the island (ADR 0007), so there is never a permanent Wi-Fi
+//! indicator: the latest state is kept in `Connectivity`, `Adapter` and `Profiles` for the Controls
+//! Surface. Each daemon belongs to its own Module (`network`, `bluetooth`,
 //! `power`), and the watcher follows only those that are on; the State of one that is off stays at
 //! its default, which Controls shows as missing.
 //!
@@ -12,21 +11,15 @@
 //! about anything else, like an access point's strength, is dropped without a call.
 
 use std::sync::{Once, mpsc};
-use std::time::{Duration, Instant};
 use std::{iter, mem};
 
 use amane::{Bus, Service, Value};
 
 use super::{bluetooth, network, power};
-use crate::island::activity::Activity;
-use crate::island::service::IslandService;
 use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
 const BUS: &str = "org.freedesktop.DBus";
-
-// longer than the default OSD, so a network's name can be read; shorter than a toast, nothing to act on
-pub const SHOWN: Duration = Duration::from_millis(2000);
 
 // a radio the Controls Surface can switch, or show disabled (plan 7)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -231,45 +224,23 @@ fn follow(daemons: Daemons) {
 
 fn refresh_all(daemons: Vec<Daemon>) {
     if daemons.contains(&Daemon::NetworkManager) {
-        refresh(network::read(), network::changes);
+        refresh(network::read());
     }
 
     if daemons.contains(&Daemon::BlueZ) {
-        refresh(bluetooth::read(), bluetooth::changes);
+        refresh(bluetooth::read());
     }
 
-    // a profile switched shows on Controls only
     if daemons.contains(&Daemon::PowerProfiles) {
-        refresh(power::read(), |_, _| Vec::new());
+        refresh(power::read());
     }
 }
 
-/*
- * posts what changed since the last read and keeps `now` for Controls. A read that changes nothing
- * writes nothing, so a signal about something Kanade does not show redraws nothing. Kept only once
- * posted, so a change a panic interrupts is posted by the restart's reads
- */
-fn refresh<S: Service + PartialEq>(now: S, changes: fn(&S, &S) -> Vec<Activity>) {
-    let posts = {
-        let before = S::read();
-
-        if *before == now {
-            return;
-        }
-
-        changes(&before, &now)
-    };
-
-    if !posts.is_empty() {
-        let at = Instant::now();
-        let mut island = IslandService::write();
-
-        for activity in posts {
-            island.post(activity, at);
-        }
+// keeps `now` for Controls; a read that changes nothing writes nothing, so redraws nothing
+fn refresh<S: Service + PartialEq>(now: S) {
+    if *S::read() != now {
+        *S::write() = now;
     }
-
-    *S::write() = now;
 }
 
 #[cfg(test)]

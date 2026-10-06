@@ -31,8 +31,6 @@ const MUTE: &str = include_str!("icons/mute.svg");
 const MICROPHONE: &str = include_str!("icons/microphone.svg");
 const SUN: &str = include_str!("icons/sun.svg");
 const WIFI: &str = include_str!("icons/wifi.svg");
-const WIRED: &str = include_str!("icons/wired.svg");
-const SHIELD: &str = include_str!("icons/shield.svg");
 const BLUETOOTH: &str = include_str!("icons/bluetooth.svg");
 const BELL: &str = include_str!("icons/bell.svg");
 const MOON: &str = include_str!("icons/moon.svg");
@@ -58,8 +56,6 @@ pub(crate) enum Icon {
     MicrophoneMuted,
     Sun,
     Wifi,
-    Wired,
-    Shield,
     Bluetooth,
     Bell,
 
@@ -169,8 +165,6 @@ impl Icon {
             Icon::Microphone | Icon::MicrophoneMuted => &[MICROPHONE],
             Icon::Sun => &[SUN],
             Icon::Wifi => &[WIFI],
-            Icon::Wired => &[WIRED],
-            Icon::Shield => &[SHIELD],
             Icon::Bluetooth => &[BLUETOOTH],
             Icon::Bell => &[BELL],
             Icon::Moon => &[MOON],
@@ -225,7 +219,7 @@ fn content(svg: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 24] = [
+    const ALL: [Icon; 22] = [
         Icon::Speaker(0),
         Icon::Speaker(30),
         Icon::Speaker(80),
@@ -234,8 +228,6 @@ mod tests {
         Icon::MicrophoneMuted,
         Icon::Sun,
         Icon::Wifi,
-        Icon::Wired,
-        Icon::Shield,
         Icon::Bluetooth,
         Icon::Bell,
         Icon::Moon,
@@ -320,8 +312,8 @@ mod tests {
             assert_eq!(drawn(), written);
         }
 
-        // one svg per drawing and ink, not per size: 22 drawings, each plain and crossed
-        assert_eq!(written, 44);
+        // one svg per drawing and ink, not per size: 20 drawings, each plain and crossed
+        assert_eq!(written, 40);
 
         for (path, _) in &first {
             assert!(path.exists(), "{}", path.display());

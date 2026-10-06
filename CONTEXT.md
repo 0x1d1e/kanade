@@ -34,7 +34,7 @@ A volume, brightness or microphone mute change, bottom centre of the focused out
 
 ## Lifetime
 `Persistent` lives until withdrawn: media playing, timer, low battery.
-`Transient(duration)` expires on its own: a workspace switch, a network or Bluetooth device coming or going. It implies no Scope and no Interrupt.
+`Transient(duration)` expires on its own: a workspace switch. It implies no Scope and no Interrupt.
 
 ## Arbiter
 Function of (registered Activities, the primary shown and since when, now, focused output) to a Frame. Owns priority, preemption, primary dwell, expiry and Satellite selection.

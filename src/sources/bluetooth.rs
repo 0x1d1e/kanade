@@ -1,14 +1,11 @@
-//! BlueZ for `system.rs`: the adapter and the devices it knows, and the Transient a device
-//! connecting or going away shows.
+//! BlueZ for `system.rs`: the adapter and the devices it knows, for the Controls Surface.
 
 use std::thread;
 
 use amane::{Argument, Bus, Service, Value};
 
-use super::system::{Radio, SHOWN};
-use crate::island::activity::{
-    Activity, Detail, Id, Interrupt, Kind, Lifetime, Peer, Priority, Scope,
-};
+use super::system::Radio;
+use crate::island::activity::Peer;
 
 pub const BLUEZ: &str = "org.bluez";
 
@@ -117,130 +114,4 @@ fn peer(path: &str, interfaces: &Value) -> Option<Peer> {
         connected,
         battery,
     })
-}
-
-/*
- * a device that connects shows; one that disconnects, or is forgotten or its adapter turned off
- * while connected, shows going away. A battery that ticks or a rename shows nothing
- */
-pub fn changes(before: &Adapter, now: &Adapter) -> Vec<Activity> {
-    let connected = |adapter: &Adapter, path: &str| {
-        adapter
-            .devices
-            .iter()
-            .any(|peer| peer.connected && peer.path == path)
-    };
-
-    let joined = now
-        .devices
-        .iter()
-        .filter(|peer| peer.connected && !connected(before, &peer.path))
-        .cloned();
-
-    let left = before
-        .devices
-        .iter()
-        .filter(|peer| peer.connected && !connected(now, &peer.path))
-        .map(|peer| Peer {
-            connected: false,
-            battery: None,
-            ..peer.clone()
-        });
-
-    joined.chain(left).map(activity).collect()
-}
-
-// one per device, so one that drops and comes back replaces its own
-fn activity(peer: Peer) -> Activity {
-    let id = Id::new(Kind::Bluetooth, peer.path.clone());
-
-    Activity::new(
-        id,
-        Priority::Osd,
-        Lifetime::Transient(SHOWN),
-        Scope::FocusedOutput,
-        Interrupt::None,
-    )
-    .expect("SHOWN is no zero Lifetime")
-    .with_detail(Detail::Bluetooth(peer))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::island::activity::{Interrupt, Lifetime};
-
-    fn peer(name: &str, connected: bool) -> Peer {
-        Peer {
-            path: format!("/org/bluez/hci0/dev_{name}"),
-            name: name.into(),
-            connected,
-            battery: connected.then_some(80),
-        }
-    }
-
-    fn with(devices: Vec<Peer>) -> Adapter {
-        Adapter {
-            radio: Radio::On,
-            path: "/org/bluez/hci0".into(),
-            devices,
-        }
-    }
-
-    // what each Transient says, as (name, connected)
-    fn shown(before: Vec<Peer>, now: Vec<Peer>) -> Vec<(String, bool)> {
-        changes(&with(before), &with(now))
-            .into_iter()
-            .map(|activity| {
-                assert_eq!(activity.lifetime(), Lifetime::Transient(SHOWN));
-                assert_eq!(activity.interrupt(), Interrupt::None);
-
-                match activity.detail() {
-                    Detail::Bluetooth(peer) => (peer.name.clone(), peer.connected),
-                    detail => panic!("{detail:?}"),
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn connecting_and_disconnecting_show() {
-        let paired = || vec![peer("buds", false)];
-        let connected = || vec![peer("buds", true)];
-
-        assert_eq!(shown(paired(), connected()), [("buds".into(), true)]);
-        assert_eq!(shown(connected(), paired()), [("buds".into(), false)]);
-    }
-
-    // turning the adapter off, or forgetting a device, drops it from the list while connected
-    #[test]
-    fn a_connected_device_that_vanishes_shows_going_away() {
-        assert_eq!(
-            shown(vec![peer("buds", true)], Vec::new()),
-            [("buds".into(), false)]
-        );
-    }
-
-    #[test]
-    fn each_device_shows_its_own() {
-        let before = vec![peer("buds", true), peer("mouse", false)];
-        let now = vec![peer("mouse", true), peer("buds", false)];
-
-        let changes = changes(&with(before), &with(now));
-
-        assert_eq!(changes.len(), 2);
-        assert_ne!(changes[0].id(), changes[1].id());
-    }
-
-    #[test]
-    fn a_battery_or_a_rename_shows_nothing() {
-        let drained = Peer {
-            battery: Some(20),
-            name: "renamed".into(),
-            ..peer("buds", true)
-        };
-
-        assert!(shown(vec![peer("buds", true)], vec![drained]).is_empty());
-        assert!(shown(vec![peer("buds", false)], Vec::new()).is_empty());
-    }
 }

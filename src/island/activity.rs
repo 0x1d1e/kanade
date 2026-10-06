@@ -61,7 +61,7 @@ pub enum Priority {
     Passive,
     Media,
 
-    // a workspace switch, a network or Bluetooth device coming or going
+    // a workspace switch
     Osd,
 
     // timer, low battery
@@ -206,10 +206,6 @@ pub enum Detail {
 
     Notification(Toast),
 
-    Network(Connection),
-
-    Bluetooth(Peer),
-
     Timer(Countdown),
 }
 
@@ -224,8 +220,6 @@ impl Detail {
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
-            Detail::Network(_) => Some(Kind::Network),
-            Detail::Bluetooth(_) => Some(Kind::Bluetooth),
             Detail::Timer(_) => Some(Kind::Timer),
         }
     }
@@ -329,13 +323,6 @@ pub enum Uplink {
 
     // a VPN, a tethered phone and the rest, by the connection's own name
     Other(String),
-}
-
-// the machine joining an Uplink, or leaving it
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Connection {
-    pub uplink: Uplink,
-    pub connected: bool,
 }
 
 // a Bluetooth device the machine knows, like a headset

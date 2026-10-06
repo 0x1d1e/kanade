@@ -376,7 +376,14 @@ impl Node {
 type Migration = fn(&mut Table);
 
 // the current layout is the last one migrated to
-const MIGRATIONS: &[Migration] = &[];
+const MIGRATIONS: &[Migration] = &[
+    // 2: notifications show as Banners, with no `timings.toast` (#109)
+    |table| {
+        if let Some(Node::Table(timings)) = table.get_mut("timings").map(|entry| &mut entry.node) {
+            timings.remove("toast");
+        }
+    },
+];
 
 // the `schema_version` this build writes and reads up to
 pub const SCHEMA_VERSION: usize = MIGRATIONS.len() + 1;
@@ -867,6 +874,24 @@ battery = false
             assert_eq!(config.clock, Hours::Twelve, "{upper}");
             assert_eq!(problems, [vec![], vec![(line, problem)]]);
         }
+    }
+
+    // a valid v1 file with the key #109 dropped still applies, so live reload keeps working
+    #[test]
+    fn a_v1_toast_timing_migrates_away() {
+        for text in [
+            "schema_version = 1\n[timings]\ntoast = 5000\nhover = 100",
+            "[timings]\ntoast = 5000\nhover = 100",
+            "timings.toast = 5000\ntimings.hover = 100",
+        ] {
+            let (config, problems) = one(text);
+
+            assert_eq!(problems, vec![], "{text}");
+            assert_eq!(config.island.hover, ms(100), "{text}");
+        }
+
+        let (_, problems) = one("schema_version = 2\n[timings]\ntoast = 5000");
+        assert_eq!(problems, said(&[(3, "unknown key timings.toast")]));
     }
 
     #[test]
