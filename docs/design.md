@@ -21,7 +21,7 @@ Sources of truth: tracker = work/status; `CONTEXT.md` = domain; ADRs = durable r
 
 - **Island**: top-center shell surface/output.
 - **Rest**: idle Island; shows the clock.
-- **Split**: Compact showing the primary and the top Satellite in one split body.
+- **Split**: Compact showing the primary and the top Satellite in one split body; each segment peeks and opens its own Activity ([ADR 0010](adr/0010-split-and-rest-right-click.md)).
 - **Activity**: live item eligible for Island slots.
 - **Satellite**: Persistent Ongoing/Critical Activity that is not the primary; cap `SATELLITES`, rest a count.
 - **Arbiter**: Island selection policy.
@@ -104,7 +104,9 @@ Rules:
 
 **Fullscreen:** no detection/suppression. Geometry heuristic rejected. Island = Top; fullscreen may cover it. Privacy = separate Overlay. Revisit only with reliable niri fullscreen state. [ADR 0006](adr/0006-island-on-top-layer.md), [ADR 0005](adr/0005-privacy-indicator-outside-arbiter.md).
 
-**Rest:** minimal configured status. Tray appears on interaction. Left click → Controls. Right click → context/pin.
+**Rest:** minimal configured status. Tray appears on interaction. Left click → Controls. Right click → Controls pinned; no context menu ([ADR 0010](adr/0010-split-and-rest-right-click.md)).
+
+**Split:** follows the Frame like Compact: Split while a Satellite exists, Compact without. Hover/click/right click act on the segment under the pointer; Peek shows one Activity by identity. [ADR 0010](adr/0010-split-and-rest-right-click.md).
 
 ## UI
 
@@ -311,8 +313,6 @@ Need design before commitment:
 ## Open
 
 - Track/test privacy Overlay stacking + input passthrough.
-- Define Rest right click "context" (today: does nothing) and how it coexists with Pin.
-- Define Split entry/exit and how it morphs to/from Compact and Peek.
 - Define Dock `app_id` ↔ `.desktop` matching + override shape.
 - Define capture backend selection + capability probing.
 - Define Google Calendar account adapter/auth/storage.
