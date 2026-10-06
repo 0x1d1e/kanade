@@ -358,13 +358,56 @@ pub struct Peer {
 }
 
 /*
- * a timer running out at `ends`, started `length` before. What it reads follows from the time it is
+ * a timer running out at `ends`, started for `length`. What it reads follows from the time it is
  * drawn at, so the Activity never changes while it counts down
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Countdown {
     pub ends: Instant,
     pub length: Duration,
+
+    // paused then, so what is left stays what it was then
+    pub paused: Option<Instant>,
+}
+
+impl Countdown {
+    pub fn new(length: Duration, now: Instant) -> Countdown {
+        Countdown {
+            ends: now + length,
+            length,
+            paused: None,
+        }
+    }
+
+    pub fn left(&self, now: Instant) -> Duration {
+        self.ends
+            .saturating_duration_since(self.paused.unwrap_or(now))
+    }
+
+    // what is left stops going down; a paused one stays as it is
+    pub fn pause(self, now: Instant) -> Countdown {
+        Countdown {
+            paused: self.paused.or(Some(now)),
+            ..self
+        }
+    }
+
+    // counts down again from what was left; a running one stays as it is
+    pub fn resume(self, now: Instant) -> Countdown {
+        match self.paused {
+            Some(paused) => Countdown {
+                ends: self.ends + now.saturating_duration_since(paused),
+                paused: None,
+                ..self
+            },
+            None => self,
+        }
+    }
+
+    // the moment it runs out, none while paused
+    pub fn running_out(&self) -> Option<Instant> {
+        self.paused.is_none().then_some(self.ends)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -773,5 +816,28 @@ mod tests {
 
         assert_eq!(Kind::parse("Timer"), None);
         assert_eq!(Priority::parse(""), None);
+    }
+
+    #[test]
+    fn a_paused_countdown_keeps_what_was_left() {
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        let timer = Countdown::new(60 * second, start);
+
+        assert_eq!(timer.left(start + 10 * second), 50 * second);
+        assert_eq!(timer.running_out(), Some(start + 60 * second));
+
+        let paused = timer.pause(start + 10 * second);
+
+        assert_eq!(paused.left(start + 100 * second), 50 * second);
+        assert_eq!(paused.running_out(), None);
+        assert_eq!(paused.pause(start + 20 * second), paused);
+
+        let resumed = paused.resume(start + 100 * second);
+
+        assert_eq!(resumed.left(start + 110 * second), 40 * second);
+        assert_eq!(resumed.running_out(), Some(start + 150 * second));
+        assert_eq!(resumed.resume(start + 120 * second), resumed);
+        assert_eq!(resumed.length, 60 * second);
     }
 }

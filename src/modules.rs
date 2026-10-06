@@ -1,7 +1,7 @@
 //! Modules (#94, docs/design.md Modules): every feature the user can turn off. A Module names the
 //! Modules it requires and those it can do without; `resolve` decides once at start which run, and
 //! `start` starts only those. A Module that is off starts no thread, opens no window, reads no
-//! Service and takes no IPC verb, so the Amane Services only it reads stay cold. Turning one on or
+//! Service and refuses its verbs, so the Amane Services only it reads stay cold. Turning one on or
 //! off takes a restart, since Amane registers windows only at start.
 
 use std::sync::OnceLock;
@@ -9,9 +9,12 @@ use std::thread;
 
 use amane::{App, Apps, Service};
 
+use crate::cli::{Call, Verb};
+use crate::island::command::{Command, Unparsed};
+use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{battery, media, niri, notifications, osd, privacy, system, timer};
-use crate::{clock, cluster, config, ipc, reload, shadow, theme, view};
+use crate::{cli, clock, cluster, config, ipc, reload, shadow, theme, view};
 
 pub struct Module {
     pub name: &'static str,
@@ -28,8 +31,11 @@ pub struct Module {
     // the config keys it owns, which others may read too; a key no Module owns is unknown
     pub settings: &'static [config::Setting],
 
+    // its CLI schema: the verbs of `kanade <verb>` it owns, which the shell refuses while it is off
+    pub verbs: &'static [Verb],
+
     /*
-     * starts its threads and adds its windows and IPC verbs to the shell; runs once at start, after
+     * starts its threads and adds its windows to the shell; runs once at start, after
      * every Module it requires
      */
     pub start: fn(App) -> App,
@@ -46,6 +52,57 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: config::ISLAND,
+        verbs: &[
+            Verb {
+                name: "launcher",
+                usage: || String::from("launcher open|close|toggle"),
+                parse: |arguments| {
+                    Command::surface(Surface::Launcher, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+            Verb {
+                name: "controls",
+                usage: || String::from("controls open|close|toggle"),
+                parse: |arguments| {
+                    Command::surface(Surface::Controls, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+            Verb {
+                name: "island",
+                usage: || String::from("island collapse"),
+                parse: |arguments| match arguments {
+                    ["collapse"] => Ok(Call::Island(Command::Collapse)),
+                    _ => Err(Unparsed::Usage),
+                },
+            },
+            Verb {
+                name: "config",
+                usage: || String::from("config reload|validate"),
+                parse: |arguments| match arguments {
+                    ["reload"] => Ok(Call::Reload),
+                    ["validate"] => Ok(Call::Validate),
+                    _ => Err(Unparsed::Usage),
+                },
+            },
+            Verb {
+                name: "status",
+                usage: || String::from("status"),
+                parse: |arguments| match arguments {
+                    [] => Ok(Call::Status),
+                    _ => Err(Unparsed::Usage),
+                },
+            },
+            // fake Activities, to see what the island does with one
+            Verb {
+                name: "debug",
+                usage: Command::debug_usage,
+                parse: |arguments| Command::debug(arguments).map(Call::Island),
+            },
+        ],
         start: |app| {
             let config = config::get();
 
@@ -67,9 +124,7 @@ pub const ALL: &[Module] = &[
             thread::spawn(|| drop(Apps::read()));
 
             app.window_per_monitor(view::island)
-                .ipc("island", ipc::island)
-                .ipc("config", ipc::config)
-                .ipc("status", ipc::status)
+                .ipc(cli::HANDLER, ipc::answer)
         },
     },
     // read from the island's niri stream, so it starts nothing of its own
@@ -79,6 +134,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[],
         start: |app| app,
     },
     // the privacy cluster: the microphone and camera from PipeWire, and screen casts from the
@@ -89,6 +145,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: Some("microphone, camera and screen cast indicators will not show"),
         settings: &[],
+        verbs: &[],
         start: |app| {
             spawn("privacy", privacy::follow);
             app.window_per_monitor(cluster::window)
@@ -100,6 +157,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[],
         start: |app| {
             spawn("battery", battery::follow);
             app
@@ -111,6 +169,15 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[Verb {
+            name: "media",
+            usage: || String::from("media open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Media, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
             spawn("media", media::follow);
             app
@@ -122,6 +189,25 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[Verb {
+            name: "timer",
+            usage: || {
+                String::from(
+                    "timer start <duration>|pause|resume|cancel
+  <duration>: like 90s, 25m or 1h30m, up to 24h",
+                )
+            },
+            parse: |arguments| {
+                let request = match arguments {
+                    ["start", length] => timer::duration(length).map(timer::Request::Start),
+                    ["pause"] => Some(timer::Request::Pause),
+                    ["resume"] => Some(timer::Request::Resume),
+                    ["cancel"] => Some(timer::Request::Cancel),
+                    _ => None,
+                };
+                request.map(Call::Timer).ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
             timer::spawn();
             app
@@ -133,6 +219,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[],
         start: |app| {
             spawn("osd", osd::follow);
             app
@@ -144,6 +231,24 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: config::NOTIFICATIONS,
+        // Do Not Disturb only quiets notifications, so it goes with them
+        verbs: &[Verb {
+            name: "notifications",
+            usage: || {
+                String::from(
+                    "notifications open|close|toggle|clear
+notifications dnd on|off|toggle",
+                )
+            },
+            parse: |arguments| {
+                let call = match arguments {
+                    ["clear"] => Some(Call::ClearNotifications),
+                    ["dnd", dnd @ ..] => Command::dnd(dnd).map(Call::Island),
+                    _ => Command::surface(Surface::Notifications, arguments).map(Call::Island),
+                };
+                call.ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
             spawn("notifications", notifications::follow);
             app
@@ -156,6 +261,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[],
         start: |app| {
             system::spawn();
             app
@@ -167,6 +273,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[],
         start: |app| {
             system::spawn();
             app
@@ -179,6 +286,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         settings: &[],
+        verbs: &[],
         start: |app| {
             system::spawn();
             app
@@ -410,6 +518,7 @@ mod tests {
             optional: &[],
             warns: None,
             settings: &[],
+            verbs: &[],
             start: |app| app,
         }
     }

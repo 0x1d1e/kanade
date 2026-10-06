@@ -1,6 +1,7 @@
-//! The timer (plan 5.1, 7): `island timer start <duration>` counts down one Persistent Ongoing Timer
-//! Activity, `island timer stop` takes it away, and running out takes it away and sends a
-//! notification, which toasts and stays in the history like any other. Starting it again restarts it.
+//! The timer (plan 5.1, 7): `kanade timer start <duration>` counts down one Persistent Ongoing Timer
+//! Activity, `pause` and `resume` stop and restart its countdown, `cancel` takes it away, and
+//! running out takes it away and sends a notification, which toasts and stays in the history like
+//! any other. Starting it again restarts it.
 //!
 //! The Activity says when the timer runs out, and the view reads it at the time it draws, so nothing
 //! reposts it each second. A window that draws a reading asks to be drawn again when that reading
@@ -63,9 +64,17 @@ impl Form {
     }
 }
 
-enum Event {
+// what `kanade timer` asks
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request {
     Start(Duration),
-    Stop,
+    Pause,
+    Resume,
+    Cancel,
+}
+
+enum Event {
+    Do(Request),
 
     // a reading asked for an earlier redraw than the thread waits for
     Wake,
@@ -96,12 +105,8 @@ impl Service for Shorts {
     fn listen() {}
 }
 
-pub fn start(length: Duration) {
-    send(Event::Start(length));
-}
-
-pub fn stop() {
-    send(Event::Stop);
+pub fn request(request: Request) {
+    send(Event::Do(request));
 }
 
 fn send(event: Event) {
@@ -133,8 +138,26 @@ struct Timer {
 }
 
 impl Timer {
+    /*
+     * a pause or resume without a timer does nothing; one that ran out by `now` ends first, so a
+     * request just past its end, before the thread woke for it, still sends its notification
+     */
+    fn apply(&mut self, request: Request, now: Instant) {
+        self.expire(now);
+
+        self.running = match request {
+            Request::Start(length) => Some(Countdown::new(length, now)),
+            Request::Pause => self.running.map(|countdown| countdown.pause(now)),
+            Request::Resume => self.running.map(|countdown| countdown.resume(now)),
+            Request::Cancel => None,
+        };
+    }
+
     fn expire(&mut self, now: Instant) {
-        if let Some(countdown) = self.running.take_if(|countdown| countdown.ends <= now) {
+        let ended =
+            |countdown: &mut Countdown| countdown.running_out().is_some_and(|ends| ends <= now);
+
+        if let Some(countdown) = self.running.take_if(ended) {
             self.ended = Some(countdown);
         }
     }
@@ -175,7 +198,7 @@ fn follow(events: &Receiver<Event>) {
 
             let deadline = timer
                 .running
-                .map(|countdown| countdown.ends)
+                .and_then(|countdown| countdown.running_out())
                 .into_iter()
                 .chain([&CLOCK, &SHORT].into_iter().filter_map(|form| *form.lock()))
                 .min();
@@ -186,13 +209,7 @@ fn follow(events: &Receiver<Event>) {
             };
 
             match event {
-                Ok(Event::Start(length)) => {
-                    timer.running = Some(Countdown {
-                        ends: Instant::now() + length,
-                        length,
-                    });
-                }
-                Ok(Event::Stop) => timer.running = None,
+                Ok(Event::Do(request)) => timer.apply(request, Instant::now()),
                 Ok(Event::Wake) | Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -279,7 +296,10 @@ fn read(form: &Form, countdown: &Countdown, now: Instant) -> String {
 
     let (text, next) = (form.at)(left(countdown, now));
 
-    if let Some(at) = next.and_then(|next| countdown.ends.checked_sub(Duration::from_secs(next))) {
+    // a paused one reads the same until it runs again, which reposts it
+    let ends = countdown.running_out();
+
+    if let Some(at) = next.and_then(|next| ends?.checked_sub(Duration::from_secs(next))) {
         redraw_at(form, at);
     }
 
@@ -302,9 +322,33 @@ fn redraw_at(form: &Form, at: Instant) {
 
 // whole seconds left, rounded up, so it reads 0:01 through its last second and 0:00 once run out
 fn left(countdown: &Countdown, now: Instant) -> u64 {
-    let left = countdown.ends.saturating_duration_since(now);
+    let left = countdown.left(now);
 
     left.as_secs() + u64::from(left.subsec_nanos() > 0)
+}
+
+// the longest timer, so a Satellite's few characters always fit it
+const LONGEST: Duration = Duration::from_secs(24 * 60 * 60);
+
+// hours, minutes and seconds, each at most once and in that order, like 1h30m; never zero
+pub fn duration(text: &str) -> Option<Duration> {
+    const UNITS: [(char, u64); 3] = [('h', 3600), ('m', 60), ('s', 1)];
+
+    let mut units = UNITS.iter();
+    let mut rest = text;
+    let mut seconds: u64 = 0;
+
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !c.is_ascii_digit())?;
+        let number: u64 = rest[..digits].parse().ok()?;
+        let unit = rest[digits..].chars().next()?;
+        let &(_, scale) = units.find(|&&(name, _)| name == unit)?;
+
+        seconds = seconds.checked_add(number.checked_mul(scale)?)?;
+        rest = &rest[digits + unit.len_utf8()..];
+    }
+
+    Some(Duration::from_secs(seconds)).filter(|length| !length.is_zero() && *length <= LONGEST)
 }
 
 /*
@@ -357,10 +401,7 @@ mod tests {
     use crate::island::activity::{Interrupt, Lifetime};
 
     fn countdown(length: u64) -> Countdown {
-        Countdown {
-            ends: Instant::now() + Duration::from_secs(length),
-            length: Duration::from_secs(length),
-        }
+        Countdown::new(Duration::from_secs(length), Instant::now())
     }
 
     #[test]
@@ -384,6 +425,95 @@ mod tests {
         assert_eq!(left(&timer, at(1)), 1);
         assert_eq!(left(&timer, timer.ends), 0);
         assert_eq!(left(&timer, timer.ends + Duration::from_secs(5)), 0);
+    }
+
+    #[test]
+    fn durations_read_in_hours_minutes_and_seconds() {
+        let read = |text: &str| duration(text).map(|length| length.as_secs());
+
+        assert_eq!(read("90s"), Some(90));
+        assert_eq!(read("25m"), Some(1500));
+        assert_eq!(read("1h30m"), Some(5400));
+        assert_eq!(read("1h0m5s"), Some(3605));
+        assert_eq!(read("24h"), Some(86_400));
+        assert_eq!(read("0h1s"), Some(1));
+
+        for text in [
+            "",
+            "25",
+            "m",
+            "0s",
+            "0h0m",
+            "24h1s",
+            "25h",
+            "1m1h",
+            "1m1m",
+            "1.5m",
+            "-5m",
+            "5 m",
+            "5min",
+            "5M",
+            "18446744073709551615h",
+        ] {
+            assert_eq!(read(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_paused_timer_never_runs_out_and_resumes_where_it_was() {
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+        let mut timer = Timer::default();
+
+        // nothing to pause or resume
+        timer.apply(Request::Pause, start);
+        timer.apply(Request::Resume, start);
+        assert_eq!(timer.running, None);
+
+        timer.apply(Request::Start(60 * second), start);
+        timer.apply(Request::Pause, start + 10 * second);
+        timer.expire(start + 600 * second);
+        assert_eq!(timer.ended, None);
+
+        let paused = timer.running.expect("a paused timer stays");
+        assert_eq!(left(&paused, start + 600 * second), 50);
+
+        timer.apply(Request::Resume, start + 600 * second);
+        timer.expire(start + 649 * second);
+        assert_eq!(timer.ended, None);
+        timer.expire(start + 650 * second);
+        assert!(timer.ended.is_some());
+        assert_eq!(timer.running, None);
+
+        timer.apply(Request::Start(60 * second), start);
+        timer.apply(Request::Cancel, start);
+        assert_eq!(timer.running, None);
+    }
+
+    // the thread may take a request that came in after the end before it wakes for the end
+    #[test]
+    fn a_request_after_the_end_still_ends_the_timer() {
+        let start = Instant::now();
+        let second = Duration::from_secs(1);
+
+        for request in [
+            Request::Pause,
+            Request::Resume,
+            Request::Cancel,
+            Request::Start(60 * second),
+        ] {
+            let mut timer = Timer::default();
+            timer.apply(Request::Start(second), start);
+
+            let started = timer.running;
+            timer.apply(request, start + 2 * second);
+
+            assert_eq!(timer.ended, started, "{request:?}");
+
+            let restarted = matches!(request, Request::Start(_))
+                .then(|| Countdown::new(60 * second, start + 2 * second));
+            assert_eq!(timer.running, restarted, "{request:?}");
+        }
     }
 
     #[test]

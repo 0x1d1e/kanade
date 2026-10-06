@@ -3,7 +3,7 @@
 //! preempting, as the primary rather than over it, when its sender says critical. The toast expires; the notification stays in Amane's list, the
 //! history, until it is dismissed or its sender closes it, which also takes its toast down.
 //!
-//! DND is the Arbiter's (`island dnd toggle`): it silences toasts, never the history. Toasts never
+//! DND is the Arbiter's (`notifications dnd toggle`): it silences toasts, never the history. Toasts never
 //! take the keyboard: the island takes it only for a pointer or a Surface (`IslandService::keyboard`).
 //!
 //! Amane's Notifications has no subscription, so this reads it again when the bus carries a

@@ -74,7 +74,7 @@ The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind ope
 ## Pin
 A right click keeps an island's Peek or open Surface up after the pointer leaves, with no leave grace. The body shows a ring while pinned.
 - Right click on Compact peeks pinned, on a Peek or open Surface pins or unpins it, at Rest does nothing (a click already opens Controls). On a Surface's own control it pins too and never presses it.
-- Escape ends a pin only while the island has keyboard focus (a pinned island gives it back, see below); IPC `collapse` and `toggle` close a pinned Surface.
+- Escape ends a pin only while the island has keyboard focus (a pinned island gives it back, see below); `kanade island collapse` and `toggle` close a pinned Surface.
 - **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The primary's withdrawal clears a pinned Peek; Preempt clears a pinned Surface. Nothing pinned is remembered.
 - **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
@@ -83,7 +83,7 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.
-- **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its IPC verbs with `module <name> is off`. An Amane Service only it reads stays cold.
+- **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its verbs with `module <name> is off`. An Amane Service only it reads stays cold.
 - **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
 - A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).
 - Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable.
