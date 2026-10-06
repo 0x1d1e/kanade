@@ -215,7 +215,7 @@ Task: glance at live state, act in one gesture, get out of the way.
 - Every Surface defines these states: empty (Media: "Nothing playing"), loading/partial (art not loaded: placeholder, no layout shift), error (notification daemon not running: surface says so and names the conflict), disabled (Controls item unavailable).
 - Keyboard: every Surface reachable via IPC and a compositor keybind; Escape collapses; arrow keys and Enter work in Notifications and Launcher; focus visible; Launcher focus exists only while Launcher is open.
 - Targets in Expanded >= 24 px, text >= 12 px.
-- Screen reader support: unverified, likely none (GPU drawn, no accessibility tree). State as a known limitation in README until checked.
+- Screen reader support: none. Checked in #38: Amane draws with the GPU and has no accessibility tree, so the island never registers on the AT-SPI bus. Stated as a limitation in README.
 - Layout is fixed per Presentation: long titles elide, never resize the body.
 
 Surfaces (v0.1):

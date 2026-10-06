@@ -18,6 +18,8 @@ use crate::island::service::IslandService;
 use crate::theme;
 use crate::view;
 
+use super::Ring;
+
 const INSET: f32 = 20.0;
 
 // the content's width, which every row fills
@@ -489,6 +491,7 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
         );
 
     let row = if selected { row.fill(theme::CARD) } else { row };
+    let row = row.border_if(selected);
 
     let monitor = monitor.to_owned();
     let app = app.clone();

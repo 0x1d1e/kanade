@@ -20,6 +20,8 @@ use crate::sources::notifications::{self, Daemon};
 use crate::theme;
 use crate::view;
 
+use super::{RING, Ring};
+
 const INSET: f32 = 20.0;
 
 // the content's width, which every row fills
@@ -57,9 +59,6 @@ const TARGET: f32 = 24.0;
 
 // a control with nothing to do now
 const DISABLED: f32 = 0.35;
-
-// the keyboard focus, thick enough to see on any part
-const RING: f32 = 2.0;
 
 // pixels per wheel line
 const WHEEL: f32 = 40.0;
@@ -787,20 +786,6 @@ fn pill(
                 click(&monitor, press.clone());
             })),
         None => pill.opacity(DISABLED),
-    }
-}
-
-trait Ring {
-    fn border_if(self, ring: bool) -> Self;
-}
-
-impl Ring for Rectangle {
-    fn border_if(self, ring: bool) -> Self {
-        if ring {
-            self.border(RING, theme::FG)
-        } else {
-            self
-        }
     }
 }
 
