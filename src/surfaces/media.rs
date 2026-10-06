@@ -14,6 +14,7 @@ use super::slider::Slider;
 use crate::icon::Icon;
 use crate::island::activity::Track;
 use crate::island::geometry;
+use crate::modules;
 use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
 use crate::theme::space::{INSET, TARGET};
@@ -68,12 +69,11 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
         Change::of(deck.track.target(), Some(&deck.track), now)
     });
 
-    Rectangle::new()
+    let surface = Rectangle::new()
         .width(shape.width)
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
-        .on_scroll(|Scroll { y, .. }| Slider::Speaker.wheel(y))
         .child(
             Column::new(children![
                 header(track, &playback.players, deck, playback.page, width),
@@ -82,7 +82,14 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
             ])
             .width(width)
             .gap(12.0),
-        )
+        );
+
+    // the wheel anywhere on it sets the volume, unless `audio` is off
+    if modules::on("audio") {
+        surface.on_scroll(|Scroll { y, .. }| Slider::Speaker.wheel(y))
+    } else {
+        surface
+    }
 }
 
 // art, then title and artist, then the players to choose from
@@ -395,8 +402,30 @@ fn faded(color: Color) -> Color {
     theme::faded(color, DISABLED)
 }
 
-// the speaker's icon and its level `width` wide, set by a press or a drag along it
+/*
+ * the speaker's icon and its level `width` wide, set by a press or a drag along it; with `audio`
+ * off Audio is never read, and both are faded and empty
+ */
 fn volume(width: f32, accent: Color) -> Row {
+    if !modules::on("audio") {
+        return Row::new(children![
+            Rectangle::new()
+                .width(TARGET)
+                .height(TARGET)
+                .align_child(Center, Center)
+                .opacity(DISABLED)
+                .child(Icon::Speaker(0).draw(20.0)),
+            Rectangle::new()
+                .width(width)
+                .height(TARGET)
+                .align_child(Start, Center)
+                .opacity(DISABLED)
+                .child(bar(width, 0.0, accent)),
+        ])
+        .gap(10.0)
+        .align(Center);
+    }
+
     let audio = Audio::read();
     let (percent, muted) = (audio.volume(), audio.muted());
     drop(audio);

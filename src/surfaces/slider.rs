@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use amane::{Audio, Brightness, Center, Color, Cursor, Rectangle, Service, Start};
 
+use crate::modules;
 use crate::theme::space::TARGET;
 use crate::view::bar;
 
@@ -22,6 +23,14 @@ pub enum Slider {
 }
 
 impl Slider {
+    // the Module without which nothing reads or sets its device
+    fn module(self) -> &'static str {
+        match self {
+            Slider::Speaker => "audio",
+            Slider::Brightness => "brightness",
+        }
+    }
+
     // 0 to 100, as the device last reported it
     pub fn percent(self) -> u8 {
         match self {
@@ -46,6 +55,10 @@ impl Slider {
 
     // down is lower
     pub fn wheel(self, lines: f32) {
+        if !modules::on(self.module()) {
+            return;
+        }
+
         let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
 
@@ -74,6 +87,10 @@ impl Slider {
     }
 
     fn set(self, percent: u8) {
+        if !modules::on(self.module()) {
+            return;
+        }
+
         *ASKED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Asked {
             slider: self,
             percent,
@@ -105,3 +122,26 @@ struct Asked {
 }
 
 static ASKED: Mutex<Option<Asked>> = Mutex::new(None);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // no Module is on in tests, so a wheel or a drag that went through would ask for a level
+    #[test]
+    fn a_slider_whose_module_is_off_sets_nothing() {
+        for slider in [Slider::Speaker, Slider::Brightness] {
+            assert!(!modules::on(slider.module()));
+
+            slider.wheel(-1.0);
+            slider.set(50);
+
+            assert!(
+                ASKED
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_none()
+            );
+        }
+    }
+}

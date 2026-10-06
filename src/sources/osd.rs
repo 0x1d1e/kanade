@@ -1,9 +1,11 @@
-//! Volume and Brightness Transients (plan 3, 5.1): a level that changes shows on the focused island
-//! for OSD, and a held key keeps reposting the same Activity, so it extends one Transient.
+//! Volume, brightness and microphone changes (plan 3, 5.1, ADR 0007): a level that changes shows in
+//! the OSD on the focused output, and a held key keeps showing it again, so it extends one OSD.
+//! Until #109 each change also shows as a Transient on the focused island.
 //!
 //! Amane has no subscription between services, so this reads them again when PulseAudio or the
 //! kernel announces a change (`wake`), and polls while a change settles or an announcer is down; a
-//! read that finds the levels unchanged posts nothing, so an idle island never redraws.
+//! read that finds the levels unchanged shows nothing, so an idle OSD never redraws. It reads only
+//! what the `audio` and `brightness` Modules that are on allow.
 
 use std::time::{Duration, Instant};
 
@@ -14,6 +16,7 @@ use crate::island::activity::{
     Activity, Detail, Device, Id, Interrupt, Kind, Lifetime, Priority, Scope, Volume,
 };
 use crate::island::service::IslandService;
+use crate::osd::{Level, Osd};
 use crate::{config, supervise};
 
 const PACE: Pace = Pace {
@@ -45,87 +48,128 @@ pub const BACKLIGHT: Announcer = Announcer {
     announces: |line| line.starts_with("KERNEL["),
 };
 
-// every level the island can show, as the services last said
+// which Services this reads: those of the `audio` and `brightness` Modules that are on
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reads {
+    pub audio: bool,
+    pub brightness: bool,
+}
+
+impl Reads {
+    pub fn any(self) -> bool {
+        self.audio || self.brightness
+    }
+
+    // only the announcers of what it reads, so an off Module starts no helper process
+    fn announcers(self) -> Vec<Announcer> {
+        [(self.audio, PULSE), (self.brightness, BACKLIGHT)]
+            .into_iter()
+            .filter_map(|(reads, announcer)| reads.then_some(announcer))
+            .collect()
+    }
+}
+
+// every level the OSD can show, as the services last said; none for what is not read
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Levels {
-    speaker: Volume,
-    microphone: Volume,
+    speaker: Option<Volume>,
+    microphone: Option<Volume>,
 
-    // none without a backlight, like a desktop monitor
+    // none also without a backlight, like a desktop monitor
     brightness: Option<u8>,
 }
 
 impl Levels {
-    fn read() -> Levels {
-        let audio = Audio::read();
+    fn read(reads: Reads) -> Levels {
+        let (speaker, microphone) = if reads.audio {
+            let audio = Audio::read();
 
-        let speaker = Volume {
-            device: Device::Speaker,
-            percent: audio.volume(),
-            muted: audio.muted(),
+            (
+                Some(Volume {
+                    device: Device::Speaker,
+                    percent: audio.volume(),
+                    muted: audio.muted(),
+                }),
+                Some(Volume {
+                    device: Device::Microphone,
+                    percent: audio.microphone_volume(),
+                    muted: audio.microphone_muted(),
+                }),
+            )
+        } else {
+            (None, None)
         };
 
-        let microphone = Volume {
-            device: Device::Microphone,
-            percent: audio.microphone_volume(),
-            muted: audio.microphone_muted(),
-        };
+        let brightness = reads
+            .brightness
+            .then(|| {
+                let brightness = Brightness::read();
 
-        drop(audio);
-
-        let brightness = Brightness::read();
+                brightness.present().then(|| brightness.percent())
+            })
+            .flatten();
 
         Levels {
             speaker,
             microphone,
-            brightness: brightness.present().then(|| brightness.percent()),
+            brightness,
         }
     }
 }
 
 /*
- * what changed since the last read, as the Transients that show it. The first read only sets where
- * the levels start, so starting the shell shows nothing. The microphone shows only for a mute:
- * apps tune its volume on their own, like a call's gain control, which no one asked to see
+ * what changed since the last read, in order. The first read only sets where the levels start, so
+ * starting the shell shows nothing. The microphone shows only for a mute: apps tune its volume on
+ * their own, like a call's gain control, which no one asked to see
  */
-fn changes(before: Option<Levels>, now: Levels) -> Vec<Activity> {
+fn changes(before: Option<Levels>, now: Levels) -> Vec<Level> {
     let Some(before) = before else {
         return Vec::new();
     };
 
     let mut changes = Vec::new();
 
-    if now.speaker != before.speaker {
-        changes.push(volume(now.speaker));
+    if let Some(speaker) = now.speaker
+        && now.speaker != before.speaker
+    {
+        changes.push(Level::Volume(speaker));
     }
 
-    if now.microphone.muted != before.microphone.muted {
-        changes.push(volume(now.microphone));
+    if let Some(microphone) = now.microphone
+        && Some(microphone.muted) != before.microphone.map(|before| before.muted)
+    {
+        changes.push(Level::Volume(microphone));
     }
 
     if let Some(percent) = now.brightness
         && now.brightness != before.brightness
     {
-        changes.push(
-            level(Id::new(Kind::Brightness, "backlight")).with_detail(Detail::Brightness(percent)),
-        );
+        changes.push(Level::Brightness(percent));
     }
 
     changes
 }
 
-// one Activity per device, so the speaker and the microphone each extend their own
-fn volume(volume: Volume) -> Activity {
-    let key = match volume.device {
-        Device::Speaker => "speaker",
-        Device::Microphone => "microphone",
+/*
+ * until #109, the Transient that shows a change over the primary on the island the user is
+ * looking at; one Activity per device, so the speaker and the microphone each extend their own
+ */
+fn transient(level: Level) -> Activity {
+    let (id, detail) = match level {
+        Level::Volume(volume) => {
+            let key = match volume.device {
+                Device::Speaker => "speaker",
+                Device::Microphone => "microphone",
+            };
+
+            (Id::new(Kind::Volume, key), Detail::Volume(volume))
+        }
+        Level::Brightness(percent) => (
+            Id::new(Kind::Brightness, "backlight"),
+            Detail::Brightness(percent),
+        ),
     };
 
-    level(Id::new(Kind::Volume, key)).with_detail(Detail::Volume(volume))
-}
-
-// a level change, shown over the primary on the island the user is looking at
-fn level(id: Id) -> Activity {
     Activity::new(
         id,
         Priority::Osd,
@@ -134,24 +178,29 @@ fn level(id: Id) -> Activity {
         Interrupt::Transient,
     )
     .expect("the config bounds osd above zero")
+    .with_detail(detail)
 }
 
-// runs on its own thread for good
-pub fn follow() {
-    let mut wakes = Wakes::new(PACE, vec![PULSE, BACKLIGHT]);
+// runs on its own thread for good; only while it reads something
+pub fn follow(reads: Reads) {
+    let mut wakes = Wakes::new(PACE, reads.announcers());
     let mut last = None;
 
     supervise::run("osd", || {
         loop {
-            let levels = Levels::read();
+            let levels = Levels::read(reads);
             let changes = changes(last, levels);
 
-            if !changes.is_empty() {
+            // one OSD: what changed last takes its place
+            if let Some(&shown) = changes.last() {
                 let now = Instant::now();
+
+                Osd::write().show(shown, now);
+
                 let mut island = IslandService::write();
 
-                for activity in changes {
-                    island.post(activity, now);
+                for level in changes {
+                    island.post(transient(level), now);
                 }
             }
 
@@ -165,8 +214,6 @@ pub fn follow() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config;
-    use crate::island::activity::Lifetime;
 
     // as `pactl subscribe` and `udevadm monitor` print them
     #[test]
@@ -189,25 +236,22 @@ mod tests {
 
     fn levels(speaker: u8, muted: bool) -> Levels {
         Levels {
-            speaker: Volume {
+            speaker: Some(Volume {
                 device: Device::Speaker,
                 percent: speaker,
                 muted,
-            },
-            microphone: Volume {
+            }),
+            microphone: Some(Volume {
                 device: Device::Microphone,
                 percent: 80,
                 muted: false,
-            },
+            }),
             brightness: Some(60),
         }
     }
 
-    fn shown(changes: &[Activity]) -> Vec<(&str, &Detail)> {
-        changes
-            .iter()
-            .map(|activity| (activity.id().key(), activity.detail()))
-            .collect()
+    fn microphone(levels: &mut Levels) -> &mut Volume {
+        levels.microphone.as_mut().unwrap()
     }
 
     #[test]
@@ -216,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_levels_post_nothing() {
+    fn unchanged_levels_show_nothing() {
         let idle = levels(40, false);
 
         assert_eq!(changes(Some(idle), idle), []);
@@ -227,30 +271,11 @@ mod tests {
         let before = levels(40, false);
 
         for now in [levels(45, false), levels(40, true)] {
-            let changes = changes(Some(before), now);
-
-            assert_eq!(shown(&changes), [("speaker", &Detail::Volume(now.speaker))]);
-            assert_eq!(changes[0].kind(), Kind::Volume);
             assert_eq!(
-                changes[0].lifetime(),
-                Lifetime::Transient(config::get().osd)
+                changes(Some(before), now),
+                [Level::Volume(now.speaker.unwrap())]
             );
         }
-    }
-
-    // every step of a held key is the same Activity, so the Arbiter extends one Transient
-    #[test]
-    fn repeated_steps_share_one_id() {
-        let steps = [40, 45, 50].map(|percent| levels(percent, false));
-
-        let ids: Vec<Id> = steps
-            .windows(2)
-            .flat_map(|pair| changes(Some(pair[0]), pair[1]))
-            .map(|activity| activity.id().clone())
-            .collect();
-
-        assert_eq!(ids.len(), 2);
-        assert_eq!(ids[0], ids[1]);
     }
 
     #[test]
@@ -258,14 +283,14 @@ mod tests {
         let before = levels(40, false);
 
         let mut gain = before;
-        gain.microphone.percent = 30;
+        microphone(&mut gain).percent = 30;
         assert_eq!(changes(Some(before), gain), []);
 
         let mut muted = before;
-        muted.microphone.muted = true;
+        microphone(&mut muted).muted = true;
         assert_eq!(
-            shown(&changes(Some(before), muted)),
-            [("microphone", &Detail::Volume(muted.microphone))]
+            changes(Some(before), muted),
+            [Level::Volume(muted.microphone.unwrap())]
         );
     }
 
@@ -275,13 +300,71 @@ mod tests {
 
         let mut brighter = before;
         brighter.brightness = Some(70);
-        assert_eq!(
-            shown(&changes(Some(before), brighter)),
-            [("backlight", &Detail::Brightness(70))]
-        );
+        assert_eq!(changes(Some(before), brighter), [Level::Brightness(70)]);
 
         let mut gone = before;
         gone.brightness = None;
         assert_eq!(changes(Some(before), gone), []);
+    }
+
+    // with `audio` or `brightness` off, its levels are never read, so never change
+    #[test]
+    fn what_is_not_read_never_shows() {
+        let unread = Levels {
+            speaker: None,
+            microphone: None,
+            brightness: None,
+        };
+
+        let mut brightness_only = unread;
+        brightness_only.brightness = Some(50);
+
+        assert_eq!(changes(Some(unread), unread), []);
+        assert_eq!(
+            changes(Some(unread), brightness_only),
+            [Level::Brightness(50)]
+        );
+    }
+
+    #[test]
+    fn only_the_announcers_of_what_is_read_start() {
+        let programs = |audio, brightness| {
+            Reads { audio, brightness }
+                .announcers()
+                .iter()
+                .map(|announcer| announcer.program)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(programs(true, true), ["pactl", "udevadm"]);
+        assert_eq!(programs(true, false), ["pactl"]);
+        assert_eq!(programs(false, true), ["udevadm"]);
+        assert!(
+            !Reads {
+                audio: false,
+                brightness: false
+            }
+            .any()
+        );
+    }
+
+    // every step of a held key is the same Transient, so the Arbiter extends one, until #109
+    #[test]
+    fn repeated_steps_share_one_transient() {
+        let steps = [40, 45, 50].map(|percent| levels(percent, false));
+
+        let ids: Vec<Id> = steps
+            .windows(2)
+            .flat_map(|pair| changes(Some(pair[0]), pair[1]))
+            .map(|level| transient(level).id().clone())
+            .collect();
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1]);
+
+        let shown = transient(Level::Brightness(70));
+        assert_eq!(shown.kind(), Kind::Brightness);
+        assert_eq!(shown.detail(), &Detail::Brightness(70));
+        assert_eq!(shown.lifetime(), Lifetime::Transient(config::get().osd));
     }
 }

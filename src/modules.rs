@@ -144,11 +144,12 @@ pub const ALL: &[Module] = &[
             clock::spawn();
             shadow::prepare(shadow::ShadowStyle::island());
 
-            // Kanade's own niri stream, which `workspace`, `privacy` and `banners` also read when on
+            // Kanade's own niri stream, which `workspace`, `privacy`, `banners` and `osd` also read when on
             let posts = niri::Posts {
                 workspace: on("workspace"),
                 privacy: on("privacy"),
                 banners: on("banners"),
+                osd: on("osd"),
             };
             supervise::spawn("niri", move || niri::follow(posts));
 
@@ -256,10 +257,34 @@ pub const ALL: &[Module] = &[
             app
         },
     },
+    // Amane's Audio: the speaker and microphone in Controls and Media, and their OSD; it starts
+    // nothing of its own, and while it is off nothing reads Audio
+    Module {
+        name: "audio",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[],
+        start: |app| app,
+    },
+    // Amane's Brightness, the backlight, as `audio`
+    Module {
+        name: "brightness",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[],
+        start: |app| app,
+    },
+    // with both of those off it has nothing to show, so it starts no thread
     Module {
         name: "osd",
         requires: &[CORE],
-        optional: &[],
+        optional: &["audio", "brightness"],
         warns: None,
         needs: &[
             Need {
@@ -274,8 +299,16 @@ pub const ALL: &[Module] = &[
         settings: &[],
         verbs: &[],
         start: |app| {
-            supervise::spawn("osd", osd::follow);
-            app
+            let reads = osd::Reads {
+                audio: on("audio"),
+                brightness: on("brightness"),
+            };
+
+            if reads.any() {
+                supervise::spawn("osd", move || osd::follow(reads));
+            }
+
+            app.window_per_monitor(crate::osd::window)
         },
     },
     Module {

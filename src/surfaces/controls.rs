@@ -128,7 +128,8 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
 fn switches(dnd: Option<bool>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
-    let microphone = self::microphone(Audio::read().microphone_muted());
+    let microphone =
+        self::microphone(modules::on("audio").then(|| Audio::read().microphone_muted()));
     let dnd = self::dnd(dnd);
 
     let width = (WIDTH - SWITCH_GAP) / 2.0;
@@ -217,17 +218,24 @@ fn radio(
     }
 }
 
-fn microphone(muted: bool) -> Switch {
+// none while `audio` is off, which leaves it unavailable
+fn microphone(muted: Option<bool>) -> Switch {
+    let status = match muted {
+        None => "Unavailable",
+        Some(true) => "Muted",
+        Some(false) => "On",
+    };
+
     Switch {
-        icon: if muted {
+        icon: if muted == Some(true) {
             Icon::MicrophoneMuted
         } else {
             Icon::Microphone
         },
         name: "Microphone",
-        status: String::from(if muted { "Muted" } else { "On" }),
-        on: !muted,
-        press: Some(Press::Microphone),
+        status: String::from(status),
+        on: muted == Some(false),
+        press: muted.map(|_| Press::Microphone),
     }
 }
 
@@ -315,37 +323,58 @@ fn run(press: Press) {
     }
 }
 
-// the speaker, its icon pressed to mute, then the screen
+/*
+ * the speaker, its icon pressed to mute, then the screen; with `audio` or `brightness` off its
+ * Service is never read, and its row is faded and empty
+ */
 fn levels() -> Column {
-    let audio = Audio::read();
-    let (volume, muted) = (audio.volume(), audio.muted());
-    drop(audio);
+    let speaker = modules::on("audio").then(|| {
+        let audio = Audio::read();
 
-    let brightness = Brightness::read();
-    let screen = brightness.present().then(|| brightness.percent());
-    drop(brightness);
+        (audio.volume(), audio.muted())
+    });
 
-    let speaker = Rectangle::new()
+    let screen = modules::on("brightness")
+        .then(|| {
+            let brightness = Brightness::read();
+
+            brightness.present().then(|| brightness.percent())
+        })
+        .flatten();
+
+    let icon = Rectangle::new()
         .width(TARGET)
         .height(TARGET)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(super::on_left(|| {
-            Audio::toggle_mute();
-        }))
-        .child(if muted {
-            Icon::SpeakerMuted.draw(20.0)
-        } else {
-            Icon::Speaker(volume).draw(20.0)
-        });
+        .align_child(Center, Center);
 
-    let tone = if muted {
-        theme::ISLAND.on_surface_variant
-    } else {
-        theme::ISLAND.on_surface
+    let volume = match speaker {
+        Some((volume, muted)) => {
+            let icon = icon
+                .cursor(Cursor::Pointer)
+                .on_click(super::on_left(|| {
+                    Audio::toggle_mute();
+                }))
+                .child(if muted {
+                    Icon::SpeakerMuted.draw(20.0)
+                } else {
+                    Icon::Speaker(volume).draw(20.0)
+                });
+
+            let tone = if muted {
+                theme::ISLAND.on_surface_variant
+            } else {
+                theme::ISLAND.on_surface
+            };
+
+            level(icon, Some(Slider::Speaker), Some(volume), tone)
+        }
+        None => level(
+            icon.child(Icon::Speaker(0).draw(20.0)),
+            None,
+            None,
+            theme::ISLAND.on_surface,
+        ),
     };
-
-    let volume = level(speaker, Some(Slider::Speaker), Some(volume), tone);
 
     let sun = Rectangle::new()
         .width(TARGET)
@@ -573,13 +602,21 @@ mod tests {
     #[test]
     fn the_microphone_and_dnd_say_whether_they_are_on() {
         assert_eq!(
-            (microphone(true).status.as_str(), microphone(true).on),
+            (
+                microphone(Some(true)).status.as_str(),
+                microphone(Some(true)).on
+            ),
             ("Muted", false)
         );
         assert_eq!(
-            (microphone(false).status.as_str(), microphone(false).on),
+            (
+                microphone(Some(false)).status.as_str(),
+                microphone(Some(false)).on
+            ),
             ("On", true)
         );
+        assert_eq!(microphone(None).press, None);
+        assert_eq!(microphone(None).status, "Unavailable");
 
         assert_eq!(dnd(Some(true)).press, Some(Press::Dnd(false)));
         assert_eq!(dnd(Some(false)).press, Some(Press::Dnd(true)));
