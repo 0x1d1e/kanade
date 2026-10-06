@@ -21,9 +21,8 @@ use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
 use super::playback::{self, Deck, Playback, Timeline, Tint};
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
 use crate::island::fade::Dissolve;
-use crate::island::motion::Mode;
 use crate::island::presentation::Surface;
-use crate::island::service::{IslandService, TRACK_CHANGE};
+use crate::island::service::{IslandService, Timings};
 use crate::theme;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
@@ -393,7 +392,7 @@ struct Watcher {
     tick: Option<Instant>,
 
     // the island's, for the Surface's dissolve and tint
-    motion: Mode,
+    timings: Timings,
 }
 
 impl Watcher {
@@ -421,21 +420,21 @@ impl Watcher {
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
             let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
-            let accent = accent.unwrap_or(theme::FG);
+            let accent = accent.unwrap_or(theme::fg());
 
             // a track shown before dissolves to this one, a Surface just opened shows it at once
             let (track, tint) = match last {
                 Some(last) => {
                     let (mut track, mut tint) = (last.track, last.accent);
 
-                    track.to(seen.track, TRACK_CHANGE, now);
-                    tint.to(accent, TRACK_CHANGE, now);
+                    track.to(seen.track, self.timings.track_change(), now);
+                    tint.to(accent, self.timings.track_change(), now);
 
                     (track, tint)
                 }
                 None => (
-                    Dissolve::new(seen.track, self.motion),
-                    Tint::new(accent, self.motion),
+                    Dissolve::new(seen.track, self.timings.motion),
+                    Tint::new(accent, self.timings.motion),
                 ),
             };
 
@@ -611,7 +610,7 @@ pub fn follow() {
 
     let mut follower = Follower::default();
     let mut watcher = Watcher {
-        motion: IslandService::read().motion(),
+        timings: IslandService::read().timings(),
         ..Watcher::default()
     };
 
@@ -1189,7 +1188,7 @@ mod tests {
         };
 
         watcher.show(&players, true, now);
-        assert_eq!(deck(&watcher).accent.at(now), theme::FG);
+        assert_eq!(deck(&watcher).accent.at(now), theme::fg());
         assert_eq!(watcher.accent, None);
 
         // the file turned up and gave its accent
@@ -1201,7 +1200,7 @@ mod tests {
         watcher.show(&players, true, later);
 
         let tint = deck(&watcher).accent;
-        assert_eq!(tint.at(later), theme::FG);
+        assert_eq!(tint.at(later), theme::fg());
         assert!(!tint.settled(later));
         assert_ne!(tint.at(later + Duration::from_millis(16)), blue);
         assert_eq!(tint.at(later + secs(2)), blue);

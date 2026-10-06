@@ -111,12 +111,12 @@ impl Icon {
     }
 
     pub(crate) fn draw(self, side: f32) -> Rectangle {
-        self.image(side, false, theme::FG)
+        self.image(side, false, theme::fg())
     }
 
     // struck through, for something gone or off
     pub(crate) fn crossed(self, side: f32) -> Rectangle {
-        self.image(side, true, theme::FG)
+        self.image(side, true, theme::fg())
     }
 
     // in `ink`, like the body's color on a filled button; cuts show what it sits on
@@ -333,8 +333,8 @@ mod tests {
         assert!(svg.ends_with(&format!("{}{TAIL}", content(SLASH))));
 
         assert_eq!(
-            Icon::MicrophoneMuted.source(18.0, false, theme::FG),
-            Icon::Microphone.source(18.0, true, theme::FG),
+            Icon::MicrophoneMuted.source(18.0, false, theme::fg()),
+            Icon::Microphone.source(18.0, true, theme::fg()),
         );
     }
 

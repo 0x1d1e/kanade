@@ -9,14 +9,12 @@ use std::time::{Duration, Instant};
 
 use amane::{Audio, Brightness, Service};
 
+use crate::config;
 use crate::island::activity::{Activity, Detail, Device, Id, Kind, Priority, Volume};
 use crate::island::service::IslandService;
 
 // plan 3: 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other step
 const POLL: Duration = Duration::from_millis(80);
-
-// plan 5.2: 1000-1400 ms from the last change
-const OSD: Duration = Duration::from_millis(1200);
 
 // every level the island can show, as the services last said
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,8 +78,12 @@ fn changes(before: Option<Levels>, now: Levels) -> Vec<Activity> {
         && now.brightness != before.brightness
     {
         changes.push(
-            Activity::transient(Id::new(Kind::Brightness, "backlight"), Priority::Osd, OSD)
-                .with_detail(Detail::Brightness(percent)),
+            Activity::transient(
+                Id::new(Kind::Brightness, "backlight"),
+                Priority::Osd,
+                config::get().osd,
+            )
+            .with_detail(Detail::Brightness(percent)),
         );
     }
 
@@ -95,7 +97,7 @@ fn volume(volume: Volume) -> Activity {
         Device::Microphone => "microphone",
     };
 
-    Activity::transient(Id::new(Kind::Volume, key), Priority::Osd, OSD)
+    Activity::transient(Id::new(Kind::Volume, key), Priority::Osd, config::get().osd)
         .with_detail(Detail::Volume(volume))
 }
 
@@ -124,6 +126,7 @@ pub fn follow() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
     use crate::island::activity::Lifetime;
 
     fn levels(speaker: u8, muted: bool) -> Levels {
@@ -170,7 +173,10 @@ mod tests {
 
             assert_eq!(shown(&changes), [("speaker", &Detail::Volume(now.speaker))]);
             assert_eq!(changes[0].kind(), Kind::Volume);
-            assert_eq!(changes[0].lifetime(), Lifetime::Transient(OSD));
+            assert_eq!(
+                changes[0].lifetime(),
+                Lifetime::Transient(config::get().osd)
+            );
         }
     }
 

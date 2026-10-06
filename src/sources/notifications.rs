@@ -17,14 +17,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use amane::{Apps, Argument, Bus, Notification, Notifications, Service, Urgency};
 
+use crate::config;
 use crate::island::activity::{Action, Activity, Detail, Id, Kind, Priority, Toast};
 use crate::island::service::IslandService;
 
 // a toast shows within this of arriving
 const POLL: Duration = Duration::from_millis(100);
-
-// plan 5.2: 4000-6000 ms
-const TOAST: Duration = Duration::from_millis(5000);
 
 // the bus name a notification daemon owns
 const NAME: &str = "org.freedesktop.Notifications";
@@ -105,7 +103,7 @@ fn activity(notification: u32, urgency: Urgency, actions: Vec<Action>, toast: To
         _ => Priority::Passive,
     };
 
-    Activity::transient(id(notification), priority, TOAST)
+    Activity::transient(id(notification), priority, config::get().toast)
         .with_actions(actions)
         .with_detail(Detail::Notification(toast))
 }
@@ -348,7 +346,7 @@ mod tests {
         let toast = toast(Urgency::Normal, vec![]);
 
         assert_eq!(toast.id(), &Id::new(Kind::Notification, "7"));
-        assert_eq!(toast.lifetime(), Lifetime::Transient(TOAST));
+        assert_eq!(toast.lifetime(), Lifetime::Transient(config::get().toast));
         assert_eq!(toast.priority(), Priority::Passive);
         assert_eq!(toast.interrupt(), Interrupt::Transient);
     }

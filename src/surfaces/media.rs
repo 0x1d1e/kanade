@@ -60,7 +60,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
     let width = shape.width - 2.0 * INSET;
 
     let deck = playback.shown.as_ref();
-    let accent = deck.map_or(theme::FG, |deck| deck.accent.at(now));
+    let accent = deck.map_or(theme::fg(), |deck| deck.accent.at(now));
 
     // the dissolve and the tint are the follower's, so the Surface asks for frames until they rest
     if deck.is_some_and(|deck| !deck.track.settled(now) || !deck.accent.settled(now)) {
@@ -106,12 +106,12 @@ fn header(
     // the artist's line is there even when it names none, like the Peek's
     let lines = children![
         track
-            .line(|track| &track.title, theme::FG)
+            .line(|track| &track.title, theme::fg())
             .size(16.0)
             .weight(600)
             .elide(),
         track
-            .line(|track| &track.artist, theme::MUTED)
+            .line(|track| &track.artist, theme::muted())
             .size(13.0)
             .weight(500)
             .elide(),
@@ -145,7 +145,7 @@ fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: 
         return Row::new(children![
             Text::new(&only.identity)
                 .size(12.0)
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .weight(500)
                 .elide()
         ])
@@ -198,15 +198,19 @@ fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Wi
         .child(
             Text::new(label)
                 .size(12.0)
-                .color(if selected { theme::FG } else { theme::MUTED })
+                .color(if selected {
+                    theme::fg()
+                } else {
+                    theme::muted()
+                })
                 .weight(600)
                 .elide(),
         );
 
     Box::new(if selected {
-        chip.fill(theme::DOT)
+        chip.fill(theme::dot())
     } else {
-        chip.border(1.0, theme::DOT)
+        chip.border(1.0, theme::dot())
     })
 }
 
@@ -274,7 +278,7 @@ fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant) -> Col
         }
     });
 
-    let time = |text: String| Text::new(text).size(12.0).color(theme::MUTED).weight(500);
+    let time = |text: String| Text::new(text).size(12.0).color(theme::muted()).weight(500);
 
     Column::new(children![
         bar(width, fraction, accent),
@@ -313,7 +317,7 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
         {
             let (glyph, control) = play_pause(deck);
 
-            button(glyph, PLAY, Some(theme::FG), control)
+            button(glyph, PLAY, Some(theme::fg()), control)
         },
         button(
             Transport::Next,
@@ -362,9 +366,9 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
     };
 
     let tone = if fill.is_some() {
-        theme::BODY
+        theme::body()
     } else {
-        fade(theme::FG)
+        fade(theme::fg())
     };
 
     let button = Rectangle::new()
@@ -418,7 +422,7 @@ fn volume(width: f32, accent: Color) -> Row {
         }))
         .child(icon.draw(20.0));
 
-    let tone = if muted { theme::MUTED } else { accent };
+    let tone = if muted { theme::muted() } else { accent };
 
     let level = Slider::Speaker.bar(width, f32::from(percent) / 100.0, tone);
 
@@ -515,7 +519,7 @@ mod tests {
                 length: Duration::ZERO,
                 rate: 0.0,
             },
-            accent: Tint::new(theme::FG, Mode::Spring),
+            accent: Tint::new(theme::fg(), Mode::Spring),
             can_play,
             can_pause,
             can_previous: false,

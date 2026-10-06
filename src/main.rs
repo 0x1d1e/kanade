@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod boundary;
+mod config;
 mod icon;
 mod ipc;
 mod island;
@@ -13,6 +14,12 @@ use std::thread;
 use amane::{App, Apps, Service};
 
 fn main() {
+    let config = config::get();
+
+    // before anything reads the island, which takes its timings once
+    island::service::configure(config.island);
+    theme::follow(config.palette.as_deref());
+
     thread::spawn(sources::niri::follow);
     thread::spawn(sources::battery::follow);
     thread::spawn(sources::media::follow);

@@ -33,7 +33,7 @@ trait Ring {
 impl Ring for Rectangle {
     fn border_if(self, ring: bool) -> Self {
         if ring {
-            self.border(RING, theme::FG)
+            self.border(RING, theme::fg())
         } else {
             self
         }

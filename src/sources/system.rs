@@ -22,7 +22,7 @@ use crate::island::service::IslandService;
 // the bus itself, the only sender of NameOwnerChanged
 const BUS: &str = "org.freedesktop.DBus";
 
-// longer than OSD, so a network's name can be read; shorter than a toast, nothing to act on
+// longer than the default OSD, so a network's name can be read; shorter than a toast, nothing to act on
 pub const SHOWN: Duration = Duration::from_millis(2000);
 
 // a radio the Controls Surface can switch, or show disabled (plan 7)
