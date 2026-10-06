@@ -8,6 +8,10 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// numbers each write, so two threads writing the same file never share its partial one
+static WRITES: AtomicU64 = AtomicU64::new(0);
 
 // the most a stored deflate block holds
 const BLOCK: usize = 65_535;
@@ -28,7 +32,8 @@ pub(crate) fn write(kind: &str, extension: &str, contents: &[u8]) -> PathBuf {
         return path;
     }
 
-    let partial = path.with_extension(format!("{}.part", process::id()));
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    let partial = path.with_extension(format!("{}.{write}.part", process::id()));
 
     let written = fs::create_dir_all(&folder)
         .and_then(|()| fs::write(&partial, contents))
@@ -200,5 +205,40 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, other);
         assert_eq!(fs::read(&first).unwrap(), b"same");
+    }
+
+    #[test]
+    fn threads_writing_the_same_file_each_find_it_whole() {
+        let contents = vec![7; 1 << 20];
+
+        // left by an earlier run, it would spare every thread the writing
+        let _ = fs::remove_file(write("raster", "bin", &contents));
+
+        let paths: Vec<PathBuf> = std::thread::scope(|scope| {
+            let writers: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| write("raster", "bin", &contents)))
+                .collect();
+
+            writers
+                .into_iter()
+                .map(|writer| writer.join().unwrap())
+                .collect()
+        });
+
+        for path in &paths {
+            assert_eq!(fs::read(path).unwrap(), contents);
+        }
+
+        let partial = fs::read_dir(paths[0].parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "part")
+            });
+
+        assert!(!partial);
     }
 }

@@ -2,13 +2,15 @@
  * the body's drop shadow, blurred once per corner radius and drawn as eight images around the
  * body: four corners at their own size and four edges stretched along it. Amane's own shadow
  * goes through Vello, which on every morphing frame cost enough gpu time to drop frames (#45);
- * images only move textures. The body covers the middle, so it has no piece there
+ * images only move textures. The body covers the middle, so it has no piece there. Each piece is
+ * a draw of its own, which on an integrated gpu costs more than the pixels it fills, so the
+ * corners stay whole rather than cut down to what the body leaves showing
  */
 
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::thread;
 
 use amane::{Color, Image, Rectangle, Widget};
 
@@ -67,27 +69,36 @@ type Pieces = [PathBuf; 8];
 static DRAWN: LazyLock<Mutex<HashMap<Key, Pieces>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /*
- * blurs and starts decoding the pieces for every radius a body passes through, so no morph
- * blurs and the first finds them decoded. Amane lets go of an image no window draws anymore,
- * so later morphs decode them again, the nearest ready radius standing in for the frame or two
+ * blurs and starts decoding the pieces for every radius a body rests at, the only place that
+ * blurs: the resting body's right away, so the first frames have a shadow to draw, the rest on
+ * their own thread. Amane lets go of an image no window draws anymore, so later morphs decode
+ * them again, the nearest ready radius standing in for the frame or two
  */
 pub(crate) fn prepare(style: ShadowStyle) {
-    for radius in radii() {
-        let key = key(radius, style);
+    prepare_radius(geometry::REST.radius as u32, style);
 
-        if lock().contains_key(&key) {
-            continue;
+    thread::spawn(move || {
+        for radius in radii() {
+            prepare_radius(radius, style);
         }
+    });
+}
 
-        // blurred outside the lock, so a window wanting a radius right now never waits on this
-        let pieces = pieces(radius, style);
+fn prepare_radius(radius: u32, style: ShadowStyle) {
+    let key = key(radius, style);
 
-        for piece in &pieces {
-            Image::loaded(piece);
-        }
-
-        lock().entry(key).or_insert(pieces);
+    if lock().contains_key(&key) {
+        return;
     }
+
+    // blurred outside the lock, so drawing a frame never waits on this
+    let pieces = pieces(radius, style);
+
+    for piece in &pieces {
+        Image::loaded(piece);
+    }
+
+    lock().entry(key).or_insert(pieces);
 }
 
 fn lock() -> MutexGuard<'static, HashMap<Key, Pieces>> {
@@ -95,16 +106,16 @@ fn lock() -> MutexGuard<'static, HashMap<Key, Pieces>> {
 }
 
 /*
- * the shadow of a body with this corner radius, to go under it. The radius is rounded to whole
- * pixels, too little to see in a blur; pieces still decoding are stood in for by the nearest
- * radius that is ready, so the shadow never blinks out mid-morph
+ * the shadow of a body with this corner radius, to go under it. Mid-morph the nearest resting
+ * radius stands in, a few pixels off under a blur in motion: every radius drawn is a set of
+ * textures Amane decodes and uploads again, which mid-morph costs more than the pixels (#45).
+ * Pieces still decoding are stood in for by the nearest radius that is ready, so the shadow
+ * never blinks out
  */
 pub(crate) fn draw(layers: &mut Vec<Box<dyn Widget>>, body: Rect, radius: f32, style: ShadowStyle) {
     let fits = (body.width.min(body.height) / 2.0).floor().max(0.0) as u32;
 
-    let wanted = (radius.round().max(0.0) as u32).min(fits);
-
-    let Some((radius, pieces)) = ready(wanted, fits, style) else {
+    let Some((radius, pieces)) = ready(radius, fits, style) else {
         return;
     };
 
@@ -127,14 +138,13 @@ pub(crate) fn draw(layers: &mut Vec<Box<dyn Widget>>, body: Rect, radius: f32, s
     }
 }
 
-// every corner radius a body morphs through
-fn radii() -> RangeInclusive<u32> {
-    let radii = geometry::SHAPES.map(|shape| shape.radius as u32);
+// every corner radius a body rests at, smallest first
+fn radii() -> Vec<u32> {
+    let mut radii = geometry::SHAPES.map(|shape| shape.radius as u32).to_vec();
 
-    let smallest = radii.iter().copied().min().unwrap_or(0);
-    let largest = radii.iter().copied().max().unwrap_or(0);
-
-    smallest..=largest
+    radii.sort_unstable();
+    radii.dedup();
+    radii
 }
 
 fn key(radius: u32, style: ShadowStyle) -> Key {
@@ -149,30 +159,31 @@ fn key(radius: u32, style: ShadowStyle) -> Key {
 }
 
 /*
- * the wanted radius's pieces once all are decoded, else those of the nearest prepared radius
- * that are and still fit the body; asking starts the wanted ones decoding, and Amane draws the
- * window again when they are done
+ * the pieces of the prepared radius nearest the wanted one that are all decoded and still fit
+ * the body, else none. Only looks: asking starts a prepared radius decoding, and Amane draws
+ * the window again when it is done
  */
-fn ready(wanted: u32, fits: u32, style: ShadowStyle) -> Option<(u32, Pieces)> {
-    let mut drawn = lock();
-
-    drawn
-        .entry(key(wanted, style))
-        .or_insert_with(|| pieces(wanted, style));
+fn ready(wanted: f32, fits: u32, style: ShadowStyle) -> Option<(u32, Pieces)> {
+    let drawn = lock();
 
     let mut prepared: Vec<(u32, &Pieces)> = radii()
-        .chain([wanted])
+        .into_iter()
         // a larger one would overlap its corners on a pill
         .filter(|radius| *radius <= fits)
         .filter_map(|radius| Some((radius, drawn.get(&key(radius, style))?)))
         .collect();
 
-    // the wanted radius first, then outward
-    prepared.sort_by_key(|(radius, _)| radius.abs_diff(wanted));
+    // the nearest the wanted radius first
+    prepared.sort_by(|(one, _), (other, _)| {
+        (*one as f32 - wanted)
+            .abs()
+            .total_cmp(&(*other as f32 - wanted).abs())
+    });
 
     prepared
         .into_iter()
-        .find(|(_, pieces)| pieces.iter().all(Image::loaded))
+        // every piece asked for, so all of them start decoding at once
+        .find(|(_, pieces)| pieces.iter().filter(|piece| !Image::loaded(piece)).count() == 0)
         .map(|(radius, pieces)| (radius, pieces.clone()))
 }
 
@@ -661,13 +672,15 @@ mod tests {
 
     #[test]
     fn the_body_hides_the_middle_at_every_radius() {
-        assert!(radii().all(|radius| radius >= STYLE.drop));
-        assert_eq!(radii(), 16..=32);
+        assert!(radii().iter().all(|radius| *radius >= STYLE.drop));
+        assert_eq!(radii(), [16, 19, 26, 32]);
     }
 
     #[test]
     fn every_radius_is_written_once_as_eight_pngs() {
-        prepare(STYLE);
+        for radius in radii() {
+            prepare_radius(radius, STYLE);
+        }
 
         let drawn = lock();
 

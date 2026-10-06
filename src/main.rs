@@ -31,7 +31,7 @@ fn main() {
     thread::spawn(sources::privacy::follow);
     sources::timer::spawn();
 
-    thread::spawn(|| shadow::prepare(shadow::ShadowStyle::island()));
+    shadow::prepare(shadow::ShadowStyle::island());
 
     // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list
     thread::spawn(|| drop(Apps::read()));
