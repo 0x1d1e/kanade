@@ -22,7 +22,7 @@ use crate::modules;
 use crate::shadow::{self, ShadowStyle};
 use crate::sources::timer;
 use crate::surfaces;
-use crate::theme;
+use crate::theme::{self, ThemeRoles};
 
 // one island window per monitor; the window stays put and only the body morphs inside it
 pub fn island(monitor: &Monitor) -> LayerWindow {
@@ -1055,21 +1055,33 @@ impl<'a> Change<'a> {
  * will, and for web art, all at the same size
  */
 pub(crate) fn art(track: &Track, side: f32, radius: f32) -> Stack {
-    tile(track.art.as_deref(), "\u{266a}", side, radius)
+    tile(
+        track.art.as_deref(),
+        "\u{266a}",
+        side,
+        radius,
+        &theme::ISLAND,
+    )
 }
 
 // a picture over a quiet tile with a mark, like `art`
-pub(crate) fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) -> Stack {
+pub(crate) fn tile(
+    picture: Option<&str>,
+    mark: &str,
+    side: f32,
+    radius: f32,
+    roles: &ThemeRoles,
+) -> Stack {
     let tile = Rectangle::new()
         .width(side)
         .height(side)
         .radius(radius)
-        .fill(theme::ISLAND.surface_container_high)
+        .fill(roles.surface_container_high)
         .align_child(Center, Center)
         .child(
             Text::new(mark)
                 .size(side * 0.5)
-                .color(theme::ISLAND.on_surface_variant),
+                .color(roles.on_surface_variant),
         );
 
     let mut layers = children![tile];
@@ -1091,7 +1103,7 @@ pub(crate) fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) ->
 }
 
 // the sender's picture, or its initial on the quiet tile
-pub(crate) fn toast_tile(toast: &Toast, side: f32, radius: f32) -> Stack {
+pub(crate) fn toast_tile(toast: &Toast, side: f32, radius: f32, roles: &ThemeRoles) -> Stack {
     let sender = if toast.app.is_empty() {
         &toast.summary
     } else {
@@ -1102,7 +1114,7 @@ pub(crate) fn toast_tile(toast: &Toast, side: f32, radius: f32) -> Stack {
         .next()
         .map_or_else(String::new, |initial| initial.to_uppercase().collect());
 
-    tile(toast.image.as_deref(), &initial, side, radius)
+    tile(toast.image.as_deref(), &initial, side, radius, roles)
 }
 
 fn critical(content: &Content) -> bool {
@@ -1156,6 +1168,7 @@ fn toast_compact(toast: &Toast, critical: bool) -> Rectangle {
                     toast,
                     shape.height - 2.0 * inset,
                     theme::radius::ART_COMPACT,
+                    &theme::ISLAND,
                 )),
                 summary(toast, critical, theme::text::LABEL, theme::text::MEDIUM),
             ])
@@ -1204,7 +1217,12 @@ fn toast_peek(toast: &Toast, critical: bool) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                toast_tile(toast, shape.height - 2.0 * inset, theme::radius::ART_PEEK),
+                toast_tile(
+                    toast,
+                    shape.height - 2.0 * inset,
+                    theme::radius::ART_PEEK,
+                    &theme::ISLAND,
+                ),
                 Column::new(lines).width(Parent).gap(1.0),
             ])
             .width(Parent)
@@ -1307,7 +1325,7 @@ fn set_armed(monitor: &str, armed: bool) {
 }
 
 // geometry already rounded it to whole pixels
-fn input_area(area: Rect) -> InputArea {
+pub(crate) fn input_area(area: Rect) -> InputArea {
     InputArea {
         x: area.x as i32,
         y: area.y as i32,

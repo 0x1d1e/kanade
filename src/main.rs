@@ -1,3 +1,4 @@
+mod banners;
 #[cfg(test)]
 mod boundary;
 mod cli;

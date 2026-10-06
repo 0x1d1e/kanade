@@ -591,7 +591,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
     }
 
     let top = Row::new(children![
-        view::toast_tile(&card.toast, TILE, radius::TILE),
+        view::toast_tile(&card.toast, TILE, radius::TILE, &theme::ISLAND),
         Column::new(lines).width(words).gap(1.0),
         dismiss(monitor, card.id, ring == Some(card.actions.len() + 1)),
     ])
@@ -903,7 +903,7 @@ fn run(monitor: &str, press: Press) {
         Press::Dnd => {
             let dnd = IslandService::read().dnd();
 
-            IslandService::write().set_dnd(!dnd, Instant::now());
+            notifications::set_dnd(!dnd, Instant::now());
         }
         Press::Clear => Notifications::clear(),
     }

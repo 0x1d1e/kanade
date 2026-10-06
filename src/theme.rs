@@ -194,10 +194,6 @@ pub fn follow(path: Option<&str>) {
 }
 
 // black and white until the image gives colors, the image's after; never the Island's
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first drawn by Banners and the OSD (phase 8)")
-)]
 pub fn roles() -> ThemeRoles {
     if !FOLLOWING.load(Ordering::Relaxed) {
         return ISLAND;

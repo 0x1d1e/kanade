@@ -7,10 +7,10 @@ use amane::{Notifications, Service};
 
 use crate::cli::{self, Call, Reply};
 use crate::island::command::{Command, Unparsed};
-use crate::island::service::IslandService;
+use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
-use crate::sources::notifications::Daemon;
+use crate::sources::notifications::{self, Daemon};
 use crate::sources::timer;
 use crate::supervise;
 
@@ -76,6 +76,7 @@ fn island(command: Command) -> Reply {
     let effect = IslandService::read().resolve(command);
 
     match effect {
+        Ok(Some(Effect::Dnd(dnd))) => notifications::set_dnd(dnd, Instant::now()),
         Ok(Some(effect)) => IslandService::write().apply(effect, Instant::now()),
         Ok(None) => {}
         Err(error) => return Reply::Refused(error.to_string()),

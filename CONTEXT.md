@@ -20,6 +20,14 @@ The microphone, camera and screen capture in use, in its own Overlay window per 
 - **Invariant:** never an Activity and never in the Arbiter. It shows whatever the island shows.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
+## Banner
+A notification card in the top-right corner of the focused output, in its own Top-layer window per monitor (ADR 0007). The `banners` Module draws it over what `notifications` keeps: the bus, state and history stay there.
+- Low shows 4 s, normal 6 s, Critical until closed. The pointer on any Banner pauses every timer. At most `MOST` (`src/banners/stack.rs`) show, newest on top; the rest queue, Critical first.
+- **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history.
+- **Invariant:** under DND only Critical Banners show; DND coming on drops the rest, queued too.
+- Until #109 a notification also shows as an island toast.
+- **Avoid:** toast (the island's Transient), popup
+
 ## Lifetime
 `Persistent` lives until withdrawn: media playing, timer, low battery.
 `Transient(duration)` expires on its own: volume, brightness, workspace switch, notification toast. It implies no Scope and no Interrupt.
