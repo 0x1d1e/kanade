@@ -5,17 +5,25 @@
 //! and Critical Persistent ones that lose the primary become Satellites. Expired Activities
 //! stay registered until `expire`, but never reach a Frame, so the primary returns on its own.
 //!
+//! A new primary dwells: for `DWELL` a newer Activity of its Priority waits behind it. Higher
+//! Priority, Preempt, AutoExpand, withdraw and expiry replace it at once. Which primary shows since
+//! when is the one state the Arbiter keeps besides the posts, settled at each deadline passed and
+//! at the `now` of each change.
+//!
 //! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
 //! it, never withdraw one; dropping the transients an open Surface already shows is `absorb`. DND (rule 5) hides the toasts already up and drops those posted during it.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::activity::{Activity, Frame, Id, Interrupt, Kind, Lifetime, Priority, Scope};
 
 // beside the primary at once; the rest only count (plan 5.1 rule 3)
 pub const SATELLITES: usize = 2;
+
+// how long a new primary stays before a newer one of its Priority replaces it
+pub const DWELL: Duration = Duration::from_millis(1500);
 
 #[derive(Debug, Default)]
 pub struct Arbiter {
@@ -25,6 +33,9 @@ pub struct Arbiter {
     posts: u64,
 
     dnd: bool,
+
+    // the primary of the islands off the focused output, then of the focused one's
+    shown: [Option<Shown>; 2],
 }
 
 // the island a Frame is for
@@ -35,6 +46,16 @@ pub struct Island {
 
     // showing a Surface the user opened
     pub expanded: bool,
+}
+
+// a primary, and when it became one
+#[derive(Debug)]
+struct Shown {
+    id: Id,
+    since: Instant,
+
+    // when it gives way to the newer one of its Priority it keeps back, if any
+    until: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -65,21 +86,24 @@ impl Arbiter {
      * it replaced
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
+        self.expire(now);
+
         if self.silenced(&activity) {
             self.activities.remove(activity.id());
-            return;
+        } else {
+            self.posts += 1;
+
+            self.activities.insert(
+                activity.id().clone(),
+                Entry {
+                    activity,
+                    posted: now,
+                    post: self.posts,
+                },
+            );
         }
 
-        self.posts += 1;
-
-        self.activities.insert(
-            activity.id().clone(),
-            Entry {
-                activity,
-                posted: now,
-                post: self.posts,
-            },
-        );
+        self.settle(now);
     }
 
     pub fn contains(&self, id: &Id) -> bool {
@@ -98,8 +122,13 @@ impl Arbiter {
     }
 
     // whether it was registered
-    pub fn withdraw(&mut self, id: &Id) -> bool {
-        self.activities.remove(id).is_some()
+    pub fn withdraw(&mut self, id: &Id, now: Instant) -> bool {
+        self.expire(now);
+
+        let withdrawn = self.activities.remove(id).is_some();
+
+        self.settle(now);
+        withdrawn
     }
 
     // drops the transients `drop` picks, an open Surface showing them already; whether any were
@@ -113,26 +142,43 @@ impl Arbiter {
         self.activities.len() != before
     }
 
-    // drops what expired by now; whether anything did
+    /*
+     * drops what expired by now and ends the dwells over; whether anything did. Each deadline
+     * passed is caught up at its own time, in order, so a late wake hands over the primary as an
+     * timely one would have. Every change runs this first
+     */
     pub fn expire(&mut self, now: Instant) -> bool {
-        let before = self.activities.len();
+        let mut changed = false;
 
-        self.activities.retain(|_, entry| entry.live(now));
+        while let Some(at) = self.deadline().filter(|&at| at <= now) {
+            let before = self.activities.len();
 
-        self.activities.len() != before
+            self.activities.retain(|_, entry| entry.live(at));
+
+            changed |= self.settle(at) || self.activities.len() != before;
+        }
+
+        changed
     }
 
     /*
-     * when `expire` next drops something: the earliest expiry of any registered Transient, hidden
-     * or not, so the Frame may not change then. Past once one expired and waits for `expire`
+     * when `expire` next has something to do: the earliest expiry of any registered Transient,
+     * hidden or not, so the Frame may not change then, or end of a dwell keeping one back. Past
+     * once due and waiting for `expire`
      */
     pub fn deadline(&self) -> Option<Instant> {
-        self.activities.values().filter_map(Entry::expiry).min()
+        self.activities
+            .values()
+            .filter_map(Entry::expiry)
+            .chain(self.shown.iter().flatten().filter_map(|shown| shown.until))
+            .min()
     }
 
     // DND silences Notification toasts, not the Notifications, and never a Critical one (rule 5)
-    pub fn set_dnd(&mut self, dnd: bool) {
+    pub fn set_dnd(&mut self, dnd: bool, now: Instant) {
+        self.expire(now);
         self.dnd = dnd;
+        self.settle(now);
     }
 
     pub fn dnd(&self) -> bool {
@@ -140,23 +186,13 @@ impl Arbiter {
     }
 
     pub fn frame(&self, now: Instant, island: Island) -> Frame {
-        // highest first, so the primary leads and Satellites keep the same order
-        let ranked = |transient: bool| {
-            let mut entries: Vec<&Entry> = self
-                .activities
-                .values()
-                .filter(|entry| entry.live(now))
-                .filter(|entry| (entry.activity.interrupt() == Interrupt::Transient) == transient)
-                .filter(|entry| island.focused || entry.activity.scope() == Scope::Global)
-                .filter(|entry| !self.silenced(&entry.activity))
-                .collect();
-            entries.sort_by_key(|entry| Reverse((entry.activity.priority(), entry.post)));
-            entries.into_iter().map(|entry| entry.activity.clone())
-        };
-
-        let mut persistent = ranked(false);
-        let primary = persistent.next();
-        let mut satellites: Vec<Activity> = persistent
+        let ranked = self.ranked(now, island.focused, false);
+        let primary = self.primary(&ranked, island.focused, now);
+        let mut satellites: Vec<Activity> = ranked
+            .iter()
+            .enumerate()
+            .filter(|&(index, _)| Some(index) != primary)
+            .map(|(_, entry)| entry.activity.clone())
             .filter(|activity| {
                 activity.lifetime() == Lifetime::Persistent
                     && matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
@@ -169,7 +205,10 @@ impl Arbiter {
          * over a Surface the user opened, transients wait as a badge and show for what is left of
          * their Lifetime once it closes (rule 4); only a Preempt one closes it, on arrival
          */
-        let mut transients = ranked(true);
+        let mut transients = self
+            .ranked(now, island.focused, true)
+            .into_iter()
+            .map(|entry| entry.activity.clone());
         let (transient, queued) = if island.expanded {
             (None, transients.collect())
         } else {
@@ -177,12 +216,78 @@ impl Arbiter {
         };
 
         Frame {
-            primary,
+            primary: primary.map(|index| ranked[index].activity.clone()),
             satellites,
             overflow,
             transient,
             queued,
         }
+    }
+
+    // the live Activities for the transient slot or the primary on an island, highest first
+    fn ranked(&self, now: Instant, focused: bool, transient: bool) -> Vec<&Entry> {
+        let mut entries: Vec<&Entry> = self
+            .activities
+            .values()
+            .filter(|entry| entry.live(now))
+            .filter(|entry| (entry.activity.interrupt() == Interrupt::Transient) == transient)
+            .filter(|entry| focused || entry.activity.scope() == Scope::Global)
+            .filter(|entry| !self.silenced(&entry.activity))
+            .collect();
+        entries.sort_by_key(|entry| Reverse((entry.activity.priority(), entry.post)));
+        entries
+    }
+
+    /*
+     * where in `ranked` the primary is: the top, unless the one shown became the primary less
+     * than DWELL ago and the top only ties it without interrupting
+     */
+    fn primary(&self, ranked: &[&Entry], focused: bool, now: Instant) -> Option<usize> {
+        let top = &ranked.first()?.activity;
+        let dwells = self.shown[usize::from(focused)]
+            .as_ref()
+            .filter(|shown| now < shown.since + DWELL)
+            .and_then(|shown| {
+                ranked
+                    .iter()
+                    .position(|entry| entry.activity.id() == &shown.id)
+            })
+            .filter(|&index| {
+                ranked[index].activity.priority() == top.priority()
+                    && !matches!(
+                        top.interrupt(),
+                        Interrupt::Preempt | Interrupt::AutoExpand(_)
+                    )
+            });
+
+        Some(dwells.unwrap_or(0))
+    }
+
+    // records the primary each island shows at `now`; whether one changed
+    fn settle(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+
+        for focused in [false, true] {
+            let ranked = self.ranked(now, focused, false);
+            let before = self.shown[usize::from(focused)].as_ref();
+            let shown = self.primary(&ranked, focused, now).map(|index| {
+                let id = ranked[index].activity.id().clone();
+                let since = before
+                    .filter(|before| before.id == id)
+                    .map_or(now, |before| before.since);
+
+                Shown {
+                    id,
+                    since,
+                    until: (index != 0).then_some(since + DWELL),
+                }
+            });
+
+            changed |= shown.as_ref().map(|shown| &shown.id) != before.map(|before| &before.id);
+            self.shown[usize::from(focused)] = shown;
+        }
+
+        changed
     }
 
     fn silenced(&self, activity: &Activity) -> bool {
@@ -263,25 +368,218 @@ mod tests {
         let mut arbiter = Arbiter::default();
 
         arbiter.post(media("spotify"), t0);
-        arbiter.post(media("mpv"), t0 + ms(10));
+        arbiter.post(media("mpv"), t0 + DWELL);
         assert_eq!(
-            primary(&arbiter, t0 + ms(10)),
+            primary(&arbiter, t0 + DWELL),
             Some(media("mpv").id().clone())
         );
 
-        // same instant: the later post
-        arbiter.post(media("firefox"), t0 + ms(10));
+        // same instant, kept back by mpv's dwell: the later post
+        let then = t0 + DWELL + ms(10);
+        arbiter.post(media("firefox"), then);
+        arbiter.post(media("vlc"), then);
+        arbiter.expire(t0 + DWELL * 2);
         assert_eq!(
-            primary(&arbiter, t0 + ms(10)),
-            Some(media("firefox").id().clone())
+            primary(&arbiter, t0 + DWELL * 2),
+            Some(media("vlc").id().clone())
         );
 
         // a repost is a new post
-        arbiter.post(media("spotify"), t0 + ms(20));
+        arbiter.post(media("spotify"), t0 + DWELL * 3);
         assert_eq!(
-            primary(&arbiter, t0 + ms(20)),
+            primary(&arbiter, t0 + DWELL * 3),
             Some(media("spotify").id().clone())
         );
+    }
+
+    #[test]
+    fn an_equal_priority_waits_out_the_dwell() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(media("mpv"), t0 + ms(500));
+
+        let spotify = Some(media("spotify").id().clone());
+        assert_eq!(primary(&arbiter, t0 + ms(500)), spotify);
+        assert_eq!(primary(&arbiter, t0 + DWELL - ms(1)), spotify);
+        assert_eq!(arbiter.deadline(), Some(t0 + DWELL));
+
+        // listen() wakes at the deadline, and expire() moves the primary on
+        assert!(arbiter.expire(t0 + DWELL));
+        assert_eq!(
+            primary(&arbiter, t0 + DWELL),
+            Some(media("mpv").id().clone())
+        );
+        assert_eq!(arbiter.deadline(), None);
+        assert!(!arbiter.expire(t0 + DWELL * 2));
+    }
+
+    // a post racing listen()'s wake at the dwell's end must not skip the one kept back
+    #[test]
+    fn a_late_wake_still_hands_over_to_the_one_kept_back() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(media("mpv"), t0 + ms(500));
+
+        // no expire at DWELL
+        arbiter.post(media("vlc"), t0 + DWELL + ms(100));
+        assert_eq!(
+            primary(&arbiter, t0 + DWELL + ms(100)),
+            Some(media("mpv").id().clone())
+        );
+
+        // mpv became the primary at spotify's dwell end, so dwells from then
+        assert_eq!(arbiter.deadline(), Some(t0 + DWELL * 2));
+        assert!(arbiter.expire(t0 + DWELL * 2));
+        assert_eq!(
+            primary(&arbiter, t0 + DWELL * 2),
+            Some(media("vlc").id().clone())
+        );
+    }
+
+    // a late wake hands over at the expiry that ended the primary, not at its dwell's end
+    #[test]
+    fn a_late_wake_hands_over_at_the_expiry() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let brief = Activity::new(
+            Id::new(Kind::Media, "brief"),
+            Priority::Media,
+            Lifetime::Transient(OSD),
+            Scope::Global,
+            Interrupt::None,
+        )
+        .unwrap();
+
+        arbiter.post(brief, t0);
+        arbiter.post(media("mpv"), t0 + ms(100));
+
+        // no expire at the brief one's expiry
+        arbiter.post(media("vlc"), t0 + ms(1600));
+        assert_eq!(
+            primary(&arbiter, t0 + ms(1600)),
+            Some(media("mpv").id().clone())
+        );
+        assert_eq!(arbiter.deadline(), Some(t0 + OSD + DWELL));
+    }
+
+    #[test]
+    fn an_update_in_place_keeps_the_primary_and_its_dwell() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(media("mpv"), t0 + ms(500));
+        arbiter.post(media("spotify"), t0 + ms(1000));
+
+        // the update neither loses the primary nor restarts its dwell
+        assert_eq!(
+            primary(&arbiter, t0 + ms(1000)),
+            Some(media("spotify").id().clone())
+        );
+        assert_eq!(arbiter.deadline(), None);
+
+        arbiter.post(media("mpv"), t0 + ms(1200));
+        assert_eq!(arbiter.deadline(), Some(t0 + DWELL));
+    }
+
+    #[test]
+    fn interruptions_bypass_the_dwell() {
+        let t0 = Instant::now();
+        let now = t0 + ms(100);
+        let fresh = || {
+            let mut arbiter = Arbiter::default();
+            arbiter.post(media("spotify"), t0);
+            arbiter
+        };
+        let media_with = |key: &str, lifetime, interrupt| {
+            Activity::new(
+                Id::new(Kind::Media, key),
+                Priority::Media,
+                lifetime,
+                Scope::Global,
+                interrupt,
+            )
+            .unwrap()
+        };
+
+        // higher Priority
+        let mut arbiter = fresh();
+        arbiter.post(cast(), now);
+        assert_eq!(primary(&arbiter, now), Some(cast().id().clone()));
+
+        // Preempt and AutoExpand, at an equal Priority
+        for interrupt in [Interrupt::Preempt, Interrupt::AutoExpand(OSD)] {
+            let mut arbiter = fresh();
+            let interrupting = media_with("mpv", Lifetime::Persistent, interrupt);
+            arbiter.post(interrupting.clone(), now);
+            assert_eq!(primary(&arbiter, now), Some(interrupting.id().clone()));
+        }
+
+        // withdraw
+        let mut arbiter = fresh();
+        arbiter.post(media("mpv"), now);
+        arbiter.post(media("vlc"), now);
+        assert!(arbiter.withdraw(media("spotify").id(), now));
+        assert_eq!(primary(&arbiter, now), Some(media("vlc").id().clone()));
+
+        // expiry, before the dwell ends
+        let mut arbiter = Arbiter::default();
+        let brief = media_with("brief", Lifetime::Transient(OSD), Interrupt::None);
+        arbiter.post(brief, t0);
+        arbiter.post(media("mpv"), now);
+        assert_eq!(arbiter.deadline(), Some(t0 + OSD));
+        assert_eq!(primary(&arbiter, t0 + OSD), Some(media("mpv").id().clone()));
+        assert!(arbiter.expire(t0 + OSD));
+        assert_eq!(arbiter.deadline(), None);
+    }
+
+    #[test]
+    fn a_new_primary_dwells_after_a_bypass() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(cast(), t0);
+        arbiter.post(media("spotify"), t0);
+
+        // the cast leaving makes spotify the primary now, so its dwell starts now
+        arbiter.withdraw(cast().id(), t0 + DWELL * 2);
+        arbiter.post(media("mpv"), t0 + DWELL * 2 + ms(100));
+        assert_eq!(
+            primary(&arbiter, t0 + DWELL * 2 + ms(100)),
+            Some(media("spotify").id().clone())
+        );
+        assert_eq!(arbiter.deadline(), Some(t0 + DWELL * 3));
+    }
+
+    // FocusedOutput Activities show on the focused island only, so its primary dwells on its own
+    #[test]
+    fn each_island_dwells_on_its_own_primary() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let other = Island {
+            focused: false,
+            expanded: false,
+        };
+        let local = Activity::new(
+            Id::new(Kind::Media, "local"),
+            Priority::Media,
+            Lifetime::Persistent,
+            Scope::FocusedOutput,
+            Interrupt::None,
+        )
+        .unwrap();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(local.clone(), t0 + DWELL);
+        arbiter.post(media("mpv"), t0 + DWELL + ms(100));
+
+        let now = t0 + DWELL + ms(100);
+        assert_eq!(primary(&arbiter, now), Some(local.id().clone()));
+        assert_eq!(arbiter.frame(now, other).primary, Some(media("mpv")));
     }
 
     #[test]
@@ -299,9 +597,9 @@ mod tests {
             frame.primary.map(|activity| activity.priority()),
             Some(Priority::Critical)
         );
-        assert!(arbiter.withdraw(&id));
+        assert!(arbiter.withdraw(&id, t0));
         assert_eq!(arbiter.frame(t0, FOCUSED), Frame::default());
-        assert!(!arbiter.withdraw(&id));
+        assert!(!arbiter.withdraw(&id, t0));
     }
 
     #[test]
@@ -468,12 +766,21 @@ mod tests {
         let mut arbiter = Arbiter::default();
         let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
 
-        arbiter.post(call(), t0);
-        arbiter.post(battery.clone(), t0 + ms(10));
+        let alarm = Activity::new(
+            Id::new(Kind::Timer, "alarm"),
+            Priority::Critical,
+            Lifetime::Transient(Duration::from_secs(5)),
+            Scope::Global,
+            Interrupt::None,
+        )
+        .unwrap();
 
-        // the call loses the primary to the newer Critical, and has a Lifetime, so goes nowhere
-        assert_eq!(primary(&arbiter, t0 + ms(10)), Some(battery.id().clone()));
-        assert_eq!(satellites(&arbiter, t0 + ms(10)), (vec![], 0));
+        arbiter.post(alarm, t0);
+        arbiter.post(battery.clone(), t0 + DWELL);
+
+        // the alarm loses the primary to the newer Critical, and has a Lifetime, so goes nowhere
+        assert_eq!(primary(&arbiter, t0 + DWELL), Some(battery.id().clone()));
+        assert_eq!(satellites(&arbiter, t0 + DWELL), (vec![], 0));
     }
 
     // only `Interrupt::Transient` picks the transient slot, whatever the Lifetime
@@ -521,12 +828,12 @@ mod tests {
             arbiter.post(ongoing(key), t0);
         }
 
-        // "d" is the newest, so the primary; three left for two places
+        // "a" outranked the media, so is the primary dwelling; three left for two places
         let (shown, overflow) = satellites(&arbiter, t0);
         assert_eq!(shown.len(), SATELLITES);
         assert_eq!(overflow, 1);
 
-        assert!(arbiter.withdraw(ongoing("a").id()));
+        assert!(arbiter.withdraw(ongoing("a").id(), t0));
         assert_eq!(satellites(&arbiter, t0).1, 0);
     }
 
@@ -540,12 +847,12 @@ mod tests {
         arbiter.post(privacy.clone(), t0);
         arbiter.post(ongoing("old"), t0);
         arbiter.post(ongoing("new"), t0 + ms(10));
-        arbiter.post(battery.clone(), t0 + ms(20));
+        arbiter.post(battery.clone(), t0 + DWELL);
 
-        // battery is the newest Critical, so the primary
-        assert_eq!(primary(&arbiter, t0 + ms(20)), Some(battery.id().clone()));
+        // battery is the newest Critical, past privacy's dwell, so the primary
+        assert_eq!(primary(&arbiter, t0 + DWELL), Some(battery.id().clone()));
         assert_eq!(
-            satellites(&arbiter, t0 + ms(20)),
+            satellites(&arbiter, t0 + DWELL),
             (vec![privacy.id().clone(), ongoing("new").id().clone()], 1)
         );
     }
@@ -560,7 +867,7 @@ mod tests {
         arbiter.post(cast(), t0);
         arbiter.post(ongoing("timer"), t0 + ms(10));
 
-        assert!(arbiter.withdraw(battery.id()));
+        assert!(arbiter.withdraw(battery.id(), t0));
 
         assert_eq!(primary(&arbiter, t0), Some(ongoing("timer").id().clone()));
         assert_eq!(satellites(&arbiter, t0), (vec![cast().id().clone()], 0));
@@ -728,7 +1035,7 @@ mod tests {
 
         assert!(posted > 0);
         for dnd in [false, true] {
-            arbiter.set_dnd(dnd);
+            arbiter.set_dnd(dnd, t0);
             for focused in [false, true] {
                 for expanded in [false, true] {
                     let island = Island { focused, expanded };
@@ -762,7 +1069,7 @@ mod tests {
         let mut arbiter = Arbiter::default();
         let history = persistent(Id::new(Kind::Notification, "7"), Priority::Passive);
 
-        arbiter.set_dnd(true);
+        arbiter.set_dnd(true, t0);
         arbiter.post(history.clone(), t0);
         arbiter.post(toast("8", Priority::Actionable), t0);
 
@@ -781,7 +1088,7 @@ mod tests {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
 
-        arbiter.set_dnd(true);
+        arbiter.set_dnd(true, t0);
         arbiter.post(toast("7", Priority::Critical), t0);
 
         assert_eq!(
@@ -795,9 +1102,9 @@ mod tests {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
 
-        arbiter.set_dnd(true);
+        arbiter.set_dnd(true, t0);
         arbiter.post(toast("7", Priority::Passive), t0);
-        arbiter.set_dnd(false);
+        arbiter.set_dnd(false, t0);
 
         assert!(!arbiter.dnd());
         assert_eq!(arbiter.frame(t0 + ms(1000), FOCUSED).transient, None);
@@ -810,9 +1117,9 @@ mod tests {
         let mut arbiter = Arbiter::default();
 
         arbiter.post(toast("7", Priority::Passive), t0);
-        arbiter.set_dnd(true);
+        arbiter.set_dnd(true, t0);
         arbiter.post(toast("7", Priority::Passive), t0 + ms(1000));
-        arbiter.set_dnd(false);
+        arbiter.set_dnd(false, t0);
 
         // inside the first post's Lifetime, which the repost ended
         assert_eq!(arbiter.frame(t0 + ms(2000), FOCUSED).transient, None);
@@ -826,11 +1133,11 @@ mod tests {
 
         arbiter.post(toast("7", Priority::Passive), t0);
 
-        arbiter.set_dnd(true);
+        arbiter.set_dnd(true, t0);
         assert_eq!(arbiter.frame(t0, FOCUSED).transient, None);
 
         // it was up before DND, so it comes back for the rest of its Lifetime
-        arbiter.set_dnd(false);
+        arbiter.set_dnd(false, t0);
         assert_eq!(
             arbiter.frame(t0 + ms(1000), FOCUSED).transient,
             Some(toast("7", Priority::Passive))

@@ -20,7 +20,7 @@ Something happening that may deserve attention. Has identity, Kind, Priority, Li
 `Transient(duration)` expires on its own: volume, brightness, workspace switch, notification toast. It implies no Scope and no Interrupt.
 
 ## Arbiter
-Pure function of (registered Activities, now, focused output) to a Frame. Owns priority, preemption, expiry and Satellite selection.
+Function of (registered Activities, the primary shown and since when, now, focused output) to a Frame. Owns priority, preemption, primary dwell, expiry and Satellite selection.
 - **Invariant:** time is an input. The Arbiter never reads a clock.
 - **Invariant:** preemption never destroys. A Persistent Activity hidden by a Transient shows again when the Transient expires, with no re-post.
 
