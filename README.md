@@ -12,16 +12,14 @@ AI-generated concept, not a capture of the current build.
 
 ## Keyboard
 
-Every Surface opens from `amane ipc call island <verb>`, so a niri keybind reaches it. Add these to the `binds` block of `~/.config/niri/config.kdl`:
+Every Surface opens from `amane ipc call island <verb>`, so a niri keybind reaches it. Add these lines inside the `binds` block of `~/.config/niri/config.kdl`:
 
 ```kdl
-binds {
-    Mod+Alt+Space hotkey-overlay-title="Island: Launcher" { spawn "amane" "ipc" "call" "island" "toggle" "launcher"; }
-    Mod+Alt+N hotkey-overlay-title="Island: Notifications" { spawn "amane" "ipc" "call" "island" "toggle" "notifications"; }
-    Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "amane" "ipc" "call" "island" "toggle" "media"; }
-    Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "amane" "ipc" "call" "island" "toggle" "controls"; }
-    Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "amane" "ipc" "call" "island" "collapse"; }
-}
+Mod+Alt+Space hotkey-overlay-title="Island: Launcher" { spawn "amane" "ipc" "call" "island" "toggle" "launcher"; }
+Mod+Alt+N hotkey-overlay-title="Island: Notifications" { spawn "amane" "ipc" "call" "island" "toggle" "notifications"; }
+Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "amane" "ipc" "call" "island" "toggle" "media"; }
+Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "amane" "ipc" "call" "island" "toggle" "controls"; }
+Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "amane" "ipc" "call" "island" "collapse"; }
 ```
 
 `amane ipc call island` with no verb prints every verb.
