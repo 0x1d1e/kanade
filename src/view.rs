@@ -10,8 +10,8 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Sensors, Toast,
-    Track, Uplink, Volume, Workspace,
+    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Priority, Sensors,
+    Toast, Track, Uplink, Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -349,8 +349,12 @@ fn small_form(
         (Presentation::Peek, Some(Detail::Media(shown))) => {
             Some(media_peek(Change::of(shown, track, now)))
         }
-        (Presentation::Compact, Some(Detail::Notification(toast))) => Some(toast_compact(toast)),
-        (Presentation::Peek, Some(Detail::Notification(toast))) => Some(toast_peek(toast)),
+        (Presentation::Compact, Some(Detail::Notification(toast))) => {
+            Some(toast_compact(toast, critical(content)))
+        }
+        (Presentation::Peek, Some(Detail::Notification(toast))) => {
+            Some(toast_peek(toast, critical(content)))
+        }
         (presentation, Some(Detail::Volume(volume))) => level(presentation, Level::volume(volume)),
         (presentation, Some(&Detail::Brightness(percent))) => {
             level(presentation, Level::brightness(percent))
@@ -1174,8 +1178,40 @@ pub(crate) fn toast_tile(toast: &Toast, side: f32, radius: f32) -> Stack {
     tile(toast.image.as_deref(), &initial, side, radius)
 }
 
+fn critical(content: &Content) -> bool {
+    content
+        .activity
+        .as_ref()
+        .is_some_and(|activity| activity.priority() == Priority::Critical)
+}
+
+// the summary, said Critical in words first as the Notifications Surface does, never color alone
+fn summary(toast: &Toast, critical: bool, size: f32, weight: u16) -> Box<dyn Widget> {
+    let summary = Text::new(&toast.summary)
+        .size(size)
+        .color(theme::fg())
+        .weight(weight)
+        .elide();
+
+    if critical {
+        Box::new(
+            Row::new(children![
+                Text::new("Critical")
+                    .size(size)
+                    .color(theme::RED)
+                    .weight(600),
+                summary,
+            ])
+            .width(Parent)
+            .gap(6.0),
+        )
+    } else {
+        Box::new(summary)
+    }
+}
+
 // picture, then the summary, laid out like the media Compact
-fn toast_compact(toast: &Toast) -> Rectangle {
+fn toast_compact(toast: &Toast, critical: bool) -> Rectangle {
     let shape = geometry::shape(Presentation::Compact);
     let inset = 7.0;
 
@@ -1188,13 +1224,9 @@ fn toast_compact(toast: &Toast) -> Rectangle {
         })
         .align_child(Start, Center)
         .child(
-            Row::new(children![
-                toast_tile(toast, shape.height - 2.0 * inset, 6.0),
-                Text::new(&toast.summary)
-                    .size(13.0)
-                    .color(theme::fg())
-                    .weight(500)
-                    .elide(),
+            Row::new(vec![
+                Box::new(toast_tile(toast, shape.height - 2.0 * inset, 6.0)),
+                summary(toast, critical, 13.0, 500),
             ])
             .width(Parent)
             .gap(9.0)
@@ -1203,17 +1235,11 @@ fn toast_compact(toast: &Toast) -> Rectangle {
 }
 
 // the Compact with the body under the summary, or the sender when the summary is not its name
-fn toast_peek(toast: &Toast) -> Rectangle {
+fn toast_peek(toast: &Toast, critical: bool) -> Rectangle {
     let shape = geometry::shape(Presentation::Peek);
     let inset = 7.0;
 
-    let mut lines = children![
-        Text::new(&toast.summary)
-            .size(14.0)
-            .color(theme::fg())
-            .weight(600)
-            .elide()
-    ];
+    let mut lines = vec![summary(toast, critical, 14.0, 600)];
 
     let second = if toast.body.is_empty() && toast.app != toast.summary {
         &toast.app
