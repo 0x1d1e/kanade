@@ -7,7 +7,7 @@
 mod wayland;
 
 use std::env;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -21,8 +21,8 @@ use amane::Bus;
 use crate::cli::{self, Reply};
 use crate::config::{self, Config};
 use crate::modules::{self, Module, Provider};
-use crate::sources::bus;
 use crate::sources::json::Json;
+use crate::sources::{bus, privacy};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -232,86 +232,88 @@ fn sockets() -> Vec<Check> {
 }
 
 const NO_INDICATORS: &str = "microphone and camera indicators will not show";
-const NO_VOLUME: &str = "no volume level or OSD";
+const NO_VOLUME: &str = "volume level and OSD will not show";
 
+// libpipewire finds its socket from PIPEWIRE_REMOTE (a name, a path, an abstract socket or a list of
+// them), its runtime dirs and the system socket, so pw-dump, the client privacy runs, is asked
 fn pipewire() -> Check {
-    let socket = pipewire_socket(
-        env::var_os("PIPEWIRE_REMOTE"),
-        env::var_os("PIPEWIRE_RUNTIME_DIR"),
-        env::var_os("XDG_RUNTIME_DIR"),
-    );
-
-    match socket {
-        Some(path) if UnixStream::connect(&path).is_ok() => {
-            Check::ok(format!("PipeWire at {}", path.display()))
-        }
-        Some(path) => Check::warn(format!(
-            "PipeWire: nothing at {}: {NO_INDICATORS}",
-            path.display()
+    match ask(privacy::DUMP, &[]) {
+        Asked::Answered(_) => Check::ok(String::from("PipeWire reachable")),
+        Asked::Refused(error) => Check::warn(format!(
+            "PipeWire: {}: {error}: {NO_INDICATORS}",
+            privacy::DUMP
         )),
-        None => Check::warn(format!(
-            "PipeWire: neither PIPEWIRE_RUNTIME_DIR nor XDG_RUNTIME_DIR is set: {NO_INDICATORS}"
-        )),
+        Asked::Absent => default_socket(
+            "PipeWire",
+            privacy::DUMP,
+            env::var_os("PIPEWIRE_RUNTIME_DIR")
+                .or_else(|| env::var_os("XDG_RUNTIME_DIR"))
+                .map(|dir| Path::new(&dir).join("pipewire-0")),
+            NO_INDICATORS,
+        ),
     }
-}
-
-// where libpipewire looks: the remote named by PIPEWIRE_REMOTE, "pipewire-0" by default, as is when
-// absolute, else in PIPEWIRE_RUNTIME_DIR or XDG_RUNTIME_DIR
-fn pipewire_socket(
-    remote: Option<OsString>,
-    runtime: Option<OsString>,
-    xdg: Option<OsString>,
-) -> Option<PathBuf> {
-    let remote = remote
-        .filter(|remote| !remote.is_empty())
-        .map_or_else(|| PathBuf::from("pipewire-0"), PathBuf::from);
-
-    if remote.is_absolute() {
-        return Some(remote);
-    }
-
-    let runtime = runtime
-        .filter(|dir| !dir.is_empty())
-        .or(xdg.filter(|dir| !dir.is_empty()))?;
-    Some(PathBuf::from(runtime).join(remote))
 }
 
 // libpulse finds its server from PULSE_SERVER, client.conf, X11 or the default socket, so `pactl
-// info`, which resolves it the same way Amane does, is asked; without pactl only the default local
-// socket can be looked at, and its absence proves nothing
+// info`, which resolves it the same way Amane does, is asked
 fn pulseaudio() -> Check {
-    match Command::new("pactl").arg("info").output() {
-        Ok(output) if output.status.success() => {
-            let info = String::from_utf8_lossy(&output.stdout);
+    match ask("pactl", &["info"]) {
+        Asked::Answered(info) => {
             let server = info
                 .lines()
                 .find_map(|line| line.strip_prefix("Server String: "))
                 .unwrap_or("its server");
             Check::ok(format!("PulseAudio at {server}"))
         }
-        Ok(output) => Check::warn(format!(
-            "PulseAudio: pactl info: {}: {NO_VOLUME}",
+        Asked::Refused(error) => {
+            Check::warn(format!("PulseAudio: pactl info: {error}: {NO_VOLUME}"))
+        }
+        Asked::Absent => default_socket(
+            "PulseAudio",
+            "pactl",
+            env::var_os("PULSE_RUNTIME_PATH")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("pulse")))
+                .map(|dir| dir.join("native")),
+            NO_VOLUME,
+        ),
+    }
+}
+
+enum Asked {
+    Answered(String),
+    // the first line of what it said went wrong
+    Refused(String),
+    Absent,
+}
+
+// a client that resolves its server the way the Modules' do, so doctor need not
+fn ask(program: &str, arguments: &[&str]) -> Asked {
+    match Command::new(program).args(arguments).output() {
+        Ok(output) if output.status.success() => {
+            Asked::Answered(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(output) => Asked::Refused(
             String::from_utf8_lossy(&output.stderr)
                 .lines()
                 .next()
                 .unwrap_or("failed")
-        )),
-        Err(_) => {
-            let socket = env::var_os("PULSE_RUNTIME_PATH")
-                .map(PathBuf::from)
-                .or_else(|| env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("pulse")))
-                .map(|dir| dir.join("native"));
+                .to_owned(),
+        ),
+        Err(_) => Asked::Absent,
+    }
+}
 
-            match socket {
-                Some(path) if UnixStream::connect(&path).is_ok() => {
-                    Check::ok(format!("PulseAudio at {}", path.display()))
-                }
-                _ => Check::warn(String::from(
-                    "PulseAudio: pactl is missing to ask libpulse, and the default local socket \
-                     answers nothing: maybe no volume level or OSD",
-                )),
-            }
+// without its client only the default local socket can be looked at, and its absence proves nothing
+fn default_socket(name: &str, client: &str, socket: Option<PathBuf>, without: &str) -> Check {
+    match socket {
+        Some(path) if UnixStream::connect(&path).is_ok() => {
+            Check::ok(format!("{name} at {}", path.display()))
         }
+        _ => Check::warn(format!(
+            "{name}: {client} is missing to ask, and the default local socket answers nothing: \
+             maybe {without}"
+        )),
     }
 }
 
@@ -529,27 +531,6 @@ version = \"9.9.9\"
                 "niri 25.05.1 (b35bcae), Kanade needs 26.04 or later"
             ))
         );
-    }
-
-    #[test]
-    fn the_pipewire_socket_is_found_where_libpipewire_looks() {
-        let os = |text: &str| Some(OsString::from(text));
-        let path = |text: &str| Some(PathBuf::from(text));
-
-        assert_eq!(
-            pipewire_socket(None, None, os("/run/user/1000")),
-            path("/run/user/1000/pipewire-0")
-        );
-        assert_eq!(
-            pipewire_socket(
-                os("pipewire-1"),
-                os("/run/user/1000/custom"),
-                os("/run/user/1000")
-            ),
-            path("/run/user/1000/custom/pipewire-1")
-        );
-        assert_eq!(pipewire_socket(os("/tmp/pw"), None, None), path("/tmp/pw"));
-        assert_eq!(pipewire_socket(os("pipewire-1"), None, None), None);
     }
 
     #[test]
