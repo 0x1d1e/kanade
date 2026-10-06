@@ -90,7 +90,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         // Escape disarms without the pointer leaving, the next move arms again
         .on_move(move |point| {
             set_armed(&moved, true);
-            set_segment(&moved, geometry::segment(body_rect, area.x + point.x));
+            set_segment(&moved, geometry::segment(area.x + point.x));
         })
         .on_click(move |button| match button {
             Button::Left => expand(&clicked),

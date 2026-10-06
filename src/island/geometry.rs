@@ -163,10 +163,12 @@ pub fn input_area(body: Rect) -> Rect {
 
 /*
  * the segment of a Split body under the pointer at `x`, in canvas coordinates: the primary takes
- * Compact's width, the top Satellite the rest. Any other body is the primary's alone
+ * Compact's width, the top Satellite the rest. Measured on the Split body whatever shows, so a
+ * still pointer is on the right segment when the body becomes Split under it; any other body is
+ * the primary's alone, wherever the pointer is
  */
-pub fn segment(body: Rect, x: f32) -> Segment {
-    if x < body.x + COMPACT.width {
+pub fn segment(x: f32) -> Segment {
+    if x < body(SPLIT).x + COMPACT.width {
         Segment::Primary
     } else {
         Segment::Satellite
@@ -427,18 +429,29 @@ mod tests {
         assert_eq!(trailing.y, inside.bottom() - trailing.bottom());
         assert_eq!(trailing.x, COMPACT.width);
 
-        assert_eq!(segment(body, body.x), Segment::Primary);
-        assert_eq!(
-            segment(body, body.x + COMPACT.width - 0.5),
-            Segment::Primary
-        );
-        assert_eq!(segment(body, body.x + COMPACT.width), Segment::Satellite);
-        assert_eq!(segment(body, body.right()), Segment::Satellite);
+        assert_eq!(segment(body.x), Segment::Primary);
+        assert_eq!(segment(body.x + trailing.x - 0.5), Segment::Primary);
+        assert_eq!(segment(body.x + trailing.x), Segment::Satellite);
+        assert_eq!(segment(body.right()), Segment::Satellite);
 
         // the hover padding past either end counts as the segment there
         let area = input_area(body);
-        assert_eq!(segment(body, area.x), Segment::Primary);
-        assert_eq!(segment(body, area.right()), Segment::Satellite);
+        assert_eq!(segment(area.x), Segment::Primary);
+        assert_eq!(segment(area.right()), Segment::Satellite);
+    }
+
+    // a pointer still on the right end of Rest or Compact is on the trailing segment once Split
+    #[test]
+    fn the_segment_under_a_still_pointer_is_the_one_split_draws_there() {
+        let line = body(SPLIT).x + trailing().x;
+
+        for small in [REST, COMPACT] {
+            let area = input_area(body(small));
+
+            assert!(area.x < line && line < area.right(), "{small:?}");
+            assert_eq!(segment(area.x), Segment::Primary, "{small:?}");
+            assert_eq!(segment(area.right() - 1.0), Segment::Satellite, "{small:?}");
+        }
     }
 
     // under the body, so it hides one coming out or going back, as tall as it is at Rest

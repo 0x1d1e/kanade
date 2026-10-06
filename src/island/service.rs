@@ -2240,6 +2240,47 @@ mod tests {
         assert_eq!(island.presentation(MONITOR), Presentation::Split);
     }
 
+    /*
+     * a pointer still on the right end of a smaller body acts on the top Satellite once the body
+     * becomes Split under it, with no motion to report the move
+     */
+    #[test]
+    fn a_body_becoming_split_under_a_still_pointer_acts_on_the_segment_there() {
+        use geometry::{COMPACT, input_area};
+
+        let right_end = |shape| geometry::segment(input_area(geometry::body(shape)).right() - 1.0);
+
+        // in Compact, a Satellite arriving before the hover delay ends is the one that peeks
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(battery(), now);
+        island.hover(MONITOR, true, now);
+        island.set_segment(MONITOR, right_end(COMPACT));
+
+        island.post(timer("a"), now + ms(50));
+        assert_eq!(island.presentation(MONITOR), Presentation::Split);
+        island.expire(now + HOVER_DELAY);
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+        assert_eq!(segments(&island), (Some(timer("a").id().clone()), None));
+
+        // at Rest, which takes no hover, a right click on the settled Split pins the Satellite
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.hover(MONITOR, true, now);
+        island.set_segment(MONITOR, right_end(REST));
+
+        island.post(battery(), now);
+        island.post(timer("a"), now);
+        let settled = now + Duration::from_secs(1);
+        assert!(island.settled(MONITOR, settled));
+        assert_eq!(island.presentation(MONITOR), Presentation::Split);
+
+        island.input(MONITOR, Input::RightClick(island.segment(MONITOR)), settled);
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+        assert!(island.pinned(MONITOR));
+        assert_eq!(segments(&island), (Some(timer("a").id().clone()), None));
+    }
+
     // the primary trading places with the top Satellite slides both, with no fade
     #[test]
     fn segments_trading_places_slide_and_keep_asking_for_frames() {
