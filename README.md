@@ -62,7 +62,13 @@ A verb of a Module turned off in the config answers `module <name> is off`. With
 
 ## Configuration
 
-Kanade reads `$XDG_CONFIG_HOME/kanade/config.toml` (else `~/.config/kanade/config.toml`) once at start. Kanade accepts the TOML subset shown below: table headers, booleans, millisecond integers, double-quoted strings (only `\"` and `\\` escapes), and comments. Every key is optional; these are the defaults:
+Kanade reads its config once at start, in layers, each over the ones before it:
+
+1. the defaults below
+2. every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else `~/.config/kanade/`), in alphabetical order, so `config.toml` can sit beside files like `10-theme.toml` that another tool manages. Hidden files are skipped.
+3. `$XDG_STATE_HOME/kanade/settings.toml` (else `~/.local/state/kanade/settings.toml`), for the Settings app to come
+
+Tables merge key by key, so a later file only changes the keys it sets; any other value, a list too, replaces the one below. Kanade never writes your files. Every key is optional; these are the defaults:
 
 ```toml
 # the island snaps to its new shape and only fades its content, over 80 ms
@@ -90,7 +96,8 @@ toast = 5000         # a notification shown as a Transient
 - `theme.palette`: the body and text take their tone from this image, and follow it when the file changes, so a wallpaper script that overwrites it re-themes the island. The body stays near-black and both stay near grey, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning. Unset, the body is near-black.
 - `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
 - `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its IPC verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
-- A bad line keeps its default and is reported on stderr, naming the line.
+- `schema_version`: the config layout a file is written in, per file, `1` without one. When a Kanade release changes the layout, it migrates older files in memory as it reads them and leaves them as they are on disk.
+- Problems are reported on stderr with file and line. A key that is unknown or a value out of range is skipped, keeping what the layers below gave it. A file that is not valid TOML, like one that sets a key twice, is skipped whole.
 
 ## Keyboard
 
