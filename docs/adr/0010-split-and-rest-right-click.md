@@ -1,6 +1,6 @@
 # 10. Split Presentation and Rest right click
 
-Status: accepted (design, roadmap 9 Shell essentials). Changes the `CONTEXT.md` Presentation, Satellite and Pin entries when implemented.
+Status: accepted (design, roadmap 9 Shell essentials, #128). Changed the `CONTEXT.md` Presentation, Satellite and Pin entries.
 
 ## Context
 

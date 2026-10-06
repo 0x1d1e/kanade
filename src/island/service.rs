@@ -11,7 +11,7 @@ use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
 use super::geometry::{self, REST, Shape};
 use super::motion::{Mode, Spring};
-use super::presentation::{Content, Input, Presentation, Presentations, Prior, Surface};
+use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
 use super::satellites::{Mark, Satellites};
 
 // plan 5.2: how long a morph takes, by what it changes, see `response`
@@ -136,6 +136,12 @@ struct Island {
     // beside the body, coming out from under it and tucking back
     satellites: Satellites,
 
+    // a Split's segments trading places, from 1 where they stood to 0 where they are now
+    swap: Option<Spring<1>>,
+
+    // the segment of the body under the pointer, the one a hover, click or right click acts on
+    segment: Segment,
+
     // what the pointer started: a Peek after the hover delay, or a collapse after the grace
     due: Option<Due>,
 }
@@ -152,7 +158,7 @@ impl Due {
     fn applies(self, presentation: Presentation) -> bool {
         matches!(
             (self.input, presentation),
-            (Input::Hover, Presentation::Compact)
+            (Input::Hover(_), Presentation::Compact | Presentation::Split)
                 | (Input::Unhover, Presentation::Peek)
                 | (Input::Collapse, Presentation::Expanded(_))
         )
@@ -313,6 +319,19 @@ impl IslandService {
             .is_none_or(|spring| spring.settled(now))
             && island.track.as_ref().is_none_or(|track| track.settled(now))
             && island.satellites.settled(now)
+            && island.swap.as_ref().is_none_or(|swap| swap.settled(now))
+    }
+
+    // how far a Split's segments still are from where they now stand, 1 where they traded places
+    pub fn swap(&self, monitor: &str, now: Instant) -> f32 {
+        self.get(monitor)
+            .swap
+            .as_ref()
+            .map_or(0.0, |swap| swap.at(now)[0])
+    }
+
+    pub fn segment(&self, monitor: &str) -> Segment {
+        self.get(monitor).segment
     }
 
     pub fn satellites(&self, monitor: &str) -> &Satellites {
@@ -707,52 +726,68 @@ impl IslandService {
      * opening one collapses any other. The primary of a Presentation is the Frame's
      */
     fn sync(&mut self, now: Instant) {
-        let showing = |frame: Frame| (Mark::of(&frame), frame.primary);
+        let id = |activity: &Option<Activity>| activity.as_ref().map(Activity::id).cloned();
 
-        let (marks, untouched) = showing(self.arbiter.frame(
+        let untouched = self.arbiter.frame(
             now,
             arbiter::Island {
                 focused: self.focused_output.is_none(),
             },
-        ));
-
-        self.presentations.set_untouched(
-            untouched
-                .as_ref()
-                .map(|activity| Surface::of(activity.kind())),
         );
+        let untouched_satellite = untouched.satellites.first().cloned();
 
-        let shown: Vec<_> = self
+        self.presentations
+            .set_untouched(id(&untouched.primary), id(&untouched_satellite));
+
+        let frames: Vec<_> = self
             .islands
             .keys()
             .map(|monitor| {
-                let (marks, shown) = showing(self.frame(monitor, now));
+                let frame = self.frame(monitor, now);
+                let satellite = frame.satellites.first().cloned();
 
-                (monitor.clone(), marks, shown)
+                (monitor.clone(), frame, satellite)
             })
             .collect();
 
-        for (monitor, _, shown) in &shown {
-            let primary = shown.as_ref().map(|activity| Surface::of(activity.kind()));
-
-            self.presentations.set_primary(monitor, primary);
+        for (monitor, frame, satellite) in &frames {
+            self.presentations
+                .set_shown(monitor, id(&frame.primary), id(satellite));
         }
+
+        // the top Satellite is a segment of the body while it is Split or a Peek out of one
+        let marks = |frame: &Frame, presentation| {
+            Mark::of(
+                frame,
+                matches!(presentation, Presentation::Split | Presentation::Peek),
+            )
+        };
 
         let presentation = self.presentations.untouched();
         follow(
             &mut self.untouched,
-            Content::new(presentation, untouched),
-            marks,
+            Content::new(
+                presentation,
+                untouched.primary.clone(),
+                untouched_satellite,
+                None,
+            ),
+            marks(&untouched, presentation),
             self.timings,
             now,
         );
 
-        for (monitor, marks, shown) in shown {
+        for (monitor, frame, satellite) in frames {
             let presentation = self.presentations.get(&monitor);
+            let marks = marks(&frame, presentation);
+            let content = Content::new(
+                presentation,
+                frame.primary,
+                satellite,
+                self.presentations.peeked(&monitor),
+            );
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                let content = Content::new(presentation, shown);
-
                 follow(island, content, marks, self.timings, now);
             }
         }
@@ -764,6 +799,19 @@ impl IslandService {
 
     pub fn set_armed(&mut self, monitor: &str, armed: bool) {
         self.island(monitor).armed = armed;
+    }
+
+    // the pointer moved over `segment`; a Peek still due peeks the one it is over when it falls due
+    pub fn set_segment(&mut self, monitor: &str, segment: Segment) {
+        let island = self.island(monitor);
+
+        island.segment = segment;
+
+        if let Some(due) = &mut island.due
+            && let Input::Hover(_) = due.input
+        {
+            due.input = Input::Hover(segment);
+        }
     }
 
     /*
@@ -792,7 +840,9 @@ impl IslandService {
         island.armed = inside;
 
         let due = match (inside, presentation) {
-            (true, Presentation::Compact) => Some((hover, Input::Hover)),
+            (true, Presentation::Compact | Presentation::Split) => {
+                Some((hover, Input::Hover(island.segment)))
+            }
             (false, Presentation::Peek) if !pinned => Some((grace, Input::Unhover)),
             (false, Presentation::Expanded(_)) if !pinned => Some((grace, Input::Collapse)),
             _ => None,
@@ -871,6 +921,17 @@ fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, timings: Timi
     }
 
     /*
+     * they slide from where they stand, the shape the same, so the spring alone carries the leg;
+     * trading back mid-slide turns around from there
+     */
+    if island.content.target().swapped(&content) {
+        let stood = island.swap.as_ref().map_or(0.0, |swap| swap.at(now)[0]);
+        let mut swap = Spring::new([1.0 - stood], motion);
+        swap.to([0.0], timings.expand, now);
+        island.swap = Some(swap);
+    }
+
+    /*
      * content and shape start the leg together, the same shape too, so a new Activity in the same
      * form still crossfades; a level that moved starts none. An island that never changed has no
      * spring
@@ -907,8 +968,9 @@ fn response(from: Presentation, to: Presentation, timings: Timings) -> Duration 
     let rank = |presentation| match presentation {
         Presentation::Rest => 0,
         Presentation::Compact => 1,
-        Presentation::Peek => 2,
-        Presentation::Expanded(_) => 3,
+        Presentation::Split => 2,
+        Presentation::Peek => 3,
+        Presentation::Expanded(_) => 4,
     };
 
     match (from, to) {
@@ -965,7 +1027,7 @@ mod tests {
         island.set_armed(MONITOR, true);
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
 
-        island.input(MONITOR, Input::Click, Instant::now());
+        island.input(MONITOR, Input::Click(Segment::Primary), Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
     }
 
@@ -977,7 +1039,7 @@ mod tests {
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
 
         island.set_armed(MONITOR, true);
-        island.input(MONITOR, Input::Click, Instant::now());
+        island.input(MONITOR, Input::Click(Segment::Primary), Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
     }
 
@@ -990,7 +1052,7 @@ mod tests {
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
 
         // a later pointer expand does not bring the hold back
-        island.input(MONITOR, Input::Click, Instant::now());
+        island.input(MONITOR, Input::Click(Segment::Primary), Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
     }
 
@@ -1108,7 +1170,7 @@ mod tests {
         let mut island = IslandService::new();
 
         island.hover(MONITOR, true, now);
-        island.input(MONITOR, Input::Click, now);
+        island.input(MONITOR, Input::Click(Segment::Primary), now);
 
         island
     }
@@ -1226,7 +1288,7 @@ mod tests {
         let now = Instant::now();
         let mut island = compact(now);
 
-        island.input(MONITOR, Input::Click, now + ms(60));
+        island.input(MONITOR, Input::Click(Segment::Primary), now + ms(60));
         assert_eq!(island.deadline(), None);
         assert_eq!(
             island.presentation(MONITOR),
@@ -1321,7 +1383,7 @@ mod tests {
         let now = Instant::now();
         let mut island = compact(now);
 
-        island.input(MONITOR, Input::Click, now);
+        island.input(MONITOR, Input::Click(Segment::Primary), now);
         island.input(MONITOR, Input::Collapse, now + ms(500));
 
         // Escape with the pointer still on the body; it has to leave and come back to peek
@@ -1353,7 +1415,7 @@ mod tests {
         let now = Instant::now();
         let mut island = expanded(now);
 
-        island.input(MONITOR, Input::RightClick, now);
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now);
         island.hover(MONITOR, false, now + ms(10));
 
         assert_eq!(island.deadline(), None);
@@ -1366,7 +1428,7 @@ mod tests {
         // unpinned, leaving collapses after the grace again
         let back = now + ms(20);
         island.hover(MONITOR, true, back);
-        island.input(MONITOR, Input::RightClick, back);
+        island.input(MONITOR, Input::RightClick(Segment::Primary), back);
         island.hover(MONITOR, false, back);
 
         assert_eq!(island.deadline(), Some(back + GRACE));
@@ -1377,7 +1439,7 @@ mod tests {
         let now = Instant::now();
         let mut island = compact(now);
 
-        island.input(MONITOR, Input::RightClick, now + ms(60));
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now + ms(60));
         assert_eq!(island.deadline(), None);
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
 
@@ -1400,7 +1462,7 @@ mod tests {
 
         island.open(MONITOR, Surface::Launcher, now);
         island.hover(MONITOR, true, now + ms(10));
-        island.input(MONITOR, Input::RightClick, now + ms(20));
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now + ms(20));
 
         assert!(!island.held(MONITOR));
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
@@ -1415,7 +1477,11 @@ mod tests {
         );
 
         // unpinning does not bring the hold back
-        island.input(MONITOR, Input::RightClick, now + HOLD + GRACE);
+        island.input(
+            MONITOR,
+            Input::RightClick(Segment::Primary),
+            now + HOLD + GRACE,
+        );
         assert!(!island.held(MONITOR));
     }
 
@@ -1529,11 +1595,14 @@ mod tests {
             island.content(MONITOR, settled),
             [
                 None,
-                Some((Content::new(Presentation::Compact, Some(media())), 1.0))
+                Some((
+                    Content::new(Presentation::Compact, Some(media()), None, None),
+                    1.0
+                ))
             ]
         );
 
-        island.input(MONITOR, Input::Click, settled);
+        island.input(MONITOR, Input::Click(Segment::Primary), settled);
 
         let media = Presentation::Expanded(Surface::Media);
         let shown = |at| presentations(&island, at);
@@ -1566,7 +1635,7 @@ mod tests {
         let now = Instant::now();
         let mut island = compact(now);
 
-        island.input(MONITOR, Input::Click, now);
+        island.input(MONITOR, Input::Click(Segment::Primary), now);
         island.input(MONITOR, Input::Open(Surface::Notifications), now);
 
         let notifications = Presentation::Expanded(Surface::Notifications);
@@ -1632,7 +1701,7 @@ mod tests {
         let mut island = expanded(now);
         let later = now + Duration::from_secs(1);
 
-        island.input(MONITOR, Input::Click, later);
+        island.input(MONITOR, Input::Click(Segment::Primary), later);
         island.post(
             fixture::persistent(Id::new(Kind::Notification, "7"), Priority::Actionable),
             later,
@@ -1701,7 +1770,7 @@ mod tests {
         island.hover(MONITOR, true, now);
         island.hover(MONITOR, false, now);
         let later = now + ms(100);
-        island.input("HDMI-A-1", Input::Click, later);
+        island.input("HDMI-A-1", Input::Click(Segment::Primary), later);
 
         assert!(island.expanded("HDMI-A-1"));
         assert!(!island.expanded(MONITOR));
@@ -1861,7 +1930,7 @@ mod tests {
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
 
         // open on another output, it is not the focused island's to close
-        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
         assert_eq!(island.resolve(Command::Close(Surface::Controls)), Ok(None));
     }
 
@@ -1870,7 +1939,7 @@ mod tests {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
-        island.input(MONITOR, Input::Click, now);
+        island.input(MONITOR, Input::Click(Segment::Primary), now);
         run(&mut island, Command::Toggle(Surface::Controls), now);
 
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
@@ -1883,7 +1952,7 @@ mod tests {
 
         assert_eq!(run(&mut island, Command::Collapse, now), None);
 
-        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
         assert_eq!(run(&mut island, Command::Collapse, now), None);
         assert!(island.expanded(OTHER));
 
@@ -1907,7 +1976,7 @@ mod tests {
         );
         assert_eq!(island.resolve(Command::Collapse), Ok(None));
 
-        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
 
         assert_eq!(
             run(&mut island, Command::Open(Surface::Media), now),
@@ -1919,7 +1988,7 @@ mod tests {
         );
         assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
 
-        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
         assert_eq!(
             run(&mut island, Command::Collapse, now),
             Some(Effect::Collapse(OTHER.to_owned()))
@@ -2100,6 +2169,115 @@ mod tests {
         assert!(island.settled(MONITOR, later + Duration::from_secs(1)));
     }
 
+    fn timer(key: &str) -> Activity {
+        fixture::persistent(Id::new(Kind::Timer, key), Priority::Ongoing)
+    }
+
+    // the ids a Split shows, primary then Satellite
+    fn segments(island: &IslandService) -> (Option<Id>, Option<Id>) {
+        let content = island.get(MONITOR).content.target();
+        let id = |activity: &Option<Activity>| activity.as_ref().map(|a| a.id().clone());
+
+        (id(&content.activity), id(&content.satellite))
+    }
+
+    // the top Satellite leaves the dots for the trailing segment, and comes back as one
+    #[test]
+    fn split_follows_the_frame_and_takes_the_top_satellite_from_the_dots() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(battery(), now);
+        island.post(timer("a"), now);
+        island.post(timer("b"), now);
+
+        let later = now + Duration::from_secs(1);
+        assert_eq!(island.presentation(MONITOR), Presentation::Split);
+        assert_eq!(
+            segments(&island),
+            (Some(battery().id().clone()), Some(timer("b").id().clone()))
+        );
+        let dots = |island: &IslandService| -> Vec<Mark> {
+            island
+                .satellites(MONITOR)
+                .shown(later)
+                .into_iter()
+                .map(|shown| shown.mark.clone())
+                .collect()
+        };
+        assert_eq!(dots(&island), vec![Mark::Activity(timer("a"))]);
+
+        island.withdraw(timer("a").id(), later);
+        island.withdraw(timer("b").id(), later);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(segments(&island), (Some(battery().id().clone()), None));
+    }
+
+    // the segment the pointer is on when the hover delay ends peeks, not the one it came in on
+    #[test]
+    fn hover_peeks_the_segment_under_the_pointer_when_the_delay_ends() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(battery(), now);
+        island.post(timer("a"), now);
+
+        island.hover(MONITOR, true, now);
+        island.set_segment(MONITOR, Segment::Satellite);
+        island.expire(now + HOVER_DELAY);
+
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+        assert_eq!(segments(&island), (Some(timer("a").id().clone()), None));
+
+        // a Peek shows one Activity, so the top Satellite is a dot no more there either
+        assert!(
+            island
+                .satellites(MONITOR)
+                .shown(now + Duration::from_secs(1))
+                .is_empty()
+        );
+
+        island.hover(MONITOR, false, now + HOVER_DELAY);
+        island.expire(now + HOVER_DELAY + GRACE);
+        assert_eq!(island.presentation(MONITOR), Presentation::Split);
+    }
+
+    // the primary trading places with the top Satellite slides both, with no fade
+    #[test]
+    fn segments_trading_places_slide_and_keep_asking_for_frames() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(timer("a"), now);
+        island.post(timer("b"), now + ms(10));
+
+        let settled = now + Duration::from_secs(1);
+        assert_eq!(
+            segments(&island),
+            (Some(timer("a").id().clone()), Some(timer("b").id().clone()))
+        );
+        assert!(island.settled(MONITOR, settled));
+        assert_eq!(island.swap(MONITOR, settled), 0.0);
+
+        // past the dwell the newer one of the same Priority takes over
+        let swapped = now + Duration::from_secs(2);
+        island.expire(swapped);
+        assert_eq!(
+            segments(&island),
+            (Some(timer("b").id().clone()), Some(timer("a").id().clone()))
+        );
+        assert_eq!(island.swap(MONITOR, swapped), 1.0);
+        assert_eq!(
+            presentations(&island, swapped),
+            [(Presentation::Split, 1.0)]
+        );
+        assert!(!island.settled(MONITOR, swapped + ms(60)));
+
+        let mid = island.swap(MONITOR, swapped + ms(60));
+        assert!(0.0 < mid && mid < 1.0, "{mid}");
+
+        let late = swapped + Duration::from_secs(1);
+        assert_eq!(island.swap(MONITOR, late), 0.0);
+        assert!(island.settled(MONITOR, late));
+    }
+
     // switching on through workspaces: each step moves the pager's mark where it stands, mid-morph
     // or settled
     #[test]
@@ -2214,7 +2392,7 @@ mod tests {
 
         island.post(media(), now);
         island.post(toast, now);
-        island.input(MONITOR, Input::Click, now);
+        island.input(MONITOR, Input::Click(Segment::Primary), now);
 
         assert_eq!(
             island.presentation(MONITOR),
@@ -2233,7 +2411,7 @@ mod tests {
         island.post(history, now + ms(100));
         assert_eq!(island.deadline(), Some(now + arbiter::DWELL));
 
-        island.input(MONITOR, Input::Click, now + ms(200));
+        island.input(MONITOR, Input::Click(Segment::Primary), now + ms(200));
         assert_eq!(
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Media)
@@ -2241,7 +2419,11 @@ mod tests {
         island.input(MONITOR, Input::Collapse, now + ms(300));
 
         island.expire(now + arbiter::DWELL);
-        island.input(MONITOR, Input::Click, now + arbiter::DWELL);
+        island.input(
+            MONITOR,
+            Input::Click(Segment::Primary),
+            now + arbiter::DWELL,
+        );
         assert_eq!(
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Notifications)
@@ -2262,7 +2444,7 @@ mod tests {
         assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(battery()));
 
         // reopened over it, a repost of the same Activity leaves it open
-        island.input(MONITOR, Input::Click, now + ms(200));
+        island.input(MONITOR, Input::Click(Segment::Primary), now + ms(200));
         island.post(battery(), now + ms(300));
 
         assert_eq!(
@@ -2311,7 +2493,7 @@ mod tests {
         let mut island = focused_on(MONITOR, now);
         let call = call();
 
-        island.input(OTHER, Input::Click, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
         island.post(call.clone(), now);
         assert!(island.expanded(OTHER));
 
@@ -2473,8 +2655,8 @@ mod tests {
         let mut island = focused_on(MONITOR, now);
 
         island.hover(OTHER, true, now);
-        island.input(OTHER, Input::Click, now);
-        island.input(OTHER, Input::RightClick, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
+        island.input(OTHER, Input::RightClick(Segment::Primary), now);
         island.post(auto("7"), now);
 
         // the Notification is Global, so the collapsed island shows it
@@ -2497,7 +2679,7 @@ mod tests {
         let mut island = focused_on(MONITOR, now);
 
         island.post(media(), now);
-        island.input(MONITOR, Input::RightClick, now);
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now);
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
 
         island.post(auto("7"), now);
@@ -2582,8 +2764,8 @@ mod tests {
         let mut island = focused_on(MONITOR, now);
 
         island.hover(OTHER, true, now);
-        island.input(OTHER, Input::Click, now);
-        island.input(OTHER, Input::RightClick, now);
+        island.input(OTHER, Input::Click(Segment::Primary), now);
+        island.input(OTHER, Input::RightClick(Segment::Primary), now);
         island.post(auto("7"), now);
         island.post(call(), now + ms(100));
 
@@ -2666,10 +2848,10 @@ mod tests {
         let later = now + ms(100);
         let actions: [(&str, Act); 6] = [
             ("click", |island, now| {
-                island.input(MONITOR, Input::Click, now)
+                island.input(MONITOR, Input::Click(Segment::Primary), now)
             }),
             ("pin", |island, now| {
-                island.input(MONITOR, Input::RightClick, now)
+                island.input(MONITOR, Input::RightClick(Segment::Primary), now)
             }),
             ("collapse", |island, now| {
                 island.input(MONITOR, Input::Collapse, now)
