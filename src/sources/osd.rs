@@ -1,20 +1,47 @@
 //! Volume and Brightness Transients (plan 3, 5.1): a level that changes shows on the focused island
 //! for OSD, and a held key keeps reposting the same Activity, so it extends one Transient.
 //!
-//! Amane has no subscription between services, so this polls their reads; a read that finds the
-//! levels unchanged posts nothing, so an idle island never redraws.
+//! Amane has no subscription between services, so this reads them again when PulseAudio or the
+//! kernel announces a change (`wake`), and polls while a change settles or an announcer is down; a
+//! read that finds the levels unchanged posts nothing, so an idle island never redraws.
 
-use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::{Audio, Brightness, Service};
 
+use super::wake::{Announcer, Pace, Wakes};
 use crate::config;
 use crate::island::activity::{Activity, Detail, Device, Id, Kind, Priority, Volume};
 use crate::island::service::IslandService;
 
-// plan 3: 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other step
-const POLL: Duration = Duration::from_millis(80);
+const PACE: Pace = Pace {
+    // plan 3: 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other
+    // step
+    poll: Duration::from_millis(80),
+
+    // longer than Amane's Brightness takes to read the backlight again, every 500 ms
+    settle: Duration::from_secs(1),
+
+    idle: None,
+};
+
+// PulseAudio announces each change to a device's volume or mute, and to which is the default
+const PULSE: Announcer = Announcer {
+    program: "pactl",
+    args: &["subscribe"],
+    announces: |line| {
+        ["on sink #", "on source #", "on server"]
+            .iter()
+            .any(|on| line.contains(on))
+    },
+};
+
+// the kernel announces each change to a backlight, from a hotkey or a tool like brightnessctl
+const BACKLIGHT: Announcer = Announcer {
+    program: "udevadm",
+    args: &["monitor", "--kernel", "--subsystem-match=backlight"],
+    announces: |line| line.starts_with("KERNEL["),
+};
 
 // every level the island can show, as the services last said
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -103,6 +130,7 @@ fn volume(volume: Volume) -> Activity {
 
 // runs on its own thread for good
 pub fn follow() {
+    let mut wakes = Wakes::new(PACE, vec![PULSE, BACKLIGHT]);
     let mut last = None;
 
     loop {
@@ -118,8 +146,9 @@ pub fn follow() {
             }
         }
 
+        let busy = last != Some(levels);
         last = Some(levels);
-        thread::sleep(POLL);
+        wakes.wait(busy);
     }
 }
 
@@ -128,6 +157,25 @@ mod tests {
     use super::*;
     use crate::config;
     use crate::island::activity::Lifetime;
+
+    // as `pactl subscribe` and `udevadm monitor` print them
+    #[test]
+    fn only_level_changes_announce() {
+        assert!((PULSE.announces)("Event 'change' on sink #55"));
+        assert!((PULSE.announces)("Event 'change' on source #56"));
+        assert!((PULSE.announces)("Event 'change' on server #-1"));
+        assert!(!(PULSE.announces)("Event 'change' on client #223"));
+        assert!(!(PULSE.announces)("Event 'new' on sink-input #12"));
+        assert!(!(PULSE.announces)("Event 'change' on card #49"));
+
+        let backlight =
+            "KERNEL[2909.593314] change   /devices/backlight/nvidia_wmi_ec_backlight (backlight)";
+        assert!((BACKLIGHT.announces)(backlight));
+        assert!(!(BACKLIGHT.announces)(
+            "monitor will print the received events for:"
+        ));
+        assert!(!(BACKLIGHT.announces)("KERNEL - the kernel uevent"));
+    }
 
     fn levels(speaker: u8, muted: bool) -> Levels {
         Levels {

@@ -45,7 +45,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 | `Rectangle`: radius, border, shadow, blur, clip, rotate/scale/translate, shader | Morph visuals need no Amane changes |
 | Verified in source (`src/wayland/update.rs`): `update_surface` runs every frame and re-sends changed input region and keyboard mode | Region tracks the spring each frame; keyboard mode can switch per Surface. Cost to measure: one `wl_region` per frame while moving |
 | Verified (`src/services.rs`): `Service::listen()` is a free-form loop on the service's own thread; a poll that returns `false` is `quiet` and wakes nothing. `quiet()` is crate-private, so a custom `listen()` cannot make its own write quiet | Verified on niri 26.04 (#5): `IslandService::listen` blocks on `recv_timeout(next_deadline)`, nudged by a static `sync_channel(1)` whenever a deadline changes. It woke only on nudges and at deadlines (90-240 µs late), never at idle (0 wakeups in 60 s). It writes only when something is due, so a quiet write is not needed |
-| Verified: no subscription between services. `read()` only subscribes windows | A source watching `Audio`/`Brightness` polls their `read()` every 50-100 ms and writes quietly unless changed. Revisit if profiling shows cost |
+| Verified: no subscription between services. `read()` only subscribes windows | A source watching `Audio`/`Brightness` reads again when PulseAudio or the kernel announces a change, polling every 50-100 ms only while it settles or no announcer runs, and writes only when changed ([ADR 0004](adr/0004-wake-sources-on-announcements.md)) |
 | Verified (`ARCHITECTURE.md`): `write()` is for input handlers and service threads, never views; IPC handlers run on the main thread | IPC verbs may call `Island::write()` |
 | Verified: Amane's `compositor` module is private; its niri backend only tracks workspaces and window-to-workspace | Kanade opens its own `$NIRI_SOCKET` `"EventStream"` connection (JSON lines) |
 | Verified on niri 26.04: event stream has `WindowFocusChanged`, `WorkspaceActivated`, `WindowLayoutsChanged`, `OverviewOpenedOrClosed`, `CastsChanged`/`CastStartedOrChanged`/`CastStopped`. Window JSON has no `is_fullscreen` | Focused output = output of the focused workspace. Screen capture comes from casts. Fullscreen only by heuristic (window size equals output logical size), see 5.3 |
@@ -249,6 +249,7 @@ Unit (pure, injected time):
 
 E2E (nested Niri session, `amane dev`):
 - Idle: `AMANE_FRAMES=1` prints no frames at rest and after every transition settles.
+- Idle wakeups: at rest no Kanade thread wakes, except battery every 5 s; what remains is Amane's own polling ([ADR 0004](adr/0004-wake-sources-on-announcements.md)).
 - Click-through: pointer outside body reaches the window below.
 - Volume key during Spotify: OSD ~1.2 s, media returns.
 - Notification toast during Expanded Media: no displacement. Critical battery: displaces.
@@ -292,7 +293,7 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 | Another notification daemon running | Notifications surface shows the error state; README says to stop mako/dunst |
 | Screen capture is covered by niri casts; mic/camera has no source | Answered in #34: active PipeWire capture links via `pw-dump --monitor` ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)). Direct v4l2/ALSA users are not seen |
 | Niri exposes no fullscreen flag | Checked in #13: the heuristic misfires, so rule 6 is deferred until niri IPC reports fullscreen ([ADR 0002](adr/0002-defer-fullscreen-suppression.md)) |
-| Source polling wakes the CPU at idle | Prefer `listen()`; any poll returns `false` unless changed |
+| Source polling wakes the CPU at idle | Answered in #40: sources block on announcements and poll only as fallback ([ADR 0004](adr/0004-wake-sources-on-announcements.md)); the remaining idle wakeups are Amane's |
 | Island nags | Attention budget in section 7 is a review gate for every new Kind |
 
 ## 12. Open questions
