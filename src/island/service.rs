@@ -614,18 +614,21 @@ impl IslandService {
                 return Ok(self.arbiter.contains(&id).then_some(Effect::Withdraw(id)));
             }
             Command::ToggleDnd => return Ok(Some(Effect::Dnd(!self.dnd()))),
-
-            // the timer's own source runs these, the island only shows what it posts
-            Command::StartTimer(_) | Command::StopTimer => return Ok(None),
+            Command::SetDnd(dnd) => return Ok((dnd != self.dnd()).then_some(Effect::Dnd(dnd))),
 
             // nothing is open or opens while the overview is
             _ if self.overview() => return Ok(None),
 
             Command::Collapse => return collapse(),
 
-            Command::Toggle(surface) if focused.is_some_and(|(_, shown)| shown == surface) => {
+            Command::Close(surface) | Command::Toggle(surface)
+                if focused.is_some_and(|(_, shown)| shown == surface) =>
+            {
                 return collapse();
             }
+
+            // shows another Surface, or none
+            Command::Close(_) => return Ok(None),
 
             Command::Open(surface) | Command::Toggle(surface) => surface,
         };
@@ -1881,6 +1884,27 @@ mod tests {
     }
 
     #[test]
+    fn close_collapses_only_the_surface_it_names() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        assert_eq!(island.resolve(Command::Close(Surface::Launcher)), Ok(None));
+
+        run(&mut island, Command::Open(Surface::Controls), now);
+        assert_eq!(island.resolve(Command::Close(Surface::Launcher)), Ok(None));
+
+        assert_eq!(
+            run(&mut island, Command::Close(Surface::Controls), now),
+            Some(Effect::Collapse(MONITOR.to_owned()))
+        );
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+
+        // open on another output, it is not the focused island's to close
+        island.input(OTHER, Input::Click, now);
+        assert_eq!(island.resolve(Command::Close(Surface::Controls)), Ok(None));
+    }
+
+    #[test]
     fn toggle_closes_a_pointer_opened_surface() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
@@ -1952,6 +1976,7 @@ mod tests {
         for command in [
             Command::Open(Surface::Launcher),
             Command::Toggle(Surface::Media),
+            Command::Close(Surface::Media),
             Command::Collapse,
         ] {
             assert_eq!(island.resolve(command.clone()), Ok(None), "{command:?}");
@@ -2460,6 +2485,18 @@ mod tests {
             Some(Effect::Dnd(false))
         );
         assert!(!island.dnd());
+
+        // setting it as it is writes nothing
+        assert_eq!(island.resolve(Command::SetDnd(false)), Ok(None));
+        assert_eq!(
+            run(&mut island, Command::SetDnd(true), now),
+            Some(Effect::Dnd(true))
+        );
+        assert_eq!(island.resolve(Command::SetDnd(true)), Ok(None));
+        assert_eq!(
+            run(&mut island, Command::SetDnd(false), now),
+            Some(Effect::Dnd(false))
+        );
 
         // the overview hides what they post, it does not refuse them
         island.set_niri(Some(MONITOR.to_owned()), true, now);

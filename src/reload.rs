@@ -1,5 +1,5 @@
 //! Config hot reload (#102, docs/design.md Hot reload): a change to a layer's file, or
-//! `amane ipc call config reload`, reads every layer again. A config without a problem applies
+//! `kanade config reload`, reads every layer again. A config without a problem applies
 //! whole, at once; one with any problem changes nothing, so a half-typed edit never reverts a key
 //! to its default, and the problems go to stderr and the last reload error. A key that only
 //! applies at start, which `[modules]` is, keeps its running value and is pending restart.

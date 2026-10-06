@@ -18,7 +18,6 @@ Kanade needs:
 
 - niri, which it talks to over `$NIRI_SOCKET`.
 - A Rust toolchain and the system libraries Amane builds against: a C compiler, pkg-config, wayland, libxkbcommon, fontconfig, freetype, expat, vulkan-loader, libpulseaudio and linux-pam, with their headers. Amane's `install.sh` installs them with pacman, apt or dnf, see [Amane's README](https://github.com/MystiaFin/amane#installation).
-- The `amane` CLI, only to send IPC verbs (`amane ipc call island ...`). Any version works.
 - Optional, see Limitations: `pactl`, `udevadm`, `dbus-monitor`, `setpriv` (util-linux) and `pw-dump` (pipewire).
 
 ```sh
@@ -43,24 +42,26 @@ Starting early also keeps D-Bus from activating another notification daemon for 
 
 From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it on every save.
 
-## IPC
+## CLI
 
-```sh
-amane ipc call island <verb>
-```
+`kanade` with no verb runs the shell. `kanade <verb> [args]` asks the running one:
 
 | Verb | Does |
 |---|---|
-| `open <surface>` | opens `media`, `notifications`, `controls` or `launcher` on the focused output |
-| `toggle <surface>` | opens it, or collapses it when it is already open there |
-| `collapse` | collapses the open island on the focused output |
-| `dnd toggle` | turns Do Not Disturb on or off: notification toasts stop showing, Critical ones still do |
+| `launcher\|controls\|media\|notifications open` | opens that Surface on the focused output |
+| `... close` | collapses it when it is open there |
+| `... toggle` | opens it, or collapses it when it is already open there |
+| `island collapse` | collapses the open island on the focused output |
+| `notifications clear` | dismisses every notification |
+| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification toasts stop showing, Critical ones still do |
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
-| `timer stop` | stops it |
+| `timer pause\|resume\|cancel` | pauses, resumes or cancels it |
+| `config reload` | reads the config again now |
+| `config validate` | says what a reload would find, without applying it |
+| `status` | the config generation, the last reload error and the keys pending restart |
+| `doctor` | checks the shell is running and the config is valid; works without a shell |
 
-A verb of a Module turned off in the config answers `module <name> is off`. With no verb it prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities.
-
-`amane ipc call config reload` reads the config again now, `amane ipc call config validate` says what a reload would find without applying it, and `amane ipc call status` prints the config generation, the last reload error and the keys pending restart.
+`kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused or no shell, 2 not a verb.
 
 ## Configuration
 
@@ -97,21 +98,21 @@ toast = 5000         # a notification shown as a Transient
 
 - `theme.palette`: the body and text take their tone from this image, and follow it when the file changes, so a wallpaper script that overwrites it re-themes the island. The body stays near-black and both stay near grey, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning. Unset, the body is near-black.
 - `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
-- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its IPC verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
+- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
 - `schema_version`: the config layout a file is written in, per file, `1` without one. When a Kanade release changes the layout, it migrates older files in memory as it reads them and leaves them as they are on disk. A file with a version newer than this Kanade reads, or one that is not a version, is skipped whole, so a downgrade never applies settings it cannot read.
 - Problems are reported on stderr with file and line. At start, a key that is unknown or a value out of range is skipped, keeping what the layers below gave it, and a file that is not valid TOML, like one that sets a key twice, is skipped whole.
 - A change while running applies without a restart, except `modules`, which stays as it started and is reported pending restart. A change with any problem applies nothing: the config in effect stays whole, and stderr and `status` report why.
 
 ## Keyboard
 
-Every Surface opens from an IPC verb, so a niri keybind reaches it. Add these lines inside the `binds` block of `~/.config/niri/config.kdl`:
+Every Surface opens from a verb, so a niri keybind reaches it. Add these lines inside the `binds` block of `~/.config/niri/config.kdl`:
 
 ```kdl
-Mod+Alt+Space hotkey-overlay-title="Island: Launcher" { spawn "amane" "ipc" "call" "island" "toggle" "launcher"; }
-Mod+Alt+N hotkey-overlay-title="Island: Notifications" { spawn "amane" "ipc" "call" "island" "toggle" "notifications"; }
-Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "amane" "ipc" "call" "island" "toggle" "media"; }
-Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "amane" "ipc" "call" "island" "toggle" "controls"; }
-Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "amane" "ipc" "call" "island" "collapse"; }
+Mod+Alt+Space hotkey-overlay-title="Island: Launcher" { spawn "kanade" "launcher" "toggle"; }
+Mod+Alt+N hotkey-overlay-title="Island: Notifications" { spawn "kanade" "notifications" "toggle"; }
+Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "kanade" "media" "toggle"; }
+Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "kanade" "controls" "toggle"; }
+Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island" "collapse"; }
 ```
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.

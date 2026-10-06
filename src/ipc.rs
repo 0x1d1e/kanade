@@ -1,41 +1,55 @@
-//! `amane ipc call island <verb> [args]` (plan 7), `config reload|validate` (#102) and `status`.
+//! The shell's side of `kanade <verb> [args]` (`crate::cli`), behind the one IPC handler.
 //! Runs on the draw thread; `island` only posts.
 
 use std::time::Instant;
 
-use amane::Service;
+use amane::{Notifications, Service};
 
+use crate::cli::{self, Call, Reply};
 use crate::island::command::{Command, Unparsed};
-use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::reload::{self, Outcome};
 use crate::sources::timer;
 
-pub fn island(arguments: &[String]) -> String {
-    let command = match Command::parse(arguments) {
-        Ok(command) => command,
-        Err(Unparsed::Invalid(invalid)) => return invalid.to_string(),
-        Err(Unparsed::Usage) => return Command::usage(),
+pub fn answer(arguments: &[String]) -> String {
+    let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+    let reply = match cli::parse(&words) {
+        // a client from another Kanade build may send what this one does not know
+        Err(Unparsed::Usage) => Reply::Refused(cli::usage()),
+        Err(Unparsed::Invalid(invalid)) => Reply::Refused(invalid.to_string()),
+        Ok((module, _)) if !modules::on(module.name) => {
+            Reply::Refused(format!("module {} is off", module.name))
+        }
+        Ok((_, call)) => run(call),
     };
 
-    if let Some(module) = needs(&command).filter(|&module| !modules::on(module)) {
-        return format!("module {module} is off");
-    }
+    reply.encode()
+}
 
-    // handed to the timer's thread, which posts its Activity itself
-    match command {
-        Command::StartTimer(length) => {
-            timer::start(length);
-            return String::new();
-        }
-        Command::StopTimer => {
-            timer::stop();
-            return String::new();
-        }
-        _ => {}
-    }
+fn run(call: Call) -> Reply {
+    match call {
+        Call::Island(command) => island(command),
 
+        // handed to the timer's thread, which posts its Activity itself
+        Call::Timer(request) => {
+            timer::request(request);
+            Reply::Done(String::new())
+        }
+        Call::ClearNotifications => {
+            Notifications::clear();
+            Reply::Done(String::new())
+        }
+        Call::Reload => config(reload::reload(), "reloaded"),
+        Call::Validate => config(reload::validate(), "valid"),
+
+        // for now the config's part (#104 adds the rest)
+        Call::Status => Reply::Done(reload::status()),
+    }
+}
+
+fn island(command: Command) -> Reply {
     // its own statement, so the read is released before the write; a write wakes every window
     // even when nothing changed, so only a real change writes
     let effect = IslandService::read().resolve(command);
@@ -43,70 +57,27 @@ pub fn island(arguments: &[String]) -> String {
     match effect {
         Ok(Some(effect)) => IslandService::write().apply(effect, Instant::now()),
         Ok(None) => {}
-        Err(error) => return error.to_string(),
+        Err(error) => return Reply::Refused(error.to_string()),
     }
 
-    String::new()
+    Reply::Done(String::new())
 }
 
-pub fn config(arguments: &[String]) -> String {
-    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-
-    let (outcome, valid) = match arguments[..] {
-        ["reload"] => (reload::reload(), "reloaded"),
-        ["validate"] => (reload::validate(), "valid"),
-        _ => return String::from("usage: config reload|validate"),
-    };
-
+fn config(outcome: Outcome, valid: &str) -> Reply {
     match outcome {
-        Outcome::Valid(pending) => std::iter::once(String::from(valid))
-            .chain(
-                pending
-                    .iter()
-                    .map(|key| format!("{key} is pending restart")),
-            )
-            .collect::<Vec<_>>()
-            .join("\n"),
-        Outcome::Invalid(problems) => {
-            format!(
-                "invalid, the config in effect stays:\n{}",
-                problems.join("\n")
-            )
-        }
-    }
-}
-
-// for now the config's part (#104 adds the rest)
-pub fn status(_: &[String]) -> String {
-    reload::status()
-}
-
-// the Module beside the core a command needs: the timer's thread, a Surface that reads a Service,
-// or Do Not Disturb, which only notifications heed
-fn needs(command: &Command) -> Option<&'static str> {
-    match command {
-        Command::StartTimer(_) | Command::StopTimer => Some("timer"),
-        Command::Open(surface) | Command::Toggle(surface) => match surface {
-            Surface::Media => Some("media"),
-            Surface::Notifications => Some("notifications"),
-            Surface::Controls | Surface::Launcher => None,
-        },
-        Command::ToggleDnd => Some("notifications"),
-        Command::Collapse | Command::Post(_) | Command::Withdraw(_) => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Do Not Disturb only quiets notifications, so it goes with them
-    #[test]
-    fn verbs_go_with_their_module() {
-        assert_eq!(needs(&Command::ToggleDnd), Some("notifications"));
-        assert_eq!(needs(&Command::StopTimer), Some("timer"));
-        assert_eq!(needs(&Command::Open(Surface::Media)), Some("media"));
-        assert_eq!(needs(&Command::Toggle(Surface::Controls)), None);
-        assert_eq!(needs(&Command::Collapse), None);
+        Outcome::Valid(pending) => Reply::Done(
+            std::iter::once(String::from(valid))
+                .chain(
+                    pending
+                        .iter()
+                        .map(|key| format!("{key} is pending restart")),
+                )
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Outcome::Invalid(problems) => Reply::Refused(format!(
+            "invalid, the config in effect stays:\n{}",
+            problems.join("\n")
+        )),
     }
 }

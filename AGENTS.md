@@ -26,7 +26,7 @@ scripts/dev               # cargo build, restart the shell on each save; a faile
 
 ## Amane pin
 
-The exact `rev` of `amane` in `Cargo.toml`. Bump it deliberately; never follow Amane `main`. The installed `amane` CLI is only needed for `amane ipc call`, and its version does not matter.
+The exact `rev` of `amane` in `Cargo.toml`. Bump it deliberately; never follow Amane `main`. The installed `amane` CLI is not needed: `kanade <verb>` talks to the shell (`src/cli.rs`).
 
 ## Rules
 

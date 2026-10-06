@@ -185,7 +185,7 @@ fn satellites(
 fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
-        Detail::Timer(countdown) => label(timer::short(countdown, now), theme::fg()),
+        Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
         _ => label(abbreviation(activity.kind()).to_owned(), theme::fg()),
     }
 }
@@ -364,6 +364,14 @@ fn small_form(
     }
 }
 
+// what is left, muted while it stands still
+fn timer_tone(countdown: &Countdown) -> Color {
+    match countdown.paused {
+        Some(_) => theme::muted(),
+        None => theme::fg(),
+    }
+}
+
 /*
  * the stopwatch, what it is, then what is left; Peek also says how long it was started for. The
  * clock has a fixed width, so a second ticking by redraws it in place
@@ -383,7 +391,11 @@ fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Opt
     let gap = 11.0;
     let width = geometry::shape(presentation).width - 2.0 * inset - icon - clock - 2.0 * gap;
 
-    let mut words = children![Text::new("Timer").size(13.0).color(theme::fg()).weight(600)];
+    let title = match countdown.paused {
+        Some(_) => "Paused",
+        None => "Timer",
+    };
+    let mut words = children![Text::new(title).size(13.0).color(theme::fg()).weight(600)];
 
     if presentation == Presentation::Peek {
         words.push(Box::new(
@@ -414,7 +426,7 @@ fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Opt
                         .child(
                             Text::new(timer::clock(countdown, now))
                                 .size(size)
-                                .color(theme::fg())
+                                .color(timer_tone(countdown))
                                 .weight(600),
                         ),
                 ])

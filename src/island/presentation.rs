@@ -18,28 +18,13 @@ pub enum Surface {
 }
 
 impl Surface {
+    #[cfg(test)]
     pub const ALL: [Surface; 4] = [
         Surface::Media,
         Surface::Notifications,
         Surface::Controls,
         Surface::Launcher,
     ];
-
-    // as IPC names it
-    pub fn name(self) -> &'static str {
-        match self {
-            Surface::Media => "media",
-            Surface::Notifications => "notifications",
-            Surface::Controls => "controls",
-            Surface::Launcher => "launcher",
-        }
-    }
-
-    pub fn parse(name: &str) -> Option<Surface> {
-        Surface::ALL
-            .into_iter()
-            .find(|surface| surface.name() == name)
-    }
 
     // what a click on an island showing this Kind opens; a Kind without a Surface of its own has its control there
     pub fn of(kind: Kind) -> Surface {
@@ -999,16 +984,6 @@ mod tests {
         assert_eq!(Surface::of(Kind::Notification), Notifications);
         assert_eq!(Surface::of(Kind::Volume), Controls);
         assert_eq!(Surface::of(Kind::Timer), Controls);
-    }
-
-    #[test]
-    fn surface_names_round_trip() {
-        for surface in Surface::ALL {
-            assert_eq!(Surface::parse(surface.name()), Some(surface));
-        }
-
-        assert_eq!(Surface::parse("Media"), None);
-        assert_eq!(Surface::parse(""), None);
     }
 
     #[test]

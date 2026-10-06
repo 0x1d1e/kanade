@@ -1,6 +1,6 @@
 #!/bin/sh
 # frame gaps across the island's morphs (#36). Needs `AMANE_FRAMES=1 scripts/dev > LOG 2>&1` running
-# usage: scripts/frames LOG [ROUNDS]
+# usage: scripts/frames LOG [ROUNDS]; $KANADE is the CLI, target/debug/kanade by default
 set -e
 log=${1:?usage: scripts/frames LOG [ROUNDS]}
 rounds=${2:-3}
@@ -9,7 +9,7 @@ measure() {
     label=$1
     shift
     start=$(wc -l < "$log")
-    amane ipc call island "$@" > /dev/null
+    "${KANADE:-target/debug/kanade}" "$@" > /dev/null
     sleep 1
     tail -n +$((start + 1)) "$log" | awk -v label="$label" '
         $1 == "frame" {
@@ -27,8 +27,8 @@ measure() {
 i=0
 while [ "$i" -lt "$rounds" ]; do
     for surface in controls media notifications launcher; do
-        measure "$surface" open "$surface"
+        measure "$surface" "$surface" open
     done
-    measure collapse collapse
+    measure collapse island collapse
     i=$((i + 1))
 done

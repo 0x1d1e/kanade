@@ -209,7 +209,10 @@ Public: `kanade <verb> [args]`; Amane IPC internal.
 ```text
 launcher open|close|toggle
 controls open|close|toggle
-notifications open|clear|dnd on|off|toggle
+media open|close|toggle
+island collapse
+notifications open|close|toggle|clear
+notifications dnd on|off|toggle
 clipboard open|clear
 calendar open
 timer start <dur>|pause|resume|cancel
