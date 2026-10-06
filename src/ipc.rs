@@ -1,4 +1,5 @@
-//! `amane ipc call island <verb> [args]` (plan 7). Runs on the draw thread and only posts.
+//! `amane ipc call island <verb> [args]` (plan 7), `config reload|validate` (#102) and `status`.
+//! Runs on the draw thread; `island` only posts.
 
 use std::time::Instant;
 
@@ -8,6 +9,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::modules;
+use crate::reload::{self, Outcome};
 use crate::sources::timer;
 
 pub fn island(arguments: &[String]) -> String {
@@ -45,6 +47,38 @@ pub fn island(arguments: &[String]) -> String {
     }
 
     String::new()
+}
+
+pub fn config(arguments: &[String]) -> String {
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+    let (outcome, valid) = match arguments[..] {
+        ["reload"] => (reload::reload(), "reloaded"),
+        ["validate"] => (reload::validate(), "valid"),
+        _ => return String::from("usage: config reload|validate"),
+    };
+
+    match outcome {
+        Outcome::Valid(pending) => std::iter::once(String::from(valid))
+            .chain(
+                pending
+                    .iter()
+                    .map(|key| format!("{key} is pending restart")),
+            )
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Outcome::Invalid(problems) => {
+            format!(
+                "invalid, the config in effect stays:\n{}",
+                problems.join("\n")
+            )
+        }
+    }
+}
+
+// for now the config's part (#104 adds the rest)
+pub fn status(_: &[String]) -> String {
+    reload::status()
 }
 
 // the Module beside the core a command needs: the timer's thread, a Surface that reads a Service,
