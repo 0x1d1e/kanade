@@ -246,7 +246,8 @@ osd volume|brightness
 - `amane ipc call` may remain internal; public CLI stays `kanade ...`.
 - add normal Rust crates when they deepen Kanade.
 - no second shell/UI framework: no Quickshell/Qt/GTK/Iced/Slint alongside Amane.
-- do not directly add low-level Wayland/render deps for behavior Amane should own. Extend Amane first; bypass only when seam belongs to Kanade.
+- do not directly add low-level Wayland/render deps for behavior Amane should own.
+- capability Amane lacks (per-app audio, devices, tray, clipboard, idle inhibit) → Kanade adapter over Amane's `Bus`, external tools or a non-Wayland crate; don't wait on Amane. Wayland boundary holds; external semantics stop at the adapter. [ADR 0011](adr/0011-kanade-adapters-where-amane-lacks-a-capability.md).
 - Amane owns Kanade's Wayland runtime/UI seam. Direct Wayland deps only for isolated diagnostics/preflight that implement no shell behavior: `wayland-client` lives only in `src/doctor/` (registry globals for `kanade doctor`), enforced by `src/boundary.rs`.
 - switch from Amane only if it blocks core invariant: privacy Overlay, secure lock, focus/input, zero-idle rendering, required protocol access.
 
