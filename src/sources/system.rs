@@ -250,8 +250,9 @@ fn refresh_all(daemons: Vec<Daemon>) {
 }
 
 /*
- * keeps `now` for Controls and posts what changed since the last read. A read that changes nothing
- * writes nothing, so a signal about something Kanade does not show redraws nothing
+ * posts what changed since the last read and keeps `now` for Controls. A read that changes nothing
+ * writes nothing, so a signal about something Kanade does not show redraws nothing. Kept only once
+ * posted, so a change a panic interrupts is posted by the restart's reads
  */
 fn refresh<S: Service + PartialEq>(now: S, changes: fn(&S, &S) -> Vec<Activity>) {
     let posts = {
@@ -264,18 +265,16 @@ fn refresh<S: Service + PartialEq>(now: S, changes: fn(&S, &S) -> Vec<Activity>)
         changes(&before, &now)
     };
 
+    if !posts.is_empty() {
+        let at = Instant::now();
+        let mut island = IslandService::write();
+
+        for activity in posts {
+            island.post(activity, at);
+        }
+    }
+
     *S::write() = now;
-
-    if posts.is_empty() {
-        return;
-    }
-
-    let at = Instant::now();
-    let mut island = IslandService::write();
-
-    for activity in posts {
-        island.post(activity, at);
-    }
 }
 
 #[cfg(test)]

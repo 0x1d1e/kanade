@@ -306,7 +306,7 @@ enum Change {
 }
 
 // what was posted, remembered so an event that changes nothing shown posts nothing
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct Follower {
     posted: Option<Seen>,
 
@@ -356,6 +356,17 @@ impl Follower {
         }
 
         changes
+    }
+
+    /*
+     * steps and posts what changed, noting the step only once posted, so a step a panic interrupts
+     * is posted again after the restart
+     */
+    fn advance(&mut self, seen: Option<Seen>, now: Instant, post: impl FnOnce(Vec<Change>)) {
+        let mut next = self.clone();
+
+        post(next.step(seen, now));
+        *self = next;
     }
 
     // when a paused Activity runs out, the one moment step() has to run without an event
@@ -631,7 +642,7 @@ fn follow_players(
     loop {
         let now = Instant::now();
 
-        post(follower.step(players.choose(), now), now);
+        follower.advance(players.choose(), now, |changes| post(changes, now));
         watcher.show(players, watching(), now);
 
         let deadline = [follower.deadline(), watcher.tick]
@@ -677,7 +688,7 @@ fn follow_players(
             }
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("kanade: session bus unreachable, no Media Activity");
-                post(follower.step(None, now), now);
+                follower.advance(None, now, |changes| post(changes, now));
                 return;
             }
         }
@@ -817,6 +828,8 @@ fn unescape(path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+
     use super::*;
 
     fn seen(key: &str, title: &str, playing: bool) -> Seen {
@@ -945,6 +958,24 @@ mod tests {
             follower.step(Some(seen("mpv", "Song", false)), Instant::now()),
             []
         );
+    }
+
+    #[test]
+    fn a_post_a_panic_interrupts_posts_again_after_the_restart() {
+        let mut follower = Follower::default();
+        let now = Instant::now();
+        let mpv = seen("mpv", "Song", true);
+
+        let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+            follower.advance(Some(mpv.clone()), now, |_| panic!("a panic while posting"));
+        }));
+        assert!(panicked.is_err());
+
+        let mut posted = Vec::new();
+        follower.advance(Some(mpv.clone()), now, |changes| posted = changes);
+
+        assert_eq!(posted, [Change::Post(mpv.activity())]);
+        assert_eq!(follower.step(Some(mpv), now), []);
     }
 
     #[test]
