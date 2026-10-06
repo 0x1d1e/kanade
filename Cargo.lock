@@ -844,6 +844,7 @@ dependencies = [
  "serde",
  "syn 2.0.119",
  "toml",
+ "wayland-client",
 ]
 
 [[package]]

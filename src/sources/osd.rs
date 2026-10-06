@@ -28,7 +28,7 @@ const PACE: Pace = Pace {
 };
 
 // PulseAudio announces each change to a device's volume or mute, and to which is the default
-const PULSE: Announcer = Announcer {
+pub const PULSE: Announcer = Announcer {
     program: "pactl",
     args: &["subscribe"],
     announces: |line| {
@@ -39,7 +39,7 @@ const PULSE: Announcer = Announcer {
 };
 
 // the kernel announces each change to a backlight, from a hotkey or a tool like brightnessctl
-const BACKLIGHT: Announcer = Announcer {
+pub const BACKLIGHT: Announcer = Announcer {
     program: "udevadm",
     args: &["monitor", "--kernel", "--subsystem-match=backlight"],
     announces: |line| line.starts_with("KERNEL["),

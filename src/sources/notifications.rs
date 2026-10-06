@@ -11,12 +11,12 @@
 //! watched; a read that finds the same notifications posts nothing. Amane is the daemon only if no other one, like mako, got the bus name
 //! first. Then nothing arrives, and `Daemon` says who has it for the Notifications Surface.
 
-use std::fs;
 use std::process;
 use std::time::{Duration, Instant, SystemTime};
 
-use amane::{Apps, Argument, Bus, Notification, Notifications, Service, Urgency};
+use amane::{Apps, Bus, Notification, Notifications, Service, Urgency};
 
+use super::bus;
 use super::wake::{Announcer, Pace, Wakes};
 use crate::island::activity::{
     Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Toast,
@@ -36,7 +36,7 @@ const PACE: Pace = Pace {
 
 // the bus carries each notification arriving, closed by its sender, or closed by Amane, which
 // is every change to Amane's list
-const BUS: Announcer = Announcer {
+pub const BUS: Announcer = Announcer {
     program: "dbus-monitor",
     args: &[
         "--session",
@@ -47,9 +47,7 @@ const BUS: Announcer = Announcer {
 };
 
 // the bus name a notification daemon owns
-const NAME: &str = "org.freedesktop.Notifications";
-
-const DBUS: &str = "org.freedesktop.DBus";
+pub const NAME: &str = "org.freedesktop.Notifications";
 
 // whether Kanade is the notification daemon, for the Notifications Surface's error state (plan 7)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -93,7 +91,7 @@ impl Daemon {
 
         // Amane owns it and is about to say so, or no one does yet
         match owner() {
-            Some(pid) if pid != process::id() => Daemon::Conflict(name(pid)),
+            Some(pid) if pid != process::id() => Daemon::Conflict(bus::process(pid)),
             _ => Daemon::Starting,
         }
     }
@@ -218,34 +216,6 @@ fn app_icon(notification: &Notification) -> Option<String> {
     Some(app.icon_path()?.to_string_lossy().into_owned())
 }
 
-// the process that has the notification bus name, none while no one has it
-fn owner() -> Option<u32> {
-    let bus = Bus::session();
-    let path = "/org/freedesktop/DBus";
-
-    let owner = bus.call(DBUS, path, DBUS, "GetNameOwner", &[Argument::from(NAME)]);
-
-    if owner.text().is_empty() {
-        return None;
-    }
-
-    let pid = bus.call(
-        DBUS,
-        path,
-        DBUS,
-        "GetConnectionUnixProcessID",
-        &[Argument::from(owner.text())],
-    );
-
-    Some(pid.number() as u32).filter(|&pid| pid > 0)
-}
-
-// as the process names itself, like "mako"
-fn name(pid: u32) -> String {
-    fs::read_to_string(format!("/proc/{pid}/comm"))
-        .map_or_else(|_| format!("process {pid}"), |name| name.trim().to_owned())
-}
-
 /*
  * whether a line of `dbus-monitor --profile` announces a change to the notifications: tab separated
  * type, time, serial, sender, destination, path, interface and member, after a header and the
@@ -312,7 +282,7 @@ pub fn follow() {
 
             // Running and Conflict are for good, so only Starting asks again
             if daemon == Daemon::Starting {
-                let next = Daemon::of(running, owner);
+                let next = Daemon::of(running, || bus::owner(Bus::session(), NAME));
 
                 if let Daemon::Conflict(other) = &next {
                     eprintln!(
@@ -387,7 +357,11 @@ mod tests {
 
         assert!(!announces(&line("mc", NAME, "GetServerInformation")));
         assert!(!announces(&line("mr", NAME, "Notify")));
-        assert!(!announces(&line("sig", DBUS, "NameAcquired")));
+        assert!(!announces(&line(
+            "sig",
+            "org.freedesktop.DBus",
+            "NameAcquired"
+        )));
         assert!(!announces(
             "#type\ttimestamp\tserial\tsender\tdestination\tpath\tinterface\tmember"
         ));

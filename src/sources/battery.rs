@@ -36,7 +36,7 @@ const PACE: Pace = Pace {
 };
 
 // the kernel announces each change to a power supply, like a charger going in
-const POWER: Announcer = Announcer {
+pub const POWER: Announcer = Announcer {
     program: "udevadm",
     args: &["monitor", "--kernel", "--subsystem-match=power_supply"],
     announces: |line| line.starts_with("KERNEL["),

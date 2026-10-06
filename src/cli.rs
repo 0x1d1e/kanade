@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use amane::{IpcCall, ipc_socket};
 
-use crate::config;
+use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::timer;
@@ -120,7 +120,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
             println!("{}", usage());
             return ExitCode::SUCCESS;
         }
-        ["doctor"] => return doctor(),
+        ["doctor"] => return doctor::run(),
         _ => {}
     }
 
@@ -150,7 +150,8 @@ pub fn run(arguments: &[String]) -> ExitCode {
     }
 }
 
-fn call(arguments: &[String]) -> Result<Reply, String> {
+// what the running shell answers, or why there is none to ask
+pub fn call(arguments: &[String]) -> Result<Reply, String> {
     // a newline would split one argument into two on the shell's side
     if arguments.iter().any(|argument| argument.contains('\n')) {
         return Err(String::from("an argument cannot hold a newline"));
@@ -188,34 +189,6 @@ fn send(mut stream: UnixStream, call: &IpcCall) -> io::Result<String> {
     stream.read_to_string(&mut reply)?;
 
     Ok(reply)
-}
-
-// read-only, and works without a shell, which may be what is wrong; #105 adds the rest
-fn doctor() -> ExitCode {
-    let mut healthy = true;
-
-    match call(&[String::from("status")]) {
-        Ok(_) => println!("shell: running"),
-        Err(problem) => {
-            println!("shell: {problem}");
-            healthy = false;
-        }
-    }
-
-    let (_, problems) = config::read();
-
-    if problems.is_empty() {
-        println!("config: valid");
-    } else {
-        println!("config: invalid");
-        problems.iter().for_each(|problem| println!("  {problem}"));
-        healthy = false;
-    }
-
-    match healthy {
-        true => ExitCode::SUCCESS,
-        false => ExitCode::FAILURE,
-    }
 }
 
 #[cfg(test)]
