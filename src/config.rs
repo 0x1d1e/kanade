@@ -896,7 +896,7 @@ battery = false
 
     #[test]
     fn this_build_reads_its_own_version() {
-        let (_, problems) = one("schema_version = 1");
+        let (_, problems) = one(&format!("schema_version = {SCHEMA_VERSION}"));
 
         assert_eq!(problems, vec![]);
     }
