@@ -8,7 +8,7 @@ AI-generated concept, not a capture of the current build.
 
 ## Configuration
 
-Kanade reads `$XDG_CONFIG_HOME/kanade/config.toml` (else `~/.config/kanade/config.toml`) once at start. Every key is optional; these are the defaults:
+Kanade reads `$XDG_CONFIG_HOME/kanade/config.toml` (else `~/.config/kanade/config.toml`) once at start. Kanade accepts the TOML subset shown below: table headers, booleans, millisecond integers, double-quoted strings (only `\"` and `\\` escapes), and comments. Every key is optional; these are the defaults:
 
 ```toml
 # the island snaps to its new shape and only fades its content, over 80 ms
