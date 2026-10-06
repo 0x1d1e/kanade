@@ -1,6 +1,84 @@
-#!/bin/sh
-# amane dev against this checkout, refusing to run on a CLI that does not match the pinned Amane
-set -e
-root=$(cd "$(dirname "$0")/.." && pwd)
-"$root/scripts/check-amane"
-AMANE_CONFIG=$root exec amane dev
+#!/usr/bin/env python3
+"""Build Kanade with cargo and restart it on every save.
+
+A failed build keeps the running shell on screen while the error is fixed. Ctrl-C stops the
+shell too. The environment passes through, so `AMANE_FRAMES=1 scripts/dev` prints frames.
+"""
+
+import json
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+watched = [root / "src", root / "Cargo.toml", root / "Cargo.lock"]
+
+# a rebuild takes seconds, so checking twice a second is quick enough
+INTERVAL = 0.5
+
+
+# the newest time among the watched paths; folders count too, since adding or removing a file
+# only changes its folder's time
+def snapshot():
+    latest = 0
+    for path in watched:
+        for entry in [path, *path.rglob("*")] if path.is_dir() else [path]:
+            try:
+                latest = max(latest, entry.stat().st_mtime_ns)
+            except FileNotFoundError:
+                pass
+    return latest
+
+
+# cargo renders its own progress and errors on stderr; stdout carries the artifact list
+def build():
+    result = subprocess.run(
+        ["cargo", "build", "--message-format", "json-render-diagnostics"],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        message = json.loads(line)
+        target = message.get("target", {})
+        if message.get("reason") == "compiler-artifact" and target.get("kind") == ["bin"]:
+            return message["executable"]
+    return None
+
+
+def stop(shell):
+    if shell is not None and shell.poll() is None:
+        shell.kill()
+        # waiting collects the exit status so the old shell does not linger as a zombie
+        shell.wait()
+
+
+def main():
+    # explicit, since a parent can start this with SIGINT ignored; SIGTERM cleans up the same way
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    shell = None
+    try:
+        while True:
+            # taken before building, so a save during the build still starts another one
+            before = snapshot()
+            binary = build()
+            if binary is not None:
+                stop(shell)
+                shell = subprocess.Popen([binary])
+            else:
+                print("dev: build failed, keeping the running shell", file=sys.stderr)
+            while snapshot() == before:
+                time.sleep(INTERVAL)
+            print("dev: change found, rebuilding", file=sys.stderr)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop(shell)
+
+
+main()

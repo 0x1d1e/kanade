@@ -1,8 +1,8 @@
 //! The config file (#39): `$XDG_CONFIG_HOME/kanade/config.toml`, else `~/.config/kanade/config.toml`.
 //! Read once at start, every key optional. A missing file is the defaults; a line that does not
 //! parse or a value out of range keeps its default and says so on stderr, so a typo never stops
-//! the shell. `amane dev` builds against `amane` and std only, so this reads a TOML subset itself:
-//! `[section]`, `key = value` with integers, booleans and "strings", and `#` comments.
+//! the shell. This reads a TOML subset itself: `[section]`, `key = value` with integers, booleans
+//! and "strings", and `#` comments.
 //!
 //! ```toml
 //! reduced_motion = false
