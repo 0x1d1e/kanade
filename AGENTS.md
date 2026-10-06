@@ -1,6 +1,6 @@
 # Kanade
 
-Niri Dynamic Island built on Amane. Original design: `docs/plan.md` (archived after v0.1, not kept in sync; decisions since are ADRs in `docs/adr/`).
+niri shell built on Amane, centered on a Dynamic Island. Before architecture or scope work, read `docs/design.md` (target design; decisions in `docs/adr/`). v0.1 plan, history only: `docs/archived/plan.md`.
 
 Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
 

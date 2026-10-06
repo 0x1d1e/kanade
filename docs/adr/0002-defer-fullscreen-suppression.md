@@ -1,6 +1,6 @@
 # 2. Defer fullscreen suppression until niri reports fullscreen state
 
-Status: accepted (Phase 1, #13). Supersedes the heuristic in plan §5.3.
+Status: superseded by ADR 0006. Was accepted (Phase 1, #13), superseding the heuristic in plan §5.3.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 1. Fixed canvas with an input region instead of resizing the layer window
 
-Status: accepted (Phase 0, #2-#5)
+Status: accepted (Phase 0, #2-#5). Layer superseded by ADR 0006.
 
 ## Context
 

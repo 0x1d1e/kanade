@@ -45,7 +45,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 | `Rectangle`: radius, border, shadow, blur, clip, rotate/scale/translate, shader | Morph visuals need no Amane changes |
 | Verified in source (`src/wayland/update.rs`): `update_surface` runs every frame and re-sends changed input region and keyboard mode | Region tracks the spring each frame; keyboard mode can switch per Surface. Cost to measure: one `wl_region` per frame while moving |
 | Verified (`src/services.rs`): `Service::listen()` is a free-form loop on the service's own thread; a poll that returns `false` is `quiet` and wakes nothing. `quiet()` is crate-private, so a custom `listen()` cannot make its own write quiet | Verified on niri 26.04 (#5): `IslandService::listen` blocks on `recv_timeout(next_deadline)`, nudged by a static `sync_channel(1)` whenever a deadline changes. It woke only on nudges and at deadlines (90-240 µs late), never at idle (0 wakeups in 60 s). It writes only when something is due, so a quiet write is not needed |
-| Verified: no subscription between services. `read()` only subscribes windows | A source watching `Audio`/`Brightness` reads again when PulseAudio or the kernel announces a change, polling every 50-100 ms only while it settles or no announcer runs, and writes only when changed ([ADR 0004](adr/0004-wake-sources-on-announcements.md)) |
+| Verified: no subscription between services. `read()` only subscribes windows | A source watching `Audio`/`Brightness` reads again when PulseAudio or the kernel announces a change, polling every 50-100 ms only while it settles or no announcer runs, and writes only when changed ([ADR 0004](../adr/0004-wake-sources-on-announcements.md)) |
 | Verified (`ARCHITECTURE.md`): `write()` is for input handlers and service threads, never views; IPC handlers run on the main thread | IPC verbs may call `Island::write()` |
 | Verified: Amane's `compositor` module is private; its niri backend only tracks workspaces and window-to-workspace | Kanade opens its own `$NIRI_SOCKET` `"EventStream"` connection (JSON lines) |
 | Verified on niri 26.04: event stream has `WindowFocusChanged`, `WorkspaceActivated`, `WindowLayoutsChanged`, `OverviewOpenedOrClosed`, `CastsChanged`/`CastStartedOrChanged`/`CastStopped`. Window JSON has no `is_fullscreen` | Focused output = output of the focused workspace. Screen capture comes from casts. Fullscreen only by heuristic (window size equals output logical size), see 5.3 |
@@ -54,7 +54,7 @@ From Amane docs and source (local clone `../amane`, `ARCHITECTURE.md`, `src/`), 
 
 ## 4. Domain language
 
-Moved to [`CONTEXT.md`](../CONTEXT.md), which owns the terms, avoid-lists and invariants.
+Moved to [`CONTEXT.md`](../../CONTEXT.md), which owns the terms, avoid-lists and invariants.
 
 Presentation changes from the earlier draft: the old 5 states (`Rest, Compact, Peek, Expanded, Surface`) had two ways to be big. Collapsed into 4. Reason: with Expanded media at 440x150 and Media surface at 520x330 there were two competing "media, bigger" forms and no rule for which one a click opens.
 
@@ -124,9 +124,9 @@ Timings (starting values, tune in Phase 6): hover 100-140 ms, expand ~180 ms, su
 - One island per monitor (`window_per_monitor`).
 - Transients and workspace OSD: focused output only.
 - Focused output = output of the workspace with `is_focused` (from `WorkspaceActivated`/`WorkspacesChanged`).
-- Fullscreen on an output: rule 6. The island is on `Layer::Overlay`, above fullscreen, so suppression is Kanade's job, not the compositor's. Deferred from v0.1: the size heuristic misfires on maximized windows, so it waits for niri to report fullscreen state over IPC. See [ADR 0002](adr/0002-defer-fullscreen-suppression.md).
+- Fullscreen on an output: rule 6. The island is on `Layer::Overlay`, above fullscreen, so suppression is Kanade's job, not the compositor's. Deferred from v0.1: the size heuristic misfires on maximized windows, so it waits for niri to report fullscreen state over IPC. See [ADR 0002](../adr/0002-defer-fullscreen-suppression.md).
 - Overview open (`OverviewOpenedOrClosed`): collapse to Rest, hide transients.
-- Screen capture: niri only says a cast exists, not why. `CastStartedOrChanged` posts a Persistent `ScreenCast` Activity; `CastStopped` withdraws it. Label: "CAPTURE" compact, "Screen capture active" expanded. Never "Recording" or "Sharing" until attribution is reliable; those would be future specializations of `ScreenCast`. Concurrent casts stay one Activity (identity unchanged), shown from the first cast until the last stops; a paused cast still counts. A `count` field can be added later without touching identity. A lost Niri socket withdraws it, since nobody can say a cast still runs. Mic/camera use is not covered by niri; it comes from the PipeWire graph ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)).
+- Screen capture: niri only says a cast exists, not why. `CastStartedOrChanged` posts a Persistent `ScreenCast` Activity; `CastStopped` withdraws it. Label: "CAPTURE" compact, "Screen capture active" expanded. Never "Recording" or "Sharing" until attribution is reliable; those would be future specializations of `ScreenCast`. Concurrent casts stay one Activity (identity unchanged), shown from the first cast until the last stops; a paused cast still counts. A `count` field can be added later without touching identity. A lost Niri socket withdraws it, since nobody can say a cast still runs. Mic/camera use is not covered by niri; it comes from the PipeWire graph ([ADR 0003](../adr/0003-privacy-from-pipewire-graph.md)).
 - If the Niri socket is lost, degrade to "every monitor is focused", no error toast, log it.
 
 ## 6. Architecture
@@ -147,7 +147,7 @@ Body sizes (starting values): rest ~150x32, compact ~220x38, peek ~300x52, expan
 
 Keyboard: `Keyboard::None` normally. Escape and Launcher typing need focus, so the island uses `OnDemand` while the pointer is on the body or it is expanded (measured in #2 on niri: `OnDemand` focuses only on a press, so it must be on before the press that expands; `Exclusive` would keep the keyboard from overlays opened later, since niri gives it to the first mapped exclusive surface) and Launcher uses `Exclusive` or `OnDemand`. Amane re-sends keyboard mode per frame, so one window suffices (verified in #4: `None`, `OnDemand` and `Exclusive` switch on the same window from one frame to the next). Measured in #4 on niri: an IPC/keybind-opened Surface under `OnDemand` gets no Escape, since no press ever focuses it, so it holds `Exclusive`. The hold lasts until collapse, not the first pointer interaction: niri moves focus back to the window on any switch from `Exclusive` to `OnDemand`, even right after a press on the island, so releasing early loses Escape. While held, other windows get no keys until Escape, `collapse`, or the pointer leaving the body after entering it. So the hold is bounded (#48): an island opened without a press collapses after 5 s unless the pointer comes onto it, which hands over to the pointer-out grace. Only keys the open Surface consumes restart it, since someone typing into a window who missed the island would otherwise hold it forever: Notifications navigation restarts it and a typed character collapses it before a Space or Enter can press anything (#28), and Controls types nothing, so a typed character collapses it too (#29); Launcher opens only from IPC or a keybind, so it always holds, and its typing, arrows, Home/End and Enter restart it (#30). Verified on niri: keys reach the focused window again after the bound, Escape works within it, the pointer-only path is unchanged.
 
-Recorded as [ADR 1](adr/0001-fixed-canvas-input-region.md).
+Recorded as [ADR 1](../adr/0001-fixed-canvas-input-region.md).
 
 ### 6.2 Modules
 
@@ -249,7 +249,7 @@ Unit (pure, injected time):
 
 E2E (nested Niri session, `scripts/dev`):
 - Idle: `AMANE_FRAMES=1` prints no frames at rest and after every transition settles, except one per minute per island showing the clock.
-- Idle wakeups: at rest no Kanade thread wakes, except battery every 5 s and the clock once a minute; what remains is Amane's own polling ([ADR 0004](adr/0004-wake-sources-on-announcements.md)).
+- Idle wakeups: at rest no Kanade thread wakes, except battery every 5 s and the clock once a minute; what remains is Amane's own polling ([ADR 0004](../adr/0004-wake-sources-on-announcements.md)).
 - Click-through: pointer outside body reaches the window below.
 - Volume key during Spotify: OSD ~1.2 s, media returns.
 - Notification toast during Expanded Media: no displacement. Critical battery: displaces.
@@ -291,9 +291,9 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 | Amane 0.1.0 breaks | Pin git rev; keep Amane calls in `main.rs`, `view.rs`, `sources/`, `surfaces/`; `island/` is Amane-free except `service.rs` |
 | Pointer-leave lost when region shrinks | Answered in #3: niri delivers it. If another compositor does not, keep the region at the larger of current and target during collapse grace |
 | Another notification daemon running | Notifications surface shows the error state; README says to stop mako/dunst |
-| Screen capture is covered by niri casts; mic/camera has no source | Answered in #34: active PipeWire capture links via `pw-dump --monitor` ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)). Direct v4l2/ALSA users are not seen |
-| Niri exposes no fullscreen flag | Checked in #13: the heuristic misfires, so rule 6 is deferred until niri IPC reports fullscreen ([ADR 0002](adr/0002-defer-fullscreen-suppression.md)) |
-| Source polling wakes the CPU at idle | Answered in #40: sources block on announcements and poll only as fallback ([ADR 0004](adr/0004-wake-sources-on-announcements.md)); the remaining idle wakeups are Amane's |
+| Screen capture is covered by niri casts; mic/camera has no source | Answered in #34: active PipeWire capture links via `pw-dump --monitor` ([ADR 0003](../adr/0003-privacy-from-pipewire-graph.md)). Direct v4l2/ALSA users are not seen |
+| Niri exposes no fullscreen flag | Checked in #13: the heuristic misfires, so rule 6 is deferred until niri IPC reports fullscreen ([ADR 0002](../adr/0002-defer-fullscreen-suppression.md)) |
+| Source polling wakes the CPU at idle | Answered in #40: sources block on announcements and poll only as fallback ([ADR 0004](../adr/0004-wake-sources-on-announcements.md)); the remaining idle wakeups are Amane's |
 | Island nags | Attention budget in section 7 is a review gate for every new Kind |
 
 ## 12. Open questions
@@ -301,7 +301,7 @@ Later (after core is excellent): calendar, clipboard, weather, screen recording 
 1. Phase 0 items in section 3.
 2. Can a cast be attributed (recorder vs share) reliably, e.g. via cast target or the requesting app? If yes, split `ScreenCast` into `Recording` and `ScreenSharing` later.
 
-Decided: Rest click opens Controls (section 5.2). Satellite cap is 2 plus an overflow count (rule 3). Niri casts are `ScreenCast`, not "Recording" (section 5.3). Mic/camera come from PipeWire streams, not the portal ([ADR 0003](adr/0003-privacy-from-pipewire-graph.md)).
+Decided: Rest click opens Controls (section 5.2). Satellite cap is 2 plus an overflow count (rule 3). Niri casts are `ScreenCast`, not "Recording" (section 5.3). Mic/camera come from PipeWire streams, not the portal ([ADR 0003](../adr/0003-privacy-from-pipewire-graph.md)).
 
 ## 13. Documentation plan
 

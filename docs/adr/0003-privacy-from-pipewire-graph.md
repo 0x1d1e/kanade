@@ -1,6 +1,6 @@
 # 3. Mic and camera privacy from the PipeWire graph
 
-Status: accepted (Phase 5, #34). Answers plan §12 Q2.
+Status: accepted (Phase 5, #34). Answers plan §12 Q2. Privacy as an Activity superseded by ADR 0005; detection stands.
 
 ## Context
 
