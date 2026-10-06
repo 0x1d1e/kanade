@@ -16,8 +16,8 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amane"
-version = "0.1.0"
-source = "git+https://github.com/MystiaFin/amane?rev=30800248fc51a663ec1f852047818641d6218786#30800248fc51a663ec1f852047818641d6218786"
+version = "0.1.1"
+source = "git+https://github.com/MystiaFin/amane?rev=6ace43e5c69cd4b39bb06b28c20fc4b883422519#6ace43e5c69cd4b39bb06b28c20fc4b883422519"
 dependencies = [
  "fontconfig",
  "inotify",

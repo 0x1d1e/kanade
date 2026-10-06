@@ -6,7 +6,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-amane = { git = "https://github.com/MystiaFin/amane", rev = "30800248fc51a663ec1f852047818641d6218786" }
+amane = { git = "https://github.com/MystiaFin/amane", rev = "6ace43e5c69cd4b39bb06b28c20fc4b883422519" }
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }
