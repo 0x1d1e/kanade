@@ -24,7 +24,7 @@ pub struct Module {
     // what the user loses with it off, said at start whenever it is, since that loss is easy to miss
     pub warns: Option<&'static str>,
 
-    // the config keys it reads, so a key no Module reads is unknown
+    // the config keys it owns, which others may read too; a key no Module owns is unknown
     pub settings: &'static [config::Setting],
 
     /*

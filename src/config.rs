@@ -7,7 +7,7 @@
 //! A file may name the layout it is written in with `schema_version`; without one it is the v0.1
 //! layout, version 1. An older file is migrated in memory before it applies.
 //!
-//! Every key is optional, and each Module's keys come from its entry in the registry. A file that
+//! Every key is optional, and each key is registered by the one Module that owns it. A file that
 //! is not TOML is skipped whole; a key that is unknown or a value out of range is skipped alone,
 //! keeping what the layers below gave it. Either says so on stderr with file and line, so a typo
 //! never stops the shell.
@@ -97,7 +97,7 @@ impl Default for Config {
     }
 }
 
-// one key a Module reads, which the registry lists with the Module
+// one key a Module owns, which the registry lists with the Module; others may read it too
 pub struct Setting {
     // dotted: `timings.hover` is `hover` in `[timings]`
     pub key: &'static str,
@@ -356,8 +356,10 @@ fn layer(
         Ok(table) => {
             let mut table = tree(text, table.into_inner(), &mut problems);
 
-            migrate(&mut table, migrations, &mut problems);
-            apply(config, &table, "", home, &mut problems);
+            match migrate(&mut table, migrations) {
+                Ok(()) => apply(config, &table, "", home, &mut problems),
+                Err(problem) => problems = vec![problem],
+            }
         }
         Err(error) => {
             let line = error.span().map_or(1, |span| line(text, span.start));
@@ -408,8 +410,11 @@ fn tree(text: &str, table: DeTable, problems: &mut Vec<(usize, String)>) -> Tabl
     out
 }
 
-// brings a file to the current layout, from its `schema_version` or else version 1
-fn migrate(table: &mut Table, migrations: &[Migration], problems: &mut Vec<(usize, String)>) {
+/*
+ * brings a file to the current layout, from its `schema_version` or else version 1; a version this
+ * build has no migration from says how to read none of the file, so the whole file is skipped
+ */
+fn migrate(table: &mut Table, migrations: &[Migration]) -> Result<(), (usize, String)> {
     let current = migrations.len() + 1;
 
     let from = match table.remove("schema_version") {
@@ -423,24 +428,22 @@ fn migrate(table: &mut Table, migrations: &[Migration], problems: &mut Vec<(usiz
             match version {
                 Some(version) if (1..=current).contains(&version) => version,
                 Some(version) if version > current => {
-                    problems.push((
+                    return Err((
                         entry.line,
                         format!(
-                            "schema_version {version} is newer than this Kanade's {current}; \
-                             read as {current}"
+                            "schema_version {version} is newer than this Kanade reads \
+                             ({current}), skipped this file"
                         ),
                     ));
-                    current
                 }
                 _ => {
-                    problems.push((
+                    return Err((
                         entry.line,
                         format!(
-                            "schema_version: expected 1 to {current}, found {}; read as 1",
+                            "schema_version: expected 1 to {current}, found {}, skipped this file",
                             entry.node.value()
                         ),
                     ));
-                    1
                 }
             }
         }
@@ -449,13 +452,15 @@ fn migrate(table: &mut Table, migrations: &[Migration], problems: &mut Vec<(usiz
     for migration in &migrations[from - 1..] {
         migration(table);
     }
+
+    Ok(())
 }
 
 fn settings() -> impl Iterator<Item = &'static Setting> {
     modules::ALL.iter().flat_map(|module| module.settings)
 }
 
-// sets each key of a table at `prefix` that a Module reads, and names every other
+// sets each key of a table at `prefix` that a Module owns, and names every other
 fn apply(
     config: &mut Config,
     table: &Table,
@@ -764,8 +769,6 @@ battery = false
         let v1 = "[timings]\npeek = 90";
         let v2 = "schema_version = 2\n[motion]\nexpand = 200\ncollapse = 0";
         let v3 = "schema_version = 3\n[timings]\ngrace = 300";
-        let newer = "schema_version = 4\n[timings]\nhover = 110";
-        let wrong = "schema_version = \"two\"\n[timings]\npeek = 70";
 
         let (config, problems) = layers(&[v1, v2, v3], migrations);
 
@@ -782,23 +785,50 @@ battery = false
                 vec![],
             ]
         );
+    }
 
-        let (config, problems) = layers(&[newer, wrong], migrations);
+    /*
+     * a version this build cannot migrate from skips the file, so a newer build's settings.toml
+     * never applies over the config below it after a downgrade
+     */
+    #[test]
+    fn an_unusable_schema_version_skips_the_file() {
+        let current = MIGRATIONS.len() + 1;
+        let newer = format!("schema_version = {}\nclock = \"24h\"", current + 1);
 
-        assert_eq!(config.island.hover, ms(70));
-        assert_eq!(
-            problems,
-            [
-                said(&[(
-                    1,
-                    "schema_version 4 is newer than this Kanade's 3; read as 3"
-                )]),
-                said(&[(
-                    1,
-                    "schema_version: expected 1 to 3, found \"two\"; read as 1"
-                )]),
-            ]
-        );
+        for (upper, problem) in [
+            (
+                newer.as_str(),
+                format!(
+                    "schema_version {} is newer than this Kanade reads ({current}), skipped this file",
+                    current + 1
+                ),
+            ),
+            (
+                "clock = \"24h\"\nschema_version = \"two\"\ntimings.hover = 0",
+                format!(
+                    "schema_version: expected 1 to {current}, found \"two\", skipped this file"
+                ),
+            ),
+            (
+                "schema_version = 0\nclock = \"24h\"",
+                format!("schema_version: expected 1 to {current}, found 0, skipped this file"),
+            ),
+            (
+                "schema_version = -1\nclock = \"24h\"",
+                format!("schema_version: expected 1 to {current}, found -1, skipped this file"),
+            ),
+        ] {
+            let (config, problems) = layers(&["clock = \"12h\"", upper], MIGRATIONS);
+            let line = upper
+                .lines()
+                .position(|line| line.starts_with("schema"))
+                .unwrap()
+                + 1;
+
+            assert_eq!(config.clock, Hours::Twelve, "{upper}");
+            assert_eq!(problems, [vec![], vec![(line, problem)]]);
+        }
     }
 
     #[test]
@@ -808,7 +838,7 @@ battery = false
         assert_eq!(problems, vec![]);
     }
 
-    // every key a Module reads, once, and no two where one is a table of the other
+    // every key a Module owns, once, and no two where one is a table of the other
     #[test]
     fn the_registry_names_each_setting_once() {
         let keys: Vec<&str> = settings().map(|setting| setting.key).collect();
