@@ -7,6 +7,8 @@
 //! anyway: `localtime_r` for the time zone and its daylight saving, and a `CLOCK_REALTIME` timerfd
 //! for the minute. A monotonic deadline would fall behind across a suspend or a clock step; the
 //! timerfd fires at the wall minute after a resume, and a step cancels it, which redraws at once.
+//!
+//! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI.
 
 use std::ffi::{c_char, c_int, c_long};
 use std::fs::File;
@@ -17,6 +19,19 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use amane::Service;
+
+// the hand-kept libc ABI below holds only here; another target must check it before building
+#[cfg(not(all(
+    target_os = "linux",
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    )
+)))]
+compile_error!(
+    "src/clock.rs declares libc's Linux ABI by hand for x86_64, aarch64 and riscv64 only"
+);
 
 // <time.h> and <sys/timerfd.h>, asm-generic values, as on x86_64, aarch64 and riscv64
 const CLOCK_REALTIME: c_int = 0;
