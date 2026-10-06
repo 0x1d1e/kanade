@@ -9,7 +9,7 @@ use std::io::{self, BufRead, BufReader};
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -98,7 +98,10 @@ pub fn run(
 
         eprintln!("kanade: lost `{command}` ({lost}), running it again in {pause:?}");
 
-        thread::sleep(pause);
+        if stop.pause(pause) {
+            return None;
+        }
+
         wait = (wait * 2).min(LAST_RETRY);
     }
 }
@@ -130,9 +133,10 @@ fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
     }
 }
 
-// ends what `run` runs from another thread: kills the program, which does not run again
+// ends what `run` runs from another thread: kills the program, or ends the wait to run it again,
+// and it does not run again
 #[derive(Clone, Default)]
-pub struct Stop(Arc<Mutex<Running>>);
+pub struct Stop(Arc<(Mutex<Running>, Condvar)>);
 
 #[derive(Default)]
 struct Running {
@@ -148,10 +152,23 @@ impl Stop {
         if let Some(child) = &mut running.child {
             drop(child.kill());
         }
+
+        self.0.1.notify_all();
+    }
+
+    // waits `pause` unless stopped first; says whether it was
+    fn pause(&self, pause: Duration) -> bool {
+        let (running, _) = self
+            .0
+            .1
+            .wait_timeout_while(self.lock(), pause, |running| !running.stopped)
+            .unwrap_or_else(PoisonError::into_inner);
+
+        running.stopped
     }
 
     fn lock(&self) -> MutexGuard<'_, Running> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -400,6 +417,36 @@ mod tests {
 
         // stopped before it ran, it never does
         assert!(run("sleep", &["60"], &stop, |_| unreachable!()).is_none());
+    }
+
+    // a program that ended waits out its backoff, and a stop must end that wait too
+    #[test]
+    fn a_stop_between_runs_ends_the_backoff() {
+        let stop = Stop::default();
+        let (ended, runs) = mpsc::channel();
+
+        let running = thread::spawn({
+            let stop = stop.clone();
+
+            move || {
+                run("true", &[], &stop, |output| {
+                    output.lines().count();
+                    ended.send(()).unwrap();
+                    io::ErrorKind::UnexpectedEof.into()
+                })
+            }
+        });
+
+        // well into the first backoff, of FIRST_RETRY
+        runs.recv().unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let stopping = Instant::now();
+        stop.stop();
+
+        assert!(running.join().unwrap().is_none());
+        assert!(stopping.elapsed() < Duration::from_millis(300));
+        assert!(runs.try_recv().is_err());
     }
 
     #[test]
