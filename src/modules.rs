@@ -24,6 +24,9 @@ pub struct Module {
     // what the user loses with it off, said at start whenever it is, since that loss is easy to miss
     pub warns: Option<&'static str>,
 
+    // the config keys it owns, which others may read too; a key no Module owns is unknown
+    pub settings: &'static [config::Setting],
+
     /*
      * starts its threads and adds its windows and IPC verbs to the shell; runs once at start, after
      * every Module it requires, so a source finds the island configured
@@ -41,6 +44,7 @@ pub const ALL: &[Module] = &[
         requires: &[],
         optional: &[],
         warns: None,
+        settings: config::ISLAND,
         start: |app| {
             let config = config::get();
 
@@ -71,6 +75,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| app,
     },
     // the privacy cluster: the microphone and camera from PipeWire, and screen casts from the
@@ -80,6 +85,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: Some("microphone, camera and screen cast indicators will not show"),
+        settings: &[],
         start: |app| {
             spawn("privacy", privacy::follow);
             app.window_per_monitor(cluster::window)
@@ -90,6 +96,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             spawn("battery", battery::follow);
             app
@@ -100,6 +107,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             spawn("media", media::follow);
             app
@@ -110,6 +118,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             timer::spawn();
             app
@@ -120,6 +129,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             spawn("osd", osd::follow);
             app
@@ -130,6 +140,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: config::NOTIFICATIONS,
         start: |app| {
             spawn("notifications", notifications::follow);
             app
@@ -141,6 +152,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             system::spawn();
             app
@@ -151,6 +163,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             system::spawn();
             app
@@ -162,6 +175,7 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
+        settings: &[],
         start: |app| {
             system::spawn();
             app
@@ -392,6 +406,7 @@ mod tests {
             requires,
             optional: &[],
             warns: None,
+            settings: &[],
             start: |app| app,
         }
     }
