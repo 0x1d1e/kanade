@@ -255,18 +255,12 @@ impl IslandService {
             now,
             arbiter::Island {
                 focused: self.focused(monitor),
-                expanded: self.expanded(monitor),
             },
         )
     }
 
     pub fn dnd(&self) -> bool {
         self.arbiter.dnd()
-    }
-
-    // registered, live or not yet swept; a source checks this so withdrawing nothing never writes
-    pub fn contains(&self, id: &Id) -> bool {
-        self.arbiter.contains(id)
     }
 
     // the Surface open on any island; at most one island is Expanded
@@ -388,11 +382,6 @@ impl IslandService {
         let id = activity.id().clone();
         let kind = activity.kind();
 
-        // a transient the open Surface already shows would only wait behind it as a badge
-        if activity.interrupt() == Interrupt::Transient && self.absorbs()(&activity) {
-            return;
-        }
-
         let up = self.arbiter.interrupt(&id, now);
         let arrives = activity.interrupt() == Interrupt::Preempt && up != Some(Interrupt::Preempt);
         let expands = match activity.interrupt() {
@@ -478,7 +467,6 @@ impl IslandService {
         });
         nudge();
 
-        self.absorb();
         self.sync(now);
     }
 
@@ -518,7 +506,6 @@ impl IslandService {
         }
 
         nudge();
-        self.absorb();
         self.sync(now);
     }
 
@@ -547,29 +534,6 @@ impl IslandService {
     // an AutoExpand's Surface is open until it gives the islands back, so a click claims it
     pub fn auto(&self) -> bool {
         self.auto.is_some()
-    }
-
-    // what the open Surface already shows, on the island each Activity reaches
-    fn absorbs(&self) -> impl Fn(&Activity) -> bool + use<> {
-        let open = self
-            .presentations
-            .expanded()
-            .map(|(monitor, surface)| (self.focused(monitor), surface));
-
-        move |activity| {
-            open.is_some_and(|(focused, surface)| {
-                (focused || activity.scope() == Scope::Global) && surface.shows(activity)
-            })
-        }
-    }
-
-    // drops the Transients up that a Surface just opened shows, as `post` drops those posted after
-    fn absorb(&mut self) {
-        let absorbs = self.absorbs();
-
-        self.change(|arbiter| {
-            arbiter.absorb(absorbs);
-        });
     }
 
     pub fn withdraw(&mut self, id: &Id, now: Instant) {
@@ -721,7 +685,6 @@ impl IslandService {
         }
 
         self.presentations.input(monitor, input);
-        self.absorb();
 
         /*
          * a pinned island stays open with nobody on it, so it waits for nothing and gives back a
@@ -741,17 +704,15 @@ impl IslandService {
 
     /*
      * every island follows its Frame and its Presentation, since a post reaches many islands and
-     * opening one collapses any other. The primary of a Presentation is what shows: the
-     * Transient over the primary Activity, or that one
+     * opening one collapses any other. The primary of a Presentation is the Frame's
      */
     fn sync(&mut self, now: Instant) {
-        let showing = |frame: Frame| (Mark::of(&frame), frame.transient.or(frame.primary));
+        let showing = |frame: Frame| (Mark::of(&frame), frame.primary);
 
         let (marks, untouched) = showing(self.arbiter.frame(
             now,
             arbiter::Island {
                 focused: self.focused_output.is_none(),
-                expanded: false,
             },
         ));
 
@@ -988,7 +949,7 @@ fn nudge() {
 mod tests {
     use super::*;
     use crate::island::activity::fixture;
-    use crate::island::activity::{Detail, Device, Lifetime, Priority, Toast, Track, Volume};
+    use crate::island::activity::{Detail, Lifetime, Priority, Track, Workspace};
 
     const MONITOR: &str = "eDP-1";
 
@@ -1987,8 +1948,8 @@ mod tests {
         assert_eq!(island.resolve(Command::Open(Surface::Media)), Err(NoFocus));
     }
 
-    fn volume() -> Activity {
-        fixture::shown(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD)
+    fn workspace() -> Activity {
+        fixture::shown(Id::new(Kind::Workspace, MONITOR), Priority::Osd, OSD)
     }
 
     fn battery() -> Activity {
@@ -2017,30 +1978,28 @@ mod tests {
     const OSD: Duration = Duration::from_millis(1200);
 
     fn shown(island: &IslandService, monitor: &str, now: Instant) -> Option<Activity> {
-        let frame = island.frame(monitor, now);
-
-        frame.transient.or(frame.primary)
+        island.frame(monitor, now).primary
     }
 
-    // the accept case of #20: shows, expires, and the persistent one returns with no re-post
+    // the accept case of #20 and #109: shows, expires, and the persistent one returns with no re-post
     #[test]
-    fn transient_over_a_persistent_shows_expires_and_returns() {
+    fn a_workspace_switch_over_a_persistent_shows_expires_and_returns() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
         island.post(media(), now);
-        island.post(volume(), now + ms(100));
+        island.post(workspace(), now + ms(100));
 
         let expiry = now + ms(100) + OSD;
 
-        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(volume()));
+        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(workspace()));
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
         assert_eq!(island.deadline(), Some(expiry));
 
         island.expire(expiry - ms(1));
         assert_eq!(
             island.get(MONITOR).content.target().activity,
-            Some(volume())
+            Some(workspace())
         );
 
         island.expire(expiry);
@@ -2060,7 +2019,7 @@ mod tests {
         island.post(media(), now);
         assert!(island.settled(MONITOR, later));
 
-        island.post(volume(), later);
+        island.post(workspace(), later);
 
         assert!(!island.settled(MONITOR, later + ms(1)));
         assert_eq!(island.shape(MONITOR, later + ms(50)), geometry::COMPACT);
@@ -2073,7 +2032,7 @@ mod tests {
 
         // a repost of the same Activity changes nothing on screen
         let settled = later + Duration::from_secs(1);
-        island.post(volume(), settled);
+        island.post(workspace(), settled);
         assert!(island.settled(MONITOR, settled));
     }
 
@@ -2141,14 +2100,15 @@ mod tests {
         assert!(island.settled(MONITOR, later + Duration::from_secs(1)));
     }
 
-    // a held volume key: each step redraws the bar where it stands, mid-morph or settled
+    // switching on through workspaces: each step moves the pager's mark where it stands, mid-morph
+    // or settled
     #[test]
     fn a_moved_level_redraws_in_place() {
-        let level = |percent| {
-            volume().with_detail(Detail::Volume(Volume {
-                device: Device::Speaker,
-                percent,
-                muted: false,
+        let level = |index| {
+            workspace().with_detail(Detail::Workspace(Workspace {
+                index,
+                count: 9,
+                name: None,
             }))
         };
         let showing = |island: &IslandService, at| {
@@ -2163,12 +2123,12 @@ mod tests {
         let mut island = focused_on(MONITOR, now);
 
         island.post(media(), now);
-        island.post(level(40), now + ms(500));
+        island.post(level(2), now + ms(500));
 
         // mid-morph, the step only changes what fades in
         let mid = now + ms(560);
         let before = showing(&island, mid);
-        island.post(level(45), mid);
+        island.post(level(3), mid);
         let after = showing(&island, mid);
 
         assert_eq!(before[0], after[0]);
@@ -2178,59 +2138,26 @@ mod tests {
         );
         assert_eq!(
             island.get(MONITOR).content.target().activity,
-            Some(level(45))
+            Some(level(3))
         );
 
         let settled = now + Duration::from_secs(1);
         assert!(island.settled(MONITOR, settled));
 
-        island.post(level(50), settled);
+        island.post(level(4), settled);
         assert!(island.settled(MONITOR, settled));
         assert_eq!(
             showing(&island, settled),
-            [
-                None,
-                Some((
-                    Some(Detail::Volume(Volume {
-                        device: Device::Speaker,
-                        percent: 50,
-                        muted: false,
-                    })),
-                    1.0
-                ))
-            ]
+            [None, Some((Some(level(4).detail().clone()), 1.0))]
         );
     }
 
-    // the Media Surface sets the speaker volume, so its Transient never queues behind it
     #[test]
-    fn the_open_surface_absorbs_what_it_shows() {
-        let level = |device| {
-            volume().with_detail(Detail::Volume(Volume {
-                device,
-                percent: 40,
-                muted: false,
-            }))
-        };
-
-        let now = Instant::now();
-        let mut island = focused_on(MONITOR, now);
-        run(&mut island, Command::Open(Surface::Media), now);
-
-        island.post(level(Device::Speaker), now + ms(100));
-        assert!(!island.contains(level(Device::Speaker).id()));
-
-        island.post(level(Device::Microphone), now + ms(200));
-        assert!(island.contains(level(Device::Microphone).id()));
-        assert_eq!(island.surface(), Some(Surface::Media));
-    }
-
-    #[test]
-    fn transient_shows_only_on_the_focused_island() {
+    fn a_workspace_switch_shows_only_on_the_focused_island() {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
-        island.post(volume(), now);
+        island.post(workspace(), now);
 
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
         assert_eq!(island.presentation(OTHER), Presentation::Rest);
@@ -2319,58 +2246,6 @@ mod tests {
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Notifications)
         );
-    }
-
-    // plan 5.1 rule 4: a toast waits behind an open Surface and shows once it closes
-    #[test]
-    fn queued_transient_shows_after_the_surface_closes() {
-        let now = Instant::now();
-        let mut island = focused_on(MONITOR, now);
-
-        island.post(media(), now);
-        island.input(MONITOR, Input::Click, now);
-        island.post(volume(), now + ms(100));
-
-        assert!(island.expanded(MONITOR));
-        assert_eq!(island.frame(MONITOR, now + ms(100)).queued, [volume()]);
-
-        island.input(MONITOR, Input::Collapse, now + ms(200));
-
-        assert_eq!(shown(&island, MONITOR, now + ms(200)), Some(volume()));
-        assert_eq!(
-            island.get(MONITOR).content.target().activity,
-            Some(volume())
-        );
-    }
-
-    // a toast up when its Surface opens is in the list, not also a badge
-    #[test]
-    fn opening_a_surface_drops_the_transients_it_shows() {
-        let now = Instant::now();
-        let mut island = focused_on(MONITOR, now);
-        let toast = fixture::shown(
-            Id::new(Kind::Notification, "7"),
-            Priority::Actionable,
-            Duration::from_secs(5),
-        )
-        .with_detail(Detail::Notification(Toast::default()));
-
-        island.post(media(), now);
-        island.post(toast.clone(), now);
-        island.input(MONITOR, Input::Click, now);
-        island.post(volume(), now);
-
-        assert_eq!(
-            island.presentation(MONITOR),
-            Presentation::Expanded(Surface::Notifications)
-        );
-        assert_eq!(island.frame(MONITOR, now).queued, [volume()]);
-
-        // nor does it return once the Surface closes
-        island.input(MONITOR, Input::Collapse, now + ms(100));
-
-        assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(volume()));
-        assert!(!island.arbiter.contains(toast.id()));
     }
 
     #[test]
@@ -2749,7 +2624,7 @@ mod tests {
         island.open(MONITOR, Surface::Controls, now);
         island.post(silenced(), now + ms(100));
 
-        assert!(!island.contains(silenced().id()));
+        assert!(!island.arbiter.contains(silenced().id()));
         assert_eq!(
             island.presentation(MONITOR),
             Presentation::Expanded(Surface::Controls)

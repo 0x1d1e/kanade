@@ -326,7 +326,7 @@ pub const ALL: &[Module] = &[
                 without: POLLS,
             },
         ],
-        settings: config::NOTIFICATIONS,
+        settings: &[],
         // Do Not Disturb only quiets notifications, so it goes with them
         verbs: &[Verb {
             name: "notifications",

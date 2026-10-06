@@ -53,7 +53,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `... toggle` | opens it, or collapses it when it is already open there |
 | `island collapse` | collapses the open island on the focused output |
 | `notifications clear` | dismisses every notification |
-| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification toasts and Banners stop showing, Critical ones still do |
+| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification Banners stop showing, Critical ones still do |
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
 | `timer pause\|resume\|cancel` | pauses, resumes or cancels it |
 | `config reload` | reads the config again now |
@@ -86,8 +86,7 @@ expand = 180         # morph to a larger form
 surface_change = 220 # one Surface replacing another, and a new track dissolving in
 collapse = 180       # morph to a smaller form
 grace = 250          # pointer out before a Peek or Surface collapses
-osd = 1200           # the OSD, and volume, brightness and workspace Transients
-toast = 5000         # a notification shown as a Transient
+osd = 1200           # the OSD, and a workspace switch on the island
 
 [theme]
 # palette = "~/Pictures/wallpaper.jpg"
@@ -131,6 +130,6 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 - A fullscreen window covers the island, Critical Activities like low battery included. The island sits on the Top layer, which niri draws below fullscreen windows; maximized windows do not cover it. See [ADR 0006](docs/adr/0006-island-on-top-layer.md).
 - The Launcher cannot tell when an app fails to start. Amane's `DesktopApp::launch` runs the entry through `sh -c` and reports nothing back, so a broken `Exec` line just closes the island.
 - The Launcher shows "Finding apps" forever on a system with no launchable `.desktop` entries. Amane's `Apps` is empty both while scanning and after finding nothing, and exposes no scan-complete state.
-- Without `pactl`, `udevadm` or `dbus-monitor`, the OSD, notification toasts and battery reads poll instead of waiting for the system to announce a change, adding up to about 23 CPU wakeups a second at idle. A backlight changed by firmware without a kernel uevent shows no brightness OSD. See [ADR 0004](docs/adr/0004-wake-sources-on-announcements.md).
+- Without `pactl`, `udevadm` or `dbus-monitor`, the OSD, notification Banners and battery reads poll instead of waiting for the system to announce a change, adding up to about 23 CPU wakeups a second at idle. A backlight changed by firmware without a kernel uevent shows no brightness OSD. See [ADR 0004](docs/adr/0004-wake-sources-on-announcements.md).
 - Without `setpriv` from util-linux, helper processes like `pactl`, `udevadm`, `dbus-monitor` and `pw-dump` still work but may survive Kanade being killed abruptly. See [ADR 0004](docs/adr/0004-wake-sources-on-announcements.md).
 - The privacy cluster's microphone and camera see only capture that goes through PipeWire, using `pw-dump` from the `pipewire` package. An app that opens `/dev/video*` or ALSA directly, like `ffmpeg -f v4l2`, does not show. See [ADR 0003](docs/adr/0003-privacy-from-pipewire-graph.md).

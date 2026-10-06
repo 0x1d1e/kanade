@@ -10,8 +10,8 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Priority, Toast,
-    Track, Uplink, Volume, Workspace,
+    Activity, Charge, Connection, Countdown, Detail, Device, Kind, Peer, Priority, Toast, Track,
+    Uplink, Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -34,7 +34,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let keyboard = island.keyboard(&monitor.name);
     let shape = island.shape(&monitor.name, now);
     let content = island.content(&monitor.name, now);
-    let frame = island.frame(&monitor.name, now);
 
     // the spring is ours, not an Amane Animation, so the view asks for frames until it rests
     if !island.settled(&monitor.name, now) {
@@ -112,10 +111,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     }
 
     layers.push(Box::new(hover));
-
-    if let Some(badge) = queued(&frame, body_rect, shape) {
-        layers.push(Box::new(badge));
-    }
 
     LayerWindow::new()
         .width(geometry::CANVAS_WIDTH)
@@ -199,34 +194,6 @@ fn label(text: String, tone: Color) -> Box<dyn Widget> {
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
-    )
-}
-
-/*
- * the Transients an open Surface keeps back, as a count in its top right corner; it fades in as
- * the Satellites fade out
- */
-fn queued(frame: &Frame, body: Rect, shape: Shape) -> Option<Rectangle> {
-    let opacity = 1.0 - geometry::satellite_opacity(shape);
-
-    if frame.queued.is_empty() || opacity == 0.0 {
-        return None;
-    }
-
-    let inset = 12.0;
-    let at = Rect {
-        x: body.x + body.width - inset - geometry::SATELLITE,
-        y: body.y + inset,
-        width: geometry::SATELLITE,
-        height: geometry::SATELLITE,
-    };
-
-    Some(
-        dot(
-            at,
-            label(frame.queued.len().to_string(), theme::ISLAND.on_surface),
-        )
-        .opacity(opacity),
     )
 }
 

@@ -26,9 +26,6 @@ use super::{RING, Ring};
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
 
-// clear of the queued badge in the body's top right corner
-const BADGE: f32 = 36.0;
-
 const HEADER: f32 = 20.0;
 const FOOTER: f32 = 28.0;
 const GAP: f32 = 10.0;
@@ -443,7 +440,7 @@ fn header(count: usize) -> Row {
     }
 
     Row::new(words)
-        .width(WIDTH - BADGE)
+        .width(WIDTH)
         .height(HEADER)
         .gap(8.0)
         .align(Center)

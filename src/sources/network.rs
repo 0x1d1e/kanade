@@ -147,10 +147,10 @@ pub fn changes(before: &Connectivity, now: &Connectivity) -> Vec<Activity> {
 
     let activity = Activity::new(
         id,
-        Priority::Passive,
+        Priority::Osd,
         Lifetime::Transient(SHOWN),
         Scope::FocusedOutput,
-        Interrupt::Transient,
+        Interrupt::None,
     )
     .expect("SHOWN is no zero Lifetime");
 
@@ -181,7 +181,7 @@ mod tests {
         let activity = changes.pop()?;
 
         assert_eq!(activity.lifetime(), Lifetime::Transient(SHOWN));
-        assert_eq!(activity.interrupt(), Interrupt::Transient);
+        assert_eq!(activity.interrupt(), Interrupt::None);
 
         match activity.detail() {
             Detail::Network(connection) => Some(connection.clone()),

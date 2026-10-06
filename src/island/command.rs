@@ -88,7 +88,7 @@ debug withdraw <kind> <key>
   <priority>: {}
   <lifetime>: persistent|<ms>
   <scope>: global|focused-output
-  <interrupt>: none|transient|preempt|auto-expand:<ms>",
+  <interrupt>: none|preempt|auto-expand:<ms>",
             kinds.join("|"),
             priorities.join("|")
         )
@@ -128,7 +128,6 @@ fn parse_scope(text: &str) -> Option<Scope> {
 fn parse_interrupt(text: &str) -> Option<Interrupt> {
     match text {
         "none" => Some(Interrupt::None),
-        "transient" => Some(Interrupt::Transient),
         "preempt" => Some(Interrupt::Preempt),
         _ => milliseconds(text.strip_prefix("auto-expand:")?).map(Interrupt::AutoExpand),
     }
@@ -203,20 +202,13 @@ mod tests {
             )
         );
         assert_eq!(
-            post(&[
-                "volume",
-                "volume",
-                "osd",
-                "1200",
-                "focused-output",
-                "transient"
-            ]),
+            post(&["volume", "volume", "osd", "1200", "focused-output", "none"]),
             activity(
                 volume,
                 Priority::Osd,
                 Lifetime::Transient(Duration::from_millis(1200)),
                 Scope::FocusedOutput,
-                Interrupt::Transient
+                Interrupt::None
             )
         );
         assert_eq!(
@@ -338,7 +330,7 @@ debug withdraw <kind> <key>
   <priority>: passive|media|osd|ongoing|actionable|critical
   <lifetime>: persistent|<ms>
   <scope>: global|focused-output
-  <interrupt>: none|transient|preempt|auto-expand:<ms>"
+  <interrupt>: none|preempt|auto-expand:<ms>"
         );
     }
 }

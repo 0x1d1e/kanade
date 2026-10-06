@@ -156,10 +156,10 @@ fn activity(peer: Peer) -> Activity {
 
     Activity::new(
         id,
-        Priority::Passive,
+        Priority::Osd,
         Lifetime::Transient(SHOWN),
         Scope::FocusedOutput,
-        Interrupt::Transient,
+        Interrupt::None,
     )
     .expect("SHOWN is no zero Lifetime")
     .with_detail(Detail::Bluetooth(peer))
@@ -193,7 +193,7 @@ mod tests {
             .into_iter()
             .map(|activity| {
                 assert_eq!(activity.lifetime(), Lifetime::Transient(SHOWN));
-                assert_eq!(activity.interrupt(), Interrupt::Transient);
+                assert_eq!(activity.interrupt(), Interrupt::None);
 
                 match activity.detail() {
                     Detail::Bluetooth(peer) => (peer.name.clone(), peer.connected),

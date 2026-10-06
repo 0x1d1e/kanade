@@ -1,5 +1,6 @@
-//! Workspace switch Transients (plan 5.3): a switch shows the workspace on the island of the output
-//! it happened on, and is hidden while niri's overview is open, which shows the workspaces itself.
+//! Workspace switch Transients (plan 5.3, ADR 0007): a switch shows the workspace on the island of
+//! the output it happened on, as its primary until it expires, then the one before returns. It is
+//! hidden while niri's overview is open, which shows the workspaces itself.
 //!
 //! niri.rs follows niri's EventStream and says which workspace is focused; this decides what the
 //! island makes of it.
@@ -28,7 +29,7 @@ pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
                 Priority::Osd,
                 Lifetime::Transient(config::get().osd),
                 Scope::FocusedOutput,
-                Interrupt::Transient,
+                Interrupt::None,
             )
             .expect("the config bounds osd above zero")
             .with_detail(Detail::Workspace(now.workspace.clone())),
@@ -76,6 +77,9 @@ mod tests {
             Change::Post(activity) => {
                 assert_eq!(activity.id(), &id());
                 assert_eq!(activity.lifetime(), Lifetime::Transient(config::get().osd));
+                assert_eq!(activity.priority(), Priority::Osd);
+                assert_eq!(activity.scope(), Scope::FocusedOutput);
+                assert_eq!(activity.interrupt(), Interrupt::None);
 
                 match activity.detail() {
                     Detail::Workspace(workspace) => Some(workspace.clone()),
