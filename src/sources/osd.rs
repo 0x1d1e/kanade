@@ -1,6 +1,6 @@
 //! Volume, brightness and microphone changes (plan 3, 5.1, ADR 0007): a level that changes shows in
 //! the OSD on the focused output, and a held key keeps showing it again, so it extends one OSD.
-//! Until #109 each change also shows as a Transient on the focused island.
+//! None of it shows on the island.
 //!
 //! Amane has no subscription between services, so this reads them again when PulseAudio or the
 //! kernel announces a change (`wake`), and polls while a change settles or an announcer is down; a
@@ -12,12 +12,9 @@ use std::time::{Duration, Instant};
 use amane::{Audio, Brightness, Service};
 
 use super::wake::{Announcer, Pace, Wakes};
-use crate::island::activity::{
-    Activity, Detail, Device, Id, Interrupt, Kind, Lifetime, Priority, Scope, Volume,
-};
-use crate::island::service::IslandService;
+use crate::island::activity::{Device, Volume};
 use crate::osd::{Level, Osd};
-use crate::{config, supervise};
+use crate::supervise;
 
 const PACE: Pace = Pace {
     // plan 3: 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other
@@ -150,37 +147,6 @@ fn changes(before: Option<Levels>, now: Levels) -> Vec<Level> {
     changes
 }
 
-/*
- * until #109, the Transient that shows a change over the primary on the island the user is
- * looking at; one Activity per device, so the speaker and the microphone each extend their own
- */
-fn transient(level: Level) -> Activity {
-    let (id, detail) = match level {
-        Level::Volume(volume) => {
-            let key = match volume.device {
-                Device::Speaker => "speaker",
-                Device::Microphone => "microphone",
-            };
-
-            (Id::new(Kind::Volume, key), Detail::Volume(volume))
-        }
-        Level::Brightness(percent) => (
-            Id::new(Kind::Brightness, "backlight"),
-            Detail::Brightness(percent),
-        ),
-    };
-
-    Activity::new(
-        id,
-        Priority::Osd,
-        Lifetime::Transient(config::get().osd),
-        Scope::FocusedOutput,
-        Interrupt::Transient,
-    )
-    .expect("the config bounds osd above zero")
-    .with_detail(detail)
-}
-
 // runs on its own thread for good; only while it reads something
 pub fn follow(reads: Reads) {
     let mut wakes = Wakes::new(PACE, reads.announcers());
@@ -193,15 +159,7 @@ pub fn follow(reads: Reads) {
 
             // one OSD: what changed last takes its place
             if let Some(&shown) = changes.last() {
-                let now = Instant::now();
-
-                Osd::write().show(shown, now);
-
-                let mut island = IslandService::write();
-
-                for level in changes {
-                    island.post(transient(level), now);
-                }
+                Osd::write().show(shown, Instant::now());
             }
 
             let busy = last != Some(levels);
@@ -346,25 +304,5 @@ mod tests {
             }
             .any()
         );
-    }
-
-    // every step of a held key is the same Transient, so the Arbiter extends one, until #109
-    #[test]
-    fn repeated_steps_share_one_transient() {
-        let steps = [40, 45, 50].map(|percent| levels(percent, false));
-
-        let ids: Vec<Id> = steps
-            .windows(2)
-            .flat_map(|pair| changes(Some(pair[0]), pair[1]))
-            .map(|level| transient(level).id().clone())
-            .collect();
-
-        assert_eq!(ids.len(), 2);
-        assert_eq!(ids[0], ids[1]);
-
-        let shown = transient(Level::Brightness(70));
-        assert_eq!(shown.kind(), Kind::Brightness);
-        assert_eq!(shown.detail(), &Detail::Brightness(70));
-        assert_eq!(shown.lifetime(), Lifetime::Transient(config::get().osd));
     }
 }

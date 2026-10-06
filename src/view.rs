@@ -10,8 +10,7 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Priority, Toast,
-    Track, Uplink, Volume, Workspace,
+    Activity, Charge, Countdown, Detail, Device, Kind, Priority, Toast, Track, Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -34,7 +33,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let keyboard = island.keyboard(&monitor.name);
     let shape = island.shape(&monitor.name, now);
     let content = island.content(&monitor.name, now);
-    let frame = island.frame(&monitor.name, now);
 
     // the spring is ours, not an Amane Animation, so the view asks for frames until it rests
     if !island.settled(&monitor.name, now) {
@@ -112,10 +110,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     }
 
     layers.push(Box::new(hover));
-
-    if let Some(badge) = queued(&frame, body_rect, shape) {
-        layers.push(Box::new(badge));
-    }
 
     LayerWindow::new()
         .width(geometry::CANVAS_WIDTH)
@@ -199,34 +193,6 @@ fn label(text: String, tone: Color) -> Box<dyn Widget> {
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
-    )
-}
-
-/*
- * the Transients an open Surface keeps back, as a count in its top right corner; it fades in as
- * the Satellites fade out
- */
-fn queued(frame: &Frame, body: Rect, shape: Shape) -> Option<Rectangle> {
-    let opacity = 1.0 - geometry::satellite_opacity(shape);
-
-    if frame.queued.is_empty() || opacity == 0.0 {
-        return None;
-    }
-
-    let inset = 12.0;
-    let at = Rect {
-        x: body.x + body.width - inset - geometry::SATELLITE,
-        y: body.y + inset,
-        width: geometry::SATELLITE,
-        height: geometry::SATELLITE,
-    };
-
-    Some(
-        dot(
-            at,
-            label(frame.queued.len().to_string(), theme::ISLAND.on_surface),
-        )
-        .opacity(opacity),
     )
 }
 
@@ -374,10 +340,6 @@ fn small_form(
         (presentation, Some(Detail::Workspace(workspace))) => {
             self::workspace(presentation, workspace)
         }
-        (presentation, Some(Detail::Network(connection))) => {
-            link(presentation, Link::network(connection))
-        }
-        (presentation, Some(Detail::Bluetooth(peer))) => link(presentation, Link::bluetooth(peer)),
         (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
         _ => None,
     }
@@ -660,127 +622,6 @@ fn pager(workspace: &Workspace, dot: f32) -> Box<dyn Widget> {
         .collect();
 
     Box::new(Row::new(dots).gap(gap).align(Center))
-}
-
-// a network or a Bluetooth device that came or went, the same layout for both
-struct Link {
-    icon: Icon,
-    name: String,
-
-    // what happened, which Peek says under the name
-    status: &'static str,
-
-    connected: bool,
-
-    // a device's own, while connected
-    battery: Option<u8>,
-}
-
-impl Link {
-    fn network(connection: &Connection) -> Link {
-        let connected = connection.connected;
-
-        let (icon, name, status) = match &connection.uplink {
-            Uplink::Wifi(ssid) => (
-                Icon::Wifi,
-                ssid.clone(),
-                if connected {
-                    "Wi-Fi connected"
-                } else {
-                    "Wi-Fi disconnected"
-                },
-            ),
-            Uplink::Wired => (Icon::Wired, String::from("Ethernet"), status(connected)),
-            Uplink::Other(name) => (Icon::Shield, name.clone(), status(connected)),
-        };
-
-        Link {
-            icon,
-            name,
-            status,
-            connected,
-            battery: None,
-        }
-    }
-
-    fn bluetooth(peer: &Peer) -> Link {
-        Link {
-            icon: Icon::Bluetooth,
-            name: peer.name.clone(),
-            status: status(peer.connected),
-            connected: peer.connected,
-            battery: peer.battery.filter(|_| peer.connected),
-        }
-    }
-}
-
-fn status(connected: bool) -> &'static str {
-    if connected {
-        "Connected"
-    } else {
-        "Disconnected"
-    }
-}
-
-/*
- * icon, name, then a device's battery; Peek says what happened under the name. Gone is the icon
- * struck through, so it never rests on color alone
- */
-fn link(presentation: Presentation, link: Link) -> Option<Rectangle> {
-    let (icon, size, inset) = match presentation {
-        Presentation::Compact => (18.0, theme::text::LABEL, 15.0),
-        Presentation::Peek => (24.0, theme::text::BODY_LARGE, 20.0),
-        _ => return None,
-    };
-
-    let mut words = children![
-        Text::new(link.name)
-            .size(theme::text::LABEL)
-            .color(theme::ISLAND.on_surface)
-            .weight(theme::text::SEMIBOLD)
-            .elide()
-    ];
-
-    if presentation == Presentation::Peek {
-        words.push(Box::new(
-            Text::new(link.status)
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
-                .weight(theme::text::MEDIUM),
-        ));
-    }
-
-    let icon = if link.connected {
-        link.icon.draw(icon)
-    } else {
-        link.icon.crossed(icon)
-    };
-
-    let mut row = vec![
-        Box::new(icon) as Box<dyn Widget>,
-        Box::new(Column::new(words).width(Parent).gap(3.0)),
-    ];
-
-    if let Some(percent) = link.battery {
-        row.push(Box::new(
-            Text::new(format!("{percent}%"))
-                .size(size)
-                .color(theme::ISLAND.on_surface_variant)
-                .weight(theme::text::SEMIBOLD),
-        ));
-    }
-
-    Some(
-        sized(presentation)
-            .padding(Padding {
-                top: 0.0,
-                right: inset,
-                bottom: 0.0,
-                left: inset,
-            })
-            .align_child(Start, Center)
-            .child(Row::new(row).width(Parent).gap(11.0).align(Center)),
-    )
 }
 
 // a Volume or Brightness as one bar, the same layout for both

@@ -61,7 +61,7 @@ pub enum Priority {
     Passive,
     Media,
 
-    // volume, brightness, workspace
+    // a workspace switch
     Osd,
 
     // timer, low battery
@@ -123,10 +123,6 @@ pub enum Scope {
 pub enum Interrupt {
     // takes its place by priority and interrupts nothing
     None,
-
-    // shows over the primary for its Lifetime, then the primary returns; goes with the Frame's
-    // transient slot (#109)
-    Transient,
 
     // displaces a Surface the user opened (plan 5.1 rule 4)
     Preempt,
@@ -210,10 +206,6 @@ pub enum Detail {
 
     Notification(Toast),
 
-    Network(Connection),
-
-    Bluetooth(Peer),
-
     Timer(Countdown),
 }
 
@@ -228,8 +220,6 @@ impl Detail {
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
-            Detail::Network(_) => Some(Kind::Network),
-            Detail::Bluetooth(_) => Some(Kind::Bluetooth),
             Detail::Timer(_) => Some(Kind::Timer),
         }
     }
@@ -333,13 +323,6 @@ pub enum Uplink {
 
     // a VPN, a tethered phone and the rest, by the connection's own name
     Other(String),
-}
-
-// the machine joining an Uplink, or leaving it
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Connection {
-    pub uplink: Uplink,
-    pub connected: bool,
 }
 
 // a Bluetooth device the machine knows, like a headset
@@ -512,12 +495,6 @@ pub struct Frame {
 
     // the Satellites past the bound, shown only as a count
     pub overflow: usize,
-
-    // an `Interrupt::Transient` Activity over the primary
-    pub transient: Option<Activity>,
-
-    // `Interrupt::Transient` Activities kept off an open Surface, highest first, shown as a badge
-    pub queued: Vec<Activity>,
 }
 
 // the two policies most tests need, so each reads as what it tests
@@ -539,14 +516,14 @@ pub mod fixture {
         .expect("a Persistent that does not auto-expand is valid")
     }
 
-    // on the focused island, over the primary, for `duration`
+    // on the focused island, competing for the primary, for `duration`
     pub fn shown(id: Id, priority: Priority, duration: Duration) -> Activity {
         Activity::new(
             id,
             priority,
             Lifetime::Transient(duration),
             Scope::FocusedOutput,
-            Interrupt::Transient,
+            Interrupt::None,
         )
         .expect("a shown Activity lasts a while")
     }
@@ -664,7 +641,7 @@ mod tests {
 
     #[test]
     fn a_transient_lifetime_is_never_zero() {
-        for interrupt in [Interrupt::None, Interrupt::Transient, Interrupt::Preempt] {
+        for interrupt in [Interrupt::None, Interrupt::Preempt] {
             assert_eq!(
                 new(
                     Kind::Volume,
@@ -681,7 +658,7 @@ mod tests {
                 Kind::Volume,
                 Priority::Osd,
                 Lifetime::Transient(Duration::from_nanos(1)),
-                Interrupt::Transient
+                Interrupt::None
             )
             .is_ok()
         );
@@ -701,7 +678,7 @@ mod tests {
                 Priority::Osd,
                 Lifetime::Transient(OSD),
                 Scope::Global,
-                Interrupt::Transient,
+                Interrupt::None,
             ),
             (
                 Priority::Passive,

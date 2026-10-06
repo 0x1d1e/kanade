@@ -64,7 +64,7 @@ pub struct ThemeRoles {
     // a notification on the surface, a quieter step than a Satellite so text on it keeps its contrast
     pub surface_container: Color,
 
-    // a Satellite, a badge or missing cover art, a step above the surface so it reads beside it
+    // a Satellite or missing cover art, a step above the surface so it reads beside it
     pub surface_container_high: Color,
 
     // the ring of a pinned Island, quiet enough not to read as an alert

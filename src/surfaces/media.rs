@@ -26,9 +26,6 @@ const ART: f32 = 80.0;
 
 const GAP: f32 = 14.0;
 
-// clear of the queued badge in the body's top right corner
-const BADGE: f32 = 36.0;
-
 const CHIP: f32 = 24.0;
 const CHIP_WIDTH: f32 = 110.0;
 const CHIP_GAP: f32 = 6.0;
@@ -121,7 +118,7 @@ fn header(
     Row::new(children![
         track.art(ART, radius::ROW),
         Stack::new(children![
-            Column::new(lines).width(words - BADGE).gap(3.0),
+            Column::new(lines).width(words).gap(3.0),
             Rectangle::new()
                 .width(words)
                 .height(ART)

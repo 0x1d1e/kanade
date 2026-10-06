@@ -1,12 +1,9 @@
-//! NetworkManager for `system.rs`: what the machine is online through, and the Transient
-//! that joining or leaving it shows.
+//! NetworkManager for `system.rs`: what the machine is online through, for the Controls Surface.
 
 use amane::{Argument, Bus, Service, Value};
 
-use super::system::{Radio, SHOWN};
-use crate::island::activity::{
-    Activity, Connection, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Uplink,
-};
+use super::system::Radio;
+use crate::island::activity::Uplink;
 
 pub const NAME: &str = "org.freedesktop.NetworkManager";
 
@@ -123,120 +120,4 @@ fn properties(path: &str, interface: &str) -> Value {
         "GetAll",
         &[Argument::from(interface)],
     )
-}
-
-/*
- * joining an Uplink, a new one included, shows it; going offline shows the one left. The Wi-Fi
- * switch alone shows nothing: while wired it changes nothing, and on Wi-Fi going offline says it
- */
-pub fn changes(before: &Connectivity, now: &Connectivity) -> Vec<Activity> {
-    let change = match (&before.uplink, &now.uplink) {
-        (before, Some(now)) if before.as_ref() != Some(now) => Connection {
-            uplink: now.clone(),
-            connected: true,
-        },
-        (Some(before), None) => Connection {
-            uplink: before.clone(),
-            connected: false,
-        },
-        _ => return Vec::new(),
-    };
-
-    // one, so leaving and joining in a row replaces rather than queues
-    let id = Id::new(Kind::Network, "uplink");
-
-    let activity = Activity::new(
-        id,
-        Priority::Passive,
-        Lifetime::Transient(SHOWN),
-        Scope::FocusedOutput,
-        Interrupt::Transient,
-    )
-    .expect("SHOWN is no zero Lifetime");
-
-    vec![activity.with_detail(Detail::Network(change))]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::island::activity::{Interrupt, Lifetime};
-
-    fn on(uplink: Option<Uplink>) -> Connectivity {
-        Connectivity {
-            uplink,
-            wifi: Radio::On,
-        }
-    }
-
-    fn wifi(ssid: &str) -> Option<Uplink> {
-        Some(Uplink::Wifi(ssid.into()))
-    }
-
-    fn shown(before: Option<Uplink>, now: Option<Uplink>) -> Option<Connection> {
-        let mut changes = changes(&on(before), &on(now));
-
-        assert!(changes.len() <= 1);
-
-        let activity = changes.pop()?;
-
-        assert_eq!(activity.lifetime(), Lifetime::Transient(SHOWN));
-        assert_eq!(activity.interrupt(), Interrupt::Transient);
-
-        match activity.detail() {
-            Detail::Network(connection) => Some(connection.clone()),
-            detail => panic!("{detail:?}"),
-        }
-    }
-
-    fn joined(uplink: Option<Uplink>) -> Option<Connection> {
-        Some(Connection {
-            uplink: uplink.unwrap(),
-            connected: true,
-        })
-    }
-
-    fn left(uplink: Option<Uplink>) -> Option<Connection> {
-        Some(Connection {
-            uplink: uplink.unwrap(),
-            connected: false,
-        })
-    }
-
-    #[test]
-    fn joining_and_leaving_show() {
-        assert_eq!(shown(None, wifi("home")), joined(wifi("home")));
-        assert_eq!(shown(wifi("home"), None), left(wifi("home")));
-        assert_eq!(
-            shown(None, Some(Uplink::Wired)),
-            joined(Some(Uplink::Wired))
-        );
-    }
-
-    #[test]
-    fn a_new_uplink_shows_the_new_one() {
-        assert_eq!(shown(wifi("home"), wifi("cafe")), joined(wifi("cafe")));
-        assert_eq!(
-            shown(wifi("home"), Some(Uplink::Wired)),
-            joined(Some(Uplink::Wired))
-        );
-    }
-
-    #[test]
-    fn staying_put_shows_nothing() {
-        assert_eq!(shown(None, None), None);
-        assert_eq!(shown(wifi("home"), wifi("home")), None);
-    }
-
-    // the Wi-Fi switch is for Controls to show, not the island
-    #[test]
-    fn the_wifi_switch_alone_shows_nothing() {
-        let wired = Some(Uplink::Wired);
-        let off = Connectivity {
-            uplink: wired.clone(),
-            wifi: Radio::Off,
-        };
-
-        assert!(changes(&on(wired), &off).is_empty());
-    }
 }

@@ -30,9 +30,6 @@ use crate::view::bar;
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
 
-// clear of the queued badge in the body's top right corner
-const BADGE: f32 = 36.0;
-
 const HEADER: f32 = 20.0;
 const GAP: f32 = 14.0;
 
@@ -90,7 +87,7 @@ fn header() -> Row {
     }
 
     Row::new(header)
-        .width(WIDTH - BADGE)
+        .width(WIDTH)
         .height(HEADER)
         .gap(ICON_GAP)
         .align(Center)

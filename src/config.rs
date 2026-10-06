@@ -24,7 +24,6 @@
 //! collapse = 180
 //! grace = 250
 //! osd = 1200
-//! toast = 5000
 //!
 //! [theme]
 //! palette = "~/Pictures/wallpaper.jpg"
@@ -51,9 +50,8 @@ use crate::island::motion::Mode;
 use crate::island::service::Timings;
 use crate::modules;
 
-// plan 5.2: a level change shows for 1000-1400 ms, a toast for 4000-6000 ms
+// plan 5.2: a level change shows for 1000-1400 ms
 const OSD: Duration = Duration::from_millis(1200);
-const TOAST: Duration = Duration::from_millis(5000);
 
 // a timing outside this keeps its default: a spring needs some time, and a minute is no glance
 const SHORTEST: u64 = 1;
@@ -63,11 +61,8 @@ const LONGEST: u64 = 60_000;
 pub struct Config {
     pub island: Timings,
 
-    // how long a Volume, Brightness or workspace Transient shows
+    // how long the OSD and a workspace switch on the island show
     pub osd: Duration,
-
-    // how long a notification shows as a Transient
-    pub toast: Duration,
 
     // the image the theme roles are taken from, usually the wallpaper; the Island stays black and white
     pub palette: Option<String>,
@@ -90,7 +85,6 @@ impl Default for Config {
         Self {
             island: Timings::default(),
             osd: OSD,
-            toast: TOAST,
             palette: None,
             clock: Hours::default(),
             off: Vec::new(),
@@ -182,14 +176,6 @@ pub const ISLAND: &[Setting] = &[
         },
     },
 ];
-
-pub const NOTIFICATIONS: &[Setting] = &[Setting {
-    key: "timings.toast",
-    set: |config, value, _| {
-        config.toast = millis(value)?;
-        Ok(())
-    },
-}];
 
 fn millis(value: &Value) -> Result<Duration, String> {
     let ms = value.as_integer().ok_or("expected milliseconds")?;
@@ -390,7 +376,14 @@ impl Node {
 type Migration = fn(&mut Table);
 
 // the current layout is the last one migrated to
-const MIGRATIONS: &[Migration] = &[];
+const MIGRATIONS: &[Migration] = &[
+    // 2: notifications show as Banners, with no `timings.toast` (#109)
+    |table| {
+        if let Some(Node::Table(timings)) = table.get_mut("timings").map(|entry| &mut entry.node) {
+            timings.remove("toast");
+        }
+    },
+];
 
 // the `schema_version` this build writes and reads up to
 pub const SCHEMA_VERSION: usize = MIGRATIONS.len() + 1;
@@ -643,7 +636,6 @@ mod tests {
             collapse = 160
             grace = 300
             osd = 1_000
-            toast = 6000
 
             [ theme ]
             palette = "~/Pictures/wall # 1.jpg"
@@ -669,7 +661,6 @@ mod tests {
                     grace: ms(300),
                 },
                 osd: ms(1000),
-                toast: ms(6000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
                 off: vec!["media"],
@@ -721,14 +712,14 @@ mod tests {
     // what a bad key would have set stays as the layers below left it
     #[test]
     fn a_bad_key_keeps_what_is_below_and_says_where() {
-        let first = "[timings]\nhover = 100\ntoast = 6000";
+        let first = "[timings]\nhover = 100\nosd = 1000";
         let second = r#"
 clock = "13h"
 [timings]
 hover = 0
 expand = -5
 grace = 300
-toast = "5000"
+osd = "900"
 speed = 3
 [colors]
 osd = 900
@@ -746,8 +737,7 @@ battery = false
         assert_eq!(config.island.hover, ms(100));
         assert_eq!(config.island.expand, Timings::default().expand);
         assert_eq!(config.island.grace, ms(300));
-        assert_eq!(config.toast, ms(6000));
-        assert_eq!(config.osd, OSD);
+        assert_eq!(config.osd, ms(1000));
         assert_eq!(config.palette, None);
         assert_eq!(config.clock, Hours::TwentyFour);
         assert_eq!(config.off, ["battery"]);
@@ -757,7 +747,7 @@ battery = false
                 (2, "clock: expected \"24h\" or \"12h\", found \"13h\""),
                 (4, "timings.hover: 0 is outside 1-60000 ms"),
                 (5, "timings.expand: -5 is outside 1-60000 ms"),
-                (7, "timings.toast: expected milliseconds"),
+                (7, "timings.osd: expected milliseconds"),
                 (8, "unknown key timings.speed"),
                 (9, "unknown key colors"),
                 (12, "theme.palette: expected a \"path\""),
@@ -886,9 +876,27 @@ battery = false
         }
     }
 
+    // a valid v1 file with the key #109 dropped still applies, so live reload keeps working
+    #[test]
+    fn a_v1_toast_timing_migrates_away() {
+        for text in [
+            "schema_version = 1\n[timings]\ntoast = 5000\nhover = 100",
+            "[timings]\ntoast = 5000\nhover = 100",
+            "timings.toast = 5000\ntimings.hover = 100",
+        ] {
+            let (config, problems) = one(text);
+
+            assert_eq!(problems, vec![], "{text}");
+            assert_eq!(config.island.hover, ms(100), "{text}");
+        }
+
+        let (_, problems) = one("schema_version = 2\n[timings]\ntoast = 5000");
+        assert_eq!(problems, said(&[(3, "unknown key timings.toast")]));
+    }
+
     #[test]
     fn this_build_reads_its_own_version() {
-        let (_, problems) = one("schema_version = 1");
+        let (_, problems) = one(&format!("schema_version = {SCHEMA_VERSION}"));
 
         assert_eq!(problems, vec![]);
     }

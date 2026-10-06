@@ -1,32 +1,31 @@
-//! Notification toasts (plan 3, 5.1, 7): a notification that arrives, or is replaced, shows as a
-//! Transient toast on the focused island. Actionable when it has actions, and Critical and
-//! preempting, as the primary rather than over it, when its sender says critical. The toast expires; the notification stays in Amane's list, the
-//! history, until it is dismissed or its sender closes it, which also takes its toast down.
+//! Notification toasts (plan 3, 5.1, 7, ADR 0007): a notification that arrives, or is replaced,
+//! shows as a Banner on the focused output, never on the island. The Banner goes away; the
+//! notification stays in Amane's list, the history, until it is dismissed or its sender closes it,
+//! which also takes its Banner down.
 //!
-//! DND is the Arbiter's (`notifications dnd toggle`): it silences toasts, never the history. Toasts never
-//! take the keyboard: the island takes it only for a pointer or a Surface (`IslandService::keyboard`).
+//! DND (`notifications dnd toggle`) silences Banners, never the history. Banners never take the
+//! keyboard.
 //!
 //! Amane's Notifications has no subscription, so this reads it again when the bus carries a
 //! notification arriving or closing (`wake`), and polls while that settles or the bus cannot be
-//! watched; a read that finds the same notifications posts nothing. Amane is the daemon only if no other one, like mako, got the bus name
-//! first. Then nothing arrives, and `Daemon` says who has it for the Notifications Surface.
+//! watched; a read that finds the same notifications shows nothing. Amane is the daemon only if no
+//! other one, like mako, got the bus name first. Then nothing arrives, and `Daemon` says who has it
+//! for the Notifications Surface.
 
 use std::process;
 use std::time::{Duration, Instant, SystemTime};
 
-use amane::{Apps, Bus, Notification, Notifications, Service, Urgency};
+use amane::{Apps, Bus, Notification, Notifications, Service};
 
 use super::bus;
 use super::wake::{Announcer, Pace, Wakes};
 use crate::banners::{Banner, Banners};
-use crate::island::activity::{
-    Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Toast,
-};
+use crate::island::activity::Toast;
 use crate::island::service::IslandService;
-use crate::{banners, config, modules, supervise};
+use crate::{banners, modules, supervise};
 
 const PACE: Pace = Pace {
-    // a toast shows within this of arriving
+    // a Banner shows within this of arriving
     poll: Duration::from_millis(100),
 
     // Amane takes in a notification on its own thread, maybe after the bus carried it
@@ -102,9 +101,9 @@ impl Daemon {
 type Version = (u32, SystemTime);
 
 /*
- * the versions in `now` that were not in `before`, to post, and the ids gone from it, to withdraw.
- * A replaced notification is a new version of the same id, so its repost replaces its toast and
- * shows it for a full Lifetime again
+ * the versions in `now` that were not in `before`, to show, and the ids gone from it, to close. A
+ * replaced notification is a new version of the same id, so it replaces its Banner and shows it
+ * for a full time again
  */
 fn changes(before: &[Version], now: &[Version]) -> (Vec<Version>, Vec<u32>) {
     let posted = now
@@ -120,31 +119,6 @@ fn changes(before: &[Version], now: &[Version]) -> (Vec<Version>, Vec<u32>) {
         .collect();
 
     (posted, gone)
-}
-
-// one per notification, so a sender replacing it replaces its toast
-fn id(notification: u32) -> Id {
-    Id::new(Kind::Notification, notification.to_string())
-}
-
-// a critical one preempts even an open Surface, and DND never silences it (plan 5.1 rules 4, 5)
-fn activity(notification: u32, urgency: Urgency, actions: Vec<Action>, toast: Toast) -> Activity {
-    let (priority, interrupt) = match urgency {
-        Urgency::Critical => (Priority::Critical, Interrupt::Preempt),
-        _ if !actions.is_empty() => (Priority::Actionable, Interrupt::Transient),
-        _ => (Priority::Passive, Interrupt::Transient),
-    };
-
-    Activity::new(
-        id(notification),
-        priority,
-        Lifetime::Transient(config::get().toast),
-        Scope::FocusedOutput,
-        interrupt,
-    )
-    .expect("the config bounds toast above zero")
-    .with_actions(actions)
-    .with_detail(Detail::Notification(toast))
 }
 
 pub(crate) fn toast(notification: &Notification) -> Toast {
@@ -232,7 +206,7 @@ fn announces(line: &str) -> bool {
     )
 }
 
-// DND quiets the island's toasts and the Banners alike, never the history
+// DND quiets the Banners, never the history
 pub fn set_dnd(dnd: bool, now: Instant) {
     IslandService::write().set_dnd(dnd, now);
 
@@ -281,27 +255,6 @@ pub fn follow() {
                 Vec::new()
             };
 
-            let posted: Vec<Activity> = arrived
-                .into_iter()
-                .map(|notification| {
-                    let actions = notification
-                        .actions()
-                        .iter()
-                        .map(|action| Action {
-                            key: action.key().to_owned(),
-                            label: action.label().to_owned(),
-                        })
-                        .collect();
-
-                    activity(
-                        notification.id(),
-                        notification.urgency(),
-                        actions,
-                        toast(notification),
-                    )
-                })
-                .collect();
-
             drop(notifications);
 
             // Running and Conflict are for good, so only Starting asks again
@@ -343,29 +296,6 @@ pub fn follow() {
                 (Vec::new(), Vec::new())
             };
 
-            // a toast that already expired is not registered, so withdrawing it would write for nothing
-            let gone: Vec<Id> = {
-                let island = IslandService::read();
-
-                gone.into_iter()
-                    .map(id)
-                    .filter(|id| island.contains(id))
-                    .collect()
-            };
-
-            if !posted.is_empty() || !gone.is_empty() {
-                let now = Instant::now();
-                let mut island = IslandService::write();
-
-                for activity in posted {
-                    island.post(activity, now);
-                }
-
-                for id in &gone {
-                    island.withdraw(id, now);
-                }
-            }
-
             if !shown.is_empty() || !closed.is_empty() {
                 let now = Instant::now();
                 let mut banners = Banners::write();
@@ -390,8 +320,6 @@ pub fn follow() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::fixture;
-    use crate::island::activity::{Interrupt, Lifetime};
 
     #[test]
     fn status_names_the_daemon() {
@@ -426,25 +354,13 @@ mod tests {
             "#type\ttimestamp\tserial\tsender\tdestination\tpath\tinterface\tmember"
         ));
     }
-    use crate::island::presentation::{Presentation, Surface};
 
     fn at(seconds: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
     }
 
-    fn reply() -> Vec<Action> {
-        vec![Action {
-            key: String::from("reply"),
-            label: String::from("Reply"),
-        }]
-    }
-
-    fn toast(urgency: Urgency, actions: Vec<Action>) -> Activity {
-        activity(7, urgency, actions, Toast::default())
-    }
-
     #[test]
-    fn a_new_notification_posts_and_a_closed_one_withdraws() {
+    fn a_new_notification_shows_and_a_closed_one_closes() {
         let one = [(1, at(1))];
         let two = [(1, at(1)), (2, at(2))];
 
@@ -454,83 +370,19 @@ mod tests {
     }
 
     #[test]
-    fn the_same_list_posts_nothing() {
+    fn the_same_list_shows_nothing() {
         let list = [(1, at(1)), (2, at(2))];
 
         assert_eq!(changes(&list, &list), (vec![], vec![]));
     }
 
-    // a replacement keeps its id, so it replaces the toast instead of withdrawing it
+    // a replacement keeps its id, so it replaces the Banner instead of closing it
     #[test]
-    fn a_replaced_notification_posts_again() {
+    fn a_replaced_notification_shows_again() {
         assert_eq!(
             changes(&[(1, at(1))], &[(1, at(5))]),
             (vec![(1, at(5))], vec![])
         );
-    }
-
-    #[test]
-    fn a_toast_is_transient_for_the_focused_output() {
-        let toast = toast(Urgency::Normal, vec![]);
-
-        assert_eq!(toast.id(), &Id::new(Kind::Notification, "7"));
-        assert_eq!(toast.lifetime(), Lifetime::Transient(config::get().toast));
-        assert_eq!(toast.priority(), Priority::Passive);
-        assert_eq!(toast.interrupt(), Interrupt::Transient);
-    }
-
-    #[test]
-    fn actions_make_it_actionable_and_critical_preempts() {
-        assert_eq!(
-            toast(Urgency::Low, reply()).priority(),
-            Priority::Actionable
-        );
-        assert_eq!(toast(Urgency::Normal, reply()).actions(), reply());
-
-        for actions in [vec![], reply()] {
-            let critical = toast(Urgency::Critical, actions);
-
-            assert_eq!(critical.priority(), Priority::Critical);
-            assert_eq!(critical.interrupt(), Interrupt::Preempt);
-        }
-    }
-
-    #[test]
-    fn a_toast_never_displaces_an_open_surface() {
-        let now = Instant::now();
-        let mut island = IslandService::new();
-        let media = fixture::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
-
-        island.post(media, now);
-        island.open("eDP-1", Surface::Media, now);
-        assert_eq!(
-            island.presentation("eDP-1"),
-            Presentation::Expanded(Surface::Media)
-        );
-
-        island.post(toast(Urgency::Normal, reply()), now);
-
-        assert_eq!(
-            island.presentation("eDP-1"),
-            Presentation::Expanded(Surface::Media)
-        );
-        assert_eq!(island.frame("eDP-1", now).transient, None);
-        assert_eq!(island.frame("eDP-1", now).queued.len(), 1);
-    }
-
-    #[test]
-    fn dnd_silences_the_toast() {
-        let now = Instant::now();
-        let mut island = IslandService::new();
-
-        island.set_dnd(true, now);
-        island.post(toast(Urgency::Normal, vec![]), now);
-        assert_eq!(island.frame("eDP-1", now).transient, None);
-        assert_eq!(island.presentation("eDP-1"), Presentation::Rest);
-
-        // a Critical one preempts, so competes for the primary rather than shows over it
-        island.post(toast(Urgency::Critical, vec![]), now);
-        assert!(island.frame("eDP-1", now).primary.is_some());
     }
 
     #[test]

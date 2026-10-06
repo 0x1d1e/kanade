@@ -24,9 +24,6 @@ use super::Ring;
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
 
-// clear of the queued badge in the body's top right corner
-const BADGE: f32 = 36.0;
-
 const FIELD: f32 = 44.0;
 const FIELD_INSET: f32 = 16.0;
 const GAP: f32 = 12.0;
@@ -293,8 +290,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
  * the field shows its end, where the typing is
  */
 fn field(query: &str) -> Rectangle {
-    let width = WIDTH - BADGE;
-    let room = width - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
+    let room = WIDTH - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
 
     let caret = Rectangle::new()
         .width(CARET)
@@ -317,7 +313,7 @@ fn field(query: &str) -> Rectangle {
     };
 
     Rectangle::new()
-        .width(width)
+        .width(WIDTH)
         .height(FIELD)
         .radius(FIELD / 2.0)
         .fill(theme::ISLAND.surface_container)
