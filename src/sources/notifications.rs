@@ -18,9 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 use amane::{Apps, Argument, Bus, Notification, Notifications, Service, Urgency};
 
 use super::wake::{Announcer, Pace, Wakes};
-use crate::config;
 use crate::island::activity::{Action, Activity, Detail, Id, Kind, Priority, Toast};
 use crate::island::service::IslandService;
+use crate::{config, supervise};
 
 const PACE: Pace = Pace {
     // a toast shows within this of arriving
@@ -247,90 +247,94 @@ pub fn follow() {
     let mut before: Vec<Version> = Vec::new();
     let mut daemon = Daemon::Starting;
 
-    loop {
-        // the first read starts Amane's daemon
-        let notifications = Notifications::read();
-        let running = notifications.running();
+    supervise::run("notifications", || {
+        loop {
+            // the first read starts Amane's daemon
+            let notifications = Notifications::read();
+            let running = notifications.running();
 
-        let now: Vec<Version> = notifications
-            .list()
-            .iter()
-            .map(|notification| (notification.id(), notification.received()))
-            .collect();
+            let now: Vec<Version> = notifications
+                .list()
+                .iter()
+                .map(|notification| (notification.id(), notification.received()))
+                .collect();
 
-        let (posted, gone) = changes(&before, &now);
-        let changed = !posted.is_empty() || !gone.is_empty();
+            let (posted, gone) = changes(&before, &now);
+            let changed = !posted.is_empty() || !gone.is_empty();
 
-        // read here, so they are of the same list
-        let posted: Vec<Activity> = notifications
-            .list()
-            .iter()
-            .filter(|notification| posted.contains(&(notification.id(), notification.received())))
-            .map(|notification| {
-                let actions = notification
-                    .actions()
-                    .iter()
-                    .map(|action| Action {
-                        key: action.key().to_owned(),
-                        label: action.label().to_owned(),
-                    })
-                    .collect();
+            // read here, so they are of the same list
+            let posted: Vec<Activity> = notifications
+                .list()
+                .iter()
+                .filter(|notification| {
+                    posted.contains(&(notification.id(), notification.received()))
+                })
+                .map(|notification| {
+                    let actions = notification
+                        .actions()
+                        .iter()
+                        .map(|action| Action {
+                            key: action.key().to_owned(),
+                            label: action.label().to_owned(),
+                        })
+                        .collect();
 
-                activity(
-                    notification.id(),
-                    notification.urgency(),
-                    actions,
-                    toast(notification),
-                )
-            })
-            .collect();
+                    activity(
+                        notification.id(),
+                        notification.urgency(),
+                        actions,
+                        toast(notification),
+                    )
+                })
+                .collect();
 
-        drop(notifications);
+            drop(notifications);
 
-        // Running and Conflict are for good, so only Starting asks again
-        if daemon == Daemon::Starting {
-            let next = Daemon::of(running, owner);
+            // Running and Conflict are for good, so only Starting asks again
+            if daemon == Daemon::Starting {
+                let next = Daemon::of(running, owner);
 
-            if let Daemon::Conflict(other) = &next {
-                eprintln!(
-                    "kanade: {other} is the notification daemon, stop it and restart Kanade to get notifications"
-                );
+                if let Daemon::Conflict(other) = &next {
+                    eprintln!(
+                        "kanade: {other} is the notification daemon, stop it and restart Kanade to get notifications"
+                    );
+                }
+
+                if next != daemon {
+                    *Daemon::write() = next.clone();
+                    daemon = next;
+                }
             }
 
-            if next != daemon {
-                *Daemon::write() = next.clone();
-                daemon = next;
+            // a toast that already expired is not registered, so withdrawing it would write for nothing
+            let gone: Vec<Id> = {
+                let island = IslandService::read();
+
+                gone.into_iter()
+                    .map(id)
+                    .filter(|id| island.contains(id))
+                    .collect()
+            };
+
+            if !posted.is_empty() || !gone.is_empty() {
+                let now = Instant::now();
+                let mut island = IslandService::write();
+
+                for activity in posted {
+                    island.post(activity, now);
+                }
+
+                for id in &gone {
+                    island.withdraw(id, now);
+                }
             }
+
+            // until Amane has the bus name, nothing it would announce can arrive
+            let busy = changed || daemon == Daemon::Starting;
+            before = now;
+            wakes.wait(busy);
         }
-
-        // a toast that already expired is not registered, so withdrawing it would write for nothing
-        let gone: Vec<Id> = {
-            let island = IslandService::read();
-
-            gone.into_iter()
-                .map(id)
-                .filter(|id| island.contains(id))
-                .collect()
-        };
-
-        if !posted.is_empty() || !gone.is_empty() {
-            let now = Instant::now();
-            let mut island = IslandService::write();
-
-            for activity in posted {
-                island.post(activity, now);
-            }
-
-            for id in &gone {
-                island.withdraw(id, now);
-            }
-        }
-
-        // until Amane has the bus name, nothing it would announce can arrive
-        let busy = changed || daemon == Daemon::Starting;
-        before = now;
-        wakes.wait(busy);
-    }
+    });
 }
 
 #[cfg(test)]

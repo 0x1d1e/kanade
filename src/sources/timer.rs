@@ -17,6 +17,7 @@ use amane::{Argument, Bus, Service};
 
 use crate::island::activity::{Activity, Countdown, Detail, Id, Kind, Priority};
 use crate::island::service::IslandService;
+use crate::supervise;
 
 // the notification daemon, Kanade's own unless another one has the name
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
@@ -115,58 +116,96 @@ pub fn spawn() {
     thread::spawn(move || follow(&events));
 }
 
-// runs for good, asleep until IPC, the end of the timer, or a reading changes
-fn follow(events: &Receiver<Event>) {
-    let mut running: Option<Countdown> = None;
+/*
+ * the timer as asked and as the island shows it, kept across a restart: the island is brought to
+ * what was asked before anything else, and what it shows is noted only once it does, so a panic
+ * in between leaves nothing stale and loses no start or stop
+ */
+#[derive(Debug, Default)]
+struct Timer {
+    running: Option<Countdown>,
+    shown: Option<Countdown>,
 
-    loop {
-        let now = Instant::now();
+    // ran out, its notification not sent yet
+    ended: Option<Countdown>,
+}
 
-        if let Some(countdown) = running.take_if(|countdown| countdown.ends <= now) {
-            forget();
-            IslandService::write().withdraw(&id(), now);
+impl Timer {
+    fn expire(&mut self, now: Instant) {
+        if let Some(countdown) = self.running.take_if(|countdown| countdown.ends <= now) {
+            self.ended = Some(countdown);
+        }
+    }
+
+    // shows `running` on the island, none withdrawing it; one already shown writes nothing
+    fn sync(&mut self, show: impl FnOnce(Option<Countdown>)) {
+        if self.shown != self.running {
+            show(self.running);
+            self.shown = self.running;
+        }
+    }
+
+    // at most once, so a notification that panics is not sent again every restart
+    fn notify(&mut self, notify: impl FnOnce(&Countdown)) {
+        if let Some(countdown) = self.ended.take() {
             notify(&countdown);
         }
+    }
+}
 
-        for form in [&CLOCK, &SHORT] {
-            if form.lock().take_if(|redraw| *redraw <= now).is_some() {
-                (form.invalidate)();
-            }
-        }
+// runs for good, asleep until IPC, the end of the timer, or a reading changes
+fn follow(events: &Receiver<Event>) {
+    let mut timer = Timer::default();
 
-        let deadline = running
-            .map(|countdown| countdown.ends)
-            .into_iter()
-            .chain([&CLOCK, &SHORT].into_iter().filter_map(|form| *form.lock()))
-            .min();
+    supervise::run("timer", || {
+        loop {
+            let now = Instant::now();
 
-        let event = match deadline {
-            Some(deadline) => events.recv_timeout(deadline.saturating_duration_since(now)),
-            None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
-        };
+            timer.expire(now);
+            timer.sync(show);
+            timer.notify(notify);
 
-        match event {
-            Ok(Event::Start(length)) => {
-                let now = Instant::now();
-                let countdown = Countdown {
-                    ends: now + length,
-                    length,
-                };
-
-                running = Some(countdown);
-                forget();
-                IslandService::write().post(activity(countdown), now);
-            }
-            Ok(Event::Stop) => {
-                // stopping no timer changes nothing, so it writes nothing
-                if running.take().is_some() {
-                    forget();
-                    IslandService::write().withdraw(&id(), Instant::now());
+            for form in [&CLOCK, &SHORT] {
+                if form.lock().take_if(|redraw| *redraw <= now).is_some() {
+                    (form.invalidate)();
                 }
             }
-            Ok(Event::Wake) | Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+
+            let deadline = timer
+                .running
+                .map(|countdown| countdown.ends)
+                .into_iter()
+                .chain([&CLOCK, &SHORT].into_iter().filter_map(|form| *form.lock()))
+                .min();
+
+            let event = match deadline {
+                Some(deadline) => events.recv_timeout(deadline.saturating_duration_since(now)),
+                None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+
+            match event {
+                Ok(Event::Start(length)) => {
+                    timer.running = Some(Countdown {
+                        ends: Instant::now() + length,
+                        length,
+                    });
+                }
+                Ok(Event::Stop) => timer.running = None,
+                Ok(Event::Wake) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
+    });
+}
+
+fn show(countdown: Option<Countdown>) {
+    let now = Instant::now();
+
+    forget();
+
+    match countdown {
+        Some(countdown) => IslandService::write().post(activity(countdown), now),
+        None => IslandService::write().withdraw(&id(), now),
     }
 }
 
@@ -302,6 +341,8 @@ fn short_at(seconds: u64) -> (String, Option<u64>) {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+
     use super::*;
     use crate::island::activity::{Interrupt, Lifetime};
 
@@ -371,5 +412,68 @@ mod tests {
         assert_eq!(short_at(5940).0, "99m");
         assert_eq!(short_at(5941).0, "2h");
         assert_eq!(short_at(86_400).0, "24h");
+    }
+
+    // the island update a panic interrupts, as the restarted thread runs it again
+    fn interrupted(timer: &mut Timer) -> Vec<Option<Countdown>> {
+        let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+            timer.sync(|_| panic!("a panic before the island has it"));
+        }));
+        assert!(panicked.is_err());
+
+        let mut shows = Vec::new();
+        timer.sync(|countdown| shows.push(countdown));
+        timer.sync(|countdown| shows.push(countdown));
+
+        shows
+    }
+
+    #[test]
+    fn a_start_a_panic_interrupts_shows_after_the_restart() {
+        let started = countdown(60);
+        let mut timer = Timer {
+            running: Some(started),
+            ..Timer::default()
+        };
+
+        assert_eq!(interrupted(&mut timer), [Some(started)]);
+    }
+
+    #[test]
+    fn a_stop_a_panic_interrupts_withdraws_after_the_restart() {
+        let mut timer = Timer {
+            running: Some(countdown(60)),
+            ..Timer::default()
+        };
+
+        timer.sync(drop);
+        timer.running = None;
+
+        assert_eq!(interrupted(&mut timer), [None]);
+    }
+
+    #[test]
+    fn an_end_a_panic_interrupts_withdraws_and_notifies_after_the_restart() {
+        let started = countdown(60);
+        let mut timer = Timer {
+            running: Some(started),
+            ..Timer::default()
+        };
+
+        timer.sync(drop);
+        timer.expire(started.ends);
+
+        assert_eq!(interrupted(&mut timer), [None]);
+
+        let mut notified = Vec::new();
+        timer.notify(|countdown| notified.push(*countdown));
+        timer.notify(|countdown| notified.push(*countdown));
+
+        assert_eq!(notified, [started]);
+    }
+
+    #[test]
+    fn stopping_no_timer_writes_nothing() {
+        Timer::default().sync(|_| panic!("a write for nothing"));
     }
 }

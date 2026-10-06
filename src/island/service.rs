@@ -164,7 +164,8 @@ impl Service for IslandService {
 
     /*
      * sleeps until the next deadline or a nudge, so an idle island never wakes (#5);
-     * a nudge sent between the read and the wait is still queued, so the wait never misses it
+     * a nudge sent between the read and the wait is still queued, so the wait never misses it.
+     * A panic here listens again after 5 s: Amane restarts every Service's listen (#95)
      */
     fn listen() {
         let receiver = NUDGE.1.lock().unwrap_or_else(PoisonError::into_inner);

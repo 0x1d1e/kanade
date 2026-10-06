@@ -14,6 +14,7 @@ use amane::{Battery, Service};
 use super::wake::{Announcer, Pace, Wakes};
 use crate::island::activity::{Activity, Charge, Detail, Id, Kind, Priority};
 use crate::island::service::IslandService;
+use crate::supervise;
 
 // at or below, the battery shows (plan 7: amber)
 const LOW: u8 = 20;
@@ -99,25 +100,27 @@ pub fn follow() {
     let mut shown = None;
     let mut last = None;
 
-    loop {
-        let reading = Reading::read();
-        let next = charge(shown, reading);
+    supervise::run("battery", || {
+        loop {
+            let reading = Reading::read();
+            let next = charge(shown, reading);
 
-        if next != shown {
-            let now = Instant::now();
-            let mut island = IslandService::write();
+            if next != shown {
+                let now = Instant::now();
+                let mut island = IslandService::write();
 
-            match next {
-                Some(charge) => island.post(activity(charge), now),
-                None => island.withdraw(&id(), now),
+                match next {
+                    Some(charge) => island.post(activity(charge), now),
+                    None => island.withdraw(&id(), now),
+                }
             }
-        }
 
-        let busy = last != Some(reading);
-        shown = next;
-        last = Some(reading);
-        wakes.wait(busy);
-    }
+            let busy = last != Some(reading);
+            shown = next;
+            last = Some(reading);
+            wakes.wait(busy);
+        }
+    });
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
 use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
-use crate::theme;
+use crate::{supervise, theme};
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
 const PAUSED: Duration = Duration::from_secs(30);
@@ -306,7 +306,7 @@ enum Change {
 }
 
 // what was posted, remembered so an event that changes nothing shown posts nothing
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct Follower {
     posted: Option<Seen>,
 
@@ -356,6 +356,17 @@ impl Follower {
         }
 
         changes
+    }
+
+    /*
+     * steps and posts what changed, noting the step only once posted, so a step a panic interrupts
+     * is posted again after the restart
+     */
+    fn advance(&mut self, seen: Option<Seen>, now: Instant, post: impl FnOnce(Vec<Change>)) {
+        let mut next = self.clone();
+
+        post(next.step(seen, now));
+        *self = next;
     }
 
     // when a paused Activity runs out, the one moment step() has to run without an event
@@ -600,25 +611,39 @@ pub fn follow() {
 
     let _ = EVENTS.set(send);
 
-    let mut players = Players::default();
-
-    for name in names(bus) {
-        if let Some(owner) = owner(bus, &name) {
-            players.open.insert(name.clone(), read(bus, &name, &owner));
-        }
-    }
-
+    // kept across a restart, so what Media shows is replaced or withdrawn, never left behind
     let mut follower = Follower::default();
     let mut watcher = Watcher {
         timings: IslandService::read().timings(),
         ..Watcher::default()
     };
 
+    supervise::run("media", || {
+        let mut players = Players::default();
+
+        for name in names(bus) {
+            if let Some(owner) = owner(bus, &name) {
+                players.open.insert(name.clone(), read(bus, &name, &owner));
+            }
+        }
+
+        follow_players(bus, &events, &mut players, &mut follower, &mut watcher);
+    });
+}
+
+// follows the players until the session bus goes away
+fn follow_players(
+    bus: Bus,
+    events: &Receiver<Event>,
+    players: &mut Players,
+    follower: &mut Follower,
+    watcher: &mut Watcher,
+) {
     loop {
         let now = Instant::now();
 
-        post(follower.step(players.choose(), now), now);
-        watcher.show(&players, watching(), now);
+        follower.advance(players.choose(), now, |changes| post(changes, now));
+        watcher.show(players, watching(), now);
 
         let deadline = [follower.deadline(), watcher.tick]
             .into_iter()
@@ -643,7 +668,7 @@ pub fn follow() {
             }
             Ok(Event::Changed { owner }) => {
                 for name in players.owned_by(&owner) {
-                    refresh(bus, &mut players, &name);
+                    refresh(bus, players, &name);
                 }
             }
             Ok(Event::Watch) => {}
@@ -654,16 +679,16 @@ pub fn follow() {
 
                 // the player announces what changed, read back here too for an answer this frame
                 bus.call(&name, PATH, PLAYER, method, &[]);
-                refresh(bus, &mut players, &name);
+                refresh(bus, players, &name);
             }
             Err(RecvTimeoutError::Timeout) => {
-                if let Some(name) = watcher.poll(&players, watching(), Instant::now()) {
-                    refresh(bus, &mut players, &name);
+                if let Some(name) = watcher.poll(players, watching(), Instant::now()) {
+                    refresh(bus, players, &name);
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
                 eprintln!("kanade: session bus unreachable, no Media Activity");
-                post(follower.step(None, now), now);
+                follower.advance(None, now, |changes| post(changes, now));
                 return;
             }
         }
@@ -677,11 +702,16 @@ fn forward(
     event: impl Fn(&Signal) -> Option<Event> + Send + 'static,
 ) {
     thread::spawn(move || {
-        for event in signals.filter_map(|signal| event(&signal)) {
-            if events.send(event).is_err() {
-                return;
+        let mut signals = signals;
+
+        // a restart goes on with the same subscription, so no signal is lost to it
+        supervise::run("media bus watch", || {
+            for event in signals.by_ref().filter_map(|signal| event(&signal)) {
+                if events.send(event).is_err() {
+                    return;
+                }
             }
-        }
+        });
     });
 }
 
@@ -798,6 +828,8 @@ fn unescape(path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+
     use super::*;
 
     fn seen(key: &str, title: &str, playing: bool) -> Seen {
@@ -926,6 +958,24 @@ mod tests {
             follower.step(Some(seen("mpv", "Song", false)), Instant::now()),
             []
         );
+    }
+
+    #[test]
+    fn a_post_a_panic_interrupts_posts_again_after_the_restart() {
+        let mut follower = Follower::default();
+        let now = Instant::now();
+        let mpv = seen("mpv", "Song", true);
+
+        let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+            follower.advance(Some(mpv.clone()), now, |_| panic!("a panic while posting"));
+        }));
+        assert!(panicked.is_err());
+
+        let mut posted = Vec::new();
+        follower.advance(Some(mpv.clone()), now, |changes| posted = changes);
+
+        assert_eq!(posted, [Change::Post(mpv.activity())]);
+        assert_eq!(follower.step(Some(mpv), now), []);
     }
 
     #[test]

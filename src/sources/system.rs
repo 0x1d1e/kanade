@@ -13,14 +13,14 @@
 
 use std::sync::{Once, mpsc};
 use std::time::{Duration, Instant};
-use std::{iter, thread};
+use std::{iter, mem, thread};
 
 use amane::{Bus, Service, Value};
 
 use super::{bluetooth, network, power};
 use crate::island::activity::Activity;
 use crate::island::service::IslandService;
-use crate::modules;
+use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
 const BUS: &str = "org.freedesktop.DBus";
@@ -132,6 +132,13 @@ impl Daemons {
         }
     }
 
+    fn followed(self) -> Vec<Daemon> {
+        [Daemon::NetworkManager, Daemon::BlueZ, Daemon::PowerProfiles]
+            .into_iter()
+            .filter(|&daemon| self.follows(daemon))
+            .collect()
+    }
+
     // objects coming and going matter only for BlueZ, see `route`
     fn watches(self, watch: Watch) -> bool {
         match watch {
@@ -176,58 +183,76 @@ fn follow(daemons: Daemons) {
         let sender = sender.clone();
 
         thread::spawn(move || {
-            for signal in signals {
-                let Some(daemon) = route(watch, signal.sender(), signal.path(), signal.arguments())
-                    .filter(|&daemon| daemons.follows(daemon))
-                else {
-                    continue;
-                };
+            let mut signals = signals;
 
-                if sender.send(daemon).is_err() {
-                    return;
+            // a restart goes on with the same subscription, so no signal is lost to it
+            supervise::run("system bus watch", || {
+                for signal in signals.by_ref() {
+                    let Some(daemon) =
+                        route(watch, signal.sender(), signal.path(), signal.arguments())
+                            .filter(|&daemon| daemons.follows(daemon))
+                    else {
+                        continue;
+                    };
+
+                    if sender.send(daemon).is_err() {
+                        return;
+                    }
                 }
-            }
+            });
         });
     }
 
     // once every watch has ended, so has the bus
     drop(sender);
 
-    // the first reads only set where things start, so starting the shell shows nothing
-    if daemons.network {
-        *network::Connectivity::write() = network::read();
-    }
+    let mut first = true;
 
-    if daemons.bluetooth {
-        *bluetooth::Adapter::write() = bluetooth::read();
-    }
+    supervise::run("system", || {
+        if mem::take(&mut first) {
+            // the first reads only set where things start, so starting the shell shows nothing
+            if daemons.network {
+                *network::Connectivity::write() = network::read();
+            }
 
-    if daemons.power {
-        *power::Profiles::write() = power::read();
-    }
+            if daemons.bluetooth {
+                *bluetooth::Adapter::write() = bluetooth::read();
+            }
 
-    while let Ok(first) = changed.recv() {
-        // a burst, or what came during the last read, asks once
-        let daemons: Vec<Daemon> = iter::once(first).chain(changed.try_iter()).collect();
-
-        if daemons.contains(&Daemon::NetworkManager) {
-            refresh(network::read(), network::changes);
+            if daemons.power {
+                *power::Profiles::write() = power::read();
+            }
+        } else {
+            // a restart asks every daemon again, for what the panic dropped
+            refresh_all(daemons.followed());
         }
 
-        if daemons.contains(&Daemon::BlueZ) {
-            refresh(bluetooth::read(), bluetooth::changes);
+        while let Ok(first) = changed.recv() {
+            // a burst, or what came during the last read, asks once
+            refresh_all(iter::once(first).chain(changed.try_iter()).collect());
         }
+    });
+}
 
-        // a profile switched shows on Controls only
-        if daemons.contains(&Daemon::PowerProfiles) {
-            refresh(power::read(), |_, _| Vec::new());
-        }
+fn refresh_all(daemons: Vec<Daemon>) {
+    if daemons.contains(&Daemon::NetworkManager) {
+        refresh(network::read(), network::changes);
+    }
+
+    if daemons.contains(&Daemon::BlueZ) {
+        refresh(bluetooth::read(), bluetooth::changes);
+    }
+
+    // a profile switched shows on Controls only
+    if daemons.contains(&Daemon::PowerProfiles) {
+        refresh(power::read(), |_, _| Vec::new());
     }
 }
 
 /*
- * keeps `now` for Controls and posts what changed since the last read. A read that changes nothing
- * writes nothing, so a signal about something Kanade does not show redraws nothing
+ * posts what changed since the last read and keeps `now` for Controls. A read that changes nothing
+ * writes nothing, so a signal about something Kanade does not show redraws nothing. Kept only once
+ * posted, so a change a panic interrupts is posted by the restart's reads
  */
 fn refresh<S: Service + PartialEq>(now: S, changes: fn(&S, &S) -> Vec<Activity>) {
     let posts = {
@@ -240,18 +265,16 @@ fn refresh<S: Service + PartialEq>(now: S, changes: fn(&S, &S) -> Vec<Activity>)
         changes(&before, &now)
     };
 
+    if !posts.is_empty() {
+        let at = Instant::now();
+        let mut island = IslandService::write();
+
+        for activity in posts {
+            island.post(activity, at);
+        }
+    }
+
     *S::write() = now;
-
-    if posts.is_empty() {
-        return;
-    }
-
-    let at = Instant::now();
-    let mut island = IslandService::write();
-
-    for activity in posts {
-        island.post(activity, at);
-    }
 }
 
 #[cfg(test)]
