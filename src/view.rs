@@ -14,7 +14,7 @@ use crate::island::activity::{
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
-use crate::island::presentation::{Content, Input, Presentation, Surface};
+use crate::island::presentation::{Content, Input, Presentation, Segment, Surface};
 use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
 use crate::modules;
@@ -33,6 +33,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let keyboard = island.keyboard(&monitor.name);
     let shape = island.shape(&monitor.name, now);
     let content = island.content(&monitor.name, now);
+    let swap = island.swap(&monitor.name, now);
 
     // the spring is ours, not an Amane Animation, so the view asks for frames until it rests
     if !island.settled(&monitor.name, now) {
@@ -65,7 +66,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     // at most one shows at a time, the crossfade hands over through nothing
     if let Some((content, opacity)) = content.into_iter().flatten().next()
-        && let Some(form) = small_form(&content, island.track(&monitor.name), now)
+        && let Some(form) = split(&content, island.track(&monitor.name), swap, now)
+            .or_else(|| small_form(&content, island.track(&monitor.name), now))
             .or_else(|| surface(&monitor.name, &content, &island, now))
             .or_else(|| rest(&content))
             .or_else(|| placeholder(&content))
@@ -86,10 +88,17 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .align_child(Start, Start)
         .on_hover(move |inside| hover(&hovered, inside))
         // Escape disarms without the pointer leaving, the next move arms again
-        .on_move(move |_| set_armed(&moved, true))
+        .on_move(move |point| {
+            set_armed(&moved, true);
+            set_segment(&moved, geometry::segment(area.x + point.x));
+        })
         .on_click(move |button| match button {
             Button::Left => expand(&clicked),
-            Button::Right => route(&clicked, Input::RightClick),
+            Button::Right => {
+                let segment = IslandService::read().segment(&clicked);
+
+                route(&clicked, Input::RightClick(segment));
+            }
             _ => {}
         })
         .on_scroll(move |Scroll { y, .. }| route(&scrolled, Input::Wheel(y)))
@@ -256,6 +265,8 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
     let (label, size) = match content.presentation {
         Presentation::Rest => return None,
         Presentation::Compact => (name(&content.activity), theme::text::LABEL),
+        // `split` draws both segments, each its own form
+        Presentation::Split => return None,
         Presentation::Peek => (name(&content.activity), theme::text::BODY_LARGE),
         Presentation::Expanded(surface) => (format!("{surface:?}"), theme::text::TITLE_LARGE),
     };
@@ -309,6 +320,71 @@ fn sized(presentation: Presentation) -> Rectangle {
     let size = geometry::shape(presentation);
 
     Rectangle::new().width(size.width).height(size.height)
+}
+
+/*
+ * the primary's Compact form leading and the top Satellite's segment trailing; while they trade
+ * places (`swap` above 0) each slides from where the other stands
+ */
+fn split(
+    content: &Content,
+    track: Option<&Dissolve<Track>>,
+    swap: f32,
+    now: Instant,
+) -> Option<Rectangle> {
+    if content.presentation != Presentation::Split {
+        return None;
+    }
+
+    let leading = Content {
+        presentation: Presentation::Compact,
+        activity: content.activity.clone(),
+        satellite: None,
+    };
+    let trailing = geometry::trailing();
+
+    let mut segments: Vec<Box<dyn Widget>> = Vec::new();
+
+    if let Some(form) = small_form(&leading, track, now).or_else(|| placeholder(&leading)) {
+        segments.push(Box::new(form.translate(swap * trailing.x, 0.0)));
+    }
+
+    if let Some(satellite) = &content.satellite {
+        segments.push(Box::new(
+            segment(satellite, trailing, now).translate(trailing.x * (1.0 - swap), trailing.y),
+        ));
+    }
+
+    Some(
+        sized(Presentation::Split)
+            .align_child(Start, Start)
+            .child(Stack::new(segments)),
+    )
+}
+
+// the top Satellite grown into the body's end: what it is, then its mark
+fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle {
+    let mut row = Vec::<Box<dyn Widget>>::new();
+
+    match activity.detail() {
+        Detail::Timer(_) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Battery(charge) => row.push(Box::new(battery_icon(
+            16.0,
+            charge.percent,
+            charge_tone(charge),
+        ))),
+        _ => {}
+    }
+
+    row.push(satellite_mark(activity, now));
+
+    Rectangle::new()
+        .width(at.width)
+        .height(at.height)
+        .radius(at.height / 2.0)
+        .fill(theme::ISLAND.surface_container_high)
+        .align_child(Center, Center)
+        .child(Row::new(row).gap(4.0).align(Center))
 }
 
 // an Activity's own Compact or Peek, drawn from its Detail; none leaves it to the placeholder
@@ -1098,8 +1174,12 @@ fn state(playing: bool) -> Row {
 
 // a write wakes the window even when nothing changed, so only write a real change
 fn expand(monitor: &str) {
-    if !IslandService::read().expanded(monitor) {
-        IslandService::write().input(monitor, Input::Click, Instant::now());
+    let island = IslandService::read();
+    let (expanded, segment) = (island.expanded(monitor), island.segment(monitor));
+    drop(island);
+
+    if !expanded {
+        IslandService::write().input(monitor, Input::Click(segment), Instant::now());
     } else {
         claim();
     }
@@ -1142,7 +1222,7 @@ pub(crate) fn pin() {
     let monitor = IslandService::read().expanded_on().map(str::to_owned);
 
     if let Some(monitor) = monitor {
-        route(&monitor, Input::RightClick);
+        route(&monitor, Input::RightClick(Segment::Primary));
     }
 }
 
@@ -1161,6 +1241,12 @@ fn stray(monitor: &str, key: Key) {
 
     if stray {
         collapse(monitor);
+    }
+}
+
+fn set_segment(monitor: &str, segment: Segment) {
+    if IslandService::read().segment(monitor) != segment {
+        IslandService::write().set_segment(monitor, segment);
     }
 }
 

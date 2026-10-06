@@ -56,12 +56,14 @@ How an Activity interrupts: `None | Preempt | AutoExpand(duration)`.
 - **Invariant:** a Preempt arriving is policy, not choice: a pending AutoExpand gives the islands back first, then it preempts as it would have without one.
 
 ## Presentation
-An island's visual level: `Rest | Compact | Peek | Expanded(Surface)`.
+An island's visual level: `Rest | Compact | Split | Peek | Expanded(Surface)`.
 - Rest has no primary Activity and shows the local time.
+- Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
+- A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
-- **Invariant:** which Surface opens is a pure function of (Presentation, primary Activity, request). No remembered last-used Surface: a click at Rest opens Controls.
+- **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request). No remembered last-used Surface: a click at Rest opens Controls.
 - **Invariant:** at most one island is Expanded at a time.
-- **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow.
+- **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow. A Split whose segments trade places slides each to its new place.
 - **Avoid:** state (Amane uses state for Services)
 
 ## Surface
@@ -75,6 +77,7 @@ Small secondary indicator beside the primary island: timer, VPN, low battery.
 - Capture is no Satellite: the privacy cluster shows it.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 - **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops.
+- While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.
 
 ## Hold
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
@@ -84,9 +87,9 @@ The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind ope
 
 ## Pin
 A right click keeps an island's Peek or open Surface up after the pointer leaves, with no leave grace. The body shows a ring while pinned.
-- Right click on Compact peeks pinned, on a Peek or open Surface pins or unpins it, at Rest does nothing (a click already opens Controls). On a Surface's own control it pins too and never presses it.
+- Right click raises the island to what the pointer would raise it to, pinned: on Compact or a Split segment it peeks that Activity pinned, at Rest it opens Controls pinned (no context menu), on a Peek or open Surface it pins or unpins it. On a Surface's own control it pins too and never presses it.
 - Escape ends a pin only while the island has keyboard focus (a pinned island gives it back, see below); `kanade island collapse` and `toggle` close a pinned Surface.
-- **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The primary's withdrawal clears a pinned Peek; Preempt clears a pinned Surface. Nothing pinned is remembered.
+- **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The peeked Activity leaving both the primary and the top Satellite clears a pinned Peek; Preempt clears a pinned Surface. Nothing pinned is remembered.
 - **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
 - **Avoid:** sticky, lock (lock is the screen locker)

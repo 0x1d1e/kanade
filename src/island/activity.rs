@@ -170,6 +170,10 @@ impl Id {
         }
     }
 
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
     pub fn key(&self) -> &str {
         &self.key
     }

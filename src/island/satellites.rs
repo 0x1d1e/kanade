@@ -23,11 +23,15 @@ impl Mark {
         }
     }
 
-    // a Frame's, nearest the body first
-    pub fn of(frame: &Frame) -> Vec<Mark> {
+    /*
+     * a Frame's, nearest the body first. With `segment` the top Satellite is the body's trailing
+     * segment, not a dot beside it
+     */
+    pub fn of(frame: &Frame, segment: bool) -> Vec<Mark> {
         frame
             .satellites
             .iter()
+            .skip(usize::from(segment))
             .cloned()
             .map(Mark::Activity)
             .chain((frame.overflow > 0).then_some(Mark::Overflow(frame.overflow)))
@@ -183,11 +187,12 @@ mod tests {
         Duration::from_millis(value)
     }
 
+    fn mark_activity(key: &str) -> Activity {
+        fixture::persistent(Id::new(Kind::Timer, key), Priority::Ongoing)
+    }
+
     fn mark(key: &str) -> Mark {
-        Mark::Activity(fixture::persistent(
-            Id::new(Kind::Timer, key),
-            Priority::Ongoing,
-        ))
+        Mark::Activity(mark_activity(key))
     }
 
     fn follow(satellites: &mut Satellites, marks: &[Mark], mode: Mode, now: Instant) {
@@ -210,6 +215,24 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn the_top_satellite_is_no_dot_while_it_is_a_segment() {
+        let frame = Frame {
+            primary: Some(fixture::persistent(
+                Id::new(Kind::Media, "m"),
+                Priority::Ongoing,
+            )),
+            satellites: vec![mark_activity("a"), mark_activity("b")],
+            overflow: 1,
+        };
+
+        assert_eq!(
+            Mark::of(&frame, false),
+            vec![mark("a"), mark("b"), Mark::Overflow(1)]
+        );
+        assert_eq!(Mark::of(&frame, true), vec![mark("b"), Mark::Overflow(1)]);
     }
 
     #[test]

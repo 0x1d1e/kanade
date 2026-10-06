@@ -1,7 +1,7 @@
 //! Where the island body sits inside the fixed canvas, and which part of the canvas takes the
 //! pointer. The window never resizes (plan 6.1), only the body moves inside it.
 
-use super::presentation::{Presentation, Surface};
+use super::presentation::{Presentation, Segment, Surface};
 
 // the layer window, sized once for the largest body plus room for its shadow
 pub const CANVAS_WIDTH: f32 = 560.0;
@@ -25,6 +25,19 @@ pub const COMPACT: Shape = Shape {
     height: 38.0,
     radius: 19.0,
 };
+
+/*
+ * Compact and the top Satellite's segment after it, as wide as a Peek, so a Peek out of it only
+ * grows down and the Satellites beside it stay where they are
+ */
+pub const SPLIT: Shape = Shape {
+    width: 300.0,
+    height: 38.0,
+    radius: 19.0,
+};
+
+// the trailing segment, inset in the body's round end like a Satellite grown into it
+pub const SEGMENT_INSET: f32 = 4.0;
 
 pub const PEEK: Shape = Shape {
     width: 300.0,
@@ -53,7 +66,7 @@ pub const EXPANDED_MAX: Shape = Shape {
 };
 
 // every shape a body morphs between; the springs never overshoot, so it stays within them
-pub const SHAPES: [Shape; 6] = [REST, COMPACT, PEEK, CONTROLS, MEDIA, EXPANDED_MAX];
+pub const SHAPES: [Shape; 7] = [REST, COMPACT, SPLIT, PEEK, CONTROLS, MEDIA, EXPANDED_MAX];
 
 // a Satellite's diameter, and the gap before each one
 pub const SATELLITE: f32 = 28.0;
@@ -64,6 +77,7 @@ pub fn shape(presentation: Presentation) -> Shape {
     match presentation {
         Presentation::Rest => REST,
         Presentation::Compact => COMPACT,
+        Presentation::Split => SPLIT,
         Presentation::Peek => PEEK,
         Presentation::Expanded(Surface::Controls) => CONTROLS,
         Presentation::Expanded(Surface::Media) => MEDIA,
@@ -106,7 +120,7 @@ pub struct Rect {
 }
 
 impl Rect {
-    fn right(self) -> f32 {
+    pub fn right(self) -> f32 {
         self.x + self.width
     }
 
@@ -145,6 +159,32 @@ pub fn input_area(body: Rect) -> Rect {
     let bottom = (body.bottom() + HOVER_PADDING).ceil().min(CANVAS_HEIGHT);
 
     Rect::from_edges(left, top, right, bottom)
+}
+
+/*
+ * the segment of a Split body under the pointer at `x`, in canvas coordinates: the primary takes
+ * Compact's width, the top Satellite the rest. Measured on the Split body whatever shows, so a
+ * still pointer is on the right segment when the body becomes Split under it; any other body is
+ * the primary's alone, wherever the pointer is
+ */
+pub fn segment(x: f32) -> Segment {
+    if x < body(SPLIT).x + COMPACT.width {
+        Segment::Primary
+    } else {
+        Segment::Satellite
+    }
+}
+
+// where the trailing segment of a Split body draws, from the body's own top left corner
+pub fn trailing() -> Rect {
+    let height = SPLIT.height - 2.0 * SEGMENT_INSET;
+
+    Rect {
+        x: COMPACT.width,
+        y: SEGMENT_INSET,
+        width: SPLIT.width - SEGMENT_INSET - COMPACT.width,
+        height,
+    }
 }
 
 /*
@@ -194,9 +234,10 @@ mod tests {
         value.fract() == 0.0
     }
 
-    const PRESENTATIONS: [Presentation; 7] = [
+    const PRESENTATIONS: [Presentation; 8] = [
         Presentation::Rest,
         Presentation::Compact,
+        Presentation::Split,
         Presentation::Peek,
         Presentation::Expanded(Surface::Media),
         Presentation::Expanded(Surface::Notifications),
@@ -238,10 +279,11 @@ mod tests {
 
     #[test]
     fn small_forms_grow_and_are_pills() {
-        let small = [REST, COMPACT, PEEK];
+        let small = [REST, COMPACT, SPLIT, PEEK];
 
         for pair in small.windows(2) {
-            assert!(pair[0].width < pair[1].width && pair[0].height < pair[1].height);
+            assert!(pair[0].width <= pair[1].width && pair[0].height <= pair[1].height);
+            assert_ne!(pair[0], pair[1]);
         }
 
         for shape in small {
@@ -354,7 +396,7 @@ mod tests {
 
     #[test]
     fn satellites_line_up_right_of_the_small_forms() {
-        for small in [COMPACT, PEEK] {
+        for small in [COMPACT, SPLIT, PEEK] {
             let body = body(small);
             let first = satellite(body, 0.0, 1.0);
             let second = satellite(body, 1.0, 1.0);
@@ -376,10 +418,46 @@ mod tests {
         }
     }
 
+    // the primary keeps Compact's place, the Satellite's segment sits inside the body's end
+    #[test]
+    fn a_split_body_has_two_segments() {
+        let body = body(SPLIT);
+        let trailing = trailing();
+        let inside = Rect::from_edges(0.0, 0.0, SPLIT.width, SPLIT.height);
+
+        assert!(contains(inside, trailing));
+        assert_eq!(trailing.y, inside.bottom() - trailing.bottom());
+        assert_eq!(trailing.x, COMPACT.width);
+
+        assert_eq!(segment(body.x), Segment::Primary);
+        assert_eq!(segment(body.x + trailing.x - 0.5), Segment::Primary);
+        assert_eq!(segment(body.x + trailing.x), Segment::Satellite);
+        assert_eq!(segment(body.right()), Segment::Satellite);
+
+        // the hover padding past either end counts as the segment there
+        let area = input_area(body);
+        assert_eq!(segment(area.x), Segment::Primary);
+        assert_eq!(segment(area.right()), Segment::Satellite);
+    }
+
+    // a pointer still on the right end of Rest or Compact is on the trailing segment once Split
+    #[test]
+    fn the_segment_under_a_still_pointer_is_the_one_split_draws_there() {
+        let line = body(SPLIT).x + trailing().x;
+
+        for small in [REST, COMPACT] {
+            let area = input_area(body(small));
+
+            assert!(area.x < line && line < area.right(), "{small:?}");
+            assert_eq!(segment(area.x), Segment::Primary, "{small:?}");
+            assert_eq!(segment(area.right() - 1.0), Segment::Satellite, "{small:?}");
+        }
+    }
+
     // under the body, so it hides one coming out or going back, as tall as it is at Rest
     #[test]
     fn a_tucked_satellite_hides_under_the_body() {
-        for small in [REST, COMPACT, PEEK] {
+        for small in [REST, COMPACT, SPLIT, PEEK] {
             let body = body(small);
 
             for slot in [0.0, 2.0] {
@@ -402,6 +480,7 @@ mod tests {
     fn satellites_fade_out_toward_a_surface() {
         assert_eq!(satellite_opacity(REST), 1.0);
         assert_eq!(satellite_opacity(COMPACT), 1.0);
+        assert_eq!(satellite_opacity(SPLIT), 1.0);
         assert_eq!(satellite_opacity(PEEK), 1.0);
         assert_eq!(satellite_opacity(MEDIA), 0.0);
         assert_eq!(satellite_opacity(CONTROLS), 0.0);
