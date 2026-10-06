@@ -122,7 +122,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .height(geometry::CANVAS_HEIGHT)
         .anchor_vertical(Vertical::Top)
         .anchor_horizontal(Horizontal::Middle)
-        .layer(Layer::Overlay)
+        .layer(Layer::Top)
         .space(Zone::Ignore)
         .namespace("kanade")
         .keyboard(keyboard)
