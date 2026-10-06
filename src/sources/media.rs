@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
 use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
-use crate::theme;
+use crate::{supervise, theme};
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
 const PAUSED: Duration = Duration::from_secs(30);
@@ -600,25 +600,39 @@ pub fn follow() {
 
     let _ = EVENTS.set(send);
 
-    let mut players = Players::default();
-
-    for name in names(bus) {
-        if let Some(owner) = owner(bus, &name) {
-            players.open.insert(name.clone(), read(bus, &name, &owner));
-        }
-    }
-
+    // kept across a restart, so what Media shows is replaced or withdrawn, never left behind
     let mut follower = Follower::default();
     let mut watcher = Watcher {
         timings: IslandService::read().timings(),
         ..Watcher::default()
     };
 
+    supervise::run("media", || {
+        let mut players = Players::default();
+
+        for name in names(bus) {
+            if let Some(owner) = owner(bus, &name) {
+                players.open.insert(name.clone(), read(bus, &name, &owner));
+            }
+        }
+
+        follow_players(bus, &events, &mut players, &mut follower, &mut watcher);
+    });
+}
+
+// follows the players until the session bus goes away
+fn follow_players(
+    bus: Bus,
+    events: &Receiver<Event>,
+    players: &mut Players,
+    follower: &mut Follower,
+    watcher: &mut Watcher,
+) {
     loop {
         let now = Instant::now();
 
         post(follower.step(players.choose(), now), now);
-        watcher.show(&players, watching(), now);
+        watcher.show(players, watching(), now);
 
         let deadline = [follower.deadline(), watcher.tick]
             .into_iter()
@@ -643,7 +657,7 @@ pub fn follow() {
             }
             Ok(Event::Changed { owner }) => {
                 for name in players.owned_by(&owner) {
-                    refresh(bus, &mut players, &name);
+                    refresh(bus, players, &name);
                 }
             }
             Ok(Event::Watch) => {}
@@ -654,11 +668,11 @@ pub fn follow() {
 
                 // the player announces what changed, read back here too for an answer this frame
                 bus.call(&name, PATH, PLAYER, method, &[]);
-                refresh(bus, &mut players, &name);
+                refresh(bus, players, &name);
             }
             Err(RecvTimeoutError::Timeout) => {
-                if let Some(name) = watcher.poll(&players, watching(), Instant::now()) {
-                    refresh(bus, &mut players, &name);
+                if let Some(name) = watcher.poll(players, watching(), Instant::now()) {
+                    refresh(bus, players, &name);
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -677,11 +691,16 @@ fn forward(
     event: impl Fn(&Signal) -> Option<Event> + Send + 'static,
 ) {
     thread::spawn(move || {
-        for event in signals.filter_map(|signal| event(&signal)) {
-            if events.send(event).is_err() {
-                return;
+        let mut signals = signals;
+
+        // a restart goes on with the same subscription, so no signal is lost to it
+        supervise::run("media bus watch", || {
+            for event in signals.by_ref().filter_map(|signal| event(&signal)) {
+                if events.send(event).is_err() {
+                    return;
+                }
             }
-        }
+        });
     });
 }
 

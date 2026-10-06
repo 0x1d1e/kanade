@@ -14,6 +14,7 @@ use super::json::Json;
 use super::{cast, workspace};
 use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
+use crate::supervise;
 
 // what the core gets from niri; the default is also what a lost socket degrades to
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -178,24 +179,32 @@ pub struct Posts {
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
 pub fn follow(posts: Posts) {
-    run(connect().map(BufReader::new), |before, seen| {
-        post(posts, before, seen);
+    // kept across a restart, so the new stream's first events post only what changed meanwhile
+    let mut posted = Seen::default();
+
+    supervise::run("niri", || {
+        run(
+            connect().map(BufReader::new),
+            &mut posted,
+            |before, seen| {
+                post(posts, before, seen);
+            },
+        );
     });
 }
 
-fn run(stream: io::Result<impl BufRead>, mut post: impl FnMut(&Seen, &Seen)) {
-    let mut posted = Seen::default();
-
+fn run(stream: io::Result<impl BufRead>, posted: &mut Seen, mut post: impl FnMut(&Seen, &Seen)) {
     let lost = match stream {
-        Ok(stream) => watch(stream, &mut posted, &mut post),
+        Ok(stream) => watch(stream, posted, &mut post),
         Err(error) => error,
     };
 
     // plan 5.3: logged, no toast
     eprintln!("kanade: niri event stream lost ({lost}), every monitor counts as focused");
 
-    if posted != Seen::default() {
-        post(&posted, &Seen::default());
+    if *posted != Seen::default() {
+        post(posted, &Seen::default());
+        *posted = Seen::default();
     }
 }
 
@@ -542,7 +551,9 @@ mod tests {
         let text = [OK, WORKSPACES, &overview(true), &cast(1)].join("\n");
         let mut posts = Vec::new();
 
-        run(Ok(text.as_bytes()), |_, seen| posts.push(seen.clone()));
+        run(Ok(text.as_bytes()), &mut Seen::default(), |_, seen| {
+            posts.push(seen.clone())
+        });
 
         // nobody can say a cast still runs, so its capture goes too
         assert_eq!(posts.last(), Some(&Seen::default()));
@@ -553,9 +564,12 @@ mod tests {
 
         run(
             Err::<&[u8], _>(io::ErrorKind::NotFound.into()),
+            &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
         );
-        run(Ok(OK.as_bytes()), |_, seen| posts.push(seen.clone()));
+        run(Ok(OK.as_bytes()), &mut Seen::default(), |_, seen| {
+            posts.push(seen.clone())
+        });
 
         assert_eq!(posts, []);
     }

@@ -147,12 +147,14 @@ fn id() -> Id {
 
 // runs on its own thread for good; without pw-dump there is no privacy indicator
 pub fn follow() {
+    // kept across a run that panicked, so the next one withdraws what no longer captures
+    let mut shown = None;
+
     let error = wake::run("pw-dump", &["--monitor", "--no-colors"], |output| {
-        let mut shown = None;
         let lost = watch(output, &mut shown, &mut post);
 
         // nobody can say any more whether something captures
-        if shown.is_some() {
+        if shown.take().is_some() {
             post(None);
         }
 

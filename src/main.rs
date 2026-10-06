@@ -9,6 +9,7 @@ mod modules;
 mod raster;
 mod shadow;
 mod sources;
+mod supervise;
 mod surfaces;
 mod theme;
 mod view;

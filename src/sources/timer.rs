@@ -17,6 +17,7 @@ use amane::{Argument, Bus, Service};
 
 use crate::island::activity::{Activity, Countdown, Detail, Id, Kind, Priority};
 use crate::island::service::IslandService;
+use crate::supervise;
 
 // the notification daemon, Kanade's own unless another one has the name
 const NOTIFICATIONS: &str = "org.freedesktop.Notifications";
@@ -119,55 +120,57 @@ pub fn spawn() {
 fn follow(events: &Receiver<Event>) {
     let mut running: Option<Countdown> = None;
 
-    loop {
-        let now = Instant::now();
+    supervise::run("timer", || {
+        loop {
+            let now = Instant::now();
 
-        if let Some(countdown) = running.take_if(|countdown| countdown.ends <= now) {
-            forget();
-            IslandService::write().withdraw(&id(), now);
-            notify(&countdown);
-        }
-
-        for form in [&CLOCK, &SHORT] {
-            if form.lock().take_if(|redraw| *redraw <= now).is_some() {
-                (form.invalidate)();
-            }
-        }
-
-        let deadline = running
-            .map(|countdown| countdown.ends)
-            .into_iter()
-            .chain([&CLOCK, &SHORT].into_iter().filter_map(|form| *form.lock()))
-            .min();
-
-        let event = match deadline {
-            Some(deadline) => events.recv_timeout(deadline.saturating_duration_since(now)),
-            None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
-        };
-
-        match event {
-            Ok(Event::Start(length)) => {
-                let now = Instant::now();
-                let countdown = Countdown {
-                    ends: now + length,
-                    length,
-                };
-
-                running = Some(countdown);
+            if let Some(countdown) = running.take_if(|countdown| countdown.ends <= now) {
                 forget();
-                IslandService::write().post(activity(countdown), now);
+                IslandService::write().withdraw(&id(), now);
+                notify(&countdown);
             }
-            Ok(Event::Stop) => {
-                // stopping no timer changes nothing, so it writes nothing
-                if running.take().is_some() {
-                    forget();
-                    IslandService::write().withdraw(&id(), Instant::now());
+
+            for form in [&CLOCK, &SHORT] {
+                if form.lock().take_if(|redraw| *redraw <= now).is_some() {
+                    (form.invalidate)();
                 }
             }
-            Ok(Event::Wake) | Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+
+            let deadline = running
+                .map(|countdown| countdown.ends)
+                .into_iter()
+                .chain([&CLOCK, &SHORT].into_iter().filter_map(|form| *form.lock()))
+                .min();
+
+            let event = match deadline {
+                Some(deadline) => events.recv_timeout(deadline.saturating_duration_since(now)),
+                None => events.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+
+            match event {
+                Ok(Event::Start(length)) => {
+                    let now = Instant::now();
+                    let countdown = Countdown {
+                        ends: now + length,
+                        length,
+                    };
+
+                    running = Some(countdown);
+                    forget();
+                    IslandService::write().post(activity(countdown), now);
+                }
+                Ok(Event::Stop) => {
+                    // stopping no timer changes nothing, so it writes nothing
+                    if running.take().is_some() {
+                        forget();
+                        IslandService::write().withdraw(&id(), Instant::now());
+                    }
+                }
+                Ok(Event::Wake) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
-    }
+    });
 }
 
 // Ongoing, so it becomes a Satellite beside a higher primary, and the primary over Media

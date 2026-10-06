@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use amane::{Audio, Brightness, Service};
 
 use super::wake::{Announcer, Pace, Wakes};
-use crate::config;
 use crate::island::activity::{Activity, Detail, Device, Id, Kind, Priority, Volume};
 use crate::island::service::IslandService;
+use crate::{config, supervise};
 
 const PACE: Pace = Pace {
     // plan 3: 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other
@@ -133,23 +133,25 @@ pub fn follow() {
     let mut wakes = Wakes::new(PACE, vec![PULSE, BACKLIGHT]);
     let mut last = None;
 
-    loop {
-        let levels = Levels::read();
-        let changes = changes(last, levels);
+    supervise::run("osd", || {
+        loop {
+            let levels = Levels::read();
+            let changes = changes(last, levels);
 
-        if !changes.is_empty() {
-            let now = Instant::now();
-            let mut island = IslandService::write();
+            if !changes.is_empty() {
+                let now = Instant::now();
+                let mut island = IslandService::write();
 
-            for activity in changes {
-                island.post(activity, now);
+                for activity in changes {
+                    island.post(activity, now);
+                }
             }
-        }
 
-        let busy = last != Some(levels);
-        last = Some(levels);
-        wakes.wait(busy);
-    }
+            let busy = last != Some(levels);
+            last = Some(levels);
+            wakes.wait(busy);
+        }
+    });
 }
 
 #[cfg(test)]

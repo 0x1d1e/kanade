@@ -6,10 +6,13 @@
 //! A command that is not running cannot announce anything, so while one is down the source polls.
 
 use std::io::{self, BufRead, BufReader};
+use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::supervise;
 
 // how long until a command runs again after it ended, doubling up to `LAST_RETRY` while it keeps
 // failing
@@ -25,8 +28,9 @@ const NOT_FOUND: i32 = 127;
 
 /*
  * runs `program` for good, `follow` reading its output until it ends and saying why; ran again
- * after a backoff. Returns only when `program` cannot be started at all, like when it is missing.
- * Call it from a thread that lives as long as Kanade: the program dies with that thread
+ * after a backoff, or after `supervise::RESTART` at least when `follow` panicked. Returns only when
+ * `program` cannot be started at all, like when it is missing. Call it from a thread that lives as
+ * long as Kanade: the program dies with that thread
  */
 pub fn run(
     program: &str,
@@ -43,9 +47,11 @@ pub fn run(
         };
 
         let started = Instant::now();
-        let lost = match child.stdout.take() {
-            Some(output) => follow(BufReader::new(output)),
-            None => io::Error::other("no output"),
+        let followed = match child.stdout.take() {
+            Some(output) => {
+                panic::catch_unwind(AssertUnwindSafe(|| follow(BufReader::new(output))))
+            }
+            None => Ok(io::Error::other("no output")),
         };
 
         drop(child.kill());
@@ -57,9 +63,16 @@ pub fn run(
         }
 
         wait = retry(wait, started.elapsed());
-        eprintln!("kanade: lost `{command}` ({lost}), running it again in {wait:?}");
 
-        thread::sleep(wait);
+        // a panic, already printed by the panic hook, waits as long as any source's restart
+        let (lost, pause) = match followed {
+            Ok(lost) => (lost, wait),
+            Err(_) => (io::Error::other("panicked"), wait.max(supervise::RESTART)),
+        };
+
+        eprintln!("kanade: lost `{command}` ({lost}), running it again in {pause:?}");
+
+        thread::sleep(pause);
         wait = (wait * 2).min(LAST_RETRY);
     }
 }
@@ -199,7 +212,7 @@ impl Wakes {
             Ok(Message::Down) => self.down += 1,
             Err(RecvTimeoutError::Timeout) => {}
 
-            // announcers run for good, so this is only a panicked one; poll rather than spin
+            // every announcer could not start, so none is left to announce; poll rather than spin
             Err(RecvTimeoutError::Disconnected) => thread::sleep(self.pace.poll),
         }
     }
@@ -218,14 +231,30 @@ fn announce(announcer: Announcer, send: Sender<Message>) {
     } = announcer;
 
     let error = run(program, args, |output| {
-        drop(send.send(Message::Up));
-        let lost = follow(output, announces, &send);
-        drop(send.send(Message::Down));
+        let _up = Up::new(&send);
 
-        lost
+        follow(output, announces, &send)
     });
 
     eprintln!("kanade: cannot run {program} ({error}), polling instead");
+}
+
+// an announcer's output being read: says Up, and Down once it ends, even by a panic, so the count
+// of announcers down stays true across a restart
+struct Up<'a>(&'a Sender<Message>);
+
+impl<'a> Up<'a> {
+    fn new(send: &'a Sender<Message>) -> Self {
+        drop(send.send(Message::Up));
+
+        Up(send)
+    }
+}
+
+impl Drop for Up<'_> {
+    fn drop(&mut self) {
+        drop(self.0.send(Message::Down));
+    }
 }
 
 // sends each announcement until the output ends; returns why it ended

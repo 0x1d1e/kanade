@@ -20,6 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use amane::Service;
 
+use crate::supervise;
+
 // the hand-kept libc ABI below holds only here; another target must check it before building
 #[cfg(not(all(
     target_os = "linux",
@@ -136,20 +138,22 @@ pub fn spawn() {
 fn follow(mut timer: File) {
     let mut expirations = [0; 8];
 
-    loop {
-        match timer.read_exact(&mut expirations) {
-            Ok(()) => {}
-            Err(error) if error.raw_os_error() == Some(ECANCELED) => {}
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                eprintln!("kanade: lost the clock timer ({error}), the time will not turn");
-                return;
+    supervise::run("clock", || {
+        loop {
+            match timer.read_exact(&mut expirations) {
+                Ok(()) => {}
+                Err(error) if error.raw_os_error() == Some(ECANCELED) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    eprintln!("kanade: lost the clock timer ({error}), the time will not turn");
+                    return;
+                }
             }
-        }
 
-        *ARMED.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        drop(WallClock::write());
-    }
+            *ARMED.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            drop(WallClock::write());
+        }
+    });
 }
 
 // the local time now, asking for a redraw when the minute turns
