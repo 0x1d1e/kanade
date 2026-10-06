@@ -21,6 +21,9 @@ pub struct Module {
     // soft: one that is not on leaves this one running without what it gives
     pub optional: &'static [&'static str],
 
+    // what the user loses with it off, said at start whenever it is, since that loss is easy to miss
+    pub warns: Option<&'static str>,
+
     /*
      * starts its threads and adds its windows and IPC verbs to the shell; runs once at start, after
      * every Module it requires, so a source finds the island configured
@@ -37,6 +40,7 @@ pub const ALL: &[Module] = &[
         name: CORE,
         requires: &[],
         optional: &[],
+        warns: None,
         start: |app| {
             let config = config::get();
 
@@ -66,6 +70,7 @@ pub const ALL: &[Module] = &[
         name: "workspace",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| app,
     },
     // the microphone and camera from PipeWire, and screen casts from the island's niri stream
@@ -73,6 +78,7 @@ pub const ALL: &[Module] = &[
         name: "privacy",
         requires: &[CORE],
         optional: &[],
+        warns: Some("microphone, camera and screen cast indicators will not show"),
         start: |app| {
             spawn("privacy", privacy::follow);
             app
@@ -82,6 +88,7 @@ pub const ALL: &[Module] = &[
         name: "battery",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             spawn("battery", battery::follow);
             app
@@ -91,6 +98,7 @@ pub const ALL: &[Module] = &[
         name: "media",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             spawn("media", media::follow);
             app
@@ -100,6 +108,7 @@ pub const ALL: &[Module] = &[
         name: "timer",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             timer::spawn();
             app
@@ -109,6 +118,7 @@ pub const ALL: &[Module] = &[
         name: "osd",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             spawn("osd", osd::follow);
             app
@@ -118,6 +128,7 @@ pub const ALL: &[Module] = &[
         name: "notifications",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             spawn("notifications", notifications::follow);
             app
@@ -128,6 +139,7 @@ pub const ALL: &[Module] = &[
         name: "network",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             system::spawn();
             app
@@ -137,6 +149,7 @@ pub const ALL: &[Module] = &[
         name: "bluetooth",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             system::spawn();
             app
@@ -147,6 +160,7 @@ pub const ALL: &[Module] = &[
         name: "power",
         requires: &[CORE],
         optional: &[],
+        warns: None,
         start: |app| {
             system::spawn();
             app
@@ -352,8 +366,10 @@ pub fn start(mut app: App) -> App {
             eprintln!("kanade: {problem}");
         }
 
-        if matches!(state, State::On { .. }) {
-            app = (module.start)(app);
+        match (state, module.warns) {
+            (State::On { .. }, _) => app = (module.start)(app),
+            (_, Some(warning)) => eprintln!("kanade: module {} is off: {warning}", module.name),
+            (_, None) => {}
         }
     }
 
@@ -374,6 +390,7 @@ mod tests {
             name,
             requires,
             optional: &[],
+            warns: None,
             start: |app| app,
         }
     }

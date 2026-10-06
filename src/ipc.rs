@@ -45,7 +45,8 @@ pub fn island(arguments: &[String]) -> String {
     String::new()
 }
 
-// the Module beside the core a command needs: the timer's thread, or a Surface that reads a Service
+// the Module beside the core a command needs: the timer's thread, a Surface that reads a Service,
+// or Do Not Disturb, which only notifications heed
 fn needs(command: &Command) -> Option<&'static str> {
     match command {
         Command::StartTimer(_) | Command::StopTimer => Some("timer"),
@@ -54,6 +55,22 @@ fn needs(command: &Command) -> Option<&'static str> {
             Surface::Notifications => Some("notifications"),
             Surface::Controls | Surface::Launcher => None,
         },
-        Command::Collapse | Command::ToggleDnd | Command::Post(_) | Command::Withdraw(_) => None,
+        Command::ToggleDnd => Some("notifications"),
+        Command::Collapse | Command::Post(_) | Command::Withdraw(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Do Not Disturb only quiets notifications, so it goes with them
+    #[test]
+    fn verbs_go_with_their_module() {
+        assert_eq!(needs(&Command::ToggleDnd), Some("notifications"));
+        assert_eq!(needs(&Command::StopTimer), Some("timer"));
+        assert_eq!(needs(&Command::Open(Surface::Media)), Some("media"));
+        assert_eq!(needs(&Command::Toggle(Surface::Controls)), None);
+        assert_eq!(needs(&Command::Collapse), None);
     }
 }

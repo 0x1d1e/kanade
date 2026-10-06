@@ -59,8 +59,11 @@ const DISABLED: f32 = 0.35;
 const HEIGHT: f32 =
     2.0 * INSET + HEADER + 2.0 * SWITCH + SWITCH_GAP + 2.0 * TARGET + LEVEL_GAP + TRACK + 3.0 * GAP;
 
-// `dnd` is the view's own read of IslandService, so this never reads it again
-pub fn surface(dnd: bool) -> Rectangle {
+/*
+ * `dnd` is the view's own read of IslandService, so this never reads it again; none while the
+ * notifications Module is off, since nothing heeds it then
+ */
+pub fn surface(dnd: Option<bool>) -> Rectangle {
     let shape = geometry::CONTROLS;
 
     Rectangle::new()
@@ -88,7 +91,7 @@ fn header() -> Row {
 }
 
 // Wi-Fi and Bluetooth, then the microphone and Do Not Disturb
-fn switches(dnd: bool) -> Column {
+fn switches(dnd: Option<bool>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
     let microphone = self::microphone(Audio::read().microphone_muted());
@@ -194,13 +197,19 @@ fn microphone(muted: bool) -> Switch {
     }
 }
 
-fn dnd(on: bool) -> Switch {
+fn dnd(on: Option<bool>) -> Switch {
+    let status = match on {
+        None => "Unavailable",
+        Some(true) => "On",
+        Some(false) => "Off",
+    };
+
     Switch {
         icon: Icon::Moon,
         name: "Do Not Disturb",
-        status: String::from(if on { "On" } else { "Off" }),
-        on,
-        press: Some(Press::Dnd(!on)),
+        status: String::from(status),
+        on: on == Some(true),
+        press: on.map(|on| Press::Dnd(!on)),
     }
 }
 
@@ -522,7 +531,9 @@ mod tests {
             ("On", true)
         );
 
-        assert_eq!(dnd(true).press, Some(Press::Dnd(false)));
-        assert_eq!(dnd(false).press, Some(Press::Dnd(true)));
+        assert_eq!(dnd(Some(true)).press, Some(Press::Dnd(false)));
+        assert_eq!(dnd(Some(false)).press, Some(Press::Dnd(true)));
+        assert_eq!(dnd(None).press, None);
+        assert_eq!(dnd(None).status, "Unavailable");
     }
 }

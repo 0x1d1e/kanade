@@ -18,6 +18,7 @@ use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
+use crate::modules;
 use crate::shadow::{self, ShadowStyle};
 use crate::sources::timer;
 use crate::surfaces;
@@ -318,7 +319,9 @@ fn surface(
             island.held(monitor),
             island.dnd(),
         )),
-        Surface::Controls => Some(surfaces::controls::surface(island.dnd())),
+        Surface::Controls => Some(surfaces::controls::surface(
+            modules::on("notifications").then(|| island.dnd()),
+        )),
         Surface::Launcher => Some(surfaces::launcher::surface(monitor, island.visit())),
     }
 }
