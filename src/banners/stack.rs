@@ -91,6 +91,16 @@ impl Stack {
             return;
         }
 
+        // a waiting one keeps its place, unless it crossed into or out of Critical, which waits first
+        if let Some(queued) = self
+            .queued
+            .iter_mut()
+            .find(|queued| queued.id == banner.id && queued.critical() == banner.critical())
+        {
+            *queued = banner;
+            return;
+        }
+
         self.queued.retain(|queued| queued.id != banner.id);
         self.queue(banner);
         self.promote(now);
@@ -321,6 +331,39 @@ mod tests {
         stack.expire(after(now, 6000));
         assert_eq!(ids(&stack), [4]);
         assert_eq!(stack.deadline(), Some(after(now, 12_000)));
+    }
+
+    #[test]
+    fn a_new_version_of_a_waiting_one_keeps_its_place() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        for id in 1..=5 {
+            stack.arrive(banner(id, Urgency::Normal), false, now);
+        }
+
+        let mut replaced = banner(4, Urgency::Normal);
+        replaced.default = true;
+        stack.arrive(replaced, false, now);
+
+        assert!(stack.close(1, now));
+        assert_eq!(ids(&stack), [4, 3, 2]);
+        assert!(stack.shown().next().is_some_and(|banner| banner.default));
+    }
+
+    #[test]
+    fn a_waiting_one_turned_critical_waits_ahead_of_the_rest() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        for id in 1..=5 {
+            stack.arrive(banner(id, Urgency::Normal), false, now);
+        }
+
+        stack.arrive(banner(5, Urgency::Critical), false, now);
+
+        assert!(stack.close(1, now));
+        assert_eq!(ids(&stack), [5, 3, 2]);
     }
 
     #[test]
