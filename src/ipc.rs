@@ -5,13 +5,19 @@ use std::time::Instant;
 use amane::Service;
 
 use crate::island::command::Command;
+use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
+use crate::modules;
 use crate::sources::timer;
 
 pub fn island(arguments: &[String]) -> String {
     let Some(command) = Command::parse(arguments) else {
         return Command::usage();
     };
+
+    if let Some(module) = needs(&command).filter(|&module| !modules::on(module)) {
+        return format!("module {module} is off");
+    }
 
     // handed to the timer's thread, which posts its Activity itself
     match command {
@@ -37,4 +43,17 @@ pub fn island(arguments: &[String]) -> String {
     }
 
     String::new()
+}
+
+// the Module beside the core a command needs: the timer's thread, or a Surface that reads a Service
+fn needs(command: &Command) -> Option<&'static str> {
+    match command {
+        Command::StartTimer(_) | Command::StopTimer => Some("timer"),
+        Command::Open(surface) | Command::Toggle(surface) => match surface {
+            Surface::Media => Some("media"),
+            Surface::Notifications => Some("notifications"),
+            Surface::Controls | Surface::Launcher => None,
+        },
+        Command::Collapse | Command::ToggleDnd | Command::Post(_) | Command::Withdraw(_) => None,
+    }
 }

@@ -2,14 +2,16 @@
 //! all three. Joining or leaving a network, or a Bluetooth device connecting or going away, shows
 //! as a short Transient on the focused island; nothing about them stays on it, so there is never a
 //! permanent Wi-Fi indicator. The latest state is kept in `Connectivity`, `Adapter` and `Profiles`
-//! for the Controls Surface.
+//! for the Controls Surface. Each daemon belongs to its own Module (`network`, `bluetooth`,
+//! `power`), and the watcher follows only those that are on; the State of one that is off stays at
+//! its default, which Controls shows as missing.
 //!
 //! Amane's Network and Bluetooth poll every second or two for good once read, so this never reads
 //! them. It waits on signals instead and asks a daemon again only when one of its objects changes,
 //! comes or goes, or the daemon itself starts or stops: at idle its threads sleep, and a signal
 //! about anything else, like an access point's strength, is dropped without a call.
 
-use std::sync::mpsc;
+use std::sync::{Once, mpsc};
 use std::time::{Duration, Instant};
 use std::{iter, thread};
 
@@ -18,6 +20,7 @@ use amane::{Bus, Service, Value};
 use super::{bluetooth, network, power};
 use crate::island::activity::Activity;
 use crate::island::service::IslandService;
+use crate::modules;
 
 // the bus itself, the only sender of NameOwnerChanged
 const BUS: &str = "org.freedesktop.DBus";
@@ -112,8 +115,49 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
     }
 }
 
+// which daemons to follow, each by its Module
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Daemons {
+    network: bool,
+    bluetooth: bool,
+    power: bool,
+}
+
+impl Daemons {
+    fn follows(self, daemon: Daemon) -> bool {
+        match daemon {
+            Daemon::NetworkManager => self.network,
+            Daemon::BlueZ => self.bluetooth,
+            Daemon::PowerProfiles => self.power,
+        }
+    }
+
+    // objects coming and going matter only for BlueZ, see `route`
+    fn watches(self, watch: Watch) -> bool {
+        match watch {
+            Watch::Added | Watch::Removed => self.bluetooth,
+            Watch::Properties | Watch::Owner => true,
+        }
+    }
+}
+
+static SPAWNED: Once = Once::new();
+
+// called by each of the three Modules that is on; the first call starts the one watcher for all
+pub fn spawn() {
+    SPAWNED.call_once(|| {
+        let daemons = Daemons {
+            network: modules::on("network"),
+            bluetooth: modules::on("bluetooth"),
+            power: modules::on("power"),
+        };
+
+        thread::spawn(move || follow(daemons));
+    });
+}
+
 // runs on its own thread for good, or until the system bus goes away
-pub fn follow() {
+fn follow(daemons: Daemons) {
     /*
      * signals queue up to 64 while unread, and a full queue stops the bus reading anything, replies
      * included: a read made while a burst arrives, as switching networks sends, would wait for
@@ -121,7 +165,10 @@ pub fn follow() {
      */
     let (sender, changed) = mpsc::channel();
 
-    for watch in Watch::ALL {
+    for watch in Watch::ALL
+        .into_iter()
+        .filter(|&watch| daemons.watches(watch))
+    {
         let (interface, name) = watch.signal();
 
         // subscribed before the first read, so no change falls between them
@@ -131,6 +178,7 @@ pub fn follow() {
         thread::spawn(move || {
             for signal in signals {
                 let Some(daemon) = route(watch, signal.sender(), signal.path(), signal.arguments())
+                    .filter(|&daemon| daemons.follows(daemon))
                 else {
                     continue;
                 };
@@ -146,9 +194,17 @@ pub fn follow() {
     drop(sender);
 
     // the first reads only set where things start, so starting the shell shows nothing
-    *network::Connectivity::write() = network::read();
-    *bluetooth::Adapter::write() = bluetooth::read();
-    *power::Profiles::write() = power::read();
+    if daemons.network {
+        *network::Connectivity::write() = network::read();
+    }
+
+    if daemons.bluetooth {
+        *bluetooth::Adapter::write() = bluetooth::read();
+    }
+
+    if daemons.power {
+        *power::Profiles::write() = power::read();
+    }
 
     while let Ok(first) = changed.recv() {
         // a burst, or what came during the last read, asks once
