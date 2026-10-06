@@ -60,9 +60,11 @@ amane ipc call island <verb>
 
 A verb of a Module turned off in the config answers `module <name> is off`. With no verb it prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities.
 
+`amane ipc call config reload` reads the config again now, `amane ipc call config validate` says what a reload would find without applying it, and `amane ipc call status` prints the config generation, the last reload error and the keys pending restart.
+
 ## Configuration
 
-Kanade reads its config once at start, in layers, each over the ones before it:
+Kanade reads its config at start, and again whenever one of its files changes, in layers, each over the ones before it:
 
 1. the defaults below
 2. every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else `~/.config/kanade/`), in alphabetical order, so `config.toml` can sit beside files like `10-theme.toml` that another tool manages. Hidden files are skipped.
@@ -97,7 +99,8 @@ toast = 5000         # a notification shown as a Transient
 - `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
 - `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its IPC verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `osd` (volume and brightness), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `network`, `bluetooth` and `power` (the Controls tiles and their Transients). A Module whose requirement is off turns off too, and stderr names why.
 - `schema_version`: the config layout a file is written in, per file, `1` without one. When a Kanade release changes the layout, it migrates older files in memory as it reads them and leaves them as they are on disk. A file with a version newer than this Kanade reads, or one that is not a version, is skipped whole, so a downgrade never applies settings it cannot read.
-- Problems are reported on stderr with file and line. A key that is unknown or a value out of range is skipped, keeping what the layers below gave it. A file that is not valid TOML, like one that sets a key twice, is skipped whole.
+- Problems are reported on stderr with file and line. At start, a key that is unknown or a value out of range is skipped, keeping what the layers below gave it, and a file that is not valid TOML, like one that sets a key twice, is skipped whole.
+- A change while running applies without a restart, except `modules`, which stays as it started and is reported pending restart. A change with any problem applies nothing: the config in effect stays whole, and stderr and `status` report why.
 
 ## Keyboard
 

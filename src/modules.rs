@@ -9,8 +9,9 @@ use std::thread;
 
 use amane::{App, Apps, Service};
 
+use crate::island::service::IslandService;
 use crate::sources::{battery, media, niri, notifications, osd, privacy, system, timer};
-use crate::{clock, cluster, config, ipc, island, shadow, theme, view};
+use crate::{clock, cluster, config, ipc, reload, shadow, theme, view};
 
 pub struct Module {
     pub name: &'static str,
@@ -29,7 +30,7 @@ pub struct Module {
 
     /*
      * starts its threads and adds its windows and IPC verbs to the shell; runs once at start, after
-     * every Module it requires, so a source finds the island configured
+     * every Module it requires
      */
     pub start: fn(App) -> App,
 }
@@ -48,9 +49,9 @@ pub const ALL: &[Module] = &[
         start: |app| {
             let config = config::get();
 
-            // before anything reads the island, which takes its timings once
-            island::service::configure(config.island);
+            IslandService::write().retime(config.island);
             theme::follow(config.palette.as_deref());
+            reload::spawn();
             clock::spawn();
             shadow::prepare(shadow::ShadowStyle::island());
 
@@ -67,6 +68,8 @@ pub const ALL: &[Module] = &[
 
             app.window_per_monitor(view::island)
                 .ipc("island", ipc::island)
+                .ipc("config", ipc::config)
+                .ipc("status", ipc::status)
         },
     },
     // read from the island's niri stream, so it starts nothing of its own

@@ -1,4 +1,4 @@
-//! The config (#39, #101, docs/design.md Config): TOML, read once at start in layers, each over the
+//! The config (#39, #101, docs/design.md Config): TOML, read at start in layers, each over the
 //! ones before it: the defaults, then every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else
 //! `~/.config/kanade/`) in alphabetical order, then `$XDG_STATE_HOME/kanade/settings.toml` (else
 //! `~/.local/state/kanade/settings.toml`), the layer the Settings app will own. Tables merge key by
@@ -10,7 +10,8 @@
 //! Every key is optional, and each key is registered by the one Module that owns it. A file that
 //! is not TOML is skipped whole; a key that is unknown or a value out of range is skipped alone,
 //! keeping what the layers below gave it. Either says so on stderr with file and line, so a typo
-//! never stops the shell.
+//! never stops the shell. A reload while running (`crate::reload`) is stricter: any problem keeps
+//! the config in effect whole.
 //!
 //! ```toml
 //! reduced_motion = false
@@ -38,7 +39,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -201,29 +202,56 @@ fn millis(value: &Value) -> Result<Duration, String> {
 }
 
 // tests never read the user's files, so they see the defaults
-static CONFIG: LazyLock<Config> = LazyLock::new(|| {
-    if cfg!(test) {
+static CURRENT: LazyLock<RwLock<Arc<Config>>> = LazyLock::new(|| {
+    let config = if cfg!(test) {
         Config::default()
     } else {
-        load()
-    }
+        let (config, problems) = read();
+
+        for problem in problems {
+            eprintln!("kanade: {problem}");
+        }
+
+        config
+    };
+
+    RwLock::new(Arc::new(config))
 });
 
-pub fn get() -> &'static Config {
-    &CONFIG
+// the config in effect; a reload swaps it whole, so one read never mixes two
+pub fn get() -> Arc<Config> {
+    CURRENT
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
-fn load() -> Config {
+// a reload's config replaces the one in effect (`crate::reload`)
+pub fn install(config: Config) {
+    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(config);
+}
+
+/*
+ * every layer read over the defaults, and what did not apply as `file:line: what`, in layer order;
+ * at start each problem is skipped alone, a reload refuses the lot
+ */
+pub fn read() -> (Config, Vec<String>) {
     let home = env::var("HOME").ok();
     let mut config = Config::default();
+    let mut problems = Vec::new();
 
-    for path in files(home.as_deref()) {
-        let Some(text) = read(&path) else {
-            continue;
+    for path in files(home.as_deref(), &mut problems) {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                problems.push(format!("{} unreadable, skipped: {error}", path.display()));
+                continue;
+            }
         };
 
         for (line, problem) in layer(&mut config, &text, MIGRATIONS, home.as_deref()) {
-            eprintln!("kanade: {}:{line}: {problem}", path.display());
+            problems.push(format!("{}:{line}: {problem}", path.display()));
         }
     }
 
@@ -231,13 +259,42 @@ fn load() -> Config {
         config.island.motion = motion;
     }
 
-    config
+    (config, problems)
+}
+
+// where a layer's file may appear, so `crate::reload` can watch for one
+pub enum Place {
+    // the config directory, any `*.toml` in it
+    Directory(PathBuf),
+
+    // the settings file
+    File(PathBuf),
+}
+
+pub fn places() -> Vec<Place> {
+    let home = env::var("HOME").ok();
+    let home = home.as_deref();
+
+    base("XDG_CONFIG_HOME", ".config", home)
+        .map(|dir| Place::Directory(dir.join("kanade")))
+        .into_iter()
+        .chain(
+            base("XDG_STATE_HOME", ".local/state", home)
+                .map(|dir| Place::File(dir.join("kanade/settings.toml"))),
+        )
+        .collect()
+}
+
+// a file in the config directory that is a layer: `*.toml`, not hidden
+pub fn layer_name(name: &OsStr) -> bool {
+    !name.as_encoded_bytes().starts_with(b".")
+        && Path::new(name).extension() == Some(OsStr::new("toml"))
 }
 
 // every layer's file, in the order they apply
-fn files(home: Option<&str>) -> Vec<PathBuf> {
+fn files(home: Option<&str>, problems: &mut Vec<String>) -> Vec<PathBuf> {
     let mut files = base("XDG_CONFIG_HOME", ".config", home)
-        .map(|dir| tomls(&dir.join("kanade")))
+        .map(|dir| tomls(&dir.join("kanade"), problems))
         .unwrap_or_default();
 
     files.extend(
@@ -256,12 +313,12 @@ fn base(variable: &str, default: &str, home: Option<&str>) -> Option<PathBuf> {
 }
 
 // the `*.toml` files in a directory by name, leaving out hidden ones; no directory is no files
-fn tomls(dir: &Path) -> Vec<PathBuf> {
+fn tomls(dir: &Path, problems: &mut Vec<String>) -> Vec<PathBuf> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
         Err(error) => {
-            eprintln!("kanade: {} unreadable, skipped: {error}", dir.display());
+            problems.push(format!("{} unreadable, skipped: {error}", dir.display()));
             return Vec::new();
         }
     };
@@ -269,29 +326,11 @@ fn tomls(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            let visible = path
-                .file_name()
-                .is_some_and(|name| !name.as_encoded_bytes().starts_with(b"."));
-
-            visible && path.extension() == Some(OsStr::new("toml")) && path.is_file()
-        })
+        .filter(|path| path.file_name().is_some_and(layer_name) && path.is_file())
         .collect();
 
     files.sort();
     files
-}
-
-// no file is no layer; one that will not read says so
-fn read(path: &Path) -> Option<String> {
-    match fs::read_to_string(path) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            eprintln!("kanade: {} unreadable, skipped: {error}", path.display());
-            None
-        }
-    }
 }
 
 // KANADE_REDUCED_MOTION set and not empty wins over the files: 0 is off, anything else on
@@ -867,7 +906,7 @@ battery = false
             fs::write(dir.join(name), "").unwrap();
         }
 
-        let names: Vec<_> = tomls(&dir)
+        let names: Vec<_> = tomls(&dir, &mut Vec::new())
             .iter()
             .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
             .collect();
@@ -875,7 +914,7 @@ battery = false
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(names, ["10.toml", "a.toml", "b.toml"]);
-        assert_eq!(tomls(&dir), Vec::<PathBuf>::new());
+        assert_eq!(tomls(&dir, &mut Vec::new()), Vec::<PathBuf>::new());
     }
 
     // without a home, `~` stays as written; a path that is not under `~/` is left alone

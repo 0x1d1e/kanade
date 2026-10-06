@@ -4,7 +4,8 @@
 //! green keep their meaning, which no theme changes.
 
 use std::path::Path;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use amane::{Color, Palette, Service};
 
@@ -73,18 +74,20 @@ const PIN: f32 = 0.365;
 // colors picked from the image, as many as a whole shell's theme needs (Amane's `Palette`)
 const PICKED: usize = 16;
 
-// set once `follow` opened an image, so the near-black theme never reads the Palette
-static FOLLOWING: OnceLock<()> = OnceLock::new();
+// set while `follow` has an image open, so the near-black theme never reads the Palette
+static FOLLOWING: AtomicBool = AtomicBool::new(false);
 
 // the last palette colors and the theme they gave, since every color a view draws asks
 static LAST: Mutex<Option<(Color, Color, Theme)>> = Mutex::new(None);
 
 /*
- * in main, before the shell starts: the theme follows the image at `path` from now on, and
- * Amane's Palette picks its colors again whenever the file changes. None keeps the default
+ * at start and on each reload that changes it (#102): the theme follows the image at `path` from
+ * now on, and Amane's Palette picks its colors again whenever the file changes. None is the default
+ * theme; Amane cannot close an image, so a Palette already open keeps watching it, unread
  */
 pub fn follow(path: Option<&str>) {
     let Some(path) = path else {
+        FOLLOWING.store(false, Ordering::Relaxed);
         return;
     };
 
@@ -96,12 +99,12 @@ pub fn follow(path: Option<&str>) {
 
     Palette::write().open(path, PICKED);
 
-    let _ = FOLLOWING.set(());
+    FOLLOWING.store(true, Ordering::Relaxed);
 }
 
 // the near-black theme until the image gives colors, the image's after
 pub fn current() -> Theme {
-    if FOLLOWING.get().is_none() {
+    if !FOLLOWING.load(Ordering::Relaxed) {
         return DARK;
     }
 

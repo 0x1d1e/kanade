@@ -8,6 +8,7 @@ mod ipc;
 mod island;
 mod modules;
 mod raster;
+mod reload;
 mod shadow;
 mod sources;
 mod supervise;

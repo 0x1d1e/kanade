@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
@@ -56,14 +56,6 @@ impl Timings {
     }
 }
 
-// set once before the shell starts, since Amane builds the service with `new()`
-static TIMINGS: OnceLock<Timings> = OnceLock::new();
-
-// before the first read; a later call changes nothing
-pub fn configure(timings: Timings) {
-    let _ = TIMINGS.set(timings);
-}
-
 /*
  * an island opened without a press holds the keyboard until it collapses (#4), so it collapses on
  * its own after this unless the pointer comes onto it (#48). Only keys the open Surface consumes
@@ -99,7 +91,7 @@ pub struct IslandService {
     // from niri; none while unknown or without niri, which counts every monitor as focused
     focused_output: Option<String>,
 
-    // from `configure`, else the defaults
+    // from `retime`, else the defaults
     timings: Timings,
 
     // an AutoExpand's Surface open, until it gives the islands back or the user takes them
@@ -175,7 +167,7 @@ impl Service for IslandService {
             arbiter: Arbiter::default(),
             presentations: Presentations::default(),
             focused_output: None,
-            timings: TIMINGS.get().copied().unwrap_or_default(),
+            timings: Timings::default(),
             auto: None,
         }
     }
@@ -219,6 +211,11 @@ impl IslandService {
     // for motion outside the island, like the Media Surface's own dissolve
     pub fn timings(&self) -> Timings {
         self.timings
+    }
+
+    // the config's timings, at start and on each reload (#102); a motion under way keeps its own
+    pub fn retime(&mut self, timings: Timings) {
+        self.timings = timings;
     }
 
     // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
