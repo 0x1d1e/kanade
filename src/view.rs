@@ -16,6 +16,7 @@ use crate::island::geometry::{self, Rect, Shape};
 use crate::island::presentation::{Content, Input, Presentation, Surface};
 use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
+use crate::shadow::{self, ShadowStyle};
 use crate::sources::timer;
 use crate::surfaces;
 use crate::theme;
@@ -92,12 +93,19 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .on_scroll(move |Scroll { y, .. }| route(&scrolled, Input::Wheel(y)))
         .child(body);
 
+    let mut layers = Vec::new();
+
+    shadow::draw(&mut layers, body_rect, shape.radius, ShadowStyle::island());
+
     // the body grows over the Satellites as they fade, and they never take the pointer
-    let mut layers = if island.overview() {
-        Vec::new()
-    } else {
-        satellites(island.satellites(&monitor.name), body_rect, shape, now)
-    };
+    if !island.overview() {
+        layers.extend(satellites(
+            island.satellites(&monitor.name),
+            body_rect,
+            shape,
+            now,
+        ));
+    }
 
     layers.push(Box::new(hover));
 

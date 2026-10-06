@@ -5,17 +5,12 @@
  */
 
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::env;
-use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::process;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use amane::{Color, Image, Rectangle};
 
-use crate::theme;
+use crate::{raster, theme};
 
 // rasterized at twice its size, crisp at scale 2, like the island's pictures
 const SCALE: f32 = 2.0;
@@ -148,7 +143,7 @@ impl Icon {
 
         let path = drawn
             .entry(key)
-            .or_insert_with(|| write(&key.0.svg(crossed, ink)));
+            .or_insert_with(|| raster::write("icons", "svg", key.0.svg(crossed, ink).as_bytes()));
 
         (path.clone(), pixels)
     }
@@ -224,49 +219,6 @@ fn content(svg: &'static str) -> &'static str {
     svg.strip_prefix(HEAD)
         .and_then(|svg| svg.strip_suffix(TAIL))
         .expect("an svg in icons/ opens with HEAD and closes with TAIL")
-}
-
-/*
- * named by its contents, so a file left by an older build never stands in for a changed icon;
- * written whole under another name first, as Amane may read it on another thread
- */
-fn write(svg: &str) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    svg.hash(&mut hasher);
-
-    let folder = folder();
-
-    let path = folder.join(format!("{:016x}.svg", hasher.finish()));
-
-    if path.exists() {
-        return path;
-    }
-
-    let partial = path.with_extension(format!("{}.part", process::id()));
-
-    let written = fs::create_dir_all(&folder)
-        .and_then(|()| fs::write(&partial, svg))
-        .and_then(|()| fs::rename(&partial, &path));
-
-    // an icon that could not be written is left out, the island still works
-    if let Err(error) = written {
-        eprintln!("kanade: failed to write icon {}: {error}", path.display());
-    }
-
-    path
-}
-
-#[cfg(not(test))]
-fn folder() -> PathBuf {
-    env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(env::temp_dir, PathBuf::from)
-        .join("kanade/icons")
-}
-
-// tests keep their icons away from the ones a running island reads
-#[cfg(test)]
-fn folder() -> PathBuf {
-    env::temp_dir().join("kanade-test/icons")
 }
 
 #[cfg(test)]

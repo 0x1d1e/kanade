@@ -52,6 +52,9 @@ pub const EXPANDED_MAX: Shape = Shape {
     radius: 32.0,
 };
 
+// every shape a body morphs between; the springs never overshoot, so it stays within them
+pub const SHAPES: [Shape; 6] = [REST, COMPACT, PEEK, CONTROLS, MEDIA, EXPANDED_MAX];
+
 // a Satellite's diameter, and the gap before each one
 pub const SATELLITE: f32 = 28.0;
 pub const SATELLITE_GAP: f32 = 6.0;
