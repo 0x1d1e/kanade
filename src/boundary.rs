@@ -10,10 +10,11 @@ use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
 use proc_macro2::{TokenStream, TokenTree};
+use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
 use syn::{
     Attribute, Expr, ExprCall, ExprPath, ImplItemFn, Item, ItemMod, ItemUse, LitStr, Macro, Meta,
-    MetaList, Path as SynPath, UseRename, UseTree,
+    MetaList, Path as SynPath, Token, UseRename, UseTree,
 };
 
 const SERVICE: &str = "service";
@@ -378,20 +379,41 @@ impl Literals {
     }
 }
 
-// `#rgb`, `#rrggbb` and friends, which Amane's `Color::from` reads
+// what Amane's `Color::from` reads: 3, 6 or 8 hex digits, any leading `#` optional
 fn hex(text: &str) -> bool {
-    text.strip_prefix('#').is_some_and(|digits| {
-        [3, 4, 6, 8].contains(&digits.len()) && digits.chars().all(|c| c.is_ascii_hexdigit())
-    })
+    let digits = text.trim_start_matches('#');
+
+    [3, 6, 8].contains(&digits.len()) && digits.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-// `#[test]` or `#[cfg(test)]`
+// `#[test]`, or a `#[cfg(..)]` that holds only under test, like `cfg(all(test, unix))`
 fn test_only(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("test")
             || attr.path().is_ident("cfg")
-                && matches!(&attr.meta, Meta::List(list) if list.tokens.to_string() == "test")
+                && attr
+                    .parse_args::<Meta>()
+                    .is_ok_and(|meta| needs_test(&meta))
     })
+}
+
+// a cfg predicate that is false outside test builds
+fn needs_test(meta: &Meta) -> bool {
+    let Meta::List(list) = meta else {
+        return meta.path().is_ident("test");
+    };
+
+    let Ok(args) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) else {
+        return false;
+    };
+
+    if list.path.is_ident("all") {
+        args.iter().any(needs_test)
+    } else if list.path.is_ident("any") {
+        !args.is_empty() && args.iter().all(needs_test)
+    } else {
+        false
+    }
 }
 
 fn item_attrs(item: &Item) -> &[Attribute] {
@@ -633,6 +655,11 @@ mod checker {
         assert!(caught("fn f() -> Color { Color::rgb(-1 as u8, 0, 0) }"));
         assert!(caught("fn f() -> Color { Color::from(\"#ff0000\") }"));
         assert!(caught("fn f() -> Color { \"#fff\".into() }"));
+        assert!(caught(r#"fn f() -> Color { "ff0000".into() }"#));
+        assert!(caught(r#"fn f() -> Color { "fff".into() }"#));
+        assert!(caught(r#"fn f() -> Color { "ff000080".into() }"#));
+        assert!(caught("fn f() -> Color { \"##fff\".into() }"));
+        assert!(caught(r#"fn f() { let _ = vec!["ff0000"]; }"#));
         assert!(caught("fn f() { let _ = vec![Color::TRANSPARENT]; }"));
         assert!(caught(
             "fn f() { let _ = vec![Text::new(\"\").color(Color::rgb(1, 2, 3))]; }"
@@ -642,6 +669,10 @@ mod checker {
         ));
         assert!(caught("impl S { fn f() -> Color { Color::RED } }"));
         assert!(caught("#[cfg(not(test))] fn f() -> Color { Color::RED }"));
+        assert!(caught(
+            "#[cfg(any(test, unix))] fn f() -> Color { Color::RED }"
+        ));
+        assert!(caught("#[cfg(unix)] fn f() -> Color { Color::RED }"));
         assert!(caught("mod inner { const C: Color = Color::GREEN; }"));
     }
 
@@ -658,6 +689,13 @@ mod checker {
         ));
         assert!(!caught("fn f() { let _ = format!(\"#{}\", 1); }"));
         assert!(!caught("fn f() { let _ = \"#tag\"; }"));
+        assert!(!caught(r#"fn f() { let _ = "ffff"; }"#));
+        assert!(!caught(
+            "#[cfg(all(test, target_os = \"linux\"))] mod t { const C: Color = Color::RED; }"
+        ));
+        assert!(!caught(
+            "#[cfg(any(test, all(test, unix)))] fn f() -> Color { Color::RED }"
+        ));
         assert!(!caught(
             "#[cfg(test)] mod tests { const C: Color = Color::RED; }"
         ));
