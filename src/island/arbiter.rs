@@ -7,8 +7,8 @@
 //!
 //! A new primary dwells: for `DWELL` a newer Activity of its Priority waits behind it. Higher
 //! Priority, Preempt, AutoExpand, withdraw and expiry replace it at once. Which primary shows since
-//! when is the one state the Arbiter keeps besides the posts, settled at the `now` of each change,
-//! before and after it.
+//! when is the one state the Arbiter keeps besides the posts, settled at each deadline passed and
+//! at the `now` of each change.
 //!
 //! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
 //! it, never withdraw one; dropping the transients an open Surface already shows is `absorb`. DND (rule 5) hides the toasts already up and drops those posted during it.
@@ -86,7 +86,7 @@ impl Arbiter {
      * it replaced
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
-        self.settle(now);
+        self.expire(now);
 
         if self.silenced(&activity) {
             self.activities.remove(activity.id());
@@ -123,7 +123,7 @@ impl Arbiter {
 
     // whether it was registered
     pub fn withdraw(&mut self, id: &Id, now: Instant) -> bool {
-        self.settle(now);
+        self.expire(now);
 
         let withdrawn = self.activities.remove(id).is_some();
 
@@ -142,16 +142,23 @@ impl Arbiter {
         self.activities.len() != before
     }
 
-    // drops what expired by now and ends the dwells over; whether anything did
+    /*
+     * drops what expired by now and ends the dwells over; whether anything did. Each deadline
+     * passed is caught up at its own time, in order, so a late wake hands over the primary as an
+     * timely one would have. Every change runs this first
+     */
     pub fn expire(&mut self, now: Instant) -> bool {
-        let ended = self.settle(now);
-        let before = self.activities.len();
+        let mut changed = false;
 
-        self.activities.retain(|_, entry| entry.live(now));
+        while let Some(at) = self.deadline().filter(|&at| at <= now) {
+            let before = self.activities.len();
 
-        let expired = self.activities.len() != before;
+            self.activities.retain(|_, entry| entry.live(at));
 
-        self.settle(now) || ended || expired
+            changed |= self.settle(at) || self.activities.len() != before;
+        }
+
+        changed
     }
 
     /*
@@ -169,7 +176,7 @@ impl Arbiter {
 
     // DND silences Notification toasts, not the Notifications, and never a Critical one (rule 5)
     pub fn set_dnd(&mut self, dnd: bool, now: Instant) {
-        self.settle(now);
+        self.expire(now);
         self.dnd = dnd;
         self.settle(now);
     }
@@ -256,11 +263,7 @@ impl Arbiter {
         Some(dwells.unwrap_or(0))
     }
 
-    /*
-     * records the primary each island shows at `now`; whether one changed. Every change settles
-     * before and after, so a dwell that ended without a wake hands over to the one it kept back,
-     * not to a later post, and that one dwells from the handover
-     */
+    // records the primary each island shows at `now`; whether one changed
     fn settle(&mut self, now: Instant) -> bool {
         let mut changed = false;
 
@@ -269,13 +272,9 @@ impl Arbiter {
             let before = self.shown[usize::from(focused)].as_ref();
             let shown = self.primary(&ranked, focused, now).map(|index| {
                 let id = ranked[index].activity.id().clone();
-                let since = match before {
-                    Some(before) if before.id == id => before.since,
-                    Some(Shown {
-                        until: Some(until), ..
-                    }) if *until <= now => *until,
-                    _ => now,
-                };
+                let since = before
+                    .filter(|before| before.id == id)
+                    .map_or(now, |before| before.since);
 
                 Shown {
                     id,
@@ -439,6 +438,32 @@ mod tests {
             primary(&arbiter, t0 + DWELL * 2),
             Some(media("vlc").id().clone())
         );
+    }
+
+    // a late wake hands over at the expiry that ended the primary, not at its dwell's end
+    #[test]
+    fn a_late_wake_hands_over_at_the_expiry() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let brief = Activity::new(
+            Id::new(Kind::Media, "brief"),
+            Priority::Media,
+            Lifetime::Transient(OSD),
+            Scope::Global,
+            Interrupt::None,
+        )
+        .unwrap();
+
+        arbiter.post(brief, t0);
+        arbiter.post(media("mpv"), t0 + ms(100));
+
+        // no expire at the brief one's expiry
+        arbiter.post(media("vlc"), t0 + ms(1600));
+        assert_eq!(
+            primary(&arbiter, t0 + ms(1600)),
+            Some(media("mpv").id().clone())
+        );
+        assert_eq!(arbiter.deadline(), Some(t0 + OSD + DWELL));
     }
 
     #[test]
