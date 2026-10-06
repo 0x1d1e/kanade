@@ -21,7 +21,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
-use crate::{modules, theme};
+use crate::{modules, supervise, theme};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -57,19 +57,16 @@ pub enum Outcome {
 
 // the watch's thread; one that cannot watch says so, and `config reload` still reloads
 pub fn spawn() {
-    let spawned = thread::Builder::new()
-        .name(String::from("config"))
-        .spawn(|| {
-            let places = config::places();
+    supervise::spawn("config", || {
+        let places = config::places();
 
-            if let Err(error) = watch(&places, || drop(reload())) {
-                eprintln!("kanade: config changes are not followed, reload by hand: {error}");
-            }
-        });
+        if let Err(error) = watch(&places, || drop(reload())) {
+            let why = format!("config changes are not followed, reload by hand: {error}");
 
-    if let Err(error) = spawned {
-        eprintln!("kanade: config changes are not followed, reload by hand: {error}");
-    }
+            eprintln!("kanade: {why}");
+            supervise::stopped("config", why);
+        }
+    });
 }
 
 // reads every layer again and applies them if they hold no problem; says on stderr what came of it

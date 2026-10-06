@@ -15,7 +15,6 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use amane::Service;
@@ -126,7 +125,10 @@ pub fn spawn() {
     let timer = TIMER.get_or_init(|| unsafe { OwnedFd::from_raw_fd(fd) });
 
     match timer.try_clone() {
-        Ok(timer) => drop(thread::spawn(move || follow(File::from(timer)))),
+        Ok(timer) => {
+            let mut timer = File::from(timer);
+            supervise::spawn("clock", move || follow(&mut timer));
+        }
         Err(error) => unturned(&format!("no clock timer ({error})")),
     }
 }
@@ -140,7 +142,7 @@ fn unturned(problem: &str) {
 }
 
 // asleep until the armed minute, or until the clock is set
-fn follow(mut timer: File) {
+fn follow(timer: &mut File) {
     let mut expirations = [0; 8];
 
     supervise::run("clock", || {

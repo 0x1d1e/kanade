@@ -173,7 +173,9 @@ pub fn follow() {
     // kept across a run that panicked, so the next one clears what no longer captures
     let mut shown = None;
 
-    let error = wake::run("pw-dump", &["--monitor", "--no-colors"], |output| {
+    let stop = wake::Stop::default();
+
+    let error = wake::run("pw-dump", &["--monitor", "--no-colors"], &stop, |output| {
         let lost = watch(output, &mut shown, &mut show);
 
         // nobody can say any more whether something captures
@@ -183,6 +185,9 @@ pub fn follow() {
 
         lost
     });
+
+    // nothing stops it
+    let Some(error) = error else { return };
 
     let why = format!("cannot run pw-dump ({error}), no microphone or camera indicator");
 

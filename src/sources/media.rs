@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
@@ -706,21 +705,17 @@ fn follow_players(
 
 // each signal stream blocks, so each gets a thread that hands what counts to the follower
 fn forward(
-    signals: impl Iterator<Item = Signal> + Send + 'static,
+    mut signals: impl Iterator<Item = Signal> + Send + 'static,
     events: Sender<Event>,
     event: impl Fn(&Signal) -> Option<Event> + Send + 'static,
 ) {
-    thread::spawn(move || {
-        let mut signals = signals;
-
-        // a restart goes on with the same subscription, so no signal is lost to it
-        supervise::run("media bus watch", || {
-            for event in signals.by_ref().filter_map(|signal| event(&signal)) {
-                if events.send(event).is_err() {
-                    return;
-                }
+    // a restart goes on with the same subscription, so no signal is lost to it
+    supervise::spawn("media bus watch", move || {
+        for event in signals.by_ref().filter_map(|signal| event(&signal)) {
+            if events.send(event).is_err() {
+                return;
             }
-        });
+        }
     });
 }
 

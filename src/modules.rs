@@ -14,7 +14,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{battery, media, niri, notifications, osd, privacy, system, timer};
-use crate::{cli, clock, cluster, config, ipc, reload, shadow, theme, view};
+use crate::{cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
 pub struct Module {
     pub name: &'static str,
@@ -113,12 +113,11 @@ pub const ALL: &[Module] = &[
             shadow::prepare(shadow::ShadowStyle::island());
 
             // Kanade's own niri stream, which `workspace` and `privacy` also read when on
-            thread::spawn(|| {
-                niri::follow(niri::Posts {
-                    workspace: on("workspace"),
-                    privacy: on("privacy"),
-                });
-            });
+            let posts = niri::Posts {
+                workspace: on("workspace"),
+                privacy: on("privacy"),
+            };
+            supervise::spawn("niri", move || niri::follow(posts));
 
             // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list
             thread::spawn(|| drop(Apps::read()));
@@ -147,7 +146,7 @@ pub const ALL: &[Module] = &[
         settings: &[],
         verbs: &[],
         start: |app| {
-            spawn("privacy", privacy::follow);
+            supervise::spawn("privacy", privacy::follow);
             app.window_per_monitor(cluster::window)
         },
     },
@@ -159,7 +158,7 @@ pub const ALL: &[Module] = &[
         settings: &[],
         verbs: &[],
         start: |app| {
-            spawn("battery", battery::follow);
+            supervise::spawn("battery", battery::follow);
             app
         },
     },
@@ -179,7 +178,7 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| {
-            spawn("media", media::follow);
+            supervise::spawn("media", media::follow);
             app
         },
     },
@@ -221,7 +220,7 @@ pub const ALL: &[Module] = &[
         settings: &[],
         verbs: &[],
         start: |app| {
-            spawn("osd", osd::follow);
+            supervise::spawn("osd", osd::follow);
             app
         },
     },
@@ -250,7 +249,7 @@ notifications dnd on|off|toggle",
             },
         }],
         start: |app| {
-            spawn("notifications", notifications::follow);
+            supervise::spawn("notifications", notifications::follow);
             app
         },
     },
@@ -477,15 +476,6 @@ fn cycle(all: &[Module], start: usize) -> Option<Vec<&'static str>> {
     }
 
     None
-}
-
-// a Module's own thread, named after it, so `/proc/<pid>/task/*/comm` says which Modules run
-fn spawn(name: &str, run: fn()) {
-    let spawned = thread::Builder::new().name(name.to_owned()).spawn(run);
-
-    if let Err(error) = spawned {
-        eprintln!("kanade: module {name} cannot start a thread: {error}");
-    }
 }
 
 static MODULES: OnceLock<Modules> = OnceLock::new();
