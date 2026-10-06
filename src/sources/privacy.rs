@@ -1,6 +1,6 @@
-//! Microphone and camera privacy (plan 5.1, 7, #34): one Persistent Critical Privacy Activity
-//! while any app captures from a microphone or a camera, green, saying which and who. It withdraws
-//! when the last capture stops.
+//! Microphone, camera and screen capture for the privacy cluster (ADR 0005): what captures now,
+//! never an Activity. The microphone and camera come from PipeWire here (ADR 0003), screen casts
+//! from the island's niri stream (`niri.rs`), each writing its half of `Privacy`.
 //!
 //! PipeWire is the only place that knows: the portal has no signal for a microphone, and apps
 //! outside a sandbox skip it. `pw-dump --monitor` prints PipeWire's graph, then every object that
@@ -10,16 +10,46 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead};
-use std::time::Instant;
 
 use amane::Service;
 
 use super::json::Json;
 use super::wake;
-use crate::island::activity::{
-    Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Sensors,
-};
-use crate::island::service::IslandService;
+
+// what captures now, as the privacy cluster and the Controls Surface show it
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Privacy {
+    // none while no app captures from a microphone or a camera
+    pub sensors: Option<Sensors>,
+
+    // niri has at least one screen cast, paused ones included; niri cannot say why, so it is
+    // never a "Recording" or "Sharing"
+    pub casting: bool,
+}
+
+impl Privacy {
+    pub fn any(&self) -> bool {
+        self.sensors.is_some() || self.casting
+    }
+}
+
+impl Service for Privacy {
+    fn new() -> Self {
+        Privacy::default()
+    }
+
+    fn listen() {}
+}
+
+// the microphone or camera an app captures from, at least one of them
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sensors {
+    pub microphone: bool,
+    pub camera: bool,
+
+    // the apps capturing, by the name they give, sorted; may be empty
+    pub apps: Vec<String>,
+}
 
 const NODE: &str = "PipeWire:Interface:Node";
 const LINK: &str = "PipeWire:Interface:Link";
@@ -137,36 +167,17 @@ impl Graph {
     }
 }
 
-// Critical, so it shows over everything below it and becomes a Satellite beside another Critical;
-// preempting, so capture starting takes over an open Surface
-fn activity(sensors: Sensors) -> Activity {
-    Activity::new(
-        id(),
-        Priority::Critical,
-        Lifetime::Persistent,
-        Scope::Global,
-        Interrupt::Preempt,
-    )
-    .expect("a Persistent that does not auto-expand is valid")
-    .with_detail(Detail::Privacy(sensors))
-}
-
-// one, whichever sensors and apps, so a camera joining the microphone replaces it
-fn id() -> Id {
-    Id::new(Kind::Privacy, "privacy")
-}
-
-// runs on its own thread for good; without pw-dump there is no privacy indicator
+// runs on its own thread for good; without pw-dump there is no microphone or camera indicator
 pub fn follow() {
-    // kept across a run that panicked, so the next one withdraws what no longer captures
+    // kept across a run that panicked, so the next one clears what no longer captures
     let mut shown = None;
 
     let error = wake::run("pw-dump", &["--monitor", "--no-colors"], |output| {
-        let lost = watch(output, &mut shown, &mut post);
+        let lost = watch(output, &mut shown, &mut show);
 
         // nobody can say any more whether something captures
         if shown.take().is_some() {
-            post(None);
+            show(None);
         }
 
         lost
@@ -176,14 +187,14 @@ pub fn follow() {
 }
 
 /*
- * follows pw-dump until its output ends, posting what changes the Sensors, so the graph changing
+ * follows pw-dump until its output ends, writing what changes the Sensors, so the graph changing
  * otherwise wakes nothing; returns why it ended. Each print is a JSON array whose closing bracket
  * alone on a line ends it, the objects inside being indented
  */
 fn watch(
     lines: impl BufRead,
     shown: &mut Option<Sensors>,
-    post: &mut impl FnMut(Option<&Sensors>),
+    show: &mut impl FnMut(Option<&Sensors>),
 ) -> io::Error {
     let mut graph = Graph::default();
     let mut print = String::new();
@@ -217,7 +228,7 @@ fn watch(
         let sensors = graph.sensors();
 
         if sensors != *shown {
-            post(sensors.as_ref());
+            show(sensors.as_ref());
             *shown = sensors;
         }
     }
@@ -225,14 +236,8 @@ fn watch(
     io::ErrorKind::UnexpectedEof.into()
 }
 
-fn post(sensors: Option<&Sensors>) {
-    let now = Instant::now();
-    let mut island = IslandService::write();
-
-    match sensors {
-        Some(sensors) => island.post(activity(sensors.clone()), now),
-        None => island.withdraw(&id(), now),
-    }
+fn show(sensors: Option<&Sensors>) {
+    Privacy::write().sensors = sensors.cloned();
 }
 
 #[cfg(test)]
@@ -497,17 +502,5 @@ mod tests {
         ]);
 
         assert_eq!(posts, vec![sensors(true, false, &["Firefox"])]);
-    }
-
-    #[test]
-    fn the_activity_is_one_critical_persistent_privacy() {
-        let activity = activity(sensors(true, false, &[]).unwrap());
-
-        assert_eq!(activity.id(), &id());
-        assert_eq!(activity.priority(), Priority::Critical);
-        assert_eq!(
-            activity.lifetime(),
-            crate::island::activity::Lifetime::Persistent
-        );
     }
 }

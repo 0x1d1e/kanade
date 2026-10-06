@@ -8,7 +8,7 @@ AI-generated concept, not a capture of the current build.
 
 ## What it is
 
-One pill at the top center of each monitor that changes shape for what is happening: the clock at rest, the playing track, volume, brightness and workspace changes, notifications, battery, screen capture, microphone and camera use, a timer. Hovering it while it shows something peeks, a click expands it into one of four Surfaces: Media, Notifications, Controls and Launcher. It is also the session's notification daemon. At rest it draws one frame a minute, for the clock, and nothing else.
+One pill at the top center of each monitor that changes shape for what is happening: the clock at rest, the playing track, volume, brightness and workspace changes, notifications, battery, a timer. Hovering it while it shows something peeks, a click expands it into one of four Surfaces: Media, Notifications, Controls and Launcher. It is also the session's notification daemon. Apart from it, at the top right of each monitor, a privacy cluster shows a microphone, camera or screen capture in use, over fullscreen windows too; the Controls Surface names the apps. At rest it draws one frame a minute, for the clock, and nothing else.
 
 It is not a bar, dock, wallpaper, lock screen or settings app, and it shows no permanent Wi-Fi, CPU or RAM indicators. It follows niri's focused output and workspaces; Hyprland and Sway are not supported, even though Amane runs there.
 
@@ -122,4 +122,4 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 - The Launcher shows "Finding apps" forever on a system with no launchable `.desktop` entries. Amane's `Apps` is empty both while scanning and after finding nothing, and exposes no scan-complete state.
 - Without `pactl`, `udevadm` or `dbus-monitor`, the volume and brightness Transients, notification toasts and battery reads poll instead of waiting for the system to announce a change, adding up to about 23 CPU wakeups a second at idle. A backlight changed by firmware without a kernel uevent shows no brightness Transient. See [ADR 0004](docs/adr/0004-wake-sources-on-announcements.md).
 - Without `setpriv` from util-linux, helper processes like `pactl`, `udevadm`, `dbus-monitor` and `pw-dump` still work but may survive Kanade being killed abruptly. See [ADR 0004](docs/adr/0004-wake-sources-on-announcements.md).
-- The microphone and camera indicator sees only capture that goes through PipeWire, using `pw-dump` from the `pipewire` package. An app that opens `/dev/video*` or ALSA directly, like `ffmpeg -f v4l2`, does not show. See [ADR 0003](docs/adr/0003-privacy-from-pipewire-graph.md).
+- The privacy cluster's microphone and camera see only capture that goes through PipeWire, using `pw-dump` from the `pipewire` package. An app that opens `/dev/video*` or ALSA directly, like `ffmpeg -f v4l2`, does not show. See [ADR 0003](docs/adr/0003-privacy-from-pipewire-graph.md).

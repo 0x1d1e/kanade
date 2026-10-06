@@ -998,7 +998,7 @@ mod tests {
         assert_eq!(Surface::of(Kind::Media), Media);
         assert_eq!(Surface::of(Kind::Notification), Notifications);
         assert_eq!(Surface::of(Kind::Volume), Controls);
-        assert_eq!(Surface::of(Kind::ScreenCast), Controls);
+        assert_eq!(Surface::of(Kind::Timer), Controls);
     }
 
     #[test]

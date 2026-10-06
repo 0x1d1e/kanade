@@ -1983,7 +1983,7 @@ mod tests {
     // brief, on the focused island, preempting
     fn call() -> Activity {
         Activity::new(
-            Id::new(Kind::Privacy, "call"),
+            Id::new(Kind::Notification, "call"),
             Priority::Critical,
             Lifetime::Transient(OSD),
             Scope::FocusedOutput,

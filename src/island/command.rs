@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn debug_verbs_post_and_withdraw_fake_activities() {
-        let cast = Id::new(Kind::ScreenCast, "cast");
+        let countdown = Id::new(Kind::Timer, "countdown");
         let volume = Id::new(Kind::Volume, "volume");
 
         let post = |arguments: &[&str]| {
@@ -246,15 +246,15 @@ mod tests {
 
         assert_eq!(
             post(&[
-                "screen-cast",
-                "cast",
+                "timer",
+                "countdown",
                 "ongoing",
                 "persistent",
                 "global",
                 "none"
             ]),
             activity(
-                cast.clone(),
+                countdown.clone(),
                 Priority::Ongoing,
                 Lifetime::Persistent,
                 Scope::Global,
@@ -313,8 +313,8 @@ mod tests {
             )
         );
         assert_eq!(
-            parse(&["debug", "withdraw", "screen-cast", "cast"]),
-            Some(Command::Withdraw(cast))
+            parse(&["debug", "withdraw", "timer", "countdown"]),
+            Some(Command::Withdraw(countdown))
         );
     }
 
@@ -426,7 +426,7 @@ mod tests {
        island timer stop
        island debug post <kind> <key> <priority> <lifetime> <scope> <interrupt>
        island debug withdraw <kind> <key>
-<kind>: media|notification|volume|brightness|workspace|battery|network|bluetooth|screen-cast|timer|privacy
+<kind>: media|notification|volume|brightness|workspace|battery|network|bluetooth|timer
 <priority>: passive|media|osd|ongoing|actionable|critical
 <lifetime>: persistent|<ms>
 <scope>: global|focused-output

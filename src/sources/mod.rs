@@ -1,8 +1,8 @@
-// produce Activities from system state; may use Amane services and Island::write()
+// produce Activities from system state, or the Services the views read; may use Amane services
+// and Island::write()
 
 pub mod battery;
 pub mod bluetooth;
-mod cast;
 mod json;
 pub mod media;
 pub mod network;

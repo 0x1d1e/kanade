@@ -1,23 +1,27 @@
 //! The Controls Surface (plan 7): Wi-Fi, Bluetooth, the microphone and Do Not Disturb as
 //! switches, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
-//! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing.
+//! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
+//! header names the apps the privacy cluster stands for.
 
 use std::time::Instant;
 
 use amane::{
-    Audio, Brightness, Center, Color, Column, Cursor, End, Network, Padding, Rectangle, Row,
-    Scroll, Service, Start, Text, Widget, children,
+    Audio, Brightness, Center, Color, Column, Cursor, End, Network, Padding, Parent, Rectangle,
+    Row, Scroll, Service, Start, Text, Widget, children,
 };
 
 use super::slider::Slider;
+use crate::cluster;
 use crate::icon::Icon;
 use crate::island::activity::Uplink;
 use crate::island::geometry;
 use crate::island::service::IslandService;
+use crate::modules;
 use crate::sources::bluetooth::{self, Adapter};
 use crate::sources::network::Connectivity;
 use crate::sources::power::{self, Profile, Profiles};
+use crate::sources::privacy::Privacy;
 use crate::sources::system::Radio;
 use crate::theme;
 use crate::view::bar;
@@ -79,15 +83,51 @@ pub fn surface(dnd: Option<bool>) -> Rectangle {
 }
 
 fn header() -> Row {
-    Row::new(children![
+    let mut header = children![
         Text::new("Controls")
             .size(16.0)
             .color(theme::fg())
             .weight(600)
-    ])
-    .width(WIDTH - BADGE)
-    .height(HEADER)
-    .align(Center)
+    ];
+
+    // the cluster takes no pointer, so the apps behind its glyphs are named here
+    if modules::on("privacy") {
+        header.extend(capturing(&Privacy::read()));
+    }
+
+    Row::new(header)
+        .width(WIDTH - BADGE)
+        .height(HEADER)
+        .gap(ICON_GAP)
+        .align(Center)
+}
+
+/*
+ * the cluster's glyphs, then the apps using a microphone or camera; niri cannot say who casts the
+ * screen, so a cast is its glyph alone
+ */
+fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
+    if !privacy.any() {
+        return None;
+    }
+
+    let mut row = cluster::glyphs(privacy);
+
+    if let Some(sensors) = privacy
+        .sensors
+        .as_ref()
+        .filter(|sensors| !sensors.apps.is_empty())
+    {
+        row.push(Box::new(
+            Text::new(sensors.apps.join(", "))
+                .size(12.0)
+                .color(theme::muted())
+                .weight(500)
+                .elide(),
+        ));
+    }
+
+    Some(Box::new(Row::new(row).width(Parent).gap(6.0).align(Center)))
 }
 
 // Wi-Fi and Bluetooth, then the microphone and Do Not Disturb

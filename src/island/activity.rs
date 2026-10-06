@@ -19,13 +19,11 @@ pub enum Kind {
     Battery,
     Network,
     Bluetooth,
-    ScreenCast,
     Timer,
-    Privacy,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -34,9 +32,7 @@ impl Kind {
         Kind::Battery,
         Kind::Network,
         Kind::Bluetooth,
-        Kind::ScreenCast,
         Kind::Timer,
-        Kind::Privacy,
     ];
 
     // as IPC names it
@@ -50,9 +46,7 @@ impl Kind {
             Kind::Battery => "battery",
             Kind::Network => "network",
             Kind::Bluetooth => "bluetooth",
-            Kind::ScreenCast => "screen-cast",
             Kind::Timer => "timer",
-            Kind::Privacy => "privacy",
         }
     }
 
@@ -70,13 +64,13 @@ pub enum Priority {
     // volume, brightness, workspace
     Osd,
 
-    // screen cast, timer, low battery
+    // timer, low battery
     Ongoing,
 
     // a notification with actions
     Actionable,
 
-    // critical battery, privacy, call
+    // critical battery, call
     Critical,
 }
 
@@ -221,8 +215,6 @@ pub enum Detail {
     Bluetooth(Peer),
 
     Timer(Countdown),
-
-    Privacy(Sensors),
 }
 
 impl Detail {
@@ -239,7 +231,6 @@ impl Detail {
             Detail::Network(_) => Some(Kind::Network),
             Detail::Bluetooth(_) => Some(Kind::Bluetooth),
             Detail::Timer(_) => Some(Kind::Timer),
-            Detail::Privacy(_) => Some(Kind::Privacy),
         }
     }
 
@@ -374,16 +365,6 @@ pub struct Peer {
 pub struct Countdown {
     pub ends: Instant,
     pub length: Duration,
-}
-
-// the microphone or camera an app captures from, at least one of them
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sensors {
-    pub microphone: bool,
-    pub camera: bool,
-
-    // the apps capturing, by the name they give, sorted; may be empty
-    pub apps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -790,7 +771,7 @@ mod tests {
             assert_eq!(Priority::parse(priority.name()), Some(priority));
         }
 
-        assert_eq!(Kind::parse("ScreenCast"), None);
+        assert_eq!(Kind::parse("Timer"), None);
         assert_eq!(Priority::parse(""), None);
     }
 }

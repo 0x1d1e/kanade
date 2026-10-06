@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod boundary;
 mod clock;
+mod cluster;
 mod config;
 mod icon;
 mod ipc;
