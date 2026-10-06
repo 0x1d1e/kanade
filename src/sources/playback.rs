@@ -226,8 +226,8 @@ pub fn accent(colors: &[Color]) -> Option<Color> {
         .filter(|&color| saturation(color) >= VIVID)?;
 
     (0..=10)
-        .map(|step| mix(vivid, theme::fg(), step as f32 / 10.0))
-        .find(|&color| contrast(color, theme::dot()) >= CONTRAST)
+        .map(|step| mix(vivid, theme::ISLAND.on_surface, step as f32 / 10.0))
+        .find(|&color| contrast(color, theme::ISLAND.surface_container_high) >= CONTRAST)
 }
 
 #[cfg(test)]
@@ -292,7 +292,7 @@ mod tests {
 
         for found in [ms(60), ms(2_000)] {
             let mut tint = Tint::new(RED, Mode::Spring);
-            tint.to(theme::fg(), TINT, now);
+            tint.to(theme::ISLAND.on_surface, TINT, now);
 
             let late = now + found;
             let before = tint.at(late);
@@ -320,11 +320,14 @@ mod tests {
     fn under_reduced_motion_the_tint_fades_from_where_it_is() {
         let now = Instant::now();
         let mut tint = Tint::new(RED, Mode::Reduced);
-        tint.to(theme::fg(), TINT, now);
+        tint.to(theme::ISLAND.on_surface, TINT, now);
 
         let late = now + ms(40);
         let before = tint.at(late);
-        assert!(before != RED && before != theme::fg(), "{before:?}");
+        assert!(
+            before != RED && before != theme::ISLAND.on_surface,
+            "{before:?}"
+        );
 
         tint.to(BLUE, TINT, late);
         assert_eq!(tint.at(late), before);
@@ -424,7 +427,7 @@ mod tests {
 
         // a deep blue is too dark on the track, so it lightens until it reads, still blue
         let blue = accent(&[Color::rgb(20, 20, 140)]).unwrap();
-        assert!(contrast(blue, theme::dot()) >= CONTRAST);
+        assert!(contrast(blue, theme::ISLAND.surface_container_high) >= CONTRAST);
         assert!(blue.blue() > blue.red());
     }
 }

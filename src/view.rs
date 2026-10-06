@@ -55,14 +55,14 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .width(body_rect.width)
         .height(body_rect.height)
         .radius(shape.radius)
-        .fill(theme::body())
+        .fill(theme::ISLAND.surface)
         .clip()
         .align_child(Center, Start)
         .translate(body_rect.x - area.x, body_rect.y - area.y);
 
     // a pinned island says why it stays open with nobody on it
     if island.pinned(&monitor.name) {
-        body = body.border(1.0, theme::pin());
+        body = body.border(1.0, theme::ISLAND.outline);
     }
 
     // at most one shows at a time, the crossfade hands over through nothing
@@ -172,7 +172,7 @@ fn satellites(
         .map(|shown| {
             let mark = match shown.mark {
                 Mark::Activity(activity) => satellite_mark(activity, now),
-                Mark::Overflow(count) => label(format!("+{count}"), theme::fg()),
+                Mark::Overflow(count) => label(format!("+{count}"), theme::ISLAND.on_surface),
             };
             let at = geometry::satellite(body, shown.slot, shown.presence);
 
@@ -186,12 +186,20 @@ fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
-        _ => label(abbreviation(activity.kind()).to_owned(), theme::fg()),
+        _ => label(
+            abbreviation(activity.kind()).to_owned(),
+            theme::ISLAND.on_surface,
+        ),
     }
 }
 
 fn label(text: String, tone: Color) -> Box<dyn Widget> {
-    Box::new(Text::new(text).size(12.0).color(tone).weight(600))
+    Box::new(
+        Text::new(text)
+            .size(theme::text::LABEL_SMALL)
+            .color(tone)
+            .weight(theme::text::SEMIBOLD),
+    )
 }
 
 /*
@@ -213,7 +221,13 @@ fn queued(frame: &Frame, body: Rect, shape: Shape) -> Option<Rectangle> {
         height: geometry::SATELLITE,
     };
 
-    Some(dot(at, label(frame.queued.len().to_string(), theme::fg())).opacity(opacity))
+    Some(
+        dot(
+            at,
+            label(frame.queued.len().to_string(), theme::ISLAND.on_surface),
+        )
+        .opacity(opacity),
+    )
 }
 
 fn dot(at: Rect, mark: Box<dyn Widget>) -> Rectangle {
@@ -221,7 +235,7 @@ fn dot(at: Rect, mark: Box<dyn Widget>) -> Rectangle {
         .width(at.width)
         .height(at.height)
         .radius(at.width / 2.0)
-        .fill(theme::dot())
+        .fill(theme::ISLAND.surface_container_high)
         .align_child(Center, Center)
         .translate(at.x, at.y)
         .child(Row::new(vec![mark]))
@@ -254,9 +268,9 @@ fn rest(content: &Content) -> Option<Rectangle> {
     Some(
         sized(Presentation::Rest).align_child(Center, Center).child(
             Text::new(clock::now(config::get().clock))
-                .size(13.0)
-                .color(theme::fg())
-                .weight(600),
+                .size(theme::text::LABEL)
+                .color(theme::ISLAND.on_surface)
+                .weight(theme::text::SEMIBOLD),
         ),
     )
 }
@@ -275,15 +289,20 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
 
     let (label, size) = match content.presentation {
         Presentation::Rest => return None,
-        Presentation::Compact => (name(&content.activity), 13.0),
-        Presentation::Peek => (name(&content.activity), 15.0),
-        Presentation::Expanded(surface) => (format!("{surface:?}"), 17.0),
+        Presentation::Compact => (name(&content.activity), theme::text::LABEL),
+        Presentation::Peek => (name(&content.activity), theme::text::BODY_LARGE),
+        Presentation::Expanded(surface) => (format!("{surface:?}"), theme::text::TITLE_LARGE),
     };
 
     Some(
         sized(content.presentation)
             .align_child(Center, Center)
-            .child(Text::new(label).size(size).color(theme::fg()).weight(500)),
+            .child(
+                Text::new(label)
+                    .size(size)
+                    .color(theme::ISLAND.on_surface)
+                    .weight(theme::text::MEDIUM),
+            ),
     )
 }
 
@@ -367,8 +386,8 @@ fn small_form(
 // what is left, muted while it stands still
 fn timer_tone(countdown: &Countdown) -> Color {
     match countdown.paused {
-        Some(_) => theme::muted(),
-        None => theme::fg(),
+        Some(_) => theme::ISLAND.on_surface_variant,
+        None => theme::ISLAND.on_surface,
     }
 }
 
@@ -381,10 +400,10 @@ fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Opt
     let hours = countdown.length.as_secs() >= 3600;
 
     let (icon, size, inset, clock) = match (presentation, hours) {
-        (Presentation::Compact, false) => (18.0, 13.0, 15.0, 40.0),
-        (Presentation::Compact, true) => (18.0, 13.0, 15.0, 56.0),
-        (Presentation::Peek, false) => (24.0, 17.0, 20.0, 52.0),
-        (Presentation::Peek, true) => (24.0, 17.0, 20.0, 72.0),
+        (Presentation::Compact, false) => (18.0, theme::text::LABEL, 15.0, 40.0),
+        (Presentation::Compact, true) => (18.0, theme::text::LABEL, 15.0, 56.0),
+        (Presentation::Peek, false) => (24.0, theme::text::TITLE_LARGE, 20.0, 52.0),
+        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 20.0, 72.0),
         _ => return None,
     };
 
@@ -395,14 +414,19 @@ fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Opt
         Some(_) => "Paused",
         None => "Timer",
     };
-    let mut words = children![Text::new(title).size(13.0).color(theme::fg()).weight(600)];
+    let mut words = children![
+        Text::new(title)
+            .size(theme::text::LABEL)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
+    ];
 
     if presentation == Presentation::Peek {
         words.push(Box::new(
             Text::new(format!("{} timer", timer::length(countdown)))
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500),
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM),
         ));
     }
 
@@ -427,7 +451,7 @@ fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Opt
                             Text::new(timer::clock(countdown, now))
                                 .size(size)
                                 .color(timer_tone(countdown))
-                                .weight(600),
+                                .weight(theme::text::SEMIBOLD),
                         ),
                 ])
                 .gap(gap)
@@ -439,9 +463,9 @@ fn timer(presentation: Presentation, countdown: &Countdown, now: Instant) -> Opt
 // amber while low, red once critical, and never color alone: the number and the words say it too
 fn charge_tone(charge: &Charge) -> Color {
     if charge.critical {
-        theme::RED
+        theme::SEMANTIC.critical
     } else {
-        theme::AMBER
+        theme::SEMANTIC.warning
     }
 }
 
@@ -451,8 +475,8 @@ fn charge_tone(charge: &Charge) -> Color {
  */
 fn battery(presentation: Presentation, charge: &Charge) -> Option<Rectangle> {
     let (icon, number, size, inset) = match presentation {
-        Presentation::Compact => (22.0, 40.0, 13.0, 15.0),
-        Presentation::Peek => (26.0, 48.0, 17.0, 20.0),
+        Presentation::Compact => (22.0, 40.0, theme::text::LABEL, 15.0),
+        Presentation::Peek => (26.0, 48.0, theme::text::TITLE_LARGE, 20.0),
         _ => return None,
     };
 
@@ -466,14 +490,19 @@ fn battery(presentation: Presentation, charge: &Charge) -> Option<Rectangle> {
         "Low Battery"
     };
 
-    let mut words = children![Text::new(title).size(13.0).color(theme::fg()).weight(600)];
+    let mut words = children![
+        Text::new(title)
+            .size(theme::text::LABEL)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
+    ];
 
     if presentation == Presentation::Peek {
         words.push(Box::new(
             Text::new("Plug in to charge")
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500),
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM),
         ));
     }
 
@@ -499,7 +528,7 @@ fn battery(presentation: Presentation, charge: &Charge) -> Option<Rectangle> {
                                 Text::new(format!("{}%", charge.percent))
                                     .size(size)
                                     .color(tone)
-                                    .weight(600),
+                                    .weight(theme::text::SEMIBOLD),
                             ),
                     ),
                 ])
@@ -529,7 +558,7 @@ fn battery_icon(width: f32, percent: u8, tone: Color) -> Row {
             Rectangle::new()
                 .width(filled)
                 .height(height - 2.0 * border - 2.0)
-                .radius(1.5)
+                .radius(theme::radius::HAIRLINE)
                 .fill(tone),
         );
 
@@ -554,8 +583,8 @@ const PAGER: u32 = 10;
  */
 fn workspace(presentation: Presentation, workspace: &Workspace) -> Option<Rectangle> {
     let (size, dot, inset) = match presentation {
-        Presentation::Compact => (13.0, 6.0, 17.0),
-        Presentation::Peek => (15.0, 7.0, 22.0),
+        Presentation::Compact => (theme::text::LABEL, 6.0, 17.0),
+        Presentation::Peek => (theme::text::BODY_LARGE, 7.0, 22.0),
         _ => return None,
     };
 
@@ -564,17 +593,17 @@ fn workspace(presentation: Presentation, workspace: &Workspace) -> Option<Rectan
     let mut words = children![
         Text::new(workspace.name.as_deref().unwrap_or(&number))
             .size(size)
-            .color(theme::fg())
-            .weight(600)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
             .elide()
     ];
 
     if presentation == Presentation::Peek && workspace.name.is_some() {
         words.push(Box::new(
             Text::new(number)
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500),
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM),
         ));
     }
 
@@ -606,9 +635,9 @@ fn pager(workspace: &Workspace, dot: f32) -> Box<dyn Widget> {
     if workspace.count > PAGER {
         return Box::new(
             Text::new(format!("{} / {}", workspace.index, workspace.count))
-                .size(13.0)
-                .color(theme::muted())
-                .weight(600),
+                .size(theme::text::LABEL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::SEMIBOLD),
         );
     }
 
@@ -621,7 +650,11 @@ fn pager(workspace: &Workspace, dot: f32) -> Box<dyn Widget> {
                     .width(if focused { mark } else { dot })
                     .height(dot)
                     .radius(dot / 2.0)
-                    .fill(if focused { theme::fg() } else { theme::muted() }),
+                    .fill(if focused {
+                        theme::ISLAND.on_surface
+                    } else {
+                        theme::ISLAND.on_surface_variant
+                    }),
             ) as Box<dyn Widget>
         })
         .collect();
@@ -695,25 +728,25 @@ fn status(connected: bool) -> &'static str {
  */
 fn link(presentation: Presentation, link: Link) -> Option<Rectangle> {
     let (icon, size, inset) = match presentation {
-        Presentation::Compact => (18.0, 13.0, 15.0),
-        Presentation::Peek => (24.0, 15.0, 20.0),
+        Presentation::Compact => (18.0, theme::text::LABEL, 15.0),
+        Presentation::Peek => (24.0, theme::text::BODY_LARGE, 20.0),
         _ => return None,
     };
 
     let mut words = children![
         Text::new(link.name)
-            .size(13.0)
-            .color(theme::fg())
-            .weight(600)
+            .size(theme::text::LABEL)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
             .elide()
     ];
 
     if presentation == Presentation::Peek {
         words.push(Box::new(
             Text::new(link.status)
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500),
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM),
         ));
     }
 
@@ -732,8 +765,8 @@ fn link(presentation: Presentation, link: Link) -> Option<Rectangle> {
         row.push(Box::new(
             Text::new(format!("{percent}%"))
                 .size(size)
-                .color(theme::muted())
-                .weight(600),
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::SEMIBOLD),
         ));
     }
 
@@ -791,8 +824,8 @@ impl Level {
  */
 fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
     let (icon, number, size, inset) = match presentation {
-        Presentation::Compact => (20.0, 26.0, 13.0, 15.0),
-        Presentation::Peek => (24.0, 30.0, 15.0, 20.0),
+        Presentation::Compact => (20.0, 26.0, theme::text::LABEL, 15.0),
+        Presentation::Peek => (24.0, 30.0, theme::text::BODY_LARGE, 20.0),
         _ => return None,
     };
 
@@ -800,9 +833,9 @@ fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
     let width = geometry::shape(presentation).width - 2.0 * inset - icon - number - 2.0 * gap;
 
     let tone = if level.quiet {
-        theme::muted()
+        theme::ISLAND.on_surface_variant
     } else {
-        theme::fg()
+        theme::ISLAND.on_surface
     };
 
     let bar = bar(width, f32::from(level.percent) / 100.0, tone);
@@ -811,9 +844,9 @@ fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
         Presentation::Peek => Box::new(
             Column::new(children![
                 Text::new(level.label)
-                    .size(12.0)
-                    .color(theme::muted())
-                    .weight(500),
+                    .size(theme::text::LABEL_SMALL)
+                    .color(theme::ISLAND.on_surface_variant)
+                    .weight(theme::text::MEDIUM),
                 bar,
             ])
             .gap(6.0),
@@ -843,7 +876,7 @@ fn level(presentation: Presentation, level: Level) -> Option<Rectangle> {
                                 Text::new(level.percent.to_string())
                                     .size(size)
                                     .color(tone)
-                                    .weight(600),
+                                    .weight(theme::text::SEMIBOLD),
                             ),
                     ),
                 ])
@@ -862,7 +895,7 @@ pub(crate) fn bar(width: f32, fraction: f32, tone: Color) -> Stack {
         .width(width)
         .height(height)
         .radius(height / 2.0)
-        .fill(theme::dot());
+        .fill(theme::ISLAND.surface_container_high);
 
     let mut layers = children![track];
 
@@ -898,11 +931,11 @@ fn media_compact(change: Change) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                change.art(shape.height - 2.0 * inset, 6.0),
+                change.art(shape.height - 2.0 * inset, theme::radius::ART_COMPACT),
                 change
-                    .line(|track| &track.title, theme::fg())
-                    .size(13.0)
-                    .weight(500)
+                    .line(|track| &track.title, theme::ISLAND.on_surface)
+                    .size(theme::text::LABEL)
+                    .weight(theme::text::MEDIUM)
                     .elide(),
                 state(change.to.playing),
             ])
@@ -927,7 +960,7 @@ fn media_peek(change: Change) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                change.art(shape.height - 2.0 * inset, 9.0),
+                change.art(shape.height - 2.0 * inset, theme::radius::ART_PEEK),
                 peek_lines(change),
                 state(change.to.playing),
             ])
@@ -944,14 +977,14 @@ fn media_peek(change: Change) -> Rectangle {
 fn peek_lines(change: Change) -> Column {
     Column::new(children![
         change
-            .line(|track| &track.title, theme::fg())
-            .size(14.0)
-            .weight(600)
+            .line(|track| &track.title, theme::ISLAND.on_surface)
+            .size(theme::text::BODY)
+            .weight(theme::text::SEMIBOLD)
             .elide(),
         change
-            .line(|track| &track.artist, theme::muted())
-            .size(12.0)
-            .weight(500)
+            .line(|track| &track.artist, theme::ISLAND.on_surface_variant)
+            .size(theme::text::LABEL_SMALL)
+            .weight(theme::text::MEDIUM)
             .elide(),
     ])
     .width(Parent)
@@ -1031,9 +1064,13 @@ pub(crate) fn tile(picture: Option<&str>, mark: &str, side: f32, radius: f32) ->
         .width(side)
         .height(side)
         .radius(radius)
-        .fill(theme::art())
+        .fill(theme::ISLAND.surface_container_high)
         .align_child(Center, Center)
-        .child(Text::new(mark).size(side * 0.5).color(theme::muted()));
+        .child(
+            Text::new(mark)
+                .size(side * 0.5)
+                .color(theme::ISLAND.on_surface_variant),
+        );
 
     let mut layers = children![tile];
 
@@ -1079,7 +1116,7 @@ fn critical(content: &Content) -> bool {
 fn summary(toast: &Toast, critical: bool, size: f32, weight: u16) -> Box<dyn Widget> {
     let summary = Text::new(&toast.summary)
         .size(size)
-        .color(theme::fg())
+        .color(theme::ISLAND.on_surface)
         .weight(weight)
         .elide();
 
@@ -1088,8 +1125,8 @@ fn summary(toast: &Toast, critical: bool, size: f32, weight: u16) -> Box<dyn Wid
             Row::new(children![
                 Text::new("Critical")
                     .size(size)
-                    .color(theme::RED)
-                    .weight(600),
+                    .color(theme::SEMANTIC.critical)
+                    .weight(theme::text::SEMIBOLD),
                 summary,
             ])
             .width(Parent)
@@ -1115,8 +1152,12 @@ fn toast_compact(toast: &Toast, critical: bool) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(toast_tile(toast, shape.height - 2.0 * inset, 6.0)),
-                summary(toast, critical, 13.0, 500),
+                Box::new(toast_tile(
+                    toast,
+                    shape.height - 2.0 * inset,
+                    theme::radius::ART_COMPACT,
+                )),
+                summary(toast, critical, theme::text::LABEL, theme::text::MEDIUM),
             ])
             .width(Parent)
             .gap(9.0)
@@ -1129,7 +1170,12 @@ fn toast_peek(toast: &Toast, critical: bool) -> Rectangle {
     let shape = geometry::shape(Presentation::Peek);
     let inset = 7.0;
 
-    let mut lines = vec![summary(toast, critical, 14.0, 600)];
+    let mut lines = vec![summary(
+        toast,
+        critical,
+        theme::text::BODY,
+        theme::text::SEMIBOLD,
+    )];
 
     let second = if toast.body.is_empty() && toast.app != toast.summary {
         &toast.app
@@ -1141,9 +1187,9 @@ fn toast_peek(toast: &Toast, critical: bool) -> Rectangle {
     if !second.is_empty() {
         lines.push(Box::new(
             Text::new(second)
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM)
                 .elide(),
         ));
     }
@@ -1158,7 +1204,7 @@ fn toast_peek(toast: &Toast, critical: bool) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                toast_tile(toast, shape.height - 2.0 * inset, 9.0),
+                toast_tile(toast, shape.height - 2.0 * inset, theme::radius::ART_PEEK),
                 Column::new(lines).width(Parent).gap(1.0),
             ])
             .width(Parent)
@@ -1173,8 +1219,8 @@ fn state(playing: bool) -> Row {
         Rectangle::new()
             .width(3.0)
             .height(height)
-            .radius(1.5)
-            .fill(theme::fg())
+            .radius(theme::radius::HAIRLINE)
+            .fill(theme::ISLAND.on_surface)
     };
 
     let bars = if playing {

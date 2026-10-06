@@ -17,12 +17,11 @@ use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::notifications::{self, Daemon};
-use crate::theme;
+use crate::theme::space::{INSET, TARGET};
+use crate::theme::{self, DISABLED, radius};
 use crate::view;
 
 use super::{RING, Ring};
-
-const INSET: f32 = 20.0;
 
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
@@ -40,7 +39,6 @@ const LIST: f32 = geometry::EXPANDED_MAX.height - 2.0 * INSET - HEADER - FOOTER 
 const CARD: f32 = 70.0;
 const CARD_GAP: f32 = 6.0;
 const PILL_PADDING: f32 = 10.0;
-const CARD_RADIUS: f32 = 16.0;
 const CARD_INSET: f32 = 10.0;
 
 // the action row a card with actions adds under its text
@@ -51,14 +49,7 @@ const MOST_ACTIONS: usize = 3;
 const ACTION_WIDTH: f32 = 120.0;
 
 const TILE: f32 = 36.0;
-const TILE_RADIUS: f32 = 10.0;
 const TILE_GAP: f32 = 10.0;
-
-// a pressable target never smaller than plan 7's 24 px
-const TARGET: f32 = 24.0;
-
-// a control with nothing to do now
-const DISABLED: f32 = 0.35;
 
 // pixels per wheel line
 const WHEEL: f32 = 40.0;
@@ -437,17 +428,17 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
 fn header(count: usize) -> Row {
     let mut words = children![
         Text::new("Notifications")
-            .size(16.0)
-            .color(theme::fg())
-            .weight(600)
+            .size(theme::text::TITLE)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD)
     ];
 
     if count > 0 {
         words.push(Box::new(
             Text::new(count.to_string())
-                .size(14.0)
-                .color(theme::muted())
-                .weight(600),
+                .size(theme::text::BODY)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::SEMIBOLD),
         ));
     }
 
@@ -462,15 +453,18 @@ fn header(count: usize) -> Row {
 fn state(icon: Rectangle, title: &str, detail: &str) -> Rectangle {
     let mut lines = children![
         icon,
-        Text::new(title).size(14.0).color(theme::fg()).weight(600),
+        Text::new(title)
+            .size(theme::text::BODY)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD),
     ];
 
     if !detail.is_empty() {
         lines.push(Box::new(
             Text::new(detail)
-                .size(12.0)
-                .color(theme::muted())
-                .weight(500),
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM),
         ));
     }
 
@@ -537,8 +531,8 @@ fn list(
             Rectangle::new()
                 .width(3.0)
                 .height(length)
-                .radius(1.5)
-                .fill(theme::dot())
+                .radius(radius::HAIRLINE)
+                .fill(theme::ISLAND.surface_container_high)
                 .translate(WIDTH + 7.0, at),
         ));
     }
@@ -554,9 +548,9 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
     let words = WIDTH - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
 
     let sender = Text::new(&card.toast.app)
-        .size(12.0)
-        .color(theme::muted())
-        .weight(500)
+        .size(theme::text::LABEL_SMALL)
+        .color(theme::ISLAND.on_surface_variant)
+        .weight(theme::text::MEDIUM)
         .elide();
 
     // said in words before the sender, so it never rests on color alone or elides away
@@ -564,9 +558,9 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         Box::new(
             Row::new(children![
                 Text::new("Critical")
-                    .size(12.0)
-                    .color(theme::RED)
-                    .weight(600),
+                    .size(theme::text::LABEL_SMALL)
+                    .color(theme::SEMANTIC.critical)
+                    .weight(theme::text::SEMIBOLD),
                 sender,
             ])
             .gap(6.0),
@@ -579,9 +573,9 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         from,
         Box::new(
             Text::new(&card.toast.summary)
-                .size(14.0)
-                .color(theme::fg())
-                .weight(600)
+                .size(theme::text::BODY)
+                .color(theme::ISLAND.on_surface)
+                .weight(theme::text::SEMIBOLD)
                 .elide(),
         ),
     ];
@@ -589,15 +583,15 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
     if !card.toast.body.is_empty() {
         lines.push(Box::new(
             Text::new(&card.toast.body)
-                .size(13.0)
-                .color(theme::muted())
-                .weight(500)
+                .size(theme::text::LABEL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM)
                 .elide(),
         ));
     }
 
     let top = Row::new(children![
-        view::toast_tile(&card.toast, TILE, TILE_RADIUS),
+        view::toast_tile(&card.toast, TILE, radius::TILE),
         Column::new(lines).width(words).gap(1.0),
         dismiss(monitor, card.id, ring == Some(card.actions.len() + 1)),
     ])
@@ -616,8 +610,8 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
     Rectangle::new()
         .width(WIDTH)
         .height(card.shape().height())
-        .radius(CARD_RADIUS)
-        .fill(theme::card())
+        .radius(radius::CARD)
+        .fill(theme::ISLAND.surface_container)
         .padding(CARD_INSET)
         .align_child(Start, Start)
         .cursor(Cursor::Pointer)
@@ -660,7 +654,10 @@ fn actions(monitor: &str, card: &Card, ring: Option<usize>, width: f32) -> Row {
 
 // centred while it fits, elided only when it does not, since elided text fills its width
 fn label_in(label: &str, width: f32) -> Text {
-    let text = Text::new(label).size(12.0).color(theme::fg()).weight(600);
+    let text = Text::new(label)
+        .size(theme::text::LABEL_SMALL)
+        .color(theme::ISLAND.on_surface)
+        .weight(theme::text::SEMIBOLD);
 
     match text.width() {
         Size::Fixed(natural) if natural <= width => text,
@@ -673,7 +670,7 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
     let monitor = monitor.to_owned();
 
     // on the same 20 unit grid as every icon, so its 10 point cross keeps the icons' line
-    let cross = Icon::Dismiss.on(20.0, theme::muted());
+    let cross = Icon::Dismiss.on(20.0, theme::ISLAND.on_surface_variant);
 
     Rectangle::new()
         .width(TARGET)
@@ -692,15 +689,19 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
 fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
     let switch = {
         let (track, knob, at) = if dnd {
-            (theme::fg(), theme::body(), 12.0)
+            (theme::ISLAND.primary, theme::ISLAND.on_primary, 12.0)
         } else {
-            (theme::dot(), theme::muted(), 0.0)
+            (
+                theme::ISLAND.surface_container_high,
+                theme::ISLAND.on_surface_variant,
+                0.0,
+            )
         };
 
         Rectangle::new()
             .width(26.0)
             .height(14.0)
-            .radius(7.0)
+            .radius(14.0 / 2.0)
             .fill(track)
             .padding(2.0)
             .align_child(Start, Center)
@@ -708,7 +709,7 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
                 Rectangle::new()
                     .width(10.0)
                     .height(10.0)
-                    .radius(5.0)
+                    .radius(10.0 / 2.0)
                     .fill(knob)
                     .translate(at, 0.0),
             )
@@ -717,9 +718,9 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
     let label = Row::new(children![
         Icon::Moon.draw(16.0),
         Text::new("Do Not Disturb")
-            .size(12.0)
-            .color(theme::fg())
-            .weight(600),
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD),
     ])
     .gap(7.0)
     .align(Center);
@@ -738,9 +739,9 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
     let clear = pill(
         monitor,
         Text::new("Clear all")
-            .size(12.0)
-            .color(theme::fg())
-            .weight(600),
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::ISLAND.on_surface)
+            .weight(theme::text::SEMIBOLD),
         (84.0, FOOTER),
         ring == Some(1),
         any.then_some(Press::Clear),
@@ -775,9 +776,9 @@ fn pill(
         .child(child);
 
     let pill = if ring {
-        pill.border(RING, theme::fg())
+        pill.border(RING, theme::ISLAND.on_surface)
     } else {
-        pill.border(1.0, theme::dot())
+        pill.border(1.0, theme::ISLAND.surface_container_high)
     };
 
     let monitor = monitor.to_owned();

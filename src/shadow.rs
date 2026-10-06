@@ -16,6 +16,7 @@ use amane::{Color, Image, Rectangle, Widget};
 
 use crate::island::geometry::{self, Rect};
 use crate::raster;
+use crate::theme;
 
 // texels per logical pixel, like the icons; the smaller copies Amane prepares fit scale 1
 const SCALE: u32 = 2;
@@ -40,12 +41,12 @@ pub(crate) struct ShadowStyle {
 }
 
 impl ShadowStyle {
-    // subtle (plan 7): lifts the body off a light window without a dark halo on a dark one
+    // subtle (plan 7)
     pub(crate) const fn island() -> Self {
         Self {
             blur: 6,
             drop: 4,
-            color: Color::rgba(0, 0, 0, 89),
+            color: theme::SHADOW,
         }
     }
 

@@ -455,7 +455,7 @@ impl Watcher {
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
             let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
-            let accent = accent.unwrap_or(theme::fg());
+            let accent = accent.unwrap_or(theme::ISLAND.on_surface);
 
             // a track shown before dissolves to this one, a Surface just opened shows it at once
             let (track, tint) = match last {
@@ -1291,7 +1291,7 @@ mod tests {
         };
 
         watcher.show(&players, true, now);
-        assert_eq!(deck(&watcher).accent.at(now), theme::fg());
+        assert_eq!(deck(&watcher).accent.at(now), theme::ISLAND.on_surface);
         assert_eq!(watcher.accent, None);
 
         // the file turned up and gave its accent
@@ -1303,7 +1303,7 @@ mod tests {
         watcher.show(&players, true, later);
 
         let tint = deck(&watcher).accent;
-        assert_eq!(tint.at(later), theme::fg());
+        assert_eq!(tint.at(later), theme::ISLAND.on_surface);
         assert!(!tint.settled(later));
         assert_ne!(tint.at(later + Duration::from_millis(16)), blue);
         assert_eq!(tint.at(later + secs(2)), blue);
