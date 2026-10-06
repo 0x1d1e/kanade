@@ -11,13 +11,13 @@ The single physical surface on one monitor. One per monitor.
 Something happening that may deserve attention. Has identity, Kind, Priority, Lifetime, Scope, Interrupt, Actions, Detail.
 - Identity is Kind plus a key, so keys from different Kinds never collide.
 - Detail is what its small form draws, typed per Kind (a Media Activity's track, a Volume's level). It is not identity: a repost with new Detail replaces the Activity. A new track dissolves in place, the new art and text rising over the old without the form moving; a level that moves redraws in place.
-- **Invariant:** Scope and Interrupt follow from Lifetime and Priority. Only a Critical Activity preempts; any other Transient shows over the primary.
+- **Invariant:** Lifetime, Priority, Scope and Interrupt are independent: the source sets each, and none implies another (ADR 0009). `Activity::new` refuses only what cannot be carried out: `Transient(0)`, and `AutoExpand` for a Kind with no Surface of its own (only Media and Notification have one). Unusual combinations, like a Persistent FocusedOutput or a Critical that interrupts nothing, stand.
 - **Invariant:** posting an Activity with an existing id replaces it and refreshes its Lifetime. A repeated volume key extends one Transient, not a queue of them.
 - **Avoid:** event, notification (a Notification is one Kind of Activity), OSD (use Transient)
 
 ## Lifetime
 `Persistent` lives until withdrawn: media playing, screen cast, timer, privacy, low battery.
-`Transient(duration)` expires on its own: volume, brightness, workspace switch, notification toast.
+`Transient(duration)` expires on its own: volume, brightness, workspace switch, notification toast. It implies no Scope and no Interrupt.
 
 ## Arbiter
 Pure function of (registered Activities, now, focused output) to a Frame. Owns priority, preemption, expiry and Satellite selection.
@@ -25,11 +25,18 @@ Pure function of (registered Activities, now, focused output) to a Frame. Owns p
 - **Invariant:** preemption never destroys. A Persistent Activity hidden by a Transient shows again when the Transient expires, with no re-post.
 
 ## Frame
-The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `overflow` (the Satellites past the bound, as a count), `transient: Option<Activity>`, `queued` (Transients kept off an open Surface, shown as a badge). One per island: Scope, an open Surface and DND decide what it leaves out.
+The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (bounded), `overflow` (the Satellites past the bound, as a count), `transient: Option<Activity>` (the `Interrupt::Transient` one over the primary), `queued` (those kept off an open Surface, shown as a badge). One per island: Scope, an open Surface and DND decide what it leaves out.
 - Not a rendered frame (Amane's `request_frame`, `AMANE_FRAMES`).
 
 ## Scope
-`Global` shows on every island. `FocusedOutput` shows only on the island of the focused output. Transients are FocusedOutput.
+`Global` shows on every island. `FocusedOutput` shows only on the island of the focused output.
+
+## Interrupt
+How an Activity interrupts: `None | Transient | Preempt | AutoExpand(duration)`.
+- `None` only competes for the primary. `Transient` shows over the primary instead (goes with the Frame's transient slot, #109). `Preempt` collapses the open Surface it shows on when it arrives. `AutoExpand` opens the Activity's own Surface on the focused island for `duration`, then gives every island it changed back its Presentation and Surface.
+- A repost with the same Interrupt is no new arrival, so it neither preempts nor expands again. One DND drops never arrives, so it interrupts nothing.
+- **Invariant:** an explicit user action while an AutoExpand is open (click or press, open or toggle, collapse, pin, a key the Surface consumes) cancels the restore: the user's choice owns the islands. The pointer entering or leaving does not, but the pointer still on the Surface at its deadline keeps it open, like Hold, until it leaves and the grace runs out.
+- **Invariant:** a Preempt arriving is policy, not choice: a pending AutoExpand gives the islands back first, then it preempts as it would have without one.
 
 ## Presentation
 An island's visual level: `Rest | Compact | Peek | Expanded(Surface)`.
@@ -44,7 +51,7 @@ An island's visual level: `Rest | Compact | Peek | Expanded(Surface)`.
 Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher`.
 - Media and Notifications are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface.
 - Controls and Launcher have no Activity. They open only by user action.
-- **Invariant:** a Transient the open Surface already shows is dropped, not queued (Volume while Media or Controls is open, Brightness, Bluetooth or Wi-Fi Network while Controls is open, a non-Critical notification while Notifications is open, `Surface::shows`).
+- **Invariant:** an `Interrupt::Transient` Activity the open Surface already shows is dropped, not queued (Volume while Media or Controls is open, Brightness, Bluetooth or Wi-Fi Network while Controls is open, a non-Critical notification while Notifications is open, `Surface::shows`).
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite

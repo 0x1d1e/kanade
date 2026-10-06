@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 use amane::{Battery, Service};
 
 use super::wake::{Announcer, Pace, Wakes};
-use crate::island::activity::{Activity, Charge, Detail, Id, Kind, Priority};
+use crate::island::activity::{
+    Activity, Charge, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
+};
 use crate::island::service::IslandService;
 use crate::supervise;
 
@@ -80,13 +82,21 @@ fn charge(shown: Option<Charge>, now: Reading) -> Option<Charge> {
 
 fn activity(charge: Charge) -> Activity {
     // Ongoing, so it becomes a Satellite beside a higher primary rather than nag over it
-    let priority = if charge.critical {
-        Priority::Critical
+    let (priority, interrupt) = if charge.critical {
+        (Priority::Critical, Interrupt::Preempt)
     } else {
-        Priority::Ongoing
+        (Priority::Ongoing, Interrupt::None)
     };
 
-    Activity::persistent(id(), priority).with_detail(Detail::Battery(charge))
+    Activity::new(
+        id(),
+        priority,
+        Lifetime::Persistent,
+        Scope::Global,
+        interrupt,
+    )
+    .expect("a Persistent that does not auto-expand is valid")
+    .with_detail(Detail::Battery(charge))
 }
 
 // one, so escalating to critical replaces the low one
@@ -195,7 +205,7 @@ mod tests {
         assert_eq!(low.id(), critical.id());
         assert_eq!(low.lifetime(), Lifetime::Persistent);
         assert_eq!(low.priority(), Priority::Ongoing);
-        assert_eq!(low.interrupt(), Interrupt::Never);
+        assert_eq!(low.interrupt(), Interrupt::None);
         assert_eq!(critical.priority(), Priority::Critical);
         assert_eq!(critical.interrupt(), Interrupt::Preempt);
     }

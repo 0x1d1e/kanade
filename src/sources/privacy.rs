@@ -16,7 +16,9 @@ use amane::Service;
 
 use super::json::Json;
 use super::wake;
-use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Sensors};
+use crate::island::activity::{
+    Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Sensors,
+};
 use crate::island::service::IslandService;
 
 const NODE: &str = "PipeWire:Interface:Node";
@@ -135,9 +137,18 @@ impl Graph {
     }
 }
 
-// Critical, so it shows over everything below it and becomes a Satellite beside another Critical
+// Critical, so it shows over everything below it and becomes a Satellite beside another Critical;
+// preempting, so capture starting takes over an open Surface
 fn activity(sensors: Sensors) -> Activity {
-    Activity::persistent(id(), Priority::Critical).with_detail(Detail::Privacy(sensors))
+    Activity::new(
+        id(),
+        Priority::Critical,
+        Lifetime::Persistent,
+        Scope::Global,
+        Interrupt::Preempt,
+    )
+    .expect("a Persistent that does not auto-expand is valid")
+    .with_detail(Detail::Privacy(sensors))
 }
 
 // one, whichever sensors and apps, so a camera joining the microphone replaces it

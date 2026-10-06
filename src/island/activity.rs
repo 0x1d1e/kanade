@@ -1,11 +1,12 @@
 //! Activities and the Frame the Arbiter makes of them (CONTEXT.md, plan 5.1). Pure data.
 //!
-//! Scope and Interrupt follow from Lifetime and Priority, so an Activity cannot carry a
-//! combination the plan rules out, such as a Global Transient or a Passive that preempts.
+//! Lifetime, Priority, Scope and Interrupt are set apart and none follows from another (ADR 0009).
+//! `Activity::new` refuses only what cannot be carried out, never an unusual combination.
 
 #![expect(dead_code, reason = "the Arbiter and the sources use these, #17-#33")]
 
 use super::fade::InPlace;
+use super::presentation::Surface;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,17 +124,42 @@ pub enum Scope {
     FocusedOutput,
 }
 
-// how far an Activity may push in front of what the island shows; each level includes the ones before
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+// whether and how an Activity pushes in front of what the island shows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interrupt {
-    // takes its place by priority, never over the primary
-    Never,
+    // takes its place by priority and interrupts nothing
+    None,
 
-    // shows over the primary for its Lifetime, then the primary returns
+    // shows over the primary for its Lifetime, then the primary returns; goes with the Frame's
+    // transient slot (#109)
     Transient,
 
-    // may also displace a Surface the user opened (plan 5.1 rule 4)
+    // displaces a Surface the user opened (plan 5.1 rule 4)
     Preempt,
+
+    // opens the Activity's own Surface for this long, then the islands show what they did before
+    AutoExpand(Duration),
+}
+
+// a policy that cannot be carried out, refused by `Activity::new`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidActivity {
+    // its Kind has no Surface of its own to expand into
+    AutoExpandWithoutSurface,
+
+    // expired as it was posted
+    ZeroLifetime,
+}
+
+impl std::fmt::Display for InvalidActivity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str(match self {
+            InvalidActivity::AutoExpandWithoutSurface => {
+                "auto-expand needs a Kind with a Surface of its own"
+            }
+            InvalidActivity::ZeroLifetime => "a Transient lifetime must be longer than zero",
+        })
+    }
 }
 
 /*
@@ -365,29 +391,41 @@ pub struct Activity {
     id: Id,
     priority: Priority,
     lifetime: Lifetime,
+    scope: Scope,
+    interrupt: Interrupt,
     actions: Vec<Action>,
     detail: Detail,
 }
 
 impl Activity {
-    pub fn persistent(id: Id, priority: Priority) -> Activity {
-        Activity {
-            id,
-            priority,
-            lifetime: Lifetime::Persistent,
-            actions: Vec::new(),
-            detail: Detail::None,
+    /*
+     * every policy field set by the source that posts it. Unusual combinations stand, like a
+     * Persistent FocusedOutput or a Critical that interrupts nothing (ADR 0009)
+     */
+    pub fn new(
+        id: Id,
+        priority: Priority,
+        lifetime: Lifetime,
+        scope: Scope,
+        interrupt: Interrupt,
+    ) -> Result<Activity, InvalidActivity> {
+        if lifetime == Lifetime::Transient(Duration::ZERO) {
+            return Err(InvalidActivity::ZeroLifetime);
         }
-    }
 
-    pub fn transient(id: Id, priority: Priority, duration: Duration) -> Activity {
-        Activity {
+        if matches!(interrupt, Interrupt::AutoExpand(_)) && Surface::own(id.kind).is_none() {
+            return Err(InvalidActivity::AutoExpandWithoutSurface);
+        }
+
+        Ok(Activity {
             id,
             priority,
-            lifetime: Lifetime::Transient(duration),
+            lifetime,
+            scope,
+            interrupt,
             actions: Vec::new(),
             detail: Detail::None,
-        }
+        })
     }
 
     pub fn with_actions(mut self, actions: Vec<Action>) -> Activity {
@@ -431,21 +469,12 @@ impl Activity {
         &self.detail
     }
 
-    // Transients are for the output the user is looking at
     pub fn scope(&self) -> Scope {
-        match self.lifetime {
-            Lifetime::Persistent => Scope::Global,
-            Lifetime::Transient(_) => Scope::FocusedOutput,
-        }
+        self.scope
     }
 
-    // only Critical preempts, so a toast never steals a Surface the user is using
     pub fn interrupt(&self) -> Interrupt {
-        match (self.priority, self.lifetime) {
-            (Priority::Critical, _) => Interrupt::Preempt,
-            (_, Lifetime::Transient(_)) => Interrupt::Transient,
-            (_, Lifetime::Persistent) => Interrupt::Never,
-        }
+        self.interrupt
     }
 }
 
@@ -460,10 +489,43 @@ pub struct Frame {
     // the Satellites past the bound, shown only as a count
     pub overflow: usize,
 
+    // an `Interrupt::Transient` Activity over the primary
     pub transient: Option<Activity>,
 
-    // Transients kept off an open Surface, highest first, shown as a badge
+    // `Interrupt::Transient` Activities kept off an open Surface, highest first, shown as a badge
     pub queued: Vec<Activity>,
+}
+
+// the two policies most tests need, so each reads as what it tests
+#[cfg(test)]
+pub mod fixture {
+    use std::time::Duration;
+
+    use super::{Activity, Id, Interrupt, Lifetime, Priority, Scope};
+
+    // on every island, competing for the primary, interrupting nothing
+    pub fn persistent(id: Id, priority: Priority) -> Activity {
+        Activity::new(
+            id,
+            priority,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::None,
+        )
+        .expect("a Persistent that does not auto-expand is valid")
+    }
+
+    // on the focused island, over the primary, for `duration`
+    pub fn shown(id: Id, priority: Priority, duration: Duration) -> Activity {
+        Activity::new(
+            id,
+            priority,
+            Lifetime::Transient(duration),
+            Scope::FocusedOutput,
+            Interrupt::Transient,
+        )
+        .expect("a shown Activity lasts a while")
+    }
 }
 
 #[cfg(test)]
@@ -539,38 +601,126 @@ mod tests {
         );
     }
 
-    #[test]
-    fn transients_are_for_the_focused_output() {
-        let volume = Activity::transient(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD);
-        let media = Activity::persistent(Id::new(Kind::Media, "spotify"), Priority::Media);
-
-        assert_eq!(volume.scope(), Scope::FocusedOutput);
-        assert_eq!(media.scope(), Scope::Global);
+    fn new(
+        kind: Kind,
+        priority: Priority,
+        lifetime: Lifetime,
+        interrupt: Interrupt,
+    ) -> Result<Activity, InvalidActivity> {
+        Activity::new(
+            Id::new(kind, "key"),
+            priority,
+            lifetime,
+            Scope::Global,
+            interrupt,
+        )
     }
 
     #[test]
-    fn only_critical_preempts() {
-        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
-        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
-        let toast = Activity::transient(
-            Id::new(Kind::Notification, "7"),
-            Priority::Actionable,
-            Duration::from_secs(5),
+    fn auto_expand_needs_a_surface_of_its_own() {
+        for kind in Kind::ALL {
+            let activity = new(
+                kind,
+                Priority::Ongoing,
+                Lifetime::Persistent,
+                Interrupt::AutoExpand(OSD),
+            );
+
+            if matches!(kind, Kind::Media | Kind::Notification) {
+                assert!(activity.is_ok(), "{kind:?}");
+            } else {
+                assert_eq!(
+                    activity,
+                    Err(InvalidActivity::AutoExpandWithoutSurface),
+                    "{kind:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_transient_lifetime_is_never_zero() {
+        for interrupt in [Interrupt::None, Interrupt::Transient, Interrupt::Preempt] {
+            assert_eq!(
+                new(
+                    Kind::Volume,
+                    Priority::Osd,
+                    Lifetime::Transient(Duration::ZERO),
+                    interrupt
+                ),
+                Err(InvalidActivity::ZeroLifetime)
+            );
+        }
+
+        assert!(
+            new(
+                Kind::Volume,
+                Priority::Osd,
+                Lifetime::Transient(Duration::from_nanos(1)),
+                Interrupt::Transient
+            )
+            .is_ok()
         );
-        let cast = Activity::persistent(Id::new(Kind::ScreenCast, "cast"), Priority::Ongoing);
+    }
 
-        assert_eq!(battery.interrupt(), Interrupt::Preempt);
-        assert_eq!(call.interrupt(), Interrupt::Preempt);
-        assert_eq!(toast.interrupt(), Interrupt::Transient);
-        assert_eq!(cast.interrupt(), Interrupt::Never);
+    // no field derives another, so each is what the source set, however unusual (ADR 0009)
+    #[test]
+    fn unusual_combinations_stand() {
+        let accepted = [
+            (
+                Priority::Media,
+                Lifetime::Persistent,
+                Scope::FocusedOutput,
+                Interrupt::None,
+            ),
+            (
+                Priority::Osd,
+                Lifetime::Transient(OSD),
+                Scope::Global,
+                Interrupt::Transient,
+            ),
+            (
+                Priority::Passive,
+                Lifetime::Persistent,
+                Scope::Global,
+                Interrupt::Preempt,
+            ),
+            (
+                Priority::Critical,
+                Lifetime::Persistent,
+                Scope::Global,
+                Interrupt::None,
+            ),
+            (
+                Priority::Passive,
+                Lifetime::Transient(OSD),
+                Scope::FocusedOutput,
+                Interrupt::AutoExpand(OSD),
+            ),
+        ];
 
-        // a Critical Transient also shows over the primary
-        assert!(call.interrupt() >= Interrupt::Transient);
+        for (priority, lifetime, scope, interrupt) in accepted {
+            let activity = Activity::new(
+                Id::new(Kind::Notification, "7"),
+                priority,
+                lifetime,
+                scope,
+                interrupt,
+            )
+            .unwrap_or_else(|invalid| {
+                panic!("{priority:?} {lifetime:?} {scope:?} {interrupt:?}: {invalid}")
+            });
+
+            assert_eq!(activity.priority(), priority);
+            assert_eq!(activity.lifetime(), lifetime);
+            assert_eq!(activity.scope(), scope);
+            assert_eq!(activity.interrupt(), interrupt);
+        }
     }
 
     #[test]
     fn kind_comes_from_the_id() {
-        let toast = Activity::transient(Id::new(Kind::Notification, "7"), Priority::Passive, OSD)
+        let toast = fixture::shown(Id::new(Kind::Notification, "7"), Priority::Passive, OSD)
             .with_actions(vec![Action {
                 key: String::from("reply"),
                 label: String::from("Reply"),
@@ -582,7 +732,7 @@ mod tests {
 
     #[test]
     fn detail_belongs_to_its_kind() {
-        let media = Activity::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
+        let media = fixture::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
         let track = Detail::Media(Track {
             title: String::from("Song"),
             ..Track::default()
@@ -626,7 +776,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "does not describe")]
     fn detail_of_another_kind_is_refused() {
-        let _ = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical)
+        let _ = fixture::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical)
             .with_detail(Detail::Media(Track::default()));
     }
 

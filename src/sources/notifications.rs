@@ -1,6 +1,6 @@
 //! Notification toasts (plan 3, 5.1, 7): a notification that arrives, or is replaced, shows as a
-//! Transient toast on the focused island. Actionable when it has actions, Critical, so preempting,
-//! when its sender says critical. The toast expires; the notification stays in Amane's list, the
+//! Transient toast on the focused island. Actionable when it has actions, and Critical and
+//! preempting, as the primary rather than over it, when its sender says critical. The toast expires; the notification stays in Amane's list, the
 //! history, until it is dismissed or its sender closes it, which also takes its toast down.
 //!
 //! DND is the Arbiter's (`island dnd toggle`): it silences toasts, never the history. Toasts never
@@ -18,7 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 use amane::{Apps, Argument, Bus, Notification, Notifications, Service, Urgency};
 
 use super::wake::{Announcer, Pace, Wakes};
-use crate::island::activity::{Action, Activity, Detail, Id, Kind, Priority, Toast};
+use crate::island::activity::{
+    Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Toast,
+};
 use crate::island::service::IslandService;
 use crate::{config, supervise};
 
@@ -115,17 +117,24 @@ fn id(notification: u32) -> Id {
     Id::new(Kind::Notification, notification.to_string())
 }
 
-// Critical preempts even an open Surface, and DND never silences it (plan 5.1 rules 4, 5)
+// a critical one preempts even an open Surface, and DND never silences it (plan 5.1 rules 4, 5)
 fn activity(notification: u32, urgency: Urgency, actions: Vec<Action>, toast: Toast) -> Activity {
-    let priority = match urgency {
-        Urgency::Critical => Priority::Critical,
-        _ if !actions.is_empty() => Priority::Actionable,
-        _ => Priority::Passive,
+    let (priority, interrupt) = match urgency {
+        Urgency::Critical => (Priority::Critical, Interrupt::Preempt),
+        _ if !actions.is_empty() => (Priority::Actionable, Interrupt::Transient),
+        _ => (Priority::Passive, Interrupt::Transient),
     };
 
-    Activity::transient(id(notification), priority, config::get().toast)
-        .with_actions(actions)
-        .with_detail(Detail::Notification(toast))
+    Activity::new(
+        id(notification),
+        priority,
+        Lifetime::Transient(config::get().toast),
+        Scope::FocusedOutput,
+        interrupt,
+    )
+    .expect("the config bounds toast above zero")
+    .with_actions(actions)
+    .with_detail(Detail::Notification(toast))
 }
 
 pub(crate) fn toast(notification: &Notification) -> Toast {
@@ -340,6 +349,7 @@ pub fn follow() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::island::activity::fixture;
     use crate::island::activity::{Interrupt, Lifetime};
 
     // as `dbus-monitor --profile` prints them
@@ -435,7 +445,7 @@ mod tests {
     fn a_toast_never_displaces_an_open_surface() {
         let now = Instant::now();
         let mut island = IslandService::new();
-        let media = Activity::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
+        let media = fixture::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
 
         island.post(media, now);
         island.open("eDP-1", Surface::Media, now);
@@ -464,8 +474,9 @@ mod tests {
         assert_eq!(island.frame("eDP-1", now).transient, None);
         assert_eq!(island.presentation("eDP-1"), Presentation::Rest);
 
+        // a Critical one preempts, so competes for the primary rather than shows over it
         island.post(toast(Urgency::Critical, vec![]), now);
-        assert!(island.frame("eDP-1", now).transient.is_some());
+        assert!(island.frame("eDP-1", now).primary.is_some());
     }
 
     #[test]

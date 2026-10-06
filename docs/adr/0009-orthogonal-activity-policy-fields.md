@@ -23,6 +23,9 @@ Today only Lifetime and Priority are set. `Activity::scope()` and `Activity::int
 
 - `Lifetime::Transient(duration)` means only that the Activity expires after `duration`. It implies no presentation and no interruption.
 - `Interrupt` is `None | Preempt | AutoExpand(duration)`. `AutoExpand` opens the Activity's Surface for `duration`, then restores the prior Presentation and Surface. `Interrupt::Transient` is removed.
+  - An explicit user action while it is open (click, open or toggle, collapse, pin, a consumed key) claims the current state and cancels the restore.
+  - The pointer entering or leaving alone claims nothing. The pointer still on the Surface at the deadline keeps it open like Hold; leaving then starts the grace.
+  - A `Preempt` arriving is policy, not user intent: the prior state is restored first, then it preempts as it would have.
 - `Frame` is `primary`, `satellites`, `overflow`. The `transient` and `queued` slots are removed; Banners, the OSD and the privacy cluster have their own presentation.
 
 ### Validation

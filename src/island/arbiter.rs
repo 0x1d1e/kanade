@@ -1,12 +1,12 @@
 //! The Arbiter (CONTEXT.md, plan 5.1 rules 1-5, 7). Pure: posts and now in, Frame out.
 //!
-//! Persistent Activities compete for the primary, Transient ones for the transient that shows
-//! over it. Each slot takes the highest Priority, tie by the newest post. The Ongoing and Critical
-//! Persistent ones that lose the primary become Satellites. Expired Activities
+//! `Interrupt::Transient` Activities compete for the transient that shows over the primary, the
+//! rest for the primary. Each slot takes the highest Priority, tie by the newest post. The Ongoing
+//! and Critical Persistent ones that lose the primary become Satellites. Expired Activities
 //! stay registered until `expire`, but never reach a Frame, so the primary returns on its own.
 //!
 //! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
-//! it, never withdraw one; dropping the Transients an open Surface already shows is `absorb`. DND (rule 5) hides the toasts already up and drops those posted during it.
+//! it, never withdraw one; dropping the transients an open Surface already shows is `absorb`. DND (rule 5) hides the toasts already up and drops those posted during it.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -87,13 +87,14 @@ impl Arbiter {
     }
 
     /*
-     * whether `id` is up and preempting at `now`: a repost of it is no new arrival, while an
-     * escalation to Critical or a repost of an expired one not yet swept is
+     * how `id` interrupts, if up at `now`: a repost with the same Interrupt is no new arrival,
+     * while one that changes it, or a repost of an expired one not yet swept, is
      */
-    pub fn preempting(&self, id: &Id, now: Instant) -> bool {
-        self.activities.get(id).is_some_and(|entry| {
-            entry.live(now) && entry.activity.interrupt() == Interrupt::Preempt
-        })
+    pub fn interrupt(&self, id: &Id, now: Instant) -> Option<Interrupt> {
+        self.activities
+            .get(id)
+            .filter(|entry| entry.live(now))
+            .map(|entry| entry.activity.interrupt())
     }
 
     // whether it was registered
@@ -101,12 +102,12 @@ impl Arbiter {
         self.activities.remove(id).is_some()
     }
 
-    // drops the Transients `drop` picks, an open Surface showing them already; whether any were
+    // drops the transients `drop` picks, an open Surface showing them already; whether any were
     pub fn absorb(&mut self, drop: impl Fn(&Activity) -> bool) -> bool {
         let before = self.activities.len();
 
         self.activities.retain(|_, entry| {
-            !(matches!(entry.activity.lifetime(), Lifetime::Transient(_)) && drop(&entry.activity))
+            !(entry.activity.interrupt() == Interrupt::Transient && drop(&entry.activity))
         });
 
         self.activities.len() != before
@@ -144,7 +145,8 @@ impl Arbiter {
             let mut entries: Vec<&Entry> = self
                 .activities
                 .values()
-                .filter(|entry| entry.live(now) && entry.expiry().is_some() == transient)
+                .filter(|entry| entry.live(now))
+                .filter(|entry| (entry.activity.interrupt() == Interrupt::Transient) == transient)
                 .filter(|entry| island.focused || entry.activity.scope() == Scope::Global)
                 .filter(|entry| !self.silenced(&entry.activity))
                 .collect();
@@ -156,24 +158,29 @@ impl Arbiter {
         let primary = persistent.next();
         let mut satellites: Vec<Activity> = persistent
             .filter(|activity| {
-                matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
+                activity.lifetime() == Lifetime::Persistent
+                    && matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
             })
             .collect();
         let overflow = satellites.len().saturating_sub(SATELLITES);
         satellites.truncate(SATELLITES);
 
         /*
-         * a Surface the user opened is covered only by a Preempt Activity, the rest wait as a
-         * badge and show for what is left of their Lifetime once it closes (rule 4)
+         * over a Surface the user opened, transients wait as a badge and show for what is left of
+         * their Lifetime once it closes (rule 4); only a Preempt one closes it, on arrival
          */
-        let (transients, queued): (Vec<Activity>, Vec<Activity>) = ranked(true)
-            .partition(|activity| !island.expanded || activity.interrupt() == Interrupt::Preempt);
+        let mut transients = ranked(true);
+        let (transient, queued) = if island.expanded {
+            (None, transients.collect())
+        } else {
+            (transients.next(), Vec::new())
+        };
 
         Frame {
             primary,
             satellites,
             overflow,
-            transient: transients.into_iter().next(),
+            transient,
             queued,
         }
     }
@@ -191,6 +198,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::island::activity::fixture::{persistent, shown};
 
     // the focused island at rest, where everything shows
     const FOCUSED: Island = Island {
@@ -205,15 +213,15 @@ mod tests {
     }
 
     fn media(key: &str) -> Activity {
-        Activity::persistent(Id::new(Kind::Media, key), Priority::Media)
+        persistent(Id::new(Kind::Media, key), Priority::Media)
     }
 
     fn cast() -> Activity {
-        Activity::persistent(Id::new(Kind::ScreenCast, "cast"), Priority::Ongoing)
+        persistent(Id::new(Kind::ScreenCast, "cast"), Priority::Ongoing)
     }
 
     fn volume() -> Activity {
-        Activity::transient(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD)
+        shown(Id::new(Kind::Volume, "volume"), Priority::Osd, OSD)
     }
 
     fn primary(arbiter: &Arbiter, now: Instant) -> Option<Id> {
@@ -282,8 +290,8 @@ mod tests {
         let mut arbiter = Arbiter::default();
         let id = Id::new(Kind::Battery, "BAT0");
 
-        arbiter.post(Activity::persistent(id.clone(), Priority::Passive), t0);
-        arbiter.post(Activity::persistent(id.clone(), Priority::Critical), t0);
+        arbiter.post(persistent(id.clone(), Priority::Passive), t0);
+        arbiter.post(persistent(id.clone(), Priority::Critical), t0);
 
         let frame = arbiter.frame(t0, FOCUSED);
 
@@ -349,7 +357,7 @@ mod tests {
     fn transients_compete_by_priority() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let toast = Activity::transient(
+        let toast = shown(
             Id::new(Kind::Notification, "7"),
             Priority::Actionable,
             Duration::from_secs(5),
@@ -388,7 +396,7 @@ mod tests {
     fn deadline_is_the_next_expiry() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let toast = Activity::transient(
+        let toast = shown(
             Id::new(Kind::Notification, "7"),
             Priority::Passive,
             Duration::from_secs(5),
@@ -423,7 +431,7 @@ mod tests {
     }
 
     fn ongoing(key: &str) -> Activity {
-        Activity::persistent(Id::new(Kind::Timer, key), Priority::Ongoing)
+        persistent(Id::new(Kind::Timer, key), Priority::Ongoing)
     }
 
     fn satellites(arbiter: &Arbiter, now: Instant) -> (Vec<Id>, usize) {
@@ -441,8 +449,8 @@ mod tests {
     fn ongoing_and_critical_beside_the_primary_become_satellites() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
-        let wifi = Activity::persistent(Id::new(Kind::Network, "wlan0"), Priority::Passive);
+        let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
+        let wifi = persistent(Id::new(Kind::Network, "wlan0"), Priority::Passive);
 
         arbiter.post(battery.clone(), t0);
         arbiter.post(cast(), t0);
@@ -455,15 +463,52 @@ mod tests {
     }
 
     #[test]
-    fn transients_are_never_satellites() {
+    fn only_persistent_activities_are_satellites() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let call = Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD);
+        let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
 
-        arbiter.post(media("spotify"), t0);
-        arbiter.post(call, t0);
+        arbiter.post(call(), t0);
+        arbiter.post(battery.clone(), t0 + ms(10));
 
-        assert_eq!(satellites(&arbiter, t0), (vec![], 0));
+        // the call loses the primary to the newer Critical, and has a Lifetime, so goes nowhere
+        assert_eq!(primary(&arbiter, t0 + ms(10)), Some(battery.id().clone()));
+        assert_eq!(satellites(&arbiter, t0 + ms(10)), (vec![], 0));
+    }
+
+    // only `Interrupt::Transient` picks the transient slot, whatever the Lifetime
+    #[test]
+    fn the_interrupt_picks_the_slot() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let brief = Activity::new(
+            Id::new(Kind::Network, "wlan0"),
+            Priority::Passive,
+            Lifetime::Transient(OSD),
+            Scope::Global,
+            Interrupt::None,
+        )
+        .unwrap();
+        let lasting = Activity::new(
+            Id::new(Kind::Volume, "volume"),
+            Priority::Osd,
+            Lifetime::Persistent,
+            Scope::FocusedOutput,
+            Interrupt::Transient,
+        )
+        .unwrap();
+
+        arbiter.post(brief.clone(), t0);
+        arbiter.post(lasting.clone(), t0);
+
+        let frame = arbiter.frame(t0, FOCUSED);
+        assert_eq!(frame.primary, Some(brief));
+        assert_eq!(frame.transient, Some(lasting.clone()));
+
+        // the brief one still expires, the lasting one does not
+        let later = arbiter.frame(t0 + OSD, FOCUSED);
+        assert_eq!(later.primary, None);
+        assert_eq!(later.transient, Some(lasting));
     }
 
     #[test]
@@ -489,8 +534,8 @@ mod tests {
     fn satellites_are_highest_first_then_newest() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
-        let privacy = Activity::persistent(Id::new(Kind::Privacy, "mic"), Priority::Critical);
+        let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
+        let privacy = persistent(Id::new(Kind::Privacy, "mic"), Priority::Critical);
 
         arbiter.post(privacy.clone(), t0);
         arbiter.post(ongoing("old"), t0);
@@ -509,7 +554,7 @@ mod tests {
     fn a_satellite_is_promoted_when_the_primary_is_withdrawn() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let battery = Activity::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
+        let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
 
         arbiter.post(battery.clone(), t0);
         arbiter.post(cast(), t0);
@@ -522,15 +567,23 @@ mod tests {
     }
 
     fn toast(key: &str, priority: Priority) -> Activity {
-        Activity::transient(
+        shown(
             Id::new(Kind::Notification, key),
             priority,
             Duration::from_secs(5),
         )
     }
 
+    // Critical, but brief and preempting
     fn call() -> Activity {
-        Activity::transient(Id::new(Kind::Privacy, "call"), Priority::Critical, OSD)
+        Activity::new(
+            Id::new(Kind::Privacy, "call"),
+            Priority::Critical,
+            Lifetime::Transient(OSD),
+            Scope::FocusedOutput,
+            Interrupt::Preempt,
+        )
+        .unwrap()
     }
 
     const EXPANDED: Island = Island {
@@ -582,43 +635,113 @@ mod tests {
         assert_eq!(closed.queued, []);
     }
 
+    // a Preempt Activity closes the Surface on arrival (`IslandService`), so competes for the primary
     #[test]
-    fn only_preempt_covers_an_open_surface() {
+    fn a_preempt_activity_competes_for_the_primary() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
 
+        arbiter.post(media("spotify"), t0);
         arbiter.post(toast("7", Priority::Actionable), t0);
         arbiter.post(call(), t0);
 
         let open = arbiter.frame(t0, EXPANDED);
-        assert_eq!(open.transient, Some(call()));
+        assert_eq!(open.primary, Some(call()));
+        assert_eq!(open.transient, None);
         assert_eq!(open.queued, [toast("7", Priority::Actionable)]);
+
+        // FocusedOutput still hides it elsewhere
+        let other = Island {
+            focused: false,
+            expanded: false,
+        };
+        assert_eq!(arbiter.frame(t0, other).primary, Some(media("spotify")));
     }
 
     #[test]
-    fn preempting_is_a_live_critical() {
+    fn interrupt_is_that_of_a_live_activity() {
         let now = Instant::now();
         let mut arbiter = Arbiter::default();
         let battery = Id::new(Kind::Battery, "BAT0");
 
-        assert!(!arbiter.preempting(&battery, now));
+        assert_eq!(arbiter.interrupt(&battery, now), None);
 
-        arbiter.post(
-            Activity::persistent(battery.clone(), Priority::Ongoing),
-            now,
-        );
-        assert!(!arbiter.preempting(&battery, now));
+        arbiter.post(persistent(battery.clone(), Priority::Ongoing), now);
+        assert_eq!(arbiter.interrupt(&battery, now), Some(Interrupt::None));
 
-        arbiter.post(
-            Activity::persistent(battery.clone(), Priority::Critical),
-            now,
-        );
-        assert!(arbiter.preempting(&battery, now));
+        // a low Priority may preempt, a Critical need not
+        let preempting = Activity::new(
+            battery.clone(),
+            Priority::Passive,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::Preempt,
+        )
+        .unwrap();
+        arbiter.post(preempting, now);
+        assert_eq!(arbiter.interrupt(&battery, now), Some(Interrupt::Preempt));
 
         // registered until expire() sweeps it, but no longer up
         arbiter.post(call(), now);
-        assert!(arbiter.preempting(call().id(), now + OSD - ms(1)));
-        assert!(!arbiter.preempting(call().id(), now + OSD));
+        assert_eq!(
+            arbiter.interrupt(call().id(), now + OSD - ms(1)),
+            Some(Interrupt::Preempt)
+        );
+        assert_eq!(arbiter.interrupt(call().id(), now + OSD), None);
+    }
+
+    // every policy `Activity::new` accepts, on every kind of island, makes a Frame
+    #[test]
+    fn the_arbiter_takes_any_valid_activity() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let lifetimes = [Lifetime::Persistent, Lifetime::Transient(OSD)];
+        let scopes = [Scope::Global, Scope::FocusedOutput];
+        let interrupts = [
+            Interrupt::None,
+            Interrupt::Transient,
+            Interrupt::Preempt,
+            Interrupt::AutoExpand(OSD),
+        ];
+        let mut posted = 0;
+
+        for (n, kind) in Kind::ALL.into_iter().enumerate() {
+            for priority in Priority::ALL {
+                for lifetime in lifetimes {
+                    for scope in scopes {
+                        for interrupt in interrupts {
+                            let key =
+                                format!("{n}-{priority:?}-{lifetime:?}-{scope:?}-{interrupt:?}");
+                            let id = Id::new(kind, &key);
+
+                            if let Ok(activity) =
+                                Activity::new(id, priority, lifetime, scope, interrupt)
+                            {
+                                arbiter.post(activity, t0);
+                                posted += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(posted > 0);
+        for dnd in [false, true] {
+            arbiter.set_dnd(dnd);
+            for focused in [false, true] {
+                for expanded in [false, true] {
+                    let island = Island { focused, expanded };
+                    let frame = arbiter.frame(t0, island);
+                    assert!(frame.primary.is_some());
+                    assert!(frame.satellites.len() <= SATELLITES);
+                    arbiter.frame(t0 + OSD, island);
+                }
+            }
+        }
+        arbiter.absorb(|activity| activity.kind() == Kind::Notification);
+        assert!(arbiter.expire(t0 + OSD));
+        assert!(arbiter.frame(t0 + OSD, FOCUSED).primary.is_some());
     }
 
     #[test]
@@ -637,7 +760,7 @@ mod tests {
     fn dnd_hides_notification_toasts_only() {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
-        let history = Activity::persistent(Id::new(Kind::Notification, "7"), Priority::Passive);
+        let history = persistent(Id::new(Kind::Notification, "7"), Priority::Passive);
 
         arbiter.set_dnd(true);
         arbiter.post(history.clone(), t0);

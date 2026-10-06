@@ -6,7 +6,7 @@
 
 use super::niri::{Change, Seen};
 use crate::config;
-use crate::island::activity::{Activity, Detail, Id, Kind, Priority};
+use crate::island::activity::{Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope};
 
 /*
  * what the island does about niri going from `before` to `now`. Only a switch on the output that
@@ -23,8 +23,15 @@ pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
 
     (now.id != before.id && now.output == before.output).then(|| {
         Change::Post(
-            Activity::transient(id(), Priority::Osd, config::get().osd)
-                .with_detail(Detail::Workspace(now.workspace.clone())),
+            Activity::new(
+                id(),
+                Priority::Osd,
+                Lifetime::Transient(config::get().osd),
+                Scope::FocusedOutput,
+                Interrupt::Transient,
+            )
+            .expect("the config bounds osd above zero")
+            .with_detail(Detail::Workspace(now.workspace.clone())),
         )
     })
 }
@@ -37,7 +44,7 @@ fn id() -> Id {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::{Lifetime, Workspace};
+    use crate::island::activity::Workspace;
     use crate::sources::niri::Focused;
 
     fn on(output: &str, id: u64, index: u32) -> Seen {

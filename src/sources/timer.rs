@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Service};
 
-use crate::island::activity::{Activity, Countdown, Detail, Id, Kind, Priority};
+use crate::island::activity::{
+    Activity, Countdown, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
+};
 use crate::island::service::IslandService;
 use crate::supervise;
 
@@ -211,7 +213,15 @@ fn show(countdown: Option<Countdown>) {
 
 // Ongoing, so it becomes a Satellite beside a higher primary, and the primary over Media
 fn activity(countdown: Countdown) -> Activity {
-    Activity::persistent(id(), Priority::Ongoing).with_detail(Detail::Timer(countdown))
+    Activity::new(
+        id(),
+        Priority::Ongoing,
+        Lifetime::Persistent,
+        Scope::Global,
+        Interrupt::None,
+    )
+    .expect("a Persistent that does not auto-expand is valid")
+    .with_detail(Detail::Timer(countdown))
 }
 
 // one timer, so a start while one runs replaces it
@@ -360,7 +370,7 @@ mod tests {
         assert_eq!(timer.id(), &id());
         assert_eq!(timer.priority(), Priority::Ongoing);
         assert_eq!(timer.lifetime(), Lifetime::Persistent);
-        assert_eq!(timer.interrupt(), Interrupt::Never);
+        assert_eq!(timer.interrupt(), Interrupt::None);
     }
 
     #[test]

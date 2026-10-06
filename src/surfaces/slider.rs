@@ -40,6 +40,7 @@ impl Slider {
             .align_child(Start, Center)
             .cursor(Cursor::Pointer)
             .on_drag(move |point| {
+                crate::view::claim();
                 self.set((point.x / width * 100.0).round().clamp(0.0, 100.0) as u8);
             })
             .child(bar(width, fraction, tone))

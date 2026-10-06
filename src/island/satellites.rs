@@ -173,6 +173,7 @@ impl Satellites {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::island::activity::fixture;
     use crate::island::activity::{Kind, Priority};
 
     const ENTER: Duration = Duration::from_millis(180);
@@ -183,7 +184,7 @@ mod tests {
     }
 
     fn mark(key: &str) -> Mark {
-        Mark::Activity(Activity::persistent(
+        Mark::Activity(fixture::persistent(
             Id::new(Kind::Timer, key),
             Priority::Ongoing,
         ))

@@ -4,7 +4,9 @@
 use amane::{Argument, Bus, Service, Value};
 
 use super::system::{Radio, SHOWN};
-use crate::island::activity::{Activity, Connection, Detail, Id, Kind, Priority, Uplink};
+use crate::island::activity::{
+    Activity, Connection, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Uplink,
+};
 
 pub const NAME: &str = "org.freedesktop.NetworkManager";
 
@@ -143,7 +145,16 @@ pub fn changes(before: &Connectivity, now: &Connectivity) -> Vec<Activity> {
     // one, so leaving and joining in a row replaces rather than queues
     let id = Id::new(Kind::Network, "uplink");
 
-    vec![Activity::transient(id, Priority::Passive, SHOWN).with_detail(Detail::Network(change))]
+    let activity = Activity::new(
+        id,
+        Priority::Passive,
+        Lifetime::Transient(SHOWN),
+        Scope::FocusedOutput,
+        Interrupt::Transient,
+    )
+    .expect("SHOWN is no zero Lifetime");
+
+    vec![activity.with_detail(Detail::Network(change))]
 }
 
 #[cfg(test)]

@@ -19,7 +19,9 @@ use std::time::{Duration, Instant};
 use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
 
 use super::playback::{self, Deck, Playback, Timeline, Tint};
-use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Track};
+use crate::island::activity::{
+    Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Track,
+};
 use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
@@ -223,8 +225,15 @@ impl Seen {
     }
 
     fn activity(&self) -> Activity {
-        Activity::persistent(Id::new(Kind::Media, &self.key), Priority::Media)
-            .with_detail(Detail::Media(self.track.clone()))
+        Activity::new(
+            Id::new(Kind::Media, &self.key),
+            Priority::Media,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::None,
+        )
+        .expect("a Persistent that does not auto-expand is valid")
+        .with_detail(Detail::Media(self.track.clone()))
     }
 }
 
@@ -877,7 +886,7 @@ mod tests {
 
         assert_eq!(
             activity.interrupt(),
-            crate::island::activity::Interrupt::Never
+            crate::island::activity::Interrupt::None
         );
         assert_eq!(activity.priority(), Priority::Media);
     }

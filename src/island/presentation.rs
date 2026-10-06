@@ -43,10 +43,15 @@ impl Surface {
 
     // what a click on an island showing this Kind opens; a Kind without a Surface of its own has its control there
     pub fn of(kind: Kind) -> Surface {
+        Surface::own(kind).unwrap_or(Surface::Controls)
+    }
+
+    // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
+    pub fn own(kind: Kind) -> Option<Surface> {
         match kind {
-            Kind::Media => Surface::Media,
-            Kind::Notification => Surface::Notifications,
-            _ => Surface::Controls,
+            Kind::Media => Some(Surface::Media),
+            Kind::Notification => Some(Surface::Notifications),
+            _ => None,
         }
     }
 
@@ -170,6 +175,12 @@ impl Input {
     pub fn decides(self) -> bool {
         !matches!(self, Input::Wheel(_))
     }
+
+    // the user's own choice, which takes a pending AutoExpand over; the island's timers and a
+    // Preempt are policy, not choice
+    pub fn claims(self) -> bool {
+        self.decides() && !matches!(self, Input::Hover | Input::Unhover | Input::Preempt)
+    }
 }
 
 // what the user raised an island to, beyond what its primary Activity gives it
@@ -192,6 +203,31 @@ struct Island {
      * any change to that ends it, so nothing pinned outlives the Peek or Surface it kept open
      */
     pinned: bool,
+}
+
+/*
+ * what an `Interrupt::AutoExpand` changed, so `Presentations::restore` puts it back: the island it
+ * opened on and the one it collapsed, as they were before the first of the AutoExpands pending
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Prior(Vec<(String, Option<Raised>, bool)>);
+
+impl Prior {
+    // the islands either changed, each as `self` found it, the earlier
+    pub fn and(mut self, later: Prior) -> Prior {
+        for island in later.0 {
+            if !self.0.iter().any(|(monitor, ..)| *monitor == island.0) {
+                self.0.push(island);
+            }
+        }
+
+        self
+    }
+
+    // the islands it puts back
+    pub fn monitors(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|(monitor, ..)| monitor.as_str())
+    }
 }
 
 // every island's Presentation by monitor
@@ -326,6 +362,54 @@ impl Presentations {
     }
 
     /*
+     * opens `surface` without the user (`Interrupt::AutoExpand`), returning what it changed;
+     * nothing while the overview is open or the island already shows it
+     */
+    pub fn auto_expand(&mut self, monitor: &str, surface: Surface) -> Option<Prior> {
+        if self.overview || self.get(monitor) == Presentation::Expanded(surface) {
+            return None;
+        }
+
+        self.island(monitor);
+
+        let prior = self
+            .islands
+            .iter()
+            .filter(|&(name, island)| {
+                name == monitor || matches!(island.raised, Some(Raised::Expanded(_)))
+            })
+            .map(|(name, island)| (name.clone(), island.raised, island.pinned))
+            .collect();
+
+        self.expand(monitor, surface);
+
+        Some(Prior(prior))
+    }
+
+    /*
+     * puts back what `auto_expand` changed, a Surface reopening as a new visit. A Peek whose
+     * primary was withdrawn meanwhile stays ended, as `set_primary` would have ended it
+     */
+    pub fn restore(&mut self, prior: Prior) {
+        if self.overview {
+            return;
+        }
+
+        for (monitor, raised, pinned) in prior.0 {
+            let island = self.island(&monitor);
+            let raised =
+                raised.filter(|&raised| raised != Raised::Peek || island.primary.is_some());
+
+            island.raised = raised;
+            island.pinned = pinned && raised.is_some();
+
+            if matches!(raised, Some(Raised::Expanded(_))) {
+                self.visits += 1;
+            }
+        }
+    }
+
+    /*
      * this opening of a Surface, new each time one opens or another replaces it, so a Surface's
      * focus and scroll last one visit without anything resetting them on close
      */
@@ -370,6 +454,7 @@ impl Island {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::island::activity::fixture;
 
     use Presentation::{Compact, Expanded, Peek, Rest};
     use Surface::{Controls, Launcher, Media, Notifications};
@@ -395,7 +480,7 @@ mod tests {
         use super::super::activity::{Id, Priority};
 
         let level = |device| {
-            Activity::transient(
+            fixture::shown(
                 Id::new(Kind::Volume, "volume"),
                 Priority::Osd,
                 std::time::Duration::from_secs(1),
@@ -419,7 +504,7 @@ mod tests {
         use super::super::activity::{Id, Peer, Priority};
 
         let transient = |kind, detail| {
-            Activity::transient(
+            fixture::shown(
                 Id::new(kind, "key"),
                 Priority::Passive,
                 std::time::Duration::from_secs(2),
@@ -457,7 +542,7 @@ mod tests {
         use super::super::activity::{Id, Toast};
 
         let toast = |priority| {
-            Activity::transient(
+            fixture::shown(
                 Id::new(Kind::Notification, "7"),
                 priority,
                 std::time::Duration::from_secs(5),
@@ -868,7 +953,7 @@ mod tests {
     fn content_names_the_activity_only_in_a_small_form() {
         use crate::island::activity::{Id, Priority};
 
-        let media = Activity::persistent(Id::new(Kind::Media, "spotify"), Priority::Media);
+        let media = fixture::persistent(Id::new(Kind::Media, "spotify"), Priority::Media);
 
         for presentation in [Compact, Peek] {
             let content = Content::new(presentation, Some(media.clone()));
@@ -888,7 +973,7 @@ mod tests {
         use crate::island::activity::{Detail, Device, Id, Priority, Volume};
 
         let content = |detail| {
-            let speaker = Activity::persistent(Id::new(Kind::Volume, "speaker"), Priority::Osd)
+            let speaker = fixture::persistent(Id::new(Kind::Volume, "speaker"), Priority::Osd)
                 .with_detail(detail);
 
             Content::new(Compact, Some(speaker))
@@ -961,5 +1046,36 @@ mod tests {
         presentations.input(MONITOR, Input::Open(Controls));
 
         assert_eq!(presentations.get(OTHER), Peek);
+    }
+
+    #[test]
+    fn auto_expand_is_nothing_where_the_surface_already_shows() {
+        let mut presentations = Presentations::default();
+
+        presentations.input(MONITOR, Input::Open(Notifications));
+        let visit = presentations.visit();
+
+        assert_eq!(presentations.auto_expand(MONITOR, Notifications), None);
+        assert_eq!(presentations.visit(), visit);
+
+        presentations.set_overview(true);
+        assert_eq!(presentations.auto_expand(MONITOR, Media), None);
+    }
+
+    #[test]
+    fn restore_reopens_as_a_new_visit() {
+        let mut presentations = Presentations::default();
+
+        presentations.input(OTHER, Input::Open(Controls));
+        let prior = presentations.auto_expand(MONITOR, Media).unwrap();
+        let visit = presentations.visit();
+
+        assert_eq!(presentations.get(OTHER), Rest);
+
+        presentations.restore(prior);
+        assert_eq!(presentations.get(OTHER), Expanded(Controls));
+        assert_eq!(presentations.get(MONITOR), Rest);
+        assert_eq!(presentations.visit(), visit + 1);
+        assert_eq!(presentations.expanded(), Some((OTHER, Controls)));
     }
 }

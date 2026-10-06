@@ -16,7 +16,10 @@ mod slider;
  */
 fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
     move |button| match button {
-        Button::Left => press(),
+        Button::Left => {
+            crate::view::claim();
+            press();
+        }
         Button::Right => crate::view::pin(),
         _ => {}
     }

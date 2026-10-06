@@ -6,7 +6,7 @@
 //! makes of it.
 
 use super::niri::{Change, Seen};
-use crate::island::activity::{Activity, Id, Kind, Priority};
+use crate::island::activity::{Activity, Id, Interrupt, Kind, Lifetime, Priority, Scope};
 
 // only the first cast starting or the last one stopping changes what the island shows
 pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
@@ -19,7 +19,14 @@ pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
 
 // Ongoing, so it becomes a Satellite beside a higher primary, and the primary over Media
 fn activity() -> Activity {
-    Activity::persistent(id(), Priority::Ongoing)
+    Activity::new(
+        id(),
+        Priority::Ongoing,
+        Lifetime::Persistent,
+        Scope::Global,
+        Interrupt::None,
+    )
+    .expect("a Persistent that does not auto-expand is valid")
 }
 
 // one, however many casts there are
@@ -48,7 +55,7 @@ mod tests {
         assert_eq!(activity.id(), &id());
         assert_eq!(activity.lifetime(), Lifetime::Persistent);
         assert_eq!(activity.priority(), Priority::Ongoing);
-        assert_eq!(activity.interrupt(), Interrupt::Never);
+        assert_eq!(activity.interrupt(), Interrupt::None);
     }
 
     #[test]
