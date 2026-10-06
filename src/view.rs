@@ -10,8 +10,8 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Priority, Sensors,
-    Toast, Track, Uplink, Volume, Workspace,
+    Activity, Charge, Connection, Countdown, Detail, Device, Frame, Kind, Peer, Priority, Toast,
+    Track, Uplink, Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -181,16 +181,11 @@ fn satellites(
         .collect()
 }
 
-/*
- * a battery shows its number in its tone, a screen capture its glyph in amber, a microphone or
- * camera in use its glyph in green (plan 7), a timer what is left, the rest their Kind
- */
+// a battery shows its number in its tone, a timer what is left, the rest their Kind
 fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), theme::fg()),
-        Detail::Privacy(sensors) => Box::new(sensor(sensors).on(16.0, theme::GREEN)),
-        _ if activity.kind() == Kind::ScreenCast => Box::new(Icon::Capture.on(16.0, theme::AMBER)),
         _ => label(abbreviation(activity.kind()).to_owned(), theme::fg()),
     }
 }
@@ -243,9 +238,7 @@ fn abbreviation(kind: Kind) -> &'static str {
         Kind::Battery => "Ba",
         Kind::Network => "Nw",
         Kind::Bluetooth => "Bt",
-        Kind::ScreenCast => "S",
         Kind::Timer => "T",
-        Kind::Privacy => "P",
     }
 }
 
@@ -339,10 +332,6 @@ fn small_form(
     track: Option<&Dissolve<Track>>,
     now: Instant,
 ) -> Option<Rectangle> {
-    if content.activity.as_ref().map(Activity::kind) == Some(Kind::ScreenCast) {
-        return capture(content.presentation);
-    }
-
     let detail = content.activity.as_ref().map(Activity::detail);
 
     match (content.presentation, detail) {
@@ -371,122 +360,8 @@ fn small_form(
         }
         (presentation, Some(Detail::Bluetooth(peer))) => link(presentation, Link::bluetooth(peer)),
         (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
-        (presentation, Some(Detail::Privacy(sensors))) => privacy(presentation, sensors),
         _ => None,
     }
-}
-
-/*
- * the glyph and a word, both amber, so it never rests on color alone and never reads as the low
- * battery's amber (plan 7). Niri cannot say why the screen is captured, so it never says
- * "Recording" or "Sharing" (plan 5.3)
- */
-fn capture(presentation: Presentation) -> Option<Rectangle> {
-    let (icon, text, size, inset) = match presentation {
-        Presentation::Compact => (18.0, "CAPTURE", 13.0, 15.0),
-        Presentation::Peek => (24.0, "Screen capture active", 15.0, 20.0),
-        _ => return None,
-    };
-
-    Some(
-        sized(presentation)
-            .padding(Padding {
-                top: 0.0,
-                right: inset,
-                bottom: 0.0,
-                left: inset,
-            })
-            .align_child(Start, Center)
-            .child(
-                Row::new(children![
-                    Icon::Capture.on(icon, theme::AMBER),
-                    Text::new(text)
-                        .size(size)
-                        .color(theme::AMBER)
-                        .weight(600)
-                        .elide()
-                ])
-                .width(Parent)
-                .gap(11.0)
-                .align(Center),
-            ),
-    )
-}
-
-// the camera when it is in use, being the more private one, else the microphone
-fn sensor(sensors: &Sensors) -> Icon {
-    if sensors.camera {
-        Icon::Camera
-    } else {
-        Icon::Microphone
-    }
-}
-
-/*
- * the sensor's glyph and what is in use, both green, so it never rests on color alone (plan 7);
- * Peek also names the apps capturing
- */
-fn privacy(presentation: Presentation, sensors: &Sensors) -> Option<Rectangle> {
-    let (icon, inset) = match presentation {
-        Presentation::Compact => (18.0, 15.0),
-        Presentation::Peek => (24.0, 20.0),
-        _ => return None,
-    };
-
-    let words: Box<dyn Widget> = match (presentation, sensors.microphone, sensors.camera) {
-        (Presentation::Compact, true, true) => Box::new(green("CAMERA + MIC", 13.0)),
-        (Presentation::Compact, false, _) => Box::new(green("CAMERA", 13.0)),
-        (Presentation::Compact, _, false) => Box::new(green("MIC", 13.0)),
-        (_, microphone, camera) => {
-            let what = match (microphone, camera) {
-                (true, true) => "Camera and microphone in use",
-                (false, _) => "Camera in use",
-                (_, false) => "Microphone in use",
-            };
-
-            let mut lines = children![green(what, 15.0)];
-
-            if !sensors.apps.is_empty() {
-                lines.push(Box::new(
-                    Text::new(sensors.apps.join(", "))
-                        .size(12.0)
-                        .color(theme::muted())
-                        .weight(500)
-                        .elide(),
-                ));
-            }
-
-            Box::new(Column::new(lines).width(Parent).gap(3.0))
-        }
-    };
-
-    Some(
-        sized(presentation)
-            .padding(Padding {
-                top: 0.0,
-                right: inset,
-                bottom: 0.0,
-                left: inset,
-            })
-            .align_child(Start, Center)
-            .child(
-                Row::new(vec![
-                    Box::new(sensor(sensors).on(icon, theme::GREEN)),
-                    words,
-                ])
-                .width(Parent)
-                .gap(11.0)
-                .align(Center),
-            ),
-    )
-}
-
-fn green(text: &str, size: f32) -> Text {
-    Text::new(text)
-        .size(size)
-        .color(theme::GREEN)
-        .weight(600)
-        .elide()
 }
 
 /*

@@ -15,8 +15,13 @@ Something happening that may deserve attention. Has identity, Kind, Priority, Li
 - **Invariant:** posting an Activity with an existing id replaces it and refreshes its Lifetime. A repeated volume key extends one Transient, not a queue of them.
 - **Avoid:** event, notification (a Notification is one Kind of Activity), OSD (use Transient)
 
+## Privacy cluster
+The microphone, camera and screen capture in use, in its own Overlay window per monitor, so no fullscreen window covers it (ADR 0005). It takes no pointer; the Controls Surface names the apps.
+- **Invariant:** never an Activity and never in the Arbiter. It shows whatever the island shows.
+- **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
+
 ## Lifetime
-`Persistent` lives until withdrawn: media playing, screen cast, timer, privacy, low battery.
+`Persistent` lives until withdrawn: media playing, timer, low battery.
 `Transient(duration)` expires on its own: volume, brightness, workspace switch, notification toast. It implies no Scope and no Interrupt.
 
 ## Arbiter
@@ -55,7 +60,8 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite
-Small secondary indicator beside the primary island: screen cast, mic/camera, timer, VPN, low battery.
+Small secondary indicator beside the primary island: timer, VPN, low battery.
+- Capture is no Satellite: the privacy cluster shows it.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 - **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops.
 

@@ -321,8 +321,8 @@ mod tests {
         persistent(Id::new(Kind::Media, key), Priority::Media)
     }
 
-    fn cast() -> Activity {
-        persistent(Id::new(Kind::ScreenCast, "cast"), Priority::Ongoing)
+    fn countdown() -> Activity {
+        persistent(Id::new(Kind::Timer, "countdown"), Priority::Ongoing)
     }
 
     fn volume() -> Activity {
@@ -356,10 +356,13 @@ mod tests {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
 
-        arbiter.post(cast(), t0);
+        arbiter.post(countdown(), t0);
         arbiter.post(media("spotify"), t0 + ms(10));
 
-        assert_eq!(primary(&arbiter, t0 + ms(10)), Some(cast().id().clone()));
+        assert_eq!(
+            primary(&arbiter, t0 + ms(10)),
+            Some(countdown().id().clone())
+        );
     }
 
     #[test]
@@ -508,8 +511,8 @@ mod tests {
 
         // higher Priority
         let mut arbiter = fresh();
-        arbiter.post(cast(), now);
-        assert_eq!(primary(&arbiter, now), Some(cast().id().clone()));
+        arbiter.post(countdown(), now);
+        assert_eq!(primary(&arbiter, now), Some(countdown().id().clone()));
 
         // Preempt and AutoExpand, at an equal Priority
         for interrupt in [Interrupt::Preempt, Interrupt::AutoExpand(OSD)] {
@@ -542,11 +545,11 @@ mod tests {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
 
-        arbiter.post(cast(), t0);
+        arbiter.post(countdown(), t0);
         arbiter.post(media("spotify"), t0);
 
-        // the cast leaving makes spotify the primary now, so its dwell starts now
-        arbiter.withdraw(cast().id(), t0 + DWELL * 2);
+        // the countdown leaving makes spotify the primary now, so its dwell starts now
+        arbiter.withdraw(countdown().id(), t0 + DWELL * 2);
         arbiter.post(media("mpv"), t0 + DWELL * 2 + ms(100));
         assert_eq!(
             primary(&arbiter, t0 + DWELL * 2 + ms(100)),
@@ -751,13 +754,16 @@ mod tests {
         let wifi = persistent(Id::new(Kind::Network, "wlan0"), Priority::Passive);
 
         arbiter.post(battery.clone(), t0);
-        arbiter.post(cast(), t0);
+        arbiter.post(countdown(), t0);
         arbiter.post(media("spotify"), t0);
         arbiter.post(wifi, t0);
 
         // the primary is not repeated, Media and Passive never become Satellites
         assert_eq!(primary(&arbiter, t0), Some(battery.id().clone()));
-        assert_eq!(satellites(&arbiter, t0), (vec![cast().id().clone()], 0));
+        assert_eq!(
+            satellites(&arbiter, t0),
+            (vec![countdown().id().clone()], 0)
+        );
     }
 
     #[test]
@@ -842,18 +848,18 @@ mod tests {
         let t0 = Instant::now();
         let mut arbiter = Arbiter::default();
         let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
-        let privacy = persistent(Id::new(Kind::Privacy, "mic"), Priority::Critical);
+        let spare = persistent(Id::new(Kind::Battery, "BAT1"), Priority::Critical);
 
-        arbiter.post(privacy.clone(), t0);
+        arbiter.post(spare.clone(), t0);
         arbiter.post(ongoing("old"), t0);
         arbiter.post(ongoing("new"), t0 + ms(10));
         arbiter.post(battery.clone(), t0 + DWELL);
 
-        // battery is the newest Critical, past privacy's dwell, so the primary
+        // battery is the newest Critical, past BAT1's dwell, so the primary
         assert_eq!(primary(&arbiter, t0 + DWELL), Some(battery.id().clone()));
         assert_eq!(
             satellites(&arbiter, t0 + DWELL),
-            (vec![privacy.id().clone(), ongoing("new").id().clone()], 1)
+            (vec![spare.id().clone(), ongoing("new").id().clone()], 1)
         );
     }
 
@@ -864,13 +870,16 @@ mod tests {
         let battery = persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical);
 
         arbiter.post(battery.clone(), t0);
-        arbiter.post(cast(), t0);
+        arbiter.post(countdown(), t0);
         arbiter.post(ongoing("timer"), t0 + ms(10));
 
         assert!(arbiter.withdraw(battery.id(), t0));
 
         assert_eq!(primary(&arbiter, t0), Some(ongoing("timer").id().clone()));
-        assert_eq!(satellites(&arbiter, t0), (vec![cast().id().clone()], 0));
+        assert_eq!(
+            satellites(&arbiter, t0),
+            (vec![countdown().id().clone()], 0)
+        );
     }
 
     fn toast(key: &str, priority: Priority) -> Activity {
@@ -884,7 +893,7 @@ mod tests {
     // Critical, but brief and preempting
     fn call() -> Activity {
         Activity::new(
-            Id::new(Kind::Privacy, "call"),
+            Id::new(Kind::Notification, "call"),
             Priority::Critical,
             Lifetime::Transient(OSD),
             Scope::FocusedOutput,
@@ -908,7 +917,7 @@ mod tests {
         };
 
         arbiter.post(media("spotify"), t0);
-        arbiter.post(cast(), t0);
+        arbiter.post(countdown(), t0);
         arbiter.post(volume(), t0);
 
         let focused = arbiter.frame(t0, FOCUSED);

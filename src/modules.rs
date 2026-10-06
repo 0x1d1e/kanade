@@ -10,7 +10,7 @@ use std::thread;
 use amane::{App, Apps, Service};
 
 use crate::sources::{battery, media, niri, notifications, osd, privacy, system, timer};
-use crate::{clock, config, ipc, island, shadow, theme, view};
+use crate::{clock, cluster, config, ipc, island, shadow, theme, view};
 
 pub struct Module {
     pub name: &'static str,
@@ -54,7 +54,7 @@ pub const ALL: &[Module] = &[
             thread::spawn(|| {
                 niri::follow(niri::Posts {
                     workspace: on("workspace"),
-                    cast: on("privacy"),
+                    privacy: on("privacy"),
                 });
             });
 
@@ -73,7 +73,8 @@ pub const ALL: &[Module] = &[
         warns: None,
         start: |app| app,
     },
-    // the microphone and camera from PipeWire, and screen casts from the island's niri stream
+    // the privacy cluster: the microphone and camera from PipeWire, and screen casts from the
+    // island's niri stream
     Module {
         name: "privacy",
         requires: &[CORE],
@@ -81,7 +82,7 @@ pub const ALL: &[Module] = &[
         warns: Some("microphone, camera and screen cast indicators will not show"),
         start: |app| {
             spawn("privacy", privacy::follow);
-            app
+            app.window_per_monitor(cluster::window)
         },
     },
     Module {

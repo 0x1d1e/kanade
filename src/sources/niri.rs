@@ -1,6 +1,6 @@
 //! Kanade's own niri EventStream (plan 3, 5.3): Amane's niri backend is private and tracks neither
 //! the overview nor casts. Hands the core a plain focused output and whether the overview is open,
-//! `workspace` the focused workspace, and `cast` whether anything captures the screen.
+//! `workspace` the focused workspace, and `privacy` whether anything captures the screen.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -11,7 +11,8 @@ use std::time::Instant;
 use amane::Service;
 
 use super::json::Json;
-use super::{cast, workspace};
+use super::privacy::Privacy;
+use super::workspace;
 use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
 use crate::supervise;
@@ -170,11 +171,11 @@ fn stream(cast: &Json) -> Option<u64> {
     cast.get("stream_id").and_then(Json::as_u64)
 }
 
-// which Modules beside the core hear from niri; one that is off posts nothing
+// which Modules beside the core hear from niri; one that is off hears nothing
 #[derive(Debug, Clone, Copy)]
 pub struct Posts {
     pub workspace: bool,
-    pub cast: bool,
+    pub privacy: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -261,21 +262,21 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &S
 
 /*
  * the core hears of focus and the overview only when they change, of the focused workspace only
- * as a switch, so a list that only renumbers wakes nothing, and of casts only as the first starts
- * or the last stops
+ * as a switch, so a list that only renumbers wakes nothing; the privacy cluster hears of casts
+ * only as the first starts or the last stops
  */
 fn post(posts: Posts, before: &Seen, seen: &Seen) {
-    let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
-    let changes: Vec<Change> = [
-        posts.workspace.then(|| workspace::change(before, seen)),
-        posts.cast.then(|| cast::change(before, seen)),
-    ]
-    .into_iter()
-    .flatten()
-    .flatten()
-    .collect();
+    if posts.privacy && before.casting != seen.casting {
+        Privacy::write().casting = seen.casting;
+    }
 
-    if !focus && changes.is_empty() {
+    let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
+    let change = posts
+        .workspace
+        .then(|| workspace::change(before, seen))
+        .flatten();
+
+    if !focus && change.is_none() {
         return;
     }
 
@@ -286,11 +287,10 @@ fn post(posts: Posts, before: &Seen, seen: &Seen) {
         island.set_niri(seen.focused_output.clone(), seen.overview, now);
     }
 
-    for change in changes {
-        match change {
-            Change::Post(activity) => island.post(activity, now),
-            Change::Withdraw(id) => island.withdraw(&id, now),
-        }
+    match change {
+        Some(Change::Post(activity)) => island.post(activity, now),
+        Some(Change::Withdraw(id)) => island.withdraw(&id, now),
+        None => {}
     }
 }
 
