@@ -9,24 +9,15 @@
 //! nothing. A camera an app opens directly (`/dev/video*`) bypasses PipeWire and is not seen.
 
 use std::collections::{BTreeSet, HashMap};
-use std::io::{self, BufRead, BufReader};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::io::{self, BufRead};
+use std::time::Instant;
 
 use amane::Service;
 
 use super::json::Json;
+use super::wake;
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority, Sensors};
 use crate::island::service::IslandService;
-
-// how long until pw-dump runs again after it ended, doubling up to `LAST_RETRY` while it keeps
-// failing
-const FIRST_RETRY: Duration = Duration::from_secs(1);
-const LAST_RETRY: Duration = Duration::from_secs(60);
-
-// how long pw-dump must have run for its end to count as PipeWire going away rather than failing
-const HEALTHY: Duration = Duration::from_secs(60);
 
 const NODE: &str = "PipeWire:Interface:Node";
 const LINK: &str = "PipeWire:Interface:Link";
@@ -156,55 +147,19 @@ fn id() -> Id {
 
 // runs on its own thread for good; without pw-dump there is no privacy indicator
 pub fn follow() {
-    let mut wait = FIRST_RETRY;
-
-    loop {
-        let child = Command::new("pw-dump")
-            .args(["--monitor", "--no-colors"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
-
-        let mut child = match child {
-            Ok(child) => child,
-            Err(error) => {
-                eprintln!(
-                    "kanade: cannot run pw-dump ({error}), no microphone or camera indicator"
-                );
-                return;
-            }
-        };
-
-        let started = Instant::now();
+    let error = wake::run("pw-dump", &["--monitor", "--no-colors"], |output| {
         let mut shown = None;
-        let output = child.stdout.take().map(BufReader::new);
-        let lost = match output {
-            Some(output) => watch(output, &mut shown, &mut post),
-            None => io::Error::other("no output"),
-        };
-
-        drop(child.kill());
-        drop(child.wait());
+        let lost = watch(output, &mut shown, &mut post);
 
         // nobody can say any more whether something captures
         if shown.is_some() {
             post(None);
         }
 
-        wait = retry(wait, started.elapsed());
-        eprintln!("kanade: lost PipeWire ({lost}), following it again in {wait:?}");
+        lost
+    });
 
-        thread::sleep(wait);
-        wait = (wait * 2).min(LAST_RETRY);
-    }
-}
-
-// how long to wait before running pw-dump again: soon after a run long enough to have followed
-// PipeWire, else as long as the backoff has grown, so one that dies right after its first print
-// still backs off
-fn retry(wait: Duration, ran: Duration) -> Duration {
-    if ran >= HEALTHY { FIRST_RETRY } else { wait }
+    eprintln!("kanade: cannot run pw-dump ({error}), no microphone or camera indicator");
 }
 
 /*
@@ -529,14 +484,6 @@ mod tests {
         ]);
 
         assert_eq!(posts, vec![sensors(true, false, &["Firefox"])]);
-    }
-
-    #[test]
-    fn retries_back_off_until_a_run_is_healthy() {
-        let short = Duration::from_millis(50);
-
-        assert_eq!(retry(Duration::from_secs(8), short), Duration::from_secs(8));
-        assert_eq!(retry(Duration::from_secs(8), HEALTHY), FIRST_RETRY);
     }
 
     #[test]

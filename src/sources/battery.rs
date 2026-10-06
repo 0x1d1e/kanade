@@ -2,14 +2,16 @@
 //! `LOW`, shown amber with its number. Below `CRITICAL` it turns Critical, red, and preempts an open
 //! Surface. Charging withdraws it.
 //!
-//! Amane's Battery reads the kernel's files every 5 s, and has no subscription, so this polls its
-//! read. A read that changes nothing the island shows posts nothing.
+//! Amane's Battery reads the kernel's files every 5 s, and has no subscription, so this reads it
+//! again as often, and every second for a while after the kernel announces a charger going in or
+//! out (`wake`), so that shows within a second of Amane's own read. A read that changes nothing the
+//! island shows posts nothing.
 
-use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::{Battery, Service};
 
+use super::wake::{Announcer, Pace, Wakes};
 use crate::island::activity::{Activity, Charge, Detail, Id, Kind, Priority};
 use crate::island::service::IslandService;
 
@@ -19,8 +21,23 @@ const LOW: u8 = 20;
 // at or below, it preempts (plan 5.1 rule 4: red)
 const CRITICAL: u8 = 10;
 
-// a charger that goes in shows within this of Amane's own read
-const POLL: Duration = Duration::from_secs(1);
+const PACE: Pace = Pace {
+    // a charger that goes in shows within this of Amane's own read
+    poll: Duration::from_secs(1),
+
+    // longer than Amane takes to read the battery again, every 5 s
+    settle: Duration::from_secs(6),
+
+    // a draining battery announces nothing on some laptops, so its percent is read this often
+    idle: Some(Duration::from_secs(5)),
+};
+
+// the kernel announces each change to a power supply, like a charger going in
+const POWER: Announcer = Announcer {
+    program: "udevadm",
+    args: &["monitor", "--kernel", "--subsystem-match=power_supply"],
+    announces: |line| line.starts_with("KERNEL["),
+};
 
 // the battery as Amane last read it
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,10 +95,13 @@ fn id() -> Id {
 
 // runs on its own thread for good
 pub fn follow() {
+    let mut wakes = Wakes::new(PACE, vec![POWER]);
     let mut shown = None;
+    let mut last = None;
 
     loop {
-        let next = charge(shown, Reading::read());
+        let reading = Reading::read();
+        let next = charge(shown, reading);
 
         if next != shown {
             let now = Instant::now();
@@ -93,8 +113,10 @@ pub fn follow() {
             }
         }
 
+        let busy = last != Some(reading);
         shown = next;
-        thread::sleep(POLL);
+        last = Some(reading);
+        wakes.wait(busy);
     }
 }
 

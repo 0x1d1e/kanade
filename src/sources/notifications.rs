@@ -6,23 +6,43 @@
 //! DND is the Arbiter's (`island dnd toggle`): it silences toasts, never the history. Toasts never
 //! take the keyboard: the island takes it only for a pointer or a Surface (`IslandService::keyboard`).
 //!
-//! Amane's Notifications has no subscription, so this polls its read; a read that finds the same
-//! notifications posts nothing. Amane is the daemon only if no other one, like mako, got the bus name
+//! Amane's Notifications has no subscription, so this reads it again when the bus carries a
+//! notification arriving or closing (`wake`), and polls while that settles or the bus cannot be
+//! watched; a read that finds the same notifications posts nothing. Amane is the daemon only if no other one, like mako, got the bus name
 //! first. Then nothing arrives, and `Daemon` says who has it for the Notifications Surface.
 
 use std::fs;
 use std::process;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use amane::{Apps, Argument, Bus, Notification, Notifications, Service, Urgency};
 
+use super::wake::{Announcer, Pace, Wakes};
 use crate::config;
 use crate::island::activity::{Action, Activity, Detail, Id, Kind, Priority, Toast};
 use crate::island::service::IslandService;
 
-// a toast shows within this of arriving
-const POLL: Duration = Duration::from_millis(100);
+const PACE: Pace = Pace {
+    // a toast shows within this of arriving
+    poll: Duration::from_millis(100),
+
+    // Amane takes in a notification on its own thread, maybe after the bus carried it
+    settle: Duration::from_secs(1),
+
+    idle: None,
+};
+
+// the bus carries each notification arriving, closed by its sender, or closed by Amane, which
+// is every change to Amane's list
+const BUS: Announcer = Announcer {
+    program: "dbus-monitor",
+    args: &[
+        "--session",
+        "--profile",
+        "interface='org.freedesktop.Notifications'",
+    ],
+    announces,
+};
 
 // the bus name a notification daemon owns
 const NAME: &str = "org.freedesktop.Notifications";
@@ -206,8 +226,24 @@ fn name(pid: u32) -> String {
         .map_or_else(|_| format!("process {pid}"), |name| name.trim().to_owned())
 }
 
+/*
+ * whether a line of `dbus-monitor --profile` announces a change to the notifications: tab separated
+ * type, time, serial, sender, destination, path, interface and member, after a header and the
+ * monitor's own NameAcquired and NameLost
+ */
+fn announces(line: &str) -> bool {
+    let columns: Vec<&str> = line.split('\t').collect();
+
+    matches!(
+        columns.as_slice(),
+        ["mc" | "sig", _, _, _, _, _, NAME, member]
+            if ["Notify", "CloseNotification", "NotificationClosed"].contains(member)
+    )
+}
+
 // runs on its own thread for good
 pub fn follow() {
+    let mut wakes = Wakes::new(PACE, vec![BUS]);
     let mut before: Vec<Version> = Vec::new();
     let mut daemon = Daemon::Starting;
 
@@ -223,6 +259,7 @@ pub fn follow() {
             .collect();
 
         let (posted, gone) = changes(&before, &now);
+        let changed = !posted.is_empty() || !gone.is_empty();
 
         // read here, so they are of the same list
         let posted: Vec<Activity> = notifications
@@ -289,8 +326,10 @@ pub fn follow() {
             }
         }
 
+        // until Amane has the bus name, nothing it would announce can arrive
+        let busy = changed || daemon == Daemon::Starting;
         before = now;
-        thread::sleep(POLL);
+        wakes.wait(busy);
     }
 }
 
@@ -298,6 +337,27 @@ pub fn follow() {
 mod tests {
     use super::*;
     use crate::island::activity::{Interrupt, Lifetime};
+
+    // as `dbus-monitor --profile` prints them
+    #[test]
+    fn only_notifications_arriving_or_closing_announce() {
+        let line = |kind: &str, interface: &str, member: &str| {
+            format!(
+                "{kind}\t1791255388.49\t9\t:1.165\t:1.162\t/org/freedesktop/Notifications\t{interface}\t{member}"
+            )
+        };
+
+        assert!(announces(&line("mc", NAME, "Notify")));
+        assert!(announces(&line("mc", NAME, "CloseNotification")));
+        assert!(announces(&line("sig", NAME, "NotificationClosed")));
+
+        assert!(!announces(&line("mc", NAME, "GetServerInformation")));
+        assert!(!announces(&line("mr", NAME, "Notify")));
+        assert!(!announces(&line("sig", DBUS, "NameAcquired")));
+        assert!(!announces(
+            "#type\ttimestamp\tserial\tsender\tdestination\tpath\tinterface\tmember"
+        ));
+    }
     use crate::island::presentation::{Presentation, Surface};
 
     fn at(seconds: u64) -> SystemTime {
