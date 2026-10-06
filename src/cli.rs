@@ -21,6 +21,10 @@ use crate::sources::timer;
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
 
+// the words a call and its reply are made of; another number means a client and shell that may
+// misread each other
+pub const PROTOCOL: u32 = 1;
+
 // the first word after `kanade`, owned by a Module
 pub struct Verb {
     pub name: &'static str,
@@ -377,7 +381,7 @@ help",
         for reply in [
             Reply::Done(String::new()),
             Reply::Done(String::from(
-                "config generation 1\nconfig modules pending restart",
+                "config schema_version 1, generation 2\nconfig modules.media is pending restart",
             )),
             Reply::Refused(String::from("module media is off")),
         ] {

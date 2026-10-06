@@ -39,7 +39,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, PoisonError, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -208,15 +208,28 @@ static CURRENT: LazyLock<RwLock<Arc<Config>>> = LazyLock::new(|| {
     } else {
         let (config, problems) = read();
 
-        for problem in problems {
+        for problem in &problems {
             eprintln!("kanade: {problem}");
         }
 
+        *SKIPPED.lock().unwrap_or_else(PoisonError::into_inner) = problems;
         config
     };
 
     RwLock::new(Arc::new(config))
 });
+
+// what the config read at start skipped; a config a reload applies skipped nothing
+static SKIPPED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn skipped() -> Vec<String> {
+    LazyLock::force(&CURRENT);
+
+    SKIPPED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
 
 // the config in effect; a reload swaps it whole, so one read never mixes two
 pub fn get() -> Arc<Config> {
@@ -376,8 +389,11 @@ impl Node {
 // takes a file from the layout at its index plus one to the next, before it applies
 type Migration = fn(&mut Table);
 
-// the current layout is the last one migrated to: version `MIGRATIONS.len() + 1`
+// the current layout is the last one migrated to
 const MIGRATIONS: &[Migration] = &[];
+
+// the `schema_version` this build writes and reads up to
+pub const SCHEMA_VERSION: usize = MIGRATIONS.len() + 1;
 
 /*
  * applies one file over the config and returns what in it did not apply, as `(line, what)` in line

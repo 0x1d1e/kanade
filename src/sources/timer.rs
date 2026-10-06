@@ -11,7 +11,6 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Service};
@@ -120,7 +119,7 @@ pub fn spawn() {
     let (send, events) = mpsc::channel();
     let _ = EVENTS.set(send);
 
-    thread::spawn(move || follow(&events));
+    supervise::spawn("timer", move || follow(&events));
 }
 
 /*

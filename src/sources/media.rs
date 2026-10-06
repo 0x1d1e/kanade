@@ -10,10 +10,9 @@
 //! `Control`s, so the bus is only ever called from this thread.
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use amane::{Argument, Bus, Color, Palette, Service, Signal, Value};
@@ -63,8 +62,24 @@ const COLORS: usize = 8;
 // set by the Media Surface when it draws, cleared here once it closed
 static WATCHED: AtomicBool = AtomicBool::new(false);
 
-// where the Surface's watch and controls reach the follower, once it runs
-static EVENTS: OnceLock<Sender<Event>> = OnceLock::new();
+/*
+ * where the Surface's watch and controls, and the bus watches, reach the follower, once it runs.
+ * Made once, so a follower run again after its setup panicked goes on with them: the Surface still
+ * reaches it, and no bus watch is doubled
+ */
+struct Feed {
+    send: Sender<Event>,
+    events: Mutex<Receiver<Event>>,
+}
+
+static FEED: OnceLock<Feed> = OnceLock::new();
+
+impl Feed {
+    // the follower's end; one follower runs at a time, and one that panicked left it whole
+    fn events(&self) -> MutexGuard<'_, Receiver<Event>> {
+        self.events.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Status {
@@ -574,8 +589,8 @@ pub fn control(control: Control) {
 }
 
 fn send(event: Event) {
-    if let Some(events) = EVENTS.get() {
-        let _ = events.send(event);
+    if let Some(feed) = FEED.get() {
+        drop(feed.send.send(event));
     }
 }
 
@@ -600,25 +615,7 @@ fn watching() -> bool {
  */
 pub fn follow() {
     let bus = Bus::session();
-
-    // watched before the first look, so a player opening in between is not missed
-    let (send, events) = mpsc::channel();
-
-    forward(
-        bus.signals(DBUS, "NameOwnerChanged"),
-        send.clone(),
-        |signal| Event::owner(signal.arguments()),
-    );
-    forward(
-        bus.signals(PROPERTIES, "PropertiesChanged"),
-        send.clone(),
-        |signal| Event::changed(signal.sender(), signal.path(), signal.arguments()),
-    );
-    forward(bus.signals(PLAYER, "Seeked"), send.clone(), |signal| {
-        Event::seeked(signal.sender(), signal.path())
-    });
-
-    let _ = EVENTS.set(send);
+    let events = feed(bus).events();
 
     // kept across a restart, so what Media shows is replaced or withdrawn, never left behind
     let mut follower = Follower::default();
@@ -704,23 +701,50 @@ fn follow_players(
     }
 }
 
+// watched before the first look, so a player opening in between is not missed
+fn feed(bus: Bus) -> &'static Feed {
+    feed_with(|send| {
+        forward(
+            bus.signals(DBUS, "NameOwnerChanged"),
+            send.clone(),
+            |signal| Event::owner(signal.arguments()),
+        );
+        forward(
+            bus.signals(PROPERTIES, "PropertiesChanged"),
+            send.clone(),
+            |signal| Event::changed(signal.sender(), signal.path(), signal.arguments()),
+        );
+        forward(bus.signals(PLAYER, "Seeked"), send.clone(), |signal| {
+            Event::seeked(signal.sender(), signal.path())
+        });
+    })
+}
+
+fn feed_with(watch: impl FnOnce(&Sender<Event>)) -> &'static Feed {
+    FEED.get_or_init(|| {
+        let (send, events) = mpsc::channel();
+        watch(&send);
+
+        Feed {
+            send,
+            events: Mutex::new(events),
+        }
+    })
+}
+
 // each signal stream blocks, so each gets a thread that hands what counts to the follower
 fn forward(
-    signals: impl Iterator<Item = Signal> + Send + 'static,
+    mut signals: impl Iterator<Item = Signal> + Send + 'static,
     events: Sender<Event>,
     event: impl Fn(&Signal) -> Option<Event> + Send + 'static,
 ) {
-    thread::spawn(move || {
-        let mut signals = signals;
-
-        // a restart goes on with the same subscription, so no signal is lost to it
-        supervise::run("media bus watch", || {
-            for event in signals.by_ref().filter_map(|signal| event(&signal)) {
-                if events.send(event).is_err() {
-                    return;
-                }
+    // a restart goes on with the same subscription, so no signal is lost to it
+    supervise::spawn("media bus watch", move || {
+        for event in signals.by_ref().filter_map(|signal| event(&signal)) {
+            if events.send(event).is_err() {
+                return;
             }
-        });
+        }
     });
 }
 
@@ -840,6 +864,26 @@ mod tests {
     use std::panic::{self, AssertUnwindSafe};
 
     use super::*;
+
+    // a follower whose setup panicked is run again, and must still hear the Surface
+    #[test]
+    fn a_follower_run_again_after_its_setup_panicked_still_hears_the_surface() {
+        let setup = || feed_with(|_| {}).events();
+
+        let panicked = panic::catch_unwind(|| {
+            let _events = setup();
+            panic!("setup failed");
+        });
+        assert!(panicked.is_err());
+
+        let events = setup();
+        control(Control::Play(String::from("player")));
+
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::Control(Control::Play(name))) if name == "player"
+        ));
+    }
 
     fn seen(key: &str, title: &str, playing: bool) -> Seen {
         Seen {

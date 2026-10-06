@@ -13,7 +13,7 @@
 
 use std::sync::{Once, mpsc};
 use std::time::{Duration, Instant};
-use std::{iter, mem, thread};
+use std::{iter, mem};
 
 use amane::{Bus, Service, Value};
 
@@ -159,7 +159,7 @@ pub fn spawn() {
             power: modules::on("power"),
         };
 
-        thread::spawn(move || follow(daemons));
+        supervise::spawn("system", move || follow(daemons));
     });
 }
 
@@ -179,27 +179,22 @@ fn follow(daemons: Daemons) {
         let (interface, name) = watch.signal();
 
         // subscribed before the first read, so no change falls between them
-        let signals = Bus::system().signals(interface, name);
+        let mut signals = Bus::system().signals(interface, name);
         let sender = sender.clone();
 
-        thread::spawn(move || {
-            let mut signals = signals;
+        // a restart goes on with the same subscription, so no signal is lost to it
+        supervise::spawn("system bus watch", move || {
+            for signal in signals.by_ref() {
+                let Some(daemon) = route(watch, signal.sender(), signal.path(), signal.arguments())
+                    .filter(|&daemon| daemons.follows(daemon))
+                else {
+                    continue;
+                };
 
-            // a restart goes on with the same subscription, so no signal is lost to it
-            supervise::run("system bus watch", || {
-                for signal in signals.by_ref() {
-                    let Some(daemon) =
-                        route(watch, signal.sender(), signal.path(), signal.arguments())
-                            .filter(|&daemon| daemons.follows(daemon))
-                    else {
-                        continue;
-                    };
-
-                    if sender.send(daemon).is_err() {
-                        return;
-                    }
+                if sender.send(daemon).is_err() {
+                    return;
                 }
-            });
+            }
         });
     }
 

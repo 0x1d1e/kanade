@@ -21,7 +21,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
-use crate::{modules, theme};
+use crate::{modules, supervise, theme};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -57,19 +57,16 @@ pub enum Outcome {
 
 // the watch's thread; one that cannot watch says so, and `config reload` still reloads
 pub fn spawn() {
-    let spawned = thread::Builder::new()
-        .name(String::from("config"))
-        .spawn(|| {
-            let places = config::places();
+    supervise::spawn("config", || {
+        let places = config::places();
 
-            if let Err(error) = watch(&places, || drop(reload())) {
-                eprintln!("kanade: config changes are not followed, reload by hand: {error}");
-            }
-        });
+        if let Err(error) = watch(&places, || drop(reload())) {
+            let why = format!("config changes are not followed, reload by hand: {error}");
 
-    if let Err(error) = spawned {
-        eprintln!("kanade: config changes are not followed, reload by hand: {error}");
-    }
+            eprintln!("kanade: {why}");
+            supervise::stopped("config", why);
+        }
+    });
 }
 
 // reads every layer again and applies them if they hold no problem; says on stderr what came of it
@@ -130,10 +127,26 @@ pub fn validate() -> Outcome {
     judge(&config::get(), &read, problems)
 }
 
-// `generation N`, then the last reload error and the keys pending restart, a line each
-pub fn status() -> String {
+// the layout and generation, what the config in effect skipped at start, the last reload error
+// and the keys pending restart
+pub fn status() -> Vec<String> {
     let state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut lines = vec![format!("config generation {}", state.generation)];
+
+    lines(&state, &config::skipped())
+}
+
+fn lines(state: &State, skipped: &[String]) -> Vec<String> {
+    let mut lines = vec![format!(
+        "config schema_version {}, generation {}",
+        config::SCHEMA_VERSION,
+        state.generation
+    )];
+
+    // every reload that applied read a config with nothing to skip
+    if state.generation == 1 && !skipped.is_empty() {
+        lines.push(String::from("config skipped at start:"));
+        lines.extend(skipped.iter().map(|problem| format!("  {problem}")));
+    }
 
     if let Some(error) = &state.error {
         lines.push(String::from("config last reload error:"));
@@ -144,9 +157,9 @@ pub fn status() -> String {
         state
             .pending
             .iter()
-            .map(|key| format!("config {key} pending restart")),
+            .map(|key| format!("config {key} is pending restart")),
     );
-    lines.join("\n")
+    lines
 }
 
 // any problem refuses the config; else the keys that differ from the running one but need a restart
@@ -377,6 +390,46 @@ mod tests {
         assert_eq!(
             judge(&running, &running.clone(), vec![]),
             Outcome::Valid(vec![])
+        );
+    }
+
+    #[test]
+    fn status_says_what_the_config_skipped_failed_and_waits_for() {
+        let skipped = [String::from("a.toml:1: clok: unknown key, skipped")];
+        let mut state = State {
+            generation: 1,
+            error: None,
+            pending: Vec::new(),
+        };
+
+        assert_eq!(
+            lines(&state, &[]),
+            [format!(
+                "config schema_version {}, generation 1",
+                config::SCHEMA_VERSION
+            )]
+        );
+        assert_eq!(
+            lines(&state, &skipped)[1..],
+            [
+                "config skipped at start:",
+                "  a.toml:1: clok: unknown key, skipped",
+            ]
+        );
+
+        // once a reload applied, the config in effect skipped nothing
+        state.generation = 2;
+        state.error = Some(String::from("a.toml:1: x\nb.toml:2: y"));
+        state.pending = vec![String::from("modules.media")];
+
+        assert_eq!(
+            lines(&state, &skipped)[1..],
+            [
+                "config last reload error:",
+                "  a.toml:1: x",
+                "  b.toml:2: y",
+                "config modules.media is pending restart",
+            ]
         );
     }
 

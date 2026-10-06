@@ -15,6 +15,7 @@ use amane::Service;
 
 use super::json::Json;
 use super::wake;
+use crate::supervise;
 
 // what captures now, as the privacy cluster and the Controls Surface show it
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -172,7 +173,9 @@ pub fn follow() {
     // kept across a run that panicked, so the next one clears what no longer captures
     let mut shown = None;
 
-    let error = wake::run("pw-dump", &["--monitor", "--no-colors"], |output| {
+    let stop = wake::Stop::default();
+
+    let error = wake::run("pw-dump", &["--monitor", "--no-colors"], &stop, |output| {
         let lost = watch(output, &mut shown, &mut show);
 
         // nobody can say any more whether something captures
@@ -183,7 +186,13 @@ pub fn follow() {
         lost
     });
 
-    eprintln!("kanade: cannot run pw-dump ({error}), no microphone or camera indicator");
+    // nothing stops it
+    let Some(error) = error else { return };
+
+    let why = format!("cannot run pw-dump ({error}), no microphone or camera indicator");
+
+    eprintln!("kanade: {why}");
+    supervise::stopped("privacy", why);
 }
 
 /*

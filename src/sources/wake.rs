@@ -9,6 +9,7 @@ use std::io::{self, BufRead, BufReader};
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,39 +28,61 @@ const HEALTHY: Duration = Duration::from_secs(60);
 const NOT_FOUND: i32 = 127;
 
 /*
- * runs `program` for good, `follow` reading its output until it ends and saying why; ran again
- * after a backoff, or after `supervise::RESTART` at least when `follow` panicked. Returns only when
- * `program` cannot be started at all, like when it is missing. Call it from a thread that lives as
- * long as Kanade: the program dies with that thread
+ * runs `program` until `stop`, `follow` reading its output until it ends and saying why; ran again
+ * after a backoff, or after `supervise::RESTART` at least when `follow` panicked. Returns why
+ * `program` cannot be started at all, like when it is missing, or none once stopped. Call it from a
+ * thread that lives as long as Kanade: the program dies with that thread
  */
 pub fn run(
     program: &str,
     args: &[&str],
+    stop: &Stop,
     mut follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
-) -> io::Error {
+) -> Option<io::Error> {
     let command = [program, args.join(" ").as_str()].join(" ");
     let mut wait = FIRST_RETRY;
 
     loop {
-        let mut child = match spawn(program, args) {
-            Ok(child) => child,
-            Err(error) => return error,
+        // started under the lock, so a stop either comes first or finds the program to kill
+        let output = {
+            let mut running = stop.lock();
+
+            if running.stopped {
+                return None;
+            }
+
+            let mut child = match spawn(program, args) {
+                Ok(child) => child,
+                Err(error) => return Some(error),
+            };
+
+            let output = child.stdout.take();
+            running.child = Some(child);
+            output
         };
 
         let started = Instant::now();
-        let followed = match child.stdout.take() {
+        let followed = match output {
             Some(output) => {
                 panic::catch_unwind(AssertUnwindSafe(|| follow(BufReader::new(output))))
             }
             None => Ok(io::Error::other("no output")),
         };
 
-        drop(child.kill());
+        let child = stop.lock().child.take();
 
-        if let Ok(status) = child.wait()
-            && status.code() == Some(NOT_FOUND)
-        {
-            return io::ErrorKind::NotFound.into();
+        if let Some(mut child) = child {
+            drop(child.kill());
+
+            if let Ok(status) = child.wait()
+                && status.code() == Some(NOT_FOUND)
+            {
+                return Some(io::ErrorKind::NotFound.into());
+            }
+        }
+
+        if stop.lock().stopped {
+            return None;
         }
 
         wait = retry(wait, started.elapsed());
@@ -67,12 +90,18 @@ pub fn run(
         // a panic, already printed by the panic hook, waits as long as any source's restart
         let (lost, pause) = match followed {
             Ok(lost) => (lost, wait),
-            Err(_) => (io::Error::other("panicked"), wait.max(supervise::RESTART)),
+            Err(payload) => {
+                supervise::panicked(thread::current().name().unwrap_or(program), &*payload);
+                (io::Error::other("panicked"), wait.max(supervise::RESTART))
+            }
         };
 
         eprintln!("kanade: lost `{command}` ({lost}), running it again in {pause:?}");
 
-        thread::sleep(pause);
+        if stop.pause(pause) {
+            return None;
+        }
+
         wait = (wait * 2).min(LAST_RETRY);
     }
 }
@@ -104,6 +133,45 @@ fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
     }
 }
 
+// ends what `run` runs from another thread: kills the program, or ends the wait to run it again,
+// and it does not run again
+#[derive(Clone, Default)]
+pub struct Stop(Arc<(Mutex<Running>, Condvar)>);
+
+#[derive(Default)]
+struct Running {
+    stopped: bool,
+    child: Option<Child>,
+}
+
+impl Stop {
+    pub fn stop(&self) {
+        let mut running = self.lock();
+        running.stopped = true;
+
+        if let Some(child) = &mut running.child {
+            drop(child.kill());
+        }
+
+        self.0.1.notify_all();
+    }
+
+    // waits `pause` unless stopped first; says whether it was
+    fn pause(&self, pause: Duration) -> bool {
+        let (running, _) = self
+            .0
+            .1
+            .wait_timeout_while(self.lock(), pause, |running| !running.stopped)
+            .unwrap_or_else(PoisonError::into_inner);
+
+        running.stopped
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Running> {
+        self.0.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 // how long to wait before running a command again: soon after a run long enough to have followed
 // what it follows, else as long as the backoff has grown, so one that dies right after its first
 // print still backs off
@@ -112,6 +180,7 @@ fn retry(wait: Duration, ran: Duration) -> Duration {
 }
 
 // a command whose output announces changes, one line each
+#[derive(Clone, Copy)]
 pub struct Announcer {
     pub program: &'static str,
     pub args: &'static [&'static str],
@@ -153,10 +222,13 @@ enum Message {
     Down,
 }
 
-// what wakes one source: its announcers, each on its own thread
+// what wakes one source: its announcers, each on its own thread, stopped once it is dropped
 pub struct Wakes {
     pace: Pace,
     messages: Receiver<Message>,
+
+    // so a source that restarts does not leave its old announcers running for nobody
+    stops: Vec<Stop>,
 
     // announcers not running; down until they first start
     down: usize,
@@ -169,15 +241,22 @@ impl Wakes {
     pub fn new(pace: Pace, announcers: Vec<Announcer>) -> Wakes {
         let (send, messages) = mpsc::channel();
         let down = announcers.len();
+        let mut stops = Vec::new();
 
         for announcer in announcers {
             let send = send.clone();
-            thread::spawn(move || announce(announcer, send));
+            let stop = Stop::default();
+
+            stops.push(stop.clone());
+            supervise::spawn(announcer.program, move || {
+                announce(announcer, &stop, send.clone());
+            });
         }
 
         Wakes {
             pace,
             messages,
+            stops,
             down,
             settling: Instant::now() + pace.settle,
         }
@@ -222,21 +301,30 @@ impl Wakes {
     }
 }
 
-// runs on its own thread for good; an announcer that cannot start stays down, so its source polls
-fn announce(announcer: Announcer, send: Sender<Message>) {
+impl Drop for Wakes {
+    fn drop(&mut self) {
+        self.stops.iter().for_each(Stop::stop);
+    }
+}
+
+// runs on its own thread until stopped; an announcer that cannot start stays down, so its source
+// polls
+fn announce(announcer: Announcer, stop: &Stop, send: Sender<Message>) {
     let Announcer {
         program,
         args,
         announces,
     } = announcer;
 
-    let error = run(program, args, |output| {
+    let error = run(program, args, stop, |output| {
         let _up = Up::new(&send);
 
         follow(output, announces, &send)
     });
 
-    eprintln!("kanade: cannot run {program} ({error}), polling instead");
+    if let Some(error) = error {
+        eprintln!("kanade: cannot run {program} ({error}), polling instead");
+    }
 }
 
 // an announcer's output being read: says Up, and Down once it ends, even by a panic, so the count
@@ -290,12 +378,75 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_not_retried() {
-        let error = run("kanade-no-such-program", &[], |output| {
+        let error = run("kanade-no-such-program", &[], &Stop::default(), |output| {
             output.lines().count();
             io::ErrorKind::UnexpectedEof.into()
         });
 
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            error.map(|error| error.kind()),
+            Some(io::ErrorKind::NotFound)
+        );
+    }
+
+    // a source restarting drops its Wakes, and the announcers it started must not outlive it
+    #[test]
+    fn a_stopped_program_is_killed_and_not_run_again() {
+        let stop = Stop::default();
+        let (started, runs) = mpsc::channel();
+
+        let running = thread::spawn({
+            let stop = stop.clone();
+
+            move || {
+                run("sleep", &["60"], &stop, |output| {
+                    started.send(()).unwrap();
+                    output.lines().count();
+                    io::ErrorKind::UnexpectedEof.into()
+                })
+            }
+        });
+
+        runs.recv().unwrap();
+        let stopping = Instant::now();
+        stop.stop();
+
+        assert!(running.join().unwrap().is_none());
+        assert!(stopping.elapsed() < FIRST_RETRY);
+        assert!(runs.try_recv().is_err());
+
+        // stopped before it ran, it never does
+        assert!(run("sleep", &["60"], &stop, |_| unreachable!()).is_none());
+    }
+
+    // a program that ended waits out its backoff, and a stop must end that wait too
+    #[test]
+    fn a_stop_between_runs_ends_the_backoff() {
+        let stop = Stop::default();
+        let (ended, runs) = mpsc::channel();
+
+        let running = thread::spawn({
+            let stop = stop.clone();
+
+            move || {
+                run("true", &[], &stop, |output| {
+                    output.lines().count();
+                    ended.send(()).unwrap();
+                    io::ErrorKind::UnexpectedEof.into()
+                })
+            }
+        });
+
+        // well into the first backoff, of FIRST_RETRY
+        runs.recv().unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let stopping = Instant::now();
+        stop.stop();
+
+        assert!(running.join().unwrap().is_none());
+        assert!(stopping.elapsed() < Duration::from_millis(300));
+        assert!(runs.try_recv().is_err());
     }
 
     #[test]
@@ -337,6 +488,7 @@ mod tests {
         let mut wakes = Wakes {
             pace: PACE,
             messages,
+            stops: Vec::new(),
             down: 0,
             settling: Instant::now(),
         };
@@ -353,6 +505,7 @@ mod tests {
         let mut wakes = Wakes {
             pace: PACE,
             messages,
+            stops: Vec::new(),
             down: 1,
             settling: Instant::now(),
         };
