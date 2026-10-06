@@ -7,7 +7,8 @@
 //!
 //! A new primary dwells: for `DWELL` a newer Activity of its Priority waits behind it. Higher
 //! Priority, Preempt, AutoExpand, withdraw and expiry replace it at once. Which primary shows since
-//! when is the one state the Arbiter keeps besides the posts, settled at the `now` of each change.
+//! when is the one state the Arbiter keeps besides the posts, settled at the `now` of each change,
+//! before and after it.
 //!
 //! Each island gets its own Frame. Scope and an open Surface (rule 4) only hide Activities from
 //! it, never withdraw one; dropping the transients an open Surface already shows is `absorb`. DND (rule 5) hides the toasts already up and drops those posted during it.
@@ -85,6 +86,8 @@ impl Arbiter {
      * it replaced
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
+        self.settle(now);
+
         if self.silenced(&activity) {
             self.activities.remove(activity.id());
         } else {
@@ -120,6 +123,8 @@ impl Arbiter {
 
     // whether it was registered
     pub fn withdraw(&mut self, id: &Id, now: Instant) -> bool {
+        self.settle(now);
+
         let withdrawn = self.activities.remove(id).is_some();
 
         self.settle(now);
@@ -139,13 +144,14 @@ impl Arbiter {
 
     // drops what expired by now and ends the dwells over; whether anything did
     pub fn expire(&mut self, now: Instant) -> bool {
+        let ended = self.settle(now);
         let before = self.activities.len();
 
         self.activities.retain(|_, entry| entry.live(now));
 
         let expired = self.activities.len() != before;
 
-        self.settle(now) || expired
+        self.settle(now) || ended || expired
     }
 
     /*
@@ -163,6 +169,7 @@ impl Arbiter {
 
     // DND silences Notification toasts, not the Notifications, and never a Critical one (rule 5)
     pub fn set_dnd(&mut self, dnd: bool, now: Instant) {
+        self.settle(now);
         self.dnd = dnd;
         self.settle(now);
     }
@@ -249,7 +256,11 @@ impl Arbiter {
         Some(dwells.unwrap_or(0))
     }
 
-    // records the primary each island shows at `now`; whether one changed
+    /*
+     * records the primary each island shows at `now`; whether one changed. Every change settles
+     * before and after, so a dwell that ended without a wake hands over to the one it kept back,
+     * not to a later post, and that one dwells from the handover
+     */
     fn settle(&mut self, now: Instant) -> bool {
         let mut changed = false;
 
@@ -258,9 +269,13 @@ impl Arbiter {
             let before = self.shown[usize::from(focused)].as_ref();
             let shown = self.primary(&ranked, focused, now).map(|index| {
                 let id = ranked[index].activity.id().clone();
-                let since = before
-                    .filter(|before| before.id == id)
-                    .map_or(now, |before| before.since);
+                let since = match before {
+                    Some(before) if before.id == id => before.since,
+                    Some(Shown {
+                        until: Some(until), ..
+                    }) if *until <= now => *until,
+                    _ => now,
+                };
 
                 Shown {
                     id,
@@ -399,6 +414,31 @@ mod tests {
         );
         assert_eq!(arbiter.deadline(), None);
         assert!(!arbiter.expire(t0 + DWELL * 2));
+    }
+
+    // a post racing listen()'s wake at the dwell's end must not skip the one kept back
+    #[test]
+    fn a_late_wake_still_hands_over_to_the_one_kept_back() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(media("mpv"), t0 + ms(500));
+
+        // no expire at DWELL
+        arbiter.post(media("vlc"), t0 + DWELL + ms(100));
+        assert_eq!(
+            primary(&arbiter, t0 + DWELL + ms(100)),
+            Some(media("mpv").id().clone())
+        );
+
+        // mpv became the primary at spotify's dwell end, so dwells from then
+        assert_eq!(arbiter.deadline(), Some(t0 + DWELL * 2));
+        assert!(arbiter.expire(t0 + DWELL * 2));
+        assert_eq!(
+            primary(&arbiter, t0 + DWELL * 2),
+            Some(media("vlc").id().clone())
+        );
     }
 
     #[test]
