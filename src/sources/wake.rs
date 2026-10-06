@@ -67,7 +67,10 @@ pub fn run(
         // a panic, already printed by the panic hook, waits as long as any source's restart
         let (lost, pause) = match followed {
             Ok(lost) => (lost, wait),
-            Err(_) => (io::Error::other("panicked"), wait.max(supervise::RESTART)),
+            Err(payload) => {
+                supervise::panicked(thread::current().name().unwrap_or(program), &*payload);
+                (io::Error::other("panicked"), wait.max(supervise::RESTART))
+            }
         };
 
         eprintln!("kanade: lost `{command}` ({lost}), running it again in {pause:?}");

@@ -348,6 +348,18 @@ impl Modules {
     pub fn on(&self, name: &str) -> bool {
         matches!(self.state(name), Some(State::On { .. }))
     }
+
+    fn lines(&self) -> Vec<String> {
+        self.states
+            .iter()
+            .map(|(name, state)| {
+                state.problem(name).unwrap_or_else(|| match state {
+                    State::On { .. } => format!("module {name} is on"),
+                    _ => format!("module {name} is off"),
+                })
+            })
+            .collect()
+    }
 }
 
 // pure: the Modules, and which the config turns off, to what runs
@@ -502,6 +514,11 @@ pub fn start(mut app: App) -> App {
     app
 }
 
+// a line for each Module, whether it runs and why it is not as asked
+pub fn status() -> Vec<String> {
+    MODULES.get().map_or_else(Vec::new, Modules::lines)
+}
+
 // whether a Module runs; none do before `start`
 pub fn on(name: &str) -> bool {
     MODULES.get().is_some_and(|modules| modules.on(name))
@@ -564,6 +581,15 @@ mod tests {
             ]
         );
         assert!(!modules.on("banners"));
+        assert_eq!(
+            modules.lines(),
+            [
+                "module island is on",
+                "module notifications is off",
+                "module banners is off: it requires notifications, which is not on",
+                "module weather is off: it requires network, which is not on",
+            ]
+        );
         assert_eq!(
             State::Missing("notifications")
                 .problem("banners")

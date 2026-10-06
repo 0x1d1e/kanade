@@ -74,6 +74,17 @@ impl Service for Daemon {
 }
 
 impl Daemon {
+    // for `kanade status`
+    pub fn status(&self) -> String {
+        match self {
+            Daemon::Starting => String::from("notification daemon: starting"),
+            Daemon::Running => String::from("notification daemon: Kanade"),
+            Daemon::Conflict(other) => {
+                format!("notification daemon: {other}, not Kanade; stop it and restart Kanade")
+            }
+        }
+    }
+
     // `owner` is the process that has the bus name, asked only while Amane is not running
     fn of(running: bool, owner: impl FnOnce() -> Option<u32>) -> Daemon {
         if running {
@@ -351,6 +362,15 @@ mod tests {
     use super::*;
     use crate::island::activity::fixture;
     use crate::island::activity::{Interrupt, Lifetime};
+
+    #[test]
+    fn status_names_the_daemon() {
+        assert_eq!(Daemon::Running.status(), "notification daemon: Kanade");
+        assert_eq!(
+            Daemon::Conflict(String::from("mako")).status(),
+            "notification daemon: mako, not Kanade; stop it and restart Kanade"
+        );
+    }
 
     // as `dbus-monitor --profile` prints them
     #[test]

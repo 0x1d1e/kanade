@@ -118,10 +118,7 @@ pub fn spawn() {
     let fd = unsafe { timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC) };
 
     if fd < 0 {
-        eprintln!(
-            "kanade: no clock timer ({}), the time will not turn",
-            io::Error::last_os_error()
-        );
+        unturned(&format!("no clock timer ({})", io::Error::last_os_error()));
         return;
     }
 
@@ -130,8 +127,16 @@ pub fn spawn() {
 
     match timer.try_clone() {
         Ok(timer) => drop(thread::spawn(move || follow(File::from(timer)))),
-        Err(error) => eprintln!("kanade: no clock timer ({error}), the time will not turn"),
+        Err(error) => unturned(&format!("no clock timer ({error})")),
     }
+}
+
+// the time shows but never turns again, which stderr and `kanade status` say
+fn unturned(problem: &str) {
+    let why = format!("{problem}, the time will not turn");
+
+    eprintln!("kanade: {why}");
+    supervise::stopped("clock", why);
 }
 
 // asleep until the armed minute, or until the clock is set
@@ -145,7 +150,7 @@ fn follow(mut timer: File) {
                 Err(error) if error.raw_os_error() == Some(ECANCELED) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    eprintln!("kanade: lost the clock timer ({error}), the time will not turn");
+                    unturned(&format!("lost the clock timer ({error})"));
                     return;
                 }
             }

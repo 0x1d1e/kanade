@@ -15,6 +15,7 @@ use amane::Service;
 
 use super::json::Json;
 use super::wake;
+use crate::supervise;
 
 // what captures now, as the privacy cluster and the Controls Surface show it
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -183,7 +184,10 @@ pub fn follow() {
         lost
     });
 
-    eprintln!("kanade: cannot run pw-dump ({error}), no microphone or camera indicator");
+    let why = format!("cannot run pw-dump ({error}), no microphone or camera indicator");
+
+    eprintln!("kanade: {why}");
+    supervise::stopped("privacy", why);
 }
 
 /*

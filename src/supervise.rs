@@ -1,9 +1,12 @@
 //! Restarting a source thread that panicked (#95, docs/design.md Constraints + SLOs). Amane does
 //! this for a Service's `listen()`; Kanade's own source threads come back the same way, so one bad
 //! reading costs a pause rather than the source for good. What a source has posted lives outside
-//! what restarts, so a restart neither posts it again nor forgets to withdraw it.
+//! what restarts, so a restart neither posts it again nor forgets to withdraw it. What went wrong
+//! with each source, a panic or giving up, is kept for `kanade status`.
 
+use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -19,11 +22,89 @@ pub fn run(name: &str, run: impl FnMut()) {
 }
 
 fn keep(name: &str, mut run: impl FnMut(), mut sleep: impl FnMut(Duration)) {
-    while panic::catch_unwind(AssertUnwindSafe(&mut run)).is_err() {
+    while let Err(payload) = panic::catch_unwind(AssertUnwindSafe(&mut run)) {
+        panicked(name, payload.as_ref());
         eprintln!("kanade: {name} panicked, running it again in {RESTART:?}");
 
         sleep(RESTART);
     }
+}
+
+// what went wrong with one source, by its name; several threads may share one
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Trouble {
+    panics: u32,
+
+    // the last panic's message
+    last: String,
+
+    // why it gave up for good, if it did
+    stopped: Option<String>,
+}
+
+impl Trouble {
+    fn lines(&self, name: &str) -> impl Iterator<Item = String> {
+        let panics = match self.panics {
+            0 => None,
+            1 => Some(format!("source {name} panicked once: {}", self.last)),
+            times => Some(format!(
+                "source {name} panicked {times} times, last: {}",
+                self.last
+            )),
+        };
+        let stopped = self
+            .stopped
+            .as_ref()
+            .map(|why| format!("source {name} stopped: {why}"));
+
+        panics.into_iter().chain(stopped)
+    }
+}
+
+// in the order each first went wrong; a source that never did is not here
+static TROUBLES: Mutex<Vec<(String, Trouble)>> = Mutex::new(Vec::new());
+
+fn trouble(name: &str, change: impl FnOnce(&mut Trouble)) {
+    let mut troubles = TROUBLES.lock().unwrap_or_else(PoisonError::into_inner);
+
+    let at = match troubles.iter().position(|(each, _)| each == name) {
+        Some(at) => at,
+        None => {
+            troubles.push((name.to_owned(), Trouble::default()));
+            troubles.len() - 1
+        }
+    };
+
+    change(&mut troubles[at].1);
+}
+
+// a source's panic, caught by whatever runs it again
+pub fn panicked(name: &str, payload: &(dyn Any + Send)) {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| String::from("no message"));
+
+    trouble(name, |trouble| {
+        trouble.panics += 1;
+        trouble.last = message;
+    });
+}
+
+// a source that gave up for good, and why
+pub fn stopped(name: &str, why: String) {
+    trouble(name, |trouble| trouble.stopped = Some(why));
+}
+
+// a line for each panic count and each stop, the sources in the order they first went wrong
+pub fn status() -> Vec<String> {
+    TROUBLES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .flat_map(|(name, trouble)| trouble.lines(name))
+        .collect()
 }
 
 #[cfg(test)]
@@ -68,6 +149,50 @@ mod tests {
         assert_eq!(runs, 4);
         assert_eq!(sleeps, [RESTART; 3]);
         assert!(RESTART >= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn panics_and_stops_are_kept_by_source() {
+        let name = "test troubles";
+
+        keep(
+            name,
+            || {
+                let runs = TROUBLES
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(each, _)| each == name)
+                    .map_or(0, |(_, trouble)| trouble.panics);
+                assert!(runs >= 2, "panics so far: {runs}");
+            },
+            |_| {},
+        );
+        stopped(name, String::from("cannot run pw-dump"));
+
+        let lines: Vec<String> = status()
+            .into_iter()
+            .filter(|line| line.starts_with("source test troubles "))
+            .collect();
+
+        assert_eq!(
+            lines,
+            [
+                "source test troubles panicked 2 times, last: panics so far: 1",
+                "source test troubles stopped: cannot run pw-dump",
+            ]
+        );
+
+        let once = Trouble {
+            panics: 1,
+            last: String::from("boom"),
+            stopped: None,
+        };
+        assert_eq!(
+            once.lines("media").collect::<Vec<_>>(),
+            ["source media panicked once: boom"]
+        );
+        assert_eq!(Trouble::default().lines("media").count(), 0);
     }
 
     #[test]

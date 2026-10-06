@@ -10,7 +10,9 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::reload::{self, Outcome};
+use crate::sources::notifications::Daemon;
 use crate::sources::timer;
+use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
@@ -44,9 +46,28 @@ fn run(call: Call) -> Reply {
         Call::Reload => config(reload::reload(), "reloaded"),
         Call::Validate => config(reload::validate(), "valid"),
 
-        // for now the config's part (#104 adds the rest)
-        Call::Status => Reply::Done(reload::status()),
+        Call::Status => Reply::Done(status().join("\n")),
     }
+}
+
+// the versions, then the config, the Modules and what went wrong with the sources, a line each
+fn status() -> Vec<String> {
+    let mut lines = vec![format!(
+        "kanade {}, protocol {}",
+        env!("CARGO_PKG_VERSION"),
+        cli::PROTOCOL
+    )];
+
+    lines.extend(reload::status());
+    lines.extend(modules::status());
+
+    // a Module that is off reads no Service
+    if modules::on("notifications") {
+        lines.push(Daemon::read().status());
+    }
+
+    lines.extend(supervise::status());
+    lines
 }
 
 fn island(command: Command) -> Reply {
