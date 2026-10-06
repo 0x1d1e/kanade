@@ -7,13 +7,13 @@
 mod wayland;
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 use amane::Bus;
@@ -190,13 +190,19 @@ fn niri_version() -> Result<String, String> {
         .ok_or_else(|| format!("unexpected reply to Version: {}", reply.trim_end()))
 }
 
-// like "26.04 (8ed0da4)"
+// like "26.04 (8ed0da4)", or "26.04.1 (...)" for a patch release, which leaves the minimum alone
 fn niri_check(version: &str) -> Check {
-    let release = version
+    let mut parts = version
         .split(|character: char| !character.is_ascii_digit() && character != '.')
         .next()
-        .and_then(|release| release.split_once('.'))
-        .and_then(|(year, month)| Some((year.parse().ok()?, month.parse().ok()?)));
+        .unwrap_or_default()
+        .split('.')
+        .map(str::parse::<u32>);
+
+    let release = match (parts.next(), parts.next()) {
+        (Some(Ok(year)), Some(Ok(month))) => Some((year, month)),
+        _ => None,
+    };
 
     match release {
         Some(release) if release >= NIRI => Check::ok(format!("niri {version}")),
@@ -210,8 +216,6 @@ fn niri_check(version: &str) -> Check {
 
 // the buses Modules read, and the PipeWire and PulseAudio servers the audio and privacy ones do
 fn sockets() -> Vec<Check> {
-    let runtime = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-
     let bus = |name: &str, bus: Bus| match bus::reachable(bus) {
         true => Check::ok(format!("{name} bus reachable")),
         false => Check::warn(format!(
@@ -219,33 +223,96 @@ fn sockets() -> Vec<Check> {
         )),
     };
 
-    let server = |name: &str, path: Option<PathBuf>, without: &str| match path {
-        Some(path) if UnixStream::connect(&path).is_ok() => {
-            Check::ok(format!("{name} at {}", path.display()))
-        }
-        Some(path) => Check::warn(format!("{name}: nothing at {}: {without}", path.display())),
-        None => Check::warn(format!("{name}: XDG_RUNTIME_DIR is not set: {without}")),
-    };
-
-    let pipewire = env::var_os("PIPEWIRE_REMOTE").map_or_else(
-        || runtime.as_ref().map(|runtime| runtime.join("pipewire-0")),
-        |remote| Some(PathBuf::from(remote)),
-    );
-
     vec![
         bus("session", Bus::session()),
         bus("system", Bus::system()),
-        server(
-            "PipeWire",
-            pipewire,
-            "microphone and camera indicators will not show",
-        ),
-        server(
-            "PulseAudio",
-            runtime.map(|runtime| runtime.join("pulse/native")),
-            "no volume level or OSD",
-        ),
+        pipewire(),
+        pulseaudio(),
     ]
+}
+
+const NO_INDICATORS: &str = "microphone and camera indicators will not show";
+const NO_VOLUME: &str = "no volume level or OSD";
+
+fn pipewire() -> Check {
+    let socket = pipewire_socket(
+        env::var_os("PIPEWIRE_REMOTE"),
+        env::var_os("PIPEWIRE_RUNTIME_DIR"),
+        env::var_os("XDG_RUNTIME_DIR"),
+    );
+
+    match socket {
+        Some(path) if UnixStream::connect(&path).is_ok() => {
+            Check::ok(format!("PipeWire at {}", path.display()))
+        }
+        Some(path) => Check::warn(format!(
+            "PipeWire: nothing at {}: {NO_INDICATORS}",
+            path.display()
+        )),
+        None => Check::warn(format!(
+            "PipeWire: neither PIPEWIRE_RUNTIME_DIR nor XDG_RUNTIME_DIR is set: {NO_INDICATORS}"
+        )),
+    }
+}
+
+// where libpipewire looks: the remote named by PIPEWIRE_REMOTE, "pipewire-0" by default, as is when
+// absolute, else in PIPEWIRE_RUNTIME_DIR or XDG_RUNTIME_DIR
+fn pipewire_socket(
+    remote: Option<OsString>,
+    runtime: Option<OsString>,
+    xdg: Option<OsString>,
+) -> Option<PathBuf> {
+    let remote = remote
+        .filter(|remote| !remote.is_empty())
+        .map_or_else(|| PathBuf::from("pipewire-0"), PathBuf::from);
+
+    if remote.is_absolute() {
+        return Some(remote);
+    }
+
+    let runtime = runtime
+        .filter(|dir| !dir.is_empty())
+        .or(xdg.filter(|dir| !dir.is_empty()))?;
+    Some(PathBuf::from(runtime).join(remote))
+}
+
+// libpulse finds its server from PULSE_SERVER, client.conf, X11 or the default socket, so `pactl
+// info`, which resolves it the same way Amane does, is asked; without pactl only the default local
+// socket can be looked at, and its absence proves nothing
+fn pulseaudio() -> Check {
+    match Command::new("pactl").arg("info").output() {
+        Ok(output) if output.status.success() => {
+            let info = String::from_utf8_lossy(&output.stdout);
+            let server = info
+                .lines()
+                .find_map(|line| line.strip_prefix("Server String: "))
+                .unwrap_or("its server");
+            Check::ok(format!("PulseAudio at {server}"))
+        }
+        Ok(output) => Check::warn(format!(
+            "PulseAudio: pactl info: {}: {NO_VOLUME}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("failed")
+        )),
+        Err(_) => {
+            let socket = env::var_os("PULSE_RUNTIME_PATH")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("pulse")))
+                .map(|dir| dir.join("native"));
+
+            match socket {
+                Some(path) if UnixStream::connect(&path).is_ok() => {
+                    Check::ok(format!("PulseAudio at {}", path.display()))
+                }
+                _ => Check::warn(String::from(
+                    "PulseAudio: pactl is missing to ask libpulse, and the default local socket \
+                     answers nothing: maybe no volume level or OSD",
+                )),
+            }
+        }
+    }
 }
 
 fn config_check(problems: Vec<String>) -> Check {
@@ -451,6 +518,38 @@ version = \"9.9.9\"
             ))
         );
         assert_eq!(niri_check("unstable").verdict, Verdict::Warn);
+    }
+
+    #[test]
+    fn a_niri_patch_release_is_judged_by_year_and_month() {
+        assert_eq!(niri_check("26.04.1 (8ed0da4)").verdict, Verdict::Ok);
+        assert_eq!(
+            niri_check("25.05.1 (b35bcae)"),
+            Check::fail(String::from(
+                "niri 25.05.1 (b35bcae), Kanade needs 26.04 or later"
+            ))
+        );
+    }
+
+    #[test]
+    fn the_pipewire_socket_is_found_where_libpipewire_looks() {
+        let os = |text: &str| Some(OsString::from(text));
+        let path = |text: &str| Some(PathBuf::from(text));
+
+        assert_eq!(
+            pipewire_socket(None, None, os("/run/user/1000")),
+            path("/run/user/1000/pipewire-0")
+        );
+        assert_eq!(
+            pipewire_socket(
+                os("pipewire-1"),
+                os("/run/user/1000/custom"),
+                os("/run/user/1000")
+            ),
+            path("/run/user/1000/custom/pipewire-1")
+        );
+        assert_eq!(pipewire_socket(os("/tmp/pw"), None, None), path("/tmp/pw"));
+        assert_eq!(pipewire_socket(os("pipewire-1"), None, None), None);
     }
 
     #[test]

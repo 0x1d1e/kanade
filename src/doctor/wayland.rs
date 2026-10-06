@@ -9,14 +9,16 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 
 use super::Check;
 
-// what Amane binds at start, or Kanade has no windows, input or monitors
-const REQUIRED: &[&str] = &[
-    "wl_compositor",
-    "wl_shm",
-    "wl_seat",
-    "wl_output",
-    "xdg_wm_base",
-    "zwlr_layer_shell_v1",
+const NO_START: &str = "the shell cannot start";
+
+// what Kanade cannot work without: Amane binds the ones that stop the start, the rest it lives without
+const REQUIRED: &[(&str, &str)] = &[
+    ("wl_compositor", NO_START),
+    ("wl_shm", NO_START),
+    ("wl_seat", "no pointer or keyboard reaches Kanade"),
+    ("wl_output", "no monitor to draw on"),
+    ("xdg_wm_base", NO_START),
+    ("zwlr_layer_shell_v1", NO_START),
 ];
 
 // what Amane uses when offered, with what goes without it
@@ -53,18 +55,18 @@ fn globals() -> Result<Vec<String>, String> {
 fn judge(globals: &[String]) -> Vec<Check> {
     let offered = |name: &str| globals.iter().any(|global| global == name);
 
-    let missing: Vec<&str> = REQUIRED
+    let missing: Vec<Check> = REQUIRED
         .iter()
-        .copied()
-        .filter(|name| !offered(name))
+        .filter(|&&(name, _)| !offered(name))
+        .map(|(name, without)| Check::fail(format!("wayland: required {name} missing: {without}")))
         .collect();
 
-    let required = match missing.as_slice() {
-        [] => Check::ok(format!("wayland: required {}", REQUIRED.join(", "))),
-        missing => Check::fail(format!(
-            "wayland: required {} missing, so the shell cannot start",
-            missing.join(", ")
-        )),
+    let required = match missing.is_empty() {
+        true => {
+            let names: Vec<&str> = REQUIRED.iter().map(|&(name, _)| name).collect();
+            vec![Check::ok(format!("wayland: required {}", names.join(", ")))]
+        }
+        false => missing,
     };
 
     let optional = OPTIONAL.iter().map(|&(name, without)| match offered(name) {
@@ -72,7 +74,7 @@ fn judge(globals: &[String]) -> Vec<Check> {
         false => Check::warn(format!("wayland: optional {name} missing: {without}")),
     });
 
-    std::iter::once(required).chain(optional).collect()
+    required.into_iter().chain(optional).collect()
 }
 
 // the registry's events past the first roundtrip are never read
@@ -103,7 +105,7 @@ mod tests {
     fn every_required_global_passes() {
         let all: Vec<&str> = REQUIRED
             .iter()
-            .copied()
+            .map(|&(name, _)| name)
             .chain(OPTIONAL.iter().map(|&(name, _)| name))
             .collect();
 
@@ -117,11 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_required_global_fails_and_an_optional_one_degrades() {
+    fn each_missing_required_global_fails_with_its_cost_and_an_optional_one_degrades() {
         let checks = judge(&globals(&[
             "wl_compositor",
             "wl_shm",
-            "wl_seat",
             "wl_output",
             "xdg_wm_base",
             "wp_viewporter",
@@ -131,7 +132,10 @@ mod tests {
             checks,
             [
                 Check::fail(String::from(
-                    "wayland: required zwlr_layer_shell_v1 missing, so the shell cannot start"
+                    "wayland: required wl_seat missing: no pointer or keyboard reaches Kanade"
+                )),
+                Check::fail(String::from(
+                    "wayland: required zwlr_layer_shell_v1 missing: the shell cannot start"
                 )),
                 Check::warn(String::from(
                     "wayland: optional wp_fractional_scale_manager_v1 missing: windows draw at whole scales"
