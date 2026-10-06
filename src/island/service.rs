@@ -407,6 +407,11 @@ impl IslandService {
 
         self.change(|arbiter| arbiter.post(activity, now));
 
+        // DND may have dropped it, and what never arrived interrupts nothing
+        let live = self.arbiter.contains(&id);
+        let arrives = arrives && live;
+        let expands = expands.filter(|_| live);
+
         // the islands go back first, so it preempts what it would have without the AutoExpand
         if arrives {
             self.restore(now);
@@ -424,8 +429,7 @@ impl IslandService {
             _ => self.sync(now),
         }
 
-        // DND may have dropped it
-        if let Some(duration) = expands.filter(|_| self.arbiter.contains(&id)) {
+        if let Some(duration) = expands {
             self.auto_expand(kind, duration, now);
         }
     }
@@ -2659,6 +2663,61 @@ mod tests {
         island.expire(now + AUTO);
         assert_eq!(
             island.presentation(OTHER),
+            Presentation::Expanded(Surface::Controls)
+        );
+    }
+
+    // a toast DND silences, though it preempts
+    fn silenced() -> Activity {
+        Activity::new(
+            Id::new(Kind::Notification, "silenced"),
+            Priority::Passive,
+            Lifetime::Transient(Duration::from_secs(5)),
+            Scope::FocusedOutput,
+            Interrupt::Preempt,
+        )
+        .unwrap()
+    }
+
+    // DND drops it, so nothing arrived and nothing is preempted
+    #[test]
+    fn a_silenced_preempt_preempts_nothing() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.set_dnd(true, now);
+        island.open(MONITOR, Surface::Controls, now);
+        island.post(silenced(), now + ms(100));
+
+        assert!(!island.contains(silenced().id()));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
+        assert!(island.held(MONITOR));
+        assert_eq!(island.deadline(), Some(now + HOLD));
+    }
+
+    // nor does it disturb a pending restore
+    #[test]
+    fn a_silenced_preempt_keeps_a_pending_restore() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.post(auto("7"), now);
+        island.set_dnd(true, now + ms(50));
+        island.post(silenced(), now + ms(100));
+
+        assert!(island.auto());
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+
+        island.expire(now + AUTO);
+        assert_eq!(
+            island.presentation(MONITOR),
             Presentation::Expanded(Surface::Controls)
         );
     }

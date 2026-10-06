@@ -34,7 +34,7 @@ The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (
 ## Interrupt
 How an Activity interrupts: `None | Transient | Preempt | AutoExpand(duration)`.
 - `None` only competes for the primary. `Transient` shows over the primary instead (goes with the Frame's transient slot, #109). `Preempt` collapses the open Surface it shows on when it arrives. `AutoExpand` opens the Activity's own Surface on the focused island for `duration`, then gives every island it changed back its Presentation and Surface.
-- A repost with the same Interrupt is no new arrival, so it neither preempts nor expands again.
+- A repost with the same Interrupt is no new arrival, so it neither preempts nor expands again. One DND drops never arrives, so it interrupts nothing.
 - **Invariant:** an explicit user action while an AutoExpand is open (click or press, open or toggle, collapse, pin, a key the Surface consumes) cancels the restore: the user's choice owns the islands. The pointer entering or leaving does not, but the pointer still on the Surface at its deadline keeps it open, like Hold, until it leaves and the grace runs out.
 - **Invariant:** a Preempt arriving is policy, not choice: a pending AutoExpand gives the islands back first, then it preempts as it would have without one.
 
