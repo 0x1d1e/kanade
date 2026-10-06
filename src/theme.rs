@@ -10,7 +10,7 @@ use amane::{Color, Palette, Service};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
-    // the body, quiet at rest; no drop shadow yet, a morphing one drops frames (#45)
+    // the body, quiet at rest; opaque, as its shadow has no piece under its middle (#45)
     pub body: Color,
 
     // high-contrast foreground for text on the body
