@@ -34,3 +34,4 @@ Single source of truth: the `rev` of `amane` in `Cargo.toml`. `amane dev` runs t
   `island/` may not depend on the rest of Kanade.
 - Never `write()` a Service in a view. Sources post via `Island::write()`.
 - Arbiter takes time as an input, never reads a clock.
+- `src/clock.rs` is the platform boundary: the only `unsafe` and hand-kept libc ABI (`tm`, `timespec`, timerfd constants). Keep new FFI there.

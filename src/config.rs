@@ -6,6 +6,7 @@
 //!
 //! ```toml
 //! reduced_motion = false
+//! clock = "24h"   # or "12h"
 //!
 //! [timings]   # milliseconds
 //! hover = 120
@@ -28,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use crate::clock::Hours;
 use crate::island::motion::Mode;
 use crate::island::service::Timings;
 
@@ -51,6 +53,9 @@ pub struct Config {
 
     // the image the theme is taken from, usually the wallpaper; none keeps the near-black body
     pub palette: Option<String>,
+
+    // how the time reads at Rest
+    pub clock: Hours,
 }
 
 impl Default for Config {
@@ -60,6 +65,7 @@ impl Default for Config {
             osd: OSD,
             toast: TOAST,
             palette: None,
+            clock: Hours::default(),
         }
     }
 }
@@ -286,6 +292,17 @@ fn set(
         ("", "reduced_motion", Value::Boolean(reduced)) => {
             island.motion = if reduced { Mode::Reduced } else { Mode::Spring };
         }
+        ("", "clock", Value::String(hours)) => {
+            config.clock = match hours.as_str() {
+                "24h" => Hours::TwentyFour,
+                "12h" => Hours::Twelve,
+                _ => {
+                    return Err(format!(
+                        "clock: expected \"24h\" or \"12h\", found \"{hours}\""
+                    ));
+                }
+            };
+        }
         ("timings", key, Value::Integer(ms)) => {
             let slot = match key {
                 "hover" => &mut island.hover,
@@ -313,6 +330,7 @@ fn set(
         ("", "reduced_motion", _) => {
             return Err(String::from("reduced_motion: expected true or false"));
         }
+        ("", "clock", _) => return Err(String::from("clock: expected \"24h\" or \"12h\"")),
         ("timings", _, _) => return Err(format!("{}: expected milliseconds", place(section))),
         ("theme", "palette", _) => {
             return Err(String::from("theme.palette: expected a \"path\""));
@@ -349,6 +367,7 @@ mod tests {
     fn every_key_sets_its_value() {
         let text = r#"
             reduced_motion = true   # trailing comment
+            clock = "12h"
 
             [timings]
             hover = 100
@@ -380,6 +399,7 @@ mod tests {
                 osd: ms(1000),
                 toast: ms(6000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
+                clock: Hours::Twelve,
             }
         );
     }
@@ -388,6 +408,7 @@ mod tests {
     #[test]
     fn a_bad_line_keeps_its_default_and_says_where() {
         let text = r#"
+clock = "13h"
 [timings]
 hover = 0
 expand = fast
@@ -410,18 +431,20 @@ palette = "a\nb"
         assert_eq!(config.toast, TOAST);
         assert_eq!(config.osd, OSD);
         assert_eq!(config.palette, None);
+        assert_eq!(config.clock, Hours::TwentyFour);
         assert_eq!(
             problems,
             [
-                "3: timings.hover: 0 is outside 1-60000 ms",
-                "4: expand: expected a number, true, false or a \"string\", found `fast`",
-                "6: timings.toast: expected milliseconds",
-                "7: unknown key timings.speed",
-                "8: unknown section [colors]",
-                "9: unknown key colors.osd",
-                "10: expected `key = value`, found `nonsense`",
-                "12: theme.palette: expected a \"path\"",
-                "13: palette: unsupported escape \\n",
+                "2: clock: expected \"24h\" or \"12h\", found \"13h\"",
+                "4: timings.hover: 0 is outside 1-60000 ms",
+                "5: expand: expected a number, true, false or a \"string\", found `fast`",
+                "7: timings.toast: expected milliseconds",
+                "8: unknown key timings.speed",
+                "9: unknown section [colors]",
+                "10: unknown key colors.osd",
+                "11: expected `key = value`, found `nonsense`",
+                "13: theme.palette: expected a \"path\"",
+                "14: palette: unsupported escape \\n",
             ]
         );
     }

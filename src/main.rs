@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod boundary;
+mod clock;
 mod config;
 mod icon;
 mod ipc;
@@ -30,6 +31,7 @@ fn main() {
     thread::spawn(sources::system::follow);
     thread::spawn(sources::privacy::follow);
     sources::timer::spawn();
+    clock::spawn();
 
     shadow::prepare(shadow::ShadowStyle::island());
 

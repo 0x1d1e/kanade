@@ -17,7 +17,7 @@ v0.1 target:
 Goals
 - One physical surface. Every state is that surface changing identity. No detached popovers.
 - Arbitration is a pure, unit-tested core. UI only renders its output.
-- Idle cost is zero: no frames, no polling redraws (`AMANE_FRAMES=1` shows nothing at rest).
+- Idle cost is zero: no frames, no polling redraws (`AMANE_FRAMES=1` shows nothing at rest but the Rest clock's one frame a minute).
 - Niri-first behavior (focused output, fullscreen), not a generic adapter.
 
 Non-goals
@@ -248,8 +248,8 @@ Unit (pure, injected time):
 - Motion: no overshoot, settles, retarget keeps velocity continuous.
 
 E2E (nested Niri session, `amane dev`):
-- Idle: `AMANE_FRAMES=1` prints no frames at rest and after every transition settles.
-- Idle wakeups: at rest no Kanade thread wakes, except battery every 5 s; what remains is Amane's own polling ([ADR 0004](adr/0004-wake-sources-on-announcements.md)).
+- Idle: `AMANE_FRAMES=1` prints no frames at rest and after every transition settles, except one per minute per island showing the clock.
+- Idle wakeups: at rest no Kanade thread wakes, except battery every 5 s and the clock once a minute; what remains is Amane's own polling ([ADR 0004](adr/0004-wake-sources-on-announcements.md)).
 - Click-through: pointer outside body reaches the window below.
 - Volume key during Spotify: OSD ~1.2 s, media returns.
 - Notification toast during Expanded Media: no displacement. Critical battery: displaces.
