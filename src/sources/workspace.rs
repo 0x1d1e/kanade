@@ -4,13 +4,9 @@
 //! niri.rs follows niri's EventStream and says which workspace is focused; this decides what the
 //! island makes of it.
 
-use std::time::Duration;
-
 use super::niri::{Change, Seen};
+use crate::config;
 use crate::island::activity::{Activity, Detail, Id, Kind, Priority};
-
-// plan 5.2: 1000-1400 ms from the last switch, the same as volume
-const OSD: Duration = Duration::from_millis(1200);
 
 /*
  * what the island does about niri going from `before` to `now`. Only a switch on the output that
@@ -27,7 +23,7 @@ pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
 
     (now.id != before.id && now.output == before.output).then(|| {
         Change::Post(
-            Activity::transient(id(), Priority::Osd, OSD)
+            Activity::transient(id(), Priority::Osd, config::get().osd)
                 .with_detail(Detail::Workspace(now.workspace.clone())),
         )
     })
@@ -72,7 +68,7 @@ mod tests {
         match change? {
             Change::Post(activity) => {
                 assert_eq!(activity.id(), &id());
-                assert_eq!(activity.lifetime(), Lifetime::Transient(OSD));
+                assert_eq!(activity.lifetime(), Lifetime::Transient(config::get().osd));
 
                 match activity.detail() {
                     Detail::Workspace(workspace) => Some(workspace.clone()),

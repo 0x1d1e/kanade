@@ -305,7 +305,7 @@ fn field(query: &str) -> Rectangle {
     let caret = Rectangle::new()
         .width(CARET)
         .height(QUERY + 4.0)
-        .fill(theme::FG);
+        .fill(theme::fg());
 
     let typed: Box<dyn Widget> = if query.is_empty() {
         Box::new(
@@ -313,7 +313,7 @@ fn field(query: &str) -> Rectangle {
                 caret,
                 Text::new("Search apps")
                     .size(QUERY)
-                    .color(theme::MUTED)
+                    .color(theme::muted())
                     .weight(500),
             ])
             .align(Center),
@@ -326,7 +326,7 @@ fn field(query: &str) -> Rectangle {
         .width(width)
         .height(FIELD)
         .radius(FIELD / 2.0)
-        .fill(theme::CARD)
+        .fill(theme::card())
         .padding(Padding {
             top: 0.0,
             right: FIELD_INSET,
@@ -336,7 +336,7 @@ fn field(query: &str) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::MUTED)) as Box<dyn Widget>,
+                Box::new(Icon::Search.on(TARGET, theme::muted())) as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)
@@ -346,7 +346,7 @@ fn field(query: &str) -> Rectangle {
 
 // the end of `query` that fits in `width`, an ellipsis before it when the start is cut
 fn tail(query: &str, width: f32) -> Text {
-    let text = |shown: &str| Text::new(shown).size(QUERY).color(theme::FG).weight(500);
+    let text = |shown: &str| Text::new(shown).size(QUERY).color(theme::fg()).weight(500);
     let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
 
     let whole = text(query);
@@ -372,11 +372,14 @@ fn tail(query: &str, width: f32) -> Text {
 fn state(title: &str, detail: &str) -> Rectangle {
     let mut lines = children![
         Icon::Search.draw(28.0),
-        Text::new(title).size(14.0).color(theme::FG).weight(600),
+        Text::new(title).size(14.0).color(theme::fg()).weight(600),
     ];
 
     if !detail.is_empty() {
-        let text = Text::new(detail).size(12.0).color(theme::MUTED).weight(500);
+        let text = Text::new(detail)
+            .size(12.0)
+            .color(theme::muted())
+            .weight(500);
 
         // centred while it fits, elided only when a long query does not, since elided text fills
         // its width
@@ -440,7 +443,7 @@ fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
                 .width(3.0)
                 .height(length)
                 .radius(1.5)
-                .fill(theme::DOT)
+                .fill(theme::dot())
                 .translate(WIDTH + 7.0, at),
         ));
     }
@@ -453,7 +456,7 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
     let mut lines = children![
         Text::new(app.name())
             .size(14.0)
-            .color(theme::FG)
+            .color(theme::fg())
             .weight(600)
             .elide()
     ];
@@ -462,7 +465,7 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
         lines.push(Box::new(
             Text::new(description)
                 .size(12.0)
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .weight(500)
                 .elide(),
         ));
@@ -490,7 +493,11 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
             .align(Center),
         );
 
-    let row = if selected { row.fill(theme::CARD) } else { row };
+    let row = if selected {
+        row.fill(theme::card())
+    } else {
+        row
+    };
     let row = row.border_if(selected);
 
     let monitor = monitor.to_owned();

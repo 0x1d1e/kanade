@@ -438,7 +438,7 @@ fn header(count: usize) -> Row {
     let mut words = children![
         Text::new("Notifications")
             .size(16.0)
-            .color(theme::FG)
+            .color(theme::fg())
             .weight(600)
     ];
 
@@ -446,7 +446,7 @@ fn header(count: usize) -> Row {
         words.push(Box::new(
             Text::new(count.to_string())
                 .size(14.0)
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .weight(600),
         ));
     }
@@ -462,12 +462,15 @@ fn header(count: usize) -> Row {
 fn state(icon: Rectangle, title: &str, detail: &str) -> Rectangle {
     let mut lines = children![
         icon,
-        Text::new(title).size(14.0).color(theme::FG).weight(600),
+        Text::new(title).size(14.0).color(theme::fg()).weight(600),
     ];
 
     if !detail.is_empty() {
         lines.push(Box::new(
-            Text::new(detail).size(12.0).color(theme::MUTED).weight(500),
+            Text::new(detail)
+                .size(12.0)
+                .color(theme::muted())
+                .weight(500),
         ));
     }
 
@@ -535,7 +538,7 @@ fn list(
                 .width(3.0)
                 .height(length)
                 .radius(1.5)
-                .fill(theme::DOT)
+                .fill(theme::dot())
                 .translate(WIDTH + 7.0, at),
         ));
     }
@@ -552,7 +555,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
 
     let sender = Text::new(&card.toast.app)
         .size(12.0)
-        .color(theme::MUTED)
+        .color(theme::muted())
         .weight(500)
         .elide();
 
@@ -577,7 +580,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         Box::new(
             Text::new(&card.toast.summary)
                 .size(14.0)
-                .color(theme::FG)
+                .color(theme::fg())
                 .weight(600)
                 .elide(),
         ),
@@ -587,7 +590,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         lines.push(Box::new(
             Text::new(&card.toast.body)
                 .size(13.0)
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .weight(500)
                 .elide(),
         ));
@@ -614,7 +617,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         .width(WIDTH)
         .height(card.shape().height())
         .radius(CARD_RADIUS)
-        .fill(theme::CARD)
+        .fill(theme::card())
         .padding(CARD_INSET)
         .align_child(Start, Start)
         .cursor(Cursor::Pointer)
@@ -657,7 +660,7 @@ fn actions(monitor: &str, card: &Card, ring: Option<usize>, width: f32) -> Row {
 
 // centred while it fits, elided only when it does not, since elided text fills its width
 fn label_in(label: &str, width: f32) -> Text {
-    let text = Text::new(label).size(12.0).color(theme::FG).weight(600);
+    let text = Text::new(label).size(12.0).color(theme::fg()).weight(600);
 
     match text.width() {
         Size::Fixed(natural) if natural <= width => text,
@@ -670,7 +673,7 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
     let monitor = monitor.to_owned();
 
     // on the same 20 unit grid as every icon, so its 10 point cross keeps the icons' line
-    let cross = Icon::Dismiss.on(20.0, theme::MUTED);
+    let cross = Icon::Dismiss.on(20.0, theme::muted());
 
     Rectangle::new()
         .width(TARGET)
@@ -689,9 +692,9 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
 fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
     let switch = {
         let (track, knob, at) = if dnd {
-            (theme::FG, theme::BODY, 12.0)
+            (theme::fg(), theme::body(), 12.0)
         } else {
-            (theme::DOT, theme::MUTED, 0.0)
+            (theme::dot(), theme::muted(), 0.0)
         };
 
         Rectangle::new()
@@ -715,7 +718,7 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
         Icon::Moon.draw(16.0),
         Text::new("Do Not Disturb")
             .size(12.0)
-            .color(theme::FG)
+            .color(theme::fg())
             .weight(600),
     ])
     .gap(7.0)
@@ -736,7 +739,7 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
         monitor,
         Text::new("Clear all")
             .size(12.0)
-            .color(theme::FG)
+            .color(theme::fg())
             .weight(600),
         (84.0, FOOTER),
         ring == Some(1),
@@ -772,9 +775,9 @@ fn pill(
         .child(child);
 
     let pill = if ring {
-        pill.border(RING, theme::FG)
+        pill.border(RING, theme::fg())
     } else {
-        pill.border(1.0, theme::DOT)
+        pill.border(1.0, theme::dot())
     };
 
     let monitor = monitor.to_owned();

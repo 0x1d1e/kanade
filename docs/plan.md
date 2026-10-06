@@ -170,7 +170,8 @@ src/
     timer.rs privacy.rs
   surfaces/            view code only: media, notifications, controls, launcher
   view.rs              body + satellites rendering from Frame and Geometry
-  theme.rs
+  theme.rs             near-black, or derived from an image through Amane's Palette
+  config.rs            the config file, read once at start
 ```
 
 Why these seams:
@@ -201,7 +202,8 @@ Own critically damped spring, closed form (no integrator jitter): `x(t) = target
 - One spring group animates width, height, radius together (same `w`), so geometry is one object. Content opacity and translation derive from progress, not separate timers.
 - Frames are requested only until the spring settles (`request_frame()`), then the window rests.
 - Upstream `Easing::Bezier` or spring to Amane later; not a v0.1 dependency.
-- Reduced-motion config: `KANADE_REDUCED_MOTION=1` snaps geometry, 80 ms opacity only (#36).
+- Reduced motion (`reduced_motion` in the config file, or `KANADE_REDUCED_MOTION=1`) snaps geometry, 80 ms opacity only (#36, #39).
+- Every response and the pointer timings are configurable (#39, README).
 - Each leg takes its own response (#36): expand and collapse 180 ms, a Surface replacing another 220 ms.
 - Never: collapse old, fade out, resize, fade in new.
 

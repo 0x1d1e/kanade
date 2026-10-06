@@ -8,7 +8,28 @@ AI-generated concept, not a capture of the current build.
 
 ## Configuration
 
-- `KANADE_REDUCED_MOTION=1`: the island snaps to its new shape and only fades its content, over 80 ms.
+Kanade reads `$XDG_CONFIG_HOME/kanade/config.toml` (else `~/.config/kanade/config.toml`) once at start. Every key is optional; these are the defaults:
+
+```toml
+# the island snaps to its new shape and only fades its content, over 80 ms
+reduced_motion = false
+
+[timings]            # milliseconds, 1-60000
+hover = 120          # pointer resting on a Compact island before it peeks
+expand = 180         # morph to a larger form
+surface_change = 220 # one Surface replacing another, and a new track dissolving in
+collapse = 180       # morph to a smaller form
+grace = 250          # pointer out before a Peek or Surface collapses
+osd = 1200           # volume, brightness and workspace Transients
+toast = 5000         # a notification shown as a Transient
+
+[theme]
+# palette = "~/Pictures/wallpaper.jpg"
+```
+
+- `theme.palette`: the body and text take their tone from this image, and follow it when the file changes, so a wallpaper script that overwrites it re-themes the island. The body stays near-black and both stay near grey, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning. Unset, the body is near-black.
+- `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
+- A bad line keeps its default and is reported on stderr, naming the line.
 
 ## Keyboard
 

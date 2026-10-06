@@ -1,8 +1,6 @@
 use std::collections::HashMap;
-use std::env;
-use std::ffi::OsStr;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use amane::{Keyboard, Service};
@@ -21,14 +19,50 @@ const EXPAND: Duration = Duration::from_millis(180);
 const SURFACE_CHANGE: Duration = Duration::from_millis(220);
 const COLLAPSE: Duration = Duration::from_millis(180);
 
-// a new track dissolves in about as long as a Surface takes to replace another
-pub const TRACK_CHANGE: Duration = SURFACE_CHANGE;
-
 // plan 5.2: a pointer resting on a Compact island for 100-140 ms peeks
 const HOVER_DELAY: Duration = Duration::from_millis(120);
 
 // plan 5.2: pointer out collapses after 200-300 ms, back in before that keeps the island open
 const GRACE: Duration = Duration::from_millis(250);
+
+// the island's motion and pointer timings (#39); the defaults are the constants above
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Timings {
+    pub motion: Mode,
+    pub expand: Duration,
+    pub surface_change: Duration,
+    pub collapse: Duration,
+    pub hover: Duration,
+    pub grace: Duration,
+}
+
+impl Default for Timings {
+    fn default() -> Self {
+        Self {
+            motion: Mode::Spring,
+            expand: EXPAND,
+            surface_change: SURFACE_CHANGE,
+            collapse: COLLAPSE,
+            hover: HOVER_DELAY,
+            grace: GRACE,
+        }
+    }
+}
+
+impl Timings {
+    // a new track dissolves in about as long as a Surface takes to replace another
+    pub fn track_change(&self) -> Duration {
+        self.surface_change
+    }
+}
+
+// set once before the shell starts, since Amane builds the service with `new()`
+static TIMINGS: OnceLock<Timings> = OnceLock::new();
+
+// before the first read; a later call changes nothing
+pub fn configure(timings: Timings) {
+    let _ = TIMINGS.set(timings);
+}
 
 /*
  * an island opened without a press holds the keyboard until it collapses (#4), so it collapses on
@@ -65,8 +99,8 @@ pub struct IslandService {
     // from niri; none while unknown or without niri, which counts every monitor as focused
     focused_output: Option<String>,
 
-    // KANADE_REDUCED_MOTION, read once at start
-    motion: Mode,
+    // from `configure`, else the defaults
+    timings: Timings,
 }
 
 #[derive(Clone, Default)]
@@ -124,7 +158,7 @@ impl Service for IslandService {
             arbiter: Arbiter::default(),
             presentations: Presentations::default(),
             focused_output: None,
-            motion: motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()),
+            timings: TIMINGS.get().copied().unwrap_or_default(),
         }
     }
 
@@ -164,8 +198,8 @@ impl IslandService {
     }
 
     // for motion outside the island, like the Media Surface's own dissolve
-    pub fn motion(&self) -> Mode {
-        self.motion
+    pub fn timings(&self) -> Timings {
+        self.timings
     }
 
     // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
@@ -551,7 +585,7 @@ impl IslandService {
             &mut self.untouched,
             Content::new(presentation, untouched),
             marks,
-            self.motion,
+            self.timings,
             now,
         );
 
@@ -561,7 +595,7 @@ impl IslandService {
             if let Some(island) = self.islands.get_mut(&monitor) {
                 let content = Content::new(presentation, shown);
 
-                follow(island, content, marks, self.motion, now);
+                follow(island, content, marks, self.timings, now);
             }
         }
     }
@@ -582,6 +616,7 @@ impl IslandService {
     pub fn hover(&mut self, monitor: &str, inside: bool, now: Instant) {
         let presentation = self.presentation(monitor);
         let pinned = self.pinned(monitor);
+        let Timings { hover, grace, .. } = self.timings;
         let island = self.island(monitor);
 
         if island.inside == inside {
@@ -593,9 +628,9 @@ impl IslandService {
         island.armed = inside;
 
         let due = match (inside, presentation) {
-            (true, Presentation::Compact) => Some((HOVER_DELAY, Input::Hover)),
-            (false, Presentation::Peek) if !pinned => Some((GRACE, Input::Unhover)),
-            (false, Presentation::Expanded(_)) if !pinned => Some((GRACE, Input::Collapse)),
+            (true, Presentation::Compact) => Some((hover, Input::Hover)),
+            (false, Presentation::Peek) if !pinned => Some((grace, Input::Unhover)),
+            (false, Presentation::Expanded(_)) if !pinned => Some((grace, Input::Collapse)),
             _ => None,
         };
 
@@ -642,13 +677,14 @@ impl IslandService {
 }
 
 // the island morphs to `content` and its Satellites to `marks`, unless already headed there
-fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, motion: Mode, now: Instant) {
+fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, timings: Timings, now: Instant) {
     let presentation = content.presentation;
     let expanded = matches!(presentation, Presentation::Expanded(_));
+    let motion = timings.motion;
 
     island
         .satellites
-        .follow(marks, EXPAND, COLLAPSE, motion, now);
+        .follow(marks, timings.expand, timings.collapse, motion, now);
 
     island.held &= expanded;
 
@@ -679,14 +715,14 @@ fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, motion: Mode,
     if island.content.to(content, spring.progress(now)) {
         spring.to(
             geometry::shape(presentation).into(),
-            response(from, presentation),
+            response(from, presentation, timings),
             now,
         );
 
         // new content fades in whole, its track with it
         island.track = track.map(|track| Dissolve::new(track, motion));
     } else if let (Some(dissolve), Some(track)) = (&mut island.track, track) {
-        dissolve.to(track, TRACK_CHANGE, now);
+        dissolve.to(track, timings.track_change(), now);
     }
 }
 
@@ -694,7 +730,7 @@ fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, motion: Mode,
  * a Surface replacing another changes the most at once, so it takes longest; down to a smaller
  * form collapses, anything else expands, a new Activity in the same form included
  */
-fn response(from: Presentation, to: Presentation) -> Duration {
+fn response(from: Presentation, to: Presentation, timings: Timings) -> Duration {
     let rank = |presentation| match presentation {
         Presentation::Rest => 0,
         Presentation::Compact => 1,
@@ -703,17 +739,11 @@ fn response(from: Presentation, to: Presentation) -> Duration {
     };
 
     match (from, to) {
-        (Presentation::Expanded(from), Presentation::Expanded(to)) if from != to => SURFACE_CHANGE,
-        _ if rank(to) < rank(from) => COLLAPSE,
-        _ => EXPAND,
-    }
-}
-
-// reduced motion: KANADE_REDUCED_MOTION set to anything but empty or 0 (plan 6.4)
-fn motion(reduced: Option<&OsStr>) -> Mode {
-    match reduced {
-        Some(value) if !value.is_empty() && value != "0" => Mode::Reduced,
-        _ => Mode::Spring,
+        (Presentation::Expanded(from), Presentation::Expanded(to)) if from != to => {
+            timings.surface_change
+        }
+        _ if rank(to) < rank(from) => timings.collapse,
+        _ => timings.expand,
     }
 }
 
@@ -1221,6 +1251,7 @@ mod tests {
 
         let media = Expanded(Surface::Media);
         let controls = Expanded(Surface::Controls);
+        let response = |from, to| response(from, to, Timings::default());
 
         assert_eq!(response(Rest, Compact), EXPAND);
         assert_eq!(response(Compact, Peek), EXPAND);
@@ -1258,13 +1289,30 @@ mod tests {
         assert!(change < 0.93, "{change}");
     }
 
+    // #39: a configured timing replaces its default everywhere it applies
     #[test]
-    fn reduced_motion_is_an_opt_in() {
-        assert_eq!(motion(None), Mode::Spring);
-        assert_eq!(motion(Some(OsStr::new(""))), Mode::Spring);
-        assert_eq!(motion(Some(OsStr::new("0"))), Mode::Spring);
-        assert_eq!(motion(Some(OsStr::new("1"))), Mode::Reduced);
-        assert_eq!(motion(Some(OsStr::new("yes"))), Mode::Reduced);
+    fn configured_timings_time_the_island() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+        island.timings = Timings {
+            expand: ms(400),
+            hover: ms(300),
+            grace: ms(600),
+            ..Timings::default()
+        };
+
+        island.post(media(), now);
+        island.hover(MONITOR, true, now);
+        assert_eq!(island.deadline(), Some(now + ms(300)));
+
+        island.expire(now + ms(300));
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+
+        island.hover(MONITOR, false, now + ms(300));
+        assert_eq!(island.deadline(), Some(now + ms(900)));
+
+        island.open(MONITOR, Surface::Controls, now + ms(1_000));
+        assert!(!island.settled(MONITOR, now + ms(1_000) + EXPAND));
     }
 
     // geometry is there at once, the content still crossfades and asks for frames for 80 ms
@@ -1272,7 +1320,7 @@ mod tests {
     fn reduced_motion_snaps_the_shape_and_fades_the_content() {
         let now = Instant::now();
         let mut island = IslandService::new();
-        island.motion = Mode::Reduced;
+        island.timings.motion = Mode::Reduced;
 
         island.open(MONITOR, Surface::Controls, now);
 

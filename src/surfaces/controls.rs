@@ -79,7 +79,7 @@ fn header() -> Row {
     Row::new(children![
         Text::new("Controls")
             .size(16.0)
-            .color(theme::FG)
+            .color(theme::fg())
             .weight(600)
     ])
     .width(WIDTH - BADGE)
@@ -207,9 +207,9 @@ fn dnd(on: bool) -> Switch {
 // its knob filled while on, then its name and status
 fn switch(item: Switch, width: f32) -> Rectangle {
     let (fill, ink) = if item.on {
-        (theme::FG, theme::BODY)
+        (theme::fg(), theme::body())
     } else {
-        (theme::DOT, theme::FG)
+        (theme::dot(), theme::fg())
     };
 
     let knob = Rectangle::new()
@@ -224,12 +224,12 @@ fn switch(item: Switch, width: f32) -> Rectangle {
     let words = Column::new(children![
         Text::new(item.name)
             .size(13.0)
-            .color(theme::FG)
+            .color(theme::fg())
             .weight(600)
             .elide(),
         Text::new(&item.status)
             .size(12.0)
-            .color(theme::MUTED)
+            .color(theme::muted())
             .weight(500)
             .elide(),
     ])
@@ -240,7 +240,7 @@ fn switch(item: Switch, width: f32) -> Rectangle {
         .width(width)
         .height(SWITCH)
         .radius(SWITCH / 2.0)
-        .fill(theme::CARD)
+        .fill(theme::card())
         .padding(Padding {
             top: 0.0,
             right,
@@ -293,7 +293,7 @@ fn levels() -> Column {
             Icon::Speaker(volume).draw(20.0)
         });
 
-    let tone = if muted { theme::MUTED } else { theme::FG };
+    let tone = if muted { theme::muted() } else { theme::fg() };
 
     let volume = level(speaker, Some(Slider::Speaker), Some(volume), tone);
 
@@ -304,7 +304,7 @@ fn levels() -> Column {
         .child(Icon::Sun.draw(20.0));
 
     // a desktop monitor has no backlight to set
-    let brightness = level(sun, screen.map(|_| Slider::Brightness), screen, theme::FG);
+    let brightness = level(sun, screen.map(|_| Slider::Brightness), screen, theme::fg());
 
     Column::new(children![volume, brightness]).gap(LEVEL_GAP)
 }
@@ -333,7 +333,7 @@ fn level(icon: Rectangle, slider: Option<Slider>, percent: Option<u8>, tone: Col
         .child(
             Text::new(percent.map_or_else(String::new, |percent| percent.to_string()))
                 .size(12.0)
-                .color(theme::MUTED)
+                .color(theme::muted())
                 .weight(600),
         );
 
@@ -379,7 +379,7 @@ fn profiles() -> Rectangle {
         .width(width)
         .height(TRACK)
         .radius(TRACK / 2.0)
-        .fill(theme::CARD)
+        .fill(theme::card())
         .padding(TRACK_INSET)
         .align_child(Start, Center)
         .child(Row::new(segments));
@@ -412,12 +412,12 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool) -> Recta
         .child(
             Text::new(profile.label())
                 .size(12.0)
-                .color(if active { theme::FG } else { theme::MUTED })
+                .color(if active { theme::fg() } else { theme::muted() })
                 .weight(600),
         );
 
     if active {
-        segment.fill(theme::DOT)
+        segment.fill(theme::dot())
     } else if available {
         segment
             .cursor(Cursor::Pointer)

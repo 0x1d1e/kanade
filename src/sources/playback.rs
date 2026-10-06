@@ -9,9 +9,9 @@ use amane::{Color, Service};
 use crate::island::activity::Track;
 use crate::island::fade::Dissolve;
 use crate::island::motion::{Mode, Spring};
-use crate::theme;
+use crate::theme::{self, channels, contrast, mix, saturation};
 
-// the timeline and volume fills stand on theme::DOT, so an accent must stand out from it
+// the timeline and volume fills stand on the theme's dot, so an accent must stand out from it
 const CONTRAST: f32 = 3.0;
 
 // less colorful than this, artwork reads as grey and the Surface stays neutral
@@ -226,51 +226,8 @@ pub fn accent(colors: &[Color]) -> Option<Color> {
         .filter(|&color| saturation(color) >= VIVID)?;
 
     (0..=10)
-        .map(|step| mix(vivid, theme::FG, step as f32 / 10.0))
-        .find(|&color| contrast(color, theme::DOT) >= CONTRAST)
-}
-
-// chroma, how far from grey; unlike HSL saturation a near-black red does not count as vivid
-fn saturation(color: Color) -> f32 {
-    let [r, g, b] = channels(color);
-    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-
-    max - min
-}
-
-fn mix(from: Color, to: Color, amount: f32) -> Color {
-    let [from, to] = [channels(from), channels(to)];
-    let channel = |index: usize| {
-        let value = from[index] + (to[index] - from[index]) * amount;
-
-        (value * 255.0).round() as u8
-    };
-
-    Color::rgb(channel(0), channel(1), channel(2))
-}
-
-// WCAG contrast ratio, 1 to 21
-fn contrast(a: Color, b: Color) -> f32 {
-    let (a, b) = (luminance(a), luminance(b));
-
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
-fn luminance(color: Color) -> f32 {
-    let linear = |channel: f32| {
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let [r, g, b] = channels(color).map(linear);
-
-    0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-fn channels(color: Color) -> [f32; 3] {
-    [color.red(), color.green(), color.blue()].map(|channel| f32::from(channel) / 255.0)
+        .map(|step| mix(vivid, theme::fg(), step as f32 / 10.0))
+        .find(|&color| contrast(color, theme::dot()) >= CONTRAST)
 }
 
 #[cfg(test)]
@@ -335,7 +292,7 @@ mod tests {
 
         for found in [ms(60), ms(2_000)] {
             let mut tint = Tint::new(RED, Mode::Spring);
-            tint.to(theme::FG, TINT, now);
+            tint.to(theme::fg(), TINT, now);
 
             let late = now + found;
             let before = tint.at(late);
@@ -363,11 +320,11 @@ mod tests {
     fn under_reduced_motion_the_tint_fades_from_where_it_is() {
         let now = Instant::now();
         let mut tint = Tint::new(RED, Mode::Reduced);
-        tint.to(theme::FG, TINT, now);
+        tint.to(theme::fg(), TINT, now);
 
         let late = now + ms(40);
         let before = tint.at(late);
-        assert!(before != RED && before != theme::FG, "{before:?}");
+        assert!(before != RED && before != theme::fg(), "{before:?}");
 
         tint.to(BLUE, TINT, late);
         assert_eq!(tint.at(late), before);
@@ -467,7 +424,7 @@ mod tests {
 
         // a deep blue is too dark on the track, so it lightens until it reads, still blue
         let blue = accent(&[Color::rgb(20, 20, 140)]).unwrap();
-        assert!(contrast(blue, theme::DOT) >= CONTRAST);
+        assert!(contrast(blue, theme::dot()) >= CONTRAST);
         assert!(blue.blue() > blue.red());
     }
 }
