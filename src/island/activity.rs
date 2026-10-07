@@ -20,10 +20,11 @@ pub enum Kind {
     Network,
     Bluetooth,
     Timer,
+    Screenshot,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -33,6 +34,7 @@ impl Kind {
         Kind::Network,
         Kind::Bluetooth,
         Kind::Timer,
+        Kind::Screenshot,
     ];
 
     // as IPC names it
@@ -47,6 +49,7 @@ impl Kind {
             Kind::Network => "network",
             Kind::Bluetooth => "bluetooth",
             Kind::Timer => "timer",
+            Kind::Screenshot => "screenshot",
         }
     }
 
@@ -211,6 +214,8 @@ pub enum Detail {
     Notification(Toast),
 
     Timer(Countdown),
+
+    Screenshot(Shot),
 }
 
 impl Detail {
@@ -225,6 +230,7 @@ impl Detail {
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
             Detail::Timer(_) => Some(Kind::Timer),
+            Detail::Screenshot(_) => Some(Kind::Screenshot),
         }
     }
 
@@ -315,6 +321,16 @@ pub struct Toast {
 
     // a local file, like a sender's avatar
     pub image: Option<String>,
+}
+
+// a screenshot niri saved
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shot {
+    // absolute
+    pub path: String,
+
+    // its path is on the clipboard, by the Activity's action
+    pub copied: bool,
 }
 
 // how the machine reaches the network, as NetworkManager's primary connection says

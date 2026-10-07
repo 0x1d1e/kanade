@@ -10,6 +10,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
+use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
 use crate::sources::timer;
@@ -49,6 +50,12 @@ fn run(call: Call) -> Reply {
             clipboard::clear();
             Reply::Done(String::new())
         }
+        // niri answers at once; an area is saved later, once the user picks it
+        Call::Screenshot(mode) => match capture::screenshot(mode) {
+            Ok(Asked::Taken(path)) => Reply::Done(path),
+            Ok(Asked::Unknown(why)) => Reply::Unknown(why),
+            Err(error) => Reply::Refused(error),
+        },
         Call::Reload => config(reload::reload(), "reloaded"),
         Call::Validate => config(reload::validate(), "valid"),
 

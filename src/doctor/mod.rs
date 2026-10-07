@@ -9,12 +9,10 @@ mod wayland;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::Duration;
 
 use amane::Bus;
 
@@ -22,13 +20,10 @@ use crate::cli::{self, Reply};
 use crate::config::{self, Config};
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{bus, pipewire};
+use crate::sources::{bus, niri, pipewire};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
-
-// how long niri may take to say its version
-const PATIENCE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
@@ -142,6 +137,7 @@ fn shell() -> Check {
     match cli::call(&[String::from("status")]) {
         Ok(Reply::Done(status)) => shell_status(status.lines().next().unwrap_or_default()),
         Ok(Reply::Refused(refused)) => Check::fail(format!("shell: refused status: {refused}")),
+        Ok(Reply::Unknown(unknown)) => Check::fail(format!("shell: status unclear: {unknown}")),
         Err(problem) if problem.starts_with("no shell is running") => {
             Check::warn(format!("shell: {problem}"))
         }
@@ -149,7 +145,7 @@ fn shell() -> Check {
     }
 }
 
-// from the first line of its status, like "kanade 0.1.0, protocol 1"
+// from the first line of its status, like "kanade 0.1.0, protocol 2"
 fn shell_status(first: &str) -> Check {
     let protocol = first
         .rsplit_once("protocol ")
@@ -172,22 +168,13 @@ fn niri() -> Check {
 }
 
 fn niri_version() -> Result<String, String> {
-    let path = env::var("NIRI_SOCKET").map_err(|_| String::from("NIRI_SOCKET is not set"))?;
-    let failed = |error: std::io::Error| format!("{path}: {error}");
+    let reply = niri::ask("\"Version\"").map_err(|error| error.to_string())?;
 
-    let mut stream = UnixStream::connect(&path).map_err(failed)?;
-    stream.set_read_timeout(Some(PATIENCE)).map_err(failed)?;
-    stream.write_all(b"\"Version\"\n").map_err(failed)?;
-
-    let mut reply = String::new();
-    BufReader::new(stream)
-        .read_line(&mut reply)
-        .map_err(failed)?;
-
-    Json::parse(&reply)
-        .as_ref()
-        .and_then(|reply| reply.get("Ok")?.get("Version")?.as_str().map(String::from))
-        .ok_or_else(|| format!("unexpected reply to Version: {}", reply.trim_end()))
+    reply
+        .get("Version")
+        .and_then(Json::as_str)
+        .map(String::from)
+        .ok_or_else(|| String::from("unexpected reply to Version"))
 }
 
 // like "26.04 (8ed0da4)", or "26.04.1 (...)" for a patch release, which leaves the minimum alone
@@ -380,6 +367,7 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     bus::owner(Bus::session(), name).map(bus::process),
                     running,
                 ),
+                Provider::Niri => niri_found(niri_version()),
                 Provider::SystemService(name) | Provider::SessionName(name) => {
                     Found::Missing(format!("{name} unknown, its bus is unreachable"))
                 }
@@ -402,6 +390,9 @@ enum Found {
 
     // another program has it, so the Module gets nothing until it is stopped
     Taken(String),
+
+    // the Module cannot work without it
+    Absent(String),
 }
 
 impl Found {
@@ -414,6 +405,7 @@ impl Found {
             Found::Taken(taken) => Check::fail(format!(
                 "module {module}: {taken}: {without}; stop it and restart Kanade"
             )),
+            Found::Absent(absent) => Check::fail(format!("module {module}: {absent}: {without}")),
         }
     }
 }
@@ -422,6 +414,17 @@ fn program_found(program: &str, path: Option<impl AsRef<OsStr>>) -> Found {
     match path.and_then(|path| find(program, path.as_ref())) {
         Some(found) => Found::Present(format!("{program} at {}", found.display())),
         None => Found::Missing(format!("{program} missing from PATH")),
+    }
+}
+
+// niri as a Module needs it: reachable, and new enough for what Kanade asks of it
+fn niri_found(version: Result<String, String>) -> Found {
+    match version {
+        Ok(version) if niri_check(&version).verdict != Verdict::Fail => {
+            Found::Present(format!("niri {version}"))
+        }
+        Ok(version) => Found::Absent(format!("niri {version} is too old")),
+        Err(problem) => Found::Absent(format!("niri: {problem}")),
     }
 }
 
@@ -497,11 +500,11 @@ version = \"9.9.9\"
     #[test]
     fn a_shell_on_another_protocol_fails() {
         assert_eq!(
-            shell_status("kanade 0.1.0, protocol 1"),
-            Check::ok(String::from("shell: running kanade 0.1.0, protocol 1"))
+            shell_status("kanade 0.1.0, protocol 2"),
+            Check::ok(String::from("shell: running kanade 0.1.0, protocol 2"))
         );
 
-        for first in ["kanade 0.2.0, protocol 2", "something else", ""] {
+        for first in ["kanade 0.1.0, protocol 1", "something else", ""] {
             assert_eq!(shell_status(first).verdict, Verdict::Fail, "{first}");
         }
     }
@@ -556,6 +559,26 @@ version = \"9.9.9\"
             ))
         );
         assert!(matches!(holder(name, None, true), Found::Missing(_)));
+    }
+
+    #[test]
+    fn capture_without_niri_fails_naming_its_backend() {
+        let absent = niri_found(Err(String::from("NIRI_SOCKET is not set")));
+
+        assert_eq!(
+            absent.check("capture", "no screenshot backend"),
+            Check::fail(String::from(
+                "module capture: niri: NIRI_SOCKET is not set: no screenshot backend"
+            ))
+        );
+        assert_eq!(
+            niri_found(Ok(String::from("25.11 (b35bcae)"))),
+            Found::Absent(String::from("niri 25.11 (b35bcae) is too old"))
+        );
+        assert_eq!(
+            niri_found(Ok(String::from("26.04 (8ed0da4)"))),
+            Found::Present(String::from("niri 26.04 (8ed0da4)"))
+        );
     }
 
     #[test]

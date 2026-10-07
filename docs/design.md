@@ -140,9 +140,9 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 `capture` initiates; `privacy` independently observes actual capture.
 
 - screenshot: area crop, window, fullscreen/output;
-- prefer niri-native capability where sufficient; otherwise external capture backend;
+- screenshots: niri-native IPC actions cover all three modes, so no external screenshot backend; `doctor` names a missing niri. External backend only for recording (#140);
 - recording: external GPU-accelerated recorder backend; start/stop/status;
-- completion may emit Activity + open/copy path action;
+- completion emits a Transient Activity + copy/open path actions, also for niri's own screenshot binds (done, #139);
 - no OCR, reverse-image search, annotation editor, upload service.
 
 ### Caffeine
@@ -321,7 +321,7 @@ Need design before commitment:
 
 - Track/test privacy Overlay stacking + input passthrough.
 - Define Dock `app_id` ↔ `.desktop` matching + override shape.
-- Define capture backend selection + capability probing.
+- Define recording backend selection + capability probing (#140).
 - Define Google Calendar account adapter/auth/storage.
 - Define clipboard sensitive-content policy before persistence.
 - Run lock crash proof; split on failure.

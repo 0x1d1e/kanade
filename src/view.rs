@@ -1,16 +1,18 @@
+use std::path::Path;
 use std::time::Instant;
 
 use amane::{
-    Button, Center, Color, Column, End, Horizontal, Image, InputArea, Key, Layer, LayerWindow,
-    Monitor, Padding, Parent, Rectangle, Row, Scroll, Service, Stack, Start, Text, Vertical,
-    Widget, Zone, children, request_frame,
+    Button, Center, Color, Column, Cursor, End, Horizontal, Image, InputArea, Key, Layer,
+    LayerWindow, Monitor, Padding, Parent, Rectangle, Row, Scroll, Service, Size, Stack, Start,
+    Text, Vertical, Widget, Zone, children, request_frame,
 };
 
 use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Activity, Charge, Countdown, Detail, Device, Kind, Priority, Toast, Track, Volume, Workspace,
+    Action, Activity, Charge, Countdown, Detail, Device, Kind, Priority, Shot, Toast, Track,
+    Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -19,7 +21,7 @@ use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::shadow::{self, ShadowStyle};
-use crate::sources::timer;
+use crate::sources::{capture, timer};
 use crate::surfaces;
 use crate::theme::{self, ThemeRoles};
 
@@ -245,6 +247,7 @@ fn abbreviation(kind: Kind) -> &'static str {
         Kind::Network => "Nw",
         Kind::Bluetooth => "Bt",
         Kind::Timer => "T",
+        Kind::Screenshot => "Sc",
     }
 }
 
@@ -443,8 +446,121 @@ fn small_form(
             self::workspace(presentation, workspace)
         }
         (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
+        (presentation, Some(Detail::Screenshot(shot))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            screenshot(presentation, shot, actions)
+        }
         _ => None,
     }
+}
+
+/*
+ * the picture, what it is and, on Peek, its file name and a pill per action. Copying says so in
+ * place of what it is, so the press shows it worked
+ */
+fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Option<Rectangle> {
+    let (inset, right, radius, size, weight) = match presentation {
+        Presentation::Compact => (
+            7.0,
+            15.0,
+            theme::radius::ART_COMPACT,
+            theme::text::LABEL,
+            theme::text::MEDIUM,
+        ),
+        Presentation::Peek => (
+            7.0,
+            14.0,
+            theme::radius::ART_PEEK,
+            theme::text::BODY,
+            theme::text::SEMIBOLD,
+        ),
+        _ => return None,
+    };
+    let shape = geometry::shape(presentation);
+
+    let title = match shot.copied {
+        true => "Path copied",
+        false => "Screenshot",
+    };
+    let mut lines = children![
+        Text::new(title)
+            .size(size)
+            .color(theme::ISLAND.on_surface)
+            .weight(weight)
+    ];
+    let mut row = children![tile(
+        Some(&shot.path),
+        "",
+        shape.height - 2.0 * inset,
+        radius,
+        &theme::ISLAND,
+    )];
+
+    if presentation == Presentation::Peek {
+        let name = Path::new(&shot.path)
+            .file_name()
+            .map_or(shot.path.as_str(), |name| {
+                name.to_str().unwrap_or(&shot.path)
+            });
+
+        lines.push(Box::new(
+            Text::new(name)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::ISLAND.on_surface_variant)
+                .weight(theme::text::MEDIUM)
+                .elide(),
+        ));
+    }
+
+    row.push(Box::new(Column::new(lines).width(Parent).gap(1.0)));
+
+    if presentation == Presentation::Peek {
+        row.extend(
+            actions
+                .iter()
+                .map(|action| Box::new(action_pill(action, &shot.path)) as Box<dyn Widget>),
+        );
+    }
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(Row::new(row).width(Parent).gap(9.0).align(Center)),
+    )
+}
+
+// a screenshot's action, run on a left click before the click reaches the island
+fn action_pill(action: &Action, path: &str) -> Rectangle {
+    let label = Text::new(&action.label)
+        .size(theme::text::LABEL_SMALL)
+        .color(theme::ISLAND.on_surface)
+        .weight(theme::text::SEMIBOLD);
+    let width = match label.width() {
+        Size::Fixed(natural) => natural + 20.0,
+        _ => theme::space::TARGET,
+    };
+    let (key, path) = (action.key.clone(), path.to_owned());
+
+    Rectangle::new()
+        .width(width.ceil())
+        .height(theme::space::TARGET)
+        .radius(theme::space::TARGET / 2.0)
+        .fill(theme::ISLAND.surface_container_high)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .on_click(move |button| {
+            if button == Button::Left {
+                capture::act(&key, &path);
+            }
+        })
+        .child(label)
 }
 
 // what is left, muted while it stands still
