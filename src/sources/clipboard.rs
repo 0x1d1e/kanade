@@ -11,9 +11,10 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, BufRead, Read, Write};
-use std::process::Child;
+use std::process::{Child, ChildStdin};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use amane::Service;
@@ -278,8 +279,8 @@ struct Restore {
     done: Box<dyn FnOnce(bool) + Send>,
 }
 
-// how long a restore waits for its selection to be announced, looking this often whether its
-// holder ended first
+// how long a restore may take, from feeding wl-copy to hearing its selection announced, looking
+// this often whether its holder ended first
 const ANNOUNCED: Duration = Duration::from_secs(3);
 const LOOK: Duration = Duration::from_millis(50);
 
@@ -351,9 +352,9 @@ fn restored(content: &Content) -> io::Result<()> {
     let (announce, announced) = mpsc::channel();
     *awaited() = Some((content.clone(), announce));
 
-    let restored = hold(content).and_then(|()| {
-        let start = Instant::now();
+    let deadline = Instant::now() + ANNOUNCED;
 
+    let restored = hold(content, deadline).and_then(|()| {
         loop {
             if announced.recv_timeout(LOOK).is_ok() {
                 return Ok(());
@@ -363,7 +364,7 @@ fn restored(content: &Content) -> io::Result<()> {
                 return Err(io::Error::other("wl-copy ended first"));
             }
 
-            if start.elapsed() >= ANNOUNCED {
+            if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "the new selection was not announced",
@@ -395,13 +396,13 @@ fn announce(content: &Content) {
     }
 }
 
-// starts a wl-copy serving `content`, then ends the one serving the last
-fn hold(content: &Content) -> io::Result<()> {
+// starts a wl-copy serving `content`, fed by `deadline`, then ends the one serving the last
+fn hold(content: &Content, deadline: Instant) -> io::Result<()> {
     let mut child = wake::hold(COPY, &["--foreground", "--type", content.mime()])?;
 
     // wl-copy reads all of it before it takes the selection
     let written = match child.stdin.take() {
-        Some(mut stdin) => stdin.write_all(content.bytes()),
+        Some(stdin) => feed(stdin, content.clone(), deadline),
         None => Err(io::Error::other("no input")),
     };
 
@@ -420,6 +421,30 @@ fn hold(content: &Content) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/*
+ * writes `content` to a holder off this thread, so one that stops reading cannot outlast
+ * `deadline`; killing it then makes the write fail, which ends the writer
+ */
+fn feed(mut stdin: ChildStdin, content: Content, deadline: Instant) -> io::Result<()> {
+    let (fed, written) = mpsc::channel();
+
+    thread::Builder::new()
+        .name("clipboard-feed".into())
+        .spawn(move || {
+            // dropping `stdin` after ends the input; the restore gave up waiting
+            let _ = fed.send(stdin.write_all(content.bytes()));
+        })?;
+
+    written
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "wl-copy did not read the entry",
+            ))
+        })
 }
 
 // forgets the holder once it exited on its own, another program having taken the selection
@@ -730,6 +755,26 @@ mod tests {
 
         clipboard.record(text("a"));
         assert!(clipboard.entries[0].id > last);
+    }
+
+    #[test]
+    fn feeding_a_holder_that_never_reads_gives_up_by_the_deadline() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let start = Instant::now();
+
+        // far more than a pipe holds
+        let fed = feed(stdin, image(1 << 22, 0), start + Duration::from_millis(200));
+
+        assert_eq!(fed.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(2));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     #[test]
