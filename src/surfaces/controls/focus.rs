@@ -5,7 +5,7 @@
 
 use amane::{Key, Service};
 
-use super::wifi;
+use super::list;
 use crate::sources::power::Profile;
 use crate::sources::wifi::Secret;
 
@@ -20,14 +20,18 @@ pub enum Subsurface {
 
     // a password being typed to join `ssid`, one of the networks
     Password { ssid: String, secret: Secret },
+
+    // the Bluetooth devices, paired and nearby
+    Bluetooth,
 }
 
 // what the ring can be on, by what it is rather than where, so a network moving keeps it
 #[derive(Debug, Clone, PartialEq)]
 pub enum At {
-    // the top level: the Wi-Fi switch's knob, then the rest of its tile, which opens Wi-Fi
+    // the top level: a radio's switch's knob, then the rest of its tile, which opens its sub-surface
     WifiSwitch,
     Wifi,
+    BluetoothSwitch,
     Bluetooth,
     Microphone,
     Dnd,
@@ -35,10 +39,20 @@ pub enum At {
     Brightness,
     Profile(Profile),
 
-    // the Wi-Fi sub-surface: its back chevron and switch, then each network by name
+    // a listing sub-surface's back chevron and switch
     Back,
     Radio,
+
+    // the Wi-Fi sub-surface's networks, by name
     Network(String),
+
+    // the Bluetooth sub-surface's devices, by BlueZ's path: the device, then its Forget pill
+    Device(String),
+    Forget(String),
+
+    // the code a pairing shows: it matches, or the pairing stops
+    Confirm,
+    Cancel,
 }
 
 // what a key asks for beyond moving
@@ -66,7 +80,7 @@ pub struct Focus {
     // the ring shows: from the start when opened from the keyboard, else from the first key
     pub shown: bool,
 
-    // how far the Wi-Fi networks scrolled, in pixels
+    // how far a listing sub-surface's rows scrolled, in pixels
     pub offset: f32,
 }
 
@@ -80,15 +94,16 @@ impl Service for Focus {
 
 /*
  * a level's targets, row by row, each with where its middle is across the Surface from 0 to 1, so
- * Up and Down go to the nearest one. `networks` are the Wi-Fi sub-surface's, top first
+ * Up and Down go to the nearest one. `rows` are a listing sub-surface's, top first, under its header
  */
-fn grid(sub: Option<&Subsurface>, networks: &[String]) -> Vec<Vec<(At, f32)>> {
+fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
     match sub {
         None => vec![
             vec![
                 (At::WifiSwitch, 0.08),
                 (At::Wifi, 0.3),
-                (At::Bluetooth, 0.75),
+                (At::BluetoothSwitch, 0.58),
+                (At::Bluetooth, 0.8),
             ],
             vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
             vec![(At::Speaker, 0.5)],
@@ -103,15 +118,10 @@ fn grid(sub: Option<&Subsurface>, networks: &[String]) -> Vec<Vec<(At, f32)>> {
                 })
                 .collect(),
         ],
-        Some(Subsurface::Wifi) => {
+        Some(Subsurface::Wifi | Subsurface::Bluetooth) => {
             let mut grid = vec![vec![(At::Back, 0.0), (At::Radio, 1.0)]];
 
-            grid.extend(
-                networks
-                    .iter()
-                    .map(|ssid| vec![(At::Network(ssid.clone()), 0.5)]),
-            );
-
+            grid.extend(rows);
             grid
         }
         // typing has no ring
@@ -131,8 +141,13 @@ impl Focus {
      * the targets of the level this focus is on. Taken from the focus itself, never a stored one,
      * which may be an earlier visit's sub-surface while this visit starts at the top level
      */
-    pub fn grid(&self, networks: &[String]) -> Vec<Vec<(At, f32)>> {
-        grid(self.sub.as_ref(), networks)
+    pub fn grid(&self, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
+        grid(self.sub.as_ref(), rows)
+    }
+
+    // a listing sub-surface: its header, then rows that scroll
+    pub fn listing(&self) -> bool {
+        matches!(self.sub, Some(Subsurface::Wifi | Subsurface::Bluetooth))
     }
 
     // this visit's focus; one kept from an earlier visit is over
@@ -150,23 +165,36 @@ impl Focus {
 
     /*
      * where the ring is in `grid`: on its target, or the level's first one when that is gone or
-     * none was chosen. A Wi-Fi sub-surface starts on the first network, as that is what it is for
+     * none was chosen. A listing sub-surface starts on its first row, as that is what it is for
      */
     fn place(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        let found = self.at.as_ref().and_then(|at| {
-            grid.iter().enumerate().find_map(|(row, targets)| {
-                let column = targets.iter().position(|(target, _)| target == at)?;
-
-                Some(Place { row, column })
-            })
-        });
-
-        let first = match self.sub {
-            Some(Subsurface::Wifi) if grid.len() > 1 => Place { row: 1, column: 0 },
-            _ => Place { row: 0, column: 0 },
+        let first = if self.listing() && grid.len() > 1 {
+            Place { row: 1, column: 0 }
+        } else {
+            Place { row: 0, column: 0 }
         };
 
-        found.or_else(|| (!grid.is_empty()).then_some(first))
+        self.found(grid)
+            .or_else(|| (!grid.is_empty()).then_some(first))
+    }
+
+    // where its target is in `grid`, none when it has none or that is gone
+    fn found(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
+        let at = self.at.as_ref()?;
+
+        grid.iter().enumerate().find_map(|(row, targets)| {
+            let column = targets.iter().position(|(target, _)| target == at)?;
+
+            Some(Place { row, column })
+        })
+    }
+
+    /*
+     * its target gone from `grid`, as a network or device leaves while the ring is on it. The ring
+     * hides until a key puts it on what took its place, so nothing is pressed it was not seen on
+     */
+    fn lost(&self, grid: &[Vec<(At, f32)>]) -> bool {
+        self.at.is_some() && self.found(grid).is_none()
     }
 
     // what the ring is on in `grid`, none on a level without one
@@ -175,10 +203,28 @@ impl Focus {
             .map(|place| grid[place.row][place.column].0.clone())
     }
 
-    // into the Wi-Fi sub-surface, at its top
-    pub fn into_wifi(self) -> Focus {
+    // what the ring shows on in `grid`, none while it hides
+    pub fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
+        (self.shown && !self.lost(grid))
+            .then(|| self.at(grid))
+            .flatten()
+    }
+
+    /*
+     * the row of `grid` the ring shows in, none while it hides or on a level without one, so a
+     * listing scrolls to show it
+     */
+    pub fn row(&self, grid: &[Vec<(At, f32)>]) -> Option<usize> {
+        (self.shown && !self.lost(grid))
+            .then(|| self.place(grid))
+            .flatten()
+            .map(|place| place.row)
+    }
+
+    // into a listing sub-surface, at its top
+    pub fn enter(self, sub: Subsurface) -> Focus {
         Focus {
-            sub: Some(Subsurface::Wifi),
+            sub: Some(sub),
             at: None,
             offset: 0.0,
             ..self
@@ -207,6 +253,12 @@ impl Focus {
                 offset: 0.0,
                 ..self
             },
+            Some(Subsurface::Bluetooth) => Focus {
+                sub: None,
+                at: Some(At::Bluetooth),
+                offset: 0.0,
+                ..self
+            },
             Some(Subsurface::Password { ssid, .. }) => Focus {
                 at: Some(At::Network(ssid.clone())),
                 sub: Some(Subsurface::Wifi),
@@ -217,8 +269,8 @@ impl Focus {
 
     /*
      * the focus after a key and what it asks for, none when the key is not for the Surface. On
-     * a level with a ring, a key while the ring is hidden only shows it, so nothing is pressed
-     * that the ring was not on
+     * a level with a ring, a key while the ring hides only shows it where it is, so nothing is
+     * pressed that the ring was not seen on
      */
     pub fn step(self, key: Key, grid: &[Vec<(At, f32)>]) -> Option<(Focus, Option<Act>)> {
         if let Some(Subsurface::Password { .. }) = self.sub {
@@ -246,10 +298,11 @@ impl Focus {
             return None;
         }
 
-        if !self.shown {
+        if !self.shown || self.lost(grid) {
             return Some((
                 Focus {
                     shown: true,
+                    at: Some(at),
                     ..self
                 },
                 None,
@@ -261,12 +314,12 @@ impl Focus {
         if let Some(moved) = moved {
             focus.at = Some(grid[moved.row][moved.column].0.clone());
 
-            // the networks are the rows after the header
-            if focus.sub == Some(Subsurface::Wifi) {
+            // the list is the rows after the header
+            if focus.listing() {
                 let count = grid.len() - 1;
                 let shown = moved.row.saturating_sub(1);
 
-                focus.offset = wifi::reveal(focus.offset, shown, count);
+                focus.offset = list::reveal(focus.offset, shown, count);
             }
         }
 
@@ -350,15 +403,25 @@ mod tests {
     use super::*;
 
     fn top() -> Vec<Vec<(At, f32)>> {
-        grid(None, &[])
+        grid(None, Vec::new())
     }
 
-    fn networks() -> Vec<String> {
-        vec!["home".into(), "cafe".into(), "office".into()]
+    fn networks(names: &[&str]) -> Vec<Vec<(At, f32)>> {
+        names
+            .iter()
+            .map(|ssid| vec![(At::Network((*ssid).into()), 0.5)])
+            .collect()
     }
 
     fn wifi() -> Vec<Vec<(At, f32)>> {
-        grid(Some(&Subsurface::Wifi), &networks())
+        grid(
+            Some(&Subsurface::Wifi),
+            networks(&["home", "cafe", "office"]),
+        )
+    }
+
+    fn into_wifi() -> Focus {
+        shown().enter(Subsurface::Wifi)
     }
 
     // a focus whose ring shows, as after the first key
@@ -382,7 +445,7 @@ mod tests {
     fn a_new_visit_starts_at_the_top_level() {
         let deep = Focus {
             visit: 1,
-            ..shown().into_wifi()
+            ..into_wifi()
         };
 
         let next = deep.of(2, false);
@@ -399,11 +462,11 @@ mod tests {
     fn a_new_visit_walks_the_top_level_not_the_last_sub_surface() {
         let deep = Focus {
             visit: 1,
-            ..shown().into_wifi()
+            ..into_wifi()
         };
 
         let next = deep.of(2, true);
-        let grid = next.grid(&networks());
+        let grid = next.grid(networks(&["home"]));
         assert_eq!(grid, top());
 
         let (next, _) = next.step(Key::Right, &grid).unwrap();
@@ -462,7 +525,7 @@ mod tests {
 
     #[test]
     fn the_wifi_tile_opens_wifi_and_escape_comes_back_to_it() {
-        let focus = shown().into_wifi();
+        let focus = into_wifi();
         assert_eq!(focus.sub, Some(Subsurface::Wifi));
 
         // it starts on the first network
@@ -478,32 +541,94 @@ mod tests {
     }
 
     #[test]
-    fn a_wifi_sub_surface_without_networks_starts_on_its_header() {
-        let empty = grid(Some(&Subsurface::Wifi), &[]);
+    fn the_bluetooth_tile_opens_bluetooth_and_escape_comes_back_to_it() {
+        let grid = top();
+        let focus = keys(shown(), &[Key::Right, Key::Right], &grid);
+        assert_eq!(focus.at(&grid), Some(At::BluetoothSwitch));
 
-        assert_eq!(shown().into_wifi().at(&empty), Some(At::Back));
+        let focus = keys(focus, &[Key::Right], &grid);
+        let (focus, act) = focus.step(Key::Enter, &grid).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Bluetooth)));
+
+        let devices = vec![
+            vec![
+                (At::Device("/buds".into()), 0.62),
+                (At::Forget("/buds".into()), 0.9),
+            ],
+            vec![(At::Device("/speaker".into()), 0.5)],
+        ];
+        let inside = focus.enter(Subsurface::Bluetooth);
+        let grid = inside.grid(devices);
+        assert_eq!(inside.at(&grid), Some(At::Device("/buds".into())));
+
+        // down from Forget to the nearest across
+        let inside = keys(inside, &[Key::Right, Key::Down], &grid);
+        assert_eq!(inside.at(&grid), Some(At::Device("/speaker".into())));
+
+        let (back, _) = inside.step(Key::Escape, &grid).unwrap();
+        assert_eq!(back.sub, None);
+        assert_eq!(back.at(&top()), Some(At::Bluetooth));
+    }
+
+    #[test]
+    fn a_wifi_sub_surface_without_networks_starts_on_its_header() {
+        let empty = grid(Some(&Subsurface::Wifi), Vec::new());
+
+        assert_eq!(into_wifi().at(&empty), Some(At::Back));
     }
 
     #[test]
     fn the_ring_follows_a_network_that_moves() {
-        let focus = keys(shown().into_wifi(), &[Key::Down], &wifi());
+        let focus = keys(into_wifi(), &[Key::Down], &wifi());
         assert_eq!(focus.at(&wifi()), Some(At::Network("cafe".into())));
 
         let reordered = grid(
             Some(&Subsurface::Wifi),
-            &["cafe".into(), "home".into(), "office".into()],
+            networks(&["cafe", "home", "office"]),
         );
         let (focus, act) = focus.step(Key::Enter, &reordered).unwrap();
         assert_eq!(act, Some(Act::Press(At::Network("cafe".into()))));
 
-        // gone, it starts over on the first
-        let gone = grid(Some(&Subsurface::Wifi), &["home".into()]);
-        assert_eq!(focus.at(&gone), Some(At::Network("home".into())));
+        // gone, the ring hides, and the next key puts it on the first without pressing that
+        let gone = grid(Some(&Subsurface::Wifi), networks(&["home"]));
+        assert_eq!(focus.ring(&gone), None);
+
+        let (focus, act) = focus.step(Key::Enter, &gone).unwrap();
+        assert_eq!(act, None);
+        assert_eq!(focus.ring(&gone), Some(At::Network("home".into())));
+
+        let (_, act) = focus.step(Key::Enter, &gone).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Network("home".into()))));
+    }
+
+    // a device forgotten under the ring must not have Enter press the one that took its row
+    #[test]
+    fn enter_on_a_device_gone_presses_nothing() {
+        let row = |name: &str| {
+            vec![
+                (At::Device(name.into()), 0.4),
+                (At::Forget(name.into()), 0.9),
+            ]
+        };
+        let inside = shown().enter(Subsurface::Bluetooth);
+        let both = inside.grid(vec![row("/old"), row("/new")]);
+
+        let focus = keys(inside, &[Key::Right], &both);
+        assert_eq!(focus.ring(&both), Some(At::Forget("/old".into())));
+
+        let left = focus.grid(vec![row("/new")]);
+        for key in [Key::Enter, Key::Space, Key::Up, Key::Right] {
+            let (focus, act) = focus.clone().step(key, &left).unwrap();
+            assert_eq!(act, None);
+
+            // nor does it move off what it was not seen on
+            assert_eq!(focus.ring(&left), Some(At::Device("/new".into())));
+        }
     }
 
     #[test]
     fn the_header_is_up_from_the_networks() {
-        let focus = keys(shown().into_wifi(), &[Key::Up], &wifi());
+        let focus = keys(into_wifi(), &[Key::Up], &wifi());
         assert_eq!(focus.at(&wifi()), Some(At::Back));
 
         let focus = keys(focus, &[Key::Right], &wifi());
@@ -515,12 +640,14 @@ mod tests {
 
     #[test]
     fn moving_down_the_networks_scrolls_them_into_view() {
-        let many: Vec<String> = (0..10).map(|index| format!("net{index}")).collect();
-        let grid = grid(Some(&Subsurface::Wifi), &many);
+        let many = (0..10)
+            .map(|index| vec![(At::Network(format!("net{index}")), 0.5)])
+            .collect();
+        let grid = grid(Some(&Subsurface::Wifi), many);
 
-        let focus = keys(shown().into_wifi(), &[Key::End], &grid);
+        let focus = keys(into_wifi(), &[Key::End], &grid);
         assert_eq!(focus.at(&grid), Some(At::Network("net9".into())));
-        assert_eq!(focus.offset, wifi::most(10));
+        assert_eq!(focus.offset, list::most(10));
 
         let focus = keys(focus, &[Key::Home], &grid);
         assert_eq!(focus.offset, 0.0);
@@ -528,7 +655,7 @@ mod tests {
 
     #[test]
     fn a_password_is_typed_erased_and_joined_with_once_it_fits() {
-        let focus = shown().into_wifi().into_password("cafe");
+        let focus = into_wifi().into_password("cafe");
 
         let focus = keys(
             focus,
@@ -556,7 +683,7 @@ mod tests {
 
     #[test]
     fn escape_from_a_password_drops_it_and_returns_to_its_network() {
-        let focus = shown().into_wifi().into_password("cafe");
+        let focus = into_wifi().into_password("cafe");
         let focus = keys(focus, &[Key::Character('x')], &[]);
 
         let (back, _) = focus.step(Key::Escape, &[]).unwrap();
@@ -570,7 +697,7 @@ mod tests {
 
     #[test]
     fn a_password_stops_at_64_characters() {
-        let focus = shown().into_wifi().into_password("cafe");
+        let focus = into_wifi().into_password("cafe");
         let focus = keys(focus, &vec![Key::Character('a'); 70], &[]);
 
         let Some(Subsurface::Password { secret, .. }) = &focus.sub else {
@@ -581,7 +708,7 @@ mod tests {
 
     #[test]
     fn keys_a_password_does_not_use_go_elsewhere() {
-        let focus = shown().into_wifi().into_password("cafe");
+        let focus = into_wifi().into_password("cafe");
 
         assert_eq!(focus.step(Key::Tab, &[]), None);
     }

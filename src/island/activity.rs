@@ -329,21 +329,6 @@ pub enum Uplink {
     Other(String),
 }
 
-// a Bluetooth device the machine knows, like a headset
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Peer {
-    // BlueZ's object for it, stable across renames, so it keys the device
-    pub path: String,
-
-    // its alias, or the address when it names none
-    pub name: String,
-
-    pub connected: bool,
-
-    // 0 to 100, only for devices that report it
-    pub battery: Option<u8>,
-}
-
 /*
  * a timer running out at `ends`, started for `length`. What it reads follows from the time it is
  * drawn at, so the Activity never changes while it counts down

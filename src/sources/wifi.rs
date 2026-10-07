@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
@@ -22,8 +21,7 @@ use std::time::{Duration, Instant};
 use amane::{Argument, Bus, Service, Value};
 
 use super::network::{NAME, ROOT};
-use crate::island::presentation::Surface;
-use crate::island::service::IslandService;
+use super::system::Watched;
 
 pub const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
@@ -253,8 +251,7 @@ impl Join {
     }
 }
 
-// the visit the sub-surface shows in, 0 while it does not
-static WATCHED: AtomicU64 = AtomicU64::new(0);
+static WATCHED: Watched = Watched::new();
 
 /*
  * the last join or disconnect, so an older join that ends after it says nothing. Held while its
@@ -274,7 +271,7 @@ static LISTENING: Mutex<Vec<(u64, Sender<Heard>)>> = Mutex::new(Vec::new());
  * and the device scans for new ones
  */
 pub fn watch(visit: u64) {
-    if WATCHED.swap(visit, Ordering::Relaxed) == visit {
+    if !WATCHED.watch(visit) {
         return;
     }
 
@@ -286,15 +283,12 @@ pub fn watch(visit: u64) {
 
 // the sub-surface closing; the island closing ends a watch too, see `wanted`
 pub fn unwatch() {
-    WATCHED.store(0, Ordering::Relaxed);
+    WATCHED.unwatch();
 }
 
 // while the sub-surface shows; it lasts one visit of the Controls Surface
 pub fn wanted() -> bool {
-    let watched = WATCHED.load(Ordering::Relaxed);
-    let island = IslandService::read();
-
-    watched != 0 && island.surface() == Some(Surface::Controls) && island.visit() == watched
+    WATCHED.wanted()
 }
 
 /*
