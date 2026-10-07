@@ -80,6 +80,14 @@ impl Object<'_> {
         self.info()?.get("props")?.get(key)?.as_str()
     }
 
+    // the serial PipeWire gives the object, which unlike its id it never gives another; printed as
+    // a number, or as text by older pw-dump
+    pub fn serial(&self) -> Option<u64> {
+        let serial = self.info()?.get("props")?.get("object.serial")?;
+
+        serial.as_u64().or_else(|| serial.as_str()?.parse().ok())
+    }
+
     // a property of a node that is true, not false or missing
     pub fn flag(&self, key: &str) -> bool {
         let flag = || self.info()?.get("props")?.get(key)?.as_bool();
