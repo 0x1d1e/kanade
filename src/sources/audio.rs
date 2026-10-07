@@ -211,20 +211,14 @@ impl Graph {
             self.input = None;
         }
 
-        let entries = metadata.get("metadata").and_then(Json::as_array);
-
-        for entry in entries.unwrap_or_default() {
-            if entry.get("subject").and_then(Json::as_u64) != Some(0) {
-                continue;
-            }
-
-            let slot = match entry.get("key").and_then(Json::as_str) {
-                Some(DEFAULT_OUTPUT) => &mut self.output,
-                Some(DEFAULT_INPUT) => &mut self.input,
+        for (key, name) in defaults(metadata) {
+            let slot = match key {
+                DEFAULT_OUTPUT => &mut self.output,
+                DEFAULT_INPUT => &mut self.input,
                 _ => continue,
             };
 
-            *slot = entry.get("value").and_then(default_name);
+            *slot = name;
         }
     }
 
@@ -345,6 +339,21 @@ fn percent(cubed: f64) -> u8 {
         .min(f64::from(u8::MAX)) as u8
 }
 
+// the keys of the defaults' metadata with the device each names, none for a removed one
+fn defaults(metadata: &Json) -> impl Iterator<Item = (&str, Option<String>)> {
+    let entries = metadata.get("metadata").and_then(Json::as_array);
+
+    entries
+        .unwrap_or_default()
+        .iter()
+        .filter(|entry| entry.get("subject").and_then(Json::as_u64) == Some(0))
+        .filter_map(|entry| {
+            let key = entry.get("key")?.as_str()?;
+
+            Some((key, entry.get("value").and_then(default_name)))
+        })
+}
+
 fn metadata_name(object: &Json) -> Option<&str> {
     object.get("props")?.get("metadata.name")?.as_str()
 }
@@ -457,10 +466,51 @@ pub fn set_muted(node: Node, muted: bool) -> Result<(), String> {
  */
 #[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
 pub fn set_default(device: &Device) -> Result<(), String> {
+    choose(device, wake::act, || wake::query(DUMP, &["--no-colors"]))
+}
+
+// `set_default` through `act`, checked against what `dump` prints of the graph after
+fn choose(
+    device: &Device,
+    act: impl FnOnce(&str, &[&str]) -> Result<(), String>,
+    dump: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
     let (program, args) = default_command(device);
     let args: Vec<_> = args.iter().map(String::as_str).collect();
 
-    wake::act(program, &args)
+    act(program, &args)?;
+
+    // pw-metadata exits 0 having set nothing, as when there is no such metadata
+    let Choice::Configured { key, name } = &device.choice else {
+        return Ok(());
+    };
+
+    match configured(&dump()?, key) {
+        Some(set) if set == *name => Ok(()),
+        set => Err(format!(
+            "`{program}` did not configure {name} as {key}, which is {}",
+            set.as_deref().unwrap_or("unset")
+        )),
+    }
+}
+
+// the device `key` of the defaults' metadata names, as pw-dump prints the graph
+fn configured(dump: &str, key: &str) -> Option<String> {
+    let mut configured = None;
+
+    pipewire::prints(dump.as_bytes(), |objects| {
+        let metadata = objects.iter().filter(|object| {
+            Object(object).kind() == Some(METADATA) && metadata_name(object) == Some(DEFAULTS)
+        });
+
+        for (entry, name) in metadata.flat_map(defaults) {
+            if entry == key {
+                configured = name;
+            }
+        }
+    });
+
+    configured
 }
 
 fn default_command(device: &Device) -> (&'static str, Vec<String>) {
@@ -915,6 +965,58 @@ mod tests {
                 .all(|d| !d.default)
         );
         assert_eq!(mixer.outputs.len(), 2);
+    }
+
+    fn duplex_output() -> Device {
+        Device {
+            node: Node(60),
+            name: "Interface".into(),
+            default: false,
+            level: level(100, false),
+            choice: Choice::Configured {
+                key: CONFIGURED_OUTPUT,
+                name: "pro_audio.duplex".into(),
+            },
+        }
+    }
+
+    // what choosing `device` says, its write exiting 0 and the graph then printing `dump`
+    fn chosen(device: &Device, dump: Option<String>) -> Result<(), String> {
+        choose(device, |_, _| Ok(()), || dump.ok_or("not dumped".into()))
+    }
+
+    // pw-metadata exits 0 even when it sets nothing, so only the graph after says
+    #[test]
+    fn a_duplex_default_holds_only_once_the_graph_shows_it() {
+        let configured = |name| Some(print(&[defaults(&[(CONFIGURED_OUTPUT, name)])]));
+
+        assert_eq!(
+            chosen(&duplex_output(), configured("pro_audio.duplex")),
+            Ok(())
+        );
+
+        let other = chosen(&duplex_output(), configured("alsa_output.analog")).unwrap_err();
+        assert!(other.ends_with("which is alsa_output.analog"), "{other}");
+
+        let unset = chosen(&duplex_output(), Some(print(&[defaults(&[])]))).unwrap_err();
+        assert!(unset.ends_with("which is unset"), "{unset}");
+
+        let missing = chosen(&duplex_output(), Some(print(&[]))).unwrap_err();
+        assert!(missing.ends_with("which is unset"), "{missing}");
+
+        assert_eq!(chosen(&duplex_output(), None), Err("not dumped".into()));
+    }
+
+    // wpctl fails on its own when it sets nothing
+    #[test]
+    fn a_device_default_trusts_wpctl() {
+        let speaker = device_of(SPEAKER, "Built-in Audio", false, 7);
+
+        assert_eq!(chosen(&speaker, None), Ok(()));
+        assert_eq!(
+            choose(&speaker, |_, _| Err("refused".into()), || unreachable!()),
+            Err("refused".into())
+        );
     }
 
     #[test]
