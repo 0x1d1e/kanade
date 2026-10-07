@@ -42,21 +42,12 @@ Nested niri session:
   - Guard risky presses in the test build, e.g. replace `Network::set_wifi` with a log line, and revert before committing.
   - Restore anything a run changed and tell the user.
 
-Test Wi-Fi network (`mac80211_hwsim`). The user runs these, since agents may not create access points:
-```sh
-sudo modprobe mac80211_hwsim radios=2      # e.g. wlan1 = AP, wlan2 = client
-nmcli dev wifi hotspot ifname wlan1 con-name kanade-ap ssid kanade-test password kanade-test-1
-nmcli con modify kanade-ap connection.interface-name wlan1 connection.autoconnect no \
-  ipv4.method manual ipv4.addresses 10.42.0.1/24 ipv6.method shared
-nmcli con up kanade-ap
-```
-- Interface names vary per load (e.g. wlan3/wlan4); use the two new ones `nmcli dev` shows.
-- `autoconnect no` and binding to wlan1 matter. NM mirrors profiles into iwd known networks, and iwd may otherwise bring the hotspot up as a client on wlan2.
+Test Wi-Fi network (`mac80211_hwsim`): `scripts/test-network up`, then `down` to clean up. The user runs it, since agents may not create access points. It finds the two simulated radios, hosts `kanade-test` (password `kanade-test-1`) on the first and prints the client.
+- The AP is bound to its radio with `autoconnect no`. NM mirrors profiles into iwd known networks, and iwd may otherwise bring the hotspot up as a client on the other radio.
 - `ipv4.method manual` is needed because NM's dnsmasq fails here (CAP_CHOWN). The client's IPv4 then times out, so joining takes about 45 s. That delay is from the test AP, not Kanade.
 - iwd AP mode doesn't work: NM resets the device to station mode.
 - `src/sources/wifi.rs` uses the first Wi-Fi device. For a run, temporarily pin `device()` to the client's `Interface`, and revert before committing.
 - A wrong password shows up as device state FAILED with reason NO_SECRETS.
-- Cleanup (by the user): `nmcli con delete kanade-ap; nmcli con delete kanade-test; sudo modprobe -r mac80211_hwsim`.
 
 ## Amane pin
 

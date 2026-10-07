@@ -1,0 +1,50 @@
+#!/bin/sh
+# a simulated Wi-Fi network for E2E (mac80211_hwsim): one radio hosts kanade-test, the other joins
+# usage: scripts/test-network up|down. Run by the user: it loads a kernel module and starts an AP
+set -eu
+
+SSID=kanade-test
+PASSWORD=kanade-test-1
+
+# the simulated radios' interfaces, in radio order; names differ on every load
+radios() {
+    for net in /sys/class/net/*; do
+        [ "$(basename "$(readlink -f "$net/device/driver")")" = mac80211_hwsim ] || continue
+        echo "$(basename "$(readlink -f "$net/device")") $(basename "$net")"
+    done | sort -V | cut -d' ' -f2
+}
+
+case "${1:-}" in
+up)
+    lsmod | grep -q '^mac80211_hwsim ' || sudo modprobe mac80211_hwsim radios=2
+
+    # NetworkManager takes a moment to manage the new devices
+    for _ in $(seq 20); do
+        set -- $(radios)
+        [ $# -ge 2 ] && nmcli -t -f DEVICE,STATE dev | grep -q "^$2:disconnected" && break
+        sleep 0.5
+    done
+    [ $# -ge 2 ] || { echo "no two simulated radios" >&2; exit 1; }
+    ap=$1 client=$2
+
+    nmcli con delete kanade-ap >/dev/null 2>&1 || true
+    nmcli dev wifi hotspot ifname "$ap" con-name kanade-ap ssid "$SSID" password "$PASSWORD" >/dev/null
+
+    # bound to its radio and never brought up on its own, or iwd may join it from the client.
+    # Static, as NetworkManager's dnsmasq fails here
+    nmcli con modify kanade-ap connection.interface-name "$ap" connection.autoconnect no \
+        ipv4.method manual ipv4.addresses 10.42.0.1/24 ipv6.method shared
+    nmcli con up kanade-ap >/dev/null
+
+    echo "AP $ap ($SSID, $PASSWORD); client $client: pin device() in src/sources/wifi.rs to it"
+    ;;
+down)
+    nmcli con delete kanade-ap >/dev/null 2>&1 || true
+    nmcli con delete "$SSID" >/dev/null 2>&1 || true
+    ! lsmod | grep -q '^mac80211_hwsim ' || sudo modprobe -r mac80211_hwsim
+    ;;
+*)
+    echo "usage: $0 up|down" >&2
+    exit 2
+    ;;
+esac
