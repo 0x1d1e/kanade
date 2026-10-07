@@ -44,7 +44,7 @@ const TFD_TIMER_CANCEL_ON_SET: c_int = 2;
 const ECANCELED: i32 = 125;
 
 // <signal.h>
-const SIGINT: c_int = 2;
+pub const SIGINT: c_int = 2;
 
 #[repr(C)]
 struct Tm {

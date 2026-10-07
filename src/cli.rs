@@ -17,6 +17,7 @@ use amane::{IpcCall, ipc_socket};
 use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
+use crate::sources::recording::Settled;
 use crate::sources::{capture, recording, timer};
 
 // the one IPC handler the shell registers, which every verb goes through
@@ -221,12 +222,13 @@ fn settle(request: recording::Request, path: String) -> Reply {
         };
 
         match request.settled(&path, &status) {
-            Some(Ok(())) => return Reply::Done(path),
-            Some(Err(why)) => return Reply::Refused(why),
-            None if Instant::now() >= deadline => {
+            Settled::Done => return Reply::Done(path),
+            Settled::Failed(why) => return Reply::Refused(why),
+            Settled::Lost(why) => return Reply::Unknown(why),
+            Settled::Waiting if Instant::now() >= deadline => {
                 return Reply::Unknown(request.unsettled(&path, PATIENCE));
             }
-            None => thread::sleep(LOOK),
+            Settled::Waiting => thread::sleep(LOOK),
         }
     }
 }

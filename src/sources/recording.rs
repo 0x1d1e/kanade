@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, ChildStderr};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -48,14 +48,22 @@ const SAID: usize = 4;
 static RECORDER_STATE: Mutex<Recorder> = Mutex::new(Recorder {
     running: None,
     ended: None,
+    issued: Vec::new(),
 });
 
+#[derive(Default)]
 struct Recorder {
     // the one recording, none while none records
     running: Option<Running>,
 
     // the last recording that ended, until another starts
     ended: Option<Ended>,
+
+    /*
+     * every path a recording was given since Kanade started, never given again, so a path names
+     * one recording: a stale Stop or `kanade` waiting on an older one never mistakes a newer one
+     */
+    issued: Vec<String>,
 }
 
 struct Running {
@@ -164,17 +172,53 @@ impl Status {
     }
 }
 
+// where a request has left the recording at its path, as `status` says
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settled {
+    // not there yet
+    Waiting,
+
+    Done,
+
+    // the recording failed, as the recorder said
+    Failed(String),
+
+    // the shell says how another recording stands, or none, so what became of this one is unknown
+    Lost(String),
+}
+
 impl Request {
     /*
-     * whether the recording at `path` is where this request leaves it, as `status` says: started
-     * once its first frame is written, stopped once its file is saved. None while it gets there
+     * whether the recording at `path` is where this request leaves it: started once its first
+     * frame is written, stopped once its file is saved. Only a status of `path` settles it
      */
-    pub fn settled(self, path: &str, status: &Status) -> Option<Result<(), String>> {
+    pub fn settled(self, path: &str, status: &Status) -> Settled {
         match (self, status) {
-            (_, Status::Failed { path: failed, why }) if failed == path => Some(Err(why.clone())),
-            (Request::Start, Status::Starting { path: starting, .. }) if starting == path => None,
-            (Request::Stop, Status::Finishing { path: finishing }) if finishing == path => None,
-            _ => Some(Ok(())),
+            (Request::Status, _) => Settled::Done,
+            (_, Status::Failed { path: failed, why }) if failed == path => {
+                Settled::Failed(why.clone())
+            }
+            (
+                Request::Start,
+                Status::Starting { path: mine, .. } | Status::Finishing { path: mine },
+            )
+            | (Request::Stop, Status::Finishing { path: mine })
+                if mine == path =>
+            {
+                Settled::Waiting
+            }
+            (
+                Request::Start,
+                Status::Recording { path: mine, .. } | Status::Saved { path: mine },
+            )
+            | (Request::Stop, Status::Saved { path: mine })
+                if mine == path =>
+            {
+                Settled::Done
+            }
+            _ => Settled::Lost(format!(
+                "the shell no longer follows {path}; it says \"{status}\""
+            )),
         }
     }
 
@@ -224,7 +268,13 @@ pub fn start() -> Result<String, String> {
         &dir,
         &format!("Screencast from {}", clock::stamp()),
         "mp4",
-        Path::exists,
+        |path| {
+            path.exists()
+                || recorder
+                    .issued
+                    .iter()
+                    .any(|issued| path == Path::new(issued))
+        },
     );
     let path = path
         .to_str()
@@ -253,6 +303,7 @@ pub fn start() -> Result<String, String> {
     // under the lock, so the recording's end, which takes it, posts after
     IslandService::write().post(running(&path, &output), Instant::now());
 
+    recorder.issued.push(path.clone());
     recorder.ended = None;
     recorder.running = Some(Running {
         path: path.clone(),
@@ -269,6 +320,13 @@ pub fn stop() -> Result<String, String> {
     let mut recorder = lock();
     let running = recorder.running.as_mut().ok_or("not recording")?;
 
+    interrupt(running)?;
+
+    Ok(running.path.clone())
+}
+
+// once, so a second stop does not cut the recorder's finishing short
+fn interrupt(running: &mut Running) -> Result<(), String> {
     if !running.stopping {
         clock::interrupt(&running.child)
             .map_err(|error| format!("cannot stop {RECORDER}: {error}"))?;
@@ -276,7 +334,7 @@ pub fn stop() -> Result<String, String> {
         running.stopping = true;
     }
 
-    Ok(running.path.clone())
+    Ok(())
 }
 
 pub fn status() -> Status {
@@ -311,17 +369,16 @@ pub fn status() -> Status {
 
 // ends the recording at `path`, as its Activity's Stop does
 pub fn stop_at(path: &str) {
-    let recording = lock()
-        .running
-        .as_ref()
-        .is_some_and(|running| running.path == path);
-
-    if !recording {
-        return;
-    }
-
-    if let Err(error) = stop() {
+    if let Err(error) = stop_recording(&mut lock(), path) {
         eprintln!("capture: stopping the recording: {error}");
+    }
+}
+
+// under one lock with the check, so a Stop for an ended recording never reaches a newer one
+fn stop_recording(recorder: &mut Recorder, path: &str) -> Result<(), String> {
+    match recorder.running.as_mut() {
+        Some(running) if running.path == path => interrupt(running),
+        _ => Ok(()),
     }
 }
 
@@ -330,6 +387,17 @@ pub fn stop_at(path: &str) {
  * was
  */
 fn follow(said: Option<ChildStderr>, path: String) {
+    let said = last_lines(said);
+    let mut recorder = lock();
+
+    // under the lock, so a newer recording's start posts after
+    if let Some(clip) = end(&mut recorder, &path, said) {
+        IslandService::write().post(ended(clip), Instant::now());
+    }
+}
+
+// the last `SAID` lines `said` prints until it closes
+fn last_lines(said: Option<impl Read>) -> VecDeque<String> {
     let mut last = VecDeque::with_capacity(SAID);
 
     for line in said
@@ -343,53 +411,62 @@ fn follow(said: Option<ChildStderr>, path: String) {
         last.push_back(line);
     }
 
-    let mut recorder = lock();
+    last
+}
 
-    let Some(mut running) = recorder.running.take_if(|running| running.path == path) else {
-        return;
-    };
+/*
+ * reaps the recorder at `path`, done printing `said`, and how its recording ended; none once
+ * another recording took its place. Saved only when the recorder succeeded and wrote a file: one
+ * that failed may leave part of one
+ */
+fn end(recorder: &mut Recorder, path: &str, said: VecDeque<String>) -> Option<Clip> {
+    let mut running = recorder.running.take_if(|running| running.path == path)?;
 
     let status = running.child.wait();
-    let saved = fs::metadata(&path).is_ok_and(|file| file.len() > 0);
+    let written = fs::metadata(path).is_ok_and(|file| file.len() > 0);
 
-    let why = match status {
-        Ok(status) if status.code() == Some(NOT_FOUND) => format!("{RECORDER} not found"),
+    let lost = match status {
+        Ok(status) if status.success() && written => None,
+        Ok(status) if status.code() == Some(NOT_FOUND) => Some(format!("{RECORDER} not found")),
         // niri sends a frame only on damage, so a stop on a still screen can come before any
         Ok(status) if status.success() && running.stopping => {
-            "stopped before the screen gave a frame".to_owned()
+            Some(String::from("stopped before the screen gave a frame"))
         }
         Ok(status) => {
-            let said = Vec::from(last).join("; ");
+            let said = Vec::from(said).join("; ");
 
-            match said.is_empty() {
+            Some(match said.is_empty() {
                 true => format!("{RECORDER} ended ({status})"),
                 false => format!("{RECORDER} ended ({status}): {said}"),
-            }
+            })
         }
-        Err(error) => format!("{RECORDER}: {error}"),
+        Err(error) => Some(format!("{RECORDER}: {error}")),
     };
 
     if !running.stopping {
-        eprintln!("capture: the recording ended on its own: {why}");
+        eprintln!(
+            "capture: the recording ended on its own: {}",
+            lost.as_deref().unwrap_or("saved")
+        );
     }
 
-    let clip = match saved {
-        true => Clip::Saved {
-            path: path.clone(),
+    let clip = match &lost {
+        None => Clip::Saved {
+            path: path.to_owned(),
             copied: false,
         },
-        false => Clip::Failed {
-            path: path.clone(),
+        Some(why) => Clip::Failed {
+            path: path.to_owned(),
             why: why.clone(),
         },
     };
 
-    IslandService::write().post(ended(clip), Instant::now());
-
     recorder.ended = Some(Ended {
-        path,
-        lost: (!saved).then_some(why),
+        path: path.to_owned(),
+        lost,
     });
+
+    Some(clip)
 }
 
 // the recording at `path` copied, shown so unless a newer recording took its place
@@ -485,6 +562,10 @@ fn ended(clip: Clip) -> Activity {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+
     use super::*;
 
     #[test]
@@ -555,48 +636,176 @@ mod tests {
     #[test]
     fn start_settles_on_the_first_frame_and_stop_on_the_saved_file() {
         let path = "/v/a.mp4";
+        let mine = String::from(path);
         let output = String::from("eDP-1");
         let starting = Status::Starting {
             output: output.clone(),
-            path: String::from(path),
+            path: mine.clone(),
         };
-        let finishing = Status::Finishing {
-            path: String::from(path),
+        let recording = Status::Recording {
+            output: output.clone(),
+            path: mine.clone(),
         };
+        let finishing = Status::Finishing { path: mine.clone() };
+        let saved = Status::Saved { path: mine.clone() };
         let failed = Status::Failed {
-            path: String::from(path),
+            path: mine.clone(),
             why: String::from("wf-recorder not found"),
         };
+        let broken = Settled::Failed(String::from("wf-recorder not found"));
 
-        assert_eq!(Request::Start.settled(path, &starting), None);
-        assert_eq!(
-            Request::Start.settled(
-                path,
-                &Status::Recording {
-                    output,
-                    path: String::from(path)
-                }
-            ),
-            Some(Ok(()))
-        );
-        assert_eq!(
-            Request::Start.settled(path, &failed),
-            Some(Err(String::from("wf-recorder not found")))
-        );
+        assert_eq!(Request::Start.settled(path, &starting), Settled::Waiting);
+        assert_eq!(Request::Start.settled(path, &finishing), Settled::Waiting);
+        assert_eq!(Request::Start.settled(path, &recording), Settled::Done);
+        assert_eq!(Request::Start.settled(path, &saved), Settled::Done);
+        assert_eq!(Request::Start.settled(path, &failed), broken);
 
-        assert_eq!(Request::Stop.settled(path, &finishing), None);
-        assert_eq!(
-            Request::Stop.settled(
+        assert_eq!(Request::Stop.settled(path, &finishing), Settled::Waiting);
+        assert_eq!(Request::Stop.settled(path, &saved), Settled::Done);
+        assert_eq!(Request::Stop.settled(path, &failed), broken);
+    }
+
+    #[test]
+    fn a_status_of_another_recording_never_settles_one() {
+        let path = "/v/a.mp4";
+        let other = String::from("/v/b.mp4");
+
+        for status in [
+            Status::Idle,
+            Status::Starting {
+                output: String::from("eDP-1"),
+                path: other.clone(),
+            },
+            Status::Recording {
+                output: String::from("eDP-1"),
+                path: other.clone(),
+            },
+            Status::Finishing {
+                path: other.clone(),
+            },
+            Status::Saved {
+                path: other.clone(),
+            },
+            Status::Failed {
+                path: other.clone(),
+                why: String::from("broke"),
+            },
+        ] {
+            for request in [Request::Start, Request::Stop] {
+                assert!(
+                    matches!(request.settled(path, &status), Settled::Lost(_)),
+                    "{request:?} on {status}"
+                );
+            }
+        }
+
+        // a stopped recording that still records was not stopped
+        let recording = Status::Recording {
+            output: String::from("eDP-1"),
+            path: String::from(path),
+        };
+
+        assert!(matches!(
+            Request::Stop.settled(path, &recording),
+            Settled::Lost(_)
+        ));
+    }
+
+    fn recording_to(path: &str, child: Child) -> Recorder {
+        Recorder {
+            running: Some(Running {
+                path: path.to_owned(),
+                output: String::from("eDP-1"),
+                child,
+                stopping: false,
+            }),
+            ..Recorder::default()
+        }
+    }
+
+    #[test]
+    fn a_stale_stop_leaves_the_newer_recording_alone() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let mut recorder = recording_to("/v/b.mp4", child);
+
+        // the Stop of a recording to a.mp4 that ended before b.mp4 started
+        assert_eq!(stop_recording(&mut recorder, "/v/a.mp4"), Ok(()));
+
+        let running = recorder.running.as_mut().unwrap();
+
+        assert!(!running.stopping);
+        assert!(running.child.try_wait().unwrap().is_none());
+
+        assert_eq!(stop_recording(&mut recorder, "/v/b.mp4"), Ok(()));
+
+        let running = recorder.running.as_mut().unwrap();
+
+        assert!(running.stopping);
+        assert_eq!(running.child.wait().unwrap().signal(), Some(clock::SIGINT));
+    }
+
+    #[test]
+    fn a_recorder_that_fails_after_writing_failed_the_recording() {
+        let dir = env::temp_dir().join(format!("kanade-recording-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.mp4");
+        let path = path.to_str().unwrap();
+
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "printf part > \"$1\"; echo 'Error: encoder broke' >&2; exit 1",
+                "sh",
                 path,
-                &Status::Saved {
-                    path: String::from(path)
-                }
-            ),
-            Some(Ok(()))
-        );
+            ])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let said = last_lines(child.stderr.take());
+        let mut recorder = recording_to(path, child);
+        recorder.running.as_mut().unwrap().stopping = true;
+
+        let clip = end(&mut recorder, path, said);
+        fs::remove_dir_all(&dir).unwrap();
+
+        let why = "wf-recorder ended (exit status: 1): Error: encoder broke";
+
         assert_eq!(
-            Request::Stop.settled(path, &failed),
-            Some(Err(String::from("wf-recorder not found")))
+            clip,
+            Some(Clip::Failed {
+                path: path.to_owned(),
+                why: why.to_owned(),
+            })
+        );
+        assert!(recorder.running.is_none());
+        assert!(matches!(
+            &recorder.ended,
+            Some(Ended { lost: Some(lost), .. }) if lost == why
+        ));
+    }
+
+    #[test]
+    fn a_recorder_that_succeeds_with_a_file_saved_it() {
+        let dir = env::temp_dir().join(format!("kanade-recording-saved-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.mp4");
+        let path = path.to_str().unwrap();
+
+        let child = Command::new("sh")
+            .args(["-c", "printf video > \"$1\"", "sh", path])
+            .spawn()
+            .unwrap();
+        let mut recorder = recording_to(path, child);
+
+        let clip = end(&mut recorder, path, VecDeque::new());
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            clip,
+            Some(Clip::Saved {
+                path: path.to_owned(),
+                copied: false,
+            })
         );
     }
 
