@@ -103,6 +103,18 @@ impl Search {
         matches!((&self.copying, action), (Copying::Failed(failed), Action::Copy(text)) if failed == text)
     }
 
+    /*
+     * the copy of `text` pressed in `visit` failed; nothing once that visit or that copy is over,
+     * so a stale worker never touches a later visit's Search
+     */
+    fn copy_failed(&mut self, visit: u64, text: String) {
+        if self.visit == visit
+            && matches!(&self.copying, Copying::Waiting(waiting) if *waiting == text)
+        {
+            self.copying = Copying::Failed(text);
+        }
+    }
+
     // this visit's search; one kept from an earlier visit is over
     fn of(&self, visit: u64) -> Search {
         if self.visit == visit {
@@ -626,22 +638,8 @@ fn copied(monitor: &str, visit: u64, text: String, done: bool) {
         return;
     }
 
-    let open = {
-        let island = IslandService::read();
-
-        island.visit() == visit
-            && island.presentation(monitor) == Presentation::Expanded(Surface::Launcher)
-    };
-
-    // read apart, since `set` writes; a later visit's Search ignores it anyway (`Search::of`)
-    if open {
-        let search = Search::read().of(visit);
-
-        set(Search {
-            copying: Copying::Failed(text),
-            ..search
-        });
-    }
+    // checked and written under one guard, as a later visit may be writing its own Search
+    Search::write().copy_failed(visit, text);
 }
 
 // down scrolls further down the list
@@ -820,6 +818,34 @@ mod tests {
             ..Search::default()
         };
         assert!(!waiting.failed(&Action::Copy(String::from("4"))));
+    }
+
+    #[test]
+    fn a_stale_failed_copy_leaves_a_later_visit_alone() {
+        let later = Search {
+            visit: 2,
+            query: String::from("fire"),
+            ..Search::default()
+        };
+
+        let mut search = later.clone();
+        search.copy_failed(1, String::from("4"));
+        assert_eq!(search, later);
+
+        let mut search = Search {
+            copying: Copying::Waiting(String::from("4")),
+            ..later.clone()
+        };
+        search.copy_failed(2, String::from("5"));
+        assert_eq!(
+            search.copying,
+            Copying::Waiting(String::from("4")),
+            "another copy"
+        );
+
+        search.copy_failed(2, String::from("4"));
+        assert_eq!(search.copying, Copying::Failed(String::from("4")));
+        assert_eq!(search.query, "fire");
     }
 
     #[test]
