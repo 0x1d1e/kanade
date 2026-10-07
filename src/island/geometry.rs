@@ -72,7 +72,7 @@ pub const MEDIA: Shape = Shape {
     radius: 32.0,
 };
 
-// the largest body, for the Surfaces with a list: Notifications and the Launcher
+// the largest body, for the Surfaces with a list: Notifications, the Launcher and the Clipboard
 pub const EXPANDED_MAX: Shape = Shape {
     width: 520.0,
     height: 330.0,
@@ -108,7 +108,9 @@ pub fn shape(presentation: Presentation) -> Shape {
         },
         Presentation::Expanded(Surface::Controls | Surface::Tray) => CONTROLS,
         Presentation::Expanded(Surface::Media) => MEDIA,
-        Presentation::Expanded(Surface::Notifications | Surface::Launcher) => EXPANDED_MAX,
+        Presentation::Expanded(Surface::Notifications | Surface::Launcher | Surface::Clipboard) => {
+            EXPANDED_MAX
+        }
     }
 }
 
@@ -261,7 +263,7 @@ mod tests {
         value.fract() == 0.0
     }
 
-    const PRESENTATIONS: [Presentation; 11] = [
+    const PRESENTATIONS: [Presentation; 12] = [
         Presentation::Rest,
         Presentation::Compact,
         Presentation::Split,
@@ -273,6 +275,7 @@ mod tests {
         Presentation::Expanded(Surface::Controls),
         Presentation::Expanded(Surface::Launcher),
         Presentation::Expanded(Surface::Tray),
+        Presentation::Expanded(Surface::Clipboard),
     ];
 
     /*

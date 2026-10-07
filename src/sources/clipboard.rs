@@ -4,7 +4,8 @@
 //! kept is what that state was about. Restoring an entry hands
 //! it to `wl-copy --foreground`, a holder that serves it until another program takes the selection;
 //! restoring another kills it. The new selection is announced like any other, so a restored entry
-//! moves to the top. What was copied is never logged, and an entry's `Debug` leaves it out.
+//! moves to the top. Removing an entry or clearing the history forgets only the history, never what
+//! is on the clipboard now. What was copied is never logged, and an entry's `Debug` leaves it out.
 
 use std::env;
 use std::ffi::OsStr;
@@ -167,7 +168,6 @@ impl Service for Clipboard {
 }
 
 impl Clipboard {
-    #[expect(dead_code, reason = "the clipboard Surface (#137) lists entries")]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
@@ -234,6 +234,38 @@ impl Clipboard {
     fn bytes(&self) -> usize {
         self.entries.iter().map(|entry| entry.content.len()).sum()
     }
+
+    // forgets the entry `id`, if it is still kept; says whether it was
+    fn remove(&mut self, id: u64) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.id != id);
+
+        self.entries.len() != before
+    }
+
+    // forgets every entry; `next` stays, so no id is ever reused
+    fn clear(&mut self) -> bool {
+        let any = !self.entries.is_empty();
+        self.entries.clear();
+
+        any
+    }
+}
+
+/*
+ * forgets an entry, and `clear` all of them; only the history, so what is on the clipboard now
+ * stays there, and its wl-copy holder with it. Each writes only a change
+ */
+pub fn remove(id: u64) {
+    if Clipboard::read().entries.iter().any(|entry| entry.id == id) {
+        Clipboard::write().remove(id);
+    }
+}
+
+pub fn clear() {
+    if !Clipboard::read().entries.is_empty() {
+        Clipboard::write().clear();
+    }
 }
 
 // asks the holder thread to restore
@@ -260,7 +292,6 @@ pub fn follow() {
 }
 
 // puts an entry back on the clipboard, off the caller's thread; a failure is logged
-#[expect(dead_code, reason = "the clipboard Surface (#137) restores entries")]
 pub fn restore(entry: &Entry) {
     if let Some(restores) = RESTORES.get() {
         drop(restores.send(entry.content.clone()));
@@ -572,6 +603,42 @@ mod tests {
         // an image is the same entry only with the same bytes
         assert!(clipboard.record(image(3, 2)));
         assert_eq!(texts(&clipboard), ["image", "a", "b", "image"]);
+    }
+
+    #[test]
+    fn removing_forgets_only_that_entry() {
+        let mut clipboard = Clipboard::default();
+
+        for copied in ["a", "b", "c"] {
+            clipboard.record(text(copied));
+        }
+
+        let b = clipboard.entries[1].id;
+
+        assert!(clipboard.remove(b));
+        assert_eq!(texts(&clipboard), ["c", "a"]);
+        assert!(!clipboard.remove(b), "already gone");
+
+        // copied again, it is a new entry under a new id
+        clipboard.record(text("b"));
+        assert_eq!(texts(&clipboard), ["b", "c", "a"]);
+        assert!(clipboard.entries[0].id > b);
+    }
+
+    #[test]
+    fn clearing_forgets_every_entry_but_never_reuses_an_id() {
+        let mut clipboard = Clipboard::default();
+
+        clipboard.record(text("a"));
+        clipboard.record(text("b"));
+        let last = clipboard.entries[0].id;
+
+        assert!(clipboard.clear());
+        assert!(clipboard.entries.is_empty());
+        assert!(!clipboard.clear(), "nothing left to clear");
+
+        clipboard.record(text("a"));
+        assert!(clipboard.entries[0].id > last);
     }
 
     #[test]

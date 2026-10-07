@@ -408,7 +408,7 @@ pub const ALL: &[Module] = &[
             app
         },
     },
-    // the clipboard history, kept only in memory; nothing shows it yet (#137)
+    // the clipboard history, kept only in memory; `clipboard-surface` shows it
     Module {
         name: "clipboard",
         requires: &[CORE],
@@ -425,7 +425,15 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
-        verbs: &[],
+        // clearing is the history's own; opening its Surface is `clipboard-surface`'s
+        verbs: &[Verb {
+            name: "clipboard",
+            usage: || String::from("clipboard clear"),
+            parse: |arguments| match arguments {
+                ["clear"] => Ok(Call::ClearClipboard),
+                _ => Err(Unparsed::Usage),
+            },
+        }],
         start: |app| {
             clipboard::follow();
             app
@@ -516,15 +524,35 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
+    // the clipboard history on the island: search, copy, delete and clear
+    Module {
+        name: "clipboard-surface",
+        requires: &[CORE, "clipboard"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "clipboard",
+            usage: || String::from("clipboard open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Clipboard, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
 ];
 
 // each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 5] = [
+const SURFACES: [(Surface, &str); 6] = [
     (Surface::Media, "media"),
     (Surface::Notifications, "notification-surface"),
     (Surface::Controls, "controls"),
     (Surface::Launcher, "launcher"),
     (Surface::Tray, "tray"),
+    (Surface::Clipboard, "clipboard-surface"),
 ];
 
 // the Surfaces whose Module is off, which the island never opens
@@ -958,7 +986,18 @@ mod tests {
         );
         assert!(modules.on("launcher"));
 
-        for surface in ["controls", "launcher", "notification-surface"] {
+        let modules = off("clipboard");
+        assert_eq!(
+            modules.state("clipboard-surface"),
+            Some(&State::Missing("clipboard"))
+        );
+
+        for surface in [
+            "controls",
+            "launcher",
+            "notification-surface",
+            "clipboard-surface",
+        ] {
             let modules = off(surface);
 
             assert_eq!(modules.state(surface), Some(&State::Off));

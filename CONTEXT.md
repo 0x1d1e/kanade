@@ -68,10 +68,10 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - **Avoid:** state (Amane uses state for Services)
 
 ## Surface
-Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray`.
+Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard`.
 - Media and Notifications are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface.
-- Controls, Launcher and Tray have no Activity. They open only by user action.
-- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
+- Controls, Launcher, Tray and Clipboard have no Activity. They open only by user action.
+- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Sub-surface
