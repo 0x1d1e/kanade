@@ -5,10 +5,12 @@ use amane::{Button, Rectangle};
 use crate::theme;
 
 pub mod controls;
+mod grid;
 pub mod launcher;
 pub mod media;
 pub mod notifications;
 mod slider;
+pub mod tray;
 
 /*
  * a Surface target pressed with the left button. Only the topmost target gets a click, so a right

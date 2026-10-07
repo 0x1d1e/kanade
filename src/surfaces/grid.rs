@@ -1,0 +1,63 @@
+//! What every Surface's keyboard shares: its targets as rows, each with where its middle is across
+//! the Surface from 0 to 1, and how the arrows move a ring between them.
+
+use amane::Key;
+
+// a place in a grid
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Place {
+    pub row: usize,
+    pub column: usize,
+}
+
+// where `at` is in `grid`, none when it is gone
+pub fn find<A: PartialEq>(grid: &[Vec<(A, f32)>], at: &A) -> Option<Place> {
+    grid.iter().enumerate().find_map(|(row, targets)| {
+        let column = targets.iter().position(|(target, _)| target == at)?;
+
+        Some(Place { row, column })
+    })
+}
+
+/*
+ * the place a key moves to, none for a key that does not move or at an edge. Up and Down go to the
+ * target in the next row nearest across, Home and End to the first and last
+ */
+pub fn moved<A>(place: Place, key: Key, grid: &[Vec<(A, f32)>]) -> Option<Place> {
+    let across = grid[place.row][place.column].1;
+
+    let nearest = |row: usize| {
+        let column = grid[row]
+            .iter()
+            .enumerate()
+            .min_by(|(_, (_, a)), (_, (_, b))| (a - across).abs().total_cmp(&(b - across).abs()))
+            .map(|(column, _)| column)?;
+
+        Some(Place { row, column })
+    };
+
+    let to = match key {
+        Key::Up => nearest(place.row.checked_sub(1)?)?,
+        Key::Down if place.row + 1 < grid.len() => nearest(place.row + 1)?,
+        Key::Left => Place {
+            column: place.column.checked_sub(1)?,
+            ..place
+        },
+        Key::Right if place.column + 1 < grid[place.row].len() => Place {
+            column: place.column + 1,
+            ..place
+        },
+        Key::Home => Place { row: 0, column: 0 },
+        Key::End => {
+            let row = grid.len() - 1;
+
+            Place {
+                row,
+                column: grid[row].len() - 1,
+            }
+        }
+        _ => return None,
+    };
+
+    (to != place).then_some(to)
+}

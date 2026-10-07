@@ -56,8 +56,9 @@ How an Activity interrupts: `None | Preempt | AutoExpand(duration)`.
 - **Invariant:** a Preempt arriving is policy, not choice: a pending AutoExpand gives the islands back first, then it preempts as it would have without one.
 
 ## Presentation
-An island's visual level: `Rest | Compact | Split | Peek | Expanded(Surface)`.
+An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surface)`.
 - Rest has no primary Activity and shows the local time.
+- Tray is Rest with the apps' tray items after the time, raised by the hover delay while there are any and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it, middle is its secondary activation, the wheel scrolls it, right opens its menu.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
@@ -67,14 +68,14 @@ An island's visual level: `Rest | Compact | Split | Peek | Expanded(Surface)`.
 - **Avoid:** state (Amane uses state for Services)
 
 ## Surface
-Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher`.
+Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray`.
 - Media and Notifications are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface.
-- Controls and Launcher have no Activity. They open only by user action.
-- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
+- Controls, Launcher and Tray have no Activity. They open only by user action.
+- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Sub-surface
-A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has four: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, and Audio, from the speaker level's chevron.
+A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has four: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, and Audio, from the speaker level's chevron. In the Tray Surface an item's menu is one, from its chevron or its slot, and each submenu another below it.
 - **Invariant:** every target in a Surface and its sub-surfaces is a key away. Arrows move a ring between targets, Enter or Space presses, Escape leaves a sub-surface for the level it came from, ringed on the target that entered it, and collapses the island only from the top level.
 - **Invariant:** a sub-surface lasts one opening of its Surface. The Surface opens at its top level.
 - **Invariant:** a password never prints, in a log or a `Debug`; it lives only until NetworkManager has it.
@@ -95,7 +96,7 @@ The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind ope
 
 ## Pin
 A right click keeps an island's Peek or open Surface up after the pointer leaves, with no leave grace. The body shows a ring while pinned.
-- Right click raises the island to what the pointer would raise it to, pinned: on Compact or a Split segment it peeks that Activity pinned, at Rest it opens Controls pinned (no context menu), on a Peek or open Surface it pins or unpins it. On a Surface's own control it pins too and never presses it.
+- Right click raises the island to what the pointer would raise it to, pinned: on Compact or a Split segment it peeks that Activity pinned, at Rest it opens Controls pinned (no context menu), on a tray slot it opens that item's menu pinned (ADR 0012), on a Peek or open Surface it pins or unpins it. On a Surface's own control it pins too and never presses it.
 - Escape ends a pin only while the island has keyboard focus (a pinned island gives it back, see below); `kanade island collapse` and `toggle` close a pinned Surface.
 - **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The peeked Activity leaving both the primary and the top Satellite clears a pinned Peek; Preempt clears a pinned Surface. Nothing pinned is remembered.
 - **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.

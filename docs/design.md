@@ -104,7 +104,7 @@ Rules:
 
 **Fullscreen:** no detection/suppression. Geometry heuristic rejected. Island = Top; fullscreen may cover it. Privacy = separate Overlay. Revisit only with reliable niri fullscreen state. [ADR 0006](adr/0006-island-on-top-layer.md), [ADR 0005](adr/0005-privacy-indicator-outside-arbiter.md).
 
-**Rest:** minimal configured status. Tray appears on interaction. Left click → Controls. Right click → Controls pinned; no context menu ([ADR 0010](adr/0010-split-and-rest-right-click.md)).
+**Rest:** minimal configured status. Tray appears on interaction: hover raises the Tray strip of item icons; a slot is the item's (left/middle/scroll, right → its menu pinned) ([ADR 0012](adr/0012-tray-at-rest-and-item-menus.md)). Left click → Controls. Right click → Controls pinned; no context menu ([ADR 0010](adr/0010-split-and-rest-right-click.md)).
 
 **Split:** follows the Frame like Compact: Split while a Satellite exists, Compact without. Hover/click/right click act on the segment under the pointer; Peek shows one Activity by identity. [ADR 0010](adr/0010-split-and-rest-right-click.md).
 
@@ -132,6 +132,8 @@ StatusNotifierItem behavior:
 - scroll events;
 - menus/submenus/actions;
 - malformed/dead item isolated, never shell-wide failure.
+
+Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (done, #135, [ADR 0012](adr/0012-tray-at-rest-and-item-menus.md)).
 
 ### Capture
 

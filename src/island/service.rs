@@ -154,14 +154,15 @@ struct Due {
 }
 
 impl Due {
-    // still meaningful for the island in this Presentation
-    fn applies(self, presentation: Presentation) -> bool {
-        matches!(
-            (self.input, presentation),
+    // still meaningful for the island in this Presentation; at Rest a hover only shows the tray items
+    fn applies(self, presentation: Presentation, tray: bool) -> bool {
+        match (self.input, presentation) {
+            (Input::Hover(_), Presentation::Rest) => tray,
             (Input::Hover(_), Presentation::Compact | Presentation::Split)
-                | (Input::Unhover, Presentation::Peek)
-                | (Input::Collapse, Presentation::Expanded(_))
-        )
+            | (Input::Unhover, Presentation::Peek | Presentation::Tray(_))
+            | (Input::Collapse, Presentation::Expanded(_)) => true,
+            _ => false,
+        }
     }
 }
 
@@ -227,6 +228,16 @@ impl IslandService {
     // the Surfaces whose Module is off, once at start: none of them opens, by click, command or AutoExpand
     pub fn withhold(&mut self, surfaces: &[Surface]) {
         self.presentations.withhold(surfaces);
+    }
+
+    // the tray items there are now; the pointer at Rest shows them, a slot each (#135)
+    pub fn set_tray(&mut self, count: usize, now: Instant) {
+        self.presentations.set_tray(count);
+        self.sync(now);
+    }
+
+    pub fn tray(&self) -> usize {
+        self.presentations.tray()
     }
 
     // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
@@ -776,6 +787,7 @@ impl IslandService {
         };
 
         let presentation = self.presentations.untouched();
+        let tray = self.presentations.tray() > 0;
         follow(
             &mut self.untouched,
             Content::new(
@@ -786,6 +798,7 @@ impl IslandService {
             ),
             marks(&untouched, presentation),
             self.timings,
+            tray,
             now,
         );
 
@@ -800,7 +813,7 @@ impl IslandService {
             );
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                follow(island, content, marks, self.timings, now);
+                follow(island, content, marks, self.timings, tray, now);
             }
         }
     }
@@ -828,8 +841,9 @@ impl IslandService {
 
     /*
      * the pointer entered or left the input region, which arms or disarms the keyboard. In, a
-     * Compact island peeks after the hover delay; out, a Peek or an open Surface collapses after the
-     * grace unless pinned; either edge cancels the other
+     * Compact island peeks after the hover delay, and one at Rest shows the tray items; out, a Peek
+     * or an open Surface collapses after the grace unless pinned, and the tray items go; either
+     * edge cancels the other
      */
     pub fn hover(&mut self, monitor: &str, inside: bool, now: Instant) {
         let presentation = self.presentation(monitor);
@@ -841,6 +855,7 @@ impl IslandService {
                 .as_ref()
                 .is_some_and(|auto| auto.monitor == monitor);
         let Timings { hover, grace, .. } = self.timings;
+        let tray = self.presentations.tray();
         let island = self.island(monitor);
 
         if island.inside == inside {
@@ -855,7 +870,9 @@ impl IslandService {
             (true, Presentation::Compact | Presentation::Split) => {
                 Some((hover, Input::Hover(island.segment)))
             }
+            (true, Presentation::Rest) if tray > 0 => Some((hover, Input::Hover(island.segment))),
             (false, Presentation::Peek) if !pinned => Some((grace, Input::Unhover)),
+            (false, Presentation::Tray(_)) => Some((grace, Input::Unhover)),
             (false, Presentation::Expanded(_)) if !pinned => Some((grace, Input::Collapse)),
             _ => None,
         };
@@ -912,7 +929,14 @@ impl IslandService {
 }
 
 // the island morphs to `content` and its Satellites to `marks`, unless already headed there
-fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, timings: Timings, now: Instant) {
+fn follow(
+    island: &mut Island,
+    content: Content,
+    marks: Vec<Mark>,
+    timings: Timings,
+    tray: bool,
+    now: Instant,
+) {
     let presentation = content.presentation;
     let expanded = matches!(presentation, Presentation::Expanded(_));
     let motion = timings.motion;
@@ -923,7 +947,10 @@ fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, timings: Timi
 
     island.held &= expanded;
 
-    if island.due.is_some_and(|due| !due.applies(presentation)) {
+    if island
+        .due
+        .is_some_and(|due| !due.applies(presentation, tray))
+    {
         island.due = None;
         nudge();
     }
@@ -979,7 +1006,7 @@ fn follow(island: &mut Island, content: Content, marks: Vec<Mark>, timings: Timi
 fn response(from: Presentation, to: Presentation, timings: Timings) -> Duration {
     let rank = |presentation| match presentation {
         Presentation::Rest => 0,
-        Presentation::Compact => 1,
+        Presentation::Compact | Presentation::Tray(_) => 1,
         Presentation::Split => 2,
         Presentation::Peek => 3,
         Presentation::Expanded(_) => 4,
@@ -1293,6 +1320,27 @@ mod tests {
 
         island.hover(MONITOR, true, Instant::now());
         assert_eq!(island.deadline(), None);
+    }
+
+    // #135: at Rest the hover delay shows the tray items, and leaving them waits out the grace
+    #[test]
+    fn hover_at_rest_shows_the_tray_after_the_delay() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+        island.set_tray(2, now);
+
+        island.hover(MONITOR, true, now);
+        assert_eq!(island.deadline(), Some(now + HOVER_DELAY));
+
+        island.expire(now + HOVER_DELAY);
+        assert_eq!(island.presentation(MONITOR), Presentation::Tray(2));
+
+        let out = now + ms(1_000);
+        island.hover(MONITOR, false, out);
+        assert_eq!(island.deadline(), Some(out + GRACE));
+
+        island.expire(out + GRACE);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
     }
 
     #[test]

@@ -386,7 +386,7 @@ pub const ALL: &[Module] = &[
             app
         },
     },
-    // the StatusNotifierItems apps show; their view is #135
+    // the StatusNotifierItems apps show: the strip at Rest and the Tray Surface with their menus
     Module {
         name: "tray",
         requires: &[CORE],
@@ -394,7 +394,15 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
-        verbs: &[],
+        verbs: &[Verb {
+            name: "tray",
+            usage: || String::from("tray open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Tray, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
             tray::follow();
             app
@@ -488,11 +496,12 @@ pub const ALL: &[Module] = &[
 ];
 
 // each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 4] = [
+const SURFACES: [(Surface, &str); 5] = [
     (Surface::Media, "media"),
     (Surface::Notifications, "notification-surface"),
     (Surface::Controls, "controls"),
     (Surface::Launcher, "launcher"),
+    (Surface::Tray, "tray"),
 ];
 
 // the Surfaces whose Module is off, which the island never opens

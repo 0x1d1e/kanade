@@ -43,7 +43,7 @@ use crate::view::bar;
 mod audio;
 mod bluetooth;
 mod focus;
-mod list;
+pub(super) mod list;
 mod wifi;
 
 // the content's width, which every row fills

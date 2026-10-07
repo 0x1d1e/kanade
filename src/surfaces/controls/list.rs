@@ -23,7 +23,7 @@ pub const GAP: f32 = 14.0;
 pub const LIST: f32 = geometry::CONTROLS.height - 2.0 * INSET - HEADER - GAP;
 
 pub const ROWS: usize = 4;
-const ROW_GAP: f32 = 6.0;
+pub const ROW_GAP: f32 = 6.0;
 pub const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 pub const ROW_INSET: f32 = 12.0;
 
@@ -211,6 +211,16 @@ pub fn state(icon: Icon, title: &str, detail: &str) -> Rectangle {
  * shows; a thumb in the inset says where while they do not all fit. The wheel scrolls them
  */
 pub fn list(count: usize, offset: f32, row: impl Fn(usize) -> Box<dyn Widget>) -> Stack {
+    scrolling(count, offset, super::scroll, row)
+}
+
+// `list`, the wheel scrolling them by `scroll`, in pixels, down further down
+pub fn scrolling(
+    count: usize,
+    offset: f32,
+    scroll: fn(f32),
+    row: impl Fn(usize) -> Box<dyn Widget>,
+) -> Stack {
     let (first, end) = shown(offset, count);
 
     let column = Column::new((first..end).map(row).collect())
@@ -222,7 +232,7 @@ pub fn list(count: usize, offset: f32, row: impl Fn(usize) -> Box<dyn Widget>) -
         .height(LIST)
         .clip()
         .align_child(Start, Start)
-        .on_scroll(|Scroll { y, .. }| super::scroll(y * WHEEL))
+        .on_scroll(move |Scroll { y, .. }| scroll(y * WHEEL))
         .child(
             Rectangle::new()
                 .width(WIDTH)

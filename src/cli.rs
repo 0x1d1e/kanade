@@ -338,6 +338,7 @@ timer start <duration>|pause|resume|cancel
 notifications clear
 notifications dnd on|off|toggle
 notifications open|close|toggle
+tray open|close|toggle
 controls open|close|toggle
 launcher open|close|toggle
 doctor
