@@ -19,6 +19,13 @@ zbus = "5"
 # zbus already builds it; the flags zbus takes a bus name with
 enumflags2 = "0.7"
 toml = { version = "1", default-features = false, features = ["display", "parse", "serde"] }
+# the emoji and their shortcodes the Launcher searches (#138)
+emojis = "0.9.0"
+# Amane draws only outlined letters, so the Launcher shows an emoji as the picture its color font
+# holds; rustybuzz finds which glyph a sequence like a flag is (#138)
+rustybuzz = "0.20"
+# Amane already builds it; finds the emoji font
+fontconfig = "0.11"
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }

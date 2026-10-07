@@ -1,9 +1,11 @@
-//! The Launcher Surface (plan 7): a search over Amane's `Apps` and the apps it finds, best match
-//! first. It opens only from IPC or a keybind, so it always holds the keyboard: typing searches,
-//! the arrow keys move the selection, Enter starts the selected app and a click starts the one
-//! clicked, and either closes the island. It says when the apps are still being found and when
-//! none match.
+//! The Launcher Surface (plan 7): a search over its providers (#138), the apps Amane's `Apps`
+//! finds, the calculator and emoji, best answer first. It opens only from IPC or a keybind, so it
+//! always holds the keyboard: typing searches, the arrow keys move the selection, Enter presses the
+//! selected answer and a click the one clicked. An app starts and the island closes; a value or an
+//! emoji is copied and the island closes once it is on the clipboard, or says it was not. It says
+//! when the apps are still being found and when nothing matches.
 
+use std::thread;
 use std::time::Instant;
 
 use amane::{
@@ -15,11 +17,22 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::sources::clipboard;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::view;
 
 use super::Ring;
+
+mod apps;
+mod calculator;
+mod emoji;
+mod provider;
+
+use apps::Apps as AppsProvider;
+use calculator::Calculator;
+use emoji::Emoji;
+use provider::{Action, Answer, Mark};
 
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
@@ -55,11 +68,25 @@ pub struct Search {
     visit: u64,
     query: String,
 
-    // in the apps the query finds
+    // in the answers the query finds
     selected: usize,
 
     // how far the rows scrolled, in pixels
     offset: f32,
+
+    copying: Copying,
+}
+
+/*
+ * a copy, from its press until it is on the clipboard or failed, of the text pressed; so the row
+ * of that text says it failed, whichever is selected by then
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Copying {
+    #[default]
+    Idle,
+    Waiting(String),
+    Failed(String),
 }
 
 impl Service for Search {
@@ -71,6 +98,23 @@ impl Service for Search {
 }
 
 impl Search {
+    // whether pressing `action` was a copy that failed
+    fn failed(&self, action: &Action) -> bool {
+        matches!((&self.copying, action), (Copying::Failed(failed), Action::Copy(text)) if failed == text)
+    }
+
+    /*
+     * the copy of `text` pressed in `visit` failed; nothing once that visit or that copy is over,
+     * so a stale worker never touches a later visit's Search
+     */
+    fn copy_failed(&mut self, visit: u64, text: String) {
+        if self.visit == visit
+            && matches!(&self.copying, Copying::Waiting(waiting) if *waiting == text)
+        {
+            self.copying = Copying::Failed(text);
+        }
+    }
+
     // this visit's search; one kept from an earlier visit is over
     fn of(&self, visit: u64) -> Search {
         if self.visit == visit {
@@ -84,8 +128,8 @@ impl Search {
     }
 
     /*
-     * the search after a key and whether it starts the selected app, none when the key is not for
-     * the Launcher; `count` is how many apps the query finds before the key
+     * the search after a key and whether it presses the selected answer, none when the key is not
+     * for the Launcher; `count` is how many answers the query finds before the key
      */
     fn step(mut self, key: Key, count: usize) -> Option<(Search, bool)> {
         let last = count.saturating_sub(1);
@@ -108,7 +152,7 @@ impl Search {
         Some((self, false))
     }
 
-    // a letter typed, or the last one erased; a new query finds new apps, so it starts at the top
+    // a letter typed, or the last one erased; a new query finds new answers, so it starts at the top
     fn typed(mut self, letter: Option<char>) -> Search {
         match letter {
             Some(letter) => self.query.push(letter),
@@ -166,7 +210,7 @@ fn reveal(offset: f32, row: usize) -> f32 {
 
 /*
  * the rows any part of shows at `offset`, as a range; only these are built, so a morph doesn't
- * lay out and draw every app each frame (#36)
+ * lay out and draw every answer each frame (#36)
  */
 fn shown(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
@@ -188,65 +232,9 @@ fn whole(offset: f32, count: usize) -> (usize, usize) {
     )
 }
 
-/*
- * how well an app answers the query, lower first, none when it does not: its name starting with
- * the query, a word in it starting so, the query in the name, every word of the query in the name,
- * then every word anywhere in its name, description or command
- */
-fn rank(query: &str, name: &str, description: &str, exec: &str) -> Option<u8> {
-    let name = name.to_lowercase();
-
-    if name.starts_with(query) {
-        return Some(0);
-    }
-
-    let word = name
-        .match_indices(query)
-        .any(|(at, _)| !name[..at].ends_with(char::is_alphanumeric));
-
-    if word {
-        return Some(1);
-    }
-
-    if name.contains(query) {
-        return Some(2);
-    }
-
-    let terms = || query.split_whitespace();
-
-    if terms().all(|term| name.contains(term)) {
-        return Some(3);
-    }
-
-    let anywhere = format!("{name} {} {}", description, exec).to_lowercase();
-
-    terms().all(|term| anywhere.contains(term)).then_some(4)
-}
-
-/*
- * the apps the query finds, best first and by name within a rank, since Amane sorts them by name;
- * a query of only spaces finds every app
- */
-fn found(apps: &[DesktopApp], query: &str) -> Vec<DesktopApp> {
-    let query = query.trim().to_lowercase();
-
-    let mut ranked: Vec<(u8, &DesktopApp)> = apps
-        .iter()
-        .filter_map(|app| {
-            let rank = rank(
-                &query,
-                app.name(),
-                app.description().unwrap_or_default(),
-                app.exec(),
-            )?;
-
-            Some((rank, app))
-        })
-        .collect();
-
-    ranked.sort_by_key(|&(rank, _)| rank);
-
-    ranked.into_iter().map(|(_, app)| app.clone()).collect()
+// what the providers find for the query, best first
+fn found(apps: &[DesktopApp], query: &str) -> Vec<Answer> {
+    provider::ranked(&[&Calculator, &AppsProvider(apps), &Emoji], query)
 }
 
 // the view's own read of the visit, so this never reads IslandService again
@@ -256,16 +244,23 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let found = found(apps.list(), &search.query);
     let search = search.bounded(found.len());
 
-    let list: Box<dyn Widget> = if apps.list().is_empty() {
+    let query = search.query.trim();
+    let emoji = query.starts_with(emoji::PREFIX);
+
+    let list: Box<dyn Widget> = if !found.is_empty() {
+        Box::new(list(monitor, &found, &search))
+    } else if apps.list().is_empty() && !emoji {
         // Amane scans every icon theme first, which takes a few seconds after Kanade starts
         Box::new(state("Finding apps", ""))
-    } else if found.is_empty() {
-        Box::new(state(
-            "No matching apps",
-            &format!("Nothing found for \u{201c}{}\u{201d}", search.query.trim()),
-        ))
     } else {
-        Box::new(list(monitor, &found, &search))
+        Box::new(state(
+            if emoji {
+                "No matching emoji"
+            } else {
+                "No matching apps"
+            },
+            &format!("Nothing found for \u{201c}{query}\u{201d}"),
+        ))
     };
 
     let shape = geometry::EXPANDED_MAX;
@@ -301,7 +296,7 @@ fn field(query: &str) -> Rectangle {
         Box::new(
             Row::new(children![
                 caret,
-                Text::new("Search apps")
+                Text::new("Search apps, 2+2 or :emoji")
                     .size(QUERY)
                     .color(theme::ISLAND.on_surface_variant)
                     .weight(theme::text::MEDIUM),
@@ -399,15 +394,18 @@ fn state(title: &str, detail: &str) -> Rectangle {
  * the rows scrolled `offset` down, clipped to the list; a thumb in the inset says where while they
  * do not all fit
  */
-fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
+fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
     let (first, end) = shown(search.offset, found.len());
 
     let column = Column::new(
         found[first..end]
             .iter()
             .zip(first..)
-            .map(|(app, index)| {
-                Box::new(row(monitor, app, index == search.selected)) as Box<dyn Widget>
+            .map(|(answer, index)| {
+                let selected = index == search.selected;
+                let failed = search.failed(&answer.action);
+
+                Box::new(row(monitor, search.visit, answer, selected, failed)) as Box<dyn Widget>
             })
             .collect(),
     )
@@ -450,19 +448,28 @@ fn list(monitor: &str, found: &[DesktopApp], search: &Search) -> Stack {
     Stack::new(layers).width(WIDTH).height(LIST)
 }
 
-// the app's icon, name and what it is; the selected one stands out, and pressing one starts it
-fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
+/*
+ * the answer's mark, title and what it is, or that it was not copied; the selected one stands out,
+ * and pressing one does what it does
+ */
+fn row(monitor: &str, visit: u64, answer: &Answer, selected: bool, failed: bool) -> Rectangle {
     let mut lines = children![
-        Text::new(app.name())
+        Text::new(&answer.title)
             .size(theme::text::BODY)
             .color(theme::ISLAND.on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide()
     ];
 
-    if let Some(description) = app.description().filter(|text| !text.is_empty()) {
+    let detail = if failed {
+        "Not copied"
+    } else {
+        answer.detail.as_str()
+    };
+
+    if !detail.is_empty() {
         lines.push(Box::new(
-            Text::new(description)
+            Text::new(detail)
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::ISLAND.on_surface_variant)
                 .weight(theme::text::MEDIUM)
@@ -484,7 +491,7 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
         .cursor(Cursor::Pointer)
         .child(
             Row::new(vec![
-                icon(app),
+                mark(&answer.mark),
                 Box::new(Column::new(lines).width(Parent).gap(1.0)),
             ])
             .width(Parent)
@@ -500,43 +507,39 @@ fn row(monitor: &str, app: &DesktopApp, selected: bool) -> Rectangle {
     let row = row.border_if(selected);
 
     let monitor = monitor.to_owned();
-    let app = app.clone();
+    let action = answer.action.clone();
 
     row.on_click(super::on_left(move || {
-        launch(&monitor, &app);
+        press(&monitor, visit, action.clone());
     }))
 }
 
 /*
- * the theme's icon, or the name's initial on the quiet tile for an app without one; nothing while
- * it decodes, so no row shifts
+ * an app's icon, a letter or sign on the quiet tile, or an emoji; nothing while an icon decodes,
+ * so no row shifts
  */
-fn icon(app: &DesktopApp) -> Box<dyn Widget> {
-    let Some(path) = app.icon_path() else {
-        let initial = app
-            .name()
-            .chars()
-            .next()
-            .map_or_else(String::new, |initial| initial.to_uppercase().collect());
+fn mark(mark: &Mark) -> Box<dyn Widget> {
+    match mark {
+        Mark::Picture(path) => {
+            // decoded at twice its size, crisp at scale 2
+            let pixels = (ICON * 2.0) as u32;
 
-        return Box::new(view::tile(
-            None,
-            &initial,
-            ICON,
-            radius::ICON,
-            &theme::ISLAND,
-        ));
-    };
-
-    // decoded at twice its size, crisp at scale 2
-    let pixels = (ICON * 2.0) as u32;
-
-    Box::new(
-        Rectangle::new()
-            .width(ICON)
-            .height(ICON)
-            .fill(Image::contain(path).thumbnail(pixels, pixels)),
-    )
+            Box::new(
+                Rectangle::new()
+                    .width(ICON)
+                    .height(ICON)
+                    .fill(Image::contain(path).thumbnail(pixels, pixels)),
+            )
+        }
+        Mark::Tile(sign) => Box::new(view::tile(None, sign, ICON, radius::ICON, &theme::ISLAND)),
+        Mark::Glyph(glyph) => Box::new(
+            Rectangle::new()
+                .width(ICON)
+                .height(ICON)
+                .align_child(Center, Center)
+                .child(Text::new(*glyph).size(ICON * 0.8)),
+        ),
+    }
 }
 
 /*
@@ -557,27 +560,86 @@ pub fn key(monitor: &str, key: Key) -> bool {
     let search = Search::read().of(visit);
     let found = found(Apps::read().list(), &search.query);
 
-    let Some((search, launches)) = search.bounded(found.len()).step(key, found.len()) else {
+    let Some((mut search, presses)) = search.bounded(found.len()).step(key, found.len()) else {
         return false;
     };
 
-    let selected = found.get(search.selected).cloned();
+    let selected = found
+        .get(search.selected)
+        .map(|answer| answer.action.clone());
+
+    // a failed copy is said until the next key
+    if matches!(search.copying, Copying::Failed(_)) {
+        search.copying = Copying::Idle;
+    }
 
     set(search);
 
     IslandService::write().attend(monitor, Instant::now());
 
-    if launches && let Some(app) = selected {
-        launch(monitor, &app);
+    if presses && let Some(action) = selected {
+        press(monitor, visit, action);
     }
 
     true
 }
 
-// what starts is in the way of nothing, so the island closes
-fn launch(monitor: &str, app: &DesktopApp) {
-    app.launch();
-    view::collapse(monitor);
+/*
+ * what starts or is copied is in the way of nothing, so the island closes; a copy once it is on
+ * the clipboard. One copy at a time
+ */
+fn press(monitor: &str, visit: u64, action: Action) {
+    match action {
+        Action::Launch(app) => {
+            app.launch();
+            view::collapse(monitor);
+        }
+        Action::Copy(text) => {
+            let search = Search::read().of(visit);
+
+            if matches!(search.copying, Copying::Waiting(_)) {
+                return;
+            }
+
+            set(Search {
+                copying: Copying::Waiting(text.clone()),
+                ..search
+            });
+
+            let (copying, put) = (monitor.to_owned(), text.clone());
+
+            let copy = thread::Builder::new()
+                .name("launcher-copy".into())
+                .spawn(move || {
+                    let done = clipboard::put(&put);
+
+                    if let Err(error) = &done {
+                        eprintln!("kanade: cannot copy a Launcher answer ({error})");
+                    }
+
+                    copied(&copying, visit, put, done.is_ok());
+                });
+
+            if let Err(error) = copy {
+                eprintln!("kanade: cannot copy a Launcher answer ({error})");
+                copied(monitor, visit, text, false);
+            }
+        }
+    }
+}
+
+/*
+ * how the copy pressed in `visit` went: closes the island, or says it was not copied. Nothing once
+ * that visit is over, so it never closes another
+ */
+fn copied(monitor: &str, visit: u64, text: String, done: bool) {
+    if done {
+        IslandService::write().finish(monitor, visit, Surface::Launcher, Instant::now());
+        return;
+    }
+
+    // checked and written under one guard, as a later visit may be writing its own Search
+    Search::write().copy_failed(visit, text);
 }
 
 // down scrolls further down the list
@@ -600,80 +662,6 @@ fn set(search: Search) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // what the query finds among (name, description, exec), best first, as `found` orders them
-    fn find<'a>(query: &str, apps: &[(&'a str, &str, &str)]) -> Vec<&'a str> {
-        let query = query.trim().to_lowercase();
-
-        let mut ranked: Vec<(u8, &str)> = apps
-            .iter()
-            .filter_map(|&(name, description, exec)| {
-                Some((rank(&query, name, description, exec)?, name))
-            })
-            .collect();
-        ranked.sort_by_key(|&(rank, _)| rank);
-
-        ranked.into_iter().map(|(_, name)| name).collect()
-    }
-
-    const APPS: [(&str, &str, &str); 5] = [
-        (
-            "Files",
-            "Access and organize files",
-            "nautilus --new-window",
-        ),
-        ("Firefox", "Web Browser", "firefox"),
-        (
-            "GNU Image Manipulation Program",
-            "Create images",
-            "gimp-2.10",
-        ),
-        ("Kitty", "Terminal emulator", "kitty"),
-        ("Visual Studio Code", "Code Editing. Redefined.", "code"),
-    ];
-
-    #[test]
-    fn the_name_starting_with_the_query_comes_first() {
-        // the description's "Redefined" finds Code too, after both names
-        assert_eq!(
-            find("fi", &APPS),
-            ["Files", "Firefox", "Visual Studio Code"]
-        );
-        assert_eq!(find("FIRE", &APPS), ["Firefox"]);
-    }
-
-    #[test]
-    fn a_word_start_beats_the_middle_of_a_word() {
-        let apps = [
-            ("Tor Browser", "", "tor"),
-            ("Monitor", "", "monitor"),
-            ("Torrent", "", "torrent"),
-        ];
-
-        assert_eq!(find("tor", &apps), ["Tor Browser", "Torrent", "Monitor"]);
-        assert_eq!(find("code", &APPS), ["Visual Studio Code"]);
-    }
-
-    #[test]
-    fn every_word_may_match_apart_and_then_anywhere() {
-        assert_eq!(
-            find("visual code", &APPS),
-            ["Visual Studio Code"],
-            "both in the name"
-        );
-        assert_eq!(find("nautilus", &APPS), ["Files"], "the command");
-        assert_eq!(find("browser", &APPS), ["Firefox"], "the description");
-        assert_eq!(find("gimp", &APPS), ["GNU Image Manipulation Program"]);
-        assert_eq!(find("zzz", &APPS), Vec::<&str>::new());
-    }
-
-    #[test]
-    fn an_empty_query_finds_every_app_in_order() {
-        let names: Vec<&str> = APPS.iter().map(|app| app.0).collect();
-
-        assert_eq!(find("", &APPS), names);
-        assert_eq!(find("   ", &APPS), names);
-    }
 
     #[test]
     fn typing_edits_the_query_and_starts_at_the_top() {
@@ -815,12 +803,59 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_copy_marks_the_answer_pressed_not_the_selection() {
+        let search = Search {
+            selected: 0,
+            copying: Copying::Failed(String::from("4")),
+            ..Search::default()
+        };
+
+        assert!(search.failed(&Action::Copy(String::from("4"))));
+        assert!(!search.failed(&Action::Copy(String::from("5"))));
+
+        let waiting = Search {
+            copying: Copying::Waiting(String::from("4")),
+            ..Search::default()
+        };
+        assert!(!waiting.failed(&Action::Copy(String::from("4"))));
+    }
+
+    #[test]
+    fn a_stale_failed_copy_leaves_a_later_visit_alone() {
+        let later = Search {
+            visit: 2,
+            query: String::from("fire"),
+            ..Search::default()
+        };
+
+        let mut search = later.clone();
+        search.copy_failed(1, String::from("4"));
+        assert_eq!(search, later);
+
+        let mut search = Search {
+            copying: Copying::Waiting(String::from("4")),
+            ..later.clone()
+        };
+        search.copy_failed(2, String::from("5"));
+        assert_eq!(
+            search.copying,
+            Copying::Waiting(String::from("4")),
+            "another copy"
+        );
+
+        search.copy_failed(2, String::from("4"));
+        assert_eq!(search.copying, Copying::Failed(String::from("4")));
+        assert_eq!(search.query, "fire");
+    }
+
+    #[test]
     fn a_new_visit_starts_empty() {
         let kept = Search {
             visit: 1,
             query: String::from("fire"),
             selected: 2,
             offset: 40.0,
+            copying: Copying::Failed(String::from("4")),
         };
 
         assert_eq!(kept.of(1), kept);
