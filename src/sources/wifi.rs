@@ -3,7 +3,8 @@
 //!
 //! Only the sub-surface reads them: `watch` asks for a scan as it opens, and `system::follow` asks
 //! again for each change of the Wi-Fi device, an access point or the saved profiles while it
-//! shows (`wanted`). Closed, those signals are dropped without a call, as before.
+//! shows (`wanted`). Closed, those signals are dropped without a call, as before. A join waits on
+//! what it hears there too (`hear`): its device, its active connection and NetworkManager itself.
 //!
 //! A password lives in a `Secret`, which never prints, and only until NetworkManager has it: a
 //! profile made to join with one is kept in memory and saved only once the network takes it, so a
@@ -13,23 +14,23 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::{Argument, Bus, Service, Signal, Value};
+use amane::{Argument, Bus, Service, Value};
 
 use super::network::{NAME, ROOT};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 
-const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
+pub const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
 const PROFILE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
-const ATTEMPT: &str = "org.freedesktop.NetworkManager.Connection.Active";
+pub const ATTEMPT: &str = "org.freedesktop.NetworkManager.Connection.Active";
 
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const DEVICES: &str = "/org/freedesktop/NetworkManager/Devices/";
@@ -52,7 +53,7 @@ const OVER: f64 = 4.0;
 
 /*
  * how long a join that is over waits for why the device failed: NetworkManager says it before
- * the join is over, but the two are heard on different threads
+ * the join is over, but the two are heard by different watches
  */
 const LATE: Duration = Duration::from_secs(1);
 
@@ -251,6 +252,13 @@ static WATCHED: AtomicU64 = AtomicU64::new(0);
  * outcome is written, so a newer one cannot be asked between checking and writing
  */
 static ASKED: Mutex<u64> = Mutex::new(0);
+
+/*
+ * the joins waiting on NetworkManager, each by what it asked, told what `system::follow` hears for
+ * them. Its watches are subscribed for good, so a join starts no thread of its own to listen, and
+ * nothing it leaves waits on the bus
+ */
+static LISTENING: Mutex<Vec<(u64, Sender<Heard>)>> = Mutex::new(Vec::new());
 
 /*
  * the sub-surface opening in `visit`: the networks are read now and on every change from here on,
@@ -525,7 +533,7 @@ pub fn join(device: &str, network: &Network, secret: Option<Secret>) {
     set(asked, Join::Joining(ssid.clone()));
 
     thread::spawn(move || {
-        let outcome = joined(&device, &network, secret);
+        let outcome = joined(asked, &device, &network, secret);
 
         set(
             asked,
@@ -537,27 +545,16 @@ pub fn join(device: &str, network: &Network, secret: Option<Secret>) {
     });
 }
 
-fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(), Failure> {
+fn joined(
+    asked: u64,
+    device: &str,
+    network: &Network,
+    secret: Option<Secret>,
+) -> Result<(), Failure> {
     let bus = Bus::system();
 
-    /*
-     * subscribed before asking, so the end of a quick join is not missed. The join's own active
-     * connection says when it is up or over; only the device says why it failed
-     */
-    let (sender, heard) = mpsc::channel();
-
-    listen(&bus, DEVICE, sender.clone(), |signal| {
-        let state = signal.arguments().first()?.number();
-        let reason = signal.arguments().get(2)?.number();
-
-        Some(Heard::Device(signal.path().to_owned(), state, reason))
-    });
-
-    listen(&bus, ATTEMPT, sender, |signal| {
-        let state = signal.arguments().first()?.number();
-
-        Some(Heard::Attempt(signal.path().to_owned(), state))
-    });
+    // listening before asking, so the end of a quick join is not missed
+    let (listening, heard) = listen(asked);
 
     let (made, active) = match (&network.profile, secret) {
         (Some(profile), None) => {
@@ -630,7 +627,7 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
         }
     };
 
-    drop(heard);
+    drop(listening);
 
     if let Some(made) = made {
         if ended.is_ok() {
@@ -648,34 +645,50 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
     ended
 }
 
-// a change a join hears: of a device, in a state for a reason, or of an active connection
+/*
+ * a change a join hears: of a device, in a state for a reason, of an active connection, an
+ * object removed, or NetworkManager going away, which takes every attempt with it
+ */
 #[derive(Debug, Clone, PartialEq)]
-enum Heard {
+pub enum Heard {
     Device(String, f64, f64),
     Attempt(String, f64),
+    Removed(String),
+    Gone,
+}
+
+// a join listening, until dropped
+struct Listening(u64);
+
+impl Drop for Listening {
+    fn drop(&mut self) {
+        let mut listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
+
+        listening.retain(|(asked, _)| *asked != self.0);
+    }
+}
+
+// the join `asked` listening, and what it hears
+fn listen(asked: u64) -> (Listening, Receiver<Heard>) {
+    let (sender, heard) = mpsc::channel();
+    let mut listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
+
+    listening.push((asked, sender));
+
+    (Listening(asked), heard)
 }
 
 /*
- * hears `interface`'s StateChanged on its own thread, so neither subscription waits behind the
- * other or the calls made meanwhile. It ends at the first signal once the join no longer listens
+ * what `system::follow` hears for the joins waiting, none most of the time. The device and active
+ * connection come from different watches, so a join may hear them in either order
  */
-fn listen(
-    bus: &Bus,
-    interface: &str,
-    sender: Sender<Heard>,
-    heard: impl Fn(&Signal) -> Option<Heard> + Send + 'static,
-) {
-    let signals = bus.signals(interface, "StateChanged");
+pub fn hear(heard: Heard) {
+    let listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
 
-    thread::spawn(move || {
-        for signal in signals {
-            if let Some(heard) = heard(&signal)
-                && sender.send(heard).is_err()
-            {
-                return;
-            }
-        }
-    });
+    for (_, sender) in listening.iter() {
+        // one that stops listening is removed by its `Listening`
+        let _ = sender.send(heard.clone());
+    }
 }
 
 /*
@@ -719,6 +732,9 @@ impl<'a> Waiting<'a> {
 
                 self.over |= *state == OVER;
             }
+            // nothing more is said of an attempt removed, nor by NetworkManager gone
+            Heard::Removed(path) if path == self.active => return Some(self.failed()),
+            Heard::Gone => return Some(self.failed()),
             _ => {}
         }
 
@@ -1022,6 +1038,53 @@ mod tests {
         assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), OVER)), None);
         assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), UP)), None);
         assert_eq!(waiting.failed(), Err(Failure::Other));
+    }
+
+    // NetworkManager going away takes the attempt with it, saying no more
+    #[test]
+    fn a_join_ends_when_networkmanager_goes_away() {
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(
+            waiting.hear(&Heard::Device("/d".into(), PREPARING, 0.0)),
+            None
+        );
+        assert_eq!(waiting.hear(&Heard::Gone), Some(Err(Failure::Other)));
+    }
+
+    // its attempt removed says no more either; another removed is not this join's end
+    #[test]
+    fn a_join_ends_when_its_attempt_is_removed() {
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&Heard::Removed("/b".into())), None);
+        assert_eq!(
+            waiting.hear(&Heard::Device("/d".into(), FAILED, NO_SECRETS)),
+            None
+        );
+        assert_eq!(
+            waiting.hear(&Heard::Removed("/a".into())),
+            Some(Err(Failure::WrongPassword))
+        );
+    }
+
+    // a join hears only while it listens, and leaves nothing behind
+    #[test]
+    fn a_join_listens_until_it_ends() {
+        let heard = Heard::Attempt("/a".into(), UP);
+
+        let (listening, waiting) = listen(u64::MAX);
+        hear(heard.clone());
+        assert_eq!(waiting.try_recv(), Ok(heard.clone()));
+
+        drop(listening);
+        hear(heard);
+        assert!(waiting.try_recv().is_err());
+        assert!(
+            LISTENING
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(asked, _)| *asked != u64::MAX)
+        );
     }
 
     #[test]
