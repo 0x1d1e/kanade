@@ -9,14 +9,18 @@
 //! them. It waits on signals instead and asks a daemon again only when one of its objects changes,
 //! comes or goes, or the daemon itself starts or stops: at idle its threads sleep, and a signal
 //! about anything else, like an access point's strength, is dropped without a call. Only while the
-//! Wi-Fi sub-surface shows are the Wi-Fi device and its access points followed too (`wifi`).
+//! Wi-Fi sub-surface shows are the Wi-Fi device and its access points followed too (`wifi`), and
+//! only while the Bluetooth sub-surface shows does the adapter look for devices nearby (`bluetooth`).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Once, mpsc};
 use std::{iter, mem};
 
 use amane::{Bus, Service, Value};
 
 use super::{bluetooth, network, power, wifi};
+use crate::island::presentation::Surface;
+use crate::island::service::IslandService;
 use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
@@ -40,6 +44,36 @@ impl Radio {
             (true, false) => Radio::Off,
             (true, true) => Radio::On,
         }
+    }
+}
+
+/*
+ * a Controls sub-surface that reads its daemon only while it shows: the visit it opened in, 0 while
+ * closed. It lasts one visit of the Surface, so the island closing ends it too (`wanted`)
+ */
+pub struct Watched(AtomicU64);
+
+impl Watched {
+    pub const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    // opening in `visit`; false when it already shows in it
+    pub fn watch(&self, visit: u64) -> bool {
+        self.0.swap(visit, Ordering::Relaxed) != visit
+    }
+
+    // closing; false when it already was
+    pub fn unwatch(&self) -> bool {
+        self.0.swap(0, Ordering::Relaxed) != 0
+    }
+
+    // while it shows
+    pub fn wanted(&self) -> bool {
+        let watched = self.0.load(Ordering::Relaxed);
+        let island = IslandService::read();
+
+        watched != 0 && island.surface() == Some(Surface::Controls) && island.visit() == watched
     }
 }
 

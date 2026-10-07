@@ -4,9 +4,11 @@
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
 //! header names the apps the privacy cluster stands for.
 //!
-//! The Wi-Fi switch's tile opens a sub-surface in its place: the networks in range, to join or
-//! leave, and the password a secured one asks for. A sub-surface goes back a level by its chevron or
-//! Escape. Every target is a key away, a ring on the one the arrows reach (`focus`).
+//! The Wi-Fi and Bluetooth switches' tiles each open a sub-surface in its place, their knobs still
+//! switching them: the networks in range, to join or leave, and the password a secured one asks
+//! for; or the Bluetooth devices, to pair, connect, disconnect or forget (#131). A sub-surface goes
+//! back a level by its chevron or Escape. Every target is a key away, a ring on the one the arrows
+//! reach (`focus`).
 
 use std::time::Instant;
 
@@ -25,7 +27,7 @@ use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::sources::bluetooth::{self, Adapter};
+use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::network::Connectivity;
 use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
@@ -36,7 +38,9 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED};
 use crate::view::bar;
 
+mod bluetooth;
 mod focus;
+mod list;
 mod wifi;
 
 // the content's width, which every row fills
@@ -78,31 +82,37 @@ const HEIGHT: f32 =
 pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectangle {
     let shape = geometry::CONTROLS;
     let focus = Focus::read().of(visit, held);
-    let ring = |grid: &[Vec<(At, f32)>]| (open && focus.shown).then(|| focus.at(grid)).flatten();
+
+    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let focus = settled(focus, &grid);
+    let ring = (open && focus.shown).then(|| focus.at(&grid)).flatten();
 
     let content = match &focus.sub {
-        None => {
-            let ring = ring(&focus.grid(&[]));
-
-            Column::new(children![
-                header(),
-                switches(dnd, ring.as_ref()),
-                levels(ring.as_ref()),
-                profiles(ring.as_ref())
-            ])
-            .width(WIDTH)
-            .gap(GAP)
-        }
-        Some(Subsurface::Wifi) => {
-            let radio = Connectivity::read().wifi;
-            let networks = Networks::read().clone();
-            let ring = ring(&focus.grid(&shown(radio, &networks)));
-
-            wifi::networks(radio, &networks, &Join::read(), &focus, ring.as_ref())
-        }
+        None => Column::new(children![
+            header(),
+            switches(dnd, ring.as_ref()),
+            levels(ring.as_ref()),
+            profiles(ring.as_ref())
+        ])
+        .width(WIDTH)
+        .gap(GAP),
+        Some(Subsurface::Wifi) => wifi::networks(
+            Connectivity::read().wifi,
+            &Networks::read(),
+            &Join::read(),
+            focus.offset,
+            ring.as_ref(),
+        ),
         Some(Subsurface::Password { ssid, secret }) => {
             wifi::password(ssid, secret, Join::read().failed(ssid))
         }
+        Some(Subsurface::Bluetooth) => bluetooth::devices(
+            &Adapter::read(),
+            &Request::read(),
+            &Prompt::read(),
+            focus.offset,
+            ring.as_ref(),
+        ),
     };
 
     Rectangle::new()
@@ -113,17 +123,13 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
         .child(content)
 }
 
-// the networks the Wi-Fi sub-surface lists, by name: none while the radio is not on
-fn shown(radio: Radio, networks: &Networks) -> Vec<String> {
-    if radio != Radio::On {
-        return Vec::new();
+// the targets a listing sub-surface lists under its header, read now
+fn rows(sub: Option<&Subsurface>) -> Vec<Vec<(At, f32)>> {
+    match sub {
+        Some(Subsurface::Wifi) => wifi::rows(Connectivity::read().wifi, &Networks::read()),
+        Some(Subsurface::Bluetooth) => bluetooth::rows(&Adapter::read(), &Prompt::read()),
+        _ => Vec::new(),
     }
-
-    networks
-        .list
-        .iter()
-        .map(|network| network.ssid.clone())
-        .collect()
 }
 
 fn header() -> Row {
@@ -186,11 +192,23 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let on = |at: At| ring == Some(&at);
     let row = |left: Rectangle, right: Rectangle| Row::new(children![left, right]).gap(SWITCH_GAP);
 
-    // the Wi-Fi switch's knob switches it, and the rest of its tile opens its sub-surface
-    let wifi = switch(wifi, width, on(At::WifiSwitch), on(At::Wifi), true);
-    let bluetooth = switch(bluetooth, width, false, on(At::Bluetooth), false);
-    let microphone = switch(microphone, width, false, on(At::Microphone), false);
-    let dnd = switch(dnd, width, false, on(At::Dnd), false);
+    // a radio's knob switches it, and the rest of its tile opens its sub-surface
+    let wifi = switch(
+        wifi,
+        width,
+        on(At::WifiSwitch),
+        on(At::Wifi),
+        Some(At::Wifi),
+    );
+    let bluetooth = switch(
+        bluetooth,
+        width,
+        on(At::BluetoothSwitch),
+        on(At::Bluetooth),
+        Some(At::Bluetooth),
+    );
+    let microphone = switch(microphone, width, false, on(At::Microphone), None);
+    let dnd = switch(dnd, width, false, on(At::Dnd), None);
 
     Column::new(children![row(wifi, bluetooth), row(microphone, dnd)]).gap(SWITCH_GAP)
 }
@@ -233,8 +251,8 @@ fn bluetooth(adapter: &Adapter) -> Switch {
     let connected: Vec<&str> = adapter
         .devices
         .iter()
-        .filter(|peer| peer.connected)
-        .map(|peer| peer.name.as_str())
+        .filter(|device| device.connected)
+        .map(|device| device.name.as_str())
         .collect();
 
     let status = if connected.is_empty() {
@@ -312,10 +330,10 @@ fn dnd(on: Option<bool>) -> Switch {
 
 /*
  * its knob filled while on, then its name and status. Pressing it switches it, or with `opens` only
- * its knob does, and the rest of it, a chevron at its end, opens its sub-surface. `knob_ring` and
- * `ring` say the ring is on the knob or the whole of it
+ * its knob does, and the rest of it, a chevron at its end, presses `opens`, its sub-surface.
+ * `knob_ring` and `ring` say the ring is on the knob or the whole of it
  */
-fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: bool) -> Rectangle {
+fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<At>) -> Rectangle {
     let (fill, ink) = if item.on {
         (theme::ISLAND.primary, theme::ISLAND.on_primary)
     } else {
@@ -342,7 +360,11 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: bool) ->
         .child(knob);
 
     let right = 16.0;
-    let chevron = if opens { 16.0 + ICON_GAP - HALO } else { 0.0 };
+    let chevron = if opens.is_some() {
+        16.0 + ICON_GAP - HALO
+    } else {
+        0.0
+    };
     let words = Column::new(children![
         Text::new(item.name)
             .size(theme::text::LABEL)
@@ -360,8 +382,8 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: bool) ->
 
     let press = item.press;
 
-    let knob = match (&press, opens) {
-        (Some(press), true) => {
+    let knob = match (&press, &opens) {
+        (Some(press), Some(_)) => {
             let press = press.clone();
 
             knob.cursor(Cursor::Pointer)
@@ -374,7 +396,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: bool) ->
 
     let mut parts = children![knob, words];
 
-    if opens {
+    if opens.is_some() {
         parts.push(Box::new(
             Icon::Forward.on(16.0, theme::ISLAND.on_surface_variant),
         ));
@@ -395,12 +417,16 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: bool) ->
         .border_if(ring)
         .child(Row::new(parts).gap(ICON_GAP - HALO).align(Center));
 
-    match press {
-        None => switch.opacity(DISABLED),
-        Some(_) if opens => switch.cursor(Cursor::Pointer).on_click(super::on_left(|| {
-            click(Act::Press(At::Wifi));
-        })),
-        Some(press) => switch
+    match (press, opens) {
+        (None, _) => switch.opacity(DISABLED),
+        (Some(_), Some(opens)) => {
+            switch
+                .cursor(Cursor::Pointer)
+                .on_click(super::on_left(move || {
+                    click(Act::Press(opens.clone()));
+                }))
+        }
+        (Some(press), None) => switch
             .cursor(Cursor::Pointer)
             .on_click(super::on_left(move || {
                 click_switch(press.clone());
@@ -417,7 +443,7 @@ fn click_switch(press: Press) {
 fn run(press: Press) {
     match press {
         Press::Wifi(on) => Network::set_wifi(on),
-        Press::Bluetooth { adapter, on } => bluetooth::power(adapter, on),
+        Press::Bluetooth { adapter, on } => bluez::power(adapter, on),
         Press::Microphone => Audio::toggle_microphone_mute(),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
     }
@@ -651,12 +677,9 @@ pub fn key(monitor: &str, key: Key) -> bool {
         (island.visit(), island.held(monitor))
     };
 
-    let networks = Networks::read();
-    let names = shown(Connectivity::read().wifi, &networks);
     let focus = Focus::read().of(visit, held);
-    let grid = focus.grid(&names);
-    let focus = settled(focus, &grid, &networks);
-    drop(networks);
+    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let focus = settled(focus, &grid);
     let Some((focus, act)) = focus.step(key, &grid) else {
         return false;
     };
@@ -694,19 +717,16 @@ fn hide() -> u64 {
 }
 
 /*
- * the Wi-Fi networks scrolled by `pixels`, down further down, from where they show. The ring hides,
- * since the pointer is what moves now and the ring would hold the list on its network
+ * a listing sub-surface's rows scrolled by `pixels`, down further down, from where they show. The
+ * ring hides, since the pointer is what moves now and the ring would hold the list on its row
  */
 fn scroll(pixels: f32) {
     let visit = IslandService::read().visit();
-    let networks = Networks::read();
-    let names = shown(Connectivity::read().wifi, &networks);
     let focus = Focus::read().of(visit, false);
-    let grid = focus.grid(&names);
-    let mut focus = settled(focus, &grid, &networks);
-    drop(networks);
+    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let mut focus = settled(focus, &grid);
 
-    let most = wifi::most(names.len());
+    let most = list::most(grid.len().saturating_sub(1));
 
     focus.shown = false;
     focus.offset = (focus.offset + pixels).clamp(0.0, most);
@@ -714,11 +734,23 @@ fn scroll(pixels: f32) {
     set(focus);
 }
 
-// `focus` scrolled to where its networks show, so a key or the wheel moves on from what is seen
-fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>], networks: &Networks) -> Focus {
-    let ring = focus.shown.then(|| focus.at(grid)).flatten();
+/*
+ * `focus` scrolled to where its rows show, the ringed one whole, so a key or the wheel moves on
+ * from what is seen. The rows are `grid`'s after the header
+ */
+fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
+    if !focus.listing() {
+        return focus;
+    }
 
-    focus.offset = wifi::scrolled(focus.offset, &networks.list, ring.as_ref());
+    let count = grid.len().saturating_sub(1);
+    let ringed = focus
+        .shown
+        .then(|| focus.row(grid))
+        .flatten()
+        .and_then(|row| row.checked_sub(1));
+
+    focus.offset = list::scrolled(focus.offset, count, ringed);
     focus
 }
 
@@ -746,7 +778,7 @@ fn act(focus: Focus, act: Act, visit: u64) -> Focus {
 fn press(focus: Focus, at: At, visit: u64) -> Focus {
     let switched = match at {
         At::WifiSwitch => self::wifi(&Connectivity::read()).press,
-        At::Bluetooth => self::bluetooth(&Adapter::read()).press,
+        At::BluetoothSwitch => self::bluetooth(&Adapter::read()).press,
         At::Microphone => {
             microphone(modules::on("audio").then(|| Audio::read().microphone_muted())).press
         }
@@ -762,7 +794,16 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
 
             wireless::watch(visit);
 
-            return focus.into_wifi();
+            return focus.enter(Subsurface::Wifi);
+        }
+        At::Bluetooth => {
+            if Adapter::read().radio == Radio::Missing {
+                return focus;
+            }
+
+            bluez::watch(visit);
+
+            return focus.enter(Subsurface::Bluetooth);
         }
         At::Speaker => {
             if modules::on("audio") {
@@ -782,12 +823,31 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
             None
         }
         At::Back => return focus.out(),
+        At::Radio if focus.sub == Some(Subsurface::Bluetooth) => {
+            self::bluetooth(&Adapter::read()).press
+        }
         At::Radio => {
             let radio = Connectivity::read().wifi;
 
             (radio != Radio::Missing).then_some(Press::Wifi(radio != Radio::On))
         }
         At::Network(ssid) => return network(focus, &ssid),
+        At::Device(path) => {
+            device(&path);
+            None
+        }
+        At::Forget(path) => {
+            forget(&path);
+            None
+        }
+        At::Confirm => {
+            bluez::confirm();
+            None
+        }
+        At::Cancel => {
+            bluez::cancel();
+            None
+        }
     };
 
     if let Some(press) = switched {
@@ -825,6 +885,50 @@ fn network(focus: Focus, ssid: &str) -> Focus {
     focus
 }
 
+/*
+ * a device pressed: a connected one is disconnected, a paired one connected, and one nearby paired,
+ * then connected. One something is being done to does nothing, as does one gone
+ */
+fn device(path: &str) {
+    if Request::read().doing(path).is_some() {
+        return;
+    }
+
+    let Some(device) = Adapter::read()
+        .devices
+        .iter()
+        .find(|device| device.path == path)
+        .cloned()
+    else {
+        return;
+    };
+
+    if device.connected {
+        bluez::disconnect(path);
+    } else if device.paired {
+        bluez::connect(path);
+    } else {
+        bluez::pair(path);
+    }
+}
+
+// a paired device forgotten, unless something is being done to it
+fn forget(path: &str) {
+    if Request::read().doing(path).is_some() {
+        return;
+    }
+
+    let adapter = Adapter::read().clone();
+
+    if adapter
+        .devices
+        .iter()
+        .any(|device| device.path == path && device.paired)
+    {
+        bluez::forget(&adapter.path, path);
+    }
+}
+
 // joins with the password typed, back to the networks, where the join says how it goes
 fn join(focus: Focus) -> Focus {
     let Some(Subsurface::Password { ssid, secret }) = &focus.sub else {
@@ -841,12 +945,19 @@ fn join(focus: Focus) -> Focus {
 }
 
 /*
- * a write wakes the window even when nothing changed, so only write a real change. At the top
- * level no sub-surface shows, so the networks stop being read
+ * a write wakes the window even when nothing changed, so only write a real change. Out of a
+ * sub-surface, its daemon stops being read for it
  */
 fn set(focus: Focus) {
-    if focus.sub.is_none() {
+    if !matches!(
+        focus.sub,
+        Some(Subsurface::Wifi | Subsurface::Password { .. })
+    ) {
         wireless::unwatch();
+    }
+
+    if focus.sub != Some(Subsurface::Bluetooth) {
+        bluez::unwatch();
     }
 
     if *Focus::read() != focus {
@@ -857,7 +968,7 @@ fn set(focus: Focus) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::island::activity::Peer;
+    use crate::sources::bluetooth::Device;
 
     #[test]
     fn the_surface_is_as_tall_as_its_rows() {
@@ -898,15 +1009,17 @@ mod tests {
 
     #[test]
     fn bluetooth_names_what_is_connected_and_switches_its_adapter() {
-        let peer = |name: &str, connected| Peer {
+        let peer = |name: &str, connected| Device {
             path: format!("/org/bluez/hci0/dev_{name}"),
             name: name.into(),
+            paired: true,
             connected,
             battery: None,
         };
         let adapter = |radio, devices| Adapter {
             radio,
             path: "/org/bluez/hci0".into(),
+            discovering: false,
             devices,
         };
 

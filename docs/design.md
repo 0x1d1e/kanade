@@ -113,7 +113,7 @@ Rules:
 ### Core Surfaces
 
 - **Launcher**: providers = apps, calculator, emoji, wallpaper. Focus only while open. Provider seam internal; no public plugin API yet.
-- **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth, audio.
+- **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio.
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
