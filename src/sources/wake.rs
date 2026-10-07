@@ -6,12 +6,14 @@
 //! A command that is not running cannot announce anything, so while one is down the source polls.
 
 use std::io::{self, BufRead, BufReader};
+use std::os::unix::fs::PermissionsExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, fs};
 
 use crate::supervise;
 
@@ -28,7 +30,7 @@ const HEALTHY: Duration = Duration::from_secs(60);
 pub const SETPRIV: &str = "setpriv";
 
 // what setpriv exits with when it cannot find the program, like a shell
-const NOT_FOUND: i32 = 127;
+pub const NOT_FOUND: i32 = 127;
 
 /*
  * runs `program` until `stop`, `follow` reading its output until it ends and saying why; ran again
@@ -123,6 +125,17 @@ fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
     })
 }
 
+// whether setpriv is on the PATH, so a program Kanade has another start, like wl-paste's watch
+// command, can go through it as `spawn` says
+pub fn guards() -> bool {
+    env::var_os("PATH").is_some_and(|path| {
+        env::split_paths(&path).any(|dir| {
+            fs::metadata(dir.join(SETPRIV))
+                .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
 // starts `program` through setpriv as `spawn` says, `start` setting up its pipes and starting it
 fn guarded(
     program: &str,
@@ -182,6 +195,21 @@ pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
     Err(match said.is_empty() {
         true => format!("`{command}` failed ({})", output.status),
         false => format!("`{command}` failed ({}): {said}", output.status),
+    })
+}
+
+/*
+ * starts `program` as a holder (ADR 0011): it stands for some state, so it runs until the caller
+ * kills it or it exits on its own, dying with the calling thread as `spawn` says. Its stdin is
+ * piped, for what it holds
+ */
+pub fn hold(program: &str, args: &[&str]) -> io::Result<Child> {
+    guarded(program, args, |command| {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
     })
 }
 

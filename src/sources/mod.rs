@@ -5,6 +5,7 @@ pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod bus;
+pub mod clipboard;
 pub mod json;
 pub mod media;
 pub mod network;

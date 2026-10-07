@@ -29,6 +29,11 @@ use amane::App;
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
 
+    if arguments == [sources::clipboard::HAND_OVER] {
+        sources::clipboard::hand_over_selection();
+        return ExitCode::SUCCESS;
+    }
+
     if !arguments.is_empty() {
         return cli::run(&arguments);
     }

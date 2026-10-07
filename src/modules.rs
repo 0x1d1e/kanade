@@ -14,8 +14,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, media, network, niri, notifications, osd, pipewire, power, privacy,
-    system, timer, tray, wake,
+    audio, battery, bluetooth, clipboard, media, network, niri, notifications, osd, pipewire,
+    power, privacy, system, timer, tray, wake,
 };
 use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
@@ -405,6 +405,29 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             tray::follow();
+            app
+        },
+    },
+    // the clipboard history, kept only in memory; nothing shows it yet (#137)
+    Module {
+        name: "clipboard",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(clipboard::PASTE),
+                without: "no clipboard history",
+            },
+            Need {
+                on: Provider::Program(clipboard::COPY),
+                without: "no restoring a clipboard entry",
+            },
+        ],
+        settings: &[],
+        verbs: &[],
+        start: |app| {
+            clipboard::follow();
             app
         },
     },
