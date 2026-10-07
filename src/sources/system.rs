@@ -8,14 +8,15 @@
 //! Amane's Network and Bluetooth poll every second or two for good once read, so this never reads
 //! them. It waits on signals instead and asks a daemon again only when one of its objects changes,
 //! comes or goes, or the daemon itself starts or stops: at idle its threads sleep, and a signal
-//! about anything else, like an access point's strength, is dropped without a call.
+//! about anything else, like an access point's strength, is dropped without a call. Only while the
+//! Wi-Fi sub-surface shows are the Wi-Fi device and its access points followed too (`wifi`).
 
 use std::sync::{Once, mpsc};
 use std::{iter, mem};
 
 use amane::{Bus, Service, Value};
 
-use super::{bluetooth, network, power};
+use super::{bluetooth, network, power, wifi};
 use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
@@ -46,6 +47,11 @@ impl Radio {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Daemon {
     NetworkManager,
+
+    // NetworkManager's Wi-Fi device, its access points or saved profiles, for the Wi-Fi
+    // sub-surface only
+    Wifi,
+
     BlueZ,
     PowerProfiles,
 }
@@ -93,6 +99,7 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
 
     match watch {
         Watch::Properties if network::concerns(path, first) => Some(Daemon::NetworkManager),
+        Watch::Properties if wifi::concerns(path, first) => Some(Daemon::Wifi),
         Watch::Properties if bluetooth::concerns(path, first) => Some(Daemon::BlueZ),
         Watch::Properties if power::concerns(path, first) => Some(Daemon::PowerProfiles),
 
@@ -119,7 +126,7 @@ struct Daemons {
 impl Daemons {
     fn follows(self, daemon: Daemon) -> bool {
         match daemon {
-            Daemon::NetworkManager => self.network,
+            Daemon::NetworkManager | Daemon::Wifi => self.network,
             Daemon::BlueZ => self.bluetooth,
             Daemon::PowerProfiles => self.power,
         }
@@ -178,8 +185,11 @@ fn follow(daemons: Daemons) {
         // a restart goes on with the same subscription, so no signal is lost to it
         supervise::spawn("system bus watch", move || {
             for signal in signals.by_ref() {
+                // the Wi-Fi device and its access points say much, heard only while the
+                // sub-surface shows
                 let Some(daemon) = route(watch, signal.sender(), signal.path(), signal.arguments())
                     .filter(|&daemon| daemons.follows(daemon))
+                    .filter(|&daemon| daemon != Daemon::Wifi || wifi::wanted())
                 else {
                     continue;
                 };
@@ -225,6 +235,11 @@ fn follow(daemons: Daemons) {
 fn refresh_all(daemons: Vec<Daemon>) {
     if daemons.contains(&Daemon::NetworkManager) {
         refresh(network::read());
+    }
+
+    // NetworkManager restarting, or the Wi-Fi switch, changes the networks too
+    if daemons.contains(&Daemon::NetworkManager) || daemons.contains(&Daemon::Wifi) {
+        wifi::refresh();
     }
 
     if daemons.contains(&Daemon::BlueZ) {
@@ -278,6 +293,13 @@ mod tests {
             changed(network::ROOT, network::NAME),
             Some(Daemon::NetworkManager)
         );
+        assert_eq!(
+            changed(
+                "/org/freedesktop/NetworkManager/AccessPoint/1",
+                "org.freedesktop.NetworkManager.AccessPoint"
+            ),
+            Some(Daemon::Wifi)
+        );
         assert_eq!(changed(BUDS, "org.bluez.Device1"), Some(Daemon::BlueZ));
         assert_eq!(
             changed("/org/bluez/hci0", "org.bluez.Adapter1"),
@@ -305,8 +327,8 @@ mod tests {
 
         assert_eq!(
             changed(
-                "/org/freedesktop/NetworkManager/AccessPoint/1",
-                "org.freedesktop.NetworkManager.AccessPoint"
+                "/org/freedesktop/NetworkManager/Devices/2",
+                "org.freedesktop.NetworkManager.Device.Statistics"
             ),
             None
         );

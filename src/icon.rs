@@ -30,7 +30,10 @@ const WAVE_FAR: &str = include_str!("icons/wave-far.svg");
 const MUTE: &str = include_str!("icons/mute.svg");
 const MICROPHONE: &str = include_str!("icons/microphone.svg");
 const SUN: &str = include_str!("icons/sun.svg");
-const WIFI: &str = include_str!("icons/wifi.svg");
+const WIFI_DOT: &str = include_str!("icons/wifi-dot.svg");
+const WIFI_NEAR: &str = include_str!("icons/wifi-near.svg");
+const WIFI_MID: &str = include_str!("icons/wifi-mid.svg");
+const WIFI_FAR: &str = include_str!("icons/wifi-far.svg");
 const BLUETOOTH: &str = include_str!("icons/bluetooth.svg");
 const BELL: &str = include_str!("icons/bell.svg");
 const MOON: &str = include_str!("icons/moon.svg");
@@ -44,6 +47,9 @@ const PLAY: &str = include_str!("icons/play.svg");
 const PAUSE: &str = include_str!("icons/pause.svg");
 const NEXT: &str = include_str!("icons/next.svg");
 const DISMISS: &str = include_str!("icons/dismiss.svg");
+const BACK: &str = include_str!("icons/back.svg");
+const FORWARD: &str = include_str!("icons/forward.svg");
+const LOCK: &str = include_str!("icons/lock.svg");
 const SLASH: &str = include_str!("icons/slash.svg");
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
@@ -56,6 +62,10 @@ pub(crate) enum Icon {
     MicrophoneMuted,
     Sun,
     Wifi,
+
+    // a network's signal, its arcs by bars from none to three; three is `Wifi`
+    Signal(u8),
+
     Bluetooth,
     Bell,
 
@@ -85,6 +95,13 @@ pub(crate) enum Icon {
 
     // the cross that closes a notification
     Dismiss,
+
+    // chevrons out of a sub-surface and into one
+    Back,
+    Forward,
+
+    // a network that takes a password
+    Lock,
 }
 
 // the icons drawn so far, by what tells their pixels apart, and the svg each was written to
@@ -151,6 +168,7 @@ impl Icon {
             Icon::Speaker(1..=50) => Icon::Speaker(1),
             Icon::Speaker(_) => Icon::Speaker(51),
             Icon::MicrophoneMuted => Icon::Microphone,
+            Icon::Signal(3..) => Icon::Wifi,
             icon => icon,
         }
     }
@@ -164,7 +182,10 @@ impl Icon {
             Icon::SpeakerMuted => &[SPEAKER, MUTE],
             Icon::Microphone | Icon::MicrophoneMuted => &[MICROPHONE],
             Icon::Sun => &[SUN],
-            Icon::Wifi => &[WIFI],
+            Icon::Wifi | Icon::Signal(3..) => &[WIFI_DOT, WIFI_NEAR, WIFI_MID, WIFI_FAR],
+            Icon::Signal(0) => &[WIFI_DOT],
+            Icon::Signal(1) => &[WIFI_DOT, WIFI_NEAR],
+            Icon::Signal(_) => &[WIFI_DOT, WIFI_NEAR, WIFI_MID],
             Icon::Bluetooth => &[BLUETOOTH],
             Icon::Bell => &[BELL],
             Icon::Moon => &[MOON],
@@ -178,6 +199,9 @@ impl Icon {
             Icon::Pause => &[PAUSE],
             Icon::Next => &[NEXT],
             Icon::Dismiss => &[DISMISS],
+            Icon::Back => &[BACK],
+            Icon::Forward => &[FORWARD],
+            Icon::Lock => &[LOCK],
         }
     }
 
@@ -219,7 +243,7 @@ fn content(svg: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 22] = [
+    const ALL: [Icon; 28] = [
         Icon::Speaker(0),
         Icon::Speaker(30),
         Icon::Speaker(80),
@@ -242,6 +266,12 @@ mod tests {
         Icon::Next,
         Icon::Dismiss,
         Icon::Speaker(100),
+        Icon::Signal(0),
+        Icon::Signal(1),
+        Icon::Signal(2),
+        Icon::Back,
+        Icon::Forward,
+        Icon::Lock,
     ];
 
     #[test]
@@ -266,6 +296,14 @@ mod tests {
         for (low, high) in [(1, 50), (51, 100)] {
             assert_eq!(Icon::Speaker(low).layers(), Icon::Speaker(high).layers());
         }
+    }
+
+    #[test]
+    fn full_signal_is_the_wifi_icon() {
+        assert_eq!(Icon::Signal(3).drawn_as(), Icon::Wifi);
+        assert_eq!(Icon::Signal(3).layers(), Icon::Wifi.layers());
+        assert_eq!(Icon::Signal(1).layers().len(), 2);
+        assert_ne!(Icon::Signal(2).drawn_as(), Icon::Wifi);
     }
 
     #[test]
@@ -312,8 +350,8 @@ mod tests {
             assert_eq!(drawn(), written);
         }
 
-        // one svg per drawing and ink, not per size: 20 drawings, each plain and crossed
-        assert_eq!(written, 40);
+        // one svg per drawing and ink, not per size: 26 drawings, each plain and crossed
+        assert_eq!(written, 52);
 
         for (path, _) in &first {
             assert!(path.exists(), "{}", path.display());

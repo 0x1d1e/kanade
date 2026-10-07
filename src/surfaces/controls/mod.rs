@@ -3,19 +3,27 @@
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
 //! header names the apps the privacy cluster stands for.
+//!
+//! The Wi-Fi switch's tile opens a sub-surface in its place: the networks in range, to join or
+//! leave, and the password a secured one asks for. A sub-surface goes back a level by its chevron or
+//! Escape. Every target is a key away, a ring on the one the arrows reach (`focus`).
 
 use std::time::Instant;
 
 use amane::{
-    Audio, Brightness, Center, Color, Column, Cursor, End, Network, Padding, Parent, Rectangle,
-    Row, Scroll, Service, Start, Text, Widget, children,
+    Audio, Brightness, Center, Color, Column, Cursor, End, Key, Network, Padding, Parent,
+    Rectangle, Row, Scroll, Service, Start, Text, Widget, children,
 };
 
+use self::focus::{Act, At, Focus, Subsurface};
+use super::Ring;
 use super::slider::Slider;
 use crate::cluster;
 use crate::icon::Icon;
 use crate::island::activity::Uplink;
 use crate::island::geometry;
+use crate::island::presentation::{Presentation, Surface};
+use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::bluetooth::{self, Adapter};
 use crate::sources::network::Connectivity;
@@ -23,9 +31,13 @@ use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::Privacy;
 use crate::sources::system::Radio;
+use crate::sources::wifi::{self as wireless, Failure, Join, Link, Networks, Security};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED};
 use crate::view::bar;
+
+mod focus;
+mod wifi;
 
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
@@ -38,6 +50,9 @@ const SWITCH: f32 = 48.0;
 const SWITCH_GAP: f32 = 8.0;
 const KNOB: f32 = 32.0;
 const KNOB_INSET: f32 = (SWITCH - KNOB) / 2.0;
+
+// room around the knob for the ring, which would not show on a filled knob
+const HALO: f32 = 4.0;
 
 const ICON_GAP: f32 = 10.0;
 const LEVEL_GAP: f32 = 8.0;
@@ -55,22 +70,60 @@ const HEIGHT: f32 =
     2.0 * INSET + HEADER + 2.0 * SWITCH + SWITCH_GAP + 2.0 * TARGET + LEVEL_GAP + TRACK + 3.0 * GAP;
 
 /*
- * `dnd` is the view's own read of IslandService, so this never reads it again; none while the
- * notifications Module is off, since nothing heeds it then
+ * the top level, or the sub-surface entered from it. `visit`, `held` and `dnd` are the view's own
+ * read of IslandService, so this never reads it again; `dnd` is none while the notifications Module
+ * is off, since nothing heeds it then. `open` says the Surface is open rather than fading out, so
+ * only then does the ring show
  */
-pub fn surface(dnd: Option<bool>) -> Rectangle {
+pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectangle {
     let shape = geometry::CONTROLS;
+    let focus = Focus::read().of(visit, held);
+    let ring = |grid: &[Vec<(At, f32)>]| (open && focus.shown).then(|| focus.at(grid)).flatten();
+
+    let content = match &focus.sub {
+        None => {
+            let ring = ring(&focus.grid(&[]));
+
+            Column::new(children![
+                header(),
+                switches(dnd, ring.as_ref()),
+                levels(ring.as_ref()),
+                profiles(ring.as_ref())
+            ])
+            .width(WIDTH)
+            .gap(GAP)
+        }
+        Some(Subsurface::Wifi) => {
+            let radio = Connectivity::read().wifi;
+            let networks = Networks::read().clone();
+            let ring = ring(&focus.grid(&shown(radio, &networks)));
+
+            wifi::networks(radio, &networks, &Join::read(), &focus, ring.as_ref())
+        }
+        Some(Subsurface::Password { ssid, secret }) => {
+            wifi::password(ssid, secret, Join::read().failed(ssid))
+        }
+    };
 
     Rectangle::new()
         .width(shape.width)
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
-        .child(
-            Column::new(children![header(), switches(dnd), levels(), profiles()])
-                .width(WIDTH)
-                .gap(GAP),
-        )
+        .child(content)
+}
+
+// the networks the Wi-Fi sub-surface lists, by name: none while the radio is not on
+fn shown(radio: Radio, networks: &Networks) -> Vec<String> {
+    if radio != Radio::On {
+        return Vec::new();
+    }
+
+    networks
+        .list
+        .iter()
+        .map(|network| network.ssid.clone())
+        .collect()
 }
 
 fn header() -> Row {
@@ -122,7 +175,7 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
 }
 
 // Wi-Fi and Bluetooth, then the microphone and Do Not Disturb
-fn switches(dnd: Option<bool>) -> Column {
+fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
     let microphone =
@@ -130,9 +183,14 @@ fn switches(dnd: Option<bool>) -> Column {
     let dnd = self::dnd(dnd);
 
     let width = (WIDTH - SWITCH_GAP) / 2.0;
-    let row = |left: Switch, right: Switch| {
-        Row::new(children![switch(left, width), switch(right, width)]).gap(SWITCH_GAP)
-    };
+    let on = |at: At| ring == Some(&at);
+    let row = |left: Rectangle, right: Rectangle| Row::new(children![left, right]).gap(SWITCH_GAP);
+
+    // the Wi-Fi switch's knob switches it, and the rest of its tile opens its sub-surface
+    let wifi = switch(wifi, width, on(At::WifiSwitch), on(At::Wifi), true);
+    let bluetooth = switch(bluetooth, width, false, on(At::Bluetooth), false);
+    let microphone = switch(microphone, width, false, on(At::Microphone), false);
+    let dnd = switch(dnd, width, false, on(At::Dnd), false);
 
     Column::new(children![row(wifi, bluetooth), row(microphone, dnd)]).gap(SWITCH_GAP)
 }
@@ -252,8 +310,12 @@ fn dnd(on: Option<bool>) -> Switch {
     }
 }
 
-// its knob filled while on, then its name and status
-fn switch(item: Switch, width: f32) -> Rectangle {
+/*
+ * its knob filled while on, then its name and status. Pressing it switches it, or with `opens` only
+ * its knob does, and the rest of it, a chevron at its end, opens its sub-surface. `knob_ring` and
+ * `ring` say the ring is on the knob or the whole of it
+ */
+fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: bool) -> Rectangle {
     let (fill, ink) = if item.on {
         (theme::ISLAND.primary, theme::ISLAND.on_primary)
     } else {
@@ -271,7 +333,16 @@ fn switch(item: Switch, width: f32) -> Rectangle {
         .align_child(Center, Center)
         .child(item.icon.on(18.0, ink));
 
+    let knob = Rectangle::new()
+        .width(KNOB + 2.0 * HALO)
+        .height(KNOB + 2.0 * HALO)
+        .radius(KNOB / 2.0 + HALO)
+        .align_child(Center, Center)
+        .border_if(knob_ring)
+        .child(knob);
+
     let right = 16.0;
+    let chevron = if opens { 16.0 + ICON_GAP - HALO } else { 0.0 };
     let words = Column::new(children![
         Text::new(item.name)
             .size(theme::text::LABEL)
@@ -284,8 +355,30 @@ fn switch(item: Switch, width: f32) -> Rectangle {
             .weight(theme::text::MEDIUM)
             .elide(),
     ])
-    .width(width - KNOB_INSET - KNOB - ICON_GAP - right)
+    .width(width - KNOB_INSET - KNOB - ICON_GAP - right - chevron)
     .gap(2.0);
+
+    let press = item.press;
+
+    let knob = match (&press, opens) {
+        (Some(press), true) => {
+            let press = press.clone();
+
+            knob.cursor(Cursor::Pointer)
+                .on_click(super::on_left(move || {
+                    click_switch(press.clone());
+                }))
+        }
+        _ => knob,
+    };
+
+    let mut parts = children![knob, words];
+
+    if opens {
+        parts.push(Box::new(
+            Icon::Forward.on(16.0, theme::ISLAND.on_surface_variant),
+        ));
+    }
 
     let switch = Rectangle::new()
         .width(width)
@@ -296,19 +389,29 @@ fn switch(item: Switch, width: f32) -> Rectangle {
             top: 0.0,
             right,
             bottom: 0.0,
-            left: KNOB_INSET,
+            left: KNOB_INSET - HALO,
         })
         .align_child(Start, Center)
-        .child(Row::new(children![knob, words]).gap(ICON_GAP).align(Center));
+        .border_if(ring)
+        .child(Row::new(parts).gap(ICON_GAP - HALO).align(Center));
 
-    match item.press {
+    match press {
+        None => switch.opacity(DISABLED),
+        Some(_) if opens => switch.cursor(Cursor::Pointer).on_click(super::on_left(|| {
+            click(Act::Press(At::Wifi));
+        })),
         Some(press) => switch
             .cursor(Cursor::Pointer)
             .on_click(super::on_left(move || {
-                run(press.clone());
+                click_switch(press.clone());
             })),
-        None => switch.opacity(DISABLED),
     }
+}
+
+// a switch clicked: the ring hides, as for any click
+fn click_switch(press: Press) {
+    hide();
+    run(press);
 }
 
 fn run(press: Press) {
@@ -324,7 +427,7 @@ fn run(press: Press) {
  * the speaker, its icon pressed to mute, then the screen; with `audio` or `brightness` off its
  * Service is never read, and its row is faded and empty
  */
-fn levels() -> Column {
+fn levels(ring: Option<&At>) -> Column {
     let speaker = modules::on("audio").then(|| {
         let audio = Audio::read();
 
@@ -363,13 +466,20 @@ fn levels() -> Column {
                 theme::ISLAND.on_surface
             };
 
-            level(icon, Some(Slider::Speaker), Some(volume), tone)
+            level(
+                icon,
+                Some(Slider::Speaker),
+                Some(volume),
+                tone,
+                ring == Some(&At::Speaker),
+            )
         }
         None => level(
             icon.child(Icon::Speaker(0).draw(20.0)),
             None,
             None,
             theme::ISLAND.on_surface,
+            ring == Some(&At::Speaker),
         ),
     };
 
@@ -385,16 +495,23 @@ fn levels() -> Column {
         screen.map(|_| Slider::Brightness),
         screen,
         theme::ISLAND.on_surface,
+        ring == Some(&At::Brightness),
     );
 
     Column::new(children![volume, brightness]).gap(LEVEL_GAP)
 }
 
 /*
- * its icon, its bar, then its number; the wheel anywhere on the row moves it. None to set leaves
- * the row faded and empty
+ * its icon, its bar, then its number; the wheel anywhere on the row moves it, as Left and Right do
+ * with the ring on it. None to set leaves the row faded and empty
  */
-fn level(icon: Rectangle, slider: Option<Slider>, percent: Option<u8>, tone: Color) -> Rectangle {
+fn level(
+    icon: Rectangle,
+    slider: Option<Slider>,
+    percent: Option<u8>,
+    tone: Color,
+    ring: bool,
+) -> Rectangle {
     let width = WIDTH - TARGET - NUMBER - 2.0 * ICON_GAP;
     let fraction = f32::from(percent.unwrap_or(0)) / 100.0;
 
@@ -421,7 +538,9 @@ fn level(icon: Rectangle, slider: Option<Slider>, percent: Option<u8>, tone: Col
     let row = Rectangle::new()
         .width(WIDTH)
         .height(TARGET)
+        .radius(TARGET / 2.0)
         .align_child(Start, Center)
+        .border_if(ring)
         .child(
             Row::new(children![icon, bar, number])
                 .gap(ICON_GAP)
@@ -438,7 +557,7 @@ fn level(icon: Rectangle, slider: Option<Slider>, percent: Option<u8>, tone: Col
  * the bolt, then every profile, the active one filled. One the machine lacks is faded in its place,
  * and with no daemon running so is the whole row
  */
-fn profiles() -> Rectangle {
+fn profiles(ring: Option<&At>) -> Rectangle {
     let profiles = Profiles::read().clone();
 
     let width = WIDTH - TARGET - ICON_GAP;
@@ -452,6 +571,7 @@ fn profiles() -> Rectangle {
                 segment,
                 profiles.active == Some(profile),
                 profiles.available.contains(&profile),
+                ring == Some(&At::Profile(profile)),
             )) as Box<dyn Widget>
         })
         .collect();
@@ -484,12 +604,13 @@ fn profiles() -> Rectangle {
     }
 }
 
-fn segment(profile: Profile, width: f32, active: bool, available: bool) -> Rectangle {
+fn segment(profile: Profile, width: f32, active: bool, available: bool, ring: bool) -> Rectangle {
     let segment = Rectangle::new()
         .width(width)
         .height(TARGET)
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
+        .border_if(ring)
         .child(
             Text::new(profile.label())
                 .size(theme::text::LABEL_SMALL)
@@ -507,10 +628,229 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool) -> Recta
         segment
             .cursor(Cursor::Pointer)
             .on_click(super::on_left(move || {
-                power::set(profile);
+                click(Act::Press(At::Profile(profile)));
             }))
     } else {
         segment.opacity(DISABLED)
+    }
+}
+
+/*
+ * a key while this island shows the Surface; false for one it does not use, which the window's own
+ * keys then get, like Escape at the top level, which closes the island. The first key only shows
+ * the ring where it is. A key it uses keeps a held island open for another hold
+ */
+pub fn key(monitor: &str, key: Key) -> bool {
+    let (visit, held) = {
+        let island = IslandService::read();
+
+        if island.presentation(monitor) != Presentation::Expanded(Surface::Controls) {
+            return false;
+        }
+
+        (island.visit(), island.held(monitor))
+    };
+
+    let networks = Networks::read();
+    let names = shown(Connectivity::read().wifi, &networks);
+    let focus = Focus::read().of(visit, held);
+    let grid = focus.grid(&names);
+    let focus = settled(focus, &grid, &networks);
+    drop(networks);
+    let Some((focus, act)) = focus.step(key, &grid) else {
+        return false;
+    };
+
+    let focus = match act {
+        Some(act) => self::act(focus, act, visit),
+        None => focus,
+    };
+
+    set(focus);
+
+    IslandService::write().attend(monitor, Instant::now());
+
+    true
+}
+
+// a target clicked: the ring hides, since the pointer is what moves now
+fn click(act: Act) {
+    let visit = hide();
+    let focus = Focus::read().of(visit, false);
+
+    set(self::act(focus, act, visit));
+}
+
+// hides the ring, giving the visit it hid in
+fn hide() -> u64 {
+    let visit = IslandService::read().visit();
+
+    let mut focus = Focus::read().of(visit, false);
+    focus.shown = false;
+
+    set(focus);
+
+    visit
+}
+
+/*
+ * the Wi-Fi networks scrolled by `pixels`, down further down, from where they show. The ring hides,
+ * since the pointer is what moves now and the ring would hold the list on its network
+ */
+fn scroll(pixels: f32) {
+    let visit = IslandService::read().visit();
+    let networks = Networks::read();
+    let names = shown(Connectivity::read().wifi, &networks);
+    let focus = Focus::read().of(visit, false);
+    let grid = focus.grid(&names);
+    let mut focus = settled(focus, &grid, &networks);
+    drop(networks);
+
+    let most = wifi::most(names.len());
+
+    focus.shown = false;
+    focus.offset = (focus.offset + pixels).clamp(0.0, most);
+
+    set(focus);
+}
+
+// `focus` scrolled to where its networks show, so a key or the wheel moves on from what is seen
+fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>], networks: &Networks) -> Focus {
+    let ring = focus.shown.then(|| focus.at(grid)).flatten();
+
+    focus.offset = wifi::scrolled(focus.offset, &networks.list, ring.as_ref());
+    focus
+}
+
+// what a key or click asks for done, giving where that leaves the focus
+fn act(focus: Focus, act: Act, visit: u64) -> Focus {
+    match act {
+        Act::Press(at) => press(focus, at, visit),
+        Act::Adjust(At::Speaker, lines) => {
+            Slider::Speaker.wheel(lines);
+            focus
+        }
+        Act::Adjust(At::Brightness, lines) => {
+            Slider::Brightness.wheel(lines);
+            focus
+        }
+        Act::Adjust(..) => focus,
+        Act::Join => join(focus),
+    }
+}
+
+/*
+ * what pressing `at` does, read now, so the keyboard does what a click on the same target would.
+ * What is unavailable does nothing
+ */
+fn press(focus: Focus, at: At, visit: u64) -> Focus {
+    let switched = match at {
+        At::WifiSwitch => self::wifi(&Connectivity::read()).press,
+        At::Bluetooth => self::bluetooth(&Adapter::read()).press,
+        At::Microphone => {
+            microphone(modules::on("audio").then(|| Audio::read().microphone_muted())).press
+        }
+        At::Dnd => {
+            let on = modules::on("notifications").then(|| IslandService::read().dnd());
+
+            dnd(on).press
+        }
+        At::Wifi => {
+            if Connectivity::read().wifi == Radio::Missing {
+                return focus;
+            }
+
+            wireless::watch(visit);
+
+            return focus.into_wifi();
+        }
+        At::Speaker => {
+            if modules::on("audio") {
+                Audio::toggle_mute();
+            }
+
+            None
+        }
+        At::Brightness => None,
+        At::Profile(profile) => {
+            let profiles = Profiles::read().clone();
+
+            if profiles.active != Some(profile) && profiles.available.contains(&profile) {
+                power::set(profile);
+            }
+
+            None
+        }
+        At::Back => return focus.out(),
+        At::Radio => {
+            let radio = Connectivity::read().wifi;
+
+            (radio != Radio::Missing).then_some(Press::Wifi(radio != Radio::On))
+        }
+        At::Network(ssid) => return network(focus, &ssid),
+    };
+
+    if let Some(press) = switched {
+        run(press);
+    }
+
+    focus
+}
+
+/*
+ * a network pressed: the joined one is left, a secured one not yet joined, or whose password was
+ * wrong, asks for its password first, and any other is joined. One joining or that this cannot
+ * join does nothing
+ */
+fn network(focus: Focus, ssid: &str) -> Focus {
+    let networks = Networks::read().clone();
+    let join = Join::read().clone();
+
+    let Some(network) = networks.list.iter().find(|network| network.ssid == ssid) else {
+        return focus;
+    };
+
+    let joining = network.link == Link::Joining || join.joining(ssid);
+    let asks = network.profile.is_none() || join.failed(ssid) == Some(Failure::WrongPassword);
+
+    if network.link == Link::Joined {
+        wireless::disconnect(&networks.device);
+    } else if joining || network.security == Security::Unsupported {
+    } else if network.security.password() && asks {
+        return focus.into_password(ssid);
+    } else {
+        wireless::join(&networks.device, network, None);
+    }
+
+    focus
+}
+
+// joins with the password typed, back to the networks, where the join says how it goes
+fn join(focus: Focus) -> Focus {
+    let Some(Subsurface::Password { ssid, secret }) = &focus.sub else {
+        return focus;
+    };
+
+    let networks = Networks::read().clone();
+
+    if let Some(network) = networks.list.iter().find(|network| network.ssid == *ssid) {
+        wireless::join(&networks.device, network, Some(secret.clone()));
+    }
+
+    focus.out()
+}
+
+/*
+ * a write wakes the window even when nothing changed, so only write a real change. At the top
+ * level no sub-surface shows, so the networks stop being read
+ */
+fn set(focus: Focus) {
+    if focus.sub.is_none() {
+        wireless::unwatch();
+    }
+
+    if *Focus::read() != focus {
+        *Focus::write() = focus;
     }
 }
 

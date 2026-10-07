@@ -130,13 +130,18 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .namespace("kanade")
         .keyboard(keyboard)
         .on_key(move |key| {
+            // a Surface whose Module is off never opens, so its keys read nothing. Controls goes
+            // first, as Escape in one of its sub-surfaces goes back a level rather than closing
+            if modules::on("controls") && surfaces::controls::key(&pressed, key) {
+                return;
+            }
+
             if key == Key::Escape {
                 collapse(&pressed);
 
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
             } else {
-                // a Surface whose Module is off never opens, so its keys read nothing
                 let notifications = modules::on("notification-surface")
                     && surfaces::notifications::key(&pressed, key);
                 let launcher = !notifications
@@ -316,6 +321,9 @@ fn surface(
             island.dnd(),
         )),
         Surface::Controls => Some(surfaces::controls::surface(
+            open,
+            island.visit(),
+            island.held(monitor),
             modules::on("notifications").then(|| island.dnd()),
         )),
         Surface::Launcher => Some(surfaces::launcher::surface(monitor, island.visit())),
