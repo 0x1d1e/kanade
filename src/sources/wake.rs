@@ -6,12 +6,14 @@
 //! A command that is not running cannot announce anything, so while one is down the source polls.
 
 use std::io::{self, BufRead, BufReader};
+use std::os::unix::fs::PermissionsExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{env, fs};
 
 use crate::supervise;
 
@@ -120,6 +122,17 @@ fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
+    })
+}
+
+// whether setpriv is on the PATH, so a program Kanade has another start, like wl-paste's watch
+// command, can go through it as `spawn` says
+pub fn guards() -> bool {
+    env::var_os("PATH").is_some_and(|path| {
+        env::split_paths(&path).any(|dir| {
+            fs::metadata(dir.join(SETPRIV))
+                .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+        })
     })
 }
 

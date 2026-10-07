@@ -1,13 +1,15 @@
 //! The clipboard (#136, ADR 0011): a history of what was copied, text and images, newest first,
-//! bounded and kept only in memory. `wl-paste --watch` hands over each new selection with its
-//! content, so what is kept is what that selection's state was about. Restoring an entry hands
+//! bounded and kept only in memory. `wl-paste --watch` runs Kanade itself at each new selection
+//! (`hand_over`), which hands back that selection's content with its state and type, so what is
+//! kept is what that state was about. Restoring an entry hands
 //! it to `wl-copy --foreground`, a holder that serves it until another program takes the selection;
 //! restoring another kills it. The new selection is announced like any other, so a restored entry
 //! moves to the top. What was copied is never logged, and an entry's `Debug` leaves it out.
 
+use std::env;
+use std::ffi::OsStr;
 use std::fmt;
-use std::io::{self, BufRead, Write};
-use std::iter;
+use std::io::{self, BufRead, Read, Write};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -20,24 +22,22 @@ use crate::supervise;
 pub const PASTE: &str = "wl-paste";
 pub const COPY: &str = "wl-copy";
 
-/*
- * what wl-paste runs at each new selection, with that selection's content on its input, in text if
- * it offers any: a line with `data` and the first ENTRY_BYTES + 1 bytes in base64 when its state
- * is `data` (or unset, by a wl-paste older than 2.2), else a `-`, without reading it. wl-paste
- * waits for it before the next selection, so the content and the state are the same selection's
- */
-fn watch_command() -> [String; 4] {
-    let script = format!(
-        "if [ \"${{CLIPBOARD_STATE:-data}}\" = data ]; then printf 'data '; head -c {} | base64 -w0; echo; else echo -; fi",
-        ENTRY_BYTES + 1
-    );
+// the argument wl-paste runs Kanade with at each new selection; not a verb
+pub const HAND_OVER: &str = "--clipboard-selection";
 
-    [
-        String::from("--watch"),
-        String::from("sh"),
-        String::from("-c"),
-        script,
-    ]
+/*
+ * what wl-paste runs at each new selection: this Kanade, through setpriv so it dies with wl-paste,
+ * which forks it and so does not pass on its own parent-death signal. One process, no shell
+ */
+fn watch_command(exe: &str) -> Vec<&str> {
+    let mut command = vec!["--watch"];
+
+    if wake::guards() {
+        command.extend([wake::SETPRIV, "--pdeathsig", "KILL"]);
+    }
+
+    command.extend([exe, HAND_OVER]);
+    command
 }
 
 // the most entries kept, the most bytes one may have, and the most all of them together may
@@ -48,13 +48,22 @@ pub const TOTAL_BYTES: usize = 64 << 20;
 // what text is restored as; wl-copy offers the other text types with it
 const TEXT: &str = "text/plain;charset=utf-8";
 
-// the images kept, by how their content starts: (type, offset, signature)
-const IMAGES: [(&str, usize, &[u8]); 5] = [
-    ("image/png", 0, b"\x89PNG\r\n\x1a\n"),
-    ("image/jpeg", 0, b"\xff\xd8\xff"),
-    ("image/gif", 0, b"GIF87a"),
-    ("image/gif", 0, b"GIF89a"),
-    ("image/webp", 8, b"WEBP"),
+// bytes an image has at an offset
+type Signature = (usize, &'static [u8]);
+
+// the longest type kept; one wl-paste hands over longer, or with a space, is not
+const MIME_BYTES: usize = 255;
+
+/*
+ * the images known by how they start, as (type, [(offset, signature)]), for a wl-paste that does
+ * not say the type it handed over (2.3.0 and older)
+ */
+const IMAGES: [(&str, &[Signature]); 5] = [
+    ("image/png", &[(0, b"\x89PNG\r\n\x1a\n")]),
+    ("image/jpeg", &[(0, b"\xff\xd8\xff")]),
+    ("image/gif", &[(0, b"GIF87a")]),
+    ("image/gif", &[(0, b"GIF89a")]),
+    ("image/webp", &[(0, b"RIFF"), (8, b"WEBP")]),
 ];
 
 // what one entry holds; shared, so a read of the history copies none of it
@@ -66,27 +75,37 @@ pub enum Content {
 
 impl Content {
     /*
-     * from what a selection held: an image Kanade knows by its start, else UTF-8 text; wl-paste
-     * hands over text when a selection offers it, so an image comes only on its own. None for the
-     * rest
+     * from what a selection held, in `mime` when wl-paste says it: an image as any `image/` type, text
+     * as a text type wl-paste reads in, if UTF-8. None for the rest. Without the type, UTF-8 text,
+     * as wl-paste reads text first, else an image Kanade knows by its start
      */
-    fn new(bytes: Vec<u8>) -> Option<Content> {
-        let image = IMAGES.iter().find(|(_, at, signature)| {
-            bytes
-                .get(*at..*at + signature.len())
-                .is_some_and(|start| start == *signature)
-        });
+    fn new(mime: Option<&str>, bytes: Vec<u8>) -> Option<Content> {
+        let image = |mime: &str| Content::Image {
+            mime: String::from(mime),
+            bytes: bytes.clone().into(),
+        };
+        let text = || {
+            String::from_utf8(bytes.clone())
+                .ok()
+                .map(|text| Content::Text(text.into()))
+        };
 
-        if let Some((mime, ..)) = image {
-            return Some(Content::Image {
-                mime: String::from(*mime),
-                bytes: bytes.into(),
-            });
+        match mime {
+            Some(mime) if mime.starts_with("image/") => Some(image(mime)),
+            Some(mime) if textual(mime) => text(),
+            Some(_) => None,
+            None => text().or_else(|| {
+                let (mime, _) = IMAGES.iter().find(|(_, signatures)| {
+                    signatures.iter().all(|(at, signature)| {
+                        bytes
+                            .get(*at..*at + signature.len())
+                            .is_some_and(|start| start == *signature)
+                    })
+                })?;
+
+                Some(image(mime))
+            }),
         }
-
-        String::from_utf8(bytes)
-            .ok()
-            .map(|text| Content::Text(text.into()))
     }
 
     fn len(&self) -> usize {
@@ -295,13 +314,26 @@ fn reap() {
     }
 }
 
+// whether wl-paste takes `mime` for text, as its `mime_type_is_text` does
+fn textual(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || matches!(mime, "TEXT" | "STRING" | "UTF8_STRING")
+        || mime.contains("json")
+        || ["script", "xml", "yaml", "csv", "ini", "pgp-keys"]
+            .iter()
+            .any(|suffix| mime.ends_with(suffix))
+        || mime.contains("application/vnd.ms-publisher")
+}
+
 fn paste() {
     let stop = wake::Stop::default();
 
-    let command = watch_command();
-    let args: Vec<&str> = command.iter().map(String::as_str).collect();
+    // this Kanade even once a rebuild replaced its file, while it runs
+    let exe = format!("/proc/{}/exe", std::process::id());
 
-    let error = wake::run(PASTE, &args, &stop, |output| watch(output, &mut record));
+    let error = wake::run(PASTE, &watch_command(&exe), &stop, |output| {
+        watch(output, &mut record)
+    });
 
     // nothing stops it
     let Some(error) = error else { return };
@@ -313,17 +345,83 @@ fn paste() {
 }
 
 /*
- * follows the selections until the output ends, keeping each one wl-paste handed over: only a
- * selection with data, never one empty, marked sensitive like a password manager's, or in a state
- * Kanade does not know. Returns why it ended
+ * `kanade --clipboard-selection`, as wl-paste runs it at each new selection with the selection's
+ * content on stdin and its state and type in the environment
  */
-fn watch(mut selections: impl BufRead, record: &mut impl FnMut(Content)) -> io::Error {
-    // within ENTRY_BYTES + 1 in base64, as `watch_command` reads no more
-    let mut line = Vec::new();
+pub fn hand_over_selection() {
+    let handed = hand_over(
+        env::var_os("CLIPBOARD_STATE").as_deref(),
+        env::var_os("CLIPBOARD_TYPE").as_deref(),
+        io::stdin().lock(),
+        io::stdout().lock(),
+    );
+
+    // wl-paste ignores how it exits, and Kanade reads a frame cut short as the watch ending
+    drop(handed);
+}
+
+/*
+ * writes one frame for Kanade: `data <length>[ <type>]` and the content, when the selection's state
+ * is `data` (or unset, by a wl-paste older than 2.2), it holds at most ENTRY_BYTES and its type, if
+ * said, is one Kanade can frame; else `-` alone, the content unread. So a sensitive selection's,
+ * or one in a state Kanade does not know, never leaves wl-paste
+ */
+fn hand_over(
+    state: Option<&OsStr>,
+    mime: Option<&OsStr>,
+    input: impl Read,
+    mut output: impl Write,
+) -> io::Result<()> {
+    let data = state.is_none_or(|state| state == "data");
+    let mime = match mime.map(OsStr::to_str) {
+        None => Ok(None),
+        Some(Some(mime))
+            if (1..=MIME_BYTES).contains(&mime.len())
+                && !mime.contains(|c: char| c.is_whitespace() || c.is_control()) =>
+        {
+            Ok(Some(mime))
+        }
+        Some(_) => Err(()),
+    };
+
+    let Ok(mime) = mime.and_then(|mime| if data { Ok(mime) } else { Err(()) }) else {
+        return output.write_all(b"-\n");
+    };
+
+    let mut bytes = Vec::new();
+    input
+        .take(u64::try_from(ENTRY_BYTES).unwrap_or(u64::MAX) + 1)
+        .read_to_end(&mut bytes)?;
+
+    if bytes.len() > ENTRY_BYTES {
+        return output.write_all(b"-\n");
+    }
+
+    match mime {
+        Some(mime) => writeln!(output, "data {} {mime}", bytes.len())?,
+        None => writeln!(output, "data {}", bytes.len())?,
+    }
+
+    output.write_all(&bytes)?;
+    output.flush()
+}
+
+/*
+ * follows the frames `hand_over` wrote until the output ends, keeping each selection with data.
+ * Returns why it ended, also a frame it cannot read
+ */
+fn watch(mut frames: impl BufRead, record: &mut impl FnMut(Content)) -> io::Error {
+    let mut header = Vec::new();
 
     loop {
-        line.clear();
-        match selections.read_until(b'\n', &mut line) {
+        header.clear();
+
+        // a header holds a length and a type within MIME_BYTES
+        let read = (&mut frames)
+            .take(MIME_BYTES as u64 + 64)
+            .read_until(b'\n', &mut header);
+
+        match read {
             Ok(0) => return io::ErrorKind::UnexpectedEof.into(),
             Ok(_) => {}
             Err(error) => return error,
@@ -331,61 +429,47 @@ fn watch(mut selections: impl BufRead, record: &mut impl FnMut(Content)) -> io::
 
         reap();
 
-        let Some(encoded) = line.strip_prefix(b"data ") else {
-            continue;
+        let Some(header) = header.strip_suffix(b"\n") else {
+            return io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a clipboard frame without its end",
+            );
         };
 
-        let Some(bytes) = decode(encoded.trim_ascii_end()) else {
-            eprintln!("kanade: cannot read the clipboard (wl-paste handed over no base64)");
-            continue;
-        };
-
-        if bytes.len() > ENTRY_BYTES {
+        if header == b"-" {
             continue;
         }
 
-        if let Some(content) = Content::new(bytes) {
+        let Some((len, mime)) = parse(header) else {
+            return io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a clipboard frame Kanade cannot read",
+            );
+        };
+
+        let mut bytes = vec![0; len];
+        if let Err(error) = frames.read_exact(&mut bytes) {
+            return error;
+        }
+
+        if let Some(content) = Content::new(mime, bytes) {
             record(content);
         }
     }
 }
 
-// standard base64 with its padding, as coreutils' `base64` writes it
-fn decode(encoded: &[u8]) -> Option<Vec<u8>> {
-    let value = |byte: u8| match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
+// a header's length, within ENTRY_BYTES, and type, if any
+fn parse(header: &[u8]) -> Option<(usize, Option<&str>)> {
+    let header = str::from_utf8(header).ok()?.strip_prefix("data ")?;
+
+    let (len, mime) = match header.split_once(' ') {
+        Some((len, mime)) => (len, Some(mime)),
+        None => (header, None),
     };
 
-    if !encoded.len().is_multiple_of(4) {
-        return None;
-    }
+    let len = len.parse().ok().filter(|len| *len <= ENTRY_BYTES)?;
 
-    let mut bytes = Vec::with_capacity(encoded.len() / 4 * 3);
-
-    for (at, quad) in encoded.chunks(4).enumerate() {
-        let last = at + 1 == encoded.len() / 4;
-        let padding = quad.iter().rev().take_while(|byte| **byte == b'=').count();
-
-        if padding > 2 || (padding > 0 && !last) {
-            return None;
-        }
-
-        let mut word = 0u32;
-        for byte in &quad[..4 - padding] {
-            word = word << 6 | u32::from(value(*byte)?);
-        }
-        word <<= 6 * padding;
-
-        let [_, first, second, third] = word.to_be_bytes();
-        bytes.extend(iter::once(first).chain([second, third]).take(3 - padding));
-    }
-
-    Some(bytes)
+    Some((len, mime))
 }
 
 // writes only a change, since a write wakes every window
@@ -506,36 +590,64 @@ mod tests {
         assert!(!ids.contains(&1));
     }
 
+    fn image_of(content: Option<Content>) -> Option<String> {
+        match content? {
+            Content::Image { mime, .. } => Some(mime),
+            Content::Text(_) => None,
+        }
+    }
+
     #[test]
-    fn an_image_is_known_by_its_start() {
+    fn a_said_type_decides_what_is_kept() {
+        let svg = b"<svg/>".to_vec();
+        let bmp = b"BM\0\0".to_vec();
+
+        assert_eq!(
+            image_of(Content::new(Some("image/svg+xml"), svg)).as_deref(),
+            Some("image/svg+xml")
+        );
+        assert_eq!(
+            image_of(Content::new(Some("image/bmp"), bmp)).as_deref(),
+            Some("image/bmp")
+        );
+        assert_eq!(
+            Content::new(Some("text/plain"), b"GIF89a".to_vec()),
+            Some(text("GIF89a"))
+        );
+        assert_eq!(
+            Content::new(Some("UTF8_STRING"), b"hi".to_vec()),
+            Some(text("hi"))
+        );
+        assert_eq!(
+            Content::new(Some("application/json"), b"{}".to_vec()),
+            Some(text("{}"))
+        );
+        assert_eq!(Content::new(Some("text/plain"), vec![0xff]), None);
+        assert_eq!(
+            Content::new(Some("application/octet-stream"), b"hi".to_vec()),
+            None
+        );
+    }
+
+    #[test]
+    fn without_a_type_text_comes_before_an_image_known_by_its_start() {
         let png = b"\x89PNG\r\n\x1a\n\0\0".to_vec();
-        let webp = b"RIFF\x10\0\0\0WEBPVP8 ".to_vec();
+        let webp = b"RIFF\x10\0\0\xffWEBPVP8 ".to_vec();
 
-        assert!(
-            matches!(Content::new(png), Some(Content::Image { mime, .. }) if mime == "image/png")
+        assert_eq!(
+            image_of(Content::new(None, png)).as_deref(),
+            Some("image/png")
         );
-        assert!(
-            matches!(Content::new(webp), Some(Content::Image { mime, .. }) if mime == "image/webp")
+        assert_eq!(
+            image_of(Content::new(None, webp)).as_deref(),
+            Some("image/webp")
         );
-        assert_eq!(Content::new(b"GIF8".to_vec()), Some(text("GIF8")));
-    }
-
-    #[test]
-    fn content_that_is_neither_text_nor_a_known_image_is_not_kept() {
-        assert_eq!(Content::new(vec![0xff, 0xfe]), None);
-        assert_eq!(Content::new(b"hi".to_vec()), Some(text("hi")));
-    }
-
-    #[test]
-    fn base64_decodes_as_coreutils_writes_it() {
-        assert_eq!(decode(b""), Some(Vec::new()));
-        assert_eq!(decode(b"aGk="), Some(b"hi".to_vec()));
-        assert_eq!(decode(b"aA=="), Some(b"h".to_vec()));
-        assert_eq!(decode(b"/+8A"), Some(vec![0xff, 0xef, 0]));
-        assert_eq!(decode(b"aGk"), None);
-        assert_eq!(decode(b"aA==aGk="), None);
-        assert_eq!(decode(b"a==="), None);
-        assert_eq!(decode(b"a-k="), None);
+        assert_eq!(
+            Content::new(None, b"GIF89a, a picture".to_vec()),
+            Some(text("GIF89a, a picture"))
+        );
+        assert_eq!(Content::new(None, b"\xffxxxxxxxWEBP".to_vec()), None);
+        assert_eq!(Content::new(None, vec![0xff, 0xfe]), None);
     }
 
     #[test]
@@ -552,37 +664,24 @@ mod tests {
         assert_eq!(clipboard.status(), "clipboard: 2 entries, 1 text, 1 images");
     }
 
-    // what wl-paste hands over, run through the watch command's script, so the test covers both
-    fn handed(selections: &[(Option<&str>, &[u8])]) -> Vec<u8> {
-        let script = watch_command()[3].clone();
+    // the frames `hand_over` writes for each (state, type, content), as wl-paste runs it
+    fn handed(selections: &[(Option<&str>, Option<&str>, &[u8])]) -> Vec<u8> {
+        let mut frames = Vec::new();
 
-        selections
-            .iter()
-            .flat_map(|(state, content)| {
-                let mut command = std::process::Command::new("sh");
-                command.args(["-c", &script]);
-                if let Some(state) = state {
-                    command.env("CLIPBOARD_STATE", state);
-                }
+        for (state, mime, content) in selections {
+            hand_over(
+                state.map(OsStr::new),
+                mime.map(OsStr::new),
+                *content,
+                &mut frames,
+            )
+            .unwrap();
+        }
 
-                let mut child = command
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .unwrap();
-
-                // written beside the read, as it is larger than a pipe holds; the script may stop
-                // reading early, as it does for a sensitive selection
-                let mut stdin = child.stdin.take().unwrap();
-                std::thread::scope(|scope| {
-                    scope.spawn(move || drop(stdin.write_all(content)));
-                    child.wait_with_output().unwrap().stdout
-                })
-            })
-            .collect()
+        frames
     }
 
-    fn recorded(selections: &[(Option<&str>, &[u8])]) -> Vec<Content> {
+    fn recorded(selections: &[(Option<&str>, Option<&str>, &[u8])]) -> Vec<Content> {
         let mut recorded = Vec::new();
 
         let lost = watch(handed(selections).as_slice(), &mut |content| {
@@ -593,16 +692,18 @@ mod tests {
         recorded
     }
 
+    const PLAIN: Option<&str> = Some("text/plain");
+
     #[test]
     fn only_a_selection_with_data_is_kept() {
-        let selections: [(Option<&str>, &[u8]); 7] = [
-            (Some("data"), b"a"),
-            (Some("nil"), b""),
-            (Some("sensitive"), b"hunter2"),
-            (Some("clear"), b""),
-            (Some("something new"), b"b"),
-            (Some("data "), b"c"),
-            (None, b"d"),
+        let selections: [(Option<&str>, Option<&str>, &[u8]); 7] = [
+            (Some("data"), PLAIN, b"a"),
+            (Some("nil"), None, b""),
+            (Some("sensitive"), PLAIN, b"hunter2"),
+            (Some("clear"), None, b""),
+            (Some("something new"), PLAIN, b"b"),
+            (Some("data "), PLAIN, b"c"),
+            (None, None, b"d"),
         ];
 
         assert_eq!(recorded(&selections), [text("a"), text("d")]);
@@ -610,10 +711,29 @@ mod tests {
 
     #[test]
     fn a_sensitive_selection_right_after_another_is_never_kept() {
-        let selections: [(Option<&str>, &[u8]); 2] =
-            [(Some("data"), b"a"), (Some("sensitive"), b"hunter2")];
+        let selections: [(Option<&str>, Option<&str>, &[u8]); 2] = [
+            (Some("data"), PLAIN, b"a"),
+            (Some("sensitive"), PLAIN, b"hunter2"),
+        ];
 
         assert_eq!(recorded(&selections), [text("a")]);
+    }
+
+    #[test]
+    fn a_sensitive_selection_is_never_read() {
+        let mut frames = Vec::new();
+        let mut unread: &[u8] = b"hunter2";
+
+        hand_over(
+            Some(OsStr::new("sensitive")),
+            PLAIN.map(OsStr::new),
+            &mut unread,
+            &mut frames,
+        )
+        .unwrap();
+
+        assert_eq!(frames, b"-\n");
+        assert_eq!(unread, b"hunter2");
     }
 
     #[test]
@@ -622,11 +742,11 @@ mod tests {
         let most = vec![b'x'; ENTRY_BYTES];
         let over = vec![b'x'; ENTRY_BYTES + 1];
 
-        let selections: [(Option<&str>, &[u8]); 4] = [
-            (Some("data"), &png),
-            (Some("data"), &over),
-            (Some("data"), &most),
-            (Some("data"), b"after"),
+        let selections: [(Option<&str>, Option<&str>, &[u8]); 4] = [
+            (Some("data"), Some("image/png"), &png),
+            (Some("data"), PLAIN, &over),
+            (Some("data"), PLAIN, &most),
+            (Some("data"), PLAIN, b"after"),
         ];
 
         let recorded = recorded(&selections);
@@ -638,13 +758,31 @@ mod tests {
     }
 
     #[test]
-    fn content_wl_paste_garbled_is_not_kept() {
-        let mut recorded = Vec::new();
+    fn a_type_kanade_cannot_frame_is_not_kept() {
+        let long = format!("text/{}", "x".repeat(MIME_BYTES));
+        let selections: [(Option<&str>, Option<&str>, &[u8]); 4] = [
+            (Some("data"), Some("text/plain extra"), b"a"),
+            (Some("data"), Some(&long), b"b"),
+            (Some("data"), Some(""), b"c"),
+            (Some("data"), PLAIN, b"d"),
+        ];
 
-        watch("data a\ndata aGk=\n".as_bytes(), &mut |content| {
-            recorded.push(content);
-        });
+        assert_eq!(recorded(&selections), [text("d")]);
+    }
 
-        assert_eq!(recorded, [text("hi")]);
+    #[test]
+    fn a_frame_kanade_cannot_read_ends_the_watch() {
+        for frames in [
+            "data x\n".as_bytes(),
+            b"data 99999999999\n",
+            b"something\n",
+            b"data 5\nab",
+            b"data 2",
+        ] {
+            let mut recorded = Vec::new();
+            watch(frames, &mut |content| recorded.push(content));
+
+            assert!(recorded.is_empty(), "{frames:?}");
+        }
     }
 }
