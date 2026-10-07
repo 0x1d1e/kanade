@@ -469,29 +469,65 @@ pub fn set_default(device: &Device) -> Result<(), String> {
     choose(device, wake::act, || wake::query(DUMP, &["--no-colors"]))
 }
 
-// `set_default` through `act`, checked against what `dump` prints of the graph after
+/*
+ * `set_default` through `act`. A duplex device is checked against what `dump` prints of the graph
+ * before and after: wpctl fails on its own for a node that is gone or a default it did not set,
+ * while pw-metadata would configure a name nothing has any more, and exits 0 even having set
+ * nothing, as when there is no such metadata
+ */
 fn choose(
     device: &Device,
     act: impl FnOnce(&str, &[&str]) -> Result<(), String>,
-    dump: impl FnOnce() -> Result<String, String>,
+    dump: impl Fn() -> Result<String, String>,
 ) -> Result<(), String> {
     let (program, args) = default_command(device);
     let args: Vec<_> = args.iter().map(String::as_str).collect();
 
-    act(program, &args)?;
-
-    // pw-metadata exits 0 having set nothing, as when there is no such metadata
     let Choice::Configured { key, name } = &device.choice else {
-        return Ok(());
+        return act(program, &args);
     };
 
-    match configured(&dump()?, key) {
-        Some(set) if set == *name => Ok(()),
-        set => Err(format!(
-            "`{program}` did not configure {name} as {key}, which is {}",
-            set.as_deref().unwrap_or("unset")
-        )),
+    let gone = || format!("{} is gone", device.name);
+
+    if !shows(&dump()?, device.node, name) {
+        return Err(gone());
     }
+
+    act(program, &args)?;
+
+    let graph = dump()?;
+
+    match configured(&graph, key) {
+        Some(set) if set == *name => {}
+        set => {
+            return Err(format!(
+                "`{program}` did not configure {name} as {key}, which is {}",
+                set.as_deref().unwrap_or("unset")
+            ));
+        }
+    }
+
+    // gone while it was configured, which leaves only a preference for when it is back
+    match shows(&graph, device.node, name) {
+        true => Ok(()),
+        false => Err(gone()),
+    }
+}
+
+// whether `node` is still the duplex device named `name`, as pw-dump prints the graph
+fn shows(dump: &str, node: Node, name: &str) -> bool {
+    let mut shows = false;
+
+    pipewire::prints(dump.as_bytes(), |objects| {
+        shows |= objects.iter().map(Object).any(|object| {
+            object.id() == Some(node.0)
+                && object.kind() == Some(NODE)
+                && object.prop("media.class") == Some("Audio/Duplex")
+                && object.prop("node.name") == Some(name)
+        });
+    });
+
+    shows
 }
 
 // the device `key` of the defaults' metadata names, as pw-dump prints the graph
@@ -980,39 +1016,96 @@ mod tests {
         }
     }
 
-    // what choosing `device` says, its write exiting 0 and the graph then printing `dump`
-    fn chosen(device: &Device, dump: Option<String>) -> Result<(), String> {
-        choose(device, |_, _| Ok(()), || dump.ok_or("not dumped".into()))
+    // the duplex device, unless `gone`, and what the defaults' metadata configures as output
+    fn graph(gone: bool, configured: &[&str]) -> String {
+        let mut objects = vec![defaults(
+            &configured
+                .iter()
+                .map(|name| (CONFIGURED_OUTPUT, *name))
+                .collect::<Vec<_>>(),
+        )];
+
+        if !gone {
+            objects.push(device(
+                60,
+                "Audio/Duplex",
+                "pro_audio.duplex",
+                "Interface",
+                "1.0",
+            ));
+        }
+
+        print(&objects)
+    }
+
+    // what choosing `device` says, its write exiting 0 and the graph printing `before`, then `after`
+    fn chosen(device: &Device, before: String, after: String) -> Result<(), String> {
+        let dumps = std::cell::RefCell::new(vec![after, before]);
+
+        choose(
+            device,
+            |_, _| Ok(()),
+            || dumps.borrow_mut().pop().ok_or("not dumped".into()),
+        )
     }
 
     // pw-metadata exits 0 even when it sets nothing, so only the graph after says
     #[test]
     fn a_duplex_default_holds_only_once_the_graph_shows_it() {
-        let configured = |name| Some(print(&[defaults(&[(CONFIGURED_OUTPUT, name)])]));
+        let before = || graph(false, &["alsa_output.analog"]);
+        let chosen = |after| chosen(&duplex_output(), before(), after);
 
-        assert_eq!(
-            chosen(&duplex_output(), configured("pro_audio.duplex")),
-            Ok(())
-        );
+        assert_eq!(chosen(graph(false, &["pro_audio.duplex"])), Ok(()));
 
-        let other = chosen(&duplex_output(), configured("alsa_output.analog")).unwrap_err();
+        let other = chosen(before()).unwrap_err();
         assert!(other.ends_with("which is alsa_output.analog"), "{other}");
 
-        let unset = chosen(&duplex_output(), Some(print(&[defaults(&[])]))).unwrap_err();
+        let unset = chosen(graph(false, &[])).unwrap_err();
         assert!(unset.ends_with("which is unset"), "{unset}");
 
-        let missing = chosen(&duplex_output(), Some(print(&[]))).unwrap_err();
+        let missing = chosen(print(&[])).unwrap_err();
         assert!(missing.ends_with("which is unset"), "{missing}");
-
-        assert_eq!(chosen(&duplex_output(), None), Err("not dumped".into()));
     }
 
-    // wpctl fails on its own when it sets nothing
+    // as wpctl fails for a node that is gone, before or while it acts
+    #[test]
+    fn a_duplex_device_gone_is_not_chosen() {
+        let written = std::cell::Cell::new(false);
+        let gone = choose(
+            &duplex_output(),
+            |_, _| {
+                written.set(true);
+                Ok(())
+            },
+            || Ok(graph(true, &[])),
+        );
+
+        assert_eq!(gone, Err("Interface is gone".into()));
+        assert!(!written.get());
+
+        let after = graph(true, &["pro_audio.duplex"]);
+        assert_eq!(
+            chosen(&duplex_output(), graph(false, &[]), after),
+            Err("Interface is gone".into())
+        );
+
+        // another node by its id, as PipeWire hands ids out again
+        let mut other = duplex_output();
+        other.choice = Choice::Configured {
+            key: CONFIGURED_OUTPUT,
+            name: "pro_audio.other".into(),
+        };
+        assert_eq!(
+            chosen(&other, graph(false, &[]), graph(false, &[])),
+            Err("Interface is gone".into())
+        );
+    }
+
     #[test]
     fn a_device_default_trusts_wpctl() {
         let speaker = device_of(SPEAKER, "Built-in Audio", false, 7);
 
-        assert_eq!(chosen(&speaker, None), Ok(()));
+        assert_eq!(choose(&speaker, |_, _| Ok(()), || unreachable!()), Ok(()));
         assert_eq!(
             choose(&speaker, |_, _| Err("refused".into()), || unreachable!()),
             Err("refused".into())
