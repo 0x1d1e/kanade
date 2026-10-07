@@ -22,7 +22,7 @@ use crate::cli::{self, Reply};
 use crate::config::{self, Config};
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{bus, privacy};
+use crate::sources::{bus, pipewire};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -231,21 +231,22 @@ fn sockets() -> Vec<Check> {
     ]
 }
 
-const NO_INDICATORS: &str = "microphone and camera indicators will not show";
+const NO_INDICATORS: &str =
+    "microphone and camera indicators, audio devices and app streams will not show";
 const NO_VOLUME: &str = "volume level and OSD will not show";
 
 // libpipewire finds its socket from PIPEWIRE_REMOTE (a name, a path, an abstract socket or a list of
-// them), its runtime dirs and the system socket, so pw-dump, the client privacy runs, is asked
+// them), its runtime dirs and the system socket, so pw-dump, the client privacy and audio run, is asked
 fn pipewire() -> Check {
-    match ask(privacy::DUMP, &[]) {
+    match ask(pipewire::DUMP, &[]) {
         Asked::Answered(_) => Check::ok(String::from("PipeWire reachable")),
         Asked::Refused(error) => Check::warn(format!(
             "PipeWire: {}: {error}: {NO_INDICATORS}",
-            privacy::DUMP
+            pipewire::DUMP
         )),
         Asked::Absent => default_socket(
             "PipeWire",
-            privacy::DUMP,
+            pipewire::DUMP,
             env::var_os("PIPEWIRE_RUNTIME_DIR")
                 .or_else(|| env::var_os("XDG_RUNTIME_DIR"))
                 .map(|dir| Path::new(&dir).join("pipewire-0")),

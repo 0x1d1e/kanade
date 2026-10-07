@@ -1,6 +1,7 @@
 // produce Activities from system state, or the Services the views read; may use Amane services
 // and Island::write()
 
+pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod bus;
@@ -10,6 +11,7 @@ pub mod network;
 pub mod niri;
 pub mod notifications;
 pub mod osd;
+pub mod pipewire;
 pub mod playback;
 pub mod power;
 pub mod privacy;
