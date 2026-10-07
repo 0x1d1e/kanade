@@ -174,7 +174,9 @@ pub fn run(arguments: &[String]) -> ExitCode {
         (
             Call::Record(request @ (recording::Request::Start | recording::Request::Stop)),
             Ok(Reply::Done(path)),
-        ) => Ok(settle(request, path)),
+        ) => Ok(settle(request, path, PATIENCE, |deadline| {
+            call_until(&status_call(), deadline)
+        })),
         (_, reply) => reply,
     };
 
@@ -198,18 +200,27 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
 /*
  * the shell answers a recording's start or stop at once (`ipc::record`), so this waits on its
- * `status` until the first frame is written or the file saved, done at its path
+ * `status`, asked through `ask` by the deadline it is given, until the first frame is written or
+ * the file saved, done at its path. All of it within `patience`, a slow answer included
  */
-fn settle(request: recording::Request, path: String) -> Reply {
-    let deadline = Instant::now() + PATIENCE;
-    let asked: Vec<String> = ["capture", "record", "status"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+fn settle(
+    request: recording::Request,
+    path: String,
+    patience: Duration,
+    mut ask: impl FnMut(Instant) -> Result<Reply, String>,
+) -> Reply {
+    let deadline = Instant::now() + patience;
 
     loop {
-        let status = match call(&asked) {
+        if Instant::now() >= deadline {
+            return Reply::Unknown(request.unsettled(&path, patience));
+        }
+
+        let status = match ask(deadline) {
             Ok(Reply::Done(status)) => status,
+            _ if Instant::now() >= deadline => {
+                return Reply::Unknown(request.unsettled(&path, patience));
+            }
             Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => {
                 return Reply::Unknown(format!("{why}; the recording is at {path}"));
             }
@@ -225,12 +236,18 @@ fn settle(request: recording::Request, path: String) -> Reply {
             Settled::Done => return Reply::Done(path),
             Settled::Failed(why) => return Reply::Refused(why),
             Settled::Lost(why) => return Reply::Unknown(why),
-            Settled::Waiting if Instant::now() >= deadline => {
-                return Reply::Unknown(request.unsettled(&path, PATIENCE));
+            Settled::Waiting => {
+                thread::sleep(LOOK.min(deadline.saturating_duration_since(Instant::now())));
             }
-            Settled::Waiting => thread::sleep(LOOK),
         }
     }
+}
+
+fn status_call() -> Vec<String> {
+    ["capture", "record", "status"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 // how often `settle` asks
@@ -238,6 +255,11 @@ const LOOK: Duration = Duration::from_millis(50);
 
 // what the running shell answers, or why there is none to ask
 pub fn call(arguments: &[String]) -> Result<Reply, String> {
+    call_until(arguments, Instant::now() + PATIENCE)
+}
+
+// as `call`, answered by `deadline`
+fn call_until(arguments: &[String], deadline: Instant) -> Result<Reply, String> {
     // a newline would split one argument into two on the shell's side
     if arguments.iter().any(|argument| argument.contains('\n')) {
         return Err(String::from("an argument cannot hold a newline"));
@@ -253,35 +275,57 @@ pub fn call(arguments: &[String]) -> Result<Reply, String> {
     let stream = UnixStream::connect(ipc_socket())
         .map_err(|_| String::from("no shell is running; start one with `kanade`"))?;
 
-    send(stream, &IpcCall::new(HANDLER, arguments), PATIENCE)
+    let patience = deadline.saturating_duration_since(Instant::now());
+
+    send(stream, &IpcCall::new(HANDLER, arguments), patience)
 }
 
 /*
- * the shell's reply to `call`; one that is late or missing once the call is sent leaves unknown
- * whether the shell did it, like a screenshot niri may already be saving
+ * the shell's reply to `call`, whole within `patience`; one that is late or missing once the call
+ * is sent leaves unknown whether the shell did it, like a screenshot niri may already be saving
  */
 fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Reply, String> {
-    let sent = stream
-        .set_read_timeout(Some(patience))
-        .and_then(|()| call.write(&mut stream))
+    let deadline = Instant::now() + patience;
+
+    let sent = call
+        .write(&mut stream)
         // closing our side is how the shell knows the call is complete
         .and_then(|()| stream.shutdown(Shutdown::Write));
 
     sent.map_err(|error| format!("the shell closed the connection: {error}"))?;
 
-    let mut reply = String::new();
-    let unanswered = match stream.read_to_string(&mut reply) {
-        Ok(_) if reply.is_empty() => Some(String::from("closed the connection without answering")),
-        Ok(_) => None,
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            Some(format!("did not answer within {patience:?}"))
+    let mut reply = Vec::new();
+    let mut read = [0; 4096];
+
+    // each read waits only what is left, so a reply in pieces is still bounded by `patience`
+    let unanswered = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+
+        if left.is_zero() {
+            break Some(format!("did not answer within {patience:?}"));
         }
-        Err(error) => Some(format!("closed the connection: {error}")),
+
+        let got = stream
+            .set_read_timeout(Some(left))
+            .and_then(|()| stream.read(&mut read));
+
+        match got {
+            Ok(0) if reply.is_empty() => {
+                break Some(String::from("closed the connection without answering"));
+            }
+            Ok(0) => break None,
+            Ok(count) => reply.extend_from_slice(&read[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                break Some(format!("did not answer within {patience:?}"));
+            }
+            Err(error) => break Some(format!("closed the connection: {error}")),
+        }
     };
 
     if let Some(why) = unanswered {
@@ -290,7 +334,10 @@ fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Re
         )));
     }
 
-    Reply::decode(&reply).ok_or_else(|| String::from("the running Amane shell is not Kanade"))
+    String::from_utf8(reply)
+        .ok()
+        .and_then(|reply| Reply::decode(&reply))
+        .ok_or_else(|| String::from("the running Amane shell is not Kanade"))
 }
 
 #[cfg(test)]
@@ -546,6 +593,81 @@ help",
         assert_eq!(
             sent(Some("no handler named kanade"), Duration::ZERO),
             Err(String::from("the running Amane shell is not Kanade"))
+        );
+    }
+
+    // a shell that takes the call and answers `answer` a byte every `drip`, holding on for a while
+    fn dripping(answer: &'static str, drip: Duration) -> UnixStream {
+        let (ours, mut theirs) = UnixStream::pair().expect("a socket pair");
+
+        std::thread::spawn(move || {
+            let mut call = Vec::new();
+            theirs.read_to_end(&mut call).expect("the call");
+
+            for byte in answer.as_bytes() {
+                std::thread::sleep(drip);
+
+                if io::Write::write_all(&mut theirs, &[*byte]).is_err() {
+                    return;
+                }
+            }
+
+            std::thread::sleep(Duration::from_secs(2));
+        });
+
+        ours
+    }
+
+    #[test]
+    fn a_reply_in_pieces_is_still_due_by_the_deadline() {
+        let call = IpcCall::new(HANDLER, &[String::from("status")]);
+        let begun = Instant::now();
+
+        // every piece comes within the time left, all of them well after it
+        let reply = send(
+            dripping("ok\nkanade 0.1.0", Duration::from_millis(30)),
+            &call,
+            Duration::from_millis(100),
+        );
+
+        assert!(matches!(reply, Ok(Reply::Unknown(_))), "{reply:?}");
+        assert!(
+            begun.elapsed() < Duration::from_millis(250),
+            "{:?}",
+            begun.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_recording_settles_within_one_patience_however_slow_the_shell() {
+        let path = "/v/a.mp4";
+        let patience = Duration::from_millis(300);
+        let call = IpcCall::new(HANDLER, &status_call());
+        let begun = Instant::now();
+
+        // starting until late in the patience, then a shell that never answers
+        let reply = settle(
+            recording::Request::Start,
+            path.to_owned(),
+            patience,
+            |deadline| match begun.elapsed() < patience * 3 / 4 {
+                true => Ok(Reply::Done(format!("starting to record eDP-1 to {path}"))),
+                false => send(
+                    dripping("", Duration::ZERO),
+                    &call,
+                    deadline.saturating_duration_since(Instant::now()),
+                ),
+            },
+        );
+
+        assert_eq!(
+            reply,
+            Reply::Unknown(recording::Request::Start.unsettled(path, patience))
+        );
+        assert!(
+            begun.elapsed() < patience + Duration::from_millis(100),
+            "{:?}",
+            begun.elapsed()
         );
     }
 
