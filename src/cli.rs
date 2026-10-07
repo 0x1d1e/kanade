@@ -18,7 +18,7 @@ use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{capture, recording, timer};
+use crate::sources::{caffeine, capture, recording, timer};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -50,6 +50,7 @@ pub enum Call {
     ClearClipboard,
     Screenshot(capture::Mode),
     Record(recording::Request),
+    Caffeine(caffeine::Request),
     Reload,
     Validate,
     Status,
@@ -395,6 +396,13 @@ mod tests {
             parsed(&["timer", "cancel"]),
             Ok(("timer", Call::Timer(timer::Request::Cancel)))
         );
+        assert_eq!(
+            parsed(&["caffeine", "toggle", "1h"]),
+            Ok((
+                "caffeine",
+                Call::Caffeine(caffeine::Request::Toggle(Some(Duration::from_secs(3600))))
+            ))
+        );
         // their Surface is its own Module, which shares the verb
         assert_eq!(
             parsed(&["notifications", "open"]),
@@ -474,6 +482,8 @@ mod tests {
             &["capture", "screenshot"],
             &["capture", "screenshot", "all"],
             &["capture", "record", "area"],
+            &["caffeine"],
+            &["caffeine", "on", "forever"],
             &["debug"],
             &["doctor"],
             &["help"],
@@ -506,6 +516,8 @@ controls open|close|toggle
 launcher open|close|toggle
 capture screenshot area|window|output
 capture record start|stop|status
+caffeine on|off|toggle [<duration>]
+  <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
 doctor
 help",
                 Command::debug_usage()

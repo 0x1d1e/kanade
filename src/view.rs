@@ -11,8 +11,8 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Charge, Clip, Countdown, Detail, Device, Kind, Priority, Shot, Toast, Track,
-    Volume, Workspace,
+    Action, Activity, Awake, Charge, Clip, Countdown, Detail, Device, Kind, Priority, Shot, Toast,
+    Track, Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -21,7 +21,7 @@ use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::shadow::{self, ShadowStyle};
-use crate::sources::{capture, timer};
+use crate::sources::{caffeine, capture, timer};
 use crate::surfaces;
 use crate::theme::{self, ThemeRoles};
 
@@ -205,11 +205,12 @@ fn satellites(
 
 /*
  * a battery shows its number in its tone, a timer what is left, a recording that it records in the
- * capture tone, the rest their Kind
+ * capture tone, caffeine its cup, the rest their Kind
  */
 fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Recording(_) => label(String::from("Rec"), theme::SEMANTIC.capture),
+        Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
         _ => label(
@@ -253,6 +254,7 @@ fn abbreviation(kind: Kind) -> &'static str {
         Kind::Timer => "T",
         Kind::Screenshot => "Sc",
         Kind::Recording => "Rec",
+        Kind::Caffeine => "Cf",
     }
 }
 
@@ -462,6 +464,11 @@ fn small_form(
 
             recording(presentation, clip, actions)
         }
+        (presentation, Some(Detail::Caffeine(awake))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            caffeine(presentation, awake, actions)
+        }
         _ => None,
     }
 }
@@ -473,13 +480,16 @@ fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Op
         false => "Screenshot",
     };
 
-    captured(
+    titled(
         presentation,
         Lead::Picture(&shot.path),
         title,
         file_name(&shot.path),
-        &shot.path,
-        actions,
+        Pills {
+            actions,
+            subject: &shot.path,
+            act: capture::act,
+        },
     )
 }
 
@@ -497,7 +507,52 @@ fn recording(presentation: Presentation, clip: &Clip, actions: &[Action]) -> Opt
         Clip::Failed { why, .. } => ("Recording failed", why.as_str()),
     };
 
-    captured(presentation, Lead::Mark, title, line, clip.path(), actions)
+    titled(
+        presentation,
+        Lead::Mark(Icon::Capture, theme::SEMANTIC.capture),
+        title,
+        line,
+        Pills {
+            actions,
+            subject: clip.path(),
+            act: capture::act,
+        },
+    )
+}
+
+// the cup, then that caffeine is on and for how long, or why it ended
+fn caffeine(presentation: Presentation, awake: &Awake, actions: &[Action]) -> Option<Rectangle> {
+    let (title, line, subject) = match awake {
+        Awake::On {
+            serial,
+            length: Some(length),
+        } => (
+            "Caffeine",
+            format!("Awake for {}", caffeine::length(*length)),
+            serial.as_str(),
+        ),
+        Awake::On {
+            serial,
+            length: None,
+        } => (
+            "Caffeine",
+            String::from("Awake until turned off"),
+            serial.as_str(),
+        ),
+        Awake::Failed { why } => ("Caffeine failed", why.clone(), ""),
+    };
+
+    titled(
+        presentation,
+        Lead::Mark(Icon::Cup, theme::ISLAND.on_surface),
+        title,
+        &line,
+        Pills {
+            actions,
+            subject,
+            act: caffeine::act,
+        },
+    )
 }
 
 fn file_name(path: &str) -> &str {
@@ -507,26 +562,32 @@ fn file_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-// what leads a capture's small form
+// what leads a titled small form
 enum Lead<'a> {
     // the saved picture itself
     Picture(&'a str),
 
-    // the capture mark, as the privacy cluster shows it
-    Mark,
+    // an icon in its ink, like the capture mark as the privacy cluster shows it
+    Mark(Icon, Color),
+}
+
+// an Activity's actions, each run by its source's `act` with the key and what it acts on
+struct Pills<'a> {
+    actions: &'a [Action],
+    subject: &'a str,
+    act: fn(&str, &str),
 }
 
 /*
  * the lead, what it is and, on Peek, a line about it and a pill per action. Copying says so in
  * place of what it is, so the press shows it worked
  */
-fn captured(
+fn titled(
     presentation: Presentation,
     lead: Lead,
     title: &str,
     line: &str,
-    path: &str,
-    actions: &[Action],
+    pills: Pills,
 ) -> Option<Rectangle> {
     let (inset, right, radius, size, weight) = match presentation {
         Presentation::Compact => (
@@ -556,14 +617,14 @@ fn captured(
     ];
     let mut row: Vec<Box<dyn Widget>> = match lead {
         Lead::Picture(picture) => children![tile(Some(picture), "", side, radius, &theme::ISLAND)],
-        Lead::Mark => children![
+        Lead::Mark(icon, ink) => children![
             Rectangle::new()
                 .width(side)
                 .height(side)
                 .radius(radius)
                 .fill(theme::ISLAND.surface_container_high)
                 .align_child(Center, Center)
-                .child(Icon::Capture.on((side * 0.55).round(), theme::SEMANTIC.capture))
+                .child(icon.on((side * 0.55).round(), ink))
         ],
     };
 
@@ -581,9 +642,10 @@ fn captured(
 
     if presentation == Presentation::Peek {
         row.extend(
-            actions
+            pills
+                .actions
                 .iter()
-                .map(|action| Box::new(action_pill(action, path)) as Box<dyn Widget>),
+                .map(|action| Box::new(action_pill(action, &pills)) as Box<dyn Widget>),
         );
     }
 
@@ -600,8 +662,8 @@ fn captured(
     )
 }
 
-// a capture's action, run on a left click before the click reaches the island
-fn action_pill(action: &Action, path: &str) -> Rectangle {
+// an action, run on a left click before the click reaches the island
+fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
     let label = Text::new(&action.label)
         .size(theme::text::LABEL_SMALL)
         .color(theme::ISLAND.on_surface)
@@ -610,7 +672,7 @@ fn action_pill(action: &Action, path: &str) -> Rectangle {
         Size::Fixed(natural) => natural + 20.0,
         _ => theme::space::TARGET,
     };
-    let (key, path) = (action.key.clone(), path.to_owned());
+    let (key, subject, act) = (action.key.clone(), pills.subject.to_owned(), pills.act);
 
     Rectangle::new()
         .width(width.ceil())
@@ -621,7 +683,7 @@ fn action_pill(action: &Action, path: &str) -> Rectangle {
         .cursor(Cursor::Pointer)
         .on_click(move |button| {
             if button == Button::Left {
-                capture::act(&key, &path);
+                act(&key, &subject);
             }
         })
         .child(label)

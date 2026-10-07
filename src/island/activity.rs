@@ -22,10 +22,11 @@ pub enum Kind {
     Timer,
     Screenshot,
     Recording,
+    Caffeine,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 12] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -37,6 +38,7 @@ impl Kind {
         Kind::Timer,
         Kind::Screenshot,
         Kind::Recording,
+        Kind::Caffeine,
     ];
 
     // as IPC names it
@@ -53,6 +55,7 @@ impl Kind {
             Kind::Timer => "timer",
             Kind::Screenshot => "screenshot",
             Kind::Recording => "recording",
+            Kind::Caffeine => "caffeine",
         }
     }
 
@@ -221,6 +224,8 @@ pub enum Detail {
     Screenshot(Shot),
 
     Recording(Clip),
+
+    Caffeine(Awake),
 }
 
 impl Detail {
@@ -237,6 +242,7 @@ impl Detail {
             Detail::Timer(_) => Some(Kind::Timer),
             Detail::Screenshot(_) => Some(Kind::Screenshot),
             Detail::Recording(_) => Some(Kind::Recording),
+            Detail::Caffeine(_) => Some(Kind::Caffeine),
         }
     }
 
@@ -360,6 +366,24 @@ impl Clip {
             }
         }
     }
+}
+
+// caffeine keeping the session from going idle
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Awake {
+    /*
+     * on, for `length` when one was asked for, else until turned off; `serial` names this time it
+     * was turned on, so a stale Turn off never turns off a newer one
+     */
+    On {
+        serial: String,
+        length: Option<Duration>,
+    },
+
+    // ended without being turned off, for why
+    Failed {
+        why: String,
+    },
 }
 
 // how the machine reaches the network, as NetworkManager's primary connection says
