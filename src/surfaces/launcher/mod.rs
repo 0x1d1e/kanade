@@ -621,6 +621,11 @@ fn press(monitor: &str, visit: u64, action: Action) {
  * that visit is over, so it never closes another
  */
 fn copied(monitor: &str, visit: u64, text: String, done: bool) {
+    if done {
+        IslandService::write().finish(monitor, visit, Surface::Launcher, Instant::now());
+        return;
+    }
+
     let open = {
         let island = IslandService::read();
 
@@ -628,22 +633,15 @@ fn copied(monitor: &str, visit: u64, text: String, done: bool) {
             && island.presentation(monitor) == Presentation::Expanded(Surface::Launcher)
     };
 
-    if !open {
-        return;
+    // read apart, since `set` writes; a later visit's Search ignores it anyway (`Search::of`)
+    if open {
+        let search = Search::read().of(visit);
+
+        set(Search {
+            copying: Copying::Failed(text),
+            ..search
+        });
     }
-
-    if done {
-        view::collapse(monitor);
-        return;
-    }
-
-    // read apart, since `set` writes
-    let search = Search::read().of(visit);
-
-    set(Search {
-        copying: Copying::Failed(text),
-        ..search
-    });
 }
 
 // down scrolls further down the list

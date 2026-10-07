@@ -715,6 +715,16 @@ impl IslandService {
         self.give(monitor, input, now);
     }
 
+    /*
+     * collapses `surface` only while it is still the one opened in `visit`, in this one write, so
+     * work that ends after its Surface closed never collapses the next one
+     */
+    pub fn finish(&mut self, monitor: &str, visit: u64, surface: Surface, now: Instant) {
+        if self.visit() == visit && self.presentation(monitor) == Presentation::Expanded(surface) {
+            self.input(monitor, Input::Collapse, now);
+        }
+    }
+
     // an input to the Presentation, the user's or one the island gives itself
     fn give(&mut self, monitor: &str, input: Input, now: Instant) {
         // touched before the Presentation is, so sync gives it its own Frame from now on
@@ -1093,6 +1103,28 @@ mod tests {
         // a later pointer expand does not bring the hold back
         island.input(MONITOR, Input::Click(Segment::Primary), Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+    }
+
+    #[test]
+    fn finishing_a_visit_collapses_only_that_visit() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        island.open(MONITOR, Surface::Launcher, now);
+        let first = island.visit();
+        island.input(MONITOR, Input::Collapse, now);
+
+        island.open(MONITOR, Surface::Controls, now);
+        island.finish(MONITOR, first, Surface::Launcher, now);
+        assert!(island.expanded(MONITOR), "another Surface");
+
+        island.input(MONITOR, Input::Collapse, now);
+        island.open(MONITOR, Surface::Launcher, now);
+        island.finish(MONITOR, first, Surface::Launcher, now);
+        assert!(island.expanded(MONITOR), "a later visit");
+
+        island.finish(MONITOR, island.visit(), Surface::Launcher, now);
+        assert!(!island.expanded(MONITOR));
     }
 
     fn ms(value: u64) -> Duration {
