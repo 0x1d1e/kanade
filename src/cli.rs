@@ -9,14 +9,15 @@ use std::io::{self, Read};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use amane::{IpcCall, ipc_socket};
 
 use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
-use crate::sources::{capture, timer};
+use crate::sources::{capture, recording, timer};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -47,6 +48,7 @@ pub enum Call {
     ClearNotifications,
     ClearClipboard,
     Screenshot(capture::Mode),
+    Record(recording::Request),
     Reload,
     Validate,
     Status,
@@ -155,8 +157,8 @@ pub fn run(arguments: &[String]) -> ExitCode {
         _ => {}
     }
 
-    match parse(&words) {
-        Ok(_) => {}
+    let asked = match parse(&words) {
+        Ok((_, call)) => call,
         Err(Unparsed::Usage) => {
             eprintln!("{}", usage());
             return ExitCode::from(2);
@@ -165,9 +167,17 @@ pub fn run(arguments: &[String]) -> ExitCode {
             eprintln!("kanade: {invalid}");
             return ExitCode::from(2);
         }
-    }
+    };
 
-    match call(arguments) {
+    let reply = match (asked, call(arguments)) {
+        (
+            Call::Record(request @ (recording::Request::Start | recording::Request::Stop)),
+            Ok(Reply::Done(path)),
+        ) => Ok(settle(request, path)),
+        (_, reply) => reply,
+    };
+
+    match reply {
         Ok(Reply::Done(text)) => {
             if !text.is_empty() {
                 println!("{text}");
@@ -184,6 +194,45 @@ pub fn run(arguments: &[String]) -> ExitCode {
         }
     }
 }
+
+/*
+ * the shell answers a recording's start or stop at once (`ipc::record`), so this waits on its
+ * `status` until the first frame is written or the file saved, done at its path
+ */
+fn settle(request: recording::Request, path: String) -> Reply {
+    let deadline = Instant::now() + PATIENCE;
+    let asked: Vec<String> = ["capture", "record", "status"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    loop {
+        let status = match call(&asked) {
+            Ok(Reply::Done(status)) => status,
+            Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => {
+                return Reply::Unknown(format!("{why}; the recording is at {path}"));
+            }
+        };
+
+        let Some(status) = recording::Status::parse(&status) else {
+            return Reply::Unknown(format!(
+                "the shell says {status:?}; the recording is at {path}"
+            ));
+        };
+
+        match request.settled(&path, &status) {
+            Some(Ok(())) => return Reply::Done(path),
+            Some(Err(why)) => return Reply::Refused(why),
+            None if Instant::now() >= deadline => {
+                return Reply::Unknown(request.unsettled(&path, PATIENCE));
+            }
+            None => thread::sleep(LOOK),
+        }
+    }
+}
+
+// how often `settle` asks
+const LOOK: Duration = Duration::from_millis(50);
 
 // what the running shell answers, or why there is none to ask
 pub fn call(arguments: &[String]) -> Result<Reply, String> {
@@ -314,6 +363,14 @@ mod tests {
             parsed(&["capture", "screenshot", "window"]),
             Ok(("capture", Call::Screenshot(capture::Mode::Window)))
         );
+        assert_eq!(
+            parsed(&["capture", "record", "start"]),
+            Ok(("capture", Call::Record(recording::Request::Start)))
+        );
+        assert_eq!(
+            parsed(&["capture", "record", "stop"]),
+            Ok(("capture", Call::Record(recording::Request::Stop)))
+        );
 
         // likewise the clipboard history and its Surface
         assert_eq!(
@@ -399,6 +456,7 @@ clipboard open|close|toggle
 controls open|close|toggle
 launcher open|close|toggle
 capture screenshot area|window|output
+capture record start|stop|status
 doctor
 help",
                 Command::debug_usage()

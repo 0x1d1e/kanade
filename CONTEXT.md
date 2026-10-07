@@ -90,7 +90,7 @@ One kind of answer the Launcher finds for a query: apps, the calculator, emoji. 
 
 ## Satellite
 Small secondary indicator beside the primary island: timer, VPN, low battery.
-- Capture is no Satellite: the privacy cluster shows it.
+- Capture the privacy cluster sees is no Satellite: the cluster shows it. Kanade's own recording is an Activity like any other, so it can be one, carrying Stop.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 - **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops.
 - While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.

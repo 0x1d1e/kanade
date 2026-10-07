@@ -11,7 +11,7 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Charge, Countdown, Detail, Device, Kind, Priority, Shot, Toast, Track,
+    Action, Activity, Charge, Clip, Countdown, Detail, Device, Kind, Priority, Shot, Toast, Track,
     Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
@@ -203,9 +203,13 @@ fn satellites(
         .collect()
 }
 
-// a battery shows its number in its tone, a timer what is left, the rest their Kind
+/*
+ * a battery shows its number in its tone, a timer what is left, a recording that it records in the
+ * capture tone, the rest their Kind
+ */
 fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
+        Detail::Recording(_) => label(String::from("Rec"), theme::SEMANTIC.capture),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
         _ => label(
@@ -248,6 +252,7 @@ fn abbreviation(kind: Kind) -> &'static str {
         Kind::Bluetooth => "Bt",
         Kind::Timer => "T",
         Kind::Screenshot => "Sc",
+        Kind::Recording => "Rec",
     }
 }
 
@@ -397,6 +402,7 @@ fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle {
 
     match activity.detail() {
         Detail::Timer(_) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Recording(_) => row.push(Box::new(Icon::Capture.on(14.0, theme::SEMANTIC.capture))),
         Detail::Battery(charge) => row.push(Box::new(battery_icon(
             16.0,
             charge.percent,
@@ -451,15 +457,77 @@ fn small_form(
 
             screenshot(presentation, shot, actions)
         }
+        (presentation, Some(Detail::Recording(clip))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            recording(presentation, clip, actions)
+        }
         _ => None,
     }
 }
 
+// the picture, then what it is
+fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Option<Rectangle> {
+    let title = match shot.copied {
+        true => "Path copied",
+        false => "Screenshot",
+    };
+
+    captured(
+        presentation,
+        Lead::Picture(&shot.path),
+        title,
+        file_name(&shot.path),
+        &shot.path,
+        actions,
+    )
+}
+
+// the capture mark, then what it is: recording the output named, saved to the file named, or why not
+fn recording(presentation: Presentation, clip: &Clip, actions: &[Action]) -> Option<Rectangle> {
+    let (title, line) = match clip {
+        Clip::Recording { output, .. } => ("Recording", output.as_str()),
+        Clip::Saved { path, copied } => (
+            match copied {
+                true => "Path copied",
+                false => "Recording saved",
+            },
+            file_name(path),
+        ),
+        Clip::Failed { why, .. } => ("Recording failed", why.as_str()),
+    };
+
+    captured(presentation, Lead::Mark, title, line, clip.path(), actions)
+}
+
+fn file_name(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+}
+
+// what leads a capture's small form
+enum Lead<'a> {
+    // the saved picture itself
+    Picture(&'a str),
+
+    // the capture mark, as the privacy cluster shows it
+    Mark,
+}
+
 /*
- * the picture, what it is and, on Peek, its file name and a pill per action. Copying says so in
+ * the lead, what it is and, on Peek, a line about it and a pill per action. Copying says so in
  * place of what it is, so the press shows it worked
  */
-fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Option<Rectangle> {
+fn captured(
+    presentation: Presentation,
+    lead: Lead,
+    title: &str,
+    line: &str,
+    path: &str,
+    actions: &[Action],
+) -> Option<Rectangle> {
     let (inset, right, radius, size, weight) = match presentation {
         Presentation::Compact => (
             7.0,
@@ -478,34 +546,30 @@ fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Op
         _ => return None,
     };
     let shape = geometry::shape(presentation);
+    let side = shape.height - 2.0 * inset;
 
-    let title = match shot.copied {
-        true => "Path copied",
-        false => "Screenshot",
-    };
     let mut lines = children![
         Text::new(title)
             .size(size)
             .color(theme::ISLAND.on_surface)
             .weight(weight)
     ];
-    let mut row = children![tile(
-        Some(&shot.path),
-        "",
-        shape.height - 2.0 * inset,
-        radius,
-        &theme::ISLAND,
-    )];
+    let mut row: Vec<Box<dyn Widget>> = match lead {
+        Lead::Picture(picture) => children![tile(Some(picture), "", side, radius, &theme::ISLAND)],
+        Lead::Mark => children![
+            Rectangle::new()
+                .width(side)
+                .height(side)
+                .radius(radius)
+                .fill(theme::ISLAND.surface_container_high)
+                .align_child(Center, Center)
+                .child(Icon::Capture.on((side * 0.55).round(), theme::SEMANTIC.capture))
+        ],
+    };
 
     if presentation == Presentation::Peek {
-        let name = Path::new(&shot.path)
-            .file_name()
-            .map_or(shot.path.as_str(), |name| {
-                name.to_str().unwrap_or(&shot.path)
-            });
-
         lines.push(Box::new(
-            Text::new(name)
+            Text::new(line)
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::ISLAND.on_surface_variant)
                 .weight(theme::text::MEDIUM)
@@ -519,7 +583,7 @@ fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Op
         row.extend(
             actions
                 .iter()
-                .map(|action| Box::new(action_pill(action, &shot.path)) as Box<dyn Widget>),
+                .map(|action| Box::new(action_pill(action, path)) as Box<dyn Widget>),
         );
     }
 
@@ -536,7 +600,7 @@ fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Op
     )
 }
 
-// a screenshot's action, run on a left click before the click reaches the island
+// a capture's action, run on a left click before the click reaches the island
 fn action_pill(action: &Action, path: &str) -> Rectangle {
     let label = Text::new(&action.label)
         .size(theme::text::LABEL_SMALL)

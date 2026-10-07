@@ -116,7 +116,7 @@ pub fn run(
  * leave it running for nobody; without setpriv the program runs on its own, and may outlive Kanade
  */
 fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
-    guarded(program, args, |command| {
+    guarded(program, args, KILL, |command| {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -136,15 +136,23 @@ pub fn guards() -> bool {
     })
 }
 
-// starts `program` through setpriv as `spawn` says, `start` setting up its pipes and starting it
+// what a program gets when Kanade dies: most are killed, one that writes a file is interrupted
+const KILL: &str = "KILL";
+const INT: &str = "INT";
+
+/*
+ * starts `program` through setpriv as `spawn` says, sent `death` rather than killed, `start`
+ * setting up its pipes and starting it
+ */
 fn guarded(
     program: &str,
     args: &[&str],
+    death: &str,
     start: impl Fn(&mut Command) -> io::Result<Child>,
 ) -> io::Result<Child> {
     let guarded = start(
         Command::new(SETPRIV)
-            .args(["--pdeathsig", "KILL", program])
+            .args(["--pdeathsig", death, program])
             .args(args),
     );
 
@@ -168,7 +176,7 @@ pub fn act(program: &str, args: &[&str]) -> Result<(), String> {
 pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
     let command = [program, args.join(" ").as_str()].join(" ");
 
-    let child = guarded(program, args, |command| {
+    let child = guarded(program, args, KILL, |command| {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -204,11 +212,26 @@ pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
  * piped, for what it holds
  */
 pub fn hold(program: &str, args: &[&str]) -> io::Result<Child> {
-    guarded(program, args, |command| {
+    guarded(program, args, KILL, |command| {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .spawn()
+    })
+}
+
+/*
+ * starts `program` as a holder that writes a file, like a recording, which a kill would leave
+ * unreadable: Kanade dying interrupts it as Ctrl+C would, so it finishes the file first. Its stderr
+ * is piped, for why it ended
+ */
+pub fn hold_file(program: &str, args: &[&str]) -> io::Result<Child> {
+    guarded(program, args, INT, |command| {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
     })
 }

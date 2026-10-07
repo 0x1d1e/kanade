@@ -18,20 +18,22 @@ use amane::Service;
 use super::clipboard;
 use super::json::{self, Json};
 use super::niri::{self, Acted};
+use super::recording;
 use crate::clock;
 use crate::island::activity::{
     Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Shot,
 };
 use crate::island::service::IslandService;
 
-// what opens a screenshot, in the user's image viewer
+// what opens a screenshot or a recording, in the user's viewer
 pub const OPEN: &str = "xdg-open";
 
 pub const COPY: &str = "copy";
 pub const SHOW: &str = "open";
 
-// how long a screenshot's Activity stays after it was saved, long enough to reach its actions
-const SHOWN: Duration = Duration::from_secs(10);
+// how long a screenshot's or a recording's Activity stays after it was saved, long enough to reach
+// its actions
+pub const SHOWN: Duration = Duration::from_secs(10);
 
 /*
  * the paths handed to niri this second, under that second's stamp: niri saves after it answers,
@@ -114,9 +116,12 @@ fn name(dir: &Path, stamp: String) -> PathBuf {
         named.clear();
     }
 
-    let path = free(dir, named_stamp, |path| {
-        path.exists() || named.contains(path)
-    });
+    let path = free(
+        dir,
+        &format!("Screenshot from {named_stamp}"),
+        "png",
+        |path| path.exists() || named.contains(path),
+    );
 
     named.insert(path.clone());
     path
@@ -128,15 +133,20 @@ fn backend(error: io::Error) -> String {
 
 // niri's own default, `~/Pictures/Screenshots`
 fn directory() -> Option<PathBuf> {
-    Some(PathBuf::from(env::var_os("HOME")?).join("Pictures/Screenshots"))
+    home("Pictures/Screenshots")
+}
+
+// `folder` under the user's home
+pub fn home(folder: &str) -> Option<PathBuf> {
+    Some(PathBuf::from(env::var_os("HOME")?).join(folder))
 }
 
 // named as niri names its own, with " (2)" and up when one taken the same second is there
-fn free(dir: &Path, stamp: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+pub fn free(dir: &Path, stem: &str, extension: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
     (1..)
         .map(|count| match count {
-            1 => dir.join(format!("Screenshot from {stamp}.png")),
-            _ => dir.join(format!("Screenshot from {stamp} ({count}).png")),
+            1 => dir.join(format!("{stem}.{extension}")),
+            _ => dir.join(format!("{stem} ({count}).{extension}")),
         })
         .find(|path| !taken(path))
         .expect("an unbounded count finds a free name")
@@ -215,13 +225,16 @@ fn activity(shot: Shot) -> Activity {
 }
 
 /*
- * runs an action of the screenshot at `path`, off the draw thread: a copy says it is done in
- * the Activity, unless a newer screenshot took its place
+ * runs an action of the screenshot or recording at `path`, off the draw thread: a copy says it is
+ * done in the Activity, unless a newer one took its place
  */
 pub fn act(key: &str, path: &str) {
     let path = path.to_owned();
 
     let spawned = match key {
+        recording::STOP => thread::Builder::new()
+            .name(String::from("capture-stop"))
+            .spawn(move || recording::stop_at(&path)),
         COPY => thread::Builder::new()
             .name(String::from("capture-copy"))
             .spawn(move || copy(path)),
@@ -247,6 +260,9 @@ fn copy(path: String) {
     if last.as_deref() == Some(path.as_str()) {
         drop(last);
         show(Shot { path, copied: true });
+    } else {
+        drop(last);
+        recording::copied(&path);
     }
 }
 
@@ -288,13 +304,13 @@ mod tests {
         ];
 
         assert_eq!(
-            free(dir, "2026-10-07 15-36-38", |_| false),
+            free(dir, "Screenshot from 2026-10-07 15-36-38", "png", |_| false),
             Path::new("/shots/Screenshot from 2026-10-07 15-36-38.png")
         );
         assert_eq!(
-            free(dir, "2026-10-07 15-36-38", |path| taken
-                .iter()
-                .any(|taken| path == Path::new(taken))),
+            free(dir, "Screenshot from 2026-10-07 15-36-38", "png", |path| {
+                taken.iter().any(|taken| path == Path::new(taken))
+            }),
             Path::new("/shots/Screenshot from 2026-10-07 15-36-38 (3).png")
         );
     }

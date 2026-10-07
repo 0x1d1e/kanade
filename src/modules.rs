@@ -15,7 +15,7 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
     audio, battery, bluetooth, capture, clipboard, media, network, niri, notifications, osd,
-    pipewire, power, privacy, system, timer, tray, wake,
+    pipewire, power, privacy, recording, system, timer, tray, wake,
 };
 use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
@@ -551,7 +551,10 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
-    // screenshots, by niri; its stream, which the core follows, says when each is saved
+    /*
+     * screenshots, by niri; its stream, which the core follows, says when each is saved. Screen
+     * recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
+     */
     Module {
         name: "capture",
         requires: &[CORE],
@@ -568,16 +571,27 @@ pub const ALL: &[Module] = &[
             },
             Need {
                 on: Provider::Program(capture::OPEN),
-                without: "no opening a screenshot",
+                without: "no opening a screenshot or a recording",
+            },
+            Need {
+                on: Provider::Program(recording::RECORDER),
+                without: "no screen recording",
             },
         ],
         settings: &[],
         verbs: &[Verb {
             name: "capture",
-            usage: || String::from("capture screenshot area|window|output"),
+            usage: || {
+                String::from(
+                    "capture screenshot area|window|output\ncapture record start|stop|status",
+                )
+            },
             parse: |arguments| match arguments {
                 ["screenshot", mode] => capture::Mode::parse(mode)
                     .map(Call::Screenshot)
+                    .ok_or(Unparsed::Usage),
+                ["record", request] => recording::Request::parse(request)
+                    .map(Call::Record)
                     .ok_or(Unparsed::Usage),
                 _ => Err(Unparsed::Usage),
             },

@@ -8,12 +8,14 @@
 //! for the minute. A monotonic deadline would fall behind across a suspend or a clock step; the
 //! timerfd fires at the wall minute after a resume, and a step cancels it, which redraws at once.
 //!
-//! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI.
+//! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI. It also
+//! holds `interrupt`, which std lacks, for a child that must end cleanly.
 
 use std::ffi::{c_char, c_int, c_long};
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::process::Child;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +42,9 @@ const TFD_CLOEXEC: c_int = 0o2_000_000;
 const TFD_TIMER_ABSTIME: c_int = 1;
 const TFD_TIMER_CANCEL_ON_SET: c_int = 2;
 const ECANCELED: i32 = 125;
+
+// <signal.h>
+const SIGINT: c_int = 2;
 
 #[repr(C)]
 struct Tm {
@@ -78,6 +83,7 @@ unsafe extern "C" {
         new: *const Itimerspec,
         old: *mut Itimerspec,
     ) -> c_int;
+    fn kill(pid: c_int, signal: c_int) -> c_int;
 }
 
 // the timer the thread waits on, made before any window draws
@@ -214,6 +220,20 @@ pub fn stamp() -> String {
     }
 }
 
+/*
+ * sends `child` SIGINT, as Ctrl+C would, so it can finish what it writes; std only kills. A
+ * reaped child's pid may be another process's by now, so the caller makes sure it is not reaped
+ */
+pub fn interrupt(child: &Child) -> io::Result<()> {
+    let pid = c_int::try_from(child.id()).map_err(io::Error::other)?;
+
+    // SAFETY: plain call
+    match unsafe { kill(pid, SIGINT) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
 fn seconds() -> c_long {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -288,6 +308,20 @@ fn read(hour: c_int, minute: c_int, hours: Hours) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interrupted_child_ends_by_sigint() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep runs");
+
+        interrupt(&child).expect("signalled");
+
+        assert_eq!(child.wait().expect("reaped").signal(), Some(SIGINT));
+    }
 
     #[test]
     fn twenty_four_hours_pad_both() {

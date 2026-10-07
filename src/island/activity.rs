@@ -21,10 +21,11 @@ pub enum Kind {
     Bluetooth,
     Timer,
     Screenshot,
+    Recording,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -35,6 +36,7 @@ impl Kind {
         Kind::Bluetooth,
         Kind::Timer,
         Kind::Screenshot,
+        Kind::Recording,
     ];
 
     // as IPC names it
@@ -50,6 +52,7 @@ impl Kind {
             Kind::Bluetooth => "bluetooth",
             Kind::Timer => "timer",
             Kind::Screenshot => "screenshot",
+            Kind::Recording => "recording",
         }
     }
 
@@ -216,6 +219,8 @@ pub enum Detail {
     Timer(Countdown),
 
     Screenshot(Shot),
+
+    Recording(Clip),
 }
 
 impl Detail {
@@ -231,6 +236,7 @@ impl Detail {
             Detail::Notification(_) => Some(Kind::Notification),
             Detail::Timer(_) => Some(Kind::Timer),
             Detail::Screenshot(_) => Some(Kind::Screenshot),
+            Detail::Recording(_) => Some(Kind::Recording),
         }
     }
 
@@ -331,6 +337,29 @@ pub struct Shot {
 
     // its path is on the clipboard, by the Activity's action
     pub copied: bool,
+}
+
+// a screen recording Kanade started, at its file's absolute path
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Clip {
+    // still recording the output named
+    Recording { path: String, output: String },
+
+    // finished; `copied` once its path is on the clipboard, by the Activity's action
+    Saved { path: String, copied: bool },
+
+    // ended without saving anything, for why
+    Failed { path: String, why: String },
+}
+
+impl Clip {
+    pub fn path(&self) -> &str {
+        match self {
+            Clip::Recording { path, .. } | Clip::Saved { path, .. } | Clip::Failed { path, .. } => {
+                path
+            }
+        }
+    }
 }
 
 // how the machine reaches the network, as NetworkManager's primary connection says
