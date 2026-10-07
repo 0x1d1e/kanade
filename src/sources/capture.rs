@@ -17,7 +17,7 @@ use amane::Service;
 
 use super::clipboard;
 use super::json::{self, Json};
-use super::niri;
+use super::niri::{self, Acted};
 use crate::clock;
 use crate::island::activity::{
     Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Shot,
@@ -34,10 +34,11 @@ pub const SHOW: &str = "open";
 const SHOWN: Duration = Duration::from_secs(10);
 
 /*
- * every path handed to niri, which saves after it answers: a second screenshot the same second
- * would otherwise find the first's name still free
+ * the paths handed to niri this second, under that second's stamp: niri saves after it answers,
+ * so a second screenshot the same second would otherwise find the first's name still free. A new
+ * second's stamp names other paths, so the last second's are let go
  */
-static NAMED: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+static NAMED: Mutex<(String, BTreeSet<PathBuf>)> = Mutex::new((String::new(), BTreeSet::new()));
 
 // the screenshot the Activity shows, so a copy finishing after a newer one leaves that one alone
 static LAST: Mutex<Option<String>> = Mutex::new(None);
@@ -65,37 +66,60 @@ impl Mode {
     }
 }
 
+// what came of asking niri for a screenshot
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asked {
+    // niri took it, to be saved at this path
+    Taken(String),
+
+    // niri may or may not take it; why, with the path it would be saved at
+    Unknown(String),
+}
+
 /*
  * asks niri for a screenshot, saved to the path returned. An area is saved once the user confirms
  * it in niri's screenshot UI, and not at all if they leave it
  */
-pub fn screenshot(mode: Mode) -> Result<String, String> {
+pub fn screenshot(mode: Mode) -> Result<Asked, String> {
     let dir = directory().ok_or("no screenshot folder: HOME is not set")?;
 
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("no screenshot folder {}: {error}", dir.display()))?;
-
-    let path = {
-        let mut named = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
-        let path = free(&dir, &clock::stamp(), |path| {
-            path.exists() || named.contains(path)
-        });
-
-        named.insert(path.clone());
-        path
-    };
-    let path = path
-        .to_str()
-        .ok_or_else(|| format!("{} is not UTF-8", path.display()))?;
 
     let window = match mode {
         Mode::Window => Some(window().map_err(backend)?.ok_or("no window to capture")?),
         _ => None,
     };
 
-    niri::ask(&action(mode, path, window)).map_err(backend)?;
+    let path = name(&dir, clock::stamp());
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("{} is not UTF-8", path.display()))?;
 
-    Ok(path.to_owned())
+    match niri::act(&action(mode, path, window)).map_err(backend)? {
+        Acted::Done => Ok(Asked::Taken(path.to_owned())),
+        Acted::Unknown(why) => Ok(Asked::Unknown(format!(
+            "niri got the request, but {why}; the screenshot may still be saved at {path}"
+        ))),
+    }
+}
+
+// a free path this second, kept from the next screenshot this second
+fn name(dir: &Path, stamp: String) -> PathBuf {
+    let mut named = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
+    let (named_stamp, named) = &mut *named;
+
+    if *named_stamp != stamp {
+        *named_stamp = stamp;
+        named.clear();
+    }
+
+    let path = free(dir, named_stamp, |path| {
+        path.exists() || named.contains(path)
+    });
+
+    named.insert(path.clone());
+    path
 }
 
 fn backend(error: io::Error) -> String {
@@ -273,6 +297,21 @@ mod tests {
                 .any(|taken| path == Path::new(taken))),
             Path::new("/shots/Screenshot from 2026-10-07 15-36-38 (3).png")
         );
+    }
+
+    // only this second's names are kept, so they do not pile up
+    #[test]
+    fn a_name_is_kept_for_its_second_only() {
+        let dir = Path::new("/nowhere/shots");
+        let named = |stamp: &str| name(dir, String::from(stamp));
+
+        assert_eq!(named("s1"), dir.join("Screenshot from s1.png"));
+        assert_eq!(named("s1"), dir.join("Screenshot from s1 (2).png"));
+        assert_eq!(named("s2"), dir.join("Screenshot from s2.png"));
+
+        let kept = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(kept.0, "s2");
+        assert_eq!(kept.1.len(), 1);
     }
 
     #[test]

@@ -137,6 +137,7 @@ fn shell() -> Check {
     match cli::call(&[String::from("status")]) {
         Ok(Reply::Done(status)) => shell_status(status.lines().next().unwrap_or_default()),
         Ok(Reply::Refused(refused)) => Check::fail(format!("shell: refused status: {refused}")),
+        Ok(Reply::Unknown(unknown)) => Check::fail(format!("shell: status unclear: {unknown}")),
         Err(problem) if problem.starts_with("no shell is running") => {
             Check::warn(format!("shell: {problem}"))
         }
@@ -144,7 +145,7 @@ fn shell() -> Check {
     }
 }
 
-// from the first line of its status, like "kanade 0.1.0, protocol 1"
+// from the first line of its status, like "kanade 0.1.0, protocol 2"
 fn shell_status(first: &str) -> Check {
     let protocol = first
         .rsplit_once("protocol ")
@@ -499,11 +500,11 @@ version = \"9.9.9\"
     #[test]
     fn a_shell_on_another_protocol_fails() {
         assert_eq!(
-            shell_status("kanade 0.1.0, protocol 1"),
-            Check::ok(String::from("shell: running kanade 0.1.0, protocol 1"))
+            shell_status("kanade 0.1.0, protocol 2"),
+            Check::ok(String::from("shell: running kanade 0.1.0, protocol 2"))
         );
 
-        for first in ["kanade 0.2.0, protocol 2", "something else", ""] {
+        for first in ["kanade 0.1.0, protocol 1", "something else", ""] {
             assert_eq!(shell_status(first).verdict, Verdict::Fail, "{first}");
         }
     }

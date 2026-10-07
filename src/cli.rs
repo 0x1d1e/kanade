@@ -23,7 +23,7 @@ pub const HANDLER: &str = "kanade";
 
 // the words a call and its reply are made of; another number means a client and shell that may
 // misread each other
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /*
  * the first word after `kanade`, with the arguments a Module owns; Modules may share a name, each
@@ -57,6 +57,9 @@ pub enum Call {
 pub enum Reply {
     Done(String),
     Refused(String),
+
+    // asked of another program that did not say whether it did it, so not to be asked again blindly
+    Unknown(String),
 }
 
 impl Reply {
@@ -65,6 +68,7 @@ impl Reply {
         match self {
             Reply::Done(text) => format!("ok\n{text}"),
             Reply::Refused(text) => format!("refused\n{text}"),
+            Reply::Unknown(text) => format!("unknown\n{text}"),
         }
     }
 
@@ -75,6 +79,7 @@ impl Reply {
         match outcome {
             "ok" => Some(Reply::Done(text)),
             "refused" => Some(Reply::Refused(text)),
+            "unknown" => Some(Reply::Unknown(text)),
             _ => None,
         }
     }
@@ -134,7 +139,10 @@ pub fn usage() -> String {
 // how long the shell may take to answer before it counts as stuck
 const PATIENCE: Duration = Duration::from_secs(5);
 
-// `kanade <verb> [args]`: 2 for words that are no verb, 1 for a refusal or no shell to ask
+/*
+ * `kanade <verb> [args]`: 2 for words that are no verb, 1 for a refusal or no shell to ask, 3 when
+ * it is not known whether it was done
+ */
 pub fn run(arguments: &[String]) -> ExitCode {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
@@ -169,6 +177,10 @@ pub fn run(arguments: &[String]) -> ExitCode {
         Ok(Reply::Refused(text)) | Err(text) => {
             eprintln!("kanade: {text}");
             ExitCode::FAILURE
+        }
+        Ok(Reply::Unknown(text)) => {
+            eprintln!("kanade: {text}");
+            ExitCode::from(3)
         }
     }
 }
@@ -414,6 +426,9 @@ help",
                 "config schema_version 1, generation 2\nconfig modules.media is pending restart",
             )),
             Reply::Refused(String::from("module media is off")),
+            Reply::Unknown(String::from(
+                "niri got the request, but did not answer within 2s",
+            )),
         ] {
             assert_eq!(Reply::decode(&reply.encode()), Some(reply));
         }

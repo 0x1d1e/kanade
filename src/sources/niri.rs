@@ -247,42 +247,103 @@ fn socket() -> io::Result<String> {
     env::var("NIRI_SOCKET").map_err(|_| io::Error::other("NIRI_SOCKET is not set"))
 }
 
-// how long niri may take to answer `ask`
+// how long niri may take to answer `ask` or `act`
 const PATIENCE: Duration = Duration::from_secs(2);
 
+// how a request niri was sent came out
+#[derive(Debug)]
+enum Exchange {
+    Answered(Json),
+    Refused(io::Error),
+
+    // sent but not answered, or answered with what is neither: niri may have carried it out
+    Unclear(io::Error),
+}
+
+// what an action niri was sent came to
+#[derive(Debug)]
+pub enum Acted {
+    Done,
+
+    // niri took it but gave no clear answer, so it may or may not be carried out; why
+    Unknown(String),
+}
+
 /*
- * what niri answers `request`, a JSON request like `"Version"`, on a connection of its own; what
- * it refuses is an error with its reason
+ * what niri answers `request`, a query like `"Version"`, on a connection of its own; what it
+ * refuses, or does not answer, is an error
  */
 pub fn ask(request: &str) -> io::Result<Json> {
-    let mut stream = UnixStream::connect(socket()?)?;
+    match exchange(UnixStream::connect(socket()?)?, request, PATIENCE)? {
+        Exchange::Answered(answer) => Ok(answer),
+        Exchange::Refused(error) | Exchange::Unclear(error) => Err(error),
+    }
+}
 
-    stream.set_read_timeout(Some(PATIENCE))?;
-    stream.set_write_timeout(Some(PATIENCE))?;
-    stream.write_all(format!("{request}\n").as_bytes())?;
+/*
+ * asks niri to carry out `action`, a request with an effect like `{"Action":...}`; an error is a
+ * definite no, while a missing or unclear answer is told apart, so the action is not repeated as if
+ * it failed
+ */
+pub fn act(action: &str) -> io::Result<Acted> {
+    match exchange(UnixStream::connect(socket()?)?, action, PATIENCE)? {
+        Exchange::Answered(_) => Ok(Acted::Done),
+        Exchange::Refused(error) => Err(error),
+        Exchange::Unclear(error) => Ok(Acted::Unknown(error.to_string())),
+    }
+}
+
+// an error before niri has the whole request means it was not sent
+fn exchange(stream: UnixStream, request: &str, patience: Duration) -> io::Result<Exchange> {
+    stream.set_read_timeout(Some(patience))?;
+    stream.set_write_timeout(Some(patience))?;
+    (&stream).write_all(format!("{request}\n").as_bytes())?;
 
     let mut reply = String::new();
-    BufReader::new(stream)
-        .read_line(&mut reply)
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => io::Error::new(
+    let read = BufReader::new(stream).read_line(&mut reply);
+
+    let unanswered = match read {
+        Ok(0) => Some(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "closed without answering",
+        )),
+        Ok(_) => None,
+        Err(error)
+            if matches!(
                 error.kind(),
-                format!("no answer within {}s", PATIENCE.as_secs()),
-            ),
-            _ => error,
-        })?;
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Some(io::Error::new(
+                error.kind(),
+                format!("did not answer within {patience:?}"),
+            ))
+        }
+        Err(error) => Some(error),
+    };
 
-    let unexpected = || io::Error::other(format!("unexpected reply: {}", reply.trim_end()));
-    let parsed = Json::parse(&reply).ok_or_else(unexpected)?;
-
-    if let Some(answer) = parsed.get("Ok") {
-        return Ok(answer.clone());
+    if let Some(error) = unanswered {
+        return Ok(Exchange::Unclear(error));
     }
 
-    Err(parsed
-        .get("Err")
+    let parsed = Json::parse(&reply);
+
+    if let Some(answer) = parsed.as_ref().and_then(|parsed| parsed.get("Ok")) {
+        return Ok(Exchange::Answered(answer.clone()));
+    }
+
+    if let Some(refused) = parsed
+        .as_ref()
+        .and_then(|parsed| parsed.get("Err"))
         .and_then(Json::as_str)
-        .map_or_else(unexpected, |refused| io::Error::other(refused.to_owned())))
+    {
+        return Ok(Exchange::Refused(io::Error::other(refused.to_owned())));
+    }
+
+    Ok(Exchange::Unclear(io::Error::other(format!(
+        "answered unexpectedly: {}",
+        reply.trim_end()
+    ))))
 }
 
 /*
@@ -691,5 +752,64 @@ mod tests {
         );
 
         assert_eq!(posts, []);
+    }
+
+    // niri at the other end of a socket, answering `reply` after `delay`, or closing unanswered
+    fn exchanged(reply: Option<&str>, delay: Duration) -> Exchange {
+        let (ours, theirs) = UnixStream::pair().expect("a socket pair");
+        let reply = reply.map(|reply| format!("{reply}\n"));
+
+        let niri = std::thread::spawn(move || {
+            let mut request = String::new();
+            BufReader::new(&theirs)
+                .read_line(&mut request)
+                .expect("the request");
+            std::thread::sleep(delay);
+
+            if let Some(reply) = reply {
+                // the asker may have stopped listening
+                let _ = (&theirs).write_all(reply.as_bytes());
+            }
+            request
+        });
+
+        let exchange = exchange(ours, r#"{"Action":{}}"#, Duration::from_millis(50))
+            .expect("the request was sent");
+
+        assert_eq!(niri.join().expect("niri"), "{\"Action\":{}}\n");
+        exchange
+    }
+
+    #[test]
+    fn an_answer_is_niris_reply_or_refusal() {
+        assert!(matches!(
+            exchanged(Some(r#"{"Ok":"Handled"}"#), Duration::ZERO),
+            Exchange::Answered(answer) if answer.as_str() == Some("Handled")
+        ));
+        assert!(matches!(
+            exchanged(Some(r#"{"Err":"no window"}"#), Duration::ZERO),
+            Exchange::Refused(error) if error.to_string() == "no window"
+        ));
+    }
+
+    // niri may carry out a request it answers late, never or garbled, so that is no refusal
+    #[test]
+    fn a_late_missing_or_garbled_answer_is_unclear() {
+        assert!(matches!(
+            exchanged(Some(r#"{"Ok":"Handled"}"#), Duration::from_millis(300)),
+            Exchange::Unclear(error) if error.to_string() == "did not answer within 50ms"
+        ));
+        assert!(matches!(
+            exchanged(None, Duration::ZERO),
+            Exchange::Unclear(error) if error.to_string() == "closed without answering"
+        ));
+        assert!(matches!(
+            exchanged(Some(r#"{"Err":7}"#), Duration::ZERO),
+            Exchange::Unclear(error) if error.to_string() == r#"answered unexpectedly: {"Err":7}"#
+        ));
+        assert!(matches!(
+            exchanged(Some("garbled"), Duration::ZERO),
+            Exchange::Unclear(error) if error.to_string() == "answered unexpectedly: garbled"
+        ));
     }
 }
