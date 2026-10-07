@@ -14,8 +14,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    battery, bluetooth, media, network, niri, notifications, osd, power, privacy, system, timer,
-    wake,
+    audio, battery, bluetooth, media, network, niri, notifications, osd, pipewire, power, privacy,
+    system, timer, wake,
 };
 use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
@@ -159,7 +159,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: Some("microphone, camera and screen cast indicators will not show"),
         needs: &[Need {
-            on: Provider::Program(privacy::DUMP),
+            on: Provider::Program(pipewire::DUMP),
             without: "microphone and camera indicators will not show",
         }],
         settings: &[],
@@ -237,17 +237,30 @@ pub const ALL: &[Module] = &[
             app
         },
     },
-    // Amane's Audio: the speaker and microphone in Controls and Media, and their OSD; it starts
-    // nothing of its own, and while it is off nothing reads Audio
+    // Amane's Audio: the default speaker and microphone in Controls and Media, and their OSD.
+    // Kanade's own adapter adds the devices and app streams (ADR 0011); while it is off nothing
+    // reads Audio
     Module {
         name: "audio",
         requires: &[CORE],
         optional: &[],
         warns: None,
-        needs: &[],
+        needs: &[
+            Need {
+                on: Provider::Program(pipewire::DUMP),
+                without: "no audio devices or app streams, only the default speaker and microphone",
+            },
+            Need {
+                on: Provider::Program(audio::WPCTL),
+                without: "no device selection or app volumes, only the default speaker and microphone",
+            },
+        ],
         settings: &[],
         verbs: &[],
-        start: |app| app,
+        start: |app| {
+            supervise::spawn("audio", audio::follow);
+            app
+        },
     },
     // Amane's Brightness, the backlight, as `audio`
     Module {

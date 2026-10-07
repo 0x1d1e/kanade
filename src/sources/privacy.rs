@@ -3,8 +3,8 @@
 //! from the island's niri stream (`niri.rs`), each writing its half of `Privacy`.
 //!
 //! PipeWire is the only place that knows: the portal has no signal for a microphone, and apps
-//! outside a sandbox skip it. `pw-dump --monitor` prints PipeWire's graph, then every object that
-//! changes, so this blocks on its output and wakes only when the graph does. An app capturing is a
+//! outside a sandbox skip it. This follows `pw-dump --monitor` (`pipewire.rs`) on its own, apart
+//! from `audio`, so it wakes only when the graph does. An app capturing is a
 //! stream node with an active link from a source node; a link still negotiating or paused moves
 //! nothing. A camera an app opens directly (`/dev/video*`) bypasses PipeWire and is not seen.
 
@@ -14,6 +14,7 @@ use std::io::{self, BufRead};
 use amane::Service;
 
 use super::json::Json;
+use super::pipewire::{self, DUMP, LINK, NODE, Object};
 use super::wake;
 use crate::supervise;
 
@@ -51,12 +52,6 @@ pub struct Sensors {
     // the apps capturing, by the name they give, sorted; may be empty
     pub apps: Vec<String>,
 }
-
-// prints the PipeWire graph, and each change to it
-pub const DUMP: &str = "pw-dump";
-
-const NODE: &str = "PipeWire:Interface:Node";
-const LINK: &str = "PipeWire:Interface:Link";
 
 // a node as far as capture goes
 #[derive(Debug)]
@@ -98,7 +93,9 @@ struct Graph {
 impl Graph {
     // one object as pw-dump prints it; without info it was removed
     fn apply(&mut self, object: &Json) {
-        let Some(id) = object.get("id").and_then(Json::as_u64) else {
+        let object = Object(object);
+
+        let Some(id) = object.id() else {
             return;
         };
 
@@ -106,24 +103,21 @@ impl Graph {
         self.nodes.remove(&id);
         self.links.remove(&id);
 
-        let Some(info) = object.get("info").filter(|info| **info != Json::Null) else {
+        let Some(info) = object.info() else {
             return;
         };
 
-        match object.get("type").and_then(Json::as_str) {
+        match object.kind() {
             Some(NODE) => {
-                let props = info.get("props");
-                let text = |key| props?.get(key)?.as_str().map(String::from);
+                let text = |key| object.prop(key).map(String::from);
 
                 if let Some(class) = text("media.class") {
-                    let monitor = props.and_then(|props| props.get("stream.monitor"));
-
                     self.nodes.insert(
                         id,
                         Node {
                             class,
                             app: text("application.name").or_else(|| text("node.name")),
-                            monitor: monitor.and_then(Json::as_bool) == Some(true),
+                            monitor: object.flag("stream.monitor"),
                         },
                     );
                 }
@@ -178,7 +172,7 @@ pub fn follow() {
 
     let stop = wake::Stop::default();
 
-    let error = wake::run(DUMP, &["--monitor", "--no-colors"], &stop, |output| {
+    let error = wake::run(DUMP, pipewire::MONITOR, &stop, |output| {
         let lost = watch(output, &mut shown, &mut show);
 
         // nobody can say any more whether something captures
@@ -198,42 +192,17 @@ pub fn follow() {
     supervise::stopped("privacy", why);
 }
 
-/*
- * follows pw-dump until its output ends, writing what changes the Sensors, so the graph changing
- * otherwise wakes nothing; returns why it ended. Each print is a JSON array whose closing bracket
- * alone on a line ends it, the objects inside being indented
- */
+// follows pw-dump until its output ends, writing what changes the Sensors, so the graph changing
+// otherwise wakes nothing; returns why it ended
 fn watch(
     lines: impl BufRead,
     shown: &mut Option<Sensors>,
     show: &mut impl FnMut(Option<&Sensors>),
 ) -> io::Error {
     let mut graph = Graph::default();
-    let mut print = String::new();
 
-    for line in lines.lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) => return error,
-        };
-
-        print.push_str(&line);
-        print.push('\n');
-
-        if line != "]" {
-            continue;
-        }
-
-        // a print this reader cannot follow is skipped, the next one still counts
-        let Some(objects) = Json::parse(&print) else {
-            eprintln!("kanade: skipped a pw-dump print that is not JSON");
-            print.clear();
-            continue;
-        };
-
-        print.clear();
-
-        for object in objects.as_array().unwrap_or_default() {
+    pipewire::prints(lines, |objects| {
+        for object in objects {
             graph.apply(object);
         }
 
@@ -243,9 +212,7 @@ fn watch(
             show(sensors.as_ref());
             *shown = sensors;
         }
-    }
-
-    io::ErrorKind::UnexpectedEof.into()
+    })
 }
 
 fn show(sensors: Option<&Sensors>) {
