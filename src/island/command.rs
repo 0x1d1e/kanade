@@ -326,7 +326,7 @@ mod tests {
             Command::debug_usage(),
             "debug post <kind> <key> <priority> <lifetime> <scope> <interrupt>
 debug withdraw <kind> <key>
-  <kind>: media|notification|volume|brightness|workspace|battery|network|bluetooth|timer|screenshot
+  <kind>: media|notification|volume|brightness|workspace|battery|network|bluetooth|timer|screenshot|recording
   <priority>: passive|media|osd|ongoing|actionable|critical
   <lifetime>: persistent|<ms>
   <scope>: global|focused-output

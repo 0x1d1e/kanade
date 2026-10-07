@@ -13,6 +13,7 @@ use crate::reload::{self, Outcome};
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
+use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::supervise;
@@ -56,11 +57,24 @@ fn run(call: Call) -> Reply {
             Ok(Asked::Unknown(why)) => Reply::Unknown(why),
             Err(error) => Reply::Refused(error),
         },
+        // on the draw thread, which the recorder ends with (`recording::start`); `kanade` waits on it
+        Call::Record(request) => record(request),
         Call::Reload => config(reload::reload(), "reloaded"),
         Call::Validate => config(reload::validate(), "valid"),
 
         Call::Status => Reply::Done(status().join("\n")),
     }
+}
+
+// answered at once, as niri gives the recorder no frame while the draw thread waits
+fn record(request: recording::Request) -> Reply {
+    let reply = match request {
+        recording::Request::Start => recording::start(),
+        recording::Request::Stop => recording::stop(),
+        recording::Request::Status => Ok(recording::status().to_string()),
+    };
+
+    reply.map_or_else(Reply::Refused, Reply::Done)
 }
 
 // the versions, then the config, the Modules and what went wrong with the sources, a line each

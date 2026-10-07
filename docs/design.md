@@ -141,7 +141,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 
 - screenshot: area crop, window, fullscreen/output;
 - screenshots: niri-native IPC actions cover all three modes, so no external screenshot backend; `doctor` names a missing niri. External backend only for recording (#140);
-- recording: external GPU-accelerated recorder backend; start/stop/status;
+- recording: `wf-recorder` through niri's wlr-screencopy, so `privacy` sees it as a cast; `h264_vaapi` to `~/Videos/Screencasts`, no fallback encoder; start/stop/status; a Persistent Ongoing Activity with Stop while it records, then the same Transient Activity as a screenshot (done, #140, [ADR 0013](adr/0013-screen-recording-with-wf-recorder.md));
 - completion emits a Transient Activity + copy/open path actions, also for niri's own screenshot binds (done, #139);
 - no OCR, reverse-image search, annotation editor, upload service.
 
@@ -219,7 +219,7 @@ clipboard open|close|toggle|clear
 calendar open
 timer start <dur>|pause|resume|cancel
 capture screenshot area|window|output
-capture record start|stop
+capture record start|stop|status
 caffeine on|off|toggle [duration]
 config reload|validate
 status
@@ -321,7 +321,6 @@ Need design before commitment:
 
 - Track/test privacy Overlay stacking + input passthrough.
 - Define Dock `app_id` ↔ `.desktop` matching + override shape.
-- Define recording backend selection + capability probing (#140).
 - Define Google Calendar account adapter/auth/storage.
 - Define clipboard sensitive-content policy before persistence.
 - Run lock crash proof; split on failure.
