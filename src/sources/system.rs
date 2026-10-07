@@ -8,14 +8,15 @@
 //! Amane's Network and Bluetooth poll every second or two for good once read, so this never reads
 //! them. It waits on signals instead and asks a daemon again only when one of its objects changes,
 //! comes or goes, or the daemon itself starts or stops: at idle its threads sleep, and a signal
-//! about anything else, like an access point's strength, is dropped without a call.
+//! about anything else, like an access point's strength, is dropped without a call. Only while the
+//! Wi-Fi sub-surface shows are the Wi-Fi device and its access points followed too (`wifi`).
 
 use std::sync::{Once, mpsc};
 use std::{iter, mem};
 
 use amane::{Bus, Service, Value};
 
-use super::{bluetooth, network, power};
+use super::{bluetooth, network, power, wifi};
 use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
@@ -46,6 +47,11 @@ impl Radio {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Daemon {
     NetworkManager,
+
+    // NetworkManager's Wi-Fi device, its access points or saved profiles, for the Wi-Fi
+    // sub-surface only
+    Wifi,
+
     BlueZ,
     PowerProfiles,
 }
@@ -62,14 +68,20 @@ enum Watch {
 
     // a daemon starting, stopping or restarting, which no object says
     Owner,
+
+    // a NetworkManager device, or an active connection, changing state, for a join (`wifi::hear`)
+    Device,
+    Attempt,
 }
 
 impl Watch {
-    const ALL: [Watch; 4] = [
+    const ALL: [Watch; 6] = [
         Watch::Properties,
         Watch::Added,
         Watch::Removed,
         Watch::Owner,
+        Watch::Device,
+        Watch::Attempt,
     ];
 
     // its interface and name
@@ -79,6 +91,8 @@ impl Watch {
             Watch::Added => ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded"),
             Watch::Removed => ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved"),
             Watch::Owner => ("org.freedesktop.DBus", "NameOwnerChanged"),
+            Watch::Device => (wifi::DEVICE, "StateChanged"),
+            Watch::Attempt => (wifi::ATTEMPT, "StateChanged"),
         }
     }
 }
@@ -93,6 +107,7 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
 
     match watch {
         Watch::Properties if network::concerns(path, first) => Some(Daemon::NetworkManager),
+        Watch::Properties if wifi::concerns(path, first) => Some(Daemon::Wifi),
         Watch::Properties if bluetooth::concerns(path, first) => Some(Daemon::BlueZ),
         Watch::Properties if power::concerns(path, first) => Some(Daemon::PowerProfiles),
 
@@ -108,6 +123,39 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
     }
 }
 
+/*
+ * what a join waiting on NetworkManager hears from a signal, if anything, and from which one: the
+ * sender, or the one gone
+ */
+fn heard(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<wifi::Heard> {
+    let number = |index: usize| arguments.get(index).map(Value::number);
+    let first = arguments.first().map_or("", Value::text);
+
+    // a name's owner before the change, none when it is just taken
+    let old = arguments.get(1).map_or("", Value::text);
+
+    let (owner, change) = match watch {
+        Watch::Device => (
+            sender,
+            wifi::Change::Device(path.into(), number(0)?, number(2)?),
+        ),
+        Watch::Attempt => (sender, wifi::Change::Attempt(path.into(), number(0)?)),
+        Watch::Removed if first.starts_with(network::ROOT) => {
+            (sender, wifi::Change::Removed(first.into()))
+        }
+        // NetworkManager stopping, or replaced, but not starting: a join may be asking it to
+        Watch::Owner if sender == BUS && first == network::NAME && !old.is_empty() => {
+            (old, wifi::Change::Gone)
+        }
+        _ => return None,
+    };
+
+    Some(wifi::Heard {
+        owner: owner.into(),
+        change,
+    })
+}
+
 // which daemons to follow, each by its Module
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Daemons {
@@ -119,7 +167,7 @@ struct Daemons {
 impl Daemons {
     fn follows(self, daemon: Daemon) -> bool {
         match daemon {
-            Daemon::NetworkManager => self.network,
+            Daemon::NetworkManager | Daemon::Wifi => self.network,
             Daemon::BlueZ => self.bluetooth,
             Daemon::PowerProfiles => self.power,
         }
@@ -135,7 +183,10 @@ impl Daemons {
     // objects coming and going matter only for BlueZ, see `route`
     fn watches(self, watch: Watch) -> bool {
         match watch {
-            Watch::Added | Watch::Removed => self.bluetooth,
+            Watch::Added => self.bluetooth,
+            // a join's active connection removed, besides BlueZ's objects
+            Watch::Removed => self.bluetooth || self.network,
+            Watch::Device | Watch::Attempt => self.network,
             Watch::Properties | Watch::Owner => true,
         }
     }
@@ -178,8 +229,18 @@ fn follow(daemons: Daemons) {
         // a restart goes on with the same subscription, so no signal is lost to it
         supervise::spawn("system bus watch", move || {
             for signal in signals.by_ref() {
+                if daemons.network
+                    && let Some(heard) =
+                        heard(watch, signal.sender(), signal.path(), signal.arguments())
+                {
+                    wifi::hear(heard);
+                }
+
+                // the Wi-Fi device and its access points say much, heard only while the
+                // sub-surface shows
                 let Some(daemon) = route(watch, signal.sender(), signal.path(), signal.arguments())
                     .filter(|&daemon| daemons.follows(daemon))
+                    .filter(|&daemon| daemon != Daemon::Wifi || wifi::wanted())
                 else {
                     continue;
                 };
@@ -225,6 +286,11 @@ fn follow(daemons: Daemons) {
 fn refresh_all(daemons: Vec<Daemon>) {
     if daemons.contains(&Daemon::NetworkManager) {
         refresh(network::read());
+    }
+
+    // NetworkManager restarting, or the Wi-Fi switch, changes the networks too
+    if daemons.contains(&Daemon::NetworkManager) || daemons.contains(&Daemon::Wifi) {
+        wifi::refresh();
     }
 
     if daemons.contains(&Daemon::BlueZ) {
@@ -278,6 +344,13 @@ mod tests {
             changed(network::ROOT, network::NAME),
             Some(Daemon::NetworkManager)
         );
+        assert_eq!(
+            changed(
+                "/org/freedesktop/NetworkManager/AccessPoint/1",
+                "org.freedesktop.NetworkManager.AccessPoint"
+            ),
+            Some(Daemon::Wifi)
+        );
         assert_eq!(changed(BUDS, "org.bluez.Device1"), Some(Daemon::BlueZ));
         assert_eq!(
             changed("/org/bluez/hci0", "org.bluez.Adapter1"),
@@ -305,8 +378,8 @@ mod tests {
 
         assert_eq!(
             changed(
-                "/org/freedesktop/NetworkManager/AccessPoint/1",
-                "org.freedesktop.NetworkManager.AccessPoint"
+                "/org/freedesktop/NetworkManager/Devices/2",
+                "org.freedesktop.NetworkManager.Device.Statistics"
             ),
             None
         );
@@ -356,6 +429,105 @@ mod tests {
 
         assert_eq!(owner(BUS, network::NAME, ":1.9", ""), restarted);
         assert_eq!(owner(BUS, network::NAME, "", ":1.81"), restarted);
+    }
+
+    #[test]
+    fn a_join_hears_its_device_attempt_and_networkmanager_going() {
+        let numbers = |numbers: &[f64]| {
+            numbers
+                .iter()
+                .map(|&n| Value::Number(n))
+                .collect::<Vec<_>>()
+        };
+        let from = |owner: &str, change| wifi::Heard {
+            owner: owner.into(),
+            change,
+        };
+        let device = "/org/freedesktop/NetworkManager/Devices/3";
+        let attempt = "/org/freedesktop/NetworkManager/ActiveConnection/9";
+
+        assert_eq!(
+            heard(Watch::Device, ":1.9", device, &numbers(&[120.0, 50.0, 7.0])),
+            Some(from(
+                ":1.9",
+                wifi::Change::Device(device.into(), 120.0, 7.0)
+            ))
+        );
+        assert_eq!(
+            heard(Watch::Attempt, ":1.9", attempt, &numbers(&[4.0, 2.0])),
+            Some(from(":1.9", wifi::Change::Attempt(attempt.into(), 4.0)))
+        );
+        assert_eq!(
+            heard(
+                Watch::Owner,
+                BUS,
+                "/org/freedesktop/DBus",
+                &text(&[network::NAME, ":1.9", ""])
+            ),
+            Some(from(":1.9", wifi::Change::Gone))
+        );
+        assert_eq!(
+            heard(
+                Watch::Owner,
+                BUS,
+                "/org/freedesktop/DBus",
+                &text(&[network::NAME, ":1.9", ":1.81"])
+            ),
+            Some(from(":1.9", wifi::Change::Gone))
+        );
+
+        // NetworkManager starting takes no attempt with it
+        assert_eq!(
+            heard(
+                Watch::Owner,
+                BUS,
+                "/org/freedesktop/DBus",
+                &text(&[network::NAME, "", ":1.81"])
+            ),
+            None
+        );
+        assert_eq!(
+            heard(
+                Watch::Removed,
+                ":1.9",
+                "/org/freedesktop",
+                &text(&[attempt, ""])
+            ),
+            Some(from(":1.9", wifi::Change::Removed(attempt.into())))
+        );
+
+        // but not other daemons, or a state change saying too little
+        assert_eq!(
+            heard(
+                Watch::Owner,
+                BUS,
+                "/org/freedesktop/DBus",
+                &text(&[bluetooth::BLUEZ, "", ":1.80"])
+            ),
+            None
+        );
+        assert_eq!(
+            heard(
+                Watch::Removed,
+                ":1.80",
+                "/",
+                &text(&["/org/bluez/hci0/dev_00", ""])
+            ),
+            None
+        );
+        assert_eq!(
+            heard(Watch::Device, ":1.9", device, &numbers(&[120.0])),
+            None
+        );
+        assert_eq!(
+            heard(
+                Watch::Properties,
+                ":1.9",
+                network::ROOT,
+                &text(&[network::NAME])
+            ),
+            None
+        );
     }
 
     #[test]

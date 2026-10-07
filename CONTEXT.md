@@ -73,6 +73,13 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 - Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
+## Sub-surface
+A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has two: Wi-Fi, from the Wi-Fi tile's chevron, and its password entry, from a network that needs one.
+- **Invariant:** every target in a Surface and its sub-surfaces is a key away. Arrows move a ring between targets, Enter or Space presses, Escape leaves a sub-surface for the level it came from, ringed on the target that entered it, and collapses the island only from the top level.
+- **Invariant:** a sub-surface lasts one opening of its Surface. The Surface opens at its top level.
+- **Invariant:** a password never prints, in a log or a `Debug`; it lives only until NetworkManager has it.
+- **Avoid:** detail (an Activity's Detail), page, view
+
 ## Satellite
 Small secondary indicator beside the primary island: timer, VPN, low battery.
 - Capture is no Satellite: the privacy cluster shows it.
