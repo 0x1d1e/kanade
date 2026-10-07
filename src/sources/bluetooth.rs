@@ -111,7 +111,7 @@ impl Request {
         matches!(self, Request::Doing(..) | Request::Cancelling)
     }
 
-    // where its thread ending leaves it: what it was doing failed, as nothing said it ended
+    // where its thread ending unfinished leaves it: what it was doing failed
     fn ended(&self) -> Option<Request> {
         match self {
             Request::Doing(path, task) => Some(Request::Failed(path.clone(), *task)),
@@ -143,18 +143,42 @@ static WATCHED: Watched = Watched::new();
 static ASKING: Mutex<()> = Mutex::new(());
 
 /*
- * the one thing under way, held by the thread doing it. Ending, by its outcome or a panic, it is
- * no longer under way
+ * the one thing under way, held by the thread doing it until it `finish`es. Dropped unfinished, as
+ * by a panic, it is no longer under way. Finished, it touches nothing asked after, though its
+ * thread may hold it a while longer
  */
-struct Working(());
+struct Working {
+    finished: bool,
+}
 
 impl Working {
-    // the outcome so far; a cancelled one says nothing more
-    fn set(&self, request: Request) {
+    // how it goes on, still under way; a cancelled one says nothing more
+    fn update(&self, request: Request) {
         let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
 
-        if matches!(*Request::read(), Request::Doing(..)) {
+        if !self.finished && matches!(*Request::read(), Request::Doing(..)) {
             write(request);
+        }
+    }
+
+    // its outcome, no longer under way; a cancelled one's says nothing
+    fn finish(&mut self, outcome: Request) {
+        let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if self.finished {
+            return;
+        }
+
+        self.finished = true;
+
+        let ended = match *Request::read() {
+            Request::Doing(..) => Some(outcome),
+            Request::Cancelling => Some(Request::Idle),
+            Request::Idle | Request::Failed(..) => None,
+        };
+
+        if let Some(ended) = ended {
+            write(ended);
         }
     }
 }
@@ -162,6 +186,11 @@ impl Working {
 impl Drop for Working {
     fn drop(&mut self) {
         let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if self.finished {
+            return;
+        }
+
         let ended = Request::read().ended();
 
         if let Some(ended) = ended {
@@ -313,7 +342,7 @@ pub fn power(adapter: String, on: bool) {
  */
 pub fn pair(device: &str) {
     let path = device.to_owned();
-    let Some(working) = ask(Request::Doing(path.clone(), Task::Pair)) else {
+    let Some(mut working) = ask(Request::Doing(path.clone(), Task::Pair)) else {
         return;
     };
 
@@ -325,25 +354,25 @@ pub fn pair(device: &str) {
         agent::over(&path);
 
         if !bus.property(BLUEZ, &path, DEVICE, "Paired").bool() {
-            working.set(Request::Failed(path, Task::Pair));
+            working.finish(Request::Failed(path, Task::Pair));
             return;
         }
 
         bus.set_property(BLUEZ, &path, DEVICE, "Trusted", Argument::from(true));
 
-        working.set(Request::Doing(path.clone(), Task::Connect));
-        working.set(connected(&path));
+        working.update(Request::Doing(path.clone(), Task::Connect));
+        working.finish(connected(&path));
     });
 }
 
 pub fn connect(device: &str) {
     let path = device.to_owned();
-    let Some(working) = ask(Request::Doing(path.clone(), Task::Connect)) else {
+    let Some(mut working) = ask(Request::Doing(path.clone(), Task::Connect)) else {
         return;
     };
 
     thread::spawn(move || {
-        working.set(connected(&path));
+        working.finish(connected(&path));
     });
 }
 
@@ -362,7 +391,7 @@ fn connected(path: &str) -> Request {
 
 pub fn disconnect(device: &str) {
     let path = device.to_owned();
-    let Some(working) = ask(Request::Doing(path.clone(), Task::Disconnect)) else {
+    let Some(mut working) = ask(Request::Doing(path.clone(), Task::Disconnect)) else {
         return;
     };
 
@@ -377,7 +406,7 @@ pub fn disconnect(device: &str) {
             Request::Idle
         };
 
-        working.set(outcome);
+        working.finish(outcome);
     });
 }
 
@@ -385,7 +414,7 @@ pub fn disconnect(device: &str) {
 pub fn forget(adapter: &str, device: &str) {
     let adapter = adapter.to_owned();
     let path = device.to_owned();
-    let Some(working) = ask(Request::Doing(path.clone(), Task::Forget)) else {
+    let Some(mut working) = ask(Request::Doing(path.clone(), Task::Forget)) else {
         return;
     };
 
@@ -407,7 +436,7 @@ pub fn forget(adapter: &str, device: &str) {
             Request::Failed(path, Task::Forget)
         };
 
-        working.set(outcome);
+        working.finish(outcome);
     });
 }
 
@@ -447,7 +476,7 @@ fn ask(request: Request) -> Option<Working> {
 
     write(request);
 
-    Some(Working(()))
+    Some(Working { finished: false })
 }
 
 // what is under way says nothing more of itself, though it runs until it ends
@@ -629,41 +658,55 @@ mod tests {
 
     // the only test asking, as asking is global
     #[test]
-    fn one_thing_is_under_way_at_a_time_until_its_thread_ends() {
+    fn one_thing_is_under_way_at_a_time_until_it_finishes() {
         let doing = |path: &str, task| Request::Doing(path.into(), task);
 
-        let working = ask(doing("/d/1", Task::Pair)).unwrap();
+        let mut working = ask(doing("/d/1", Task::Pair)).unwrap();
         assert!(ask(doing("/d/2", Task::Connect)).is_none());
 
-        working.set(doing("/d/1", Task::Connect));
+        working.update(doing("/d/1", Task::Connect));
         assert_eq!(*Request::read(), doing("/d/1", Task::Connect));
 
-        working.set(Request::Idle);
-        assert!(!Request::read().busy());
+        working.finish(Request::Idle);
+        assert_eq!(*Request::read(), Request::Idle);
+
+        // finished, its guard dropped only after the next is asked touches nothing of it
+        let mut next = ask(doing("/d/2", Task::Disconnect)).unwrap();
+        working.update(doing("/d/1", Task::Connect));
+        working.finish(Request::Failed("/d/1".into(), Task::Pair));
         drop(working);
+        assert_eq!(*Request::read(), doing("/d/2", Task::Disconnect));
+
+        next.finish(Request::Idle);
+        drop(next);
         assert_eq!(*Request::read(), Request::Idle);
 
         // cancelled, nothing presses until BlueZ gives the pairing up, and its outcome says nothing
-        let working = ask(doing("/d/1", Task::Pair)).unwrap();
+        let mut working = ask(doing("/d/1", Task::Pair)).unwrap();
         abandon();
         assert_eq!(*Request::read(), Request::Cancelling);
-        assert!(Request::read().busy());
         assert!(ask(doing("/d/2", Task::Connect)).is_none());
 
-        working.set(Request::Failed("/d/1".into(), Task::Pair));
+        working.update(doing("/d/1", Task::Connect));
         assert_eq!(*Request::read(), Request::Cancelling);
 
+        working.finish(Request::Failed("/d/1".into(), Task::Pair));
+        assert_eq!(*Request::read(), Request::Idle);
+        drop(working);
+
+        // dropped unfinished, as by a panic, it is no longer under way
+        let working = ask(doing("/d/1", Task::Pair)).unwrap();
+        abandon();
         drop(working);
         assert_eq!(*Request::read(), Request::Idle);
 
-        // a thread ending without an outcome, as by a panic, leaves nothing under way
         let working = ask(doing("/d/2", Task::Connect)).unwrap();
         drop(working);
         assert_eq!(
             *Request::read(),
             Request::Failed("/d/2".into(), Task::Connect)
         );
-        assert!(ask(doing("/d/2", Task::Connect)).is_some());
+        assert!(!Request::read().busy());
     }
 
     #[test]
