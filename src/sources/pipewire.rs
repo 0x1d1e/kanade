@@ -12,6 +12,9 @@ pub const DUMP: &str = "pw-dump";
 // what `wake::run` runs it with
 pub const MONITOR: &[&str] = &["--monitor", "--no-colors"];
 
+// sets one key of a metadata, like the defaults
+pub const SET_METADATA: &str = "pw-metadata";
+
 pub const NODE: &str = "PipeWire:Interface:Node";
 pub const LINK: &str = "PipeWire:Interface:Link";
 pub const METADATA: &str = "PipeWire:Interface:Metadata";

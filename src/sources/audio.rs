@@ -11,7 +11,7 @@ use std::io::{self, BufRead};
 
 use amane::Service;
 
-use super::json::Json;
+use super::json::{self, Json};
 use super::pipewire::{self, DUMP, METADATA, NODE, Object};
 use super::wake;
 use crate::supervise;
@@ -53,6 +53,19 @@ pub struct Device {
     pub default: bool,
 
     pub level: Level,
+
+    // how `set_default` makes it the default of the list it is in
+    choice: Choice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Choice {
+    // a sink or source, whose direction wpctl knows
+    Node,
+
+    // a device that does both, which wpctl turns down: set by name as the configured default of
+    // one direction, as wpctl would
+    Configured { key: &'static str, name: String },
 }
 
 // an app playing or recording sound
@@ -87,6 +100,10 @@ pub const WPCTL: &str = "wpctl";
 const DEFAULTS: &str = "default";
 const DEFAULT_OUTPUT: &str = "default.audio.sink";
 const DEFAULT_INPUT: &str = "default.audio.source";
+
+// the defaults asked for, which the session manager follows while those devices are there
+const CONFIGURED_OUTPUT: &str = "default.configured.audio.sink";
+const CONFIGURED_INPUT: &str = "default.configured.audio.source";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -212,7 +229,7 @@ impl Graph {
     }
 
     fn mixer(&self) -> Mixer {
-        let devices = |role, default: &Option<String>| {
+        let devices = |role, default: &Option<String>, configured| {
             let mut devices: Vec<_> = self
                 .nodes
                 .iter()
@@ -222,6 +239,13 @@ impl Graph {
                     name: entry.label.clone(),
                     default: default.as_ref() == Some(&entry.name),
                     level: entry.level,
+                    choice: match entry.role {
+                        Role::Duplex => Choice::Configured {
+                            key: configured,
+                            name: entry.name.clone(),
+                        },
+                        _ => Choice::Node,
+                    },
                 })
                 .collect();
 
@@ -245,8 +269,8 @@ impl Graph {
         streams.sort_by(|a, b| (!a.plays, &a.app, a.node.0).cmp(&(!b.plays, &b.app, b.node.0)));
 
         Mixer {
-            outputs: devices(Role::Output, &self.output),
-            inputs: devices(Role::Input, &self.input),
+            outputs: devices(Role::Output, &self.output, CONFIGURED_OUTPUT),
+            inputs: devices(Role::Input, &self.input, CONFIGURED_INPUT),
             streams,
         }
     }
@@ -427,11 +451,28 @@ pub fn set_muted(node: Node, muted: bool) -> Result<(), String> {
     wake::act(WPCTL, &["set-mute", &node.0.to_string(), muted])
 }
 
-// makes a device the default for its direction, as `set_volume`; streams that follow the default
-// move to it
+/*
+ * makes a device the default of the list it is in, outputs or inputs, as `set_volume`; streams that
+ * follow the default move to it
+ */
 #[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_default(node: Node) -> Result<(), String> {
-    wake::act(WPCTL, &["set-default", &node.0.to_string()])
+pub fn set_default(device: &Device) -> Result<(), String> {
+    let (program, args) = default_command(device);
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
+
+    wake::act(program, &args)
+}
+
+fn default_command(device: &Device) -> (&'static str, Vec<String>) {
+    match &device.choice {
+        Choice::Node => (WPCTL, vec!["set-default".into(), device.node.0.to_string()]),
+        Choice::Configured { key, name } => {
+            let value = format!("{{ \"name\": {} }}", json::quote(name));
+            let args = ["-n", DEFAULTS, "0", key, &value, "Spa:String:JSON"];
+
+            (pipewire::SET_METADATA, args.map(String::from).to_vec())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -583,6 +624,7 @@ mod tests {
             name: name.into(),
             default,
             level: level(volume, false),
+            choice: Choice::Node,
         }
     }
 
@@ -795,11 +837,56 @@ mod tests {
         ]);
 
         let mixer = posts.last().unwrap();
-        let interface = device_of(60, "Interface", false, 100);
+        let interface = |devices: &[Device]| {
+            devices
+                .iter()
+                .find(|device| device.node == Node(60))
+                .cloned()
+                .unwrap()
+        };
 
-        assert!(mixer.outputs.contains(&interface));
+        assert_eq!(interface(&mixer.outputs).name, "Interface");
         assert_eq!(default_nodes(&mixer.inputs), vec![Node(60)]);
         assert_eq!(default_nodes(&mixer.outputs), vec![Node(HEADPHONES)]);
+
+        // wpctl takes only a sink or a source, so a duplex one is configured per direction
+        let configures = |devices: &[Device]| {
+            let (program, args) = default_command(&interface(devices));
+
+            assert_eq!(program, pipewire::SET_METADATA);
+            args
+        };
+        let value = r#"{ "name": "pro_audio.duplex" }"#;
+
+        assert_eq!(
+            configures(&mixer.outputs),
+            [
+                "-n",
+                "default",
+                "0",
+                CONFIGURED_OUTPUT,
+                value,
+                "Spa:String:JSON"
+            ]
+        );
+        assert_eq!(
+            configures(&mixer.inputs),
+            [
+                "-n",
+                "default",
+                "0",
+                CONFIGURED_INPUT,
+                value,
+                "Spa:String:JSON"
+            ]
+        );
+        assert_eq!(
+            default_command(&mixer.outputs[0]),
+            (
+                WPCTL,
+                vec!["set-default".into(), mixer.outputs[0].node.0.to_string()]
+            )
+        );
     }
 
     #[test]

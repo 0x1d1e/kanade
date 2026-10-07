@@ -254,6 +254,10 @@ pub const ALL: &[Module] = &[
                 on: Provider::Program(audio::WPCTL),
                 without: "no device selection or app volumes, only the default speaker and microphone",
             },
+            Need {
+                on: Provider::Program(pipewire::SET_METADATA),
+                without: "no choosing a device that both plays and records as the default",
+            },
         ],
         settings: &[],
         verbs: &[],

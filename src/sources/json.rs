@@ -148,6 +148,23 @@ fn array(chars: &mut Input) -> Option<Json> {
     }
 }
 
+// `text` as a JSON string, quoted, for a tool that takes JSON
+pub fn quote(text: &str) -> String {
+    let mut quoted = String::from('"');
+
+    for char in text.chars() {
+        match char {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            control if control < ' ' => quoted.push_str(&format!("\\u{:04x}", u32::from(control))),
+            other => quoted.push(other),
+        }
+    }
+
+    quoted.push('"');
+    quoted
+}
+
 fn string(chars: &mut Input) -> Option<String> {
     chars.next_if_eq(&'"')?;
 
@@ -261,6 +278,13 @@ fn skip_space(chars: &mut Input) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quoted_string_parses_back() {
+        let text = "a \"node\" \\ with\ttabs";
+
+        assert_eq!(Json::parse(&quote(text)), Some(Json::String(text.into())));
+    }
 
     #[test]
     fn reads_every_kind_of_value() {

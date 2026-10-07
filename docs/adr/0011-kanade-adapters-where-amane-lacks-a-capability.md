@@ -20,7 +20,7 @@ Amane is third party (ADR 0004). A change there lands on its schedule, and Kanad
 When the pinned Amane lacks a capability a Module needs, Kanade builds an adapter for it and does not wait for Amane. Prefer, in order:
 
 1. **D-Bus through Amane's `Bus`**, when the service speaks D-Bus and `Bus` carries what it needs. The tray's watcher and host.
-2. **An external tool** from the package that owns the capability: `pw-dump` and `wpctl` for audio, `wl-paste` and `wl-copy` for the clipboard, `systemd-inhibit` for idle inhibit.
+2. **An external tool** from the package that owns the capability: `pw-dump`, `pw-metadata` and `wpctl` for audio, `wl-paste` and `wl-copy` for the clipboard, `systemd-inhibit` for idle inhibit.
 3. **A normal Rust crate**, when neither of the above is sound and the crate deepens Kanade. Never a Wayland or render crate.
 
 Every adapter keeps these rules:
