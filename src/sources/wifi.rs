@@ -586,6 +586,14 @@ fn joined(
     // listening before asking, so the end of a quick join is not missed
     let (listening, heard) = listen(asked);
 
+    /*
+     * the snapshot's NetworkManager may have been replaced while nothing listened. It can still
+     * answer, but its going away would then say nothing more: no join is asked of it
+     */
+    if self::owner() != owner {
+        return Ended::Gone;
+    }
+
     let (made, active) = match (&network.profile, secret) {
         (Some(profile), None) => {
             let active = bus.call(
