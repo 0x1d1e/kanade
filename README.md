@@ -1,6 +1,6 @@
 # Kanade
 
-A top-center Dynamic Island for niri, built with [Amane](https://github.com/MystiaFin/amane).
+A top-center adaptive activity island for niri, built with [Amane](https://github.com/MystiaFin/amane).
 
 https://github.com/user-attachments/assets/27e6837e-8cf1-4faa-8815-e5b14cdd631b
 

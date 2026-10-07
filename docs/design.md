@@ -2,7 +2,7 @@
 
 ## Objective
 
-macOS-style niri shell, Rust on Amane ([ADR 0008](adr/0008-kanade-is-a-shell.md)). No bar. One Island/output: status at rest, Activities live, Surfaces on demand. ~zero idle cost.
+Desktop shell for niri, Rust on Amane ([ADR 0008](adr/0008-kanade-is-a-shell.md)). No bar. One Island/output: status at rest, Activities live, Surfaces on demand. ~zero idle cost.
 
 Sources of truth: tracker = work/status; `CONTEXT.md` = domain; ADRs = durable rationale; this doc = target architecture/constraints. Where this doc changes a `CONTEXT.md` term or invariant, `CONTEXT.md` changes in the PR that implements it; until then `CONTEXT.md` describes the code. History: `docs/archived/plan.md` (v0.1 plan).
 

@@ -8,7 +8,7 @@ v0.1 is one Island per output, explicitly not a bar, dock, wallpaper, lock scree
 
 ## Decision
 
-Kanade becomes a macOS-style niri shell on Amane, scoped by `docs/design.md`: no bar, the Island replaces bar, menu and taskbar, plus the Modules listed there; dock, wallpaper, lock, session and settings come in later roadmap phases (10-11). Every feature is a Module the user can disable; a disabled Module opens no window, reads no Service, registers no IPC and has no side effects. One process, except where security needs a split (lock, per its crash proof).
+Kanade becomes a desktop shell for niri on Amane, scoped by `docs/design.md`: no bar, the Island replaces bar, menu and taskbar, plus the Modules listed there; dock, wallpaper, lock, session and settings come in later roadmap phases (10-11). Every feature is a Module the user can disable; a disabled Module opens no window, reads no Service, registers no IPC and has no side effects. One process, except where security needs a split (lock, per its crash proof).
 
 ## Alternatives
 

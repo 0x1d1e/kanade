@@ -4,7 +4,7 @@ Status: archived after v0.1, kept as history and no longer edited to match the c
 
 ## 1. Problem
 
-Niri users who want a Dynamic Island style surface have two options: heavy whole-shell projects (iNiR, Ukishima/Ricelin) or small single-purpose ones (Tide). Kanade is a narrow third option: one top-center pill per monitor that shows the few live things worth attention and grows in place into four surfaces. Not a desktop shell.
+Niri users who want a top-center status island have two options: heavy whole-shell projects (iNiR, Ukishima/Ricelin) or small single-purpose ones (Tide). Kanade is a narrow third option: one top-center pill per monitor that shows the few live things worth attention and grows in place into four surfaces. Not a desktop shell.
 
 Built on [Amane](https://github.com/MystiaFin/amane) (Rust, MIT, 0.1.0, experimental, Rust 2024): GPU-drawn Wayland layer shells, no QML/GTK/browser.
 
