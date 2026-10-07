@@ -30,6 +30,17 @@ impl Watcher {
         service: &str,
         #[zbus(header)] header: Header<'_>,
     ) -> fdo::Result<()> {
+        /*
+         * only through the watcher's name, which the bus routes to its owner alone: Kanade's unique
+         * name reaches this object while another program is the watcher too. Not by Kanade's role,
+         * which an item registering again on a takeover may come before
+         */
+        if header.destination().map(|destination| destination.as_str()) != Some(NAME) {
+            return Err(fdo::Error::AccessDenied(format!(
+                "register with {NAME}, Kanade is not the watcher by its own name"
+            )));
+        }
+
         let caller = header.sender().map(|caller| caller.as_str());
 
         let address = Address::registered(service, caller)

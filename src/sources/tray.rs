@@ -102,8 +102,9 @@ pub enum Role {
 
 impl Role {
     /*
-     * whether what a watcher said of an item counts: Kanade's own watcher (none) always, another
-     * only while it is the one that holds the name, so any program's signal is not taken for it
+     * whether what a watcher said of an item counts. Kanade's own watcher (none) always: it takes
+     * only calls the bus routed by the watcher's name, so Kanade held it then, whatever the role
+     * says yet. Another only while it holds the name, so any program's signal is not taken for it
      */
     fn heeds(&self, watcher: Option<&str>) -> bool {
         match (self, watcher) {
@@ -220,6 +221,22 @@ struct Entry {
 
     // a failed read was logged, so the next is not
     failed: bool,
+}
+
+impl Entry {
+    /*
+     * as if just registered, under a new serial so a read under way, or a row of the old item,
+     * matches nothing; returns the old item
+     */
+    fn unread(&mut self) -> Option<Item> {
+        self.serial = SERIALS.fetch_add(1, Ordering::Relaxed);
+        self.owner = None;
+        self.reading = false;
+        self.again = false;
+        self.failed = false;
+
+        self.item.take()
+    }
 }
 
 // what actions on items may reach, while a run is hosting
@@ -590,12 +607,20 @@ impl Hosting {
             return;
         }
 
-        // a well-known name moved to another program, which is read afresh
+        /*
+         * a well-known name moved to another program: what the last one said is withdrawn at once,
+         * so its row neither stays shown nor reaches it, and the new one hidden until read
+         */
         let moved: Vec<usize> = (0..self.entries.len())
-            .filter(|&at| self.entries[at].address.name == name)
+            .filter(|&at| {
+                let entry = &self.entries[at];
+                entry.address.name == name && entry.owner.as_deref() != Some(new)
+            })
             .collect();
 
         for at in moved {
+            let old = self.entries[at].unread();
+            self.forget(old);
             self.read(at);
         }
     }
@@ -943,7 +968,7 @@ mod tests {
         assert!(!Role::Own.heeds(Some(":1.5")));
         assert!(!Role::Starting.heeds(Some(":1.5")));
 
-        // Kanade's own watcher
+        // Kanade's own watcher, called by the watcher's name: Kanade held it, the role may lag
         assert!(foreign.heeds(None));
         assert!(Role::Own.heeds(None));
     }
@@ -962,6 +987,25 @@ mod tests {
 
         // no run is hosting
         assert!(!reaches(&[], &item(4, ":1.7")));
+    }
+
+    #[test]
+    fn an_entry_unread_drops_what_its_last_owner_said() {
+        let mut entry = Entry {
+            address: Address::registered("org.test.Moving", None).unwrap(),
+            serial: 4,
+            owner: Some(String::from(":1.7")),
+            item: Some(item(4, ":1.7")),
+            reading: true,
+            again: true,
+            failed: true,
+        };
+
+        assert_eq!(entry.unread(), Some(item(4, ":1.7")));
+        assert_ne!(entry.serial, 4);
+        assert_eq!(entry.owner, None);
+        assert_eq!(entry.item, None);
+        assert!(!entry.reading && !entry.again && !entry.failed);
     }
 
     #[test]
