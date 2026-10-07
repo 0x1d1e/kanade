@@ -10,6 +10,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
+use crate::sources::clipboard::Clipboard;
 use crate::sources::notifications::{self, Daemon};
 use crate::sources::timer;
 use crate::sources::tray::Tray;
@@ -68,6 +69,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("tray") {
         lines.push(Tray::read().status());
+    }
+    if modules::on("clipboard") {
+        lines.push(Clipboard::read().status());
     }
 
     lines.extend(supervise::status());

@@ -5,7 +5,7 @@
 //! the change on its own thread, maybe after the announcement, so one read could come too early.
 //! A command that is not running cannot announce anything, so while one is down the source polls.
 
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -28,7 +28,7 @@ const HEALTHY: Duration = Duration::from_secs(60);
 pub const SETPRIV: &str = "setpriv";
 
 // what setpriv exits with when it cannot find the program, like a shell
-const NOT_FOUND: i32 = 127;
+pub const NOT_FOUND: i32 = 127;
 
 /*
  * runs `program` until `stop`, `follow` reading its output until it ends and saying why; ran again
@@ -182,6 +182,68 @@ pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
     Err(match said.is_empty() {
         true => format!("`{command}` failed ({})", output.status),
         false => format!("`{command}` failed ({}): {said}", output.status),
+    })
+}
+
+/*
+ * an action that reads one thing, as `query`, as bytes and at most `most` of them: one that prints
+ * more is killed, and none is handed back. Says why it failed, without what it printed
+ */
+pub fn read(program: &str, args: &[&str], most: usize) -> Result<Option<Vec<u8>>, String> {
+    let command = [program, args.join(" ").as_str()].join(" ");
+    let cannot = |error: io::Error| format!("cannot run `{command}`: {error}");
+
+    let mut child = guarded(program, args, |command| {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+    })
+    .map_err(cannot)?;
+
+    let mut output = Vec::new();
+    let read = match child.stdout.take() {
+        Some(stdout) => stdout
+            .take(u64::try_from(most).unwrap_or(u64::MAX).saturating_add(1))
+            .read_to_end(&mut output),
+        None => Err(io::Error::other("no output")),
+    };
+
+    let over = output.len() > most;
+    if over || read.is_err() {
+        drop(child.kill());
+    }
+
+    let status = child.wait().map_err(cannot)?;
+    read.map_err(cannot)?;
+
+    if over {
+        return Ok(None);
+    }
+
+    if status.success() {
+        return Ok(Some(output));
+    }
+
+    Err(match status.code() {
+        Some(NOT_FOUND) => format!("cannot run `{command}`: {program} not found"),
+        _ => format!("`{command}` failed ({status})"),
+    })
+}
+
+/*
+ * starts `program` as a holder (ADR 0011): it stands for some state, so it runs until the caller
+ * kills it or it exits on its own, dying with the calling thread as `spawn` says. Its stdin is
+ * piped, for what it holds
+ */
+pub fn hold(program: &str, args: &[&str]) -> io::Result<Child> {
+    guarded(program, args, |command| {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
     })
 }
 
@@ -522,6 +584,24 @@ mod tests {
         assert!(running.join().unwrap().is_none());
         assert!(stopping.elapsed() < Duration::from_millis(300));
         assert!(runs.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_read_hands_back_at_most_its_bytes() {
+        assert_eq!(read("printf", &["abc"], 3), Ok(Some(b"abc".to_vec())));
+        assert_eq!(read("head", &["-c", "1000000", "/dev/zero"], 10), Ok(None));
+        assert_eq!(read("yes", &[], 10), Ok(None));
+    }
+
+    #[test]
+    fn a_failed_read_says_why_without_its_output() {
+        // prints what its command line does not hold
+        let failed = read("sh", &["-c", "printf %s%s sec ret; exit 3"], 100).unwrap_err();
+        assert!(failed.contains("failed"), "{failed}");
+        assert!(!failed.contains("secret"), "{failed}");
+
+        let missing = read("kanade-no-such-program", &[], 100).unwrap_err();
+        assert!(missing.contains("not found"), "{missing}");
     }
 
     #[test]
