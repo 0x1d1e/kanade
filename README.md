@@ -1,6 +1,12 @@
-# Kanade
+<p align="center">
+  <img src="docs/assets/kanade-mascot.png" width="320" alt="Kanade">
+</p>
 
-A top-center adaptive activity island for niri, built with [Amane](https://github.com/MystiaFin/amane).
+<h1 align="center">Kanade</h1>
+
+<p align="center">
+  A top-center Dynamic Island for niri, built with <a href="https://github.com/MystiaFin/amane">Amane</a>.
+</p>
 
 https://github.com/user-attachments/assets/27e6837e-8cf1-4faa-8815-e5b14cdd631b
 
