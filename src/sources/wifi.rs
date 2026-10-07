@@ -13,10 +13,12 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
-use amane::{Argument, Bus, Service, Value};
+use amane::{Argument, Bus, Service, Signal, Value};
 
 use super::network::{NAME, ROOT};
 use crate::island::presentation::Surface;
@@ -44,9 +46,15 @@ const ACTIVATED_DEVICE: f64 = 100.0;
 const FAILED: f64 = 120.0;
 const NO_SECRETS: f64 = 7.0;
 
-// an active connection's states once it is up, and once it is over; a gone one reads as nothing
+// an active connection's states once it is up, and once it is over
 const UP: f64 = 2.0;
 const OVER: f64 = 4.0;
+
+/*
+ * how long a join that is over waits for why the device failed: NetworkManager says it before
+ * the join is over, but the two are heard on different threads
+ */
+const LATE: Duration = Duration::from_secs(1);
 
 // an access point's flags: one with privacy, and the ways its WPA and RSN flags say it keys
 const PRIVACY: u32 = 0x1;
@@ -533,10 +541,23 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
     let bus = Bus::system();
 
     /*
-     * subscribed before asking, so the end of a quick join is not missed. The device says why it
-     * failed; the active connection only says the device went down
+     * subscribed before asking, so the end of a quick join is not missed. The join's own active
+     * connection says when it is up or over; only the device says why it failed
      */
-    let mut changes = bus.signals(DEVICE, "StateChanged");
+    let (sender, heard) = mpsc::channel();
+
+    listen(&bus, DEVICE, sender.clone(), |signal| {
+        let state = signal.arguments().first()?.number();
+        let reason = signal.arguments().get(2)?.number();
+
+        Some(Heard::Device(signal.path().to_owned(), state, reason))
+    });
+
+    listen(&bus, ATTEMPT, sender, |signal| {
+        let state = signal.arguments().first()?.number();
+
+        Some(Heard::Attempt(signal.path().to_owned(), state))
+    });
 
     let (made, active) = match (&network.profile, secret) {
         (Some(profile), None) => {
@@ -580,32 +601,36 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
         }
     };
 
-    /*
-     * the device's changes may be another join's, one that took the device over, so only this
-     * join's own active connection says whether it is up or over; the device says why it failed
-     */
     let ended = if active.is_empty() {
         Err(Failure::Other)
     } else {
-        let mut failure = None;
+        let mut waiting = Waiting::new(device, &active);
+        let mut late: Option<Instant> = None;
 
-        changes
-            .find_map(|signal| {
-                let state = signal.arguments().first()?.number();
-                let reason = signal.arguments().get(2)?.number();
+        loop {
+            // once over, why it failed may still be on its way, but not for long
+            let next = match late {
+                None => heard.recv().ok(),
+                Some(by) => heard
+                    .recv_timeout(by.saturating_duration_since(Instant::now()))
+                    .ok(),
+            };
 
-                if signal.path() != device {
-                    return None;
-                }
+            let Some(next) = next else {
+                break waiting.failed();
+            };
 
-                let attempt = bus.property(NAME, &active, ATTEMPT, "State").number();
+            if let Some(ended) = waiting.hear(&next) {
+                break ended;
+            }
 
-                ended(&mut failure, state, reason, attempt)
-            })
-            .unwrap_or(Err(Failure::Other))
+            if waiting.over && late.is_none() {
+                late = Some(Instant::now() + LATE);
+            }
+        }
     };
 
-    drop(changes);
+    drop(heard);
 
     if let Some(made) = made {
         if ended.is_ok() {
@@ -623,33 +648,90 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
     ended
 }
 
+// a change a join hears: of a device, in a state for a reason, or of an active connection
+#[derive(Debug, Clone, PartialEq)]
+enum Heard {
+    Device(String, f64, f64),
+    Attempt(String, f64),
+}
+
 /*
- * how a change of the device, in `state` for `reason`, ends a join whose active connection is in
- * `attempt`: once that is up or over, none while it is still on its way. `failure` keeps why the
- * device last failed since it began preparing, which may be said before the join is over
+ * hears `interface`'s StateChanged on its own thread, so neither subscription waits behind the
+ * other or the calls made meanwhile. It ends at the first signal once the join no longer listens
  */
-fn ended(
-    failure: &mut Option<f64>,
-    state: f64,
-    reason: f64,
-    attempt: f64,
-) -> Option<Result<(), Failure>> {
-    if state == PREPARING {
-        *failure = None;
-    } else if state == FAILED {
-        *failure = Some(reason);
+fn listen(
+    bus: &Bus,
+    interface: &str,
+    sender: Sender<Heard>,
+    heard: impl Fn(&Signal) -> Option<Heard> + Send + 'static,
+) {
+    let signals = bus.signals(interface, "StateChanged");
+
+    thread::spawn(move || {
+        for signal in signals {
+            if let Some(heard) = heard(&signal)
+                && sender.send(heard).is_err()
+            {
+                return;
+            }
+        }
+    });
+}
+
+/*
+ * a join waiting on its device and active connection. Another join may take the device over, so
+ * only the join's own active connection says it is up or over; the device says why it failed
+ */
+struct Waiting<'a> {
+    device: &'a str,
+    active: &'a str,
+
+    // why the device last failed since it began preparing
+    failure: Option<f64>,
+
+    over: bool,
+}
+
+impl<'a> Waiting<'a> {
+    fn new(device: &'a str, active: &'a str) -> Self {
+        Self {
+            device,
+            active,
+            failure: None,
+            over: false,
+        }
     }
 
-    if attempt == UP {
-        Some(Ok(()))
-    } else if attempt == OVER || attempt == 0.0 {
-        Some(Err(if *failure == Some(NO_SECRETS) {
+    // how what was heard ends the join: up, or over once it is known why; none while on its way
+    fn hear(&mut self, heard: &Heard) -> Option<Result<(), Failure>> {
+        match heard {
+            Heard::Device(path, state, reason) if path == self.device => {
+                if *state == PREPARING && !self.over {
+                    self.failure = None;
+                } else if *state == FAILED {
+                    self.failure = Some(*reason);
+                }
+            }
+            Heard::Attempt(path, state) if path == self.active => {
+                if *state == UP && !self.over {
+                    return Some(Ok(()));
+                }
+
+                self.over |= *state == OVER;
+            }
+            _ => {}
+        }
+
+        (self.over && self.failure.is_some()).then(|| self.failed())
+    }
+
+    // the join failing, as a wrong password when the device said so
+    fn failed(&self) -> Result<(), Failure> {
+        Err(if self.failure == Some(NO_SECRETS) {
             Failure::WrongPassword
         } else {
             Failure::Other
-        }))
-    } else {
-        None
+        })
     }
 }
 
@@ -878,51 +960,68 @@ mod tests {
     #[test]
     fn a_join_ends_when_its_own_attempt_is_up_or_over_and_says_why() {
         const ON_ITS_WAY: f64 = 1.0;
+        let device = |state, reason| Heard::Device("/d".into(), state, reason);
+        let attempt = |state| Heard::Attempt("/a".into(), state);
 
         // the network it leaves goes down first, which is not the join's end
-        let mut failure = None;
-        assert_eq!(ended(&mut failure, 110.0, 0.0, ON_ITS_WAY), None);
-        assert_eq!(ended(&mut failure, 30.0, 0.0, ON_ITS_WAY), None);
-        assert_eq!(ended(&mut failure, PREPARING, 0.0, ON_ITS_WAY), None);
-        assert_eq!(ended(&mut failure, ACTIVATED_DEVICE, 0.0, UP), Some(Ok(())));
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&device(110.0, 0.0)), None);
+        assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
+        assert_eq!(waiting.hear(&attempt(ON_ITS_WAY)), None);
+        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
+        assert_eq!(waiting.hear(&device(ACTIVATED_DEVICE, 0.0)), None);
+        assert_eq!(waiting.hear(&attempt(UP)), Some(Ok(())));
 
-        // a wrong password: the device fails, then the attempt is over and later gone
-        let mut failure = None;
-        assert_eq!(ended(&mut failure, PREPARING, 0.0, ON_ITS_WAY), None);
-        assert_eq!(ended(&mut failure, FAILED, NO_SECRETS, ON_ITS_WAY), None);
+        // a wrong password: the device fails, then the attempt is over
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
+        assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
         assert_eq!(
-            ended(&mut failure, 30.0, 0.0, OVER),
+            waiting.hear(&attempt(OVER)),
             Some(Err(Failure::WrongPassword))
         );
+
+        // heard the other way round, as the two threads may
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
+        assert_eq!(waiting.hear(&attempt(OVER)), None);
         assert_eq!(
-            ended(&mut failure, 30.0, 0.0, 0.0),
+            waiting.hear(&device(FAILED, NO_SECRETS)),
             Some(Err(Failure::WrongPassword))
         );
+
+        // over without the device failing, once no reason came in time
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&attempt(OVER)), None);
+        assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
+        assert_eq!(waiting.failed(), Err(Failure::Other));
 
         // a failure from before it began preparing is not this join's
-        let mut failure = None;
-        assert_eq!(ended(&mut failure, FAILED, NO_SECRETS, ON_ITS_WAY), None);
-        assert_eq!(ended(&mut failure, PREPARING, 0.0, ON_ITS_WAY), None);
-        assert_eq!(
-            ended(&mut failure, FAILED, 8.0, OVER),
-            Some(Err(Failure::Other))
-        );
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
+        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
+        assert_eq!(waiting.hear(&device(FAILED, 8.0)), None);
+        assert_eq!(waiting.hear(&attempt(OVER)), Some(Err(Failure::Other)));
     }
 
-    // another join took the device over and came up: that is not this one's success
+    // only its own active connection and device count: another join's coming up is not this one's
     #[test]
-    fn a_join_taken_over_by_another_fails_even_as_the_device_comes_up() {
-        let mut failure = None;
+    fn a_join_hears_only_its_own_attempt_and_device() {
+        let mut waiting = Waiting::new("/d", "/a");
+        assert_eq!(waiting.hear(&Heard::Attempt("/b".into(), UP)), None);
         assert_eq!(
-            ended(&mut failure, PREPARING, 0.0, OVER),
-            Some(Err(Failure::Other))
+            waiting.hear(&Heard::Device("/e".into(), FAILED, NO_SECRETS)),
+            None
+        );
+        assert_eq!(
+            waiting.hear(&Heard::Device("/d".into(), ACTIVATED_DEVICE, 0.0)),
+            None
         );
 
-        let mut failure = None;
-        assert_eq!(
-            ended(&mut failure, ACTIVATED_DEVICE, 0.0, 0.0),
-            Some(Err(Failure::Other))
-        );
+        // taken over before it began: over, with nothing from the device to say why
+        assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), OVER)), None);
+        assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), UP)), None);
+        assert_eq!(waiting.failed(), Err(Failure::Other));
     }
 
     #[test]
