@@ -3,7 +3,9 @@
 //! that one's items, and takes over the name once that program quits. Each item's properties are
 //! read again when it says they changed, off this thread, so a slow or dead item stalls only its
 //! own read. An item that quits, or has nothing at its address, is dropped; one that answers with
-//! something else stays as last read, hidden if never read, until a change reads it whole.
+//! something else stays as last read, hidden if never read, until a change reads it whole. Losing
+//! the bus ends the run, its items withdrawn, and it connects again, as items register again with
+//! a watcher that comes back.
 //!
 //! Over zbus, not Amane's `Bus`: an item may register with only its object path, and the bus name
 //! it lives at is then the caller's, which Amane's `Method` does not give.
@@ -12,13 +14,15 @@ mod item;
 mod watcher;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fs;
 use std::path::PathBuf;
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use amane::Service;
 use enumflags2::BitFlags;
@@ -40,6 +44,12 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
 // how long an item may take to answer before its read, or an action on it, is given up
 const TIMEOUT: Duration = Duration::from_secs(2);
+
+// how long until a run that ended connects again, doubling up to `LAST_RETRY` while it keeps
+// ending, back to `FIRST_RETRY` once one lasted `HEALTHY`
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const LAST_RETRY: Duration = Duration::from_secs(60);
+const HEALTHY: Duration = Duration::from_secs(60);
 
 // what reading an item finds: it is gone for good only when nothing is at its address
 const GONE: [&str; 5] = [
@@ -90,9 +100,30 @@ pub enum Role {
     Foreign(String),
 }
 
+impl Role {
+    /*
+     * whether what a watcher said of an item counts: Kanade's own watcher (none) always, another
+     * only while it is the one that holds the name, so any program's signal is not taken for it
+     */
+    fn heeds(&self, watcher: Option<&str>) -> bool {
+        match (self, watcher) {
+            (_, None) => true,
+            (Role::Foreign(owner), Some(watcher)) => owner == watcher,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     address: Address,
+
+    // the unique name that answered its read, which actions go to: a well-known name may move to
+    // another program
+    owner: String,
+
+    // its entry's, never reused, so an old row cannot reach what replaced it
+    serial: u64,
 
     pub title: String,
     pub status: Status,
@@ -123,20 +154,39 @@ pub enum Orientation {
 // what the tray thread hears, from the bus or a read it started
 #[derive(Debug)]
 enum Event {
-    // an item registered, with Kanade's watcher or another one
-    Registered(Address),
+    // an item registered, with Kanade's watcher when none, else the unique name of the one that
+    // said so
+    Registered {
+        address: Address,
+        watcher: Option<String>,
+    },
 
-    // another watcher dropped this item
-    Unregistered(Address),
+    // the watcher of that unique name dropped this item
+    Unregistered {
+        address: Address,
+        watcher: String,
+    },
 
     // an item said one of its properties changed: who said it, at which object
-    Changed { sender: String, path: String },
+    Changed {
+        sender: String,
+        path: String,
+    },
 
     // a bus name has a new owner, none when empty
-    Owner { name: String, new: String },
+    Owner {
+        name: String,
+        new: String,
+    },
 
     // what reading an entry found, by its serial
-    Read { serial: u64, outcome: Outcome },
+    Read {
+        serial: u64,
+        outcome: Outcome,
+    },
+
+    // the bus thread heard the last of the connection, and why
+    Ended(zbus::Error),
 }
 
 #[derive(Debug)]
@@ -172,21 +222,51 @@ struct Entry {
     failed: bool,
 }
 
-// the connection actions on items go over, the tray thread's
-static CONNECTION: OnceLock<Mutex<Option<Connection>>> = OnceLock::new();
+// what actions on items may reach, while a run is hosting
+struct Reach {
+    connection: Connection,
 
+    // each shown item's serial and owner
+    shown: Vec<(u64, String)>,
+}
+
+// whether a row is of an item shown now, read from the same program
+fn reaches(shown: &[(u64, String)], item: &Item) -> bool {
+    shown
+        .iter()
+        .any(|(serial, owner)| *serial == item.serial && *owner == item.owner)
+}
+
+static REACH: Mutex<Option<Reach>> = Mutex::new(None);
+
+// an entry's serial, across runs
+static SERIALS: AtomicU64 = AtomicU64::new(0);
+
+// runs for good, connecting again after a run fails to start or loses the bus
 pub fn follow() {
     supervise::spawn("tray", || {
-        if let Err(error) = run() {
-            let why = format!("cannot host items: {error}");
+        let mut wait = FIRST_RETRY;
 
-            eprintln!("kanade: tray {why}");
-            supervise::stopped("tray", why);
+        loop {
+            let started = Instant::now();
+            let Err(error) = run();
+
+            wait = retry(wait, started.elapsed());
+            eprintln!("kanade: tray ended ({error}), connecting again in {wait:?}");
+
+            thread::sleep(wait);
+            wait = (wait * 2).min(LAST_RETRY);
         }
     });
 }
 
-fn run() -> zbus::Result<()> {
+// how long until a run that lasted `ran` connects again, `wait` if it ended soon
+fn retry(wait: Duration, ran: Duration) -> Duration {
+    if ran >= HEALTHY { FIRST_RETRY } else { wait }
+}
+
+// hosts items until the connection ends
+fn run() -> zbus::Result<Infallible> {
     let connection = connection::Builder::session()?
         .method_timeout(TIMEOUT)
         .build()?;
@@ -252,10 +332,11 @@ fn run() -> zbus::Result<()> {
         }
     };
 
-    *CONNECTION
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(connection.clone());
+    // withdrawn when `tray` drops
+    *reach() = Some(Reach {
+        connection: connection.clone(),
+        shown: Vec::new(),
+    });
 
     let mut tray = Hosting {
         connection,
@@ -264,14 +345,16 @@ fn run() -> zbus::Result<()> {
         registered,
         role: Role::Starting,
         entries: Vec::new(),
-        serials: 0,
     };
 
     tray.assume(role);
     tray.publish();
-    tray.listen(heard);
 
-    Ok(())
+    Err(tray.listen(&heard))
+}
+
+fn reach() -> MutexGuard<'static, Option<Reach>> {
+    REACH.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 // a host's name, as the spec has hosts take one
@@ -288,10 +371,18 @@ impl Drop for Names {
     }
 }
 
-// turns what the bus sends into events; it only sends, so it never falls behind
+// turns what the bus sends into events, the last its end; it only sends, so it never falls behind
 fn forward(messages: MessageIterator, own: &str, events: &Sender<Event>) {
+    let mut last = None;
+
     for message in messages {
-        let Ok(message) = message else { continue };
+        let message = match message {
+            Ok(message) => message,
+            Err(error) => {
+                last = Some(error);
+                continue;
+            }
+        };
 
         let header = message.header();
 
@@ -326,7 +417,10 @@ fn forward(messages: MessageIterator, own: &str, events: &Sender<Event>) {
                     continue;
                 };
 
-                Event::Registered(address)
+                Event::Registered {
+                    address,
+                    watcher: Some(sender.to_string()),
+                }
             }
             (watcher::INTERFACE, "StatusNotifierItemUnregistered") => {
                 let Ok((service,)) = body.deserialize::<(String,)>() else {
@@ -336,7 +430,10 @@ fn forward(messages: MessageIterator, own: &str, events: &Sender<Event>) {
                     continue;
                 };
 
-                Event::Unregistered(address)
+                Event::Unregistered {
+                    address,
+                    watcher: sender.to_string(),
+                }
             }
 
             (ITEM, _) => {
@@ -355,6 +452,9 @@ fn forward(messages: MessageIterator, own: &str, events: &Sender<Event>) {
             return;
         }
     }
+
+    let why = last.unwrap_or_else(|| zbus::Error::Failure(String::from("the bus closed")));
+    let _ = events.send(Event::Ended(why));
 }
 
 // the tray thread's state
@@ -372,16 +472,25 @@ struct Hosting {
 
     role: Role,
     entries: Vec<Entry>,
-    serials: u64,
 }
 
 impl Hosting {
-    fn listen(&mut self, heard: Receiver<Event>) {
-        for event in heard {
+    // until the bus thread hears the connection end, and why
+    fn listen(&mut self, heard: &Receiver<Event>) -> zbus::Error {
+        loop {
+            // never closed: `self` keeps a sender
+            let Ok(event) = heard.recv() else {
+                return zbus::Error::Failure(String::from("no events"));
+            };
+
             match event {
-                Event::Registered(address) => self.register(address),
-                Event::Unregistered(address) => {
-                    if matches!(self.role, Role::Foreign(_)) {
+                Event::Registered { address, watcher } => {
+                    if self.role.heeds(watcher.as_deref()) {
+                        self.register(address);
+                    }
+                }
+                Event::Unregistered { address, watcher } => {
+                    if self.role.heeds(Some(&watcher)) {
                         self.drop_where(|entry| entry.address == address);
                     }
                 }
@@ -402,6 +511,7 @@ impl Hosting {
                 }
                 Event::Owner { name, new } => self.owner(&name, &new),
                 Event::Read { serial, outcome } => self.answered(serial, outcome),
+                Event::Ended(why) => return why,
             }
 
             self.publish();
@@ -417,7 +527,7 @@ impl Hosting {
 
         match role {
             Role::Own => self.list(),
-            Role::Foreign(_) => {
+            Role::Foreign(watcher) => {
                 // off this thread: another watcher may be slow to answer
                 let connection = self.connection.clone();
                 let events = self.events.clone();
@@ -425,7 +535,12 @@ impl Hosting {
 
                 thread::spawn(move || {
                     for address in host_with(&connection, &host) {
-                        if events.send(Event::Registered(address)).is_err() {
+                        let registered = Event::Registered {
+                            address,
+                            watcher: Some(watcher.clone()),
+                        };
+
+                        if events.send(registered).is_err() {
                             return;
                         }
                     }
@@ -440,11 +555,9 @@ impl Hosting {
             return;
         }
 
-        self.serials += 1;
-
         self.entries.push(Entry {
             address: address.clone(),
-            serial: self.serials,
+            serial: SERIALS.fetch_add(1, Ordering::Relaxed),
             owner: None,
             item: None,
             reading: false,
@@ -520,10 +633,10 @@ impl Hosting {
 
         match outcome {
             Outcome::Read(owner, described) => {
-                entry.owner = Some(owner);
+                entry.owner = Some(owner.clone());
                 entry.failed = false;
 
-                let item = shown(entry.address.clone(), described);
+                let item = shown(entry.address.clone(), owner, serial, described);
                 let old = entry.item.replace(item);
 
                 self.forget(old);
@@ -629,9 +742,33 @@ impl Hosting {
             watcher: self.role.clone(),
         };
 
+        if let Some(reach) = reach().as_mut() {
+            reach.shown = tray
+                .items
+                .iter()
+                .map(|item| (item.serial, item.owner.clone()))
+                .collect();
+        }
+
         if *Tray::read() != tray {
             *Tray::write() = tray;
         }
+    }
+}
+
+// a run that ends, a panic too, withdraws what it showed and what actions may reach
+impl Drop for Hosting {
+    fn drop(&mut self) {
+        *reach() = None;
+
+        for entry in self.entries.drain(..) {
+            if let Some(pixmap) = entry.item.and_then(|item| item.icon.pixmap) {
+                let _ = fs::remove_file(pixmap);
+            }
+        }
+
+        self.role = Role::Starting;
+        self.publish();
     }
 }
 
@@ -701,7 +838,7 @@ fn read(connection: &Connection, address: &Address) -> Outcome {
 }
 
 // an item as the views see it, its pixels written for Amane to draw
-fn shown(address: Address, described: Described) -> Item {
+fn shown(address: Address, owner: String, serial: u64, described: Described) -> Item {
     let pixmap = described.picture.pixmap.map(|pixmap| {
         raster::write(
             "tray",
@@ -712,6 +849,8 @@ fn shown(address: Address, described: Described) -> Item {
 
     Item {
         address,
+        owner,
+        serial,
         title: described.title,
         status: described.status,
         icon: Icon {
@@ -724,7 +863,8 @@ fn shown(address: Address, described: Described) -> Item {
 
 /*
  * what clicking or scrolling an item asks of it, x and y where on screen, sent off the caller's
- * thread; an item that fails or does not answer is logged, nothing else
+ * thread to the program that answered its read, while it is still shown as read; an item that
+ * fails or does not answer is logged, nothing else
  */
 #[expect(dead_code, reason = "the tray's view (#135) clicks items")]
 pub fn activate(item: &Item, x: i32, y: i32) {
@@ -750,20 +890,20 @@ fn call<B>(item: &Item, method: &'static str, body: B)
 where
     B: serde::Serialize + zbus::zvariant::DynamicType + Send + 'static,
 {
-    let Some(connection) = CONNECTION.get().and_then(|connection| {
-        connection
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
-    }) else {
+    let Some(connection) = reach()
+        .as_ref()
+        .filter(|reach| reaches(&reach.shown, item))
+        .map(|reach| reach.connection.clone())
+    else {
         return;
     };
 
     let address = item.address.clone();
+    let owner = item.owner.clone();
 
     thread::spawn(move || {
         let called = connection.call_method(
-            Some(address.name.as_str()),
+            Some(owner.as_str()),
             address.path.as_str(),
             Some(ITEM),
             method,
@@ -777,4 +917,65 @@ where
             );
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(serial: u64, owner: &str) -> Item {
+        Item {
+            address: Address::registered("org.test.Moving", None).unwrap(),
+            owner: owner.to_owned(),
+            serial,
+            title: String::new(),
+            status: Status::Active,
+            icon: Icon::default(),
+        }
+    }
+
+    #[test]
+    fn only_the_foreign_watcher_holding_the_name_is_heeded() {
+        let foreign = Role::Foreign(String::from(":1.5"));
+
+        assert!(foreign.heeds(Some(":1.5")));
+        assert!(!foreign.heeds(Some(":1.9")));
+        assert!(!Role::Own.heeds(Some(":1.5")));
+        assert!(!Role::Starting.heeds(Some(":1.5")));
+
+        // Kanade's own watcher
+        assert!(foreign.heeds(None));
+        assert!(Role::Own.heeds(None));
+    }
+
+    #[test]
+    fn a_row_reaches_only_the_program_that_answered_while_it_is_shown() {
+        let shown = vec![(4, String::from(":1.7"))];
+
+        assert!(reaches(&shown, &item(4, ":1.7")));
+
+        // the name moved to another program, which was read again
+        assert!(!reaches(&shown, &item(4, ":1.3")));
+
+        // an entry since dropped, its address registered again
+        assert!(!reaches(&shown, &item(2, ":1.7")));
+
+        // no run is hosting
+        assert!(!reaches(&[], &item(4, ":1.7")));
+    }
+
+    #[test]
+    fn a_run_that_keeps_ending_waits_longer_until_one_lasts() {
+        let mut wait = FIRST_RETRY;
+        let mut waits = Vec::new();
+
+        for _ in 0..8 {
+            wait = retry(wait, Duration::from_secs(1));
+            waits.push(wait.as_secs());
+            wait = (wait * 2).min(LAST_RETRY);
+        }
+
+        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
+        assert_eq!(retry(LAST_RETRY, HEALTHY), FIRST_RETRY);
+    }
 }

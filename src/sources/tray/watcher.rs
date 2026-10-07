@@ -35,7 +35,10 @@ impl Watcher {
         let address = Address::registered(service, caller)
             .ok_or_else(|| fdo::Error::InvalidArgs(format!("no item at {service:?}")))?;
 
-        let _ = self.events.send(Event::Registered(address));
+        let _ = self.events.send(Event::Registered {
+            address,
+            watcher: None,
+        });
 
         Ok(())
     }
