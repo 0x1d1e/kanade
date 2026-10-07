@@ -4,7 +4,7 @@
 //! kept is what that state was about. Restoring an entry hands
 //! it to `wl-copy --foreground`, a holder that serves it until another program takes the selection;
 //! restoring another kills it. The new selection is announced like any other, so a restored entry
-//! moves to the top. Removing an entry or clearing the history forgets only the history, never what
+//! moves to the top, and that announcement is what says the restore is done: a paste then gets it. Removing an entry or clearing the history forgets only the history, never what
 //! is on the clipboard now. What was copied is never logged, and an entry's `Debug` leaves it out.
 
 use std::env;
@@ -14,6 +14,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use amane::Service;
 
@@ -269,7 +270,25 @@ pub fn clear() {
 }
 
 // asks the holder thread to restore
-static RESTORES: OnceLock<Sender<Content>> = OnceLock::new();
+static RESTORES: OnceLock<Sender<Restore>> = OnceLock::new();
+
+// what to restore, and who hears whether it reached the clipboard
+struct Restore {
+    content: Content,
+    done: Box<dyn FnOnce(bool) + Send>,
+}
+
+// how long a restore waits for its selection to be announced, looking this often whether its
+// holder ended first
+const ANNOUNCED: Duration = Duration::from_secs(3);
+const LOOK: Duration = Duration::from_millis(50);
+
+// the content a restore waits to hear announced, and where to say it was
+static AWAITED: Mutex<Option<(Content, Sender<()>)>> = Mutex::new(None);
+
+fn awaited() -> MutexGuard<'static, Option<(Content, Sender<()>)>> {
+    AWAITED.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 // the wl-copy serving the last restored entry, until another took the selection and it was reaped
 static HELD: Mutex<Option<Child>> = Mutex::new(None);
@@ -291,19 +310,88 @@ pub fn follow() {
     supervise::spawn("clipboard", paste);
 }
 
-// puts an entry back on the clipboard, off the caller's thread; a failure is logged
-pub fn restore(entry: &Entry) {
-    if let Some(restores) = RESTORES.get() {
-        drop(restores.send(entry.content.clone()));
+/*
+ * puts an entry back on the clipboard, off the caller's thread. `done` hears, on that thread,
+ * whether it is there, once the new selection was announced or it failed; a failure is logged
+ */
+pub fn restore(entry: &Entry, done: impl FnOnce(bool) + Send + 'static) {
+    let restore = Restore {
+        content: entry.content.clone(),
+        done: Box::new(done),
+    };
+
+    let unsent = match RESTORES.get() {
+        Some(restores) => restores.send(restore).err().map(|unsent| unsent.0),
+        None => Some(restore),
+    };
+
+    if let Some(restore) = unsent {
+        (restore.done)(false);
     }
 }
 
-fn copy(heard: &Receiver<Content>) {
+fn copy(heard: &Receiver<Restore>) {
     // never ends: `RESTORES` keeps the sender
-    for content in heard {
-        if let Err(error) = hold(&content) {
+    for Restore { content, done } in heard {
+        let restored = restored(&content);
+
+        if let Err(error) = &restored {
             eprintln!("kanade: cannot restore a clipboard entry ({error})");
         }
+
+        done(restored.is_ok());
+    }
+}
+
+/*
+ * holds `content`, then waits for wl-paste to announce it as the selection; a holder that ended
+ * before, refused or replaced at once, never will
+ */
+fn restored(content: &Content) -> io::Result<()> {
+    let (announce, announced) = mpsc::channel();
+    *awaited() = Some((content.clone(), announce));
+
+    let restored = hold(content).and_then(|()| {
+        let start = Instant::now();
+
+        loop {
+            if announced.recv_timeout(LOOK).is_ok() {
+                return Ok(());
+            }
+
+            if !holding() {
+                return Err(io::Error::other("wl-copy ended first"));
+            }
+
+            if start.elapsed() >= ANNOUNCED {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the new selection was not announced",
+                ));
+            }
+        }
+    });
+
+    *awaited() = None;
+    restored
+}
+
+// whether the last holder still runs
+fn holding() -> bool {
+    held()
+        .as_mut()
+        .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+}
+
+// a selection was announced; a restore waiting for it is done
+fn announce(content: &Content) {
+    let mut awaited = awaited();
+
+    if awaited.as_ref().is_some_and(|(want, _)| want == content)
+        && let Some((_, announce)) = awaited.take()
+    {
+        // the restore gave up waiting
+        let _ = announce.send(());
     }
 }
 
@@ -503,8 +591,11 @@ fn parse(header: &[u8]) -> Option<(usize, Option<&str>)> {
     Some((len, mime))
 }
 
-// writes only a change, since a write wakes every window
+// writes only a change, since a write wakes every window; a restore of the newest changes nothing
+// but is announced all the same
 fn record(content: Content) {
+    announce(&content);
+
     if Clipboard::read().takes(&content) {
         Clipboard::write().record(content);
     }
@@ -639,6 +730,20 @@ mod tests {
 
         clipboard.record(text("a"));
         assert!(clipboard.entries[0].id > last);
+    }
+
+    #[test]
+    fn a_restore_is_done_only_when_its_own_content_is_announced() {
+        let (announce, announced) = mpsc::channel();
+        *awaited() = Some((text("kept"), announce));
+
+        super::announce(&text("other"));
+        assert!(announced.try_recv().is_err());
+        assert!(awaited().is_some());
+
+        super::announce(&text("kept"));
+        assert!(announced.try_recv().is_ok());
+        assert!(awaited().is_none());
     }
 
     #[test]

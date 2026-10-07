@@ -1,8 +1,8 @@
 //! The Clipboard Surface (#137): the clipboard history, newest first, searched as it is typed.
 //! It opens only from IPC or a keybind, so it always holds the keyboard, like the Launcher: typing
 //! searches, the arrow keys move a ring over each entry, its delete and Clear all, and Enter
-//! presses what the ring is on. Pressing an entry copies it and closes the island. It says when the
-//! history is empty and when nothing matches. Text shows as its first words; an image only as its
+//! presses what the ring is on. Pressing an entry copies it and closes the island once it is on the
+//! clipboard, or says it was not copied. It says when the history is empty and when nothing matches. Text shows as its first words; an image only as its
 //! kind and size, since Amane draws images from files and the history never leaves memory.
 
 use std::collections::HashMap;
@@ -74,6 +74,17 @@ pub struct Search {
 
     // how far the rows scrolled, in pixels
     offset: f32,
+
+    copying: Copying,
+}
+
+// an entry's copy, from its press until it is on the clipboard or failed
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Copying {
+    #[default]
+    Idle,
+    Waiting,
+    Failed,
 }
 
 impl Service for Search {
@@ -84,10 +95,10 @@ impl Service for Search {
     fn listen() {}
 }
 
-// what the ring presses
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// what the ring presses; a copy holds the entry as it was pressed, which the history may drop meanwhile
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Press {
-    Copy(u64),
+    Copy(Entry),
     Remove(u64),
     Clear,
 }
@@ -213,12 +224,12 @@ impl Search {
             return any.then_some(Press::Clear);
         }
 
-        let id = found.get(self.selected)?.id;
+        let entry = found.get(self.selected)?;
 
         Some(if self.delete {
-            Press::Remove(id)
+            Press::Remove(entry.id)
         } else {
-            Press::Copy(id)
+            Press::Copy(entry.clone())
         })
     }
 }
@@ -588,7 +599,7 @@ fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
             .map(|(entry, index)| {
                 let ring = (index == search.selected && !search.clear).then_some(search.delete);
 
-                Box::new(row(monitor, entry, ring)) as Box<dyn Widget>
+                Box::new(row(monitor, search.visit, entry, ring)) as Box<dyn Widget>
             })
             .collect(),
     )
@@ -635,7 +646,7 @@ fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
  * the entry's kind, what it holds and how much, and a delete at the end. `ring` is where the ring
  * is when it is on this row: on its delete, or on the entry. Pressing the entry copies it
  */
-fn row(monitor: &str, entry: &Entry, ring: Option<bool>) -> Rectangle {
+fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangle {
     let summary = summary(entry);
 
     let kind = match entry.content {
@@ -694,10 +705,10 @@ fn row(monitor: &str, entry: &Entry, ring: Option<bool>) -> Rectangle {
     let row = row.border_if(ring == Some(false));
 
     let monitor = monitor.to_owned();
-    let id = entry.id;
+    let entry = entry.clone();
 
     row.on_click(super::on_left(move || {
-        run(&monitor, Press::Copy(id));
+        run(&monitor, visit, Press::Copy(entry.clone()));
     }))
 }
 
@@ -720,6 +731,7 @@ fn delete(id: u64, ring: bool) -> Rectangle {
  */
 fn footer(search: &Search, found: usize, all: usize) -> Row {
     let count = match all {
+        _ if search.copying == Copying::Failed => String::from("The entry was not copied"),
         0 => String::from("0 entries"),
         _ if !search.query.trim().is_empty() => format!("{found} of {all}"),
         1 => String::from("1 entry"),
@@ -784,19 +796,24 @@ pub fn key(monitor: &str, key: Key) -> bool {
     let search = Search::read().of(visit);
     let found = found(&entries, &search.query);
 
-    let Some((search, presses)) = search.bounded(found.len(), any).step(key, found.len(), any)
+    let Some((mut search, presses)) = search.bounded(found.len(), any).step(key, found.len(), any)
     else {
         return false;
     };
 
     let press = presses.then(|| search.press(&found, any)).flatten();
 
+    // a failed copy is said until the next key
+    if search.copying == Copying::Failed {
+        search.copying = Copying::Idle;
+    }
+
     set(search);
 
     IslandService::write().attend(monitor, Instant::now());
 
     if let Some(press) = press {
-        run(monitor, press);
+        run(monitor, visit, press);
     }
 
     true
@@ -804,26 +821,58 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
 /*
  * a copied entry goes back on the clipboard to be pasted elsewhere, so the island closes out of
- * the way; a delete or Clear all leaves it open on what is left
+ * the way once it is there; a delete or Clear all leaves it open on what is left. One copy at a time
  */
-fn run(monitor: &str, press: Press) {
+fn run(monitor: &str, visit: u64, press: Press) {
     match press {
-        Press::Copy(id) => {
-            let entry = Clipboard::read()
-                .entries()
-                .iter()
-                .find(|entry| entry.id == id)
-                .cloned();
+        Press::Copy(entry) => {
+            let search = Search::read().of(visit);
 
-            if let Some(entry) = entry {
-                clipboard::restore(&entry);
+            if search.copying == Copying::Waiting {
+                return;
             }
 
-            view::collapse(monitor);
+            set(Search {
+                copying: Copying::Waiting,
+                ..search
+            });
+
+            let monitor = monitor.to_owned();
+            clipboard::restore(&entry, move |done| copied(&monitor, visit, done));
         }
         Press::Remove(id) => clipboard::remove(id),
         Press::Clear => clipboard::clear(),
     }
+}
+
+/*
+ * how the copy pressed in `visit` went, on the clipboard's thread: closes the island, or says it
+ * was not copied. Nothing once that visit is over, so it never closes another
+ */
+fn copied(monitor: &str, visit: u64, done: bool) {
+    let open = {
+        let island = IslandService::read();
+
+        island.visit() == visit
+            && island.presentation(monitor) == Presentation::Expanded(Surface::Clipboard)
+    };
+
+    if !open {
+        return;
+    }
+
+    if done {
+        view::collapse(monitor);
+        return;
+    }
+
+    // read apart, since `set` writes
+    let search = Search::read().of(visit);
+
+    set(Search {
+        copying: Copying::Failed,
+        ..search
+    });
 }
 
 // down scrolls further down the list
@@ -979,8 +1028,8 @@ mod tests {
             presses.then(|| search.press(&found, true)).flatten()
         };
 
-        assert_eq!(press(&[]), Some(Press::Copy(9)));
-        assert_eq!(press(&[Key::Down]), Some(Press::Copy(4)));
+        assert_eq!(press(&[]), Some(Press::Copy(found[0].clone())));
+        assert_eq!(press(&[Key::Down]), Some(Press::Copy(found[1].clone())));
         assert_eq!(press(&[Key::Down, Key::Right]), Some(Press::Remove(4)));
         assert_eq!(press(&[Key::End, Key::Down]), Some(Press::Clear));
     }
@@ -1100,6 +1149,7 @@ mod tests {
             delete: true,
             clear: false,
             offset: 40.0,
+            copying: Copying::Failed,
         };
 
         assert_eq!(kept.of(1), kept);
