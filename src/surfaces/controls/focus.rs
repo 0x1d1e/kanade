@@ -168,21 +168,33 @@ impl Focus {
      * none was chosen. A listing sub-surface starts on its first row, as that is what it is for
      */
     fn place(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        let found = self.at.as_ref().and_then(|at| {
-            grid.iter().enumerate().find_map(|(row, targets)| {
-                let column = targets.iter().position(|(target, _)| target == at)?;
-
-                Some(Place { row, column })
-            })
-        });
-
         let first = if self.listing() && grid.len() > 1 {
             Place { row: 1, column: 0 }
         } else {
             Place { row: 0, column: 0 }
         };
 
-        found.or_else(|| (!grid.is_empty()).then_some(first))
+        self.found(grid)
+            .or_else(|| (!grid.is_empty()).then_some(first))
+    }
+
+    // where its target is in `grid`, none when it has none or that is gone
+    fn found(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
+        let at = self.at.as_ref()?;
+
+        grid.iter().enumerate().find_map(|(row, targets)| {
+            let column = targets.iter().position(|(target, _)| target == at)?;
+
+            Some(Place { row, column })
+        })
+    }
+
+    /*
+     * its target gone from `grid`, as a network or device leaves while the ring is on it. The ring
+     * hides until a key puts it on what took its place, so nothing is pressed it was not seen on
+     */
+    fn lost(&self, grid: &[Vec<(At, f32)>]) -> bool {
+        self.at.is_some() && self.found(grid).is_none()
     }
 
     // what the ring is on in `grid`, none on a level without one
@@ -191,12 +203,22 @@ impl Focus {
             .map(|place| grid[place.row][place.column].0.clone())
     }
 
+    // what the ring shows on in `grid`, none while it hides
+    pub fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
+        (self.shown && !self.lost(grid))
+            .then(|| self.at(grid))
+            .flatten()
+    }
+
     /*
-     * the row of `grid` the ring is in, none on a level without one, so a listing scrolls to show
-     * it
+     * the row of `grid` the ring shows in, none while it hides or on a level without one, so a
+     * listing scrolls to show it
      */
     pub fn row(&self, grid: &[Vec<(At, f32)>]) -> Option<usize> {
-        self.place(grid).map(|place| place.row)
+        (self.shown && !self.lost(grid))
+            .then(|| self.place(grid))
+            .flatten()
+            .map(|place| place.row)
     }
 
     // into a listing sub-surface, at its top
@@ -247,8 +269,8 @@ impl Focus {
 
     /*
      * the focus after a key and what it asks for, none when the key is not for the Surface. On
-     * a level with a ring, a key while the ring is hidden only shows it, so nothing is pressed
-     * that the ring was not on
+     * a level with a ring, a key while the ring hides only shows it where it is, so nothing is
+     * pressed that the ring was not seen on
      */
     pub fn step(self, key: Key, grid: &[Vec<(At, f32)>]) -> Option<(Focus, Option<Act>)> {
         if let Some(Subsurface::Password { .. }) = self.sub {
@@ -276,10 +298,11 @@ impl Focus {
             return None;
         }
 
-        if !self.shown {
+        if !self.shown || self.lost(grid) {
             return Some((
                 Focus {
                     shown: true,
+                    at: Some(at),
                     ..self
                 },
                 None,
@@ -566,9 +589,41 @@ mod tests {
         let (focus, act) = focus.step(Key::Enter, &reordered).unwrap();
         assert_eq!(act, Some(Act::Press(At::Network("cafe".into()))));
 
-        // gone, it starts over on the first
+        // gone, the ring hides, and the next key puts it on the first without pressing that
         let gone = grid(Some(&Subsurface::Wifi), networks(&["home"]));
-        assert_eq!(focus.at(&gone), Some(At::Network("home".into())));
+        assert_eq!(focus.ring(&gone), None);
+
+        let (focus, act) = focus.step(Key::Enter, &gone).unwrap();
+        assert_eq!(act, None);
+        assert_eq!(focus.ring(&gone), Some(At::Network("home".into())));
+
+        let (_, act) = focus.step(Key::Enter, &gone).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Network("home".into()))));
+    }
+
+    // a device forgotten under the ring must not have Enter press the one that took its row
+    #[test]
+    fn enter_on_a_device_gone_presses_nothing() {
+        let row = |name: &str| {
+            vec![
+                (At::Device(name.into()), 0.4),
+                (At::Forget(name.into()), 0.9),
+            ]
+        };
+        let inside = shown().enter(Subsurface::Bluetooth);
+        let both = inside.grid(vec![row("/old"), row("/new")]);
+
+        let focus = keys(inside, &[Key::Right], &both);
+        assert_eq!(focus.ring(&both), Some(At::Forget("/old".into())));
+
+        let left = focus.grid(vec![row("/new")]);
+        for key in [Key::Enter, Key::Space, Key::Up, Key::Right] {
+            let (focus, act) = focus.clone().step(key, &left).unwrap();
+            assert_eq!(act, None);
+
+            // nor does it move off what it was not seen on
+            assert_eq!(focus.ring(&left), Some(At::Device("/new".into())));
+        }
     }
 
     #[test]

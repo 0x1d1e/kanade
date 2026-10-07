@@ -85,7 +85,7 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
 
     let grid = focus.grid(rows(focus.sub.as_ref()));
     let focus = settled(focus, &grid);
-    let ring = (open && focus.shown).then(|| focus.at(&grid)).flatten();
+    let ring = open.then(|| focus.ring(&grid)).flatten();
 
     let content = match &focus.sub {
         None => Column::new(children![
@@ -678,6 +678,16 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let focus = Focus::read().of(visit, held);
+
+    // read apart, as typing writes it
+    let pin = matches!(*Prompt::read(), Prompt::Pin { .. });
+
+    if focus.sub == Some(Subsurface::Bluetooth) && pin && typed_pin(key) {
+        IslandService::write().attend(monitor, Instant::now());
+
+        return true;
+    }
+
     let grid = focus.grid(rows(focus.sub.as_ref()));
     let focus = settled(focus, &grid);
     let Some((focus, act)) = focus.step(key, &grid) else {
@@ -692,6 +702,18 @@ pub fn key(monitor: &str, key: Key) -> bool {
     set(focus);
 
     IslandService::write().attend(monitor, Instant::now());
+
+    true
+}
+
+// a key on the Pin prompt: typing the PIN, or pairing with it; false for one it does not take
+fn typed_pin(key: Key) -> bool {
+    match key {
+        Key::Character(letter) => bluez::type_pin(Some(letter)),
+        Key::Backspace => bluez::type_pin(None),
+        Key::Enter => bluez::confirm(),
+        _ => return false,
+    }
 
     true
 }
@@ -744,11 +766,7 @@ fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
     }
 
     let count = grid.len().saturating_sub(1);
-    let ringed = focus
-        .shown
-        .then(|| focus.row(grid))
-        .flatten()
-        .and_then(|row| row.checked_sub(1));
+    let ringed = focus.row(grid).and_then(|row| row.checked_sub(1));
 
     focus.offset = list::scrolled(focus.offset, count, ringed);
     focus
@@ -887,13 +905,9 @@ fn network(focus: Focus, ssid: &str) -> Focus {
 
 /*
  * a device pressed: a connected one is disconnected, a paired one connected, and one nearby paired,
- * then connected. One something is being done to does nothing, as does one gone
+ * then connected. One gone does nothing, as does any while something is being done to a device
  */
 fn device(path: &str) {
-    if Request::read().doing(path).is_some() {
-        return;
-    }
-
     let Some(device) = Adapter::read()
         .devices
         .iter()
@@ -912,12 +926,8 @@ fn device(path: &str) {
     }
 }
 
-// a paired device forgotten, unless something is being done to it
+// a paired device forgotten, unless something is being done to a device
 fn forget(path: &str) {
-    if Request::read().doing(path).is_some() {
-        return;
-    }
-
     let adapter = Adapter::read().clone();
 
     if adapter

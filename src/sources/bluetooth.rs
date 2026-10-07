@@ -22,7 +22,7 @@ use crate::supervise;
 
 mod agent;
 
-pub use agent::{Prompt, confirm};
+pub use agent::{Prompt, confirm, type_pin};
 
 pub const BLUEZ: &str = "org.bluez";
 
@@ -99,6 +99,11 @@ impl Service for Request {
 }
 
 impl Request {
+    // something is being done to a device, so nothing else may be asked until it ends
+    pub fn busy(&self) -> bool {
+        matches!(self, Request::Doing(..))
+    }
+
     // what is being done to the device at `path`, if it was the last one asked
     pub fn doing(&self, path: &str) -> Option<Task> {
         match self {
@@ -119,10 +124,31 @@ impl Request {
 static WATCHED: Watched = Watched::new();
 
 /*
- * the last thing asked, so an older one that ends after it says nothing. Held while its outcome is
- * written, so a newer one cannot be asked between checking and writing
+ * the last thing asked, so an older one that ends after it says nothing, and whether one is still
+ * under way. Held while an outcome is written, so a newer one cannot be asked between checking and
+ * writing
  */
-static ASKED: Mutex<u64> = Mutex::new(0);
+static ASKED: Mutex<Asked> = Mutex::new(Asked {
+    last: 0,
+    working: false,
+});
+
+struct Asked {
+    last: u64,
+    working: bool,
+}
+
+/*
+ * one thing asked under way, until its thread ends, outcome written or not: a pairing cancelled
+ * still runs until BlueZ gives it up
+ */
+struct Working;
+
+impl Drop for Working {
+    fn drop(&mut self) {
+        ASKED.lock().unwrap_or_else(PoisonError::into_inner).working = false;
+    }
+}
 
 // the scanner, told to look again; none until the sub-surface first opens
 static SCANNER: Mutex<Option<Sender<()>>> = Mutex::new(None);
@@ -267,9 +293,12 @@ pub fn power(adapter: String, on: bool) {
  */
 pub fn pair(device: &str) {
     let path = device.to_owned();
-    let asked = ask(Request::Doing(path.clone(), Task::Pair));
+    let Some(asked) = ask(Request::Doing(path.clone(), Task::Pair)) else {
+        return;
+    };
 
     thread::spawn(move || {
+        let _working = Working;
         let bus = Bus::system();
 
         agent::register();
@@ -290,9 +319,15 @@ pub fn pair(device: &str) {
 
 pub fn connect(device: &str) {
     let path = device.to_owned();
-    let asked = ask(Request::Doing(path.clone(), Task::Connect));
+    let Some(asked) = ask(Request::Doing(path.clone(), Task::Connect)) else {
+        return;
+    };
 
-    thread::spawn(move || set(asked, connected(&path)));
+    thread::spawn(move || {
+        let _working = Working;
+
+        set(asked, connected(&path));
+    });
 }
 
 // connects the device at `path`, saying whether it did
@@ -310,9 +345,12 @@ fn connected(path: &str) -> Request {
 
 pub fn disconnect(device: &str) {
     let path = device.to_owned();
-    let asked = ask(Request::Doing(path.clone(), Task::Disconnect));
+    let Some(asked) = ask(Request::Doing(path.clone(), Task::Disconnect)) else {
+        return;
+    };
 
     thread::spawn(move || {
+        let _working = Working;
         let bus = Bus::system();
 
         bus.call(BLUEZ, &path, DEVICE, "Disconnect", &[]);
@@ -331,9 +369,12 @@ pub fn disconnect(device: &str) {
 pub fn forget(adapter: &str, device: &str) {
     let adapter = adapter.to_owned();
     let path = device.to_owned();
-    let asked = ask(Request::Doing(path.clone(), Task::Forget));
+    let Some(asked) = ask(Request::Doing(path.clone(), Task::Forget)) else {
+        return;
+    };
 
     thread::spawn(move || {
+        let _working = Working;
         let bus = Bus::system();
 
         bus.call(
@@ -369,7 +410,7 @@ pub fn cancel() {
         return;
     };
 
-    ask(Request::Idle);
+    abandon();
     agent::over(&device);
 
     thread::spawn(move || {
@@ -377,23 +418,44 @@ pub fn cancel() {
     });
 }
 
-// something asked, newer than any before, `request` until it ends
-fn ask(request: Request) -> u64 {
+/*
+ * something asked, newer than any before, `request` until it ends, its thread holding `Working`.
+ * One at a time, so none while another is under way: BlueZ's answers say nothing of which call
+ * they end, and a pairing's agent asks the user about one device
+ */
+fn ask(request: Request) -> Option<u64> {
     let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
-    *asked += 1;
 
-    if *Request::read() != request {
-        *Request::write() = request;
+    if asked.working {
+        return None;
     }
 
-    *asked
+    asked.working = true;
+    asked.last += 1;
+    write(request);
+
+    Some(asked.last)
+}
+
+// what is under way says nothing more of itself, though it runs until it ends
+fn abandon() {
+    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+    asked.last += 1;
+    write(Request::Idle);
 }
 
 // the outcome of the last thing asked, dropped when something newer was asked since
 fn set(asked: u64, request: Request) {
     let last = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
 
-    if *last == asked && *Request::read() != request {
+    if last.last == asked {
+        write(request);
+    }
+}
+
+fn write(request: Request) {
+    if *Request::read() != request {
         *Request::write() = request;
     }
 }
@@ -558,6 +620,35 @@ mod tests {
         let failed = Request::Failed("/d/1".into(), Task::Pair);
         assert_eq!(failed.failed("/d/1"), Some(Task::Pair));
         assert_eq!(failed.doing("/d/1"), None);
+    }
+
+    // the only test asking, as asking is global
+    #[test]
+    fn one_thing_is_asked_at_a_time_and_a_cancelled_one_still_holds_until_it_ends() {
+        let first = ask(Request::Doing("/d/1".into(), Task::Pair)).unwrap();
+        assert!(Request::read().busy());
+
+        let working = Working;
+        assert_eq!(ask(Request::Doing("/d/2".into(), Task::Connect)), None);
+        assert_eq!(Request::read().doing("/d/1"), Some(Task::Pair));
+
+        // cancelled, it says nothing more, but nothing else is asked until its thread ends
+        abandon();
+        assert_eq!(*Request::read(), Request::Idle);
+        assert_eq!(ask(Request::Doing("/d/2".into(), Task::Connect)), None);
+
+        set(first, Request::Failed("/d/1".into(), Task::Pair));
+        assert_eq!(*Request::read(), Request::Idle);
+
+        drop(working);
+        let second = ask(Request::Doing("/d/2".into(), Task::Connect)).unwrap();
+        assert!(second > first);
+
+        drop(Working);
+        assert_eq!(
+            *Request::read(),
+            Request::Doing("/d/2".into(), Task::Connect)
+        );
     }
 
     #[test]

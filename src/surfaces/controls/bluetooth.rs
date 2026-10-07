@@ -1,6 +1,7 @@
 //! The Controls Surface's Bluetooth sub-surface: the devices paired, connected ones first, then
 //! those nearby, to pair, connect, disconnect or forget. Each says what is being done to it, or
-//! what last failed. A pairing that needs the user shows its code in place of the devices.
+//! what last failed. A pairing that needs the user shows its code, or takes the device's PIN, in
+//! place of the devices.
 
 use amane::{Center, Column, End, Rectangle, Row, Text, Widget, children};
 
@@ -28,7 +29,9 @@ pub fn rows(adapter: &Adapter, prompt: &Prompt) -> Vec<Vec<(At, f32)>> {
     }
 
     match prompt {
-        Prompt::Confirm { .. } => return vec![vec![(At::Cancel, 0.6), (At::Confirm, 0.85)]],
+        Prompt::Confirm { .. } | Prompt::Pin { .. } => {
+            return vec![vec![(At::Cancel, 0.6), (At::Confirm, 0.85)]];
+        }
         Prompt::Show { .. } => return vec![vec![(At::Cancel, 0.85)]],
         Prompt::None => {}
     }
@@ -131,10 +134,10 @@ fn status(device: &Device, request: &Request) -> Option<(String, bool)> {
 /*
  * its name and status; a paired one has a Forget pill, a connected one a Disconnect pill too, which
  * the ring goes on instead and which alone disconnects it. Pressing another pairs or connects it.
- * While something is being done to it, none of it presses
+ * While something is being done to any device, none of it presses
  */
 fn row(device: &Device, request: &Request, ring: Option<&At>) -> Rectangle {
-    let busy = request.doing(&device.path).is_some();
+    let busy = request.busy();
     let at = At::Device(device.path.clone());
     let forget = At::Forget(device.path.clone());
     let press = |at: &At| (!busy).then(|| Act::Press(at.clone()));
@@ -175,7 +178,8 @@ fn row(device: &Device, request: &Request, ring: Option<&At>) -> Rectangle {
 
 /*
  * a pairing waiting on the user, in place of the devices: the code the device shows too, to say
- * whether it matches, or the one to type on it
+ * whether it matches, the one to type on it, or the device's PIN as it is typed, which pairs once
+ * there is one
  */
 fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
     let name = |path: &str| {
@@ -186,18 +190,24 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
             .map_or_else(|| String::from("the device"), |device| device.name.clone())
     };
 
-    let (title, code, detail, confirms) = match prompt {
+    let (title, code, detail, pairs) = match prompt {
         Prompt::Confirm { device, passkey } => (
             format!("Pair with {}?", name(device)),
             passkey.as_str(),
             "Check it shows the same code",
-            true,
+            Some(true),
         ),
         Prompt::Show { device, code } => (
             format!("Type this code on {}", name(device)),
             code.as_str(),
             "Then press Enter on it",
-            false,
+            None,
+        ),
+        Prompt::Pin { device, pin } => (
+            format!("Type the PIN of {}", name(device)),
+            pin.as_str(),
+            "Its manual says it, then press Enter",
+            Some(!pin.is_empty()),
         ),
         Prompt::None => return Rectangle::new().width(WIDTH).height(LIST),
     };
@@ -209,12 +219,12 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
         Some(Act::Press(At::Cancel)),
     )];
 
-    if confirms {
+    if let Some(ready) = pairs {
         buttons.push(Box::new(list::pill(
             list::label("Pair"),
             84.0,
             ring == Some(&At::Confirm),
-            Some(Act::Press(At::Confirm)),
+            ready.then_some(Act::Press(At::Confirm)),
         )));
     }
 
@@ -352,6 +362,10 @@ mod tests {
             device: "/org/bluez/hci0/dev_buds".into(),
             code: "012345".into(),
         };
+        let pin = Prompt::Pin {
+            device: "/org/bluez/hci0/dev_buds".into(),
+            pin: String::new(),
+        };
 
         let targets = |prompt| -> Vec<At> {
             rows(&adapter, prompt)
@@ -363,6 +377,7 @@ mod tests {
 
         assert_eq!(targets(&confirm), [At::Cancel, At::Confirm]);
         assert_eq!(targets(&show), [At::Cancel]);
+        assert_eq!(targets(&pin), [At::Cancel, At::Confirm]);
     }
 
     #[test]
