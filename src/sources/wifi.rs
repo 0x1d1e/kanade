@@ -32,6 +32,9 @@ const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
 const PROFILE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 pub const ATTEMPT: &str = "org.freedesktop.NetworkManager.Connection.Active";
 
+const BUS: &str = "org.freedesktop.DBus";
+const BUS_PATH: &str = "/org/freedesktop/DBus";
+
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const DEVICES: &str = "/org/freedesktop/NetworkManager/Devices/";
 const ACCESS_POINTS: &str = "/org/freedesktop/NetworkManager/AccessPoint/";
@@ -191,6 +194,12 @@ pub struct Network {
 // the Wi-Fi device's networks for the sub-surface; written only while it shows
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Networks {
+    /*
+     * the NetworkManager that made these objects, by its unique name: their paths are its own, so a
+     * join or disconnect asks it, never one that replaced it
+     */
+    pub owner: String,
+
     // NetworkManager's object for the Wi-Fi device, empty without one
     pub device: String,
 
@@ -351,13 +360,19 @@ struct Seen {
 }
 
 fn read() -> Networks {
+    let bus = Bus::system();
+
+    // first, so objects read after a replacement are asked of the one gone, and fail
+    let owner = bus
+        .call(BUS, BUS_PATH, BUS, "GetNameOwner", &[Argument::from(NAME)])
+        .text()
+        .to_owned();
+
     let device = device();
 
-    if device.is_empty() {
+    if owner.is_empty() || device.is_empty() {
         return Networks::default();
     }
-
-    let bus = Bus::system();
 
     let seen: Vec<Seen> = bus
         .call(NAME, &device, WIRELESS, "GetAllAccessPoints", &[])
@@ -383,6 +398,7 @@ fn read() -> Networks {
         .map(|seen| (seen.ssid.clone(), link));
 
     Networks {
+        owner,
         device,
         list: networks(seen, &profiles(), on),
     }
@@ -520,26 +536,29 @@ fn networks(
 }
 
 /*
- * joins `network`, with `secret` for one that needs a new password: a saved profile is used as it
- * is, otherwise one is made in memory and saved once the network takes it, replacing older ones
+ * joins `network`, one of `networks`, with `secret` for one that needs a new password: a saved
+ * profile is used as it is, otherwise one is made in memory and saved once the network takes it,
+ * replacing older ones. All of it is asked of the NetworkManager the networks were read from
  */
-pub fn join(device: &str, network: &Network, secret: Option<Secret>) {
+pub fn join(networks: &Networks, network: &Network, secret: Option<Secret>) {
     let asked = ask();
 
     let ssid = network.ssid.clone();
-    let device = device.to_owned();
+    let owner = networks.owner.clone();
+    let device = networks.device.clone();
     let network = network.clone();
 
     set(asked, Join::Joining(ssid.clone()));
 
     thread::spawn(move || {
-        let outcome = joined(asked, &device, &network, secret);
+        let outcome = joined(asked, &owner, &device, &network, secret);
 
         set(
             asked,
             match outcome {
-                Ok(()) => Join::Idle,
-                Err(failure) => Join::Failed(ssid, failure),
+                Ended::Up => Join::Idle,
+                Ended::Failed(failure) => Join::Failed(ssid, failure),
+                Ended::Gone => Join::Failed(ssid, Failure::Other),
             },
         );
     });
@@ -547,10 +566,11 @@ pub fn join(device: &str, network: &Network, secret: Option<Secret>) {
 
 fn joined(
     asked: u64,
+    owner: &str,
     device: &str,
     network: &Network,
     secret: Option<Secret>,
-) -> Result<(), Failure> {
+) -> Ended {
     let bus = Bus::system();
 
     // listening before asking, so the end of a quick join is not missed
@@ -559,7 +579,7 @@ fn joined(
     let (made, active) = match (&network.profile, secret) {
         (Some(profile), None) => {
             let active = bus.call(
-                NAME,
+                owner,
                 ROOT,
                 NAME,
                 "ActivateConnection",
@@ -576,7 +596,7 @@ fn joined(
             let options = BTreeMap::from([(String::from("persist"), Argument::from("memory"))]);
 
             let reply = bus.call(
-                NAME,
+                owner,
                 ROOT,
                 NAME,
                 "AddAndActivateConnection2",
@@ -599,7 +619,7 @@ fn joined(
     };
 
     let ended = if active.is_empty() {
-        Err(Failure::Other)
+        Ended::Failed(Failure::Other)
     } else {
         let mut waiting = Waiting::new(device, &active);
         let mut late: Option<Instant> = None;
@@ -629,20 +649,39 @@ fn joined(
 
     drop(listening);
 
-    if let Some(made) = made {
-        if ended.is_ok() {
-            bus.call(NAME, &made, PROFILE, "Save", &[]);
-
-            // a profile with the old password, which would otherwise come back
-            if let Some(old) = &network.profile {
-                bus.call(NAME, old, PROFILE, "Delete", &[]);
-            }
-        } else {
-            bus.call(NAME, &made, PROFILE, "Delete", &[]);
-        }
+    for (profile, method) in tidy(made.as_deref(), network.profile.as_deref(), ended) {
+        bus.call(owner, profile, PROFILE, method, &[]);
     }
 
     ended
+}
+
+/*
+ * what becomes of the profile a join `made` and the `old` one it replaces once the join `ended`:
+ * the one made is saved, and the old one, with the old password, deleted so it does not come back;
+ * failed, the one made is deleted. With NetworkManager gone, so are its profiles: nothing is asked
+ */
+fn tidy<'a>(
+    made: Option<&'a str>,
+    old: Option<&'a str>,
+    ended: Ended,
+) -> Vec<(&'a str, &'static str)> {
+    match (made, ended) {
+        (Some(made), Ended::Up) => [(made, "Save")]
+            .into_iter()
+            .chain(old.map(|old| (old, "Delete")))
+            .collect(),
+        (Some(made), Ended::Failed(_)) => vec![(made, "Delete")],
+        _ => Vec::new(),
+    }
+}
+
+// how a join ends: up, failed, or with the NetworkManager it asked gone
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Ended {
+    Up,
+    Failed(Failure),
+    Gone,
 }
 
 /*
@@ -716,7 +755,7 @@ impl<'a> Waiting<'a> {
     }
 
     // how what was heard ends the join: up, or over once it is known why; none while on its way
-    fn hear(&mut self, heard: &Heard) -> Option<Result<(), Failure>> {
+    fn hear(&mut self, heard: &Heard) -> Option<Ended> {
         match heard {
             Heard::Device(path, state, reason) if path == self.device => {
                 if *state == PREPARING && !self.over {
@@ -727,14 +766,14 @@ impl<'a> Waiting<'a> {
             }
             Heard::Attempt(path, state) if path == self.active => {
                 if *state == UP && !self.over {
-                    return Some(Ok(()));
+                    return Some(Ended::Up);
                 }
 
                 self.over |= *state == OVER;
             }
             // nothing more is said of an attempt removed, nor by NetworkManager gone
             Heard::Removed(path) if path == self.active => return Some(self.failed()),
-            Heard::Gone => return Some(self.failed()),
+            Heard::Gone => return Some(Ended::Gone),
             _ => {}
         }
 
@@ -742,8 +781,8 @@ impl<'a> Waiting<'a> {
     }
 
     // the join failing, as a wrong password when the device said so
-    fn failed(&self) -> Result<(), Failure> {
-        Err(if self.failure == Some(NO_SECRETS) {
+    fn failed(&self) -> Ended {
+        Ended::Failed(if self.failure == Some(NO_SECRETS) {
             Failure::WrongPassword
         } else {
             Failure::Other
@@ -786,14 +825,15 @@ fn settings(network: &Network, secret: Option<&Secret>) -> Argument {
 }
 
 // leaves the network the device is on; NetworkManager joins nothing on its own until asked to
-pub fn disconnect(device: &str) {
+pub fn disconnect(networks: &Networks) {
     let asked = ask();
-    let device = device.to_owned();
+    let owner = networks.owner.clone();
+    let device = networks.device.clone();
 
     set(asked, Join::Idle);
 
     thread::spawn(move || {
-        Bus::system().call(NAME, &device, DEVICE, "Disconnect", &[]);
+        Bus::system().call(&owner, &device, DEVICE, "Disconnect", &[]);
     });
 }
 
@@ -986,7 +1026,7 @@ mod tests {
         assert_eq!(waiting.hear(&attempt(ON_ITS_WAY)), None);
         assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
         assert_eq!(waiting.hear(&device(ACTIVATED_DEVICE, 0.0)), None);
-        assert_eq!(waiting.hear(&attempt(UP)), Some(Ok(())));
+        assert_eq!(waiting.hear(&attempt(UP)), Some(Ended::Up));
 
         // a wrong password: the device fails, then the attempt is over
         let mut waiting = Waiting::new("/d", "/a");
@@ -994,7 +1034,7 @@ mod tests {
         assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
         assert_eq!(
             waiting.hear(&attempt(OVER)),
-            Some(Err(Failure::WrongPassword))
+            Some(Ended::Failed(Failure::WrongPassword))
         );
 
         // heard the other way round, as the two threads may
@@ -1003,21 +1043,24 @@ mod tests {
         assert_eq!(waiting.hear(&attempt(OVER)), None);
         assert_eq!(
             waiting.hear(&device(FAILED, NO_SECRETS)),
-            Some(Err(Failure::WrongPassword))
+            Some(Ended::Failed(Failure::WrongPassword))
         );
 
         // over without the device failing, once no reason came in time
         let mut waiting = Waiting::new("/d", "/a");
         assert_eq!(waiting.hear(&attempt(OVER)), None);
         assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
-        assert_eq!(waiting.failed(), Err(Failure::Other));
+        assert_eq!(waiting.failed(), Ended::Failed(Failure::Other));
 
         // a failure from before it began preparing is not this join's
         let mut waiting = Waiting::new("/d", "/a");
         assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
         assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
         assert_eq!(waiting.hear(&device(FAILED, 8.0)), None);
-        assert_eq!(waiting.hear(&attempt(OVER)), Some(Err(Failure::Other)));
+        assert_eq!(
+            waiting.hear(&attempt(OVER)),
+            Some(Ended::Failed(Failure::Other))
+        );
     }
 
     // only its own active connection and device count: another join's coming up is not this one's
@@ -1037,7 +1080,7 @@ mod tests {
         // taken over before it began: over, with nothing from the device to say why
         assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), OVER)), None);
         assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), UP)), None);
-        assert_eq!(waiting.failed(), Err(Failure::Other));
+        assert_eq!(waiting.failed(), Ended::Failed(Failure::Other));
     }
 
     // NetworkManager going away takes the attempt with it, saying no more
@@ -1048,7 +1091,7 @@ mod tests {
             waiting.hear(&Heard::Device("/d".into(), PREPARING, 0.0)),
             None
         );
-        assert_eq!(waiting.hear(&Heard::Gone), Some(Err(Failure::Other)));
+        assert_eq!(waiting.hear(&Heard::Gone), Some(Ended::Gone));
     }
 
     // its attempt removed says no more either; another removed is not this join's end
@@ -1062,8 +1105,27 @@ mod tests {
         );
         assert_eq!(
             waiting.hear(&Heard::Removed("/a".into())),
-            Some(Err(Failure::WrongPassword))
+            Some(Ended::Failed(Failure::WrongPassword))
         );
+    }
+
+    #[test]
+    fn a_join_saves_or_deletes_what_it_made_but_nothing_once_networkmanager_is_gone() {
+        let (made, old) = (Some("/s/9"), Some("/s/7"));
+
+        assert_eq!(
+            tidy(made, old, Ended::Up),
+            [("/s/9", "Save"), ("/s/7", "Delete")]
+        );
+        assert_eq!(
+            tidy(made, old, Ended::Failed(Failure::WrongPassword)),
+            [("/s/9", "Delete")]
+        );
+        assert_eq!(tidy(None, old, Ended::Up), []);
+
+        // the paths were the old NetworkManager's; a new one may have given them to others
+        assert_eq!(tidy(made, old, Ended::Gone), []);
+        assert_eq!(tidy(None, old, Ended::Gone), []);
     }
 
     // a join hears only while it listens, and leaves nothing behind

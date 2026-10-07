@@ -814,12 +814,12 @@ fn network(focus: Focus, ssid: &str) -> Focus {
     let asks = network.profile.is_none() || join.failed(ssid) == Some(Failure::WrongPassword);
 
     if network.link == Link::Joined {
-        wireless::disconnect(&networks.device);
+        wireless::disconnect(&networks);
     } else if joining || network.security == Security::Unsupported {
     } else if network.security.password() && asks {
         return focus.into_password(ssid);
     } else {
-        wireless::join(&networks.device, network, None);
+        wireless::join(&networks, network, None);
     }
 
     focus
@@ -834,7 +834,7 @@ fn join(focus: Focus) -> Focus {
     let networks = Networks::read().clone();
 
     if let Some(network) = networks.list.iter().find(|network| network.ssid == *ssid) {
-        wireless::join(&networks.device, network, Some(secret.clone()));
+        wireless::join(&networks, network, Some(secret.clone()));
     }
 
     focus.out()
