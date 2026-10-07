@@ -74,7 +74,7 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Sub-surface
-A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has three: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, and Bluetooth, from the Bluetooth tile's chevron.
+A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has four: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, and Audio, from the speaker level's chevron.
 - **Invariant:** every target in a Surface and its sub-surfaces is a key away. Arrows move a ring between targets, Enter or Space presses, Escape leaves a sub-surface for the level it came from, ringed on the target that entered it, and collapses the island only from the top level.
 - **Invariant:** a sub-surface lasts one opening of its Surface. The Surface opens at its top level.
 - **Invariant:** a password never prints, in a log or a `Debug`; it lives only until NetworkManager has it.

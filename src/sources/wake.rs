@@ -147,10 +147,6 @@ fn guarded(
  * runs `program` to do one thing and waits for it to exit (ADR 0011: an action), dying with Kanade
  * as `spawn` says; never runs it again. Says why it failed, with what it printed on stderr
  */
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the Audio sub-surface acts, #133")
-)]
 pub fn act(program: &str, args: &[&str]) -> Result<(), String> {
     query(program, args).map(drop)
 }

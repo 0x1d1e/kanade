@@ -1,5 +1,6 @@
 //! A level a Surface sets by a press, a drag along its bar, or the wheel: the speaker's volume on
-//! Media and Controls, and the screen's brightness on Controls.
+//! Media and Controls, and the screen's brightness, the microphone's volume and an app's on
+//! Controls.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -7,6 +8,7 @@ use std::time::{Duration, Instant};
 use amane::{Audio, Brightness, Center, Color, Cursor, Rectangle, Service, Start};
 
 use crate::modules;
+use crate::sources::audio::{self, Mixer, Node};
 use crate::theme::space::TARGET;
 use crate::view::bar;
 
@@ -20,22 +22,32 @@ const ASKED_FOR: Duration = Duration::from_millis(300);
 pub enum Slider {
     Speaker,
     Brightness,
+    Microphone,
+
+    // an app playing or recording sound
+    Stream(Node),
 }
 
 impl Slider {
     // the Module without which nothing reads or sets its device
     fn module(self) -> &'static str {
         match self {
-            Slider::Speaker => "audio",
+            Slider::Speaker | Slider::Microphone | Slider::Stream(_) => "audio",
             Slider::Brightness => "brightness",
         }
     }
 
-    // 0 to 100, as the device last reported it
+    // 0 to 100, as the device last reported it; past 100 for an app amplified
     pub fn percent(self) -> u8 {
         match self {
             Slider::Speaker => Audio::read().volume(),
             Slider::Brightness => Brightness::read().percent(),
+            Slider::Microphone => Audio::read().microphone_volume(),
+            Slider::Stream(node) => Mixer::read()
+                .streams
+                .iter()
+                .find(|stream| stream.node == node)
+                .map_or(0, |stream| stream.level.volume),
         }
     }
 
@@ -105,6 +117,8 @@ impl Slider {
         match self {
             Slider::Speaker => Audio::set_volume(percent),
             Slider::Brightness => Brightness::set(percent),
+            Slider::Microphone => Audio::set_microphone_volume(percent),
+            Slider::Stream(node) => audio::ask_volume(node, percent),
         }
     }
 }
@@ -130,7 +144,12 @@ mod tests {
     // no Module is on in tests, so a wheel or a drag that went through would ask for a level
     #[test]
     fn a_slider_whose_module_is_off_sets_nothing() {
-        for slider in [Slider::Speaker, Slider::Brightness] {
+        for slider in [
+            Slider::Speaker,
+            Slider::Brightness,
+            Slider::Microphone,
+            Slider::Stream(Node::of(7)),
+        ] {
             assert!(!modules::on(slider.module()));
 
             slider.wheel(-1.0);

@@ -1,13 +1,15 @@
 //! The audio devices and app streams (#132, ADR 0011): what Amane's `Audio` lacks, since it has the
 //! default speaker and microphone only. Read from PipeWire's graph through `pw-dump --monitor`, run
 //! apart from `privacy`'s, so this wakes only when the graph does; changed through `wpctl`, one
-//! action each. What capture is in use is `privacy`'s, not this.
+//! action each, run in turn off the draw thread. What capture is in use is `privacy`'s, not this.
 //!
 //! Volumes are percents on the scale `wpctl` and Amane's `Audio` show: PipeWire keeps the cube of
 //! it per channel. A `Node` names a device or stream to act on, and is good only while it shows.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};
+use std::sync::{Mutex, PoisonError};
+use std::thread;
 
 use amane::Service;
 
@@ -42,6 +44,13 @@ impl Service for Mixer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Node(u64);
 
+#[cfg(test)]
+impl Node {
+    pub fn of(id: u64) -> Node {
+        Node(id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     pub node: Node,
@@ -66,6 +75,23 @@ enum Choice {
     // a device that does both, which wpctl turns down: set by name as the configured default of
     // one direction, as wpctl would
     Configured { key: &'static str, name: String },
+}
+
+#[cfg(test)]
+impl Device {
+    // a sink or source, as other modules' tests need one
+    pub fn of(node: Node, name: &str, default: bool) -> Device {
+        Device {
+            node,
+            name: name.into(),
+            default,
+            level: Level {
+                volume: 50,
+                muted: false,
+            },
+            choice: Choice::Node,
+        }
+    }
 }
 
 // an app playing or recording sound
@@ -442,19 +468,192 @@ fn show(mixer: &Mixer) {
 }
 
 /*
- * sets a device's or stream's volume, 0 to 100; waits for wpctl, so call it off the draw thread.
- * The Mixer shows the change once PipeWire has it
+ * asks for a device's or stream's volume, 0 to 100, as `ask` says. The Mixer shows the change once
+ * PipeWire has it
  */
-#[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_volume(node: Node, volume: u8) -> Result<(), String> {
+pub fn ask_volume(node: Node, volume: u8) {
+    ask(Ask::Volume(node, volume));
+}
+
+// asks for a device or stream muted or unmuted, as `ask_volume`
+pub fn ask_muted(node: Node, muted: bool) {
+    ask(Ask::Muted(node, muted));
+}
+
+/*
+ * asks for `device` the default of `direction`, the list it is in, unless one is being switched to
+ * already; `Switching` says how it goes
+ */
+pub fn ask_default(device: &Device, direction: Direction) {
+    {
+        let mut switching = Switching::write();
+
+        if matches!(*switching, Switching::Doing(..)) {
+            return;
+        }
+
+        *switching = Switching::Doing(device.node, direction);
+    }
+
+    ask(Ask::Default(device.clone(), direction));
+}
+
+// which list a device is in; a duplex device is in both
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Output,
+    Input,
+}
+
+// a default device being switched to, or the last that failed to be
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Switching {
+    #[default]
+    Idle,
+    Doing(Node, Direction),
+    Failed(Node, Direction),
+}
+
+impl Service for Switching {
+    fn new() -> Self {
+        Switching::default()
+    }
+
+    fn listen() {}
+}
+
+impl Switching {
+    pub fn doing(self, node: Node, direction: Direction) -> bool {
+        self == Switching::Doing(node, direction)
+    }
+
+    pub fn failed(self, node: Node, direction: Direction) -> bool {
+        self == Switching::Failed(node, direction)
+    }
+
+    pub fn busy(self) -> bool {
+        matches!(self, Switching::Doing(..))
+    }
+}
+
+// one change through wpctl
+#[derive(Debug, Clone, PartialEq)]
+enum Ask {
+    Volume(Node, u8),
+    Muted(Node, bool),
+    Default(Device, Direction),
+}
+
+impl Ask {
+    // asks for the same thing of the same device or stream, so only the later one need run
+    fn replaces(&self, other: &Ask) -> bool {
+        match (self, other) {
+            (Ask::Volume(node, _), Ask::Volume(other, _))
+            | (Ask::Muted(node, _), Ask::Muted(other, _)) => node == other,
+            (Ask::Default(_, direction), Ask::Default(_, other)) => direction == other,
+            _ => false,
+        }
+    }
+
+    fn run(self) {
+        match self {
+            Ask::Volume(node, volume) => {
+                if let Err(why) = set_volume(node, volume) {
+                    eprintln!("kanade: cannot set a volume: {why}");
+                }
+            }
+            Ask::Muted(node, muted) => {
+                if let Err(why) = set_muted(node, muted) {
+                    eprintln!("kanade: cannot mute or unmute: {why}");
+                }
+            }
+            Ask::Default(device, direction) => {
+                let outcome = match set_default(&device) {
+                    Ok(()) => Switching::Idle,
+                    Err(why) => {
+                        eprintln!("kanade: cannot switch to {}: {why}", device.name);
+                        Switching::Failed(device.node, direction)
+                    }
+                };
+
+                let mut switching = Switching::write();
+
+                if switching.doing(device.node, direction) {
+                    *switching = outcome;
+                }
+            }
+        }
+    }
+}
+
+// the asks waiting their turn, oldest first, and whether a thread is running them
+#[derive(Debug, Default)]
+struct Asks {
+    waiting: Vec<Ask>,
+    running: bool,
+}
+
+impl Asks {
+    // `ask` in its turn, in place of one it replaces, so a slider dragged runs only its last level
+    fn push(&mut self, ask: Ask) {
+        match self
+            .waiting
+            .iter_mut()
+            .find(|waiting| ask.replaces(waiting))
+        {
+            Some(waiting) => *waiting = ask,
+            None => self.waiting.push(ask),
+        }
+    }
+}
+
+static ASKS: Mutex<Asks> = Mutex::new(Asks {
+    waiting: Vec::new(),
+    running: false,
+});
+
+/*
+ * runs `ask` after those asked before it, one at a time on a thread of their own, so the draw
+ * thread never waits for wpctl and two never race
+ */
+fn ask(ask: Ask) {
+    let mut asks = ASKS.lock().unwrap_or_else(PoisonError::into_inner);
+
+    asks.push(ask);
+
+    if !asks.running {
+        asks.running = true;
+        thread::spawn(run);
+    }
+}
+
+// the asks run until none wait
+fn run() {
+    loop {
+        let ask = {
+            let mut asks = ASKS.lock().unwrap_or_else(PoisonError::into_inner);
+
+            if asks.waiting.is_empty() {
+                asks.running = false;
+                return;
+            }
+
+            asks.waiting.remove(0)
+        };
+
+        ask.run();
+    }
+}
+
+// sets a device's or stream's volume, 0 to 100; waits for wpctl
+fn set_volume(node: Node, volume: u8) -> Result<(), String> {
     let volume = format!("{}%", volume.min(100));
 
     wake::act(WPCTL, &["set-volume", &node.0.to_string(), &volume])
 }
 
 // mutes or unmutes a device or stream, as `set_volume`
-#[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_muted(node: Node, muted: bool) -> Result<(), String> {
+fn set_muted(node: Node, muted: bool) -> Result<(), String> {
     let muted = if muted { "1" } else { "0" };
 
     wake::act(WPCTL, &["set-mute", &node.0.to_string(), muted])
@@ -464,8 +663,7 @@ pub fn set_muted(node: Node, muted: bool) -> Result<(), String> {
  * makes a device the default of the list it is in, outputs or inputs, as `set_volume`; streams that
  * follow the default move to it
  */
-#[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_default(device: &Device) -> Result<(), String> {
+fn set_default(device: &Device) -> Result<(), String> {
     choose(device, wake::act, || wake::query(DUMP, &["--no-colors"]))
 }
 
@@ -1118,6 +1316,32 @@ mod tests {
 
         assert_eq!(default_name(&value).as_deref(), Some("alsa_output.analog"));
         assert_eq!(default_name(&Json::Null), None);
+    }
+
+    #[test]
+    fn a_later_ask_of_the_same_thing_takes_the_earlier_ones_turn() {
+        let speaker = device_of(SPEAKER, "Built-in Audio", false, 7);
+        let headphones = device_of(HEADPHONES, "Moondrop", true, 36);
+
+        let mut asks = Asks::default();
+        asks.push(Ask::Volume(Node(1), 10));
+        asks.push(Ask::Muted(Node(1), true));
+        asks.push(Ask::Volume(Node(2), 20));
+        asks.push(Ask::Default(speaker, Direction::Output));
+        asks.push(Ask::Volume(Node(1), 30));
+        asks.push(Ask::Default(headphones.clone(), Direction::Output));
+        asks.push(Ask::Default(headphones.clone(), Direction::Input));
+
+        assert_eq!(
+            asks.waiting,
+            [
+                Ask::Volume(Node(1), 30),
+                Ask::Muted(Node(1), true),
+                Ask::Volume(Node(2), 20),
+                Ask::Default(headphones.clone(), Direction::Output),
+                Ask::Default(headphones, Direction::Input),
+            ]
+        );
     }
 
     #[test]
