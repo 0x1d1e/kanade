@@ -135,10 +135,17 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
-            } else if !surfaces::notifications::key(&pressed, key)
-                && !surfaces::launcher::key(&pressed, key)
-            {
-                stray(&pressed, key);
+            } else {
+                // a Surface whose Module is off never opens, so its keys read nothing
+                let notifications = modules::on("notification-surface")
+                    && surfaces::notifications::key(&pressed, key);
+                let launcher = !notifications
+                    && modules::on("launcher")
+                    && surfaces::launcher::key(&pressed, key);
+
+                if !notifications && !launcher {
+                    stray(&pressed, key);
+                }
             }
         })
         // empty under niri's overview, so the pointer reaches the overview beneath

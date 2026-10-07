@@ -61,7 +61,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Expanded(Surface)`.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
-- **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request). No remembered last-used Surface: a click at Rest opens Controls.
+- **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request, the Surfaces withheld). No remembered last-used Surface: a click at Rest opens Controls.
 - **Invariant:** at most one island is Expanded at a time.
 - **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow. A Split whose segments trade places slides each to its new place.
 - **Avoid:** state (Amane uses state for Services)
@@ -70,6 +70,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Expanded(Surface)`.
 Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher`.
 - Media and Notifications are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface.
 - Controls and Launcher have no Activity. They open only by user action.
+- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is Amane's build function)
 
 ## Satellite
