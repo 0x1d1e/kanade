@@ -12,12 +12,12 @@ Status: accepted (roadmap 9 Shell essentials, #135). Changed the `CONTEXT.md` Pr
 
 - **A Presentation, `Tray(slots)`.** The hover delay at Rest raises it while there are items: the time, then one slot per item, up to `TRAY_SLOTS`; past that the last slot is "+N" and opens the Tray Surface. It rests again when the pointer leaves and the grace runs out, or when the last item goes. It is Rest's own small form, as Peek is Compact's, so it takes the same hover, delay and grace and remembers nothing.
 - **Hover only on entering.** As for a Peek, the delay starts when the pointer enters. Items arriving under a resting pointer do not raise it.
-- **A slot is the item's.** Left activates it, or opens its menu when the item says it is only a menu. Middle is secondary activation. The wheel scrolls it, a notch 120. Right opens its menu.
+- **A slot is the item's.** Left activates it; an item that says it is only a menu (`ItemIsMenu`) never gets `Activate`: left opens its menu, or calls `ContextMenu` when it has no dbusmenu. Middle is secondary activation. The wheel scrolls it, a notch 120. Right opens its menu.
 - **Elsewhere on the strip it is Rest.** A click on the time opens Controls, a right click opens Controls pinned (ADR 0010).
 
 ### The Tray Surface
 
-- **A Surface, `Tray`.** It lists every item: the row activates it, its chevron opens its menu. `kanade tray open|close|toggle` opens it, so the keyboard reaches every item.
+- **A Surface, `Tray`.** It lists every item: the row presses it as left does on its slot, its chevron opens its menu. `kanade tray open|close|toggle` opens it, so the keyboard reaches every item.
 - **A menu is a sub-surface.** An item's `com.canonical.dbusmenu` layout shows as rows: a separator is a rule above the next row, a checked or selected entry a check, a submenu a chevron, a disabled entry dimmed and inert, a hidden one absent. Entering a submenu is a further sub-surface; back or Escape returns to the entry that entered it. An action runs and collapses the island.
 - **A menu opened from a slot is pinned.** An app's menu stays until dismissed, and the pointer leaving to reach the Surface's rows must not close it. It ends as any pin does.
 - **Keyboard-complete.** Arrows move the ring, Enter or Space presses, Right enters a submenu, Left or Escape goes back a level, and Escape at the items collapses (`CONTEXT.md` Sub-surface).
@@ -36,4 +36,5 @@ Status: accepted (roadmap 9 Shell essentials, #135). Changed the `CONTEXT.md` Pr
 
 - `Presentation` gains `Tray(u8)` and `Surface` gains `Tray`. A Hover due at Rest applies only while there are items.
 - `CONTEXT.md` Pin: a right click on a tray slot opens that item's menu pinned. No other target gains a context action.
+- Every call about a menu is addressed to the item it was opened for when it is made, so a late worker never reaches an item opened since.
 - A menu reads its layout when it opens and on each `LayoutUpdated`, and calls `AboutToShow` before showing a level, so an app that fills its menu lazily shows it.

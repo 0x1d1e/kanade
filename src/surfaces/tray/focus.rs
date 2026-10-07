@@ -13,7 +13,7 @@ pub enum At {
     // a menu's back chevron
     Back,
 
-    // an item, by its key: the row, which activates it, then its chevron, which opens its menu
+    // an item, by its key: the row, which presses it, then its chevron, which opens its menu
     Item(u64),
     Menu(u64),
 

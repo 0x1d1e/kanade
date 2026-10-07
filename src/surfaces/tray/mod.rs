@@ -21,7 +21,7 @@ use crate::island::geometry::{self, REST, TRAY_SLOT, TRAY_SLOTS};
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::tray::menu::{self, Entry, Menu, Toggle};
-use crate::sources::tray::{self, Item, Orientation, Status, Tray};
+use crate::sources::tray::{self, Item, Orientation, Press, Status, Tray};
 use crate::theme::space::INSET;
 use crate::theme::{self, DISABLED, radius};
 use crate::view;
@@ -106,8 +106,11 @@ fn slot(monitor: &str, item: &Item) -> Rectangle {
             let (monitor, item) = &clicked;
 
             match button {
-                Button::Left if item.is_menu && item.has_menu() => open(monitor, item),
-                Button::Left => tray::activate(item, 0, 0),
+                Button::Left => match item.press() {
+                    Press::Menu => open(monitor, item),
+                    Press::ContextMenu => tray::context_menu(item, 0, 0),
+                    Press::Activate => tray::activate(item, 0, 0),
+                },
                 Button::Middle => tray::secondary_activate(item, 0, 0),
                 Button::Right if item.has_menu() => open(monitor, item),
                 Button::Right => tray::context_menu(item, 0, 0),
@@ -565,12 +568,15 @@ fn act(focus: Focus, act: Act, items: &[Item], menu: &Menu) -> Focus {
                 return focus;
             };
 
-            if item.is_menu && item.has_menu() {
-                menu::open(item);
-                return focus.into_menu(key);
+            match item.press() {
+                Press::Menu => {
+                    menu::open(item);
+                    return focus.into_menu(key);
+                }
+                Press::ContextMenu => tray::context_menu(item, 0, 0),
+                Press::Activate => tray::activate(item, 0, 0),
             }
 
-            tray::activate(item, 0, 0);
             close();
             focus
         }

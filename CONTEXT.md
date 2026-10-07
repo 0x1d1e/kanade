@@ -58,7 +58,7 @@ How an Activity interrupts: `None | Preempt | AutoExpand(duration)`.
 ## Presentation
 An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surface)`.
 - Rest has no primary Activity and shows the local time.
-- Tray is Rest with the apps' tray items after the time, raised by the hover delay while there are any and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it, middle is its secondary activation, the wheel scrolls it, right opens its menu.
+- Tray is Rest with the apps' tray items after the time, raised by the hover delay while there are any and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it (an item that is only a menu shows its menu instead), middle is its secondary activation, the wheel scrolls it, right opens its menu.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.

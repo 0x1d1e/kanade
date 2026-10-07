@@ -149,6 +149,27 @@ impl Item {
     pub fn has_menu(&self) -> bool {
         self.menu.is_some()
     }
+
+    // what its primary press asks: one that is only a menu shows it, the item drawing it without one
+    pub fn press(&self) -> Press {
+        match (self.is_menu, self.has_menu()) {
+            (true, true) => Press::Menu,
+            (true, false) => Press::ContextMenu,
+            (false, _) => Press::Activate,
+        }
+    }
+}
+
+// what a primary press on an item does
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    // its menu, shown by Kanade
+    Menu,
+
+    // `ContextMenu`, for an item that is only a menu but has none Kanade can show
+    ContextMenu,
+
+    Activate,
 }
 
 // what to draw: the file its icon name stands for, else its own pixels, else neither
@@ -1021,6 +1042,36 @@ mod tests {
             menu: None,
             is_menu: false,
         }
+    }
+
+    // #135: an item that is only a menu never gets Activate, as the spec asks
+    #[test]
+    fn a_press_on_an_item_that_is_only_a_menu_shows_a_menu() {
+        let plain = item(1, ":1.1");
+        let menu = Item {
+            menu: Some(String::from("/MenuBar")),
+            ..plain.clone()
+        };
+
+        assert_eq!(plain.press(), Press::Activate);
+        assert_eq!(menu.press(), Press::Activate);
+
+        assert_eq!(
+            Item {
+                is_menu: true,
+                ..menu
+            }
+            .press(),
+            Press::Menu
+        );
+        assert_eq!(
+            Item {
+                is_menu: true,
+                ..plain
+            }
+            .press(),
+            Press::ContextMenu
+        );
     }
 
     #[test]

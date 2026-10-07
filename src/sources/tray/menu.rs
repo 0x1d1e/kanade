@@ -84,6 +84,60 @@ impl Menu {
     pub fn of(&self, item: u64) -> Option<&Entry> {
         self.root.as_ref().filter(|_| self.item == Some(item))
     }
+
+    // where a call about this opening goes, while it is `item`'s
+    fn request(&self, item: u64) -> Option<Request> {
+        (self.item == Some(item)).then(|| Request {
+            opening: self.opening,
+            owner: self.owner.clone(),
+            path: self.path.clone(),
+        })
+    }
+}
+
+/*
+ * a call about one opening of a menu, addressed when it is made: a reply or a worker that runs late
+ * still reaches the menu it was for, never one opened since
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Request {
+    opening: u64,
+    owner: String,
+    path: String,
+}
+
+// the calls a menu takes; a test stands in for D-Bus
+trait Calls {
+    // whether the item changed entry `id`'s submenu, so it is read again
+    fn about_to_show(&self, to: &Request, id: i32) -> bool;
+
+    fn layout(&self, to: &Request) -> zbus::Result<Layout>;
+}
+
+impl Calls for Connection {
+    // an item without AboutToShow is read all the same
+    fn about_to_show(&self, to: &Request, id: i32) -> bool {
+        self.call_method(
+            Some(to.owner.as_str()),
+            to.path.as_str(),
+            Some(INTERFACE),
+            "AboutToShow",
+            &(id,),
+        )
+        .and_then(|reply| reply.body().deserialize::<bool>())
+        .unwrap_or(false)
+    }
+
+    fn layout(&self, to: &Request) -> zbus::Result<Layout> {
+        self.call_method(
+            Some(to.owner.as_str()),
+            to.path.as_str(),
+            Some(INTERFACE),
+            "GetLayout",
+            &(0_i32, -1_i32, Vec::<String>::new()),
+        )
+        .and_then(|reply| reply.body().deserialize::<Layout>())
+    }
 }
 
 /*
@@ -95,7 +149,7 @@ pub fn open(item: &Item) {
         return;
     };
 
-    let opening = {
+    let request = {
         let mut menu = Menu::write();
 
         *menu = Menu {
@@ -106,43 +160,33 @@ pub fn open(item: &Item) {
             ..Menu::default()
         };
 
-        menu.opening
+        menu.request(item.key())
     };
 
-    fetch(connection, opening, 0);
+    if let Some(request) = request {
+        thread::spawn(move || fetch(&connection, &request, 0));
+    }
 }
 
 // the submenu of entry `id` is about to show; an item that fills it then says so, and is read again
 pub fn enter(item: &Item, id: i32) {
-    let Some(connection) = connection(item) else {
+    let (Some(connection), Some(request)) = (connection(item), Menu::read().request(item.key()))
+    else {
         return;
     };
 
-    let menu = Menu::read();
-    if menu.item != Some(item.key()) {
-        return;
-    }
-
-    fetch(connection, menu.opening, id);
+    thread::spawn(move || fetch(&connection, &request, id));
 }
 
 // runs entry `id`'s action
 pub fn click(item: &Item, id: i32) {
-    let Some(connection) = connection(item) else {
+    let (Some(connection), Some(request)) = (connection(item), Menu::read().request(item.key()))
+    else {
         return;
     };
 
-    let (owner, path) = {
-        let menu = Menu::read();
-
-        if menu.item != Some(item.key()) {
-            return;
-        }
-
-        (menu.owner.clone(), menu.path.clone())
-    };
-
     thread::spawn(move || {
+        let Request { owner, path, .. } = request;
         let clicked = connection.call_method(
             Some(owner.as_str()),
             path.as_str(),
@@ -163,14 +207,18 @@ pub(super) fn changed(sender: &str, path: &str) {
         return;
     }
 
-    let opening = {
+    let request = {
         let menu = Menu::read();
 
-        if menu.item.is_none() || menu.owner != sender || menu.path != path {
+        if menu.owner != sender || menu.path != path {
             return;
         }
 
-        menu.opening
+        let Some(request) = menu.item.and_then(|item| menu.request(item)) else {
+            return;
+        };
+
+        request
     };
 
     let Some(connection) = super::reach()
@@ -180,66 +228,34 @@ pub(super) fn changed(sender: &str, path: &str) {
         return;
     };
 
-    thread::spawn(move || read(&connection, opening));
+    thread::spawn(move || read(&connection, &request));
 }
 
-/*
- * asks AboutToShow of entry `id`, then reads the layout when it opens the menu (0) or the item
- * says it changed it; an item without AboutToShow is read all the same
- */
-fn fetch(connection: Connection, opening: u64, id: i32) {
-    thread::spawn(move || {
-        let (owner, path) = {
-            let menu = Menu::read();
-            (menu.owner.clone(), menu.path.clone())
-        };
+// asks AboutToShow of entry `id`, then reads the layout when it opens the menu (0) or it changed
+fn fetch(calls: &impl Calls, request: &Request, id: i32) {
+    let update = calls.about_to_show(request, id);
 
-        let update = connection
-            .call_method(
-                Some(owner.as_str()),
-                path.as_str(),
-                Some(INTERFACE),
-                "AboutToShow",
-                &(id,),
-            )
-            .and_then(|reply| reply.body().deserialize::<bool>())
-            .unwrap_or(false);
-
-        if id == 0 || update {
-            read(&connection, opening);
-        }
-    });
+    if id == 0 || update {
+        read(calls, request);
+    }
 }
 
 // reads the whole layout into the menu, unless another opened since
-fn read(connection: &Connection, opening: u64) {
-    let (owner, path) = {
-        let menu = Menu::read();
+fn read(calls: &impl Calls, request: &Request) {
+    if Menu::read().opening != request.opening {
+        return;
+    }
 
-        if menu.opening != opening {
-            return;
-        }
-
-        (menu.owner.clone(), menu.path.clone())
-    };
-
-    let read = connection
-        .call_method(
-            Some(owner.as_str()),
-            path.as_str(),
-            Some(INTERFACE),
-            "GetLayout",
-            &(0_i32, -1_i32, Vec::<String>::new()),
-        )
-        .and_then(|reply| reply.body().deserialize::<Layout>());
+    let read = calls.layout(request);
 
     if let Err(error) = &read {
+        let Request { owner, path, .. } = request;
         eprintln!("kanade: tray menu {owner}{path} could not be read: {error}");
     }
 
     let mut menu = Menu::write();
 
-    if menu.opening != opening {
+    if menu.opening != request.opening {
         return;
     }
 
@@ -360,9 +376,57 @@ fn label(label: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use zbus::zvariant::{Array, Dict, Signature, StructureBuilder};
 
     use super::*;
+
+    // the calls made, each by method, owner, path and entry; every AboutToShow says it changed
+    #[derive(Default)]
+    struct Recorded(RefCell<Vec<(&'static str, String, String, i32)>>);
+
+    impl Calls for Recorded {
+        fn about_to_show(&self, to: &Request, id: i32) -> bool {
+            let call = ("AboutToShow", to.owner.clone(), to.path.clone(), id);
+
+            self.0.borrow_mut().push(call);
+            true
+        }
+
+        fn layout(&self, to: &Request) -> zbus::Result<Layout> {
+            let call = ("GetLayout", to.owner.clone(), to.path.clone(), 0);
+
+            self.0.borrow_mut().push(call);
+            Ok(root(Vec::new()))
+        }
+    }
+
+    // #135: a submenu's read that runs after another item's menu opened asks only its own item
+    #[test]
+    fn a_late_submenu_read_reaches_only_its_own_item() {
+        let opened = |item, opening, owner: &str, path: &str| Menu {
+            item: Some(item),
+            opening,
+            owner: owner.to_owned(),
+            path: path.to_owned(),
+            ..Menu::default()
+        };
+
+        let a = opened(1, 1, ":1.1", "/A").request(1).unwrap();
+        assert_eq!(opened(1, 1, ":1.1", "/A").request(2), None);
+
+        *Menu::write() = opened(2, 2, ":1.2", "/B");
+
+        let calls = Recorded::default();
+        fetch(&calls, &a, 42);
+
+        assert_eq!(
+            *calls.0.borrow(),
+            [("AboutToShow", String::from(":1.1"), String::from("/A"), 42)]
+        );
+        assert_eq!(*Menu::read(), opened(2, 2, ":1.2", "/B"));
+    }
 
     fn properties(entries: &[(&str, Value<'static>)]) -> Dict<'static, 'static> {
         let mut dict = Dict::new(&Signature::Str, &Signature::Variant);
