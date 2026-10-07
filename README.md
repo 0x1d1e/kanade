@@ -69,7 +69,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `status` | the config generation, the last reload error and the keys pending restart |
 | `doctor` | read-only diagnostics: Amane and niri versions, Wayland protocols, buses and sockets, the config, and what each Module on runs worse without, like a missing `pw-dump` or another notification daemon; works without a shell, exits 1 on a failure |
 
-`kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused or no shell, 2 not a verb, 3 not known whether it was done (niri took a screenshot request but did not answer, so the screenshot may still be saved; not worth repeating blindly).
+`kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused or no shell, 2 not a verb, 3 not known whether it was done: the shell, or niri for a screenshot, got the call but did not answer in time, so it may still be done; not worth repeating blindly.
 
 ## Configuration
 

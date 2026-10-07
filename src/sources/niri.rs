@@ -293,14 +293,25 @@ pub fn act(action: &str) -> io::Result<Acted> {
     }
 }
 
-// an error before niri has the whole request means it was not sent
+/*
+ * one `patience` for sending and answering both; an error before niri has the whole request means
+ * it was not sent
+ */
 fn exchange(stream: UnixStream, request: &str, patience: Duration) -> io::Result<Exchange> {
-    stream.set_read_timeout(Some(patience))?;
+    let deadline = Instant::now() + patience;
+
     stream.set_write_timeout(Some(patience))?;
     (&stream).write_all(format!("{request}\n").as_bytes())?;
 
     let mut reply = String::new();
-    let read = BufReader::new(stream).read_line(&mut reply);
+
+    // a timeout of zero is refused, so a request that took all the time waits a moment more
+    let left = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_millis(1));
+    let read = stream
+        .set_read_timeout(Some(left))
+        .and_then(|()| BufReader::new(stream).read_line(&mut reply));
 
     let unanswered = match read {
         Ok(0) => Some(io::Error::new(

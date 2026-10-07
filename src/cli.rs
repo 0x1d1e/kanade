@@ -141,7 +141,7 @@ const PATIENCE: Duration = Duration::from_secs(5);
 
 /*
  * `kanade <verb> [args]`: 2 for words that are no verb, 1 for a refusal or no shell to ask, 3 when
- * it is not known whether it was done
+ * it is not known whether it was done, as the shell or niri took it but did not answer
  */
 pub fn run(arguments: &[String]) -> ExitCode {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
@@ -202,28 +202,44 @@ pub fn call(arguments: &[String]) -> Result<Reply, String> {
     let stream = UnixStream::connect(ipc_socket())
         .map_err(|_| String::from("no shell is running; start one with `kanade`"))?;
 
-    let reply =
-        send(stream, &IpcCall::new(HANDLER, arguments)).map_err(|error| match error.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
-                String::from("the shell did not answer")
-            }
-            _ => format!("the shell closed the connection: {error}"),
-        })?;
-
-    Reply::decode(&reply).ok_or_else(|| String::from("the running Amane shell is not Kanade"))
+    send(stream, &IpcCall::new(HANDLER, arguments), PATIENCE)
 }
 
-fn send(mut stream: UnixStream, call: &IpcCall) -> io::Result<String> {
-    stream.set_read_timeout(Some(PATIENCE))?;
-    call.write(&mut stream)?;
+/*
+ * the shell's reply to `call`; one that is late or missing once the call is sent leaves unknown
+ * whether the shell did it, like a screenshot niri may already be saving
+ */
+fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Reply, String> {
+    let sent = stream
+        .set_read_timeout(Some(patience))
+        .and_then(|()| call.write(&mut stream))
+        // closing our side is how the shell knows the call is complete
+        .and_then(|()| stream.shutdown(Shutdown::Write));
 
-    // closing our side is how the shell knows the call is complete
-    stream.shutdown(Shutdown::Write)?;
+    sent.map_err(|error| format!("the shell closed the connection: {error}"))?;
 
     let mut reply = String::new();
-    stream.read_to_string(&mut reply)?;
+    let unanswered = match stream.read_to_string(&mut reply) {
+        Ok(_) if reply.is_empty() => Some(String::from("closed the connection without answering")),
+        Ok(_) => None,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            Some(format!("did not answer within {patience:?}"))
+        }
+        Err(error) => Some(format!("closed the connection: {error}")),
+    };
 
-    Ok(reply)
+    if let Some(why) = unanswered {
+        return Ok(Reply::Unknown(format!(
+            "the shell got the call, but {why}; it may still have done it"
+        )));
+    }
+
+    Reply::decode(&reply).ok_or_else(|| String::from("the running Amane shell is not Kanade"))
 }
 
 #[cfg(test)]
@@ -435,5 +451,59 @@ help",
 
         assert_eq!(Reply::decode("no handler named kanade"), None);
         assert_eq!(Reply::decode(""), None);
+    }
+
+    // the shell at the other end of a socket, answering `reply` after `delay`, or closing unanswered
+    fn sent(reply: Option<&str>, delay: Duration) -> Result<Reply, String> {
+        let (ours, mut theirs) = UnixStream::pair().expect("a socket pair");
+        let reply = reply.map(str::to_owned);
+
+        let shell = std::thread::spawn(move || {
+            let mut call = Vec::new();
+            theirs.read_to_end(&mut call).expect("the call");
+            std::thread::sleep(delay);
+
+            if let Some(reply) = reply {
+                // the caller may have stopped listening
+                let _ = io::Write::write_all(&mut theirs, reply.as_bytes());
+            }
+            call
+        });
+
+        let call = IpcCall::new(HANDLER, &[String::from("status")]);
+        let reply = send(ours, &call, Duration::from_millis(50));
+
+        assert!(!shell.join().expect("the shell").is_empty());
+        reply
+    }
+
+    #[test]
+    fn a_reply_is_the_shells_answer() {
+        assert_eq!(
+            sent(Some("ok\nkanade 0.1.0"), Duration::ZERO),
+            Ok(Reply::Done(String::from("kanade 0.1.0")))
+        );
+        assert_eq!(
+            sent(Some("no handler named kanade"), Duration::ZERO),
+            Err(String::from("the running Amane shell is not Kanade"))
+        );
+    }
+
+    // the shell may have done a call it answers late or never, so that is no failure
+    #[test]
+    fn a_late_or_missing_reply_is_unknown() {
+        assert_eq!(
+            sent(Some("ok\n"), Duration::from_millis(300)),
+            Ok(Reply::Unknown(String::from(
+                "the shell got the call, but did not answer within 50ms; it may still have done it"
+            )))
+        );
+        assert_eq!(
+            sent(None, Duration::ZERO),
+            Ok(Reply::Unknown(String::from(
+                "the shell got the call, but closed the connection without answering; it may \
+                 still have done it"
+            )))
+        );
     }
 }
