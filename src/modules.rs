@@ -14,8 +14,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, clipboard, media, network, niri, notifications, osd, pipewire,
-    power, privacy, system, timer, tray, wake,
+    audio, battery, bluetooth, capture, clipboard, media, network, niri, notifications, osd,
+    pipewire, power, privacy, system, timer, tray, wake,
 };
 use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
@@ -64,6 +64,9 @@ pub enum Provider {
 
     // a session bus name Kanade takes, which no other program may hold
     SessionName(&'static str),
+
+    // niri's IPC, which the Module cannot work without
+    Niri,
 }
 
 // what a source that waits on an announcer does without it (`sources::wake`)
@@ -127,12 +130,14 @@ pub const ALL: &[Module] = &[
             clock::spawn();
             shadow::prepare(shadow::ShadowStyle::island());
 
-            // Kanade's own niri stream, which `workspace`, `privacy`, `banners` and `osd` also read when on
+            // Kanade's own niri stream, which `workspace`, `privacy`, `banners`, `osd` and `capture`
+            // also read when on
             let posts = niri::Posts {
                 workspace: on("workspace"),
                 privacy: on("privacy"),
                 banners: on("banners"),
                 osd: on("osd"),
+                capture: on("capture"),
             };
             supervise::spawn("niri", move || niri::follow(posts));
 
@@ -542,6 +547,39 @@ pub const ALL: &[Module] = &[
                 Command::surface(Surface::Clipboard, arguments)
                     .map(Call::Island)
                     .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
+    // screenshots, by niri; its stream, which the core follows, says when each is saved
+    Module {
+        name: "capture",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Niri,
+                without: "no screenshot backend",
+            },
+            Need {
+                on: Provider::Program(clipboard::COPY),
+                without: "no copying a screenshot's path",
+            },
+            Need {
+                on: Provider::Program(capture::OPEN),
+                without: "no opening a screenshot",
+            },
+        ],
+        settings: &[],
+        verbs: &[Verb {
+            name: "capture",
+            usage: || String::from("capture screenshot area|window|output"),
+            parse: |arguments| match arguments {
+                ["screenshot", mode] => capture::Mode::parse(mode)
+                    .map(Call::Screenshot)
+                    .ok_or(Unparsed::Usage),
+                _ => Err(Unparsed::Usage),
             },
         }],
         start: |app| app,

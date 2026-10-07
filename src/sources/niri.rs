@@ -1,15 +1,17 @@
 //! Kanade's own niri EventStream (plan 3, 5.3): Amane's niri backend is private and tracks neither
 //! the overview nor casts. Hands the core a plain focused output and whether the overview is open,
-//! `workspace` the focused workspace, and `privacy` whether anything captures the screen.
+//! `workspace` the focused workspace, `privacy` whether anything captures the screen, and `capture`
+//! each screenshot niri saves. `ask` sends niri one request on a connection of its own.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use amane::Service;
 
+use super::capture;
 use super::json::Json;
 use super::privacy::Privacy;
 use super::workspace;
@@ -173,6 +175,15 @@ fn stream(cast: &Json) -> Option<u64> {
     cast.get("stream_id").and_then(Json::as_u64)
 }
 
+// where niri saved a screenshot; none for another event, or one it only put on the clipboard
+fn captured(event: &Json) -> Option<String> {
+    event
+        .get("ScreenshotCaptured")?
+        .get("path")?
+        .as_str()
+        .map(String::from)
+}
+
 // which Modules beside the core hear from niri; one that is off hears nothing
 #[derive(Debug, Clone, Copy)]
 pub struct Posts {
@@ -180,6 +191,7 @@ pub struct Posts {
     pub privacy: bool,
     pub banners: bool,
     pub osd: bool,
+    pub capture: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -194,13 +206,23 @@ pub fn follow(posts: Posts) {
             |before, seen| {
                 post(posts, before, seen);
             },
+            |path| {
+                if posts.capture {
+                    capture::captured(path);
+                }
+            },
         );
     });
 }
 
-fn run(stream: io::Result<impl BufRead>, posted: &mut Seen, mut post: impl FnMut(&Seen, &Seen)) {
+fn run(
+    stream: io::Result<impl BufRead>,
+    posted: &mut Seen,
+    mut post: impl FnMut(&Seen, &Seen),
+    mut shot: impl FnMut(String),
+) {
     let lost = match stream {
-        Ok(stream) => watch(stream, posted, &mut post),
+        Ok(stream) => watch(stream, posted, &mut post, &mut shot),
         Err(error) => error,
     };
 
@@ -214,20 +236,65 @@ fn run(stream: io::Result<impl BufRead>, posted: &mut Seen, mut post: impl FnMut
 }
 
 fn connect() -> io::Result<UnixStream> {
-    let path = env::var("NIRI_SOCKET").map_err(|_| io::Error::other("NIRI_SOCKET is not set"))?;
-
-    let mut stream = UnixStream::connect(path)?;
+    let mut stream = UnixStream::connect(socket()?)?;
 
     stream.write_all(b"\"EventStream\"\n")?;
 
     Ok(stream)
 }
 
+fn socket() -> io::Result<String> {
+    env::var("NIRI_SOCKET").map_err(|_| io::Error::other("NIRI_SOCKET is not set"))
+}
+
+// how long niri may take to answer `ask`
+const PATIENCE: Duration = Duration::from_secs(2);
+
+/*
+ * what niri answers `request`, a JSON request like `"Version"`, on a connection of its own; what
+ * it refuses is an error with its reason
+ */
+pub fn ask(request: &str) -> io::Result<Json> {
+    let mut stream = UnixStream::connect(socket()?)?;
+
+    stream.set_read_timeout(Some(PATIENCE))?;
+    stream.set_write_timeout(Some(PATIENCE))?;
+    stream.write_all(format!("{request}\n").as_bytes())?;
+
+    let mut reply = String::new();
+    BufReader::new(stream)
+        .read_line(&mut reply)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => io::Error::new(
+                error.kind(),
+                format!("no answer within {}s", PATIENCE.as_secs()),
+            ),
+            _ => error,
+        })?;
+
+    let unexpected = || io::Error::other(format!("unexpected reply: {}", reply.trim_end()));
+    let parsed = Json::parse(&reply).ok_or_else(unexpected)?;
+
+    if let Some(answer) = parsed.get("Ok") {
+        return Ok(answer.clone());
+    }
+
+    Err(parsed
+        .get("Err")
+        .and_then(Json::as_str)
+        .map_or_else(unexpected, |refused| io::Error::other(refused.to_owned())))
+}
+
 /*
  * follows niri until the stream ends, posting what changes as it was and is now, so the stream of
  * window events wakes nothing; returns why it ended
  */
-fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &Seen)) -> io::Error {
+fn watch(
+    lines: impl BufRead,
+    posted: &mut Seen,
+    post: &mut impl FnMut(&Seen, &Seen),
+    shot: &mut impl FnMut(String),
+) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Niri::default();
 
@@ -250,6 +317,10 @@ fn watch(lines: impl BufRead, posted: &mut Seen, post: &mut impl FnMut(&Seen, &S
             eprintln!("kanade: skipped a niri event that is not JSON: {line}");
             continue;
         };
+
+        if let Some(path) = captured(&event) {
+            shot(path);
+        }
 
         niri.apply(&event);
 
@@ -329,10 +400,15 @@ mod tests {
         let mut posted = Seen::default();
 
         let text = lines.join("\n");
-        let lost = watch(text.as_bytes(), &mut posted, &mut |before, seen| {
-            assert_eq!(before, posts.last().unwrap_or(&Seen::default()));
-            posts.push(seen.clone())
-        });
+        let lost = watch(
+            text.as_bytes(),
+            &mut posted,
+            &mut |before, seen| {
+                assert_eq!(before, posts.last().unwrap_or(&Seen::default()));
+                posts.push(seen.clone())
+            },
+            &mut |path| panic!("no screenshot was taken, yet {path}"),
+        );
 
         assert_eq!(posts.last().cloned().unwrap_or_default(), posted);
 
@@ -490,10 +566,34 @@ mod tests {
             "not json",
             &activated(9, true),
             r#"{"CastsChanged":{"casts":[]}}"#,
+            r#"{"ScreenshotCaptured":{"path":null}}"#,
         ]);
 
         // workspace 9 is unknown, so its output is too, which is the default
         assert_eq!(posts, []);
+    }
+
+    // one only put on the clipboard has no file to show
+    #[test]
+    fn each_screenshot_saved_is_heard_once() {
+        let text = [
+            OK,
+            r#"{"ScreenshotCaptured":{"path":"/home/k/Pictures/Screenshots/a.png"}}"#,
+            r#"{"ScreenshotCaptured":{"path":null}}"#,
+            &overview(true),
+            r#"{"ScreenshotCaptured":{"path":"/tmp/b.png"}}"#,
+        ]
+        .join("\n");
+        let mut shots = Vec::new();
+
+        watch(
+            text.as_bytes(),
+            &mut Seen::default(),
+            &mut |_, _| {},
+            &mut |path| shots.push(path),
+        );
+
+        assert_eq!(shots, ["/home/k/Pictures/Screenshots/a.png", "/tmp/b.png"]);
     }
 
     fn cast(stream: u64) -> String {
@@ -563,9 +663,12 @@ mod tests {
         let text = [OK, WORKSPACES, &overview(true), &cast(1)].join("\n");
         let mut posts = Vec::new();
 
-        run(Ok(text.as_bytes()), &mut Seen::default(), |_, seen| {
-            posts.push(seen.clone())
-        });
+        run(
+            Ok(text.as_bytes()),
+            &mut Seen::default(),
+            |_, seen| posts.push(seen.clone()),
+            drop,
+        );
 
         // nobody can say a cast still runs, so its capture goes too
         assert_eq!(posts.last(), Some(&Seen::default()));
@@ -578,10 +681,14 @@ mod tests {
             Err::<&[u8], _>(io::ErrorKind::NotFound.into()),
             &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
+            drop,
         );
-        run(Ok(OK.as_bytes()), &mut Seen::default(), |_, seen| {
-            posts.push(seen.clone())
-        });
+        run(
+            Ok(OK.as_bytes()),
+            &mut Seen::default(),
+            |_, seen| posts.push(seen.clone()),
+            drop,
+        );
 
         assert_eq!(posts, []);
     }

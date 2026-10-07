@@ -16,7 +16,7 @@ use amane::{IpcCall, ipc_socket};
 use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
-use crate::sources::timer;
+use crate::sources::{capture, timer};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -46,6 +46,7 @@ pub enum Call {
     Timer(timer::Request),
     ClearNotifications,
     ClearClipboard,
+    Screenshot(capture::Mode),
     Reload,
     Validate,
     Status,
@@ -281,6 +282,11 @@ mod tests {
             Ok(("notifications", Call::ClearNotifications))
         );
 
+        assert_eq!(
+            parsed(&["capture", "screenshot", "window"]),
+            Ok(("capture", Call::Screenshot(capture::Mode::Window)))
+        );
+
         // likewise the clipboard history and its Surface
         assert_eq!(
             parsed(&["clipboard", "clear"]),
@@ -330,6 +336,10 @@ mod tests {
             &["clipboard"],
             &["clipboard", "clear", "all"],
             &["clipboard", "delete"],
+            &["capture"],
+            &["capture", "screenshot"],
+            &["capture", "screenshot", "all"],
+            &["capture", "record", "area"],
             &["debug"],
             &["doctor"],
             &["help"],
@@ -360,6 +370,7 @@ clipboard clear
 clipboard open|close|toggle
 controls open|close|toggle
 launcher open|close|toggle
+capture screenshot area|window|output
 doctor
 help",
                 Command::debug_usage()

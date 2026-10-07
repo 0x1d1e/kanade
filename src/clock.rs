@@ -167,10 +167,7 @@ fn follow(timer: &mut File) {
 pub fn now(hours: Hours) -> String {
     drop(WallClock::read());
 
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let seconds = c_long::try_from(seconds).unwrap_or(c_long::MAX);
+    let seconds = seconds();
 
     let mut armed = ARMED.lock().unwrap_or_else(PoisonError::into_inner);
 
@@ -194,6 +191,35 @@ pub fn now(hours: Hours) -> String {
     }
 
     read(local.tm_hour, local.tm_min, hours)
+}
+
+// the local date and time now, like "2026-10-07 15-36-38", for a file name
+pub fn stamp() -> String {
+    let seconds = seconds();
+
+    // SAFETY: plain call
+    unsafe { tzset() };
+
+    match local(seconds) {
+        Some(local) => format!(
+            "{:04}-{:02}-{:02} {:02}-{:02}-{:02}",
+            local.tm_year + 1900,
+            local.tm_mon + 1,
+            local.tm_mday,
+            local.tm_hour,
+            local.tm_min,
+            local.tm_sec
+        ),
+        None => seconds.to_string(),
+    }
+}
+
+fn seconds() -> c_long {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+
+    c_long::try_from(seconds).unwrap_or(c_long::MAX)
 }
 
 fn local(seconds: c_long) -> Option<Tm> {
@@ -287,6 +313,17 @@ mod tests {
         assert_eq!(c_long::from(tm.tm_sec), seconds % 60);
         assert_eq!(tm.tm_gmtoff % 60, 0);
         assert!((0..24).contains(&tm.tm_hour));
+    }
+
+    #[test]
+    fn a_stamp_is_a_date_and_a_time() {
+        let stamp = stamp();
+        let shape: String = stamp
+            .chars()
+            .map(|char| if char.is_ascii_digit() { '0' } else { char })
+            .collect();
+
+        assert_eq!(shape, "0000-00-00 00-00-00", "{stamp}");
     }
 
     #[test]
