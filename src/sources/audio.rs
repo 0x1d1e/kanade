@@ -22,7 +22,8 @@ pub struct Mixer {
     // speakers and headphones, by name
     pub outputs: Vec<Device>,
 
-    // microphones, by name
+    // microphones, by name; a device that does both, like an audio interface, shows in each with
+    // the same Node
     pub inputs: Vec<Device>,
 
     // by app, those playing first
@@ -91,6 +92,7 @@ const DEFAULT_INPUT: &str = "default.audio.source";
 enum Role {
     Output,
     Input,
+    Duplex,
     Playback,
     Recording,
 }
@@ -100,6 +102,7 @@ impl Role {
         match class {
             "Audio/Sink" => Some(Role::Output),
             "Audio/Source" | "Audio/Source/Virtual" => Some(Role::Input),
+            "Audio/Duplex" => Some(Role::Duplex),
             "Stream/Output/Audio" => Some(Role::Playback),
             "Stream/Input/Audio" => Some(Role::Recording),
             _ => None,
@@ -127,10 +130,12 @@ struct Entry {
 struct Graph {
     nodes: HashMap<u64, Entry>,
 
-    // the default devices' metadata, once known, whose prints carry only what changed
+    // the default devices' metadata, once known; its first print has every key, later ones only
+    // the keys set, a removed key not at all, so after those it is read again whole
     defaults: Option<u64>,
     output: Option<String>,
     input: Option<String>,
+    reread: bool,
 }
 
 impl Graph {
@@ -159,25 +164,50 @@ impl Graph {
                 None => drop(self.nodes.remove(&id)),
             },
             Some(METADATA) if metadata_name(object.0) == Some(DEFAULTS) => {
+                let whole = self.defaults != Some(id);
+
                 self.defaults = Some(id);
-
-                let entries = object.0.get("metadata").and_then(Json::as_array);
-
-                for entry in entries.unwrap_or_default() {
-                    if entry.get("subject").and_then(Json::as_u64) != Some(0) {
-                        continue;
-                    }
-
-                    let slot = match entry.get("key").and_then(Json::as_str) {
-                        Some(DEFAULT_OUTPUT) => &mut self.output,
-                        Some(DEFAULT_INPUT) => &mut self.input,
-                        _ => continue,
-                    };
-
-                    *slot = entry.get("value").and_then(default_name);
-                }
+                self.reread |= !whole;
+                self.set_defaults(object.0, whole);
             }
             _ => {}
+        }
+    }
+
+    // the defaults' metadata as a one-off pw-dump of it prints it, whole; none once it is gone,
+    // whose removal is still to come
+    fn reread_defaults(&mut self, text: &str) {
+        pipewire::prints(text.as_bytes(), |objects| {
+            for object in objects {
+                let metadata = Object(object);
+
+                if metadata.id().is_some() && metadata.id() == self.defaults {
+                    self.set_defaults(object, true);
+                }
+            }
+        });
+    }
+
+    fn set_defaults(&mut self, metadata: &Json, whole: bool) {
+        if whole {
+            self.output = None;
+            self.input = None;
+        }
+
+        let entries = metadata.get("metadata").and_then(Json::as_array);
+
+        for entry in entries.unwrap_or_default() {
+            if entry.get("subject").and_then(Json::as_u64) != Some(0) {
+                continue;
+            }
+
+            let slot = match entry.get("key").and_then(Json::as_str) {
+                Some(DEFAULT_OUTPUT) => &mut self.output,
+                Some(DEFAULT_INPUT) => &mut self.input,
+                _ => continue,
+            };
+
+            *slot = entry.get("value").and_then(default_name);
         }
     }
 
@@ -186,7 +216,7 @@ impl Graph {
             let mut devices: Vec<_> = self
                 .nodes
                 .iter()
-                .filter(|(_, entry)| entry.role == role)
+                .filter(|(_, entry)| entry.role == role || entry.role == Role::Duplex)
                 .map(|(&id, entry)| Device {
                     node: Node(id),
                     name: entry.label.clone(),
@@ -233,7 +263,7 @@ fn entry(object: &Object) -> Option<Entry> {
 
     let name = object.prop("node.name").unwrap_or_default().to_string();
     let label = match role {
-        Role::Output | Role::Input => object.prop("node.description"),
+        Role::Output | Role::Input | Role::Duplex => object.prop("node.description"),
         Role::Playback | Role::Recording => object.prop("application.name"),
     };
     let label = label.filter(|label| !label.is_empty()).unwrap_or(&name);
@@ -313,7 +343,7 @@ pub fn follow() {
     let stop = wake::Stop::default();
 
     let error = wake::run(DUMP, pipewire::MONITOR, &stop, |output| {
-        let lost = watch(output, &mut shown, &mut show);
+        let lost = watch(output, &mut reread, &mut shown, &mut show);
 
         // nobody can say any more what plays
         if shown != Mixer::default() {
@@ -333,14 +363,31 @@ pub fn follow() {
     supervise::stopped("audio", why);
 }
 
-// follows pw-dump until its output ends, writing the Mixer when it changes, so the graph changing
-// otherwise, like a link or a client, writes nothing; returns why it ended
-fn watch(lines: impl BufRead, shown: &mut Mixer, show: &mut impl FnMut(&Mixer)) -> io::Error {
+/*
+ * follows pw-dump until its output ends, writing the Mixer when it changes, so the graph changing
+ * otherwise, like a link or a client, writes nothing; returns why it ended. `reread` prints one
+ * object of the graph whole
+ */
+fn watch(
+    lines: impl BufRead,
+    reread: &mut impl FnMut(u64) -> Result<String, String>,
+    shown: &mut Mixer,
+    show: &mut impl FnMut(&Mixer),
+) -> io::Error {
     let mut graph = Graph::default();
 
     pipewire::prints(lines, |objects| {
         for object in objects {
             graph.apply(object);
+        }
+
+        if std::mem::take(&mut graph.reread)
+            && let Some(defaults) = graph.defaults
+        {
+            match reread(defaults) {
+                Ok(text) => graph.reread_defaults(&text),
+                Err(why) => eprintln!("kanade: default devices may be stale: {why}"),
+            }
         }
 
         let mixer = graph.mixer();
@@ -350,6 +397,11 @@ fn watch(lines: impl BufRead, shown: &mut Mixer, show: &mut impl FnMut(&Mixer)) 
             *shown = mixer;
         }
     })
+}
+
+// the defaults' metadata whole, which waits for pw-dump on the follower's thread
+fn reread(id: u64) -> Result<String, String> {
+    wake::query(DUMP, &["--no-colors", &id.to_string()])
 }
 
 fn show(mixer: &Mixer) {
@@ -487,13 +539,18 @@ mod tests {
         ])
     }
 
-    // what each print wrote
-    fn posts(prints: &[String]) -> Vec<Mixer> {
+    // what each print wrote, reading the defaults' metadata again as `whole` prints it
+    fn rereading(prints: &[String], whole: Result<String, String>) -> Vec<Mixer> {
         let mut posts = Vec::new();
         let mut shown = Mixer::default();
 
+        let mut reread = |id| {
+            assert_eq!(id, DEFAULTS_ID);
+            whole.clone()
+        };
+
         let text = prints.concat();
-        let lost = watch(text.as_bytes(), &mut shown, &mut |mixer| {
+        let lost = watch(text.as_bytes(), &mut reread, &mut shown, &mut |mixer| {
             posts.push(mixer.clone())
         });
 
@@ -501,6 +558,19 @@ mod tests {
         assert_eq!(posts.last().cloned().unwrap_or_default(), shown);
 
         posts
+    }
+
+    // what each print wrote, where nothing reads the defaults' metadata again
+    fn posts(prints: &[String]) -> Vec<Mixer> {
+        rereading(prints, Err("not reread".into()))
+    }
+
+    fn default_nodes(devices: &[Device]) -> Vec<Node> {
+        devices
+            .iter()
+            .filter(|device| device.default)
+            .map(|device| device.node)
+            .collect()
     }
 
     fn level(volume: u8, muted: bool) -> Level {
@@ -665,16 +735,71 @@ mod tests {
         ]);
 
         let mixer = posts.last().unwrap();
-        let defaults = |devices: &[Device]| {
-            devices
-                .iter()
-                .filter(|device| device.default)
-                .map(|device| device.node)
-                .collect::<Vec<_>>()
-        };
 
-        assert_eq!(defaults(&mixer.outputs), vec![Node(SPEAKER)]);
-        assert_eq!(defaults(&mixer.inputs), vec![Node(MICROPHONE)]);
+        assert_eq!(default_nodes(&mixer.outputs), vec![Node(SPEAKER)]);
+        assert_eq!(default_nodes(&mixer.inputs), vec![Node(MICROPHONE)]);
+    }
+
+    // pw-dump prints a removed key as nothing, so only reading the metadata again tells
+    #[test]
+    fn a_removed_default_is_read_again_and_forgotten() {
+        let whole = print(&[defaults(&[(DEFAULT_INPUT, "alsa_input.analog")])]);
+        let posts = rereading(&[machine(), print(&[defaults(&[])])], Ok(whole));
+
+        let mixer = posts.last().unwrap();
+
+        assert_eq!(default_nodes(&mixer.outputs), vec![]);
+        assert_eq!(default_nodes(&mixer.inputs), vec![Node(MICROPHONE)]);
+    }
+
+    #[test]
+    fn the_first_print_of_the_defaults_is_whole() {
+        let whole = print(&[defaults(&[])]);
+        let posts = rereading(&[machine()], Ok(whole));
+
+        assert_eq!(
+            default_nodes(&posts.last().unwrap().outputs),
+            vec![Node(HEADPHONES)]
+        );
+    }
+
+    #[test]
+    fn the_defaults_gone_before_their_reread_stay_until_their_removal() {
+        let posts = rereading(
+            &[
+                machine(),
+                print(&[defaults(&[])]),
+                print(&[removed(DEFAULTS_ID)]),
+            ],
+            Ok(print(&[])),
+        );
+
+        assert_eq!(posts.len(), 2);
+        assert_eq!(default_nodes(&posts[0].outputs), vec![Node(HEADPHONES)]);
+        assert_eq!(default_nodes(&posts[1].outputs), vec![]);
+    }
+
+    // one device that both plays and records, the default of both or either
+    #[test]
+    fn a_duplex_device_is_an_output_and_an_input() {
+        let posts = posts(&[
+            machine(),
+            print(&[device(
+                60,
+                "Audio/Duplex",
+                "pro_audio.duplex",
+                "Interface",
+                "1.0",
+            )]),
+            print(&[defaults(&[(DEFAULT_INPUT, "pro_audio.duplex")])]),
+        ]);
+
+        let mixer = posts.last().unwrap();
+        let interface = device_of(60, "Interface", false, 100);
+
+        assert!(mixer.outputs.contains(&interface));
+        assert_eq!(default_nodes(&mixer.inputs), vec![Node(60)]);
+        assert_eq!(default_nodes(&mixer.outputs), vec![Node(HEADPHONES)]);
     }
 
     #[test]

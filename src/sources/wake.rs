@@ -152,12 +152,17 @@ fn guarded(
     expect(dead_code, reason = "the Audio sub-surface acts, #133")
 )]
 pub fn act(program: &str, args: &[&str]) -> Result<(), String> {
+    query(program, args).map(drop)
+}
+
+// an action that reads one thing, as `act`, and hands back what it printed on stdout
+pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
     let command = [program, args.join(" ").as_str()].join(" ");
 
     let child = guarded(program, args, |command| {
         command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
     });
@@ -167,7 +172,8 @@ pub fn act(program: &str, args: &[&str]) -> Result<(), String> {
         .map_err(|error| format!("cannot run `{command}`: {error}"))?;
 
     if output.status.success() {
-        return Ok(());
+        return String::from_utf8(output.stdout)
+            .map_err(|_| format!("`{command}` printed something that is not text"));
     }
 
     if output.status.code() == Some(NOT_FOUND) {
@@ -442,6 +448,11 @@ mod tests {
             "{failed}"
         );
         assert!(failed.ends_with(": nope"), "{failed}");
+    }
+
+    #[test]
+    fn a_query_hands_back_what_it_printed() {
+        assert_eq!(query("echo", &["graph"]), Ok("graph\n".into()));
     }
 
     #[test]
