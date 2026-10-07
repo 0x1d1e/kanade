@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 
 use amane::{Argument, Bus, Service, Value};
@@ -26,6 +27,7 @@ const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
 const PROFILE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
+const ATTEMPT: &str = "org.freedesktop.NetworkManager.Connection.Active";
 
 const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 const DEVICES: &str = "/org/freedesktop/NetworkManager/Devices/";
@@ -41,6 +43,10 @@ const ACTIVATED_DEVICE: f64 = 100.0;
 // a device failing to come up, and why: it had no password, or a wrong one
 const FAILED: f64 = 120.0;
 const NO_SECRETS: f64 = 7.0;
+
+// an active connection's states once it is up, and once it is over; a gone one reads as nothing
+const UP: f64 = 2.0;
+const OVER: f64 = 4.0;
 
 // an access point's flags: one with privacy, and the ways its WPA and RSN flags say it keys
 const PRIVACY: u32 = 0x1;
@@ -232,8 +238,11 @@ impl Join {
 // the visit the sub-surface shows in, 0 while it does not
 static WATCHED: AtomicU64 = AtomicU64::new(0);
 
-// the last join or disconnect, so an older join that ends after it says nothing
-static ASKED: AtomicU64 = AtomicU64::new(0);
+/*
+ * the last join or disconnect, so an older join that ends after it says nothing. Held while its
+ * outcome is written, so a newer one cannot be asked between checking and writing
+ */
+static ASKED: Mutex<u64> = Mutex::new(0);
 
 /*
  * the sub-surface opening in `visit`: the networks are read now and on every change from here on,
@@ -499,7 +508,7 @@ fn networks(
  * is, otherwise one is made in memory and saved once the network takes it, replacing older ones
  */
 pub fn join(device: &str, network: &Network, secret: Option<Secret>) {
-    let asked = ASKED.fetch_add(1, Ordering::Relaxed) + 1;
+    let asked = ask();
 
     let ssid = network.ssid.clone();
     let device = device.to_owned();
@@ -571,17 +580,27 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
         }
     };
 
+    /*
+     * the device's changes may be another join's, one that took the device over, so only this
+     * join's own active connection says whether it is up or over; the device says why it failed
+     */
     let ended = if active.is_empty() {
         Err(Failure::Other)
     } else {
-        let mut begun = false;
+        let mut failure = None;
 
         changes
             .find_map(|signal| {
                 let state = signal.arguments().first()?.number();
                 let reason = signal.arguments().get(2)?.number();
 
-                (signal.path() == device).then(|| ended(&mut begun, state, reason))?
+                if signal.path() != device {
+                    return None;
+                }
+
+                let attempt = bus.property(NAME, &active, ATTEMPT, "State").number();
+
+                ended(&mut failure, state, reason, attempt)
             })
             .unwrap_or(Err(Failure::Other))
     };
@@ -605,24 +624,30 @@ fn joined(device: &str, network: &Network, secret: Option<Secret>) -> Result<(),
 }
 
 /*
- * how the device's state change ends a join, none while it is still on its way. Changes before it
- * starts preparing are the network it leaves going down
+ * how a change of the device, in `state` for `reason`, ends a join whose active connection is in
+ * `attempt`: once that is up or over, none while it is still on its way. `failure` keeps why the
+ * device last failed since it began preparing, which may be said before the join is over
  */
-fn ended(begun: &mut bool, state: f64, reason: f64) -> Option<Result<(), Failure>> {
-    *begun |= state == PREPARING;
-
-    if !*begun {
-        None
-    } else if state == ACTIVATED_DEVICE {
-        Some(Ok(()))
+fn ended(
+    failure: &mut Option<f64>,
+    state: f64,
+    reason: f64,
+    attempt: f64,
+) -> Option<Result<(), Failure>> {
+    if state == PREPARING {
+        *failure = None;
     } else if state == FAILED {
-        Some(Err(if reason == NO_SECRETS {
+        *failure = Some(reason);
+    }
+
+    if attempt == UP {
+        Some(Ok(()))
+    } else if attempt == OVER || attempt == 0.0 {
+        Some(Err(if *failure == Some(NO_SECRETS) {
             Failure::WrongPassword
         } else {
             Failure::Other
         }))
-    } else if state < PREPARING {
-        Some(Err(Failure::Other))
     } else {
         None
     }
@@ -664,7 +689,7 @@ fn settings(network: &Network, secret: Option<&Secret>) -> Argument {
 
 // leaves the network the device is on; NetworkManager joins nothing on its own until asked to
 pub fn disconnect(device: &str) {
-    let asked = ASKED.fetch_add(1, Ordering::Relaxed) + 1;
+    let asked = ask();
     let device = device.to_owned();
 
     set(asked, Join::Idle);
@@ -674,9 +699,18 @@ pub fn disconnect(device: &str) {
     });
 }
 
+// a join or disconnect asked, newer than any before
+fn ask() -> u64 {
+    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    *asked += 1;
+    *asked
+}
+
 // the outcome of the last thing asked, dropped when something newer was asked since
 fn set(asked: u64, join: Join) {
-    if ASKED.load(Ordering::Relaxed) == asked && *Join::read() != join {
+    let last = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+    if *last == asked && *Join::read() != join {
         *Join::write() = join;
     }
 }
@@ -842,22 +876,53 @@ mod tests {
     }
 
     #[test]
-    fn a_join_ends_up_or_down_and_says_why() {
-        // the network it leaves goes down first, which is not the join's end
-        let mut begun = false;
-        assert_eq!(ended(&mut begun, 110.0, 0.0), None);
-        assert_eq!(ended(&mut begun, 30.0, 0.0), None);
-        assert_eq!(ended(&mut begun, PREPARING, 0.0), None);
-        assert_eq!(ended(&mut begun, 50.0, 0.0), None);
-        assert_eq!(ended(&mut begun, ACTIVATED_DEVICE, 0.0), Some(Ok(())));
+    fn a_join_ends_when_its_own_attempt_is_up_or_over_and_says_why() {
+        const ON_ITS_WAY: f64 = 1.0;
 
-        let mut begun = true;
+        // the network it leaves goes down first, which is not the join's end
+        let mut failure = None;
+        assert_eq!(ended(&mut failure, 110.0, 0.0, ON_ITS_WAY), None);
+        assert_eq!(ended(&mut failure, 30.0, 0.0, ON_ITS_WAY), None);
+        assert_eq!(ended(&mut failure, PREPARING, 0.0, ON_ITS_WAY), None);
+        assert_eq!(ended(&mut failure, ACTIVATED_DEVICE, 0.0, UP), Some(Ok(())));
+
+        // a wrong password: the device fails, then the attempt is over and later gone
+        let mut failure = None;
+        assert_eq!(ended(&mut failure, PREPARING, 0.0, ON_ITS_WAY), None);
+        assert_eq!(ended(&mut failure, FAILED, NO_SECRETS, ON_ITS_WAY), None);
         assert_eq!(
-            ended(&mut begun, FAILED, NO_SECRETS),
+            ended(&mut failure, 30.0, 0.0, OVER),
             Some(Err(Failure::WrongPassword))
         );
-        assert_eq!(ended(&mut begun, FAILED, 8.0), Some(Err(Failure::Other)));
-        assert_eq!(ended(&mut begun, 30.0, 0.0), Some(Err(Failure::Other)));
+        assert_eq!(
+            ended(&mut failure, 30.0, 0.0, 0.0),
+            Some(Err(Failure::WrongPassword))
+        );
+
+        // a failure from before it began preparing is not this join's
+        let mut failure = None;
+        assert_eq!(ended(&mut failure, FAILED, NO_SECRETS, ON_ITS_WAY), None);
+        assert_eq!(ended(&mut failure, PREPARING, 0.0, ON_ITS_WAY), None);
+        assert_eq!(
+            ended(&mut failure, FAILED, 8.0, OVER),
+            Some(Err(Failure::Other))
+        );
+    }
+
+    // another join took the device over and came up: that is not this one's success
+    #[test]
+    fn a_join_taken_over_by_another_fails_even_as_the_device_comes_up() {
+        let mut failure = None;
+        assert_eq!(
+            ended(&mut failure, PREPARING, 0.0, OVER),
+            Some(Err(Failure::Other))
+        );
+
+        let mut failure = None;
+        assert_eq!(
+            ended(&mut failure, ACTIVATED_DEVICE, 0.0, 0.0),
+            Some(Err(Failure::Other))
+        );
     }
 
     #[test]
