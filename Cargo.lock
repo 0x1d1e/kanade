@@ -839,12 +839,14 @@ name = "kanade"
 version = "0.1.0"
 dependencies = [
  "amane",
+ "enumflags2",
  "inotify",
  "proc-macro2",
  "serde",
  "syn 2.0.119",
  "toml",
  "wayland-client",
+ "zbus",
 ]
 
 [[package]]

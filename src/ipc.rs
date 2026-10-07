@@ -12,6 +12,7 @@ use crate::modules;
 use crate::reload::{self, Outcome};
 use crate::sources::notifications::{self, Daemon};
 use crate::sources::timer;
+use crate::sources::tray::Tray;
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -64,6 +65,9 @@ fn status() -> Vec<String> {
     // a Module that is off reads no Service
     if modules::on("notifications") {
         lines.push(Daemon::read().status());
+    }
+    if modules::on("tray") {
+        lines.push(Tray::read().status());
     }
 
     lines.extend(supervise::status());

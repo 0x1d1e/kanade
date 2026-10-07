@@ -9,7 +9,7 @@ Status: accepted (design, roadmap 9 Shell essentials). Replaces "Extend Amane fi
 | Capability | Module | Amane at the pin |
 |---|---|---|
 | Output and input devices, per-app streams | `audio` (#132) | `Audio`: volume and mute of the default sink and source only |
-| StatusNotifierItem host | `tray` (#134) | no tray. `Bus` can call, read and set properties, own a name, serve methods, match and emit signals |
+| StatusNotifierItem host | `tray` (#134) | no tray. `Bus` can call, read and set properties, own a name, serve methods, match and emit signals, but a served method does not learn its caller |
 | Clipboard history | `clipboard` (#136) | none |
 | Idle inhibit | `caffeine` (#141) | none. `Bus` drops UNIX fds, so it cannot hold the fd logind `Inhibit` returns |
 
@@ -19,9 +19,9 @@ Amane is third party (ADR 0004). A change there lands on its schedule, and Kanad
 
 When the pinned Amane lacks a capability a Module needs, Kanade builds an adapter for it and does not wait for Amane. Prefer, in order:
 
-1. **D-Bus through Amane's `Bus`**, when the service speaks D-Bus and `Bus` carries what it needs. The tray's watcher and host.
+1. **D-Bus through Amane's `Bus`**, when the service speaks D-Bus and `Bus` carries what it needs.
 2. **An external tool** from the package that owns the capability: `pw-dump`, `pw-metadata` and `wpctl` for audio, `wl-paste` and `wl-copy` for the clipboard, `systemd-inhibit` for idle inhibit.
-3. **A normal Rust crate**, when neither of the above is sound and the crate deepens Kanade. Never a Wayland or render crate.
+3. **A normal Rust crate**, when neither of the above is sound and the crate deepens Kanade. Never a Wayland or render crate. The tray's watcher and host use zbus, which Amane already builds: an item that registers with only its object path, as libappindicator's do, lives at its caller's bus name, which `Bus` does not give.
 
 Every adapter keeps these rules:
 

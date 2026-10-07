@@ -17,6 +17,7 @@ pub mod power;
 pub mod privacy;
 pub mod system;
 pub mod timer;
+pub mod tray;
 pub mod wake;
 pub mod wifi;
 pub mod workspace;

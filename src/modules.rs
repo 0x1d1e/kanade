@@ -15,7 +15,7 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
     audio, battery, bluetooth, media, network, niri, notifications, osd, pipewire, power, privacy,
-    system, timer, wake,
+    system, timer, tray, wake,
 };
 use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
@@ -383,6 +383,20 @@ pub const ALL: &[Module] = &[
         verbs: &[],
         start: |app| {
             system::spawn();
+            app
+        },
+    },
+    // the StatusNotifierItems apps show; their view is #135
+    Module {
+        name: "tray",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[],
+        start: |app| {
+            tray::follow();
             app
         },
     },
