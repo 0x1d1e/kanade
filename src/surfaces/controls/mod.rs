@@ -678,17 +678,25 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let focus = Focus::read().of(visit, held);
+    let grid = focus.grid(rows(focus.sub.as_ref()));
 
     // read apart, as typing writes it
     let pin = matches!(*Prompt::read(), Prompt::Pin { .. });
 
-    if focus.sub == Some(Subsurface::Bluetooth) && pin && typed_pin(key) {
+    if focus.sub == Some(Subsurface::Bluetooth)
+        && pin
+        && let Some(typed) = typed_pin(key, focus.ring(&grid).is_some())
+    {
+        match typed {
+            Pin::Letter(letter) => bluez::type_pin(letter),
+            Pin::Pair => bluez::confirm(),
+        }
+
         IslandService::write().attend(monitor, Instant::now());
 
         return true;
     }
 
-    let grid = focus.grid(rows(focus.sub.as_ref()));
     let focus = settled(focus, &grid);
     let Some((focus, act)) = focus.step(key, &grid) else {
         return false;
@@ -706,16 +714,25 @@ pub fn key(monitor: &str, key: Key) -> bool {
     true
 }
 
-// a key on the Pin prompt: typing the PIN, or pairing with it; false for one it does not take
-fn typed_pin(key: Key) -> bool {
-    match key {
-        Key::Character(letter) => bluez::type_pin(Some(letter)),
-        Key::Backspace => bluez::type_pin(None),
-        Key::Enter => bluez::confirm(),
-        _ => return false,
-    }
+// what a key on the Pin prompt does beyond the ring
+#[derive(Debug, PartialEq)]
+enum Pin {
+    // a letter typed, or the last erased for none
+    Letter(Option<char>),
+    Pair,
+}
 
-    true
+/*
+ * a key on the Pin prompt, none for one the ring takes. Enter pairs only while the ring hides, so
+ * it never does other than the button the ring is on
+ */
+fn typed_pin(key: Key, ringed: bool) -> Option<Pin> {
+    match key {
+        Key::Character(letter) => Some(Pin::Letter(Some(letter))),
+        Key::Backspace => Some(Pin::Letter(None)),
+        Key::Enter if !ringed => Some(Pin::Pair),
+        _ => None,
+    }
 }
 
 // a target clicked: the ring hides, since the pointer is what moves now
@@ -979,6 +996,37 @@ fn set(focus: Focus) {
 mod tests {
     use super::*;
     use crate::sources::bluetooth::Device;
+
+    // with the ring on Cancel, Enter cancels the PIN typed rather than pairing with it
+    #[test]
+    fn enter_on_the_pin_prompt_presses_what_the_ring_is_on() {
+        let prompt = Prompt::Pin {
+            device: "/buds".into(),
+            pin: "1234".into(),
+        };
+        let adapter = Adapter {
+            radio: Radio::On,
+            ..Adapter::default()
+        };
+        let focus = Focus::default().of(1, true).enter(Subsurface::Bluetooth);
+        let grid = focus.grid(bluetooth::rows(&adapter, &prompt));
+
+        let (focus, _) = focus.step(Key::Right, &grid).unwrap();
+        let (focus, _) = focus.step(Key::Left, &grid).unwrap();
+        assert_eq!(focus.ring(&grid), Some(At::Cancel));
+
+        assert_eq!(typed_pin(Key::Enter, focus.ring(&grid).is_some()), None);
+        let (_, act) = focus.step(Key::Enter, &grid).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Cancel)));
+
+        // the ring hidden, Enter pairs, and typing goes to the PIN either way
+        assert_eq!(typed_pin(Key::Enter, false), Some(Pin::Pair));
+        assert_eq!(
+            typed_pin(Key::Character('5'), true),
+            Some(Pin::Letter(Some('5')))
+        );
+        assert_eq!(typed_pin(Key::Space, true), None);
+    }
 
     #[test]
     fn the_surface_is_as_tall_as_its_rows() {

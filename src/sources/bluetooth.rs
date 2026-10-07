@@ -81,12 +81,19 @@ pub enum Task {
     Forget,
 }
 
-// the last thing asked of a device from here, until another
+/*
+ * the last thing asked of a device from here, until another. What is under way, `Doing` or
+ * `Cancelling`, lasts until the thread doing it ends, and only one is at a time
+ */
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Request {
     #[default]
     Idle,
     Doing(String, Task),
+
+    // a pairing cancelled, still running until BlueZ gives it up, which says nothing of itself
+    Cancelling,
+
     Failed(String, Task),
 }
 
@@ -99,9 +106,18 @@ impl Service for Request {
 }
 
 impl Request {
-    // something is being done to a device, so nothing else may be asked until it ends
+    // something is under way, so nothing else may be asked until it ends
     pub fn busy(&self) -> bool {
-        matches!(self, Request::Doing(..))
+        matches!(self, Request::Doing(..) | Request::Cancelling)
+    }
+
+    // where its thread ending leaves it: what it was doing failed, as nothing said it ended
+    fn ended(&self) -> Option<Request> {
+        match self {
+            Request::Doing(path, task) => Some(Request::Failed(path.clone(), *task)),
+            Request::Cancelling => Some(Request::Idle),
+            Request::Idle | Request::Failed(..) => None,
+        }
     }
 
     // what is being done to the device at `path`, if it was the last one asked
@@ -123,30 +139,34 @@ impl Request {
 
 static WATCHED: Watched = Watched::new();
 
-/*
- * the last thing asked, so an older one that ends after it says nothing, and whether one is still
- * under way. Held while an outcome is written, so a newer one cannot be asked between checking and
- * writing
- */
-static ASKED: Mutex<Asked> = Mutex::new(Asked {
-    last: 0,
-    working: false,
-});
+// held while `Request` is checked and written, so nothing is asked between the two
+static ASKING: Mutex<()> = Mutex::new(());
 
-struct Asked {
-    last: u64,
-    working: bool,
+/*
+ * the one thing under way, held by the thread doing it. Ending, by its outcome or a panic, it is
+ * no longer under way
+ */
+struct Working(());
+
+impl Working {
+    // the outcome so far; a cancelled one says nothing more
+    fn set(&self, request: Request) {
+        let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if matches!(*Request::read(), Request::Doing(..)) {
+            write(request);
+        }
+    }
 }
-
-/*
- * one thing asked under way, until its thread ends, outcome written or not: a pairing cancelled
- * still runs until BlueZ gives it up
- */
-struct Working;
 
 impl Drop for Working {
     fn drop(&mut self) {
-        ASKED.lock().unwrap_or_else(PoisonError::into_inner).working = false;
+        let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+        let ended = Request::read().ended();
+
+        if let Some(ended) = ended {
+            write(ended);
+        }
     }
 }
 
@@ -293,12 +313,11 @@ pub fn power(adapter: String, on: bool) {
  */
 pub fn pair(device: &str) {
     let path = device.to_owned();
-    let Some(asked) = ask(Request::Doing(path.clone(), Task::Pair)) else {
+    let Some(working) = ask(Request::Doing(path.clone(), Task::Pair)) else {
         return;
     };
 
     thread::spawn(move || {
-        let _working = Working;
         let bus = Bus::system();
 
         agent::register();
@@ -306,27 +325,25 @@ pub fn pair(device: &str) {
         agent::over(&path);
 
         if !bus.property(BLUEZ, &path, DEVICE, "Paired").bool() {
-            set(asked, Request::Failed(path, Task::Pair));
+            working.set(Request::Failed(path, Task::Pair));
             return;
         }
 
         bus.set_property(BLUEZ, &path, DEVICE, "Trusted", Argument::from(true));
 
-        set(asked, Request::Doing(path.clone(), Task::Connect));
-        set(asked, connected(&path));
+        working.set(Request::Doing(path.clone(), Task::Connect));
+        working.set(connected(&path));
     });
 }
 
 pub fn connect(device: &str) {
     let path = device.to_owned();
-    let Some(asked) = ask(Request::Doing(path.clone(), Task::Connect)) else {
+    let Some(working) = ask(Request::Doing(path.clone(), Task::Connect)) else {
         return;
     };
 
     thread::spawn(move || {
-        let _working = Working;
-
-        set(asked, connected(&path));
+        working.set(connected(&path));
     });
 }
 
@@ -345,12 +362,11 @@ fn connected(path: &str) -> Request {
 
 pub fn disconnect(device: &str) {
     let path = device.to_owned();
-    let Some(asked) = ask(Request::Doing(path.clone(), Task::Disconnect)) else {
+    let Some(working) = ask(Request::Doing(path.clone(), Task::Disconnect)) else {
         return;
     };
 
     thread::spawn(move || {
-        let _working = Working;
         let bus = Bus::system();
 
         bus.call(BLUEZ, &path, DEVICE, "Disconnect", &[]);
@@ -361,7 +377,7 @@ pub fn disconnect(device: &str) {
             Request::Idle
         };
 
-        set(asked, outcome);
+        working.set(outcome);
     });
 }
 
@@ -369,12 +385,11 @@ pub fn disconnect(device: &str) {
 pub fn forget(adapter: &str, device: &str) {
     let adapter = adapter.to_owned();
     let path = device.to_owned();
-    let Some(asked) = ask(Request::Doing(path.clone(), Task::Forget)) else {
+    let Some(working) = ask(Request::Doing(path.clone(), Task::Forget)) else {
         return;
     };
 
     thread::spawn(move || {
-        let _working = Working;
         let bus = Bus::system();
 
         bus.call(
@@ -392,7 +407,7 @@ pub fn forget(adapter: &str, device: &str) {
             Request::Failed(path, Task::Forget)
         };
 
-        set(asked, outcome);
+        working.set(outcome);
     });
 }
 
@@ -419,38 +434,28 @@ pub fn cancel() {
 }
 
 /*
- * something asked, newer than any before, `request` until it ends, its thread holding `Working`.
- * One at a time, so none while another is under way: BlueZ's answers say nothing of which call
- * they end, and a pairing's agent asks the user about one device
+ * `request` asked, under way until the thread given `Working` ends. One at a time, so none while
+ * another is: BlueZ's answers say nothing of which call they end, and a pairing's agent asks the
+ * user about one device
  */
-fn ask(request: Request) -> Option<u64> {
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+fn ask(request: Request) -> Option<Working> {
+    let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
 
-    if asked.working {
+    if Request::read().busy() {
         return None;
     }
 
-    asked.working = true;
-    asked.last += 1;
     write(request);
 
-    Some(asked.last)
+    Some(Working(()))
 }
 
 // what is under way says nothing more of itself, though it runs until it ends
 fn abandon() {
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
 
-    asked.last += 1;
-    write(Request::Idle);
-}
-
-// the outcome of the last thing asked, dropped when something newer was asked since
-fn set(asked: u64, request: Request) {
-    let last = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
-
-    if last.last == asked {
-        write(request);
+    if matches!(*Request::read(), Request::Doing(..)) {
+        write(Request::Cancelling);
     }
 }
 
@@ -624,31 +629,41 @@ mod tests {
 
     // the only test asking, as asking is global
     #[test]
-    fn one_thing_is_asked_at_a_time_and_a_cancelled_one_still_holds_until_it_ends() {
-        let first = ask(Request::Doing("/d/1".into(), Task::Pair)).unwrap();
-        assert!(Request::read().busy());
+    fn one_thing_is_under_way_at_a_time_until_its_thread_ends() {
+        let doing = |path: &str, task| Request::Doing(path.into(), task);
 
-        let working = Working;
-        assert_eq!(ask(Request::Doing("/d/2".into(), Task::Connect)), None);
-        assert_eq!(Request::read().doing("/d/1"), Some(Task::Pair));
+        let working = ask(doing("/d/1", Task::Pair)).unwrap();
+        assert!(ask(doing("/d/2", Task::Connect)).is_none());
 
-        // cancelled, it says nothing more, but nothing else is asked until its thread ends
+        working.set(doing("/d/1", Task::Connect));
+        assert_eq!(*Request::read(), doing("/d/1", Task::Connect));
+
+        working.set(Request::Idle);
+        assert!(!Request::read().busy());
+        drop(working);
+        assert_eq!(*Request::read(), Request::Idle);
+
+        // cancelled, nothing presses until BlueZ gives the pairing up, and its outcome says nothing
+        let working = ask(doing("/d/1", Task::Pair)).unwrap();
         abandon();
-        assert_eq!(*Request::read(), Request::Idle);
-        assert_eq!(ask(Request::Doing("/d/2".into(), Task::Connect)), None);
+        assert_eq!(*Request::read(), Request::Cancelling);
+        assert!(Request::read().busy());
+        assert!(ask(doing("/d/2", Task::Connect)).is_none());
 
-        set(first, Request::Failed("/d/1".into(), Task::Pair));
-        assert_eq!(*Request::read(), Request::Idle);
+        working.set(Request::Failed("/d/1".into(), Task::Pair));
+        assert_eq!(*Request::read(), Request::Cancelling);
 
         drop(working);
-        let second = ask(Request::Doing("/d/2".into(), Task::Connect)).unwrap();
-        assert!(second > first);
+        assert_eq!(*Request::read(), Request::Idle);
 
-        drop(Working);
+        // a thread ending without an outcome, as by a panic, leaves nothing under way
+        let working = ask(doing("/d/2", Task::Connect)).unwrap();
+        drop(working);
         assert_eq!(
             *Request::read(),
-            Request::Doing("/d/2".into(), Task::Connect)
+            Request::Failed("/d/2".into(), Task::Connect)
         );
+        assert!(ask(doing("/d/2", Task::Connect)).is_some());
     }
 
     #[test]
