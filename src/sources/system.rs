@@ -128,13 +128,19 @@ fn heard(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
     let number = |index: usize| arguments.get(index).map(Value::number);
     let first = arguments.first().map_or("", Value::text);
 
+    // a name's owner before the change, none when it is just taken
+    let old = arguments.get(1).map_or("", Value::text);
+
     match watch {
         Watch::Device => Some(wifi::Heard::Device(path.into(), number(0)?, number(2)?)),
         Watch::Attempt => Some(wifi::Heard::Attempt(path.into(), number(0)?)),
         Watch::Removed if first.starts_with(network::ROOT) => {
             Some(wifi::Heard::Removed(first.into()))
         }
-        Watch::Owner if sender == BUS && first == network::NAME => Some(wifi::Heard::Gone),
+        // NetworkManager stopping, or replaced, but not starting: a join may be asking it to
+        Watch::Owner if sender == BUS && first == network::NAME && !old.is_empty() => {
+            Some(wifi::Heard::Gone)
+        }
         _ => None,
     }
 }
@@ -441,6 +447,26 @@ mod tests {
                 &text(&[network::NAME, ":1.9", ""])
             ),
             Some(wifi::Heard::Gone)
+        );
+        assert_eq!(
+            heard(
+                Watch::Owner,
+                BUS,
+                "/org/freedesktop/DBus",
+                &text(&[network::NAME, ":1.9", ":1.81"])
+            ),
+            Some(wifi::Heard::Gone)
+        );
+
+        // NetworkManager starting takes no attempt with it
+        assert_eq!(
+            heard(
+                Watch::Owner,
+                BUS,
+                "/org/freedesktop/DBus",
+                &text(&[network::NAME, "", ":1.81"])
+            ),
+            None
         );
         assert_eq!(
             heard(
