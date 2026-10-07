@@ -69,6 +69,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         && let Some(form) = split(&content, island.track(&monitor.name), swap, now)
             .or_else(|| small_form(&content, island.track(&monitor.name), now))
             .or_else(|| surface(&monitor.name, &content, &island, now))
+            .or_else(|| surfaces::tray::strip(&monitor.name, content.presentation))
             .or_else(|| rest(&content))
             .or_else(|| placeholder(&content))
     {
@@ -130,9 +131,13 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .namespace("kanade")
         .keyboard(keyboard)
         .on_key(move |key| {
-            // a Surface whose Module is off never opens, so its keys read nothing. Controls goes
-            // first, as Escape in one of its sub-surfaces goes back a level rather than closing
+            // a Surface whose Module is off never opens, so its keys read nothing. Controls and the
+            // Tray go first, as Escape in a sub-surface goes back a level rather than closing
             if modules::on("controls") && surfaces::controls::key(&pressed, key) {
+                return;
+            }
+
+            if modules::on("tray") && surfaces::tray::key(&pressed, key) {
                 return;
             }
 
@@ -275,7 +280,7 @@ fn placeholder(content: &Content) -> Option<Rectangle> {
     };
 
     let (label, size) = match content.presentation {
-        Presentation::Rest => return None,
+        Presentation::Rest | Presentation::Tray(_) => return None,
         Presentation::Compact => (name(&content.activity), theme::text::LABEL),
         // `split` draws both segments, each its own form
         Presentation::Split => return None,
@@ -327,6 +332,11 @@ fn surface(
             modules::on("notifications").then(|| island.dnd()),
         )),
         Surface::Launcher => Some(surfaces::launcher::surface(monitor, island.visit())),
+        Surface::Tray => Some(surfaces::tray::surface(
+            open,
+            island.visit(),
+            island.held(monitor),
+        )),
     }
 }
 
@@ -1229,6 +1239,18 @@ fn hover(monitor: &str, inside: bool) {
 fn route(monitor: &str, input: Input) {
     if input.decides() {
         IslandService::write().input(monitor, input, Instant::now());
+    }
+}
+
+/*
+ * opens `surface` from a target of the island's own, as a click on the island opens one, pinned
+ * when it should stay with nobody on it
+ */
+pub(crate) fn open(monitor: &str, surface: Surface, pinned: bool) {
+    route(monitor, Input::Open(surface));
+
+    if pinned && !IslandService::read().pinned(monitor) {
+        route(monitor, Input::RightClick(Segment::Primary));
     }
 }
 

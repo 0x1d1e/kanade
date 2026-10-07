@@ -9,6 +9,7 @@ use super::list;
 use crate::sources::audio::Node;
 use crate::sources::power::Profile;
 use crate::sources::wifi::Secret;
+use crate::surfaces::grid::{Place, find, moved};
 
 // a password is at most 64 characters, the WPA key itself as hex
 const MOST_SECRET: usize = 64;
@@ -163,13 +164,6 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32
     }
 }
 
-// a place in a grid
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Place {
-    row: usize,
-    column: usize,
-}
-
 impl Focus {
     /*
      * the targets of the level this focus is on. Taken from the focus itself, never a stored one,
@@ -217,13 +211,7 @@ impl Focus {
 
     // where its target is in `grid`, none when it has none or that is gone
     fn found(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        let at = self.at.as_ref()?;
-
-        grid.iter().enumerate().find_map(|(row, targets)| {
-            let column = targets.iter().position(|(target, _)| target == at)?;
-
-            Some(Place { row, column })
-        })
+        find(grid, self.at.as_ref()?)
     }
 
     /*
@@ -400,49 +388,6 @@ impl Focus {
 
         Some((self, act))
     }
-}
-
-/*
- * the place a key moves to, none for a key that does not move or at an edge. Up and Down go to the
- * target in the next row nearest across, Home and End to the first and last
- */
-fn moved(place: Place, key: Key, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-    let across = grid[place.row][place.column].1;
-
-    let nearest = |row: usize| {
-        let column = grid[row]
-            .iter()
-            .enumerate()
-            .min_by(|(_, (_, a)), (_, (_, b))| (a - across).abs().total_cmp(&(b - across).abs()))
-            .map(|(column, _)| column)?;
-
-        Some(Place { row, column })
-    };
-
-    let to = match key {
-        Key::Up => nearest(place.row.checked_sub(1)?)?,
-        Key::Down if place.row + 1 < grid.len() => nearest(place.row + 1)?,
-        Key::Left => Place {
-            column: place.column.checked_sub(1)?,
-            ..place
-        },
-        Key::Right if place.column + 1 < grid[place.row].len() => Place {
-            column: place.column + 1,
-            ..place
-        },
-        Key::Home => Place { row: 0, column: 0 },
-        Key::End => {
-            let row = grid.len() - 1;
-
-            Place {
-                row,
-                column: grid[row].len() - 1,
-            }
-        }
-        _ => return None,
-    };
-
-    (to != place).then_some(to)
 }
 
 #[cfg(test)]

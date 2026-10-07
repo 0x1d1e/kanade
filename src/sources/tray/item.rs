@@ -92,6 +92,12 @@ pub struct Described {
 
     // a folder the item's own icon names are in, before the user's theme
     pub themes: Option<String>,
+
+    // the object its com.canonical.dbusmenu menu is at, none when it has none
+    pub menu: Option<String>,
+
+    // it only shows its menu, so a click opens that rather than activating it
+    pub is_menu: bool,
 }
 
 // the answer to Properties.GetAll on org.kde.StatusNotifierItem
@@ -137,11 +143,27 @@ pub fn describe(properties: &HashMap<String, OwnedValue>) -> Described {
 
     let themes = Some(text("IconThemePath")).filter(|path| path.starts_with('/'));
 
+    // "/" is how some say they have none, "/NO_DBUSMENU" how Qt does
+    let menu = properties
+        .get("Menu")
+        .and_then(|value| match &**value {
+            Value::ObjectPath(path) => Some(path.as_str().to_owned()),
+            _ => None,
+        })
+        .filter(|path| path != "/" && path != "/NO_DBUSMENU");
+
+    let is_menu = matches!(
+        properties.get("ItemIsMenu").map(|value| &**value),
+        Some(Value::Bool(true))
+    );
+
     Described {
         title,
         status,
         picture,
         themes,
+        menu,
+        is_menu,
     }
 }
 
@@ -253,8 +275,28 @@ mod tests {
                     pixmap: None,
                 },
                 themes: Some(String::from("/usr/share/nm-applet/icons")),
+                menu: None,
+                is_menu: false,
             }
         );
+    }
+
+    #[test]
+    fn an_item_reads_its_menu() {
+        let path = |path: &'static str| Value::from(ObjectPath::try_from(path).unwrap());
+
+        let described = describe(&properties(vec![
+            ("Menu", path("/MenuBar")),
+            ("ItemIsMenu", Value::from(true)),
+        ]));
+        assert_eq!(described.menu.as_deref(), Some("/MenuBar"));
+        assert!(described.is_menu);
+
+        // none, as some say it, and a menu by any other kind
+        for none in [path("/"), path("/NO_DBUSMENU"), Value::from("/MenuBar")] {
+            let described = describe(&properties(vec![("Menu", none)]));
+            assert_eq!(described.menu, None);
+        }
     }
 
     #[test]
@@ -348,6 +390,8 @@ mod tests {
             ("AttentionIconPixmap", pixmaps(vec![])),
             ("ToolTip", Value::from(3_u32)),
             ("IconThemePath", Value::from("relative/icons")),
+            ("Menu", Value::from(1_i32)),
+            ("ItemIsMenu", Value::from("yes")),
         ]));
 
         assert_eq!(
@@ -357,6 +401,8 @@ mod tests {
                 status: Status::Active,
                 picture: Picture::default(),
                 themes: None,
+                menu: None,
+                is_menu: false,
             }
         );
 

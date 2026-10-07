@@ -10,13 +10,15 @@
 //! Over zbus, not Amane's `Bus`: an item may register with only its object path, and the bus name
 //! it lives at is then the caller's, which Amane's `Method` does not give.
 
+mod icons;
 mod item;
+pub mod menu;
 mod watcher;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -37,6 +39,7 @@ pub use item::Status;
 use item::{Address, Described};
 use watcher::Watcher;
 
+use crate::island::service::IslandService;
 use crate::{raster, supervise};
 
 const ITEM: &str = "org.kde.StatusNotifierItem";
@@ -129,16 +132,50 @@ pub struct Item {
     pub title: String,
     pub status: Status,
     pub icon: Icon,
+
+    // the object its menu is at
+    menu: Option<String>,
+
+    // it only shows its menu, so a click opens that rather than activating it
+    pub is_menu: bool,
 }
 
-// what to draw: the named icon if the theme, or the item's own folder, has it, else its pixels
+impl Item {
+    // which item it is, for as long as it is shown as read
+    pub fn key(&self) -> u64 {
+        self.serial
+    }
+
+    pub fn has_menu(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    // what its primary press asks: one that is only a menu shows it, the item drawing it without one
+    pub fn press(&self) -> Press {
+        match (self.is_menu, self.has_menu()) {
+            (true, true) => Press::Menu,
+            (true, false) => Press::ContextMenu,
+            (false, _) => Press::Activate,
+        }
+    }
+}
+
+// what a primary press on an item does
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    // its menu, shown by Kanade
+    Menu,
+
+    // `ContextMenu`, for an item that is only a menu but has none Kanade can show
+    ContextMenu,
+
+    Activate,
+}
+
+// what to draw: the file its icon name stands for, else its own pixels, else neither
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Icon {
-    // a theme icon name, or an absolute path
-    pub name: String,
-
-    // a folder of the item's own icons, before the user's theme
-    pub themes: Option<PathBuf>,
+    pub file: Option<PathBuf>,
 
     // its pixels, written as a png
     pub pixmap: Option<PathBuf>,
@@ -146,7 +183,6 @@ pub struct Icon {
 
 // which way a scroll turns
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(dead_code, reason = "the tray's view (#135) scrolls items")]
 pub enum Orientation {
     Vertical,
     Horizontal,
@@ -174,6 +210,12 @@ enum Event {
         path: String,
     },
 
+    // an item said its menu changed: who said it, at which object
+    MenuChanged {
+        sender: String,
+        path: String,
+    },
+
     // a bus name has a new owner, none when empty
     Owner {
         name: String,
@@ -192,8 +234,8 @@ enum Event {
 
 #[derive(Debug)]
 enum Outcome {
-    // the unique name that answered, and what it said
-    Read(String, Described),
+    // the unique name that answered, what it said, and the file its icon name stands for
+    Read(String, Described, Option<PathBuf>),
 
     // nothing is at its address
     Gone,
@@ -305,6 +347,7 @@ fn run() -> zbus::Result<Infallible> {
     for rule in [
         format!("type='signal',interface='{ITEM}'"),
         format!("type='signal',interface='{}'", watcher::INTERFACE),
+        format!("type='signal',interface='{}'", menu::INTERFACE),
         String::from(
             "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'",
         ),
@@ -462,6 +505,15 @@ fn forward(messages: MessageIterator, own: &str, events: &Sender<Event>) {
                 }
             }
 
+            (menu::INTERFACE, "LayoutUpdated" | "ItemsPropertiesUpdated") => {
+                let Some(path) = header.path() else { continue };
+
+                Event::MenuChanged {
+                    sender: sender.to_string(),
+                    path: path.to_string(),
+                }
+            }
+
             _ => continue,
         };
 
@@ -526,6 +578,7 @@ impl Hosting {
                         self.read(at);
                     }
                 }
+                Event::MenuChanged { sender, path } => menu::changed(&sender, &path),
                 Event::Owner { name, new } => self.owner(&name, &new),
                 Event::Read { serial, outcome } => self.answered(serial, outcome),
                 Event::Ended(why) => return why,
@@ -657,11 +710,11 @@ impl Hosting {
         entry.reading = false;
 
         match outcome {
-            Outcome::Read(owner, described) => {
+            Outcome::Read(owner, described, file) => {
                 entry.owner = Some(owner.clone());
                 entry.failed = false;
 
-                let item = shown(entry.address.clone(), owner, serial, described);
+                let item = shown(entry.address.clone(), owner, serial, described, file);
                 let old = entry.item.replace(item);
 
                 self.forget(old);
@@ -778,6 +831,18 @@ impl Hosting {
         if *Tray::read() != tray {
             *Tray::write() = tray;
         }
+
+        // the strip shows those that are not passive
+        let count = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.item.as_ref())
+            .filter(|item| item.status != Status::Passive)
+            .count();
+
+        if IslandService::read().tray() != count {
+            IslandService::write().set_tray(count, Instant::now());
+        }
     }
 }
 
@@ -856,14 +921,28 @@ fn read(connection: &Connection, address: &Address) -> Outcome {
         });
 
     match properties {
-        Ok((owner, properties)) => Outcome::Read(owner, item::describe(&properties)),
+        Ok((owner, properties)) => {
+            let described = item::describe(&properties);
+            let file = icons::find(
+                &described.picture.name,
+                described.themes.as_deref().map(Path::new),
+            );
+
+            Outcome::Read(owner, described, file)
+        }
         Err(zbus::Error::MethodError(name, ..)) if GONE.contains(&name.as_str()) => Outcome::Gone,
         Err(error) => Outcome::Failed(error.to_string()),
     }
 }
 
 // an item as the views see it, its pixels written for Amane to draw
-fn shown(address: Address, owner: String, serial: u64, described: Described) -> Item {
+fn shown(
+    address: Address,
+    owner: String,
+    serial: u64,
+    described: Described,
+    file: Option<PathBuf>,
+) -> Item {
     let pixmap = described.picture.pixmap.map(|pixmap| {
         raster::write(
             "tray",
@@ -878,11 +957,9 @@ fn shown(address: Address, owner: String, serial: u64, described: Described) -> 
         serial,
         title: described.title,
         status: described.status,
-        icon: Icon {
-            name: described.picture.name,
-            themes: described.themes.map(PathBuf::from),
-            pixmap,
-        },
+        icon: Icon { file, pixmap },
+        menu: described.menu,
+        is_menu: described.is_menu,
     }
 }
 
@@ -891,17 +968,14 @@ fn shown(address: Address, owner: String, serial: u64, described: Described) -> 
  * thread to the program that answered its read, while it is still shown as read; an item that
  * fails or does not answer is logged, nothing else
  */
-#[expect(dead_code, reason = "the tray's view (#135) clicks items")]
 pub fn activate(item: &Item, x: i32, y: i32) {
     call(item, "Activate", (x, y));
 }
 
-#[expect(dead_code, reason = "the tray's view (#135) clicks items")]
 pub fn secondary_activate(item: &Item, x: i32, y: i32) {
     call(item, "SecondaryActivate", (x, y));
 }
 
-#[expect(dead_code, reason = "the tray's view (#135) scrolls items")]
 pub fn scroll(item: &Item, delta: i32, orientation: Orientation) {
     let orientation = match orientation {
         Orientation::Vertical => "vertical",
@@ -911,15 +985,16 @@ pub fn scroll(item: &Item, delta: i32, orientation: Orientation) {
     call(item, "Scroll", (delta, orientation.to_owned()));
 }
 
+// for an item without a menu of its own: it shows its menu itself
+pub fn context_menu(item: &Item, x: i32, y: i32) {
+    call(item, "ContextMenu", (x, y));
+}
+
 fn call<B>(item: &Item, method: &'static str, body: B)
 where
     B: serde::Serialize + zbus::zvariant::DynamicType + Send + 'static,
 {
-    let Some(connection) = reach()
-        .as_ref()
-        .filter(|reach| reaches(&reach.shown, item))
-        .map(|reach| reach.connection.clone())
-    else {
+    let Some(connection) = connection(item) else {
         return;
     };
 
@@ -944,6 +1019,14 @@ where
     });
 }
 
+// what reaches `item`, while it is shown as read
+fn connection(item: &Item) -> Option<Connection> {
+    reach()
+        .as_ref()
+        .filter(|reach| reaches(&reach.shown, item))
+        .map(|reach| reach.connection.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,7 +1039,39 @@ mod tests {
             title: String::new(),
             status: Status::Active,
             icon: Icon::default(),
+            menu: None,
+            is_menu: false,
         }
+    }
+
+    // #135: an item that is only a menu never gets Activate, as the spec asks
+    #[test]
+    fn a_press_on_an_item_that_is_only_a_menu_shows_a_menu() {
+        let plain = item(1, ":1.1");
+        let menu = Item {
+            menu: Some(String::from("/MenuBar")),
+            ..plain.clone()
+        };
+
+        assert_eq!(plain.press(), Press::Activate);
+        assert_eq!(menu.press(), Press::Activate);
+
+        assert_eq!(
+            Item {
+                is_menu: true,
+                ..menu
+            }
+            .press(),
+            Press::Menu
+        );
+        assert_eq!(
+            Item {
+                is_menu: true,
+                ..plain
+            }
+            .press(),
+            Press::ContextMenu
+        );
     }
 
     #[test]

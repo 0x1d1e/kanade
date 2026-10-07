@@ -45,6 +45,20 @@ pub const PEEK: Shape = Shape {
     radius: 26.0,
 };
 
+/*
+ * the Tray strip: the time as at Rest, then a slot for each tray item, as tall as Compact so the
+ * icons have room. Past `TRAY_SLOTS` items the last slot opens the Tray Surface with them all
+ */
+pub const TRAY_SLOTS: usize = 8;
+pub const TRAY_SLOT: f32 = 32.0;
+pub const TRAY_END: f32 = 6.0;
+
+pub const TRAY: Shape = Shape {
+    width: REST.width + TRAY_SLOTS as f32 * TRAY_SLOT + TRAY_END,
+    height: COMPACT.height,
+    radius: COMPACT.radius,
+};
+
 pub const CONTROLS: Shape = Shape {
     width: 440.0,
     height: 290.0,
@@ -66,7 +80,16 @@ pub const EXPANDED_MAX: Shape = Shape {
 };
 
 // every shape a body morphs between; the springs never overshoot, so it stays within them
-pub const SHAPES: [Shape; 7] = [REST, COMPACT, SPLIT, PEEK, CONTROLS, MEDIA, EXPANDED_MAX];
+pub const SHAPES: [Shape; 8] = [
+    REST,
+    COMPACT,
+    SPLIT,
+    PEEK,
+    TRAY,
+    CONTROLS,
+    MEDIA,
+    EXPANDED_MAX,
+];
 
 // a Satellite's diameter, and the gap before each one
 pub const SATELLITE: f32 = 28.0;
@@ -79,7 +102,11 @@ pub fn shape(presentation: Presentation) -> Shape {
         Presentation::Compact => COMPACT,
         Presentation::Split => SPLIT,
         Presentation::Peek => PEEK,
-        Presentation::Expanded(Surface::Controls) => CONTROLS,
+        Presentation::Tray(slots) => Shape {
+            width: REST.width + f32::from(slots) * TRAY_SLOT + TRAY_END,
+            ..TRAY
+        },
+        Presentation::Expanded(Surface::Controls | Surface::Tray) => CONTROLS,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Notifications | Surface::Launcher) => EXPANDED_MAX,
     }
@@ -234,15 +261,18 @@ mod tests {
         value.fract() == 0.0
     }
 
-    const PRESENTATIONS: [Presentation; 8] = [
+    const PRESENTATIONS: [Presentation; 11] = [
         Presentation::Rest,
         Presentation::Compact,
         Presentation::Split,
         Presentation::Peek,
+        Presentation::Tray(1),
+        Presentation::Tray(TRAY_SLOTS as u8),
         Presentation::Expanded(Surface::Media),
         Presentation::Expanded(Surface::Notifications),
         Presentation::Expanded(Surface::Controls),
         Presentation::Expanded(Surface::Launcher),
+        Presentation::Expanded(Surface::Tray),
     ];
 
     /*
@@ -289,6 +319,18 @@ mod tests {
         for shape in small {
             assert_eq!(shape.radius, shape.height / 2.0, "{shape:?}");
         }
+    }
+
+    // a pill the time leads, a slot wider for each item, the widest one of the shapes
+    #[test]
+    fn the_tray_strip_grows_by_a_slot_per_item() {
+        let one = shape(Presentation::Tray(1));
+        let all = shape(Presentation::Tray(TRAY_SLOTS as u8));
+
+        assert!(one.width > REST.width && one.height >= REST.height);
+        assert_eq!(one.radius, one.height / 2.0);
+        assert_eq!(all, TRAY);
+        assert_eq!(shape(Presentation::Tray(2)).width - one.width, TRAY_SLOT);
     }
 
     #[test]

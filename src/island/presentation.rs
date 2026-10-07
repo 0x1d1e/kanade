@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use super::activity::{Activity, Detail, Id, Kind};
 use super::fade::InPlace;
+use super::geometry::TRAY_SLOTS;
 
 // full interactive content of an Expanded island
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,15 +17,19 @@ pub enum Surface {
     Notifications,
     Controls,
     Launcher,
+
+    // the apps' tray items and their menus (#135)
+    Tray,
 }
 
 impl Surface {
     #[cfg(test)]
-    pub const ALL: [Surface; 4] = [
+    pub const ALL: [Surface; 5] = [
         Surface::Media,
         Surface::Notifications,
         Surface::Controls,
         Surface::Launcher,
+        Surface::Tray,
     ];
 
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
@@ -51,6 +56,10 @@ pub enum Presentation {
     Split,
 
     Peek,
+
+    // Rest with the apps' tray items after the time, this many slots of them, while the pointer is on it
+    Tray(u8),
+
     Expanded(Surface),
 }
 
@@ -95,7 +104,7 @@ impl Content {
 
                 (peeked, None)
             }
-            Presentation::Rest | Presentation::Expanded(_) => (None, None),
+            Presentation::Rest | Presentation::Tray(_) | Presentation::Expanded(_) => (None, None),
         };
 
         Self {
@@ -192,6 +201,9 @@ enum Raised {
     Peek(Id),
 
     Expanded(Surface),
+
+    // the tray items, only ever at Rest
+    Tray,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -251,6 +263,9 @@ pub struct Presentations {
 
     // the Surfaces that never open, since their Module is off
     withheld: Vec<Surface>,
+
+    // how many tray items there are, the same on every island
+    tray: usize,
 }
 
 impl Presentations {
@@ -312,6 +327,7 @@ impl Presentations {
         match (&island.raised, &island.primary, &island.satellite) {
             (Some(Raised::Expanded(surface)), ..) => Presentation::Expanded(*surface),
             (Some(Raised::Peek(_)), ..) => Presentation::Peek,
+            (Some(Raised::Tray), ..) => Presentation::Tray(self.tray.min(TRAY_SLOTS) as u8),
             (None, Some(_), Some(_)) => Presentation::Split,
             (None, Some(_), None) => Presentation::Compact,
             (None, None, _) => Presentation::Rest,
@@ -325,6 +341,26 @@ impl Presentations {
      */
     pub fn set_shown(&mut self, monitor: &str, primary: Option<Id>, satellite: Option<Id>) {
         self.island(monitor).set_shown(primary, satellite);
+    }
+
+    /*
+     * the tray items there are now, which the Tray strip shows a slot for each, up to
+     * `TRAY_SLOTS`. With none left, a strip showing them rests
+     */
+    pub fn set_tray(&mut self, count: usize) {
+        self.tray = count;
+
+        if count == 0 {
+            for island in self.islands.values_mut() {
+                if island.raised == Some(Raised::Tray) {
+                    island.raise(None);
+                }
+            }
+        }
+    }
+
+    pub fn tray(&self) -> usize {
+        self.tray
     }
 
     // for every island not touched yet, which then starts from it
@@ -356,6 +392,7 @@ impl Presentations {
         }
 
         let now = self.get(monitor);
+        let tray = self.tray;
         let island = self.island(monitor);
 
         match (input, now) {
@@ -375,6 +412,12 @@ impl Presentations {
 
             (Input::Collapse | Input::Preempt, Presentation::Expanded(_)) => island.raise(None),
 
+            // the strip is Rest while the pointer is on it, so it waits for the pointer alone
+            (Input::Collapse | Input::Unhover, Presentation::Tray(_)) => island.raise(None),
+            (Input::Hover(_), Presentation::Rest) if tray > 0 => {
+                island.raise(Some(Raised::Tray));
+            }
+
             // a pinned Peek waits for Escape or another right click, not for the pointer
             (Input::Collapse, Presentation::Peek) if island.pinned => island.raise(None),
             (Input::Unhover, Presentation::Peek) if !island.pinned => island.raise(None),
@@ -389,7 +432,7 @@ impl Presentations {
                 island.peek(segment);
                 island.pinned = true;
             }
-            (Input::RightClick(_), Presentation::Rest) => {
+            (Input::RightClick(_), Presentation::Rest | Presentation::Tray(_)) => {
                 if let Some(surface) = self.clicked(None) {
                     self.expand(monitor, surface);
                     self.island(monitor).pinned = true;
@@ -461,6 +504,7 @@ impl Presentations {
             let raised = raised.filter(|raised| match raised {
                 Raised::Peek(id) => island.shows(id),
                 Raised::Expanded(_) => true,
+                Raised::Tray => false,
             });
             let expanded = matches!(raised, Some(Raised::Expanded(_)));
 
@@ -500,13 +544,18 @@ impl Presentations {
 }
 
 impl Island {
+    // an Activity shown leaves Rest, so the Tray strip with it
     fn set_shown(&mut self, primary: Option<Id>, satellite: Option<Id>) {
         self.primary = primary;
         self.satellite = satellite.filter(|_| self.primary.is_some());
 
-        if let Some(Raised::Peek(id)) = &self.raised
-            && !self.shows(id)
-        {
+        let ended = match &self.raised {
+            Some(Raised::Peek(id)) => !self.shows(id),
+            Some(Raised::Tray) => self.primary.is_some(),
+            _ => false,
+        };
+
+        if ended {
             self.raise(None);
         }
     }
@@ -523,7 +572,7 @@ impl Island {
     fn under(&self, segment: Segment) -> Option<&Id> {
         match (&self.raised, segment) {
             (Some(Raised::Peek(id)), _) => Some(id),
-            (Some(Raised::Expanded(_)), _) => None,
+            (Some(Raised::Expanded(_) | Raised::Tray), _) => None,
             (None, Segment::Satellite) if self.satellite.is_some() => self.satellite.as_ref(),
             (None, _) => self.primary.as_ref(),
         }
@@ -571,6 +620,53 @@ mod tests {
         }
 
         presentations.get(MONITOR)
+    }
+
+    // #135: the pointer on the island at Rest shows the tray items, a slot each up to the cap
+    #[test]
+    fn hover_at_rest_shows_the_tray_strip_while_there_are_items() {
+        let mut presentations = Presentations::default();
+
+        presentations.input(MONITOR, Input::Hover(Primary));
+        assert_eq!(presentations.get(MONITOR), Rest);
+
+        presentations.set_tray(TRAY_SLOTS + 3);
+        presentations.input(MONITOR, Input::Hover(Primary));
+        assert_eq!(
+            presentations.get(MONITOR),
+            Presentation::Tray(TRAY_SLOTS as u8)
+        );
+
+        presentations.input(MONITOR, Input::Unhover);
+        assert_eq!(presentations.get(MONITOR), Rest);
+
+        presentations.set_tray(2);
+        presentations.input(MONITOR, Input::Hover(Primary));
+        assert_eq!(presentations.get(MONITOR), Presentation::Tray(2));
+
+        // the last item gone, the strip rests
+        presentations.set_tray(0);
+        assert_eq!(presentations.get(MONITOR), Rest);
+    }
+
+    #[test]
+    fn the_tray_strip_opens_surfaces_and_gives_way_to_an_activity() {
+        let mut presentations = Presentations::default();
+        presentations.set_tray(1);
+
+        presentations.input(MONITOR, Input::Hover(Primary));
+        presentations.input(MONITOR, Input::Open(Surface::Tray));
+        assert_eq!(presentations.get(MONITOR), Expanded(Surface::Tray));
+
+        presentations.input(MONITOR, Input::Collapse);
+        presentations.input(MONITOR, Input::Hover(Primary));
+        presentations.input(MONITOR, Input::Click(Primary));
+        assert_eq!(presentations.get(MONITOR), Expanded(Controls));
+
+        presentations.input(MONITOR, Input::Collapse);
+        presentations.input(MONITOR, Input::Hover(Primary));
+        presentations.set_shown(MONITOR, Some(id(Kind::Media)), None);
+        assert_eq!(presentations.get(MONITOR), Compact);
     }
 
     #[test]
