@@ -14,7 +14,7 @@ AI-generated concept, not a capture of the current build.
 
 ## What it is
 
-One pill at the top center of each monitor that changes shape for what is happening: the clock at rest, the playing track, volume, brightness and workspace changes, notifications, battery, a timer. Hovering it while it shows something peeks, a click expands it into one of five Surfaces: Media, Notifications, Controls, Launcher and Tray. Hovering it at rest shows the apps' tray items beside the clock: left click activates one, middle click is its secondary action, the wheel scrolls it, and right click opens its menu. It is also the session's notification daemon. Apart from it, at the top right of each monitor, a privacy cluster shows a microphone, camera or screen capture in use, over fullscreen windows too; the Controls Surface names the apps. At rest it draws one frame a minute, for the clock, and nothing else.
+One pill at the top center of each monitor that changes shape for what is happening: the clock at rest, the playing track, volume, brightness and workspace changes, notifications, battery, a timer. Hovering it while it shows something peeks, a click expands it into one of six Surfaces: Media, Notifications, Controls, Launcher, Tray and Clipboard. Hovering it at rest shows the apps' tray items beside the clock: left click activates one, middle click is its secondary action, the wheel scrolls it, and right click opens its menu. It is also the session's notification daemon. Apart from it, at the top right of each monitor, a privacy cluster shows a microphone, camera or screen capture in use, over fullscreen windows too; the Controls Surface names the apps. At rest it draws one frame a minute, for the clock, and nothing else.
 
 It is not a bar, dock, wallpaper, lock screen or settings app, and it shows no permanent Wi-Fi, CPU or RAM indicators. It follows niri's focused output and workspaces; Hyprland and Sway are not supported, even though Amane runs there.
 
@@ -54,12 +54,13 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 
 | Verb | Does |
 |---|---|
-| `launcher\|controls\|media\|notifications\|tray open` | opens that Surface on the focused output |
+| `launcher\|controls\|media\|notifications\|tray\|clipboard open` | opens that Surface on the focused output |
 | `... close` | collapses it when it is open there |
 | `... toggle` | opens it, or collapses it when it is already open there |
 | `island collapse` | collapses the open island on the focused output |
 | `notifications clear` | dismisses every notification |
 | `notifications dnd on\|off\|toggle` | Do Not Disturb: notification Banners stop showing, Critical ones still do |
+| `clipboard clear` | forgets the clipboard history; what is on the clipboard stays |
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
 | `timer pause\|resume\|cancel` | pauses, resumes or cancels it |
 | `config reload` | reads the config again now |
@@ -103,7 +104,7 @@ osd = 1200           # the OSD, and a workspace switch on the island
 
 - `theme.palette`: the theme roles for what draws beside the island, like the Banners and the OSD, take their tone from this image and follow it when the file changes. The island itself stays black and white whatever the wallpaper, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning.
 - `KANADE_REDUCED_MOTION`: overrides `reduced_motion`. `1` turns it on, `0` off.
-- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `audio` (volume and mute; with it off, nothing reads them), `brightness` (the backlight; likewise), `osd` (volume, brightness and microphone mute bottom centre on the focused output, over fullscreen windows too; shows what of `audio` and `brightness` is on), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `banners` (notification cards top-right on the focused output; requires `notifications`), `network`, `bluetooth` and `power` (the Controls tiles), `tray` (Kanade hosts the apps' tray items, and is their StatusNotifierWatcher unless another program already is; hovering the island at rest shows them, and the Tray Surface lists them with their menus), `clipboard` (a history of copied text and images through `wl-paste` and `wl-copy`, kept only in memory and never logged; nothing shows it yet), and the island's Surfaces: `controls` (with it off, a click at Rest does nothing), `launcher` and `notification-surface` (the notification list; requires `notifications`, and with it off a click on a notification opens Controls). An off Surface never opens. A Module whose requirement is off turns off too, and stderr names why.
+- `modules`: turns a feature off. An off Module starts no thread or helper process, posts nothing and answers its verbs with `module <name> is off`. Turning one on or off takes a restart. The Modules are `island` (the island itself, cannot be turned off), `workspace`, `privacy` (microphone, camera and screen cast; turning it off is warned about at every start), `battery`, `media`, `timer`, `audio` (volume and mute; with it off, nothing reads them), `brightness` (the backlight; likewise), `osd` (volume, brightness and microphone mute bottom centre on the focused output, over fullscreen windows too; shows what of `audio` and `brightness` is on), `notifications` (with it off, Kanade is not the notification daemon and Do Not Disturb is unavailable), `banners` (notification cards top-right on the focused output; requires `notifications`), `network`, `bluetooth` and `power` (the Controls tiles), `tray` (Kanade hosts the apps' tray items, and is their StatusNotifierWatcher unless another program already is; hovering the island at rest shows them, and the Tray Surface lists them with their menus), `clipboard` (a history of copied text and images through `wl-paste` and `wl-copy`, kept only in memory and never logged), and the island's Surfaces: `controls` (with it off, a click at Rest does nothing), `launcher`, `notification-surface` (the notification list; requires `notifications`, and with it off a click on a notification opens Controls) and `clipboard-surface` (the clipboard history; requires `clipboard`). An off Surface never opens. A Module whose requirement is off turns off too, and stderr names why.
 - `schema_version`: the config layout a file is written in, per file, `1` without one. Version 2 drops `timings.toast`. When a Kanade release changes the layout, it migrates older files in memory as it reads them and leaves them as they are on disk. A file with a version newer than this Kanade reads, or one that is not a version, is skipped whole, so a downgrade never applies settings it cannot read.
 - Problems are reported on stderr with file and line. At start, a key that is unknown or a value out of range is skipped, keeping what the layers below gave it, and a file that is not valid TOML, like one that sets a key twice, is skipped whole.
 - A change while running applies without a restart, except `modules`, which stays as it started and is reported pending restart. A change with any problem applies nothing: the config in effect stays whole, and stderr and `status` report why.
@@ -118,6 +119,7 @@ Mod+Alt+N hotkey-overlay-title="Island: Notifications" { spawn "kanade" "notific
 Mod+Alt+M hotkey-overlay-title="Island: Media" { spawn "kanade" "media" "toggle"; }
 Mod+Alt+C hotkey-overlay-title="Island: Controls" { spawn "kanade" "controls" "toggle"; }
 Mod+Alt+T hotkey-overlay-title="Island: Tray" { spawn "kanade" "tray" "toggle"; }
+Mod+Alt+V hotkey-overlay-title="Island: Clipboard" { spawn "kanade" "clipboard" "toggle"; }
 Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island" "collapse"; }
 ```
 
@@ -128,6 +130,7 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Any Surface | Escape collapses. A pinned island gives the keyboard back, so the `collapse` bind closes it |
 | Notifications | arrows and Tab move the ring, Enter or Space presses what it is on, Backspace dismisses the card |
 | Launcher | typing searches, Up/Down/Home/End move the selection, Enter starts it |
+| Clipboard | typing searches, arrows, Tab, Home and End move the ring, Enter copies the entry, deletes it or clears the history, whichever the ring is on |
 | Tray | arrows move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
 | Media, Controls | a typed character collapses an island opened from a keybind, so it goes to the window beneath |
 

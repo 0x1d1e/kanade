@@ -10,7 +10,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
-use crate::sources::clipboard::Clipboard;
+use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
 use crate::sources::timer;
 use crate::sources::tray::Tray;
@@ -43,6 +43,10 @@ fn run(call: Call) -> Reply {
         }
         Call::ClearNotifications => {
             Notifications::clear();
+            Reply::Done(String::new())
+        }
+        Call::ClearClipboard => {
+            clipboard::clear();
             Reply::Done(String::new())
         }
         Call::Reload => config(reload::reload(), "reloaded"),

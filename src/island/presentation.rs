@@ -20,16 +20,20 @@ pub enum Surface {
 
     // the apps' tray items and their menus (#135)
     Tray,
+
+    // the clipboard history (#137)
+    Clipboard,
 }
 
 impl Surface {
     #[cfg(test)]
-    pub const ALL: [Surface; 5] = [
+    pub const ALL: [Surface; 6] = [
         Surface::Media,
         Surface::Notifications,
         Surface::Controls,
         Surface::Launcher,
         Surface::Tray,
+        Surface::Clipboard,
     ];
 
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)

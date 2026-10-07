@@ -45,6 +45,7 @@ pub enum Call {
     Island(Command),
     Timer(timer::Request),
     ClearNotifications,
+    ClearClipboard,
     Reload,
     Validate,
     Status,
@@ -280,6 +281,19 @@ mod tests {
             Ok(("notifications", Call::ClearNotifications))
         );
 
+        // likewise the clipboard history and its Surface
+        assert_eq!(
+            parsed(&["clipboard", "clear"]),
+            Ok(("clipboard", Call::ClearClipboard))
+        );
+        assert_eq!(
+            parsed(&["clipboard", "open"]),
+            Ok((
+                "clipboard-surface",
+                Call::Island(Command::Open(Surface::Clipboard))
+            ))
+        );
+
         // Do Not Disturb only quiets notifications, so it goes with them
         assert_eq!(
             parsed(&["notifications", "dnd", "on"]),
@@ -313,6 +327,9 @@ mod tests {
             &["notifications", "dnd"],
             &["notifications", "dnd", "maybe"],
             &["notifications", "clear", "all"],
+            &["clipboard"],
+            &["clipboard", "clear", "all"],
+            &["clipboard", "delete"],
             &["debug"],
             &["doctor"],
             &["help"],
@@ -339,6 +356,8 @@ notifications clear
 notifications dnd on|off|toggle
 notifications open|close|toggle
 tray open|close|toggle
+clipboard clear
+clipboard open|close|toggle
 controls open|close|toggle
 launcher open|close|toggle
 doctor

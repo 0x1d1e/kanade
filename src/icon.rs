@@ -51,6 +51,9 @@ const BACK: &str = include_str!("icons/back.svg");
 const FORWARD: &str = include_str!("icons/forward.svg");
 const LOCK: &str = include_str!("icons/lock.svg");
 const CHECK: &str = include_str!("icons/check.svg");
+const CLIPBOARD: &str = include_str!("icons/clipboard.svg");
+const TEXT: &str = include_str!("icons/text.svg");
+const PICTURE: &str = include_str!("icons/picture.svg");
 const SLASH: &str = include_str!("icons/slash.svg");
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
@@ -106,6 +109,11 @@ pub(crate) enum Icon {
 
     // the one chosen of a list, like the default device
     Check,
+
+    // the clipboard history, and the kinds of what it keeps: lines of text, a picture
+    Clipboard,
+    Text,
+    Picture,
 }
 
 // the icons drawn so far, by what tells their pixels apart, and the svg each was written to
@@ -207,6 +215,9 @@ impl Icon {
             Icon::Forward => &[FORWARD],
             Icon::Lock => &[LOCK],
             Icon::Check => &[CHECK],
+            Icon::Clipboard => &[CLIPBOARD],
+            Icon::Text => &[TEXT],
+            Icon::Picture => &[PICTURE],
         }
     }
 
@@ -248,7 +259,7 @@ fn content(svg: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 29] = [
+    const ALL: [Icon; 32] = [
         Icon::Speaker(0),
         Icon::Speaker(30),
         Icon::Speaker(80),
@@ -278,6 +289,9 @@ mod tests {
         Icon::Forward,
         Icon::Lock,
         Icon::Check,
+        Icon::Clipboard,
+        Icon::Text,
+        Icon::Picture,
     ];
 
     #[test]
@@ -356,8 +370,8 @@ mod tests {
             assert_eq!(drawn(), written);
         }
 
-        // one svg per drawing and ink, not per size: 27 drawings, each plain and crossed
-        assert_eq!(written, 54);
+        // one svg per drawing and ink, not per size: 30 drawings, each plain and crossed
+        assert_eq!(written, 60);
 
         for (path, _) in &first {
             assert!(path.exists(), "{}", path.display());

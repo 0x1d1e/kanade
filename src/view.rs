@@ -147,13 +147,13 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
                 // OnDemand would keep the focus the press gave while the pointer rests on the pill
                 set_armed(&pressed, false);
             } else {
-                let notifications = modules::on("notification-surface")
-                    && surfaces::notifications::key(&pressed, key);
-                let launcher = !notifications
-                    && modules::on("launcher")
-                    && surfaces::launcher::key(&pressed, key);
+                let used = (modules::on("notification-surface")
+                    && surfaces::notifications::key(&pressed, key))
+                    || (modules::on("launcher") && surfaces::launcher::key(&pressed, key))
+                    || (modules::on("clipboard-surface")
+                        && surfaces::clipboard::key(&pressed, key));
 
-                if !notifications && !launcher {
+                if !used {
                     stray(&pressed, key);
                 }
             }
@@ -337,6 +337,7 @@ fn surface(
             island.visit(),
             island.held(monitor),
         )),
+        Surface::Clipboard => Some(surfaces::clipboard::surface(monitor, island.visit())),
     }
 }
 
@@ -1264,9 +1265,9 @@ pub(crate) fn pin() {
 }
 
 /*
- * only the Launcher takes typing, and it consumes its keys first, so a character typed into any
- * other held island the pointer never reached was meant for the window beneath: the island lets go of the keyboard
- * before a Space or Enter presses anything
+ * only the Launcher and the Clipboard take typing, and they consume their keys first, so a character
+ * typed into any other held island the pointer never reached was meant for the window beneath: the
+ * island lets go of the keyboard before a Space or Enter presses anything
  */
 fn stray(monitor: &str, key: Key) {
     let island = IslandService::read();
