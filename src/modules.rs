@@ -488,7 +488,10 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
-        needs: &[],
+        needs: &[Need {
+            on: Provider::Program(clipboard::COPY),
+            without: "no copying a calculator value or an emoji",
+        }],
         settings: &[],
         verbs: &[Verb {
             name: "launcher",

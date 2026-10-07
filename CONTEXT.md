@@ -81,6 +81,13 @@ A level inside a Surface, entered from one of its targets and left by a back con
 - **Invariant:** a password never prints, in a log or a `Debug`; it lives only until NetworkManager has it.
 - **Avoid:** detail (an Activity's Detail), page, view
 
+## LauncherProvider
+One kind of answer the Launcher finds for a query: apps, the calculator, emoji. Each answer has a Fit, what its row shows, and its action: start an app, or copy text.
+- **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, emoji), then each provider's own.
+- Emoji answer only a query starting with `:`, and apps answer none of those.
+- Kanade's own seam; no plugin API.
+- **Avoid:** plugin, source (a source posts to the island)
+
 ## Satellite
 Small secondary indicator beside the primary island: timer, VPN, low battery.
 - Capture is no Satellite: the privacy cluster shows it.

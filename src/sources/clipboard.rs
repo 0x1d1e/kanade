@@ -11,7 +11,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, BufRead, Read, Write};
-use std::process::{Child, ChildStdin};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
@@ -328,6 +328,30 @@ pub fn restore(entry: &Entry, done: impl FnOnce(bool) + Send + 'static) {
 
     if let Some(restore) = unsent {
         (restore.done)(false);
+    }
+}
+
+/*
+ * puts `text` on the clipboard apart from the history, for the Launcher: wl-copy serves it from a
+ * process of its own, which outlives Kanade, until another program takes the selection. Blocks
+ * until wl-copy has it, so call it off the view's thread; needs no `clipboard` Module
+ */
+pub fn put(text: &str) -> io::Result<()> {
+    // that process keeps what it inherits open, so it gets nothing to hold
+    let status = Command::new(COPY)
+        .args(["--type", TEXT, "--", text])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => io::Error::new(error.kind(), "wl-copy not found"),
+            _ => error,
+        })?;
+
+    match status.success() {
+        true => Ok(()),
+        false => Err(io::Error::other(format!("wl-copy failed ({status})"))),
     }
 }
 
