@@ -62,7 +62,7 @@ pub fn networks(
     };
 
     Column::new(vec![
-        Box::new(list::header("Wi-Fi", radio, ring)) as Box<dyn Widget>,
+        Box::new(list::header("Wi-Fi", Some(radio), ring)) as Box<dyn Widget>,
         list,
     ])
     .width(WIDTH)

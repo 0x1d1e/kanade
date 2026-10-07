@@ -50,6 +50,7 @@ const DISMISS: &str = include_str!("icons/dismiss.svg");
 const BACK: &str = include_str!("icons/back.svg");
 const FORWARD: &str = include_str!("icons/forward.svg");
 const LOCK: &str = include_str!("icons/lock.svg");
+const CHECK: &str = include_str!("icons/check.svg");
 const SLASH: &str = include_str!("icons/slash.svg");
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
@@ -102,6 +103,9 @@ pub(crate) enum Icon {
 
     // a network that takes a password
     Lock,
+
+    // the one chosen of a list, like the default device
+    Check,
 }
 
 // the icons drawn so far, by what tells their pixels apart, and the svg each was written to
@@ -202,6 +206,7 @@ impl Icon {
             Icon::Back => &[BACK],
             Icon::Forward => &[FORWARD],
             Icon::Lock => &[LOCK],
+            Icon::Check => &[CHECK],
         }
     }
 
@@ -243,7 +248,7 @@ fn content(svg: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 28] = [
+    const ALL: [Icon; 29] = [
         Icon::Speaker(0),
         Icon::Speaker(30),
         Icon::Speaker(80),
@@ -272,6 +277,7 @@ mod tests {
         Icon::Back,
         Icon::Forward,
         Icon::Lock,
+        Icon::Check,
     ];
 
     #[test]
@@ -350,8 +356,8 @@ mod tests {
             assert_eq!(drawn(), written);
         }
 
-        // one svg per drawing and ink, not per size: 26 drawings, each plain and crossed
-        assert_eq!(written, 52);
+        // one svg per drawing and ink, not per size: 27 drawings, each plain and crossed
+        assert_eq!(written, 54);
 
         for (path, _) in &first {
             assert!(path.exists(), "{}", path.display());

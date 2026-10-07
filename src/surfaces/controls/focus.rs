@@ -1,11 +1,12 @@
 //! Where the Controls Surface is for one visit: its top level or a sub-surface, and the keyboard's
 //! ring on it. Written by input only, never by the view. Every target is a key away: the arrows
-//! move the ring, Enter or Space presses it, Escape goes back a level, and the top level's levels
-//! move with Left and Right.
+//! move the ring, Enter or Space presses it, Escape goes back a level, and levels move with Left and
+//! Right.
 
 use amane::{Key, Service};
 
 use super::list;
+use crate::sources::audio::Node;
 use crate::sources::power::Profile;
 use crate::sources::wifi::Secret;
 
@@ -23,6 +24,9 @@ pub enum Subsurface {
 
     // the Bluetooth devices, paired and nearby
     Bluetooth,
+
+    // the sound devices and the apps playing or recording
+    Audio,
 }
 
 // what the ring can be on, by what it is rather than where, so a network moving keeps it
@@ -36,6 +40,10 @@ pub enum At {
     Microphone,
     Dnd,
     Speaker,
+
+    // the chevron at the end of the speaker's level, which opens the Audio sub-surface
+    Audio,
+
     Brightness,
     Profile(Profile),
 
@@ -53,6 +61,25 @@ pub enum At {
     // the code a pairing shows: it matches, or the pairing stops
     Confirm,
     Cancel,
+
+    /*
+     * the Audio sub-surface's: the default microphone's level, as `Speaker` is the default
+     * speaker's, the devices to make the default, and the apps' levels
+     */
+    MicrophoneLevel,
+    Output(Node),
+    Input(Node),
+    Stream(Node),
+}
+
+impl At {
+    // Left and Right move it, rather than the ring
+    fn level(&self) -> bool {
+        matches!(
+            self,
+            At::Speaker | At::Brightness | At::MicrophoneLevel | At::Stream(_)
+        )
+    }
 }
 
 // what a key asks for beyond moving
@@ -106,7 +133,7 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32
                 (At::Bluetooth, 0.8),
             ],
             vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
-            vec![(At::Speaker, 0.5)],
+            vec![(At::Speaker, 0.45), (At::Audio, 0.97)],
             vec![(At::Brightness, 0.5)],
             Profile::ALL
                 .into_iter()
@@ -120,6 +147,13 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32
         ],
         Some(Subsurface::Wifi | Subsurface::Bluetooth) => {
             let mut grid = vec![vec![(At::Back, 0.0), (At::Radio, 1.0)]];
+
+            grid.extend(rows);
+            grid
+        }
+        // no radio to switch
+        Some(Subsurface::Audio) => {
+            let mut grid = vec![vec![(At::Back, 0.0)]];
 
             grid.extend(rows);
             grid
@@ -147,7 +181,10 @@ impl Focus {
 
     // a listing sub-surface: its header, then rows that scroll
     pub fn listing(&self) -> bool {
-        matches!(self.sub, Some(Subsurface::Wifi | Subsurface::Bluetooth))
+        matches!(
+            self.sub,
+            Some(Subsurface::Wifi | Subsurface::Bluetooth | Subsurface::Audio)
+        )
     }
 
     // this visit's focus; one kept from an earlier visit is over
@@ -259,6 +296,12 @@ impl Focus {
                 offset: 0.0,
                 ..self
             },
+            Some(Subsurface::Audio) => Focus {
+                sub: None,
+                at: Some(At::Audio),
+                offset: 0.0,
+                ..self
+            },
             Some(Subsurface::Password { ssid, .. }) => Focus {
                 at: Some(At::Network(ssid.clone())),
                 sub: Some(Subsurface::Wifi),
@@ -283,7 +326,7 @@ impl Focus {
 
         let place = self.place(grid)?;
         let at = grid[place.row][place.column].0.clone();
-        let level = matches!(at, At::Speaker | At::Brightness);
+        let level = at.level();
 
         let act = match key {
             Key::Enter | Key::Space => Some(Act::Press(at.clone())),
@@ -292,7 +335,11 @@ impl Focus {
             _ => None,
         };
 
-        let moved = moved(place, key, grid);
+        // on a level, Left and Right only move it
+        let moved = match key {
+            Key::Left | Key::Right if level => None,
+            _ => moved(place, key, grid),
+        };
 
         if act.is_none() && moved.is_none() {
             return None;
@@ -521,6 +568,65 @@ mod tests {
 
         let (_, act) = focus.step(Key::Space, &grid).unwrap();
         assert_eq!(act, Some(Act::Press(At::Speaker)));
+    }
+
+    // the speaker's chevron is in its row, but Left and Right there move the level, not the ring
+    #[test]
+    fn the_audio_chevron_is_down_from_dnd_and_left_and_right_stay_on_the_speaker() {
+        let grid = top();
+        let focus = keys(shown(), &[Key::Down, Key::Right, Key::Down], &grid);
+        assert_eq!(focus.at(&grid), Some(At::Audio));
+
+        let (speaker, act) = focus.clone().step(Key::Left, &grid).unwrap();
+        assert_eq!(act, None);
+        assert_eq!(speaker.at(&grid), Some(At::Speaker));
+
+        for key in [Key::Left, Key::Right] {
+            let (still, _) = speaker.clone().step(key, &grid).unwrap();
+            assert_eq!(still.at(&grid), Some(At::Speaker));
+        }
+
+        let (_, act) = focus.step(Key::Enter, &grid).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Audio)));
+    }
+
+    #[test]
+    fn the_audio_sub_surface_adjusts_each_level_and_escape_comes_back_to_its_chevron() {
+        let rows = vec![
+            vec![(At::Speaker, 0.5)],
+            vec![(At::Output(Node::of(1)), 0.5)],
+            vec![(At::MicrophoneLevel, 0.5)],
+            vec![(At::Stream(Node::of(9)), 0.5)],
+        ];
+        let inside = shown().enter(Subsurface::Audio);
+        let grid = inside.grid(rows);
+
+        // it starts on the output's level, under a header with only its back chevron
+        assert_eq!(grid[0], [(At::Back, 0.0)]);
+        assert_eq!(inside.at(&grid), Some(At::Speaker));
+
+        let app = keys(inside, &[Key::End], &grid);
+        assert_eq!(app.at(&grid), Some(At::Stream(Node::of(9))));
+
+        let (app, act) = app.step(Key::Right, &grid).unwrap();
+        assert_eq!(act, Some(Act::Adjust(At::Stream(Node::of(9)), -1.0)));
+
+        let (app, act) = app.step(Key::Space, &grid).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Stream(Node::of(9)))));
+
+        let microphone = keys(app, &[Key::Up], &grid);
+        let (microphone, act) = microphone.step(Key::Left, &grid).unwrap();
+        assert_eq!(act, Some(Act::Adjust(At::MicrophoneLevel, 1.0)));
+
+        // a device is pressed, not adjusted, and Left and Right go nowhere from it
+        let output = keys(microphone, &[Key::Up], &grid);
+        assert_eq!(output.clone().step(Key::Right, &grid), None);
+        let (output, act) = output.step(Key::Enter, &grid).unwrap();
+        assert_eq!(act, Some(Act::Press(At::Output(Node::of(1)))));
+
+        let (back, _) = output.step(Key::Escape, &grid).unwrap();
+        assert_eq!(back.sub, None);
+        assert_eq!(back.at(&top()), Some(At::Audio));
     }
 
     #[test]

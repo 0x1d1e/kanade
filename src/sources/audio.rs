@@ -1,13 +1,17 @@
 //! The audio devices and app streams (#132, ADR 0011): what Amane's `Audio` lacks, since it has the
 //! default speaker and microphone only. Read from PipeWire's graph through `pw-dump --monitor`, run
 //! apart from `privacy`'s, so this wakes only when the graph does; changed through `wpctl`, one
-//! action each. What capture is in use is `privacy`'s, not this.
+//! action each, run in turn off the draw thread. What capture is in use is `privacy`'s, not this.
 //!
 //! Volumes are percents on the scale `wpctl` and Amane's `Audio` show: PipeWire keeps the cube of
-//! it per channel. A `Node` names a device or stream to act on, and is good only while it shows.
+//! it per channel. A `Node` names one device or stream for as long as it lives: PipeWire hands its
+//! id out again, never its serial, so an action runs only once the graph still shows that serial
+//! at that id.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};
+use std::sync::{Mutex, PoisonError};
+use std::thread;
 
 use amane::Service;
 
@@ -38,9 +42,32 @@ impl Service for Mixer {
     fn listen() {}
 }
 
-// one device or stream to act on; another Node once it is gone and back
+// one device or stream to act on: the id wpctl takes, and the serial that tells it from another
+// given the same id later
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Node(u64);
+pub struct Node {
+    id: u64,
+    serial: u64,
+}
+
+#[cfg(test)]
+impl Node {
+    // the node at `id`, its serial apart from its id as PipeWire's are
+    pub fn of(id: u64) -> Node {
+        Node {
+            id,
+            serial: id + 1000,
+        }
+    }
+
+    // another node PipeWire gave the same id
+    pub fn again(self) -> Node {
+        Node {
+            serial: self.serial + 1,
+            ..self
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
@@ -54,7 +81,7 @@ pub struct Device {
 
     pub level: Level,
 
-    // how `set_default` makes it the default of the list it is in
+    // how `command` makes it the default of the list it is in
     choice: Choice,
 }
 
@@ -66,6 +93,23 @@ enum Choice {
     // a device that does both, which wpctl turns down: set by name as the configured default of
     // one direction, as wpctl would
     Configured { key: &'static str, name: String },
+}
+
+#[cfg(test)]
+impl Device {
+    // a sink or source, as other modules' tests need one
+    pub fn of(node: Node, name: &str, default: bool) -> Device {
+        Device {
+            node,
+            name: name.into(),
+            default,
+            level: Level {
+                volume: 50,
+                muted: false,
+            },
+            choice: Choice::Node,
+        }
+    }
 }
 
 // an app playing or recording sound
@@ -131,6 +175,7 @@ impl Role {
 #[derive(Debug)]
 struct Entry {
     role: Role,
+    serial: u64,
 
     // what the default devices name it by
     name: String,
@@ -229,7 +274,10 @@ impl Graph {
                 .iter()
                 .filter(|(_, entry)| entry.role == role || entry.role == Role::Duplex)
                 .map(|(&id, entry)| Device {
-                    node: Node(id),
+                    node: Node {
+                        id,
+                        serial: entry.serial,
+                    },
                     name: entry.label.clone(),
                     default: default.as_ref() == Some(&entry.name),
                     level: entry.level,
@@ -243,7 +291,7 @@ impl Graph {
                 })
                 .collect();
 
-            devices.sort_by(|a, b| (&a.name, a.node.0).cmp(&(&b.name, b.node.0)));
+            devices.sort_by(|a, b| (&a.name, a.node.id).cmp(&(&b.name, b.node.id)));
             devices
         };
 
@@ -252,7 +300,10 @@ impl Graph {
             .iter()
             .filter(|(_, entry)| matches!(entry.role, Role::Playback | Role::Recording))
             .map(|(&id, entry)| Stream {
-                node: Node(id),
+                node: Node {
+                    id,
+                    serial: entry.serial,
+                },
                 app: entry.label.clone(),
                 title: entry.title.clone(),
                 plays: entry.role == Role::Playback,
@@ -260,7 +311,7 @@ impl Graph {
             })
             .collect();
 
-        streams.sort_by(|a, b| (!a.plays, &a.app, a.node.0).cmp(&(!b.plays, &b.app, b.node.0)));
+        streams.sort_by(|a, b| (!a.plays, &a.app, a.node.id).cmp(&(!b.plays, &b.app, b.node.id)));
 
         Mixer {
             outputs: devices(Role::Output, &self.output, CONFIGURED_OUTPUT),
@@ -270,10 +321,13 @@ impl Graph {
     }
 }
 
-// a node the Mixer shows; none for the rest, like video, MIDI, a level meter or a stream inside
-// a device
+/*
+ * a node the Mixer shows; none for the rest, like video, MIDI, a level meter or a stream inside
+ * a device, or one without a serial, which could not be told from another given its id
+ */
 fn entry(object: &Object) -> Option<Entry> {
     let role = Role::of(object.prop("media.class")?)?;
+    let serial = object.serial()?;
 
     if object.flag("stream.monitor") {
         return None;
@@ -291,6 +345,7 @@ fn entry(object: &Object) -> Option<Entry> {
 
     Some(Entry {
         role,
+        serial,
         label: label.to_string(),
         title: title.map(String::from),
         name,
@@ -442,60 +497,222 @@ fn show(mixer: &Mixer) {
 }
 
 /*
- * sets a device's or stream's volume, 0 to 100; waits for wpctl, so call it off the draw thread.
- * The Mixer shows the change once PipeWire has it
+ * asks for a device's or stream's volume, 0 to 100, as `ask` says. The Mixer shows the change once
+ * PipeWire has it
  */
-#[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_volume(node: Node, volume: u8) -> Result<(), String> {
-    let volume = format!("{}%", volume.min(100));
-
-    wake::act(WPCTL, &["set-volume", &node.0.to_string(), &volume])
+pub fn ask_volume(node: Node, volume: u8) {
+    ask(Ask::Volume(node, volume));
 }
 
-// mutes or unmutes a device or stream, as `set_volume`
-#[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_muted(node: Node, muted: bool) -> Result<(), String> {
-    let muted = if muted { "1" } else { "0" };
-
-    wake::act(WPCTL, &["set-mute", &node.0.to_string(), muted])
+// asks for a device or stream muted or unmuted, as `ask_volume`
+pub fn ask_muted(node: Node, muted: bool) {
+    ask(Ask::Muted(node, muted));
 }
 
 /*
- * makes a device the default of the list it is in, outputs or inputs, as `set_volume`; streams that
- * follow the default move to it
+ * asks for `device` the default of `direction`, the list it is in, unless one is being switched to
+ * already; `Switching` says how it goes
  */
-#[expect(dead_code, reason = "the Audio sub-surface calls it, #133")]
-pub fn set_default(device: &Device) -> Result<(), String> {
-    choose(device, wake::act, || wake::query(DUMP, &["--no-colors"]))
+pub fn ask_default(device: &Device, direction: Direction) {
+    {
+        let mut switching = Switching::write();
+
+        if matches!(*switching, Switching::Doing(..)) {
+            return;
+        }
+
+        *switching = Switching::Doing(device.node, direction);
+    }
+
+    ask(Ask::Default(device.clone(), direction));
+}
+
+// which list a device is in; a duplex device is in both
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Output,
+    Input,
+}
+
+// a default device being switched to, or the last that failed to be
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Switching {
+    #[default]
+    Idle,
+    Doing(Node, Direction),
+    Failed(Node, Direction),
+}
+
+impl Service for Switching {
+    fn new() -> Self {
+        Switching::default()
+    }
+
+    fn listen() {}
+}
+
+impl Switching {
+    pub fn doing(self, node: Node, direction: Direction) -> bool {
+        self == Switching::Doing(node, direction)
+    }
+
+    pub fn failed(self, node: Node, direction: Direction) -> bool {
+        self == Switching::Failed(node, direction)
+    }
+
+    pub fn busy(self) -> bool {
+        matches!(self, Switching::Doing(..))
+    }
+}
+
+// one change through wpctl
+#[derive(Debug, Clone, PartialEq)]
+enum Ask {
+    Volume(Node, u8),
+    Muted(Node, bool),
+    Default(Device, Direction),
+}
+
+impl Ask {
+    // asks for the same thing of the same device or stream, so only the later one need run
+    fn replaces(&self, other: &Ask) -> bool {
+        match (self, other) {
+            (Ask::Volume(node, _), Ask::Volume(other, _))
+            | (Ask::Muted(node, _), Ask::Muted(other, _)) => node == other,
+            (Ask::Default(_, direction), Ask::Default(_, other)) => direction == other,
+            _ => false,
+        }
+    }
+
+    // waits for pw-dump and wpctl
+    fn run(self) {
+        let done = perform(&self, wake::act, |id| match id {
+            Some(id) => wake::query(DUMP, &["--no-colors", &id.to_string()]),
+            None => wake::query(DUMP, &["--no-colors"]),
+        });
+
+        match self {
+            Ask::Volume(..) | Ask::Muted(..) => {
+                if let Err(why) = done {
+                    eprintln!("kanade: cannot set a level: {why}");
+                }
+            }
+            Ask::Default(device, direction) => {
+                let outcome = match done {
+                    Ok(()) => Switching::Idle,
+                    Err(why) => {
+                        eprintln!("kanade: cannot switch to {}: {why}", device.name);
+                        Switching::Failed(device.node, direction)
+                    }
+                };
+
+                let mut switching = Switching::write();
+
+                if switching.doing(device.node, direction) {
+                    *switching = outcome;
+                }
+            }
+        }
+    }
+}
+
+// the asks waiting their turn, oldest first, and whether a thread is running them
+#[derive(Debug, Default)]
+struct Asks {
+    waiting: Vec<Ask>,
+    running: bool,
+}
+
+impl Asks {
+    // `ask` in its turn, in place of one it replaces, so a slider dragged runs only its last level
+    fn push(&mut self, ask: Ask) {
+        match self
+            .waiting
+            .iter_mut()
+            .find(|waiting| ask.replaces(waiting))
+        {
+            Some(waiting) => *waiting = ask,
+            None => self.waiting.push(ask),
+        }
+    }
+}
+
+static ASKS: Mutex<Asks> = Mutex::new(Asks {
+    waiting: Vec::new(),
+    running: false,
+});
+
+/*
+ * runs `ask` after those asked before it, one at a time on a thread of their own, so the draw
+ * thread never waits for wpctl and two never race
+ */
+fn ask(ask: Ask) {
+    let mut asks = ASKS.lock().unwrap_or_else(PoisonError::into_inner);
+
+    asks.push(ask);
+
+    if !asks.running {
+        asks.running = true;
+        thread::spawn(run);
+    }
+}
+
+// the asks run until none wait
+fn run() {
+    loop {
+        let ask = {
+            let mut asks = ASKS.lock().unwrap_or_else(PoisonError::into_inner);
+
+            if asks.waiting.is_empty() {
+                asks.running = false;
+                return;
+            }
+
+            asks.waiting.remove(0)
+        };
+
+        ask.run();
+    }
 }
 
 /*
- * `set_default` through `act`. A duplex device is checked against what `dump` prints of the graph
- * before and after: wpctl fails on its own for a node that is gone or a default it did not set,
- * while pw-metadata would configure a name nothing has any more, and exits 0 even having set
- * nothing, as when there is no such metadata
+ * `ask` through `act`, once its node is still the object it was, as `dump` prints the object at an
+ * id, or the whole graph for none. Only the moment between that print and `act` is left, as wpctl
+ * takes no serial. A duplex default is checked again after: wpctl fails on its own for a default
+ * it did not set, while pw-metadata would configure a name nothing has any more, and exits 0 even
+ * having set nothing, as when there is no such metadata
  */
-fn choose(
-    device: &Device,
+fn perform(
+    ask: &Ask,
     act: impl FnOnce(&str, &[&str]) -> Result<(), String>,
-    dump: impl Fn() -> Result<String, String>,
+    dump: impl Fn(Option<u64>) -> Result<String, String>,
 ) -> Result<(), String> {
-    let (program, args) = default_command(device);
-    let args: Vec<_> = args.iter().map(String::as_str).collect();
-
-    let Choice::Configured { key, name } = &device.choice else {
-        return act(program, &args);
+    let node = match ask {
+        Ask::Volume(node, _) | Ask::Muted(node, _) => *node,
+        Ask::Default(device, _) => device.node,
     };
 
-    let gone = || format!("{} is gone", device.name);
-
-    if !shows(&dump()?, device.node, name) {
-        return Err(gone());
+    if !shows(&dump(Some(node.id))?, node) {
+        return Err(gone(ask));
     }
+
+    let (program, args) = command(ask);
+    let args: Vec<_> = args.iter().map(String::as_str).collect();
 
     act(program, &args)?;
 
-    let graph = dump()?;
+    let Ask::Default(
+        Device {
+            choice: Choice::Configured { key, name },
+            ..
+        },
+        _,
+    ) = ask
+    else {
+        return Ok(());
+    };
+
+    let graph = dump(None)?;
 
     match configured(&graph, key) {
         Some(set) if set == *name => {}
@@ -508,22 +725,28 @@ fn choose(
     }
 
     // gone while it was configured, which leaves only a preference for when it is back
-    match shows(&graph, device.node, name) {
+    match shows(&graph, node) {
         true => Ok(()),
-        false => Err(gone()),
+        false => Err(gone(ask)),
     }
 }
 
-// whether `node` is still the duplex device named `name`, as pw-dump prints the graph
-fn shows(dump: &str, node: Node, name: &str) -> bool {
+fn gone(ask: &Ask) -> String {
+    match ask {
+        Ask::Volume(node, _) | Ask::Muted(node, _) => format!("node {} is gone", node.id),
+        Ask::Default(device, _) => format!("{} is gone", device.name),
+    }
+}
+
+// whether `node` is still the object at its id, as pw-dump prints the graph
+fn shows(dump: &str, node: Node) -> bool {
     let mut shows = false;
 
     pipewire::prints(dump.as_bytes(), |objects| {
         shows |= objects.iter().map(Object).any(|object| {
-            object.id() == Some(node.0)
+            object.id() == Some(node.id)
                 && object.kind() == Some(NODE)
-                && object.prop("media.class") == Some("Audio/Duplex")
-                && object.prop("node.name") == Some(name)
+                && object.serial() == Some(node.serial)
         });
     });
 
@@ -549,15 +772,33 @@ fn configured(dump: &str, key: &str) -> Option<String> {
     configured
 }
 
-fn default_command(device: &Device) -> (&'static str, Vec<String>) {
-    match &device.choice {
-        Choice::Node => (WPCTL, vec!["set-default".into(), device.node.0.to_string()]),
-        Choice::Configured { key, name } => {
-            let value = format!("{{ \"name\": {} }}", json::quote(name));
-            let args = ["-n", DEFAULTS, "0", key, &value, "Spa:String:JSON"];
+/*
+ * what carries `ask` out: wpctl for a level, and for a default but a duplex device's, which wpctl
+ * turns down and is configured by name, as wpctl would
+ */
+fn command(ask: &Ask) -> (&'static str, Vec<String>) {
+    let wpctl = |args: &[&str]| (WPCTL, args.iter().map(|arg| arg.to_string()).collect());
 
-            (pipewire::SET_METADATA, args.map(String::from).to_vec())
-        }
+    match ask {
+        Ask::Volume(node, volume) => wpctl(&[
+            "set-volume",
+            &node.id.to_string(),
+            &format!("{}%", volume.min(&100)),
+        ]),
+        Ask::Muted(node, muted) => wpctl(&[
+            "set-mute",
+            &node.id.to_string(),
+            if *muted { "1" } else { "0" },
+        ]),
+        Ask::Default(device, _) => match &device.choice {
+            Choice::Node => wpctl(&["set-default", &device.node.id.to_string()]),
+            Choice::Configured { key, name } => {
+                let value = format!("{{ \"name\": {} }}", json::quote(name));
+                let args = ["-n", DEFAULTS, "0", key, &value, "Spa:String:JSON"];
+
+                (pipewire::SET_METADATA, args.map(String::from).to_vec())
+            }
+        },
     }
 }
 
@@ -570,13 +811,18 @@ mod tests {
     const HEADPHONES: u64 = 116;
     const DEFAULTS_ID: u64 = 40;
 
+    // the node at `id`, its serial as `Node::of` has it
     fn node(id: u64, props: &str, volumes: &str, muted: bool) -> String {
+        serialed(id, id + 1000, props, volumes, muted)
+    }
+
+    fn serialed(id: u64, serial: u64, props: &str, volumes: &str, muted: bool) -> String {
         format!(
             r#"  {{
     "id": {id},
     "type": "{NODE}",
     "info": {{
-      "props": {{ {props} }},
+      "props": {{ "object.serial": {serial}, {props} }},
       "params": {{
         "Props": [
           {{ "device": "x" }},
@@ -706,7 +952,7 @@ mod tests {
 
     fn device_of(node: u64, name: &str, default: bool, volume: u8) -> Device {
         Device {
-            node: Node(node),
+            node: Node::of(node),
             name: name.into(),
             default,
             level: level(volume, false),
@@ -762,21 +1008,21 @@ mod tests {
             streams,
             &vec![
                 Stream {
-                    node: Node(82),
+                    node: Node::of(82),
                     app: "Firefox".into(),
                     title: None,
                     plays: true,
                     level: level(100, false),
                 },
                 Stream {
-                    node: Node(81),
+                    node: Node::of(81),
                     app: "Zen".into(),
                     title: Some("Video - YouTube".into()),
                     plays: true,
                     level: level(50, true),
                 },
                 Stream {
-                    node: Node(80),
+                    node: Node::of(80),
                     app: "OBS".into(),
                     title: None,
                     plays: false,
@@ -810,7 +1056,7 @@ mod tests {
         assert_eq!(
             posts.last().unwrap().streams,
             vec![Stream {
-                node: Node(80),
+                node: Node::of(80),
                 app: "speech-dispatcher".into(),
                 title: None,
                 plays: true,
@@ -864,8 +1110,8 @@ mod tests {
 
         let mixer = posts.last().unwrap();
 
-        assert_eq!(default_nodes(&mixer.outputs), vec![Node(SPEAKER)]);
-        assert_eq!(default_nodes(&mixer.inputs), vec![Node(MICROPHONE)]);
+        assert_eq!(default_nodes(&mixer.outputs), vec![Node::of(SPEAKER)]);
+        assert_eq!(default_nodes(&mixer.inputs), vec![Node::of(MICROPHONE)]);
     }
 
     // pw-dump prints a removed key as nothing, so only reading the metadata again tells
@@ -877,7 +1123,7 @@ mod tests {
         let mixer = posts.last().unwrap();
 
         assert_eq!(default_nodes(&mixer.outputs), vec![]);
-        assert_eq!(default_nodes(&mixer.inputs), vec![Node(MICROPHONE)]);
+        assert_eq!(default_nodes(&mixer.inputs), vec![Node::of(MICROPHONE)]);
     }
 
     #[test]
@@ -887,7 +1133,7 @@ mod tests {
 
         assert_eq!(
             default_nodes(&posts.last().unwrap().outputs),
-            vec![Node(HEADPHONES)]
+            vec![Node::of(HEADPHONES)]
         );
     }
 
@@ -903,7 +1149,7 @@ mod tests {
         );
 
         assert_eq!(posts.len(), 2);
-        assert_eq!(default_nodes(&posts[0].outputs), vec![Node(HEADPHONES)]);
+        assert_eq!(default_nodes(&posts[0].outputs), vec![Node::of(HEADPHONES)]);
         assert_eq!(default_nodes(&posts[1].outputs), vec![]);
     }
 
@@ -926,18 +1172,18 @@ mod tests {
         let interface = |devices: &[Device]| {
             devices
                 .iter()
-                .find(|device| device.node == Node(60))
+                .find(|device| device.node == Node::of(60))
                 .cloned()
                 .unwrap()
         };
 
         assert_eq!(interface(&mixer.outputs).name, "Interface");
-        assert_eq!(default_nodes(&mixer.inputs), vec![Node(60)]);
-        assert_eq!(default_nodes(&mixer.outputs), vec![Node(HEADPHONES)]);
+        assert_eq!(default_nodes(&mixer.inputs), vec![Node::of(60)]);
+        assert_eq!(default_nodes(&mixer.outputs), vec![Node::of(HEADPHONES)]);
 
         // wpctl takes only a sink or a source, so a duplex one is configured per direction
         let configures = |devices: &[Device]| {
-            let (program, args) = default_command(&interface(devices));
+            let (program, args) = command(&Ask::Default(interface(devices), Direction::Output));
 
             assert_eq!(program, pipewire::SET_METADATA);
             args
@@ -967,11 +1213,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            default_command(&mixer.outputs[0]),
-            (
-                WPCTL,
-                vec!["set-default".into(), mixer.outputs[0].node.0.to_string()]
-            )
+            command(&Ask::Default(mixer.outputs[0].clone(), Direction::Output)),
+            (WPCTL, vec!["set-default".into(), SPEAKER.to_string()])
         );
     }
 
@@ -1005,7 +1248,7 @@ mod tests {
 
     fn duplex_output() -> Device {
         Device {
-            node: Node(60),
+            node: Node::of(60),
             name: "Interface".into(),
             default: false,
             level: level(100, false),
@@ -1042,11 +1285,40 @@ mod tests {
     fn chosen(device: &Device, before: String, after: String) -> Result<(), String> {
         let dumps = std::cell::RefCell::new(vec![after, before]);
 
-        choose(
-            device,
+        perform(
+            &Ask::Default(device.clone(), Direction::Output),
             |_, _| Ok(()),
-            || dumps.borrow_mut().pop().ok_or("not dumped".into()),
+            |_| dumps.borrow_mut().pop().ok_or("not dumped".into()),
         )
+    }
+
+    /*
+     * what performing `ask` says while pw-dump prints `graph` at any id, and what it ran: nothing
+     * unless the graph still shows its node
+     */
+    fn performed(ask: &Ask, graph: &str) -> (Result<(), String>, Vec<Vec<String>>) {
+        let ran = std::cell::RefCell::new(Vec::new());
+
+        let done = perform(
+            ask,
+            |program, args| {
+                let mut line = vec![program.to_string()];
+                line.extend(args.iter().map(|arg| arg.to_string()));
+                ran.borrow_mut().push(line);
+                Ok(())
+            },
+            |_| Ok(graph.into()),
+        );
+
+        (done, ran.into_inner())
+    }
+
+    fn playing(id: u64, serial: u64) -> String {
+        let props = format!(
+            r#""media.class": "Stream/Output/Audio", "node.name": "node{id}", "application.name": "pw-play""#
+        );
+
+        print(&[serialed(id, serial, &props, "1.0", false)])
     }
 
     // pw-metadata exits 0 even when it sets nothing, so only the graph after says
@@ -1071,13 +1343,13 @@ mod tests {
     #[test]
     fn a_duplex_device_gone_is_not_chosen() {
         let written = std::cell::Cell::new(false);
-        let gone = choose(
-            &duplex_output(),
+        let gone = perform(
+            &Ask::Default(duplex_output(), Direction::Output),
             |_, _| {
                 written.set(true);
                 Ok(())
             },
-            || Ok(graph(true, &[])),
+            |_| Ok(graph(true, &[])),
         );
 
         assert_eq!(gone, Err("Interface is gone".into()));
@@ -1091,10 +1363,7 @@ mod tests {
 
         // another node by its id, as PipeWire hands ids out again
         let mut other = duplex_output();
-        other.choice = Choice::Configured {
-            key: CONFIGURED_OUTPUT,
-            name: "pro_audio.other".into(),
-        };
+        other.node = other.node.again();
         assert_eq!(
             chosen(&other, graph(false, &[]), graph(false, &[])),
             Err("Interface is gone".into())
@@ -1102,13 +1371,104 @@ mod tests {
     }
 
     #[test]
-    fn a_device_default_trusts_wpctl() {
+    fn a_device_default_shown_is_left_to_wpctl() {
         let speaker = device_of(SPEAKER, "Built-in Audio", false, 7);
+        let ask = Ask::Default(speaker, Direction::Output);
 
-        assert_eq!(choose(&speaker, |_, _| Ok(()), || unreachable!()), Ok(()));
         assert_eq!(
-            choose(&speaker, |_, _| Err("refused".into()), || unreachable!()),
-            Err("refused".into())
+            performed(&ask, &machine()),
+            (
+                Ok(()),
+                vec![vec![
+                    WPCTL.into(),
+                    "set-default".into(),
+                    SPEAKER.to_string()
+                ]]
+            )
+        );
+
+        let refused = perform(&ask, |_, _| Err("refused".into()), |_| Ok(machine()));
+        assert_eq!(refused, Err("refused".into()));
+    }
+
+    // a stream gone and its id given to another, a level asked of it waiting meanwhile
+    #[test]
+    fn a_level_asked_of_a_node_gone_never_reaches_the_one_given_its_id() {
+        let stream = Node::of(95);
+        let after = playing(95, stream.again().serial);
+
+        assert_eq!(
+            posts(std::slice::from_ref(&after))[0].streams[0].node,
+            stream.again()
+        );
+
+        for ask in [Ask::Volume(stream, 40), Ask::Muted(stream, true)] {
+            assert_eq!(
+                performed(&ask, &after),
+                (Err("node 95 is gone".into()), vec![])
+            );
+            assert_eq!(
+                performed(&ask, &print(&[])),
+                (Err("node 95 is gone".into()), vec![])
+            );
+        }
+
+        let still = playing(95, stream.serial);
+        let ran = |ask| performed(&ask, &still).1.concat();
+
+        assert_eq!(
+            ran(Ask::Volume(stream, 140)),
+            [WPCTL, "set-volume", "95", "100%"]
+        );
+        assert_eq!(
+            ran(Ask::Muted(stream, true)),
+            [WPCTL, "set-mute", "95", "1"]
+        );
+        assert_eq!(
+            ran(Ask::Muted(stream, false)),
+            [WPCTL, "set-mute", "95", "0"]
+        );
+    }
+
+    // a sink or source gone and its id given to another, a switch to it waiting meanwhile
+    #[test]
+    fn a_default_asked_of_a_device_gone_never_reaches_the_one_given_its_id() {
+        let microphone = device_of(MICROPHONE, "Built-in Microphone", false, 100);
+        let replaced = print(&[serialed(
+            MICROPHONE,
+            microphone.node.again().serial,
+            r#""media.class": "Audio/Source", "node.name": "alsa_input.usb""#,
+            "1.0",
+            false,
+        )]);
+
+        for direction in [Direction::Output, Direction::Input] {
+            let ask = Ask::Default(microphone.clone(), direction);
+
+            assert_eq!(
+                performed(&ask, &replaced),
+                (Err("Built-in Microphone is gone".into()), vec![])
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_without_a_serial_is_not_shown() {
+        let props = r#""media.class": "Audio/Sink", "node.name": "alsa_output.analog""#;
+        let unserialed = node(SPEAKER, props, "1.0", false)
+            .replace(&format!(r#""object.serial": {}, "#, SPEAKER + 1000), "");
+
+        assert_eq!(posts(&[print(&[unserialed])]), Vec::<Mixer>::new());
+
+        // older pw-dump prints it as text
+        let text = node(SPEAKER, props, "1.0", false).replace(
+            &format!(r#""object.serial": {}"#, SPEAKER + 1000),
+            &format!(r#""object.serial": "{}""#, SPEAKER + 1000),
+        );
+
+        assert_eq!(
+            posts(&[print(&[text])])[0].outputs[0].node,
+            Node::of(SPEAKER)
         );
     }
 
@@ -1118,6 +1478,32 @@ mod tests {
 
         assert_eq!(default_name(&value).as_deref(), Some("alsa_output.analog"));
         assert_eq!(default_name(&Json::Null), None);
+    }
+
+    #[test]
+    fn a_later_ask_of_the_same_thing_takes_the_earlier_ones_turn() {
+        let speaker = device_of(SPEAKER, "Built-in Audio", false, 7);
+        let headphones = device_of(HEADPHONES, "Moondrop", true, 36);
+
+        let mut asks = Asks::default();
+        asks.push(Ask::Volume(Node::of(1), 10));
+        asks.push(Ask::Muted(Node::of(1), true));
+        asks.push(Ask::Volume(Node::of(2), 20));
+        asks.push(Ask::Default(speaker, Direction::Output));
+        asks.push(Ask::Volume(Node::of(1), 30));
+        asks.push(Ask::Default(headphones.clone(), Direction::Output));
+        asks.push(Ask::Default(headphones.clone(), Direction::Input));
+
+        assert_eq!(
+            asks.waiting,
+            [
+                Ask::Volume(Node::of(1), 30),
+                Ask::Muted(Node::of(1), true),
+                Ask::Volume(Node::of(2), 20),
+                Ask::Default(headphones.clone(), Direction::Output),
+                Ask::Default(headphones, Direction::Input),
+            ]
+        );
     }
 
     #[test]

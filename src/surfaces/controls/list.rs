@@ -1,6 +1,6 @@
-//! What the Controls Surface's listing sub-surfaces, Wi-Fi and Bluetooth, share: a header with
-//! a back chevron, a title and the radio's switch, then rows that scroll under it, or what it means
-//! while there are none.
+//! What the Controls Surface's listing sub-surfaces, Wi-Fi, Bluetooth and Audio, share: a header
+//! with a back chevron, a title and a radio's switch, then rows that scroll under it, or what it
+//! means while there are none.
 
 use amane::{
     Center, Column, Cursor, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Stack, Start,
@@ -25,7 +25,7 @@ pub const LIST: f32 = geometry::CONTROLS.height - 2.0 * INSET - HEADER - GAP;
 pub const ROWS: usize = 4;
 const ROW_GAP: f32 = 6.0;
 pub const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
-const ROW_INSET: f32 = 12.0;
+pub const ROW_INSET: f32 = 12.0;
 
 pub const ICON: f32 = 20.0;
 pub const ICON_GAP: f32 = 12.0;
@@ -86,10 +86,10 @@ fn shown(offset: f32, count: usize) -> (usize, usize) {
 }
 
 /*
- * the back chevron, `title` and the radio's switch, the ring on the target `ring` is. Its switch
- * presses `At::Radio`, as Enter on it does
+ * the back chevron, `title` and the radio's switch, if it has one, the ring on the target `ring`
+ * is. Its switch presses `At::Radio`, as Enter on it does
  */
-pub fn header(title: &str, radio: Radio, ring: Option<&At>) -> Row {
+pub fn header(title: &str, radio: Option<Radio>, ring: Option<&At>) -> Row {
     let title = Row::new(children![
         back(ring == Some(&At::Back)),
         Text::new(title)
@@ -100,7 +100,13 @@ pub fn header(title: &str, radio: Radio, ring: Option<&At>) -> Row {
     .gap(8.0)
     .align(Center);
 
-    Row::new(children![title, toggle(radio, ring == Some(&At::Radio))])
+    let mut parts = children![title];
+
+    if let Some(radio) = radio {
+        parts.push(Box::new(toggle(radio, ring == Some(&At::Radio))));
+    }
+
+    Row::new(parts)
         .width(WIDTH)
         .height(HEADER)
         .justify(SpaceBetween)
@@ -281,6 +287,30 @@ pub fn row(
         ));
     }
 
+    let row = frame(
+        Row::new(vec![
+            leading,
+            Box::new(Column::new(lines).width(Parent).gap(1.0)),
+            Box::new(Row::new(trailing).gap(ICON_GAP).align(Center)),
+        ])
+        .width(Parent)
+        .gap(ICON_GAP)
+        .align(Center),
+        ring,
+    );
+
+    let Some(at) = press else {
+        return row;
+    };
+
+    row.cursor(Cursor::Pointer)
+        .on_click(super::super::on_left(move || {
+            super::click(Act::Press(at.clone()));
+        }))
+}
+
+// a row's shape around `content`, filled while the ring is on it
+pub fn frame(content: Row, ring: bool) -> Rectangle {
     let row = Rectangle::new()
         .width(WIDTH)
         .height(ROW)
@@ -292,31 +322,13 @@ pub fn row(
             left: ROW_INSET,
         })
         .align_child(Start, Center)
-        .child(
-            Row::new(vec![
-                leading,
-                Box::new(Column::new(lines).width(Parent).gap(1.0)),
-                Box::new(Row::new(trailing).gap(ICON_GAP).align(Center)),
-            ])
-            .width(Parent)
-            .gap(ICON_GAP)
-            .align(Center),
-        );
+        .child(content);
 
-    let row = if ring {
+    if ring {
         row.fill(theme::ISLAND.surface_container).border_if(true)
     } else {
         row
-    };
-
-    let Some(at) = press else {
-        return row;
-    };
-
-    row.cursor(Cursor::Pointer)
-        .on_click(super::super::on_left(move || {
-            super::click(Act::Press(at.clone()));
-        }))
+    }
 }
 
 // a pill's words

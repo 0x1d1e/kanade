@@ -6,9 +6,10 @@
 //!
 //! The Wi-Fi and Bluetooth switches' tiles each open a sub-surface in its place, their knobs still
 //! switching them: the networks in range, to join or leave, and the password a secured one asks
-//! for; or the Bluetooth devices, to pair, connect, disconnect or forget (#131). A sub-surface goes
-//! back a level by its chevron or Escape. Every target is a key away, a ring on the one the arrows
-//! reach (`focus`).
+//! for; or the Bluetooth devices, to pair, connect, disconnect or forget (#131). The speaker's
+//! level ends in a chevron to the Audio sub-surface: the devices to play on and record from, and
+//! each app's level (#133). A sub-surface goes back a level by its chevron or Escape. Every target
+//! is a key away, a ring on the one the arrows reach (`focus`).
 
 use std::time::Instant;
 
@@ -27,6 +28,7 @@ use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
+use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::network::Connectivity;
 use crate::sources::notifications;
@@ -38,6 +40,7 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED};
 use crate::view::bar;
 
+mod audio;
 mod bluetooth;
 mod focus;
 mod list;
@@ -113,6 +116,9 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
             focus.offset,
             ring.as_ref(),
         ),
+        Some(Subsurface::Audio) => {
+            audio::sound(&mixer(), *Switching::read(), focus.offset, ring.as_ref())
+        }
     };
 
     Rectangle::new()
@@ -128,7 +134,17 @@ fn rows(sub: Option<&Subsurface>) -> Vec<Vec<(At, f32)>> {
     match sub {
         Some(Subsurface::Wifi) => wifi::rows(Connectivity::read().wifi, &Networks::read()),
         Some(Subsurface::Bluetooth) => bluetooth::rows(&Adapter::read(), &Prompt::read()),
+        Some(Subsurface::Audio) => audio::rows(&mixer()),
         _ => Vec::new(),
+    }
+}
+
+// the devices and apps, none while `audio` is off, as nothing follows them then
+fn mixer() -> Mixer {
+    if modules::on("audio") {
+        Mixer::read().clone()
+    } else {
+        Mixer::default()
     }
 }
 
@@ -450,8 +466,8 @@ fn run(press: Press) {
 }
 
 /*
- * the speaker, its icon pressed to mute, then the screen; with `audio` or `brightness` off its
- * Service is never read, and its row is faded and empty
+ * the speaker, its icon pressed to mute and its chevron to open the Audio sub-surface, then the
+ * screen; with `audio` or `brightness` off its Service is never read, and its row is faded and empty
  */
 fn levels(ring: Option<&At>) -> Column {
     let speaker = modules::on("audio").then(|| {
@@ -498,6 +514,7 @@ fn levels(ring: Option<&At>) -> Column {
                 Some(volume),
                 tone,
                 ring == Some(&At::Speaker),
+                chevron(ring == Some(&At::Audio), true),
             )
         }
         None => level(
@@ -506,6 +523,7 @@ fn levels(ring: Option<&At>) -> Column {
             None,
             theme::ISLAND.on_surface,
             ring == Some(&At::Speaker),
+            chevron(ring == Some(&At::Audio), false),
         ),
     };
 
@@ -522,14 +540,35 @@ fn levels(ring: Option<&At>) -> Column {
         screen,
         theme::ISLAND.on_surface,
         ring == Some(&At::Brightness),
+        Rectangle::new().width(TARGET).height(TARGET),
     );
 
     Column::new(children![volume, brightness]).gap(LEVEL_GAP)
 }
 
+// opens the Audio sub-surface, faded and not pressable while `audio` is off
+fn chevron(ring: bool, on: bool) -> Rectangle {
+    let chevron = Rectangle::new()
+        .width(TARGET)
+        .height(TARGET)
+        .radius(TARGET / 2.0)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .child(Icon::Forward.on(16.0, theme::ISLAND.on_surface_variant));
+
+    if !on {
+        return chevron.opacity(DISABLED);
+    }
+
+    chevron.cursor(Cursor::Pointer).on_click(super::on_left(|| {
+        click(Act::Press(At::Audio));
+    }))
+}
+
 /*
- * its icon, its bar, then its number; the wheel anywhere on the row moves it, as Left and Right do
- * with the ring on it. None to set leaves the row faded and empty
+ * its icon, its bar, its number, then `end`, a chevron or the room one takes; the wheel on the
+ * row before `end` moves it, as Left and Right do with the ring on it. None to set leaves that faded
+ * and empty
  */
 fn level(
     icon: Rectangle,
@@ -537,8 +576,9 @@ fn level(
     percent: Option<u8>,
     tone: Color,
     ring: bool,
-) -> Rectangle {
-    let width = WIDTH - TARGET - NUMBER - 2.0 * ICON_GAP;
+    end: Rectangle,
+) -> Row {
+    let width = WIDTH - TARGET - NUMBER - 3.0 * ICON_GAP - TARGET;
     let fraction = f32::from(percent.unwrap_or(0)) / 100.0;
 
     let bar = match slider {
@@ -561,8 +601,8 @@ fn level(
                 .weight(theme::text::SEMIBOLD),
         );
 
-    let row = Rectangle::new()
-        .width(WIDTH)
+    let level = Rectangle::new()
+        .width(WIDTH - ICON_GAP - TARGET)
         .height(TARGET)
         .radius(TARGET / 2.0)
         .align_child(Start, Center)
@@ -573,10 +613,15 @@ fn level(
                 .align(Center),
         );
 
-    match slider {
-        Some(slider) => row.on_scroll(move |Scroll { y, .. }| slider.wheel(y)),
-        None => row.opacity(DISABLED),
-    }
+    let level = match slider {
+        Some(slider) => level.on_scroll(move |Scroll { y, .. }| slider.wheel(y)),
+        None => level.opacity(DISABLED),
+    };
+
+    Row::new(children![level, end])
+        .width(WIDTH)
+        .gap(ICON_GAP)
+        .align(Center)
 }
 
 /*
@@ -793,15 +838,21 @@ fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
 fn act(focus: Focus, act: Act, visit: u64) -> Focus {
     match act {
         Act::Press(at) => press(focus, at, visit),
-        Act::Adjust(At::Speaker, lines) => {
-            Slider::Speaker.wheel(lines);
+        Act::Adjust(at, lines) => {
+            let slider = match at {
+                At::Speaker => Some(Slider::Speaker),
+                At::Brightness => Some(Slider::Brightness),
+                At::MicrophoneLevel => Some(Slider::Microphone),
+                At::Stream(node) => Some(Slider::Stream(node)),
+                _ => None,
+            };
+
+            if let Some(slider) = slider {
+                slider.wheel(lines);
+            }
+
             focus
         }
-        Act::Adjust(At::Brightness, lines) => {
-            Slider::Brightness.wheel(lines);
-            focus
-        }
-        Act::Adjust(..) => focus,
         Act::Join => join(focus),
     }
 }
@@ -843,6 +894,35 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         At::Speaker => {
             if modules::on("audio") {
                 Audio::toggle_mute();
+            }
+
+            None
+        }
+        At::Audio => {
+            if !modules::on("audio") {
+                return focus;
+            }
+
+            return focus.enter(Subsurface::Audio);
+        }
+        At::MicrophoneLevel => {
+            if modules::on("audio") {
+                Audio::toggle_microphone_mute();
+            }
+
+            None
+        }
+        At::Output(node) => {
+            default(&mixer().outputs, node, Direction::Output);
+            None
+        }
+        At::Input(node) => {
+            default(&mixer().inputs, node, Direction::Input);
+            None
+        }
+        At::Stream(node) => {
+            if let Some(stream) = mixer().streams.iter().find(|stream| stream.node == node) {
+                sound::ask_muted(node, !stream.level.muted);
             }
 
             None
@@ -918,6 +998,16 @@ fn network(focus: Focus, ssid: &str) -> Focus {
     }
 
     focus
+}
+
+// a device of `devices` made the default of `direction`, unless it is already or is gone
+fn default(devices: &[sound::Device], node: sound::Node, direction: Direction) {
+    if let Some(device) = devices
+        .iter()
+        .find(|device| device.node == node && !device.default)
+    {
+        sound::ask_default(device, direction);
+    }
 }
 
 /*

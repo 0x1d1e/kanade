@@ -86,7 +86,7 @@ pub fn devices(
     };
 
     Column::new(vec![
-        Box::new(list::header("Bluetooth", adapter.radio, ring)) as Box<dyn Widget>,
+        Box::new(list::header("Bluetooth", Some(adapter.radio), ring)) as Box<dyn Widget>,
         list,
     ])
     .width(WIDTH)
