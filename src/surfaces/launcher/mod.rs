@@ -77,13 +77,16 @@ pub struct Search {
     copying: Copying,
 }
 
-// a copy, from its press until it is on the clipboard or failed
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/*
+ * a copy, from its press until it is on the clipboard or failed, of the text pressed; so the row
+ * of that text says it failed, whichever is selected by then
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum Copying {
     #[default]
     Idle,
-    Waiting,
-    Failed,
+    Waiting(String),
+    Failed(String),
 }
 
 impl Service for Search {
@@ -95,6 +98,11 @@ impl Service for Search {
 }
 
 impl Search {
+    // whether pressing `action` was a copy that failed
+    fn failed(&self, action: &Action) -> bool {
+        matches!((&self.copying, action), (Copying::Failed(failed), Action::Copy(text)) if failed == text)
+    }
+
     // this visit's search; one kept from an earlier visit is over
     fn of(&self, visit: u64) -> Search {
         if self.visit == visit {
@@ -383,7 +391,7 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
             .zip(first..)
             .map(|(answer, index)| {
                 let selected = index == search.selected;
-                let failed = selected && search.copying == Copying::Failed;
+                let failed = search.failed(&answer.action);
 
                 Box::new(row(monitor, search.visit, answer, selected, failed)) as Box<dyn Widget>
             })
@@ -549,7 +557,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         .map(|answer| answer.action.clone());
 
     // a failed copy is said until the next key
-    if search.copying == Copying::Failed {
+    if matches!(search.copying, Copying::Failed(_)) {
         search.copying = Copying::Idle;
     }
 
@@ -577,32 +585,32 @@ fn press(monitor: &str, visit: u64, action: Action) {
         Action::Copy(text) => {
             let search = Search::read().of(visit);
 
-            if search.copying == Copying::Waiting {
+            if matches!(search.copying, Copying::Waiting(_)) {
                 return;
             }
 
             set(Search {
-                copying: Copying::Waiting,
+                copying: Copying::Waiting(text.clone()),
                 ..search
             });
 
-            let copying = monitor.to_owned();
+            let (copying, put) = (monitor.to_owned(), text.clone());
 
             let copy = thread::Builder::new()
                 .name("launcher-copy".into())
                 .spawn(move || {
-                    let done = clipboard::put(&text);
+                    let done = clipboard::put(&put);
 
                     if let Err(error) = &done {
                         eprintln!("kanade: cannot copy a Launcher answer ({error})");
                     }
 
-                    copied(&copying, visit, done.is_ok());
+                    copied(&copying, visit, put, done.is_ok());
                 });
 
             if let Err(error) = copy {
                 eprintln!("kanade: cannot copy a Launcher answer ({error})");
-                copied(monitor, visit, false);
+                copied(monitor, visit, text, false);
             }
         }
     }
@@ -612,7 +620,7 @@ fn press(monitor: &str, visit: u64, action: Action) {
  * how the copy pressed in `visit` went: closes the island, or says it was not copied. Nothing once
  * that visit is over, so it never closes another
  */
-fn copied(monitor: &str, visit: u64, done: bool) {
+fn copied(monitor: &str, visit: u64, text: String, done: bool) {
     let open = {
         let island = IslandService::read();
 
@@ -633,7 +641,7 @@ fn copied(monitor: &str, visit: u64, done: bool) {
     let search = Search::read().of(visit);
 
     set(Search {
-        copying: Copying::Failed,
+        copying: Copying::Failed(text),
         ..search
     });
 }
@@ -799,13 +807,31 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_copy_marks_the_answer_pressed_not_the_selection() {
+        let search = Search {
+            selected: 0,
+            copying: Copying::Failed(String::from("4")),
+            ..Search::default()
+        };
+
+        assert!(search.failed(&Action::Copy(String::from("4"))));
+        assert!(!search.failed(&Action::Copy(String::from("5"))));
+
+        let waiting = Search {
+            copying: Copying::Waiting(String::from("4")),
+            ..Search::default()
+        };
+        assert!(!waiting.failed(&Action::Copy(String::from("4"))));
+    }
+
+    #[test]
     fn a_new_visit_starts_empty() {
         let kept = Search {
             visit: 1,
             query: String::from("fire"),
             selected: 2,
             offset: 40.0,
-            copying: Copying::Failed,
+            copying: Copying::Failed(String::from("4")),
         };
 
         assert_eq!(kept.of(1), kept);

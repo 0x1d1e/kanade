@@ -11,7 +11,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, BufRead, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
@@ -284,6 +284,11 @@ struct Restore {
 const ANNOUNCED: Duration = Duration::from_secs(3);
 const LOOK: Duration = Duration::from_millis(50);
 
+// how long the Launcher's wl-copy may take to get the selection, as a restore may, looking this
+// often whether it did; it ends once it has, in a few milliseconds
+const PUT: Duration = ANNOUNCED;
+const PUT_LOOK: Duration = Duration::from_millis(5);
+
 // the content a restore waits to hear announced, and where to say it was
 static AWAITED: Mutex<Option<(Content, Sender<()>)>> = Mutex::new(None);
 
@@ -334,24 +339,51 @@ pub fn restore(entry: &Entry, done: impl FnOnce(bool) + Send + 'static) {
 /*
  * puts `text` on the clipboard apart from the history, for the Launcher: wl-copy serves it from a
  * process of its own, which outlives Kanade, until another program takes the selection. Blocks
- * until wl-copy has it, so call it off the view's thread; needs no `clipboard` Module
+ * until wl-copy has it, at most `PUT`, so call it off the view's thread; needs no `clipboard`
+ * Module
  */
 pub fn put(text: &str) -> io::Result<()> {
     // that process keeps what it inherits open, so it gets nothing to hold
-    let status = Command::new(COPY)
+    let child = Command::new(COPY)
         .args(["--type", TEXT, "--", text])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => io::Error::new(error.kind(), "wl-copy not found"),
             _ => error,
         })?;
 
+    let status = ended(child, Instant::now() + PUT)?;
+
     match status.success() {
         true => Ok(()),
         false => Err(io::Error::other(format!("wl-copy failed ({status})"))),
+    }
+}
+
+/*
+ * how `child` ended, looking every `PUT_LOOK`; one still running at `deadline`, like a wl-copy
+ * that never got the selection, is killed and reaped
+ */
+fn ended(mut child: Child, deadline: Instant) -> io::Result<ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+
+        if Instant::now() >= deadline {
+            drop(child.kill());
+            drop(child.wait());
+
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "wl-copy did not end",
+            ));
+        }
+
+        thread::sleep(PUT_LOOK);
     }
 }
 
@@ -656,6 +688,31 @@ mod tests {
 
     fn text(text: &str) -> Content {
         Content::Text(text.into())
+    }
+
+    #[test]
+    fn a_put_that_never_ends_is_killed_at_the_deadline() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        let start = Instant::now();
+
+        let error = ended(child, start + Duration::from_millis(100)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "reaped"
+        );
+    }
+
+    #[test]
+    fn a_put_that_ends_gives_its_status() {
+        let child = Command::new("false").spawn().unwrap();
+
+        let status = ended(child, Instant::now() + Duration::from_secs(5)).unwrap();
+
+        assert!(!status.success());
     }
 
     fn image(len: usize, fill: u8) -> Content {
