@@ -25,7 +25,10 @@ pub const HANDLER: &str = "kanade";
 // misread each other
 pub const PROTOCOL: u32 = 1;
 
-// the first word after `kanade`, owned by a Module
+/*
+ * the first word after `kanade`, with the arguments a Module owns; Modules may share a name, each
+ * owning its own arguments, like `notifications clear` and `notifications open`
+ */
 pub struct Verb {
     pub name: &'static str,
 
@@ -81,23 +84,41 @@ pub fn parse(words: &[&str]) -> Result<(&'static Module, Call), Unparsed> {
         return Err(Unparsed::Usage);
     };
 
-    let (module, verb) = modules::ALL
-        .iter()
-        .find_map(|module| {
-            let verb = module.verbs.iter().find(|verb| verb.name == *name)?;
-            Some((module, verb))
-        })
-        .ok_or(Unparsed::Usage)?;
+    let mut unparsed = Unparsed::Usage;
 
-    (verb.parse)(arguments).map(|call| (module, call))
+    for (module, verb) in verbs().filter(|(_, verb)| verb.name == *name) {
+        match (verb.parse)(arguments) {
+            Ok(call) => return Ok((module, call)),
+            Err(Unparsed::Invalid(invalid)) => unparsed = Unparsed::Invalid(invalid),
+            Err(Unparsed::Usage) => {}
+        }
+    }
+
+    Err(unparsed)
 }
 
-// every verb, in the Modules' order, then those this process answers itself
-pub fn usage() -> String {
-    let verbs = modules::ALL
+// every verb with its Module, in the Modules' order
+fn verbs() -> impl Iterator<Item = (&'static Module, &'static Verb)> {
+    modules::ALL
         .iter()
-        .flat_map(|module| module.verbs)
-        .map(|verb| (verb.usage)());
+        .flat_map(|module| module.verbs.iter().map(move |verb| (module, verb)))
+}
+
+// every verb, in the Modules' order with the lines of one name together, then those this process answers itself
+pub fn usage() -> String {
+    let mut names: Vec<&str> = Vec::new();
+
+    for (_, verb) in verbs() {
+        if !names.contains(&verb.name) {
+            names.push(verb.name);
+        }
+    }
+
+    let verbs = names.into_iter().flat_map(|name| {
+        verbs()
+            .filter(move |(_, verb)| verb.name == name)
+            .map(|(_, verb)| (verb.usage)())
+    });
 
     std::iter::once(String::from(
         "usage: kanade [<verb> [args]]\nwith no verb, runs the shell; a verb asks the running one:",
@@ -206,11 +227,11 @@ mod tests {
 
         assert_eq!(
             parsed(&["launcher", "toggle"]),
-            island(Command::Toggle(Surface::Launcher))
+            Ok(("launcher", Call::Island(Command::Toggle(Surface::Launcher))))
         );
         assert_eq!(
             parsed(&["controls", "close"]),
-            island(Command::Close(Surface::Controls))
+            Ok(("controls", Call::Island(Command::Close(Surface::Controls))))
         );
         assert_eq!(parsed(&["island", "collapse"]), island(Command::Collapse));
         assert_eq!(parsed(&["config", "reload"]), Ok(("island", Call::Reload)));
@@ -246,10 +267,11 @@ mod tests {
             parsed(&["timer", "cancel"]),
             Ok(("timer", Call::Timer(timer::Request::Cancel)))
         );
+        // their Surface is its own Module, which shares the verb
         assert_eq!(
             parsed(&["notifications", "open"]),
             Ok((
-                "notifications",
+                "notification-surface",
                 Call::Island(Command::Open(Surface::Notifications))
             ))
         );
@@ -306,8 +328,6 @@ mod tests {
             format!(
                 "usage: kanade [<verb> [args]]
 with no verb, runs the shell; a verb asks the running one:
-launcher open|close|toggle
-controls open|close|toggle
 island collapse
 config reload|validate
 status
@@ -315,8 +335,11 @@ status
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
   <duration>: like 90s, 25m or 1h30m, up to 24h
-notifications open|close|toggle|clear
+notifications clear
 notifications dnd on|off|toggle
+notifications open|close|toggle
+controls open|close|toggle
+launcher open|close|toggle
 doctor
 help",
                 Command::debug_usage()
@@ -324,20 +347,23 @@ help",
         );
     }
 
-    // so the usage lists a verb under its own name, and each name means one verb
+    // so the usage lists a verb under its own name; Modules sharing one each own their arguments
     #[test]
-    fn each_verb_has_one_owner_and_its_usage_starts_with_its_name() {
-        let verbs: Vec<&Verb> = modules::ALL
-            .iter()
-            .flat_map(|module| module.verbs)
-            .collect();
+    fn a_module_owns_a_verb_once_and_its_usage_starts_with_its_name() {
+        for module in modules::ALL {
+            for (index, verb) in module.verbs.iter().enumerate() {
+                assert!(
+                    module.verbs[..index]
+                        .iter()
+                        .all(|other| other.name != verb.name),
+                    "{} owns {} twice",
+                    module.name,
+                    verb.name
+                );
+            }
+        }
 
-        for (index, verb) in verbs.iter().enumerate() {
-            assert!(
-                verbs[..index].iter().all(|other| other.name != verb.name),
-                "{} is owned twice",
-                verb.name
-            );
+        for (_, verb) in verbs() {
             assert!(!["doctor", "help"].contains(&verb.name));
 
             for line in (verb.usage)()

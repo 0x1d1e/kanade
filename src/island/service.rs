@@ -224,6 +224,11 @@ impl IslandService {
         self.timings = timings;
     }
 
+    // the Surfaces whose Module is off, once at start: none of them opens, by click, command or AutoExpand
+    pub fn withhold(&mut self, surfaces: &[Surface]) {
+        self.presentations.withhold(surfaces);
+    }
+
     // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
     pub fn overview(&self) -> bool {
         self.presentations.overview()
@@ -612,6 +617,13 @@ impl IslandService {
 
             // shows another Surface, or none
             Command::Close(_) => return Ok(None),
+
+            // its Module is off, so it opens nowhere and takes nothing over
+            Command::Open(surface) | Command::Toggle(surface)
+                if !self.presentations.offers(surface) =>
+            {
+                return Ok(None);
+            }
 
             Command::Open(surface) | Command::Toggle(surface) => surface,
         };
@@ -2663,6 +2675,27 @@ mod tests {
         island.expire(now + AUTO);
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
         assert_eq!(island.deadline(), None);
+    }
+
+    // its Module is off: the Notification still shows Compact, and a pending restore stays pending
+    #[test]
+    fn a_withheld_surface_neither_auto_expands_nor_opens_on_command() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.withhold(&[Surface::Notifications, Surface::Launcher]);
+
+        island.post(auto("7"), now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.deadline(), None);
+
+        for command in [
+            Command::Open(Surface::Notifications),
+            Command::Toggle(Surface::Launcher),
+        ] {
+            assert_eq!(run(&mut island, command, now), None);
+        }
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
     }
 
     #[test]

@@ -86,24 +86,6 @@ pub const ALL: &[Module] = &[
         settings: config::ISLAND,
         verbs: &[
             Verb {
-                name: "launcher",
-                usage: || String::from("launcher open|close|toggle"),
-                parse: |arguments| {
-                    Command::surface(Surface::Launcher, arguments)
-                        .map(Call::Island)
-                        .ok_or(Unparsed::Usage)
-                },
-            },
-            Verb {
-                name: "controls",
-                usage: || String::from("controls open|close|toggle"),
-                parse: |arguments| {
-                    Command::surface(Surface::Controls, arguments)
-                        .map(Call::Island)
-                        .ok_or(Unparsed::Usage)
-                },
-            },
-            Verb {
                 name: "island",
                 usage: || String::from("island collapse"),
                 parse: |arguments| match arguments {
@@ -139,6 +121,7 @@ pub const ALL: &[Module] = &[
             let config = config::get();
 
             IslandService::write().retime(config.island);
+            IslandService::write().withhold(&withheld());
             theme::follow(config.palette.as_deref());
             reload::spawn();
             clock::spawn();
@@ -152,9 +135,6 @@ pub const ALL: &[Module] = &[
                 osd: on("osd"),
             };
             supervise::spawn("niri", move || niri::follow(posts));
-
-            // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list
-            thread::spawn(|| drop(Apps::read()));
 
             app.window_per_monitor(view::island)
                 .ipc(cli::HANDLER, ipc::answer)
@@ -327,20 +307,16 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
-        // Do Not Disturb only quiets notifications, so it goes with them
+        // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
+        // `notification-surface`'s
         verbs: &[Verb {
             name: "notifications",
-            usage: || {
-                String::from(
-                    "notifications open|close|toggle|clear
-notifications dnd on|off|toggle",
-                )
-            },
+            usage: || String::from("notifications clear\nnotifications dnd on|off|toggle"),
             parse: |arguments| {
                 let call = match arguments {
                     ["clear"] => Some(Call::ClearNotifications),
                     ["dnd", dnd @ ..] => Command::dnd(dnd).map(Call::Island),
-                    _ => Command::surface(Surface::Notifications, arguments).map(Call::Island),
+                    _ => None,
                 };
                 call.ok_or(Unparsed::Usage)
             },
@@ -410,7 +386,92 @@ notifications dnd on|off|toggle",
             app
         },
     },
+    // the island's Surfaces: each off never opens, so what only it reads stays cold
+    Module {
+        name: "controls",
+        requires: &[CORE],
+        optional: &[
+            "notifications",
+            "audio",
+            "brightness",
+            "network",
+            "bluetooth",
+            "power",
+            "privacy",
+        ],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "controls",
+            usage: || String::from("controls open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Controls, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
+    Module {
+        name: "launcher",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "launcher",
+            usage: || String::from("launcher open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Launcher, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list
+            thread::spawn(|| drop(Apps::read()));
+            app
+        },
+    },
+    // the notification list on the island; Banners show them without it
+    Module {
+        name: "notification-surface",
+        requires: &[CORE, "notifications"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "notifications",
+            usage: || String::from("notifications open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Notifications, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
 ];
+
+// each Surface the island opens, with the Module that draws it
+const SURFACES: [(Surface, &str); 4] = [
+    (Surface::Media, "media"),
+    (Surface::Notifications, "notification-surface"),
+    (Surface::Controls, "controls"),
+    (Surface::Launcher, "launcher"),
+];
+
+// the Surfaces whose Module is off, which the island never opens
+fn withheld() -> Vec<Surface> {
+    SURFACES
+        .iter()
+        .filter(|(_, module)| !on(module))
+        .map(|&(surface, _)| surface)
+        .collect()
+}
 
 // what became of a Module at start
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -800,6 +861,50 @@ mod tests {
                     module.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_surface_has_a_module() {
+        for surface in Surface::ALL {
+            let (_, module) = SURFACES
+                .iter()
+                .find(|(each, _)| *each == surface)
+                .unwrap_or_else(|| panic!("{surface:?} has no module"));
+            let module = ALL.iter().find(|each| each.name == *module).unwrap();
+
+            assert!(module.requires.contains(&CORE), "{}", module.name);
+        }
+    }
+
+    // the Modules of the issue's dependencies, as the registry declares them
+    #[test]
+    fn surfaces_turn_off_with_what_they_require() {
+        let off = |turned: &'static str| resolve(ALL, move |name| name == turned);
+
+        let modules = off("notifications");
+        assert_eq!(
+            modules.state("notification-surface"),
+            Some(&State::Missing("notifications"))
+        );
+        assert_eq!(
+            modules.state("controls"),
+            Some(&State::On {
+                without: vec!["notifications"]
+            })
+        );
+        assert!(modules.on("launcher"));
+
+        for surface in ["controls", "launcher", "notification-surface"] {
+            let modules = off(surface);
+
+            assert_eq!(modules.state(surface), Some(&State::Off));
+            assert!(
+                ALL.iter()
+                    .filter(|module| module.name != surface)
+                    .all(|module| modules.on(module.name)),
+                "{surface} turns off another"
+            );
         }
     }
 

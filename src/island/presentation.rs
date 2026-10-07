@@ -27,11 +27,6 @@ impl Surface {
         Surface::Launcher,
     ];
 
-    // what a click on an island showing this Kind opens; a Kind without a Surface of its own has its control there
-    pub fn of(kind: Kind) -> Surface {
-        Surface::own(kind).unwrap_or(Surface::Controls)
-    }
-
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
     pub fn own(kind: Kind) -> Option<Surface> {
         match kind {
@@ -253,9 +248,33 @@ pub struct Presentations {
 
     // how many times a Surface opened, so state kept for one opening ends with it
     visits: u64,
+
+    // the Surfaces that never open, since their Module is off
+    withheld: Vec<Surface>,
 }
 
 impl Presentations {
+    // once at start, from the Modules that are off; every Surface may open until then
+    pub fn withhold(&mut self, surfaces: &[Surface]) {
+        self.withheld = surfaces.to_vec();
+    }
+
+    pub fn offers(&self, surface: Surface) -> bool {
+        !self.withheld.contains(&surface)
+    }
+
+    /*
+     * what a click on an island showing this Activity opens, or with none what one at Rest opens:
+     * its own Surface, else Controls, where a Kind without one has its control. None while that is
+     * withheld too
+     */
+    fn clicked(&self, id: Option<&Id>) -> Option<Surface> {
+        id.and_then(|id| Surface::own(id.kind()))
+            .into_iter()
+            .chain([Surface::Controls])
+            .find(|&surface| self.offers(surface))
+    }
+
     pub fn get(&self, monitor: &str) -> Presentation {
         self.of(self.islands.get(monitor).unwrap_or(&self.untouched))
     }
@@ -345,10 +364,11 @@ impl Presentations {
 
             // the Surface of the Activity under the pointer; Rest has none and no remembered last Surface, so Controls
             (Input::Click(segment), _) => {
-                let surface = island
-                    .under(segment)
-                    .map_or(Surface::Controls, |id| Surface::of(id.kind()));
-                self.expand(monitor, surface);
+                let under = island.under(segment).cloned();
+
+                if let Some(surface) = self.clicked(under.as_ref()) {
+                    self.expand(monitor, surface);
+                }
             }
 
             (Input::Open(surface), _) => self.expand(monitor, surface),
@@ -370,8 +390,10 @@ impl Presentations {
                 island.pinned = true;
             }
             (Input::RightClick(_), Presentation::Rest) => {
-                self.expand(monitor, Surface::Controls);
-                self.island(monitor).pinned = true;
+                if let Some(surface) = self.clicked(None) {
+                    self.expand(monitor, surface);
+                    self.island(monitor).pinned = true;
+                }
             }
             (Input::RightClick(_), Presentation::Peek | Presentation::Expanded(_)) => {
                 island.pinned = !island.pinned;
@@ -381,8 +403,12 @@ impl Presentations {
         }
     }
 
-    // at most one island is Expanded, opening one collapses any other
+    // at most one island is Expanded, opening one collapses any other; a withheld Surface opens nowhere
     fn expand(&mut self, monitor: &str, surface: Surface) {
+        if !self.offers(surface) {
+            return;
+        }
+
         for island in self.islands.values_mut() {
             if matches!(island.raised, Some(Raised::Expanded(_))) {
                 island.raise(None);
@@ -398,7 +424,10 @@ impl Presentations {
      * nothing while the overview is open or the island already shows it
      */
     pub fn auto_expand(&mut self, monitor: &str, surface: Surface) -> Option<Prior> {
-        if self.overview || self.get(monitor) == Presentation::Expanded(surface) {
+        if self.overview
+            || !self.offers(surface)
+            || self.get(monitor) == Presentation::Expanded(surface)
+        {
             return None;
         }
 
@@ -1099,10 +1128,54 @@ mod tests {
 
     #[test]
     fn a_kind_opens_its_own_surface_or_controls() {
-        assert_eq!(Surface::of(Kind::Media), Media);
-        assert_eq!(Surface::of(Kind::Notification), Notifications);
-        assert_eq!(Surface::of(Kind::Volume), Controls);
-        assert_eq!(Surface::of(Kind::Timer), Controls);
+        let presentations = Presentations::default();
+        let clicked = |kind| presentations.clicked(Some(&id(kind)));
+
+        assert_eq!(clicked(Kind::Media), Some(Media));
+        assert_eq!(clicked(Kind::Notification), Some(Notifications));
+        assert_eq!(clicked(Kind::Volume), Some(Controls));
+        assert_eq!(clicked(Kind::Timer), Some(Controls));
+        assert_eq!(presentations.clicked(None), Some(Controls));
+    }
+
+    // its Module is off: a Kind whose own Surface is withheld has its control in Controls, as one without
+    #[test]
+    fn a_withheld_surface_never_opens() {
+        let mut presentations = Presentations::default();
+        presentations.withhold(&[Notifications, Controls]);
+
+        assert_eq!(presentations.clicked(Some(&id(Kind::Notification))), None);
+        assert_eq!(presentations.clicked(None), None);
+
+        presentations.withhold(&[Notifications]);
+        assert_eq!(
+            presentations.clicked(Some(&id(Kind::Notification))),
+            Some(Controls)
+        );
+        assert_eq!(presentations.clicked(Some(&id(Kind::Media))), Some(Media));
+
+        presentations.withhold(&[Controls, Launcher]);
+
+        for input in [
+            Input::Click(Primary),
+            Input::RightClick(Primary),
+            Input::Open(Controls),
+            Input::Open(Launcher),
+        ] {
+            presentations.input(MONITOR, input);
+            assert_eq!(presentations.get(MONITOR), Rest, "{input:?}");
+            assert!(!presentations.pinned(MONITOR), "{input:?}");
+        }
+
+        assert_eq!(presentations.auto_expand(MONITOR, Controls), None);
+
+        presentations.withhold(&[Notifications]);
+        assert_eq!(presentations.auto_expand(MONITOR, Notifications), None);
+        assert_eq!(presentations.get(MONITOR), Rest);
+
+        // what is offered still opens
+        presentations.input(MONITOR, Input::Open(Controls));
+        assert_eq!(presentations.get(MONITOR), Expanded(Controls));
     }
 
     #[test]
