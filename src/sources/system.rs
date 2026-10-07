@@ -123,7 +123,10 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
     }
 }
 
-// what a join waiting on NetworkManager hears from a signal, if anything
+/*
+ * what a join waiting on NetworkManager hears from a signal, if anything, and from which one: the
+ * sender, or the one gone
+ */
 fn heard(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<wifi::Heard> {
     let number = |index: usize| arguments.get(index).map(Value::number);
     let first = arguments.first().map_or("", Value::text);
@@ -131,18 +134,26 @@ fn heard(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
     // a name's owner before the change, none when it is just taken
     let old = arguments.get(1).map_or("", Value::text);
 
-    match watch {
-        Watch::Device => Some(wifi::Heard::Device(path.into(), number(0)?, number(2)?)),
-        Watch::Attempt => Some(wifi::Heard::Attempt(path.into(), number(0)?)),
+    let (owner, change) = match watch {
+        Watch::Device => (
+            sender,
+            wifi::Change::Device(path.into(), number(0)?, number(2)?),
+        ),
+        Watch::Attempt => (sender, wifi::Change::Attempt(path.into(), number(0)?)),
         Watch::Removed if first.starts_with(network::ROOT) => {
-            Some(wifi::Heard::Removed(first.into()))
+            (sender, wifi::Change::Removed(first.into()))
         }
         // NetworkManager stopping, or replaced, but not starting: a join may be asking it to
         Watch::Owner if sender == BUS && first == network::NAME && !old.is_empty() => {
-            Some(wifi::Heard::Gone)
+            (old, wifi::Change::Gone)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+
+    Some(wifi::Heard {
+        owner: owner.into(),
+        change,
+    })
 }
 
 // which daemons to follow, each by its Module
@@ -428,16 +439,23 @@ mod tests {
                 .map(|&n| Value::Number(n))
                 .collect::<Vec<_>>()
         };
+        let from = |owner: &str, change| wifi::Heard {
+            owner: owner.into(),
+            change,
+        };
         let device = "/org/freedesktop/NetworkManager/Devices/3";
         let attempt = "/org/freedesktop/NetworkManager/ActiveConnection/9";
 
         assert_eq!(
             heard(Watch::Device, ":1.9", device, &numbers(&[120.0, 50.0, 7.0])),
-            Some(wifi::Heard::Device(device.into(), 120.0, 7.0))
+            Some(from(
+                ":1.9",
+                wifi::Change::Device(device.into(), 120.0, 7.0)
+            ))
         );
         assert_eq!(
             heard(Watch::Attempt, ":1.9", attempt, &numbers(&[4.0, 2.0])),
-            Some(wifi::Heard::Attempt(attempt.into(), 4.0))
+            Some(from(":1.9", wifi::Change::Attempt(attempt.into(), 4.0)))
         );
         assert_eq!(
             heard(
@@ -446,7 +464,7 @@ mod tests {
                 "/org/freedesktop/DBus",
                 &text(&[network::NAME, ":1.9", ""])
             ),
-            Some(wifi::Heard::Gone)
+            Some(from(":1.9", wifi::Change::Gone))
         );
         assert_eq!(
             heard(
@@ -455,7 +473,7 @@ mod tests {
                 "/org/freedesktop/DBus",
                 &text(&[network::NAME, ":1.9", ":1.81"])
             ),
-            Some(wifi::Heard::Gone)
+            Some(from(":1.9", wifi::Change::Gone))
         );
 
         // NetworkManager starting takes no attempt with it
@@ -475,7 +493,7 @@ mod tests {
                 "/org/freedesktop",
                 &text(&[attempt, ""])
             ),
-            Some(wifi::Heard::Removed(attempt.into()))
+            Some(from(":1.9", wifi::Change::Removed(attempt.into())))
         );
 
         // but not other daemons, or a state change saying too little

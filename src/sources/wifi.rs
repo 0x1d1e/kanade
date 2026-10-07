@@ -324,11 +324,12 @@ pub fn refresh() {
 
 // asks the device to look for networks; NetworkManager refuses one right after another
 fn scan() {
-    let device = device();
+    let owner = owner();
+    let device = device(&owner);
 
     if !device.is_empty() {
         Bus::system().call(
-            NAME,
+            &owner,
             &device,
             WIRELESS,
             "RequestScan",
@@ -337,15 +338,26 @@ fn scan() {
     }
 }
 
-// the first Wi-Fi device, empty when there is none
-fn device() -> String {
+/*
+ * the NetworkManager running, by its unique name, empty when none is. Its object paths are its own,
+ * so everything read or asked of one goes to it, never to a NetworkManager that replaced it
+ */
+fn owner() -> String {
+    Bus::system()
+        .call(BUS, BUS_PATH, BUS, "GetNameOwner", &[Argument::from(NAME)])
+        .text()
+        .to_owned()
+}
+
+// `owner`'s first Wi-Fi device, empty when there is none
+fn device(owner: &str) -> String {
     let bus = Bus::system();
 
-    bus.call(NAME, ROOT, NAME, "GetDevices", &[])
+    bus.call(owner, ROOT, NAME, "GetDevices", &[])
         .list()
         .iter()
         .map(Value::text)
-        .find(|device| bus.property(NAME, device, DEVICE, "DeviceType").number() == WIFI_DEVICE)
+        .find(|device| bus.property(owner, device, DEVICE, "DeviceType").number() == WIFI_DEVICE)
         .unwrap_or_default()
         .to_owned()
 }
@@ -362,27 +374,23 @@ struct Seen {
 fn read() -> Networks {
     let bus = Bus::system();
 
-    // first, so objects read after a replacement are asked of the one gone, and fail
-    let owner = bus
-        .call(BUS, BUS_PATH, BUS, "GetNameOwner", &[Argument::from(NAME)])
-        .text()
-        .to_owned();
-
-    let device = device();
+    // all of it read from one NetworkManager; one replaced meanwhile answers nothing more
+    let owner = owner();
+    let device = device(&owner);
 
     if owner.is_empty() || device.is_empty() {
         return Networks::default();
     }
 
     let seen: Vec<Seen> = bus
-        .call(NAME, &device, WIRELESS, "GetAllAccessPoints", &[])
+        .call(&owner, &device, WIRELESS, "GetAllAccessPoints", &[])
         .list()
         .iter()
-        .filter_map(|path| seen(path.text()))
+        .filter_map(|path| seen(&owner, path.text()))
         .collect();
 
-    let state = bus.property(NAME, &device, DEVICE, "State").number();
-    let active = bus.property(NAME, &device, WIRELESS, "ActiveAccessPoint");
+    let state = bus.property(&owner, &device, DEVICE, "State").number();
+    let active = bus.property(&owner, &device, WIRELESS, "ActiveAccessPoint");
 
     let link = if state == ACTIVATED_DEVICE {
         Link::Joined
@@ -397,17 +405,19 @@ fn read() -> Networks {
         .find(|seen| seen.path == active.text())
         .map(|seen| (seen.ssid.clone(), link));
 
+    let profiles = profiles(&owner);
+
     Networks {
         owner,
         device,
-        list: networks(seen, &profiles(), on),
+        list: networks(seen, &profiles, on),
     }
 }
 
-// one access point, none for a hidden one, which has no name to show
-fn seen(path: &str) -> Option<Seen> {
+// one of `owner`'s access points, none for a hidden one, which has no name to show
+fn seen(owner: &str, path: &str) -> Option<Seen> {
     let properties = Bus::system().call(
-        NAME,
+        owner,
         path,
         "org.freedesktop.DBus.Properties",
         "GetAll",
@@ -439,14 +449,14 @@ fn ssid(bytes: &Value) -> Option<String> {
 }
 
 // the saved Wi-Fi profiles, by network, oldest first as NetworkManager lists them
-fn profiles() -> Vec<(String, String)> {
+fn profiles(owner: &str) -> Vec<(String, String)> {
     let bus = Bus::system();
 
-    bus.call(NAME, SETTINGS_PATH, SETTINGS, "ListConnections", &[])
+    bus.call(owner, SETTINGS_PATH, SETTINGS, "ListConnections", &[])
         .list()
         .iter()
         .filter_map(|path| {
-            let settings = bus.call(NAME, path.text(), PROFILE, "GetSettings", &[]);
+            let settings = bus.call(owner, path.text(), PROFILE, "GetSettings", &[]);
 
             Some((joins(&settings)?, path.text().to_owned()))
         })
@@ -621,7 +631,7 @@ fn joined(
     let ended = if active.is_empty() {
         Ended::Failed(Failure::Other)
     } else {
-        let mut waiting = Waiting::new(device, &active);
+        let mut waiting = Waiting::new(owner, device, &active);
         let mut late: Option<Instant> = None;
 
         loop {
@@ -685,11 +695,21 @@ enum Ended {
 }
 
 /*
- * a change a join hears: of a device, in a state for a reason, of an active connection, an
- * object removed, or NetworkManager going away, which takes every attempt with it
+ * a change a join hears, from the NetworkManager `owner`, by its unique name: the one that said
+ * it, or the one gone. Paths are only that NetworkManager's, so a join hears only its own
  */
 #[derive(Debug, Clone, PartialEq)]
-pub enum Heard {
+pub struct Heard {
+    pub owner: String,
+    pub change: Change,
+}
+
+/*
+ * of a device, in a state for a reason, of an active connection, an object removed, or
+ * NetworkManager going away, which takes every attempt with it
+ */
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
     Device(String, f64, f64),
     Attempt(String, f64),
     Removed(String),
@@ -735,6 +755,7 @@ pub fn hear(heard: Heard) {
  * only the join's own active connection says it is up or over; the device says why it failed
  */
 struct Waiting<'a> {
+    owner: &'a str,
     device: &'a str,
     active: &'a str,
 
@@ -745,8 +766,9 @@ struct Waiting<'a> {
 }
 
 impl<'a> Waiting<'a> {
-    fn new(device: &'a str, active: &'a str) -> Self {
+    fn new(owner: &'a str, device: &'a str, active: &'a str) -> Self {
         Self {
+            owner,
             device,
             active,
             failure: None,
@@ -756,15 +778,20 @@ impl<'a> Waiting<'a> {
 
     // how what was heard ends the join: up, or over once it is known why; none while on its way
     fn hear(&mut self, heard: &Heard) -> Option<Ended> {
-        match heard {
-            Heard::Device(path, state, reason) if path == self.device => {
+        // another NetworkManager's, one that replaced the join's, may reuse its paths
+        if heard.owner != self.owner {
+            return None;
+        }
+
+        match &heard.change {
+            Change::Device(path, state, reason) if path == self.device => {
                 if *state == PREPARING && !self.over {
                     self.failure = None;
                 } else if *state == FAILED {
                     self.failure = Some(*reason);
                 }
             }
-            Heard::Attempt(path, state) if path == self.active => {
+            Change::Attempt(path, state) if path == self.active => {
                 if *state == UP && !self.over {
                     return Some(Ended::Up);
                 }
@@ -772,8 +799,8 @@ impl<'a> Waiting<'a> {
                 self.over |= *state == OVER;
             }
             // nothing more is said of an attempt removed, nor by NetworkManager gone
-            Heard::Removed(path) if path == self.active => return Some(self.failed()),
-            Heard::Gone => return Some(Ended::Gone),
+            Change::Removed(path) if path == self.active => return Some(self.failed()),
+            Change::Gone => return Some(Ended::Gone),
             _ => {}
         }
 
@@ -1013,14 +1040,26 @@ mod tests {
         assert!(!format!("{:?}", Some(secret)).contains("hunter22"));
     }
 
+    // the NetworkManager a join asked, by its unique name
+    const OWNER: &str = ":1.9";
+
+    impl From<Change> for Heard {
+        fn from(change: Change) -> Self {
+            Self {
+                owner: OWNER.into(),
+                change,
+            }
+        }
+    }
+
     #[test]
     fn a_join_ends_when_its_own_attempt_is_up_or_over_and_says_why() {
         const ON_ITS_WAY: f64 = 1.0;
-        let device = |state, reason| Heard::Device("/d".into(), state, reason);
-        let attempt = |state| Heard::Attempt("/a".into(), state);
+        let device = |state, reason| Heard::from(Change::Device("/d".into(), state, reason));
+        let attempt = |state| Heard::from(Change::Attempt("/a".into(), state));
 
         // the network it leaves goes down first, which is not the join's end
-        let mut waiting = Waiting::new("/d", "/a");
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
         assert_eq!(waiting.hear(&device(110.0, 0.0)), None);
         assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
         assert_eq!(waiting.hear(&attempt(ON_ITS_WAY)), None);
@@ -1029,7 +1068,7 @@ mod tests {
         assert_eq!(waiting.hear(&attempt(UP)), Some(Ended::Up));
 
         // a wrong password: the device fails, then the attempt is over
-        let mut waiting = Waiting::new("/d", "/a");
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
         assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
         assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
         assert_eq!(
@@ -1038,7 +1077,7 @@ mod tests {
         );
 
         // heard the other way round, as the two threads may
-        let mut waiting = Waiting::new("/d", "/a");
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
         assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
         assert_eq!(waiting.hear(&attempt(OVER)), None);
         assert_eq!(
@@ -1047,13 +1086,13 @@ mod tests {
         );
 
         // over without the device failing, once no reason came in time
-        let mut waiting = Waiting::new("/d", "/a");
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
         assert_eq!(waiting.hear(&attempt(OVER)), None);
         assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
         assert_eq!(waiting.failed(), Ended::Failed(Failure::Other));
 
         // a failure from before it began preparing is not this join's
-        let mut waiting = Waiting::new("/d", "/a");
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
         assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
         assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
         assert_eq!(waiting.hear(&device(FAILED, 8.0)), None);
@@ -1066,45 +1105,70 @@ mod tests {
     // only its own active connection and device count: another join's coming up is not this one's
     #[test]
     fn a_join_hears_only_its_own_attempt_and_device() {
-        let mut waiting = Waiting::new("/d", "/a");
-        assert_eq!(waiting.hear(&Heard::Attempt("/b".into(), UP)), None);
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
+        assert_eq!(waiting.hear(&Change::Attempt("/b".into(), UP).into()), None);
         assert_eq!(
-            waiting.hear(&Heard::Device("/e".into(), FAILED, NO_SECRETS)),
+            waiting.hear(&Change::Device("/e".into(), FAILED, NO_SECRETS).into()),
             None
         );
         assert_eq!(
-            waiting.hear(&Heard::Device("/d".into(), ACTIVATED_DEVICE, 0.0)),
+            waiting.hear(&Change::Device("/d".into(), ACTIVATED_DEVICE, 0.0).into()),
             None
         );
 
         // taken over before it began: over, with nothing from the device to say why
-        assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), OVER)), None);
-        assert_eq!(waiting.hear(&Heard::Attempt("/a".into(), UP)), None);
+        assert_eq!(
+            waiting.hear(&Change::Attempt("/a".into(), OVER).into()),
+            None
+        );
+        assert_eq!(waiting.hear(&Change::Attempt("/a".into(), UP).into()), None);
         assert_eq!(waiting.failed(), Ended::Failed(Failure::Other));
     }
 
     // NetworkManager going away takes the attempt with it, saying no more
     #[test]
     fn a_join_ends_when_networkmanager_goes_away() {
-        let mut waiting = Waiting::new("/d", "/a");
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
         assert_eq!(
-            waiting.hear(&Heard::Device("/d".into(), PREPARING, 0.0)),
+            waiting.hear(&Change::Device("/d".into(), PREPARING, 0.0).into()),
             None
         );
-        assert_eq!(waiting.hear(&Heard::Gone), Some(Ended::Gone));
+        assert_eq!(waiting.hear(&Change::Gone.into()), Some(Ended::Gone));
+    }
+
+    /*
+     * a NetworkManager that replaced the join's may reuse its paths, and one gone that is not the
+     * join's takes nothing with it
+     */
+    #[test]
+    fn a_join_hears_only_its_own_networkmanager() {
+        let other = |change| Heard {
+            owner: ":1.81".into(),
+            change,
+        };
+
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
+        assert_eq!(waiting.hear(&other(Change::Attempt("/a".into(), UP))), None);
+        assert_eq!(
+            waiting.hear(&other(Change::Device("/d".into(), FAILED, NO_SECRETS))),
+            None
+        );
+        assert_eq!(waiting.hear(&other(Change::Removed("/a".into()))), None);
+        assert_eq!(waiting.hear(&other(Change::Gone)), None);
+        assert_eq!(waiting.hear(&Change::Gone.into()), Some(Ended::Gone));
     }
 
     // its attempt removed says no more either; another removed is not this join's end
     #[test]
     fn a_join_ends_when_its_attempt_is_removed() {
-        let mut waiting = Waiting::new("/d", "/a");
-        assert_eq!(waiting.hear(&Heard::Removed("/b".into())), None);
+        let mut waiting = Waiting::new(OWNER, "/d", "/a");
+        assert_eq!(waiting.hear(&Change::Removed("/b".into()).into()), None);
         assert_eq!(
-            waiting.hear(&Heard::Device("/d".into(), FAILED, NO_SECRETS)),
+            waiting.hear(&Change::Device("/d".into(), FAILED, NO_SECRETS).into()),
             None
         );
         assert_eq!(
-            waiting.hear(&Heard::Removed("/a".into())),
+            waiting.hear(&Change::Removed("/a".into()).into()),
             Some(Ended::Failed(Failure::WrongPassword))
         );
     }
@@ -1131,7 +1195,7 @@ mod tests {
     // a join hears only while it listens, and leaves nothing behind
     #[test]
     fn a_join_listens_until_it_ends() {
-        let heard = Heard::Attempt("/a".into(), UP);
+        let heard = Heard::from(Change::Attempt("/a".into(), UP));
 
         let (listening, waiting) = listen(u64::MAX);
         hear(heard.clone());
