@@ -163,7 +163,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 - **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144).
 - **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
-- **Lock**: `ext-session-lock` + PAM; no notification content.
+- **Lock**: `ext-session-lock` + PAM; no notification content; to re-lock at start on a true `LockedHint` under a systemd user unit (#154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
 - **Settings**: floated normal window; schema-backed overrides; page per Module; per-output keys file-only (done, #148).
 
@@ -282,7 +282,7 @@ Nested-niri E2E checks idle/morph each release.
 - privacy Overlay fullscreen-visible while module enabled.
 - lock shows no notification content.
 
-Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`.
+Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. The production lock, user unit and re-lock on a true logind `LockedHint` land in #154, which repeats the gate ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 
 ## Explicit non-goals
 
@@ -324,11 +324,10 @@ Need design before commitment:
 
 - Track/test privacy Overlay stacking + input passthrough.
 - Define clipboard sensitive-content policy before persistence.
-- Run lock crash proof; split on failure.
 - Blur waits for viable Amane/niri background-effect path.
 - Native polkit waits for safe helper stdin integration.
 - Plugins/hooks/ASR remain deferred design decisions.
 
 ## Fixed
 
-No bar. No Mission Control clone. No geometry fullscreen heuristic. Privacy outside Arbiter. Activity fields orthogonal. Notification state ≠ UI. Dock consumes `windows`, not `workspace`. `audio` ≠ privacy capture monitoring. Detailed controls use macOS-style sub-surfaces. Launcher ships apps/calculator/emoji/wallpaper providers. Clipboard/capture/caffeine/calendar/weather in scope. Per-app mixer + device selection in scope. Config hot reload + doctor in scope. English-only; no system monitor/fingerprint/OSK. Kanade Cargo owns builds; Amane stays library/runtime. No second UI framework. Real TOML/serde; user config never rewritten. v0.1 Palette; matugen later. Separate lock process only if crash proof requires it.
+No bar. No Mission Control clone. No geometry fullscreen heuristic. Privacy outside Arbiter. Activity fields orthogonal. Notification state ≠ UI. Dock consumes `windows`, not `workspace`. `audio` ≠ privacy capture monitoring. Detailed controls use macOS-style sub-surfaces. Launcher ships apps/calculator/emoji/wallpaper providers. Clipboard/capture/caffeine/calendar/weather in scope. Per-app mixer + device selection in scope. Config hot reload + doctor in scope. English-only; no system monitor/fingerprint/OSK. Kanade Cargo owns builds; Amane stays library/runtime. No second UI framework. Real TOML/serde; user config never rewritten. v0.1 Palette; matugen later. Lock in the shell process; no `kanade-lock` (ADR 0018).
