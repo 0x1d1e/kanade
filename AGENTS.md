@@ -52,6 +52,8 @@ The exact `rev` of `amane` in `Cargo.toml`. Bump it deliberately; never follow A
 
 ## Rules
 
+- Never open an issue or PR on Amane or niri, nor write a custom patch, fork or vendored change for either. Build everything in Kanade, working around their gaps from Kanade's side.
+
 - `island/` is Amane-free except `island/service.rs`; enforced by `src/boundary.rs` (syn-based, covers aliases, nested modules, macros, `super`/`crate` escapes).
   `island/` may not depend on the rest of Kanade.
 - Amane owns the Wayland runtime/UI seam. `wayland-client` only in `src/doctor/` (diagnostics, no shell behavior); enforced by `src/boundary.rs`.
