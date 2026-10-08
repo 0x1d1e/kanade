@@ -15,11 +15,11 @@ use std::time::{Duration, Instant};
 
 use amane::{IpcCall, ipc_socket};
 
-use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
 use crate::sources::{caffeine, capture, osd, recording, timer, wallpaper};
+use crate::{config, doctor};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -138,7 +138,7 @@ pub fn usage() -> String {
         "usage: kanade [<verb> [args]]\nwith no verb, runs the shell; a verb asks the running one:",
     ))
     .chain(verbs)
-    .chain([String::from("doctor\nhelp")])
+    .chain([String::from("config defaults\ndoctor\nhelp")])
     .collect::<Vec<_>>()
     .join("\n")
 }
@@ -159,6 +159,10 @@ pub fn run(arguments: &[String]) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         ["doctor"] => return doctor::run(),
+        ["config", "defaults"] => {
+            print!("{}", config::defaults());
+            return ExitCode::SUCCESS;
+        }
         _ => {}
     }
 
@@ -685,6 +689,7 @@ capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
+config defaults
 doctor
 help",
                 Command::debug_usage()

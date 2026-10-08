@@ -204,7 +204,7 @@ file change → debounce → parse → migrate → merge → validate
 
 `status` reports config generation, last reload error, pending-restart keys.
 
-Post-v0.1 schema registry defines setting once: key/type/default/validation/UI metadata/restart/per-output. Drives parsing, Settings, docs, validation.
+Schema registry (`config::Setting`, per Module) defines each setting once: key/kind/default/validation/help/restart/per-output. Drives parsing, validation, reload restart, docs (`kanade config defaults`, README), Settings.
 
 ## CLI
 
@@ -225,7 +225,7 @@ capture record start|stop|status
 caffeine on|off|toggle [duration]|status
 wallpaper set <path>|status
 osd volume|brightness
-config reload|validate
+config reload|validate|defaults
 status
 doctor
 

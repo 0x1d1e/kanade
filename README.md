@@ -88,37 +88,48 @@ Kanade reads its config at start, and again whenever one of its files changes, i
 2. every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else `~/.config/kanade/`), in alphabetical order, so `config.toml` can sit beside files like `10-theme.toml` that another tool manages. Hidden files are skipped.
 3. `$XDG_STATE_HOME/kanade/settings.toml` (else `~/.local/state/kanade/settings.toml`), for the Settings app to come
 
-Tables merge key by key, so a later file only changes the keys it sets; any other value, a list too, replaces the one below. Kanade never writes your files. Every key is optional; these are the defaults:
+Tables merge key by key, so a later file only changes the keys it sets; any other value, a list too, replaces the one below. Kanade never writes your files. Every key is optional; these are the defaults, which `kanade config defaults` prints:
 
 ```toml
-# the island snaps to its new shape and only fades its content, over 80 ms
+# the island snaps to its new shape and only fades its content, over 80 ms; KANADE_REDUCED_MOTION=1 or 0 overrides it
 reduced_motion = false
 
 # the time an idle island shows: "24h" (14:05) or "12h" (2:05 PM)
 clock = "24h"
 
-[timings]            # milliseconds, 1-60000
-hover = 120          # pointer resting on a Compact island before it peeks
-expand = 180         # morph to a larger form
-surface_change = 220 # one Surface replacing another, and a new track dissolving in
-collapse = 180       # morph to a smaller form
-grace = 250          # pointer out before a Peek or Surface collapses
-osd = 1200           # the OSD, and a workspace switch on the island
+[timings]
+# pointer resting on a Compact island before it peeks, ms 1-60000
+hover = 120
+# morph to a larger form, ms 1-60000
+expand = 180
+# one Surface replacing another, and a new track dissolving in, ms 1-60000
+surface_change = 220
+# morph to a smaller form, ms 1-60000
+collapse = 180
+# pointer out before a Peek or Surface collapses, ms 1-60000
+grace = 250
+# the OSD, and a workspace switch on the island, ms 1-60000
+osd = 1200
 
 [theme]
+# the image the theme roles beside the island take their tone from
 # palette = "~/Pictures/wallpaper.jpg"
 
-[windows.apps]       # app id = the .desktop file it belongs to, where Kanade's guess is wrong
+[modules]
+# every Module is on unless set to false here, takes a restart
+# media = false
+
+[windows.apps]
+# app id = the .desktop file it belongs to, where Kanade's guess is wrong
 # jetbrains-idea = "intellij-idea-ultimate-edition"
 
-[wallpaper]
-# directory = "~/Pictures/Wallpapers" # the images the Launcher offers after `@`
-
 [dock]
-# pinned = ["firefox", "kitty"] # .desktop file ids, in the Dock's order
+# .desktop file ids, in the Dock's order
+# pinned = ["firefox", "kitty"]
 
-[modules]            # every Module is on unless set to false here
-# media = false
+[wallpaper]
+# the images the Launcher offers after `@`, else ~/Pictures/Wallpapers
+# directory = "~/Pictures/Wallpapers"
 ```
 
 - `theme.palette`: the theme roles for what draws beside the island, like the Banners and the OSD, take their tone from this image and follow it when the file changes. The island itself stays black and white whatever the wallpaper, so amber (capture, low battery), red (critical) and green (mic/camera) keep their meaning.

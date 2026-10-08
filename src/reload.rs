@@ -80,10 +80,7 @@ pub fn reload() -> Outcome {
 
     match &outcome {
         Outcome::Valid(pending) => {
-            let next = Config {
-                off: running.off.clone(),
-                ..read
-            };
+            let next = config::restarted(&running, read);
 
             if next != *running {
                 // swapped first, so the windows the island's write wakes draw the new config
@@ -177,13 +174,7 @@ fn judge(running: &Config, read: &Config, problems: Vec<String>) -> Outcome {
         return Outcome::Invalid(problems);
     }
 
-    let pending = modules::ALL
-        .iter()
-        .filter(|module| running.off(module.name) != read.off(module.name))
-        .map(|module| format!("modules.{}", module.name))
-        .collect();
-
-    Outcome::Valid(pending)
+    Outcome::Valid(config::pending(running, read))
 }
 
 // what makes an event under one watch a change to the config
