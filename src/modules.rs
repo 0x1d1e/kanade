@@ -2,7 +2,8 @@
 //! Modules it requires and those it can do without; `resolve` decides once at start which run, and
 //! `start` starts only those. A Module that is off starts no thread, opens no window, reads no
 //! Service and refuses its verbs, so the Amane Services only it reads stay cold. Turning one on or
-//! off takes a restart, since Amane registers windows only at start.
+//! off takes a restart, since Amane registers windows only at start. `kanade module` (#149) lists
+//! them and turns one on or off in the settings file, saying what the restart will change.
 
 use std::sync::OnceLock;
 use std::thread;
@@ -114,6 +115,27 @@ pub const ALL: &[Module] = &[
                 parse: |arguments| match arguments {
                     [] => Ok(Call::Status),
                     _ => Err(Unparsed::Usage),
+                },
+            },
+            Verb {
+                name: "module",
+                usage: || {
+                    let names: Vec<&str> =
+                        ALL.iter().filter_map(|module| named(module.name)).collect();
+
+                    format!(
+                        "module list|enable <name>|disable <name>\n  <name>: {}",
+                        names.join("|")
+                    )
+                },
+                parse: |arguments| {
+                    match arguments {
+                        ["list"] => Some(Call::Modules),
+                        ["enable", name] => named(name).map(|name| Call::Turn(name, true)),
+                        ["disable", name] => named(name).map(|name| Call::Turn(name, false)),
+                        _ => None,
+                    }
+                    .ok_or(Unparsed::Usage)
                 },
             },
             // fake Activities, to see what the island does with one
@@ -790,18 +812,25 @@ impl State {
     pub fn problem(&self, name: &str) -> Option<String> {
         match self {
             State::On { without } if without.is_empty() => None,
-            State::On { without } => {
-                Some(format!("module {name} runs without {}", without.join(", ")))
-            }
             State::Off => None,
-            State::Missing(required) => Some(format!(
-                "module {name} is off: it requires {required}, which is not on"
-            )),
-            State::Cycle(cycle) => Some(format!(
-                "module {name} is off: its requirements loop: {} -> {}",
+            _ => Some(format!("module {name} {}", self.said())),
+        }
+    }
+
+    // what became of it, after its name
+    fn said(&self) -> String {
+        match self {
+            State::On { without } if without.is_empty() => String::from("is on"),
+            State::On { without } => format!("runs without {}", without.join(", ")),
+            State::Off => String::from("is off"),
+            State::Missing(required) => {
+                format!("is off: it requires {required}, which is not on")
+            }
+            State::Cycle(cycle) => format!(
+                "is off: its requirements loop: {} -> {}",
                 cycle.join(" -> "),
                 cycle[0]
-            )),
+            ),
         }
     }
 }
@@ -827,11 +856,28 @@ impl Modules {
     fn lines(&self) -> Vec<String> {
         self.states
             .iter()
+            .map(|(name, state)| format!("module {name} {}", state.said()))
+            .collect()
+    }
+
+    /*
+     * a line for each Module, with what a restart would make of it where that differs: `next`,
+     * resolved against the config the files give now. Each with whether it differs
+     */
+    fn against(&self, next: &Modules) -> Vec<(&'static str, String, bool)> {
+        self.states
+            .iter()
             .map(|(name, state)| {
-                state.problem(name).unwrap_or_else(|| match state {
-                    State::On { .. } => format!("module {name} is on"),
-                    _ => format!("module {name} is off"),
-                })
+                let line = format!("module {name} {}", state.said());
+
+                match next.state(name).filter(|after| *after != state) {
+                    Some(after) => (
+                        *name,
+                        format!("{line}; after a restart it {}", after.said()),
+                        true,
+                    ),
+                    None => (*name, line, false),
+                }
             })
             .collect()
     }
@@ -985,6 +1031,73 @@ pub fn status() -> Vec<String> {
     MODULES.get().map_or_else(Vec::new, Modules::lines)
 }
 
+// what the files would start, which a restart applies
+fn next() -> Modules {
+    let (read, _) = config::layers(true);
+
+    resolve(ALL, |name| read.off(name))
+}
+
+// `module list`: a line for each Module, whether it runs, why it is not as asked, and what a restart changes
+pub fn list() -> Vec<String> {
+    let Some(modules) = MODULES.get() else {
+        return Vec::new();
+    };
+
+    modules
+        .against(&next())
+        .into_iter()
+        .map(|(_, line, _)| line)
+        .collect()
+}
+
+/*
+ * `module enable|disable`: turns a Module on or off in the settings file, which a restart applies;
+ * says what becomes of it and of every other Module a restart changes, and what is lost with it off
+ */
+pub fn turn(name: &'static str, on: bool) -> Result<String, String> {
+    settings::set(&["modules", name], Some(toml::Value::Boolean(on)))?;
+
+    // at once, not on the watch's debounce, so `status` right after shows the change pending
+    let refused = match reload::reload() {
+        reload::Outcome::Valid(_) => None,
+        reload::Outcome::Invalid(_) => Some(String::from(
+            "the config did not reload, see `kanade status`; a restart still applies this",
+        )),
+    };
+
+    let Some(modules) = MODULES.get() else {
+        return Ok(String::new());
+    };
+
+    let mut lines: Vec<String> = modules
+        .against(&next())
+        .into_iter()
+        .filter(|&(each, _, changes)| each == name || changes)
+        .map(|(_, line, _)| line)
+        .collect();
+
+    if let Some(warning) = ALL
+        .iter()
+        .find(|module| module.name == name)
+        .and_then(|module| module.warns)
+        .filter(|_| !on)
+    {
+        lines.push(format!("with module {name} off, {warning}"));
+    }
+
+    lines.extend(refused);
+
+    Ok(lines.join("\n"))
+}
+
+// the Module of this name that can be turned on or off: any but the core
+pub fn named(name: &str) -> Option<&'static str> {
+    ALL.iter()
+        .map(|module| module.name)
+        .find(|each| *each == name && *each != CORE)
+}
+
 // whether a Module runs; none do before `start`
 pub fn on(name: &str) -> bool {
     MODULES.get().is_some_and(|modules| modules.on(name))
@@ -1072,6 +1185,58 @@ mod tests {
             Some("module banners is off: it requires notifications, which is not on")
         );
         assert_eq!(State::Off.problem("notifications"), None);
+    }
+
+    // a restart's change shows on the Modules it changes, those that turn off with it too
+    #[test]
+    fn a_line_says_what_a_restart_changes() {
+        let all = [
+            module("island", &[]),
+            module("notifications", &["island"]),
+            module("banners", &["notifications"]),
+            module("media", &["island"]),
+        ];
+
+        let running = resolve(&all, |name| name == "media");
+        let next = resolve(&all, |name| name == "notifications");
+
+        assert_eq!(
+            running.against(&next),
+            [
+                ("island", String::from("module island is on"), false),
+                (
+                    "notifications",
+                    String::from("module notifications is on; after a restart it is off"),
+                    true
+                ),
+                (
+                    "banners",
+                    String::from(
+                        "module banners is on; after a restart it is off: it requires \
+                         notifications, which is not on"
+                    ),
+                    true
+                ),
+                (
+                    "media",
+                    String::from("module media is off; after a restart it is on"),
+                    true
+                ),
+            ]
+        );
+        assert!(
+            running
+                .against(&running)
+                .iter()
+                .all(|(_, _, changes)| !changes)
+        );
+    }
+
+    #[test]
+    fn every_module_but_the_core_can_be_turned() {
+        assert_eq!(named(CORE), None);
+        assert_eq!(named("media"), Some("media"));
+        assert_eq!(named("weather"), None);
     }
 
     // order does not matter: a requirement listed later still settles first

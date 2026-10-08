@@ -195,6 +195,13 @@ fn change(path: Vec<String>, value: Option<Value>) {
     }
 }
 
+// writes the key at `path` to the settings file, as a change in the window does, for `kanade module`
+pub fn set(path: &[&str], value: Option<Value>) -> Result<(), String> {
+    let path: Vec<String> = path.iter().map(|&key| key.to_owned()).collect();
+
+    file::set(&path, value)
+}
+
 fn turn_to(page: &'static str) {
     Settings::write().page = page;
 }
