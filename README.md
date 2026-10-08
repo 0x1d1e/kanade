@@ -96,7 +96,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `status` | the config generation, the last reload error and the keys pending restart |
 | `module list` | each Module: whether it runs, why not, and what a restart would change |
 | `module enable\|disable <name>` | turns a Module on or off in the settings file, applied at the next restart; prints what the restart will change, the Modules that turn off with it included. `island` cannot be turned off |
-| `lock` | locks the session: every monitor shows the time, the date and a password field, checked by PAM through its `login` service. Exits 0 only once niri has locked, 3 if it has not within 5 s (niri says so only when run as a session, `niri-session`). Refused without the `login` PAM service |
+| `lock` | locks the session: every monitor shows the time, the date and a password field, checked by PAM through its `login` service. Exits 0 once logind says niri's session is locked, 3 if it is not within 5 s (niri says so only when run as a session, `niri-session`). Refused without the `login` PAM service |
 | `doctor` | read-only diagnostics: Amane and niri versions, Wayland protocols, buses and sockets, the config, and what each Module on runs worse without, like a missing `pw-dump` or another notification daemon; works without a shell, exits 1 on a failure |
 
 `kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused or no shell, 2 not a verb, 3 not known whether it was done: the shell, or niri for a screenshot, got the call but did not answer in time, so it may still be done; not worth repeating blindly.
@@ -221,7 +221,7 @@ Mod+Alt+K hotkey-overlay-title="Caffeine" { spawn "kanade" "caffeine" "toggle"; 
 Mod+Alt+L hotkey-overlay-title="Lock" { spawn "kanade" "lock"; }
 ```
 
-An idle daemon locks the same way, like hypridle's `lock_cmd = kanade lock`. `kanade lock` exits 0 only once every monitor shows the lock screen, so a suspend hook can run it and wait. On the lock screen, type the password and press Enter.
+An idle daemon locks the same way, like hypridle's `lock_cmd = kanade lock`. `kanade lock` waits until logind says the session is locked, but right after an unlock that may still be the previous lock ([#196](https://github.com/0x1d1e/kanade/issues/196)), so it does not yet make locking before suspend reliable. On the lock screen, type the password and press Enter.
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
 

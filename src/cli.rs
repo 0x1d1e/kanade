@@ -348,9 +348,10 @@ fn settle_recording(
 
 /*
  * the shell answers a lock at once, as Amane only asks niri for it (`lock::start`), so this waits
- * until niri says the session is locked: done only then, so a suspend hook can wait on it. niri
- * says so whichever locker holds it, and when it refuses because another one does, that one has
- * locked. `ask` says `locked` or `unlocked`
+ * until niri says the session is locked; right after an unlock that may still be the last lock
+ * (#196), so it is not yet enough for a suspend hook. niri says so whichever locker holds it, and
+ * when it refuses because another one does, that one has locked. `ask` says `locked` or
+ * `unlocked`
  */
 fn settle_lock(patience: Duration, ask: impl FnMut(Instant) -> Result<Reply, String>) -> Reply {
     settle(
