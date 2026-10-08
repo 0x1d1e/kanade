@@ -21,8 +21,9 @@
 //! A sign-in's thread only brings the code back and trades it; one cancelled by then is not kept.
 //! A sign-in kept is a new account to Kanade: the events synced before go once it is kept, and
 //! one not kept leaves the account it would have replaced as it was. The synced events name the
-//! sign-in they are for (`OWNER`), so after a crash between keeping one and deleting the events,
-//! the next start drops events synced for another.
+//! sign-in they are for (`OWNER`). The calendar reads them only once this thread has checked them
+//! at start (`vouched`), so events a crash left, synced for another sign-in or for none after an
+//! interrupted sign-out, are deleted before they can show.
 
 mod ics;
 mod oauth;
@@ -34,7 +35,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
@@ -246,6 +247,9 @@ static QUEUE: LazyLock<(Sender<Message>, Mutex<Receiver<Message>>)> = LazyLock::
 // the sign-in going on; a newer one, or a sign-out, ends the one before
 static SIGN_IN: AtomicU64 = AtomicU64::new(0);
 
+// whether the sync thread found the events on disk the kept sign-in's since start (`Worker::vet`)
+static VOUCHED: AtomicBool = AtomicBool::new(false);
+
 fn send(message: Message) {
     // the receiver lives in a static, so it is never gone
     let _ = QUEUE.0.send(message);
@@ -283,6 +287,14 @@ pub fn status() -> String {
                 .to_string(),
         )
     })
+}
+
+/*
+ * where the synced events are kept, for the calendar to read; none until the sync thread found
+ * them the kept sign-in's, as a crash may have left another's, or a signed-out one's
+ */
+pub fn vouched() -> Option<PathBuf> {
+    VOUCHED.load(Ordering::Relaxed).then(directory).flatten()
 }
 
 // where the synced events are kept
@@ -454,6 +466,9 @@ trait Outside {
     // the calendar reads its places again
     fn reread(&self);
 
+    // the events on disk are the kept sign-in's, or none, so the calendar may read them
+    fn vouch(&self);
+
     // the account as the Calendar Surface and `status` read it
     fn publish(&self, account: &Account);
 }
@@ -498,6 +513,11 @@ impl Outside for Google {
         calendar::reread();
     }
 
+    fn vouch(&self) {
+        VOUCHED.store(true, Ordering::Relaxed);
+        calendar::reread();
+    }
+
     // written only on a change, as a write wakes every window
     fn publish(&self, account: &Account) {
         if *Account::read() != *account {
@@ -525,6 +545,9 @@ struct Worker<O> {
     kept: Option<Credentials>,
     access: Option<Access>,
     account: Account,
+
+    // whether the events on disk were found the kept sign-in's since start (`vet`)
+    vetted: bool,
 }
 
 impl<O: Outside> Worker<O> {
@@ -535,6 +558,7 @@ impl<O: Outside> Worker<O> {
             kept: None,
             access: None,
             account: Account::default(),
+            vetted: false,
         }
     }
 
@@ -543,17 +567,11 @@ impl<O: Outside> Worker<O> {
         if self.signed_in() {
             self.load();
         }
-
-        // a sign-in kept just before a crash may have left the last account's events
-        if let Some(kept) = &self.kept
-            && !self.owns(&kept.account)
-            && self.forget_events().is_ok()
-        {
-            eprintln!("kanade: google-calendar: deleted events synced for another sign-in");
-        }
         let mut due = self.kept.is_some();
 
         loop {
+            self.vet();
+
             if due {
                 self.sync();
             }
@@ -677,6 +695,36 @@ impl<O: Outside> Worker<O> {
         if let Err(why) = restored {
             eprintln!("kanade: google-calendar: the keyring was not put back: {why}");
         }
+    }
+
+    /*
+     * lets the calendar show the events on disk once they are known to be the kept sign-in's. A
+     * crash can leave another's: between keeping a sign-in and deleting the last one's events,
+     * or in a sign-out, after the marker went. Those are deleted first. While the keyring has not
+     * said which sign-in is kept, whose they are is not known, so they stay hidden
+     */
+    fn vet(&mut self) {
+        if self.vetted {
+            return;
+        }
+
+        let foreign = match &self.kept {
+            Some(kept) => !self.owns(&kept.account),
+            None if self.signed_in() => return,
+            // signed out, so any are left over
+            None => true,
+        };
+        let there = self.places.events.as_ref().is_some_and(|dir| dir.exists());
+
+        if foreign && there {
+            if self.forget_events().is_err() {
+                return;
+            }
+            eprintln!("kanade: google-calendar: deleted events synced for no current sign-in");
+        }
+
+        self.vetted = true;
+        self.outside.vouch();
     }
 
     // whether the events on disk were synced for `account`; none on disk is no other's
@@ -1244,6 +1292,13 @@ mod tests {
 
         // the keyring refuses to store, as when its prompt is dismissed
         refusing: bool,
+
+        // the keyring does not unlock, so it gives nothing
+        locked: bool,
+
+        // where the events are, and whether a's showed each time they were vouched for
+        events: Option<PathBuf>,
+        vouched: Vec<bool>,
         revoked: Vec<String>,
         published: Vec<Account>,
     }
@@ -1262,7 +1317,12 @@ mod tests {
 
     impl Outside for Shared {
         fn load(&self) -> Result<Option<Credentials>, String> {
-            Ok(self.fake().keyring.clone())
+            let fake = self.fake();
+            if fake.locked {
+                return Err(String::from("the keyring was not unlocked"));
+            }
+
+            Ok(fake.keyring.clone())
         }
 
         fn store(&self, credentials: &Credentials) -> Result<(), String> {
@@ -1316,6 +1376,15 @@ mod tests {
 
         fn reread(&self) {}
 
+        fn vouch(&self) {
+            let mut fake = self.fake();
+            let shown = fake
+                .events
+                .as_ref()
+                .is_some_and(|dir| dir.join("a.ics").exists());
+            fake.vouched.push(shown);
+        }
+
         fn publish(&self, account: &Account) {
             self.fake().published.push(account.clone());
         }
@@ -1324,6 +1393,7 @@ mod tests {
     // a worker on its own thread, over places in `dir`
     fn worker(shared: &Shared, dir: &Path) -> (Sender<Message>, thread::JoinHandle<Account>) {
         let (send, queue) = mpsc::channel();
+        shared.fake().events = Some(dir.join("events"));
         let places = Places {
             events: Some(dir.join("events")),
             marker: Some(dir.join("state/marker")),
@@ -1639,6 +1709,8 @@ mod tests {
 
         assert!(dir.join("events/a.ics").exists());
         assert!(matches!(account.state, State::Failed(Problem::Offline(_))));
+        // its own, so shown
+        assert_eq!(shared.fake().vouched, [true]);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1651,6 +1723,8 @@ mod tests {
         let (send, running) = worker(&shared, &dir);
         let account = ended(send, running);
 
+        // never shown: the calendar may read them only once they are gone
+        assert_eq!(shared.fake().vouched, [false]);
         assert!(!dir.join("events/a.ics").exists());
         assert_eq!(
             account,
@@ -1739,6 +1813,48 @@ mod tests {
                 .iter()
                 .all(|account| account.state == State::SignedIn)
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_crash_in_a_sign_out_drops_the_events_before_they_show() {
+        let dir = scratch("crash-sign-out");
+        // the keyring and the marker went, the events did not
+        let shared = crashed(&dir, "a", "a");
+        shared.fake().keyring = None;
+        let _ = fs::remove_file(dir.join("state/marker"));
+
+        let (send, running) = worker(&shared, &dir);
+        let account = ended(send, running);
+
+        assert_eq!(shared.fake().vouched, [false]);
+        assert!(!dir.join("events").exists());
+        assert_eq!(account.state, State::SignedOut);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn events_stay_hidden_while_the_keyring_cannot_say_whose_they_are() {
+        let dir = scratch("locked");
+        let shared = crashed(&dir, "a", "b");
+        shared.fake().locked = true;
+
+        let (send, running) = worker(&shared, &dir);
+        while shared.fake().published.is_empty() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(shared.fake().vouched.is_empty());
+        assert!(dir.join("events/a.ics").exists());
+
+        // unlocked on `sync`: b's, so a's go before they show
+        shared.fake().locked = false;
+        let _ = send.send(Message::Sync);
+        ended(send, running);
+
+        assert_eq!(shared.fake().vouched, [false]);
+        assert!(!dir.join("events/a.ics").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

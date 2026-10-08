@@ -194,9 +194,10 @@ pub fn reread() {
     let mut watch = WATCH.lock().unwrap_or_else(PoisonError::into_inner);
     let mut places = places(&config::get().calendars, data_home().as_deref());
 
-    // Google's, once a sync made it, which then tells this to read again (ADR 0016)
+    // Google's, once the sync thread vouched for it and a sync made it, either then telling this
+    // to read again (ADR 0016)
     if modules::on("google-calendar") {
-        places.extend(google::directory().filter(|dir| dir.is_dir()));
+        places.extend(google::vouched().filter(|dir| dir.is_dir()));
     }
 
     let found = find(&places);
