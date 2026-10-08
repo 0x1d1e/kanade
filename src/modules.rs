@@ -619,7 +619,7 @@ pub const ALL: &[Module] = &[
             name: "caffeine",
             usage: || {
                 String::from(
-                    "caffeine on|off|toggle [<duration>]
+                    "caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off",
                 )
             },

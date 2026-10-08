@@ -175,9 +175,17 @@ pub fn run(arguments: &[String]) -> ExitCode {
         (
             Call::Record(request @ (recording::Request::Start | recording::Request::Stop)),
             Ok(Reply::Done(path)),
-        ) => Ok(settle(request, path, PATIENCE, |deadline| {
+        ) => Ok(settle_recording(request, path, PATIENCE, |deadline| {
             call_until(&status_call(), deadline)
         })),
+        (
+            Call::Caffeine(caffeine::Request::On(_) | caffeine::Request::Toggle(_)),
+            Ok(Reply::Done(text)),
+        ) if let Some(serial) = caffeine::starting(&text) => {
+            Ok(settle_caffeine(serial, PATIENCE, |deadline| {
+                call_until(&caffeine_status_call(), deadline)
+            }))
+        }
         (_, reply) => reply,
     };
 
@@ -199,53 +207,117 @@ pub fn run(arguments: &[String]) -> ExitCode {
     }
 }
 
+// where a call the shell answered at once stands, by the status it says
+enum Settling {
+    Waiting,
+    Settled(Reply),
+}
+
 /*
- * the shell answers a recording's start or stop at once (`ipc::record`), so this waits on its
- * `status`, asked through `ask` by the deadline it is given, until the first frame is written or
- * the file saved, done at its path. All of it within `patience`, a slow answer included
+ * waits on a call the shell answers at once and does after: asks its status through `ask` by the
+ * deadline it is given, until `settling` says it settled. All of it within `patience`, a slow
+ * answer included; then it is `unsettled`. `aside` says what is left of it when that is not known
  */
 fn settle(
-    request: recording::Request,
-    path: String,
     patience: Duration,
+    unsettled: impl FnOnce() -> String,
+    aside: &str,
     mut ask: impl FnMut(Instant) -> Result<Reply, String>,
+    mut settling: impl FnMut(&str) -> Option<Settling>,
 ) -> Reply {
     let deadline = Instant::now() + patience;
 
     loop {
         if Instant::now() >= deadline {
-            return Reply::Unknown(request.unsettled(&path, patience));
+            return Reply::Unknown(unsettled());
         }
 
         let status = match ask(deadline) {
             Ok(Reply::Done(status)) => status,
-            _ if Instant::now() >= deadline => {
-                return Reply::Unknown(request.unsettled(&path, patience));
-            }
+            _ if Instant::now() >= deadline => return Reply::Unknown(unsettled()),
             Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => {
-                return Reply::Unknown(format!("{why}; the recording is at {path}"));
+                return Reply::Unknown(format!("{why}; {aside}"));
             }
         };
 
-        let Some(status) = recording::Status::parse(&status) else {
-            return Reply::Unknown(format!(
-                "the shell says {status:?}; the recording is at {path}"
-            ));
-        };
-
-        match request.settled(&path, &status) {
-            Settled::Done => return Reply::Done(path),
-            Settled::Failed(why) => return Reply::Refused(why),
-            Settled::Lost(why) => return Reply::Unknown(why),
-            Settled::Waiting => {
+        match settling(&status) {
+            Some(Settling::Settled(reply)) => return reply,
+            Some(Settling::Waiting) => {
                 thread::sleep(LOOK.min(deadline.saturating_duration_since(Instant::now())));
             }
+            None => return Reply::Unknown(format!("the shell says {status:?}; {aside}")),
         }
     }
 }
 
+/*
+ * the shell answers a recording's start or stop at once (`ipc::record`), so this waits until the
+ * first frame is written or the file saved, done at its path
+ */
+fn settle_recording(
+    request: recording::Request,
+    path: String,
+    patience: Duration,
+    ask: impl FnMut(Instant) -> Result<Reply, String>,
+) -> Reply {
+    settle(
+        patience,
+        || request.unsettled(&path, patience),
+        &format!("the recording is at {path}"),
+        ask,
+        |status| {
+            Some(
+                match request.settled(&path, &recording::Status::parse(status)?) {
+                    Settled::Done => Settling::Settled(Reply::Done(path.clone())),
+                    Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
+                    Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
+                    Settled::Waiting => Settling::Waiting,
+                },
+            )
+        },
+    )
+}
+
+/*
+ * the shell answers caffeine's `on` at once, as starting (`caffeine::request`), so this waits
+ * until its inhibitor is held
+ */
+fn settle_caffeine(
+    serial: u64,
+    patience: Duration,
+    ask: impl FnMut(Instant) -> Result<Reply, String>,
+) -> Reply {
+    settle(
+        patience,
+        || {
+            format!(
+                "{} did not hold the inhibitor within {}s; caffeine may still turn on",
+                caffeine::INHIBIT,
+                patience.as_secs()
+            )
+        },
+        "caffeine may still turn on",
+        ask,
+        |status| {
+            Some(match caffeine::Status::parse(status)?.settled(serial) {
+                caffeine::Settled::On(text) => Settling::Settled(Reply::Done(text)),
+                caffeine::Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
+                caffeine::Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
+                caffeine::Settled::Waiting => Settling::Waiting,
+            })
+        },
+    )
+}
+
 fn status_call() -> Vec<String> {
     ["capture", "record", "status"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+fn caffeine_status_call() -> Vec<String> {
+    ["caffeine", "status"]
         .into_iter()
         .map(String::from)
         .collect()
@@ -397,6 +469,10 @@ mod tests {
             Ok(("timer", Call::Timer(timer::Request::Cancel)))
         );
         assert_eq!(
+            parsed(&["caffeine", "status"]),
+            Ok(("caffeine", Call::Caffeine(caffeine::Request::Status)))
+        );
+        assert_eq!(
             parsed(&["caffeine", "toggle", "1h"]),
             Ok((
                 "caffeine",
@@ -516,7 +592,7 @@ controls open|close|toggle
 launcher open|close|toggle
 capture screenshot area|window|output
 capture record start|stop|status
-caffeine on|off|toggle [<duration>]
+caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
 doctor
 help",
@@ -658,7 +734,7 @@ help",
         let begun = Instant::now();
 
         // starting until late in the patience, then a shell that never answers
-        let reply = settle(
+        let reply = settle_recording(
             recording::Request::Start,
             path.to_owned(),
             patience,
@@ -680,6 +756,43 @@ help",
             begun.elapsed() < patience + Duration::from_millis(100),
             "{:?}",
             begun.elapsed()
+        );
+    }
+
+    #[test]
+    fn caffeine_settles_once_its_on_holds_fails_or_is_lost() {
+        let patience = Duration::from_millis(300);
+        let settled = |said: &'static [&'static str]| {
+            let mut said = said.iter();
+
+            settle_caffeine(2, patience, move |_| {
+                Ok(Reply::Done(String::from(*said.next().unwrap())))
+            })
+        };
+
+        assert_eq!(
+            settled(&["off\nstarting #2", "on #2 for 25m"]),
+            Reply::Done(String::from("on for 25m"))
+        );
+        assert_eq!(
+            settled(&[
+                "on #1 until turned off\nstarting #2",
+                "on #1 until turned off\n#2 failed: denied"
+            ]),
+            Reply::Refused(String::from("denied"))
+        );
+        assert!(matches!(
+            settled(&["off\nstarting #2", "off"]),
+            Reply::Unknown(_)
+        ));
+
+        let reply = settle_caffeine(2, patience, |_| {
+            Ok(Reply::Done(String::from("off\nstarting #2")))
+        });
+
+        assert!(
+            matches!(&reply, Reply::Unknown(why) if why.contains("did not hold the inhibitor")),
+            "{reply:?}"
         );
     }
 

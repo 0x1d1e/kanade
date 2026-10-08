@@ -149,7 +149,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 
 Idle inhibitor toggle/activity. Prevent idle/lock/suspend only while explicitly active; visible state; optional timeout.
 
-A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. On again lets go of the old holder only once the new one holds, so it never lapses. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
+A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. The shell answers `on` at once as starting and a worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; `kanade` waits on `caffeine status` within one 5 s patience. Off, toggle and a newer on supersede a start by serial. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
 
 ### Presentation migration
 
@@ -222,7 +222,7 @@ calendar open
 timer start <dur>|pause|resume|cancel
 capture screenshot area|window|output
 capture record start|stop|status
-caffeine on|off|toggle [duration]
+caffeine on|off|toggle [duration]|status
 config reload|validate
 status
 doctor

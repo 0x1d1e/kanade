@@ -65,7 +65,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `clipboard clear` | forgets the clipboard history; what is on the clipboard stays |
 | `capture screenshot area\|window\|output` | asks niri for a screenshot of a picked area, the focused window or the focused output, saved under `~/Pictures/Screenshots`; prints its path |
 | `capture record start\|stop\|status` | records the focused output with `wf-recorder`, encoded on the GPU, to `~/Videos/Screencasts`; `start` and `stop` print its path once it records or is saved, `status` says how it stands |
-| `caffeine on\|off\|toggle [<duration>]` | keeps the session from going idle, so idle daemons like hypridle neither lock nor suspend it, until turned off or for a duration like `90s`, `25m` or `1h30m`, up to 24h; the island shows it while on |
+| `caffeine on\|off\|toggle [<duration>]\|status` | keeps the session from going idle, so idle daemons like hypridle neither lock nor suspend it, until turned off or for a duration like `90s`, `25m` or `1h30m`, up to 24h; the island shows it while on. `on` returns once the inhibitor is held, `status` says how it stands |
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
 | `timer pause\|resume\|cancel` | pauses, resumes or cancels it |
 | `config reload` | reads the config again now |

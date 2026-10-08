@@ -9,11 +9,15 @@
 //! like the timer while the machine is awake. Ending on its own, it ended caffeine, which is never
 //! turned on again. It runs only through setpriv, so it dies with Kanade; otherwise it could hold
 //! the inhibitor for good, with no Kanade left that knows of it.
+//!
+//! `on` only starts a holder, answered at once so the draw thread never waits on logind. The
+//! holder's command says when logind gave it the inhibitor, and only then does caffeine turn on,
+//! letting go of the holder before it, so it never lapses. `kanade` waits on `status` for that.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
-use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,17 +43,26 @@ const SAID: usize = 4;
 // what the inhibitor's command says once it runs, so once logind gave systemd-inhibit the inhibitor
 const HELD: &str = "held";
 
-// how long `on` waits for that on the draw thread; logind answers in milliseconds
+// how long a holder may take to say it, after which it is given up on; logind answers in milliseconds
 const READY: Duration = Duration::from_secs(2);
 
 static CAFFEINE: Mutex<Caffeine> = Mutex::new(Caffeine {
     holding: None,
+    starting: None,
+    failed: None,
     issued: 0,
 });
 
+#[derive(Default)]
 struct Caffeine {
     // the inhibitor's holder, none while caffeine is off
     holding: Option<Holding>,
+
+    // the newest `on`'s holder, until it holds the inhibitor and takes over from `holding`
+    starting: Option<Holding>,
+
+    // the newest `on` that failed and why, until the next request; for `status`
+    failed: Option<(u64, String)>,
 
     /*
      * the serials given out since Kanade started, never given again, so a serial names one
@@ -60,8 +73,9 @@ struct Caffeine {
 
 struct Holding {
     serial: u64,
+    length: Option<Duration>,
 
-    // reaped only once taken out of `holding`, so while there its pid is its own
+    // reaped only once taken out of `holding` or `starting`, so while there its pid is its own
     child: Child,
 }
 
@@ -71,6 +85,7 @@ pub enum Request {
     On(Option<Duration>),
     Off,
     Toggle(Option<Duration>),
+    Status,
 }
 
 impl Request {
@@ -83,126 +98,333 @@ impl Request {
             ["off"] => Some(Request::Off),
             ["toggle"] => Some(Request::Toggle(None)),
             ["toggle", text] => lasting(text).map(Request::Toggle),
+            ["status"] => Some(Request::Status),
             _ => None,
         }
     }
 }
 
-fn lock() -> MutexGuard<'static, Caffeine> {
-    CAFFEINE.lock().unwrap_or_else(PoisonError::into_inner)
+/*
+ * how caffeine stands, as `status` says it: a line a person reads, then one for an `on` still
+ * starting and one for the newest that failed; `kanade` parses it back to wait on `on`
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    // the serial holding the inhibitor and for how long, none while off
+    pub on: Option<(u64, Option<Duration>)>,
+
+    pub starting: Option<u64>,
+    pub failed: Option<(u64, String)>,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.on {
+            Some((serial, Some(length))) => write!(f, "on #{serial} for {}", self::length(length))?,
+            Some((serial, None)) => write!(f, "on #{serial} until turned off")?,
+            None => write!(f, "off")?,
+        }
+
+        if let Some(serial) = self.starting {
+            write!(f, "\nstarting #{serial}")?;
+        }
+
+        if let Some((serial, why)) = &self.failed {
+            write!(f, "\n#{serial} failed: {}", why.replace('\n', "; "))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Status {
+    pub fn parse(text: &str) -> Option<Status> {
+        let serial = |text: &str| text.strip_prefix('#')?.parse::<u64>().ok();
+        let mut lines = text.lines();
+
+        let on = match lines.next()? {
+            "off" => None,
+            line => {
+                let (number, held) = line.strip_prefix("on ")?.split_once(' ')?;
+                let length = match held {
+                    "until turned off" => None,
+                    held => Some(timer::duration(held.strip_prefix("for ")?)?),
+                };
+
+                Some((serial(number)?, length))
+            }
+        };
+
+        let mut status = Status {
+            on,
+            starting: None,
+            failed: None,
+        };
+
+        for line in lines {
+            if let Some(number) = line.strip_prefix("starting ") {
+                status.starting = Some(serial(number)?);
+            } else {
+                let (number, why) = line.split_once(" failed: ")?;
+                status.failed = Some((serial(number)?, why.to_owned()));
+            }
+        }
+
+        Some(status)
+    }
+
+    // where the `on` that `serial` names stands
+    pub fn settled(&self, serial: u64) -> Settled {
+        match self {
+            Status {
+                on: Some((on, length)),
+                ..
+            } if *on == serial => Settled::On(match length {
+                Some(length) => format!("on for {}", self::length(*length)),
+                None => String::from("on until turned off"),
+            }),
+            Status {
+                starting: Some(starting),
+                ..
+            } if *starting == serial => Settled::Waiting,
+            Status {
+                failed: Some((failed, why)),
+                ..
+            } if *failed == serial => Settled::Failed(why.clone()),
+            _ => Settled::Lost(format!(
+                "the shell no longer follows caffeine #{serial}; it says \"{}\"",
+                self.to_string().replace('\n', "; ")
+            )),
+        }
+    }
+}
+
+// where an `on` stands, as `status` says
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settled {
+    Waiting,
+
+    // its holder holds the inhibitor, said as `kanade` prints it
+    On(String),
+
+    Failed(String),
+
+    // turned off, or another `on` took its place, before it held the inhibitor
+    Lost(String),
+}
+
+// what the shell answers an `on`: its serial, to wait on through `status`
+pub fn starting(reply: &str) -> Option<u64> {
+    reply.strip_prefix("starting #")?.parse().ok()
+}
+
+fn lock(caffeine: &Mutex<Caffeine>) -> MutexGuard<'_, Caffeine> {
+    caffeine.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /*
- * does what `request` asks and says how caffeine is left. Call it from the draw thread, which
- * lives as long as Kanade: systemd-inhibit dies with the thread that started it
+ * does what `request` asks and says how caffeine is left, an `on` as starting. Call it from the
+ * draw thread, which lives as long as Kanade: systemd-inhibit dies with the thread that started it
  */
 pub fn request(request: Request) -> Result<String, String> {
-    let mut caffeine = lock();
+    let mut caffeine = lock(&CAFFEINE);
 
     match request {
+        Request::Status => Ok(caffeine.status().to_string()),
         Request::Off => {
-            turn_off(&mut caffeine);
+            caffeine.turn_off();
             Ok(String::from("off"))
         }
-        Request::Toggle(_) if caffeine.holding.is_some() => {
-            turn_off(&mut caffeine);
+        Request::Toggle(_) if caffeine.holding.is_some() || caffeine.starting.is_some() => {
+            caffeine.turn_off();
             Ok(String::from("off"))
         }
-        Request::On(length) | Request::Toggle(length) => turn_on(&mut caffeine, length),
+        Request::On(length) | Request::Toggle(length) => caffeine
+            .turn_on(length)
+            .map(|serial| format!("starting #{serial}")),
     }
 }
 
-/*
- * holds a new inhibitor, then lets go of the old one, if on, so caffeine never lapses; on again
- * starts its duration over. A new one that fails leaves the old one on
- */
-fn turn_on(caffeine: &mut Caffeine, length: Option<Duration>) -> Result<String, String> {
-    // setpriv says a missing program only once running, which is too late to refuse `on`
-    if !wake::found(INHIBIT) {
-        return Err(format!("{INHIBIT} not found"));
+// turns off the caffeine that `serial` names, as its Activity's Turn off does
+pub fn act(key: &str, serial: &str) {
+    let mut caffeine = lock(&CAFFEINE);
+
+    if key == OFF
+        && let Ok(serial) = serial.parse::<u64>()
+        && caffeine
+            .holding
+            .as_ref()
+            .is_some_and(|holding| holding.serial == serial)
+    {
+        caffeine.turn_off();
     }
-
-    // without it the inhibitor outlives Kanade, held for good by nothing that can let go of it
-    if !wake::found(SETPRIV) {
-        return Err(format!(
-            "{SETPRIV} not found, so the inhibitor could outlive Kanade"
-        ));
-    }
-
-    let arguments = arguments(length);
-    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-
-    let child = wake::hold_lock(INHIBIT, &arguments)
-        .map_err(|error| format!("cannot run {INHIBIT}: {error}"))?;
-
-    caffeine.issued += 1;
-    let serial = caffeine.issued;
-
-    if let Err(why) = swap(caffeine, child, serial, READY) {
-        // a keybind has no reply to read
-        if caffeine.holding.is_none() {
-            IslandService::write().post(failed(why.clone()), Instant::now());
-        }
-
-        return Err(why);
-    }
-
-    // under the lock, so its end, which takes it, posts after
-    IslandService::write().post(on(serial, length), Instant::now());
-
-    Ok(match length {
-        Some(length) => format!("on for {}", self::length(length)),
-        None => String::from("on until turned off"),
-    })
 }
 
-/*
- * makes `child`, as `serial`, the holder once it says it holds the inhibitor, letting go of the old
- * one only then; kills it instead when it does not say so within `patience`
- */
-fn swap(
-    caffeine: &mut Caffeine,
-    mut child: Child,
-    serial: u64,
-    patience: Duration,
-) -> Result<(), String> {
-    let (held, said) = (child.stdout.take(), child.stderr.take());
-    let (ready, readiness) = mpsc::channel();
-
-    let followed = thread::Builder::new()
-        .name(String::from("caffeine"))
-        .spawn(move || follow(held, said, serial, ready));
-
-    if let Err(error) = followed {
-        drop(child.kill());
-        drop(child.wait());
-
-        return Err(format!("cannot follow {INHIBIT}: {error}"));
+impl Caffeine {
+    fn status(&self) -> Status {
+        Status {
+            on: self
+                .holding
+                .as_ref()
+                .map(|holding| (holding.serial, holding.length)),
+            starting: self.starting.as_ref().map(|starting| starting.serial),
+            failed: self.failed.clone(),
+        }
     }
 
-    match readiness.recv_timeout(patience) {
-        Ok(Ok(())) => {
-            release(caffeine.holding.replace(Holding { serial, child }));
-            Ok(())
+    /*
+     * starts a holder for a new inhibitor, in place of any still starting, and hands back its
+     * serial; it turns caffeine on once it holds (`follow`), or is given up on after `READY`
+     */
+    fn turn_on(&mut self, length: Option<Duration>) -> Result<u64, String> {
+        self.failed = None;
+
+        self.start(length).inspect_err(|why| self.refused(why))
+    }
+
+    fn start(&mut self, length: Option<Duration>) -> Result<u64, String> {
+        // setpriv says a missing program only once running, which is too late to refuse `on`
+        if !wake::found(INHIBIT) {
+            return Err(format!("{INHIBIT} not found"));
         }
-        // ending at all before it held, it failed, even as `sleep` would end
-        Ok(Err(said)) => ended(child.wait(), said)
-            .and_then(|()| Err(format!("{INHIBIT} ended before it held the inhibitor"))),
-        Err(_) => {
+
+        // without it the inhibitor outlives Kanade, held for good by nothing that can let go of it
+        if !wake::found(SETPRIV) {
+            return Err(format!(
+                "{SETPRIV} not found, so the inhibitor could outlive Kanade"
+            ));
+        }
+
+        let arguments = arguments(length);
+        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+        let child = wake::hold_lock(INHIBIT, &arguments)
+            .map_err(|error| format!("cannot run {INHIBIT}: {error}"))?;
+
+        self.issued += 1;
+        self.wait_on(&CAFFEINE, child, self.issued, length, READY)?;
+
+        Ok(self.issued)
+    }
+
+    /*
+     * makes `child`, as `serial`, the starting holder of `home`, which is `self` once unlocked,
+     * followed until it holds or ends and given up on after `patience`
+     */
+    fn wait_on(
+        &mut self,
+        home: &'static Mutex<Caffeine>,
+        mut child: Child,
+        serial: u64,
+        length: Option<Duration>,
+        patience: Duration,
+    ) -> Result<(), String> {
+        let (held, said) = (child.stdout.take(), child.stderr.take());
+
+        let followed = thread::Builder::new()
+            .name(String::from("caffeine"))
+            .spawn(move || follow(home, held, said, serial))
+            .and_then(|_| {
+                thread::Builder::new()
+                    .name(String::from("caffeine wait"))
+                    .spawn(move || {
+                        thread::sleep(patience);
+                        lock(home).give_up(serial, patience);
+                    })
+            });
+
+        // either thread left finds it no longer starting
+        if let Err(error) = followed {
             drop(child.kill());
             drop(child.wait());
 
-            Err(format!(
-                "{INHIBIT} did not hold the inhibitor within {patience:?}"
-            ))
+            return Err(format!("cannot follow {INHIBIT}: {error}"));
+        }
+
+        release(self.starting.replace(Holding {
+            serial,
+            length,
+            child,
+        }));
+
+        Ok(())
+    }
+
+    // the holder `serial` names holds the inhibitor: caffeine is on, the holder before let go of
+    fn held(&mut self, serial: u64) {
+        let Some(holding) = self.starting.take_if(|starting| starting.serial == serial) else {
+            return;
+        };
+
+        let length = holding.length;
+        release(self.holding.replace(holding));
+
+        // under the lock, so its end, which takes it, posts after
+        IslandService::write().post(on(serial, length), Instant::now());
+    }
+
+    // the holder `serial` names ended, having printed `said`, before it held the inhibitor
+    fn ended_starting(&mut self, serial: u64, said: VecDeque<String>) {
+        let Some(mut starting) = self.starting.take_if(|starting| starting.serial == serial) else {
+            return;
+        };
+
+        // ending at all before it held, it failed, even as `sleep` would end
+        let why = ended(starting.child.wait(), said)
+            .err()
+            .unwrap_or_else(|| format!("{INHIBIT} ended before it held the inhibitor"));
+
+        self.failed_start(serial, why);
+    }
+
+    // the holder `serial` names did not hold the inhibitor within `patience`
+    fn give_up(&mut self, serial: u64, patience: Duration) {
+        if let Some(starting) = self.starting.take_if(|starting| starting.serial == serial) {
+            release(Some(starting));
+            self.failed_start(
+                serial,
+                format!("{INHIBIT} did not hold the inhibitor within {patience:?}"),
+            );
         }
     }
-}
 
-fn turn_off(caffeine: &mut Caffeine) {
-    if caffeine.holding.is_some() {
-        release(caffeine.holding.take());
-        IslandService::write().withdraw(&id(), Instant::now());
+    fn failed_start(&mut self, serial: u64, why: String) {
+        eprintln!("caffeine: did not turn on: {why}");
+        self.refused(&why);
+        self.failed = Some((serial, why));
+    }
+
+    // an `on` that failed shows why, as a keybind has no reply to read; one already on stays on
+    fn refused(&self, why: &str) {
+        if self.holding.is_none() {
+            IslandService::write().post(failed(why.to_owned()), Instant::now());
+        }
+    }
+
+    fn turn_off(&mut self) {
+        self.failed = None;
+        release(self.starting.take());
+
+        if self.holding.is_some() {
+            release(self.holding.take());
+            IslandService::write().withdraw(&id(), Instant::now());
+        }
+    }
+
+    /*
+     * reaps the holder `serial` names, done printing `said`, and whether it ran out as asked or
+     * why not; none once it was let go of, or another took its place
+     */
+    fn end(&mut self, serial: u64, said: VecDeque<String>) -> Option<Result<(), String>> {
+        let mut holding = self.holding.take_if(|holding| holding.serial == serial)?;
+
+        let ended = ended(holding.child.wait(), said);
+
+        if let Err(why) = &ended {
+            eprintln!("caffeine: turned off on its own: {why}");
+        }
+
+        Some(ended)
     }
 }
 
@@ -214,45 +436,29 @@ fn release(holding: Option<Holding>) {
     }
 }
 
-// turns off the caffeine that `serial` names, as its Activity's Turn off does
-pub fn act(key: &str, serial: &str) {
-    let mut caffeine = lock();
-
-    if key == OFF
-        && let Ok(serial) = serial.parse::<u64>()
-        && caffeine
-            .holding
-            .as_ref()
-            .is_some_and(|holding| holding.serial == serial)
-    {
-        turn_off(&mut caffeine);
-    }
-}
-
 /*
- * tells `ready` once the holder says it holds the inhibitor, or what it printed before it ended
- * without. Then reads what it prints until it exits, and takes the Activity away, or shows why
- * caffeine failed
+ * follows the holder `serial` names: turns caffeine on once it says it holds the inhibitor, then
+ * reads what it prints until it exits, and takes the Activity away, or shows why caffeine failed
  */
 fn follow(
+    home: &Mutex<Caffeine>,
     held: Option<ChildStdout>,
     said: Option<ChildStderr>,
     serial: u64,
-    ready: Sender<Result<(), VecDeque<String>>>,
 ) {
     if !holds(held) {
-        drop(ready.send(Err(last_lines(said))));
+        let said = last_lines(said);
+        lock(home).ended_starting(serial, said);
         return;
     }
 
-    // none listens once it was given up on, and its end below finds it let go of
-    drop(ready.send(Ok(())));
+    lock(home).held(serial);
 
     let said = last_lines(said);
-    let mut caffeine = lock();
+    let mut caffeine = lock(home);
 
     // under the lock, so a newer holder's start posts after
-    match end(&mut caffeine, serial, said) {
+    match caffeine.end(serial, said) {
         Some(Ok(())) => IslandService::write().withdraw(&id(), Instant::now()),
         Some(Err(why)) => IslandService::write().post(failed(why), Instant::now()),
         None => {}
@@ -285,24 +491,6 @@ fn last_lines(said: Option<impl Read>) -> VecDeque<String> {
     }
 
     last
-}
-
-/*
- * reaps the holder `serial` names, done printing `said`, and whether it ran out as asked or why
- * not; none once it was let go of, or another took its place
- */
-fn end(caffeine: &mut Caffeine, serial: u64, said: VecDeque<String>) -> Option<Result<(), String>> {
-    let mut holding = caffeine
-        .holding
-        .take_if(|holding| holding.serial == serial)?;
-
-    let ended = ended(holding.child.wait(), said);
-
-    if let Err(why) = &ended {
-        eprintln!("caffeine: turned off on its own: {why}");
-    }
-
-    Some(ended)
 }
 
 // whether a holder that exited as `status`, having printed `said`, ran out as asked, or why not
@@ -408,6 +596,7 @@ mod tests {
         assert_eq!(Request::parse(&["on"]), Some(Request::On(None)));
         assert_eq!(Request::parse(&["on", "1h"]), Some(Request::On(hour)));
         assert_eq!(Request::parse(&["off"]), Some(Request::Off));
+        assert_eq!(Request::parse(&["status"]), Some(Request::Status));
         assert_eq!(Request::parse(&["toggle"]), Some(Request::Toggle(None)));
         assert_eq!(
             Request::parse(&["toggle", "1h"]),
@@ -455,11 +644,72 @@ mod tests {
         assert!(failed.actions().is_empty());
     }
 
+    #[test]
+    fn a_status_reads_back_as_it_was_said() {
+        let statuses = [
+            Status {
+                on: None,
+                starting: None,
+                failed: None,
+            },
+            Status {
+                on: Some((3, Some(Duration::from_secs(5400)))),
+                starting: Some(4),
+                failed: None,
+            },
+            Status {
+                on: Some((3, None)),
+                starting: None,
+                failed: Some((5, String::from("systemd-inhibit ended (exit status: 1)"))),
+            },
+        ];
+
+        for status in statuses {
+            assert_eq!(Status::parse(&status.to_string()), Some(status.clone()));
+        }
+
+        assert_eq!(
+            Status::parse("on #3 for 1h30m\nstarting #4").map(|status| status.to_string()),
+            Some(String::from("on #3 for 1h30m\nstarting #4"))
+        );
+
+        for wrong in ["", "on", "on #x until turned off", "off\nlater #4"] {
+            assert_eq!(Status::parse(wrong), None, "{wrong:?}");
+        }
+    }
+
+    #[test]
+    fn an_on_settles_once_it_holds_fails_or_is_lost() {
+        let status = Status {
+            on: Some((3, Some(Duration::from_secs(90)))),
+            starting: Some(4),
+            failed: Some((2, String::from("denied"))),
+        };
+
+        assert_eq!(status.settled(3), Settled::On(String::from("on for 1m30s")));
+        assert_eq!(status.settled(4), Settled::Waiting);
+        assert_eq!(status.settled(2), Settled::Failed(String::from("denied")));
+        assert!(matches!(status.settled(1), Settled::Lost(_)));
+
+        assert_eq!(starting("starting #4"), Some(4));
+        assert_eq!(starting("off"), None);
+    }
+
     fn holding(serial: u64, child: Child) -> Caffeine {
         Caffeine {
-            holding: Some(Holding { serial, child }),
+            holding: Some(Holding {
+                serial,
+                length: None,
+                child,
+            }),
             issued: serial,
+            ..Caffeine::default()
         }
+    }
+
+    // a Caffeine of its own, so tests run side by side
+    fn home(caffeine: Caffeine) -> &'static Mutex<Caffeine> {
+        Box::leak(Box::new(Mutex::new(caffeine)))
     }
 
     fn spawn(script: &str) -> Child {
@@ -471,11 +721,43 @@ mod tests {
             .expect("sh runs")
     }
 
+    // starts `script` as `serial`, as `on` does
+    fn start(home: &'static Mutex<Caffeine>, script: &str, serial: u64, patience: Duration) {
+        let mut caffeine = lock(home);
+
+        caffeine.issued = serial;
+        caffeine
+            .wait_on(home, spawn(script), serial, None, patience)
+            .expect("followed");
+    }
+
+    // the status of `home` once nothing starts, at most a few seconds on
+    fn settled(home: &Mutex<Caffeine>) -> Status {
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        loop {
+            let status = lock(home).status();
+
+            if status.starting.is_none() || Instant::now() > deadline {
+                return status;
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn turn_off(home: &Mutex<Caffeine>) {
+        let mut caffeine = lock(home);
+
+        release(caffeine.starting.take());
+        release(caffeine.holding.take());
+    }
+
     #[test]
     fn a_holder_that_runs_out_ended_caffeine_as_asked() {
         let mut caffeine = holding(1, spawn("true"));
 
-        assert_eq!(end(&mut caffeine, 1, VecDeque::new()), Some(Ok(())));
+        assert_eq!(caffeine.end(1, VecDeque::new()), Some(Ok(())));
         assert!(caffeine.holding.is_none());
     }
 
@@ -485,7 +767,7 @@ mod tests {
         let said = last_lines(child.stderr.take());
         let mut caffeine = holding(1, child);
 
-        let why = end(&mut caffeine, 1, said).unwrap().unwrap_err();
+        let why = caffeine.end(1, said).unwrap().unwrap_err();
 
         assert!(why.ends_with(": Failed to inhibit: Access denied"), "{why}");
     }
@@ -494,7 +776,7 @@ mod tests {
     fn a_stale_end_leaves_the_newer_holder_alone() {
         let mut caffeine = holding(2, spawn("sleep 30"));
 
-        assert_eq!(end(&mut caffeine, 1, VecDeque::new()), None);
+        assert_eq!(caffeine.end(1, VecDeque::new()), None);
         assert!(caffeine.holding.is_some());
 
         release(caffeine.holding.take());
@@ -509,90 +791,114 @@ mod tests {
     fn the_old_holder_is_let_go_of_only_once_the_new_one_holds() {
         let old = spawn("exec sleep 30");
         let pid = old.id();
-        let mut caffeine = holding(1, old);
+        let home = home(holding(1, old));
         let started = Instant::now();
 
-        let swapped = thread::scope(|scope| {
-            let swapping = scope.spawn(|| {
-                swap(
-                    &mut caffeine,
-                    spawn("sleep 0.5; echo held; exec sleep 30"),
-                    2,
-                    READY,
-                )
-            });
+        start(home, "sleep 0.5; echo held; exec sleep 30", 2, READY);
 
-            thread::sleep(Duration::from_millis(250));
-            assert!(running(pid), "the old holder was let go of too early");
+        // `on` answered at once, with caffeine still held by the old holder
+        assert!(started.elapsed() < Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(250));
+        assert!(running(pid), "the old holder was let go of too early");
+        assert_eq!(lock(home).status().settled(2), Settled::Waiting);
+        assert_eq!(lock(home).status().on, Some((1, None)));
 
-            swapping.join().unwrap()
-        });
+        let status = settled(home);
 
-        assert_eq!(swapped, Ok(()));
         assert!(started.elapsed() >= Duration::from_millis(500));
+        assert_eq!(status.on, Some((2, None)));
         assert!(!running(pid));
-        assert_eq!(
-            caffeine.holding.as_ref().map(|holding| holding.serial),
-            Some(2)
-        );
 
-        release(caffeine.holding.take());
+        turn_off(home);
     }
 
     #[test]
     fn a_holder_that_never_holds_is_given_up_on_and_the_old_one_kept() {
-        let mut caffeine = holding(1, spawn("exec sleep 30"));
+        let home = home(holding(1, spawn("exec sleep 30")));
 
-        let why = swap(
-            &mut caffeine,
-            spawn("exec sleep 30"),
-            2,
-            Duration::from_millis(200),
-        )
-        .unwrap_err();
+        start(home, "exec sleep 30", 2, Duration::from_millis(200));
+        let status = settled(home);
 
-        assert!(why.contains("did not hold the inhibitor"), "{why}");
-        assert_eq!(
-            caffeine.holding.as_ref().map(|holding| holding.serial),
-            Some(1)
+        assert_eq!(status.on, Some((1, None)));
+        assert!(
+            matches!(status.settled(2), Settled::Failed(why) if why.contains("did not hold")),
+            "{status}"
         );
 
-        release(caffeine.holding.take());
+        turn_off(home);
     }
 
     #[test]
     fn a_holder_that_ends_well_before_it_holds_failed() {
-        let mut caffeine = holding(1, spawn("exec sleep 30"));
+        let home = home(holding(1, spawn("exec sleep 30")));
 
-        let why = swap(&mut caffeine, spawn("true"), 2, READY).unwrap_err();
+        start(home, "true", 2, READY);
+        let status = settled(home);
 
-        assert!(why.ends_with("ended before it held the inhibitor"), "{why}");
-        assert_eq!(
-            caffeine.holding.as_ref().map(|holding| holding.serial),
-            Some(1)
+        assert_eq!(status.on, Some((1, None)));
+        assert!(
+            matches!(status.settled(2), Settled::Failed(why) if why.ends_with("ended before it held the inhibitor")),
+            "{status}"
         );
 
-        release(caffeine.holding.take());
+        turn_off(home);
     }
 
     #[test]
     fn a_holder_that_fails_before_it_holds_says_why_and_the_old_one_is_kept() {
-        let mut caffeine = holding(1, spawn("exec sleep 30"));
+        let home = home(holding(1, spawn("exec sleep 30")));
 
-        let why = swap(
-            &mut caffeine,
-            spawn("echo 'Failed to inhibit: Access denied' >&2; exit 1"),
+        start(
+            home,
+            "echo 'Failed to inhibit: Access denied' >&2; exit 1",
             2,
             READY,
-        )
-        .unwrap_err();
+        );
+        let status = settled(home);
 
-        assert!(why.ends_with(": Failed to inhibit: Access denied"), "{why}");
-        assert_eq!(
-            caffeine.holding.as_ref().map(|holding| holding.serial),
-            Some(1)
+        assert_eq!(status.on, Some((1, None)));
+        assert!(
+            matches!(status.settled(2), Settled::Failed(why) if why.ends_with(": Failed to inhibit: Access denied")),
+            "{status}"
         );
 
-        release(caffeine.holding.take());
+        turn_off(home);
+    }
+
+    #[test]
+    fn a_newer_on_takes_the_place_of_one_still_starting() {
+        let home = home(Caffeine::default());
+
+        start(home, "exec sleep 30", 1, READY);
+        let pid = lock(home)
+            .starting
+            .as_ref()
+            .map(|starting| starting.child.id());
+        start(home, "sleep 0.3; echo held; exec sleep 30", 2, READY);
+
+        assert!(!running(pid.unwrap()));
+
+        let status = settled(home);
+
+        assert_eq!(status.on, Some((2, None)));
+        assert_eq!(status.failed, None);
+        assert!(matches!(status.settled(1), Settled::Lost(_)));
+
+        turn_off(home);
+    }
+
+    #[test]
+    fn off_lets_go_of_an_on_still_starting() {
+        let home = home(Caffeine::default());
+
+        start(home, "sleep 0.3; echo held; exec sleep 30", 1, READY);
+        lock(home).turn_off();
+        thread::sleep(Duration::from_millis(500));
+
+        let status = lock(home).status();
+
+        assert_eq!(status.on, None);
+        assert_eq!(status.starting, None);
+        assert!(matches!(status.settled(1), Settled::Lost(_)));
     }
 }
