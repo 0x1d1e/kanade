@@ -14,10 +14,11 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use amane::Bus;
+use amane::{Argument, Bus};
 
 use crate::cli::{self, Reply};
 use crate::config::{self, Config};
+use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
 use crate::sources::{bus, niri, pipewire};
@@ -90,6 +91,7 @@ pub fn run() -> ExitCode {
         )),
         amane(include_str!("../../Cargo.lock")),
         shell,
+        unit(running),
         niri(),
     ];
 
@@ -156,6 +158,71 @@ fn shell_status(first: &str) -> Check {
         _ => Check::fail(format!(
             "shell: running {first}, not protocol {}; restart it",
             cli::PROTOCOL
+        )),
+    }
+}
+
+const SYSTEMD: &str = "org.freedesktop.systemd1";
+
+// the user unit that restarts a crashed shell, which a locked session needs (ADR 0018)
+fn unit(running: bool) -> Check {
+    let bus = Bus::session();
+
+    if !bus::reachable(bus) {
+        return Check::warn(format!(
+            "unit {}: unknown, the session bus is unreachable",
+            lock::UNIT
+        ));
+    }
+
+    // GetUnit, not LoadUnit, so doctor loads nothing; it fails for a unit systemd has not
+    // loaded, like one not enabled
+    let path = bus.call(
+        SYSTEMD,
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+        "GetUnit",
+        &[Argument::from(lock::UNIT)],
+    );
+    if path.text().is_empty() {
+        return unit_check(running, "not loaded", "");
+    }
+
+    let state = |name| {
+        let value = bus.property(SYSTEMD, path.text(), "org.freedesktop.systemd1.Unit", name);
+        value.text().to_owned()
+    };
+
+    unit_check(running, &state("LoadState"), &state("ActiveState"))
+}
+
+// from the unit's LoadState and ActiveState
+fn unit_check(running: bool, load: &str, active: &str) -> Check {
+    let unit = lock::UNIT;
+    let unrestarted = "a crashed shell is not restarted, which leaves a locked session on \
+                       niri's red screen";
+
+    match (load, active) {
+        ("loaded", "active" | "activating" | "reloading") => {
+            Check::ok(format!("unit {unit}: {active}"))
+        }
+        ("loaded", "failed") => Check {
+            detail: vec![
+                String::from("once its cause is fixed:"),
+                format!("systemctl --user reset-failed {unit}"),
+                format!("systemctl --user restart {unit}"),
+            ],
+            ..Check::warn(format!(
+                "unit {unit}: failed, maybe its start limit: {unrestarted}"
+            ))
+        },
+        ("loaded", _) if running => Check::warn(format!(
+            "unit {unit}: {active}, so the shell running is not its: {unrestarted}"
+        )),
+        ("loaded", _) => Check::warn(format!("unit {unit}: {active}")),
+        ("", _) => Check::warn(format!("unit {unit}: unknown, systemd did not answer")),
+        _ => Check::warn(format!(
+            "unit {unit}: {load}, see the README to install it: {unrestarted}"
         )),
     }
 }
@@ -368,6 +435,7 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     bus::owner(Bus::session(), name).map(bus::process),
                     running,
                 ),
+                Provider::Pam(service) => pam_found(service, lock::pam()),
                 Provider::Niri => niri_found(niri_version()),
                 Provider::SystemService(name)
                 | Provider::SessionName(name)
@@ -417,6 +485,14 @@ fn program_found(program: &str, path: Option<impl AsRef<OsStr>>) -> Found {
     match path.and_then(|path| find(program, path.as_ref())) {
         Some(found) => Found::Present(format!("{program} at {}", found.display())),
         None => Found::Missing(format!("{program} missing from PATH")),
+    }
+}
+
+// without the service's file PAM falls back to `other`, which usually refuses every password
+fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
+    match file {
+        Some(file) => Found::Present(format!("PAM service {service} at {}", file.display())),
+        None => Found::Absent(format!("no PAM service {service}")),
     }
 }
 
@@ -609,6 +685,48 @@ version = \"9.9.9\"
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_shell_the_unit_does_not_run_warns() {
+        assert_eq!(
+            unit_check(true, "loaded", "active"),
+            Check::ok(String::from("unit kanade.service: active"))
+        );
+        assert_eq!(
+            unit_check(true, "loaded", "inactive").text,
+            "unit kanade.service: inactive, so the shell running is not its: a crashed shell is \
+             not restarted, which leaves a locked session on niri's red screen"
+        );
+        assert_eq!(
+            unit_check(false, "not-found", "inactive").text,
+            "unit kanade.service: not-found, see the README to install it: a crashed shell is \
+             not restarted, which leaves a locked session on niri's red screen"
+        );
+
+        let failed = unit_check(false, "loaded", "failed");
+        assert_eq!(failed.verdict, Verdict::Warn);
+        assert_eq!(
+            failed.detail[1..],
+            [
+                "systemctl --user reset-failed kanade.service",
+                "systemctl --user restart kanade.service",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_lock_without_its_pam_service_fails() {
+        assert_eq!(
+            pam_found("login", None).check("lock", "no password unlocks"),
+            Check::fail(String::from(
+                "module lock: no PAM service login: no password unlocks"
+            ))
+        );
+        assert_eq!(
+            pam_found("login", Some(PathBuf::from("/etc/pam.d/login"))),
+            Found::Present(String::from("PAM service login at /etc/pam.d/login"))
+        );
     }
 
     #[test]

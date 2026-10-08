@@ -56,6 +56,7 @@ pub enum Call {
     Google(google::Request),
     Weather(weather::Request),
     Osd(osd::Asked),
+    Lock,
     Settings(Option<&'static str>),
     CloseSettings,
     Reload,
@@ -611,6 +612,7 @@ mod tests {
             parsed(&["osd", "brightness"]),
             Ok(("osd", Call::Osd(osd::Asked::Brightness)))
         );
+        assert_eq!(parsed(&["lock"]), Ok(("lock", Call::Lock)));
         // their Surface is its own Module, which shares the verb
         assert_eq!(
             parsed(&["notifications", "open"]),
@@ -722,6 +724,7 @@ mod tests {
             &["caffeine", "on", "forever"],
             &["osd"],
             &["osd", "microphone"],
+            &["lock", "now"],
             &["settings"],
             &["settings", "open", "launcher"],
             &["debug"],
@@ -746,7 +749,7 @@ module list|enable <name>|disable <name>
   <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
 banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
 calendar|calendar-surface|google-calendar|weather|weather-surface|clipboard-surface|capture|\
-caffeine|settings
+caffeine|lock|settings
 {}
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
@@ -770,6 +773,7 @@ capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
+lock
 settings open [<page>]|close
   <page>: island|windows|dock|wallpaper|calendar|weather
 config defaults

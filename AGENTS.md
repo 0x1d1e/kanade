@@ -29,7 +29,7 @@ scripts/dev               # cargo build, restart the shell on each save; a faile
 
 E2E runs on the user's own niri session; no nested niri. The user's session usually runs over its own Wi-Fi: never disconnect it, toggle its radio, or read its secrets.
 
-- The test build replaces the user's shell (one Amane shell per session): `scripts/dev` if running, else stop their `kanade` and run `target/debug/kanade`. Leave a working shell running afterwards.
+- The test build replaces the user's shell (one Amane shell per session): `scripts/dev` if running, else stop their shell (`systemctl --user stop kanade.service`, or `kanade` if they run it otherwise) and run `target/debug/kanade`; restart the unit after. Leave a working shell running afterwards.
 - Config/state tests: run it with a temporary `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, so the user's real config and `settings.toml` stay untouched; restart with their normal env after.
 - Input lands in the user's session: note the focused window first (`niri msg focused-window`), refocus it after, and tell the user their pointer/focus was used.
 - Keys: `wtype`. Send a whole key sequence in one call (`wtype -k Right -s 250 -k Return`). One call per key races niri's keymap update, so keys arrive decoded with the previous call's keymap. The first call after a while may race too; warm up with `wtype -k Shift_L`.

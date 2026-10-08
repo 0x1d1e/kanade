@@ -1,0 +1,21 @@
+# Kanade, run with niri's graphical session (ADR 0018). A crash while locked leaves niri locked on
+# its red screen; the restart locks it again. Install: see the README.
+
+[Unit]
+Description=Kanade shell for niri
+Documentation=https://github.com/0x1d1e/kanade
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+# a shell that crashes at every start stops here, after 5 starts in 60 s; recovery is in ADR 0018
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# where `cargo install` puts it; change it for another install
+ExecStart=%h/.cargo/bin/kanade
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=niri.service

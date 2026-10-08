@@ -2,7 +2,7 @@
 
 Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split.
 
-Validated: crash recovery in a temporary test build, not committed. Pending #154: the production lock, the user unit and re-locking at start, and the gate again on the production binary and installed unit.
+Validated: crash recovery in a temporary test build (#153), to repeat in #154 on the production binary and the installed `kanade.service` unit.
 
 ## Context
 
@@ -37,12 +37,12 @@ All three land in #154.
 ## Consequences
 
 - A crash while locked shows niri's red screen for about the restart delay (1 s here), then the lock screen. A password typed into the dead process is lost.
-- Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` should name a shell not run by the unit (#154).
-- A lock that crashes on every start hits the unit's start limit and stays on the red screen. Recovery, from another TTY (`Ctrl+Alt+F3`): first fix the cause and restart the unit (`<unit-name>` until #154 names it), which locks again and keeps the session:
+- Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` warns about a shell the unit does not run.
+- A lock that crashes on every start hits the unit's start limit and stays on the red screen. Recovery, from another TTY (`Ctrl+Alt+F3`): first fix the cause and restart the unit (`kanade.service`, `dist/kanade.service`), which locks again and keeps the session:
 
   ```sh
-  systemctl --user reset-failed <unit-name>
-  systemctl --user restart <unit-name>
+  systemctl --user reset-failed kanade.service
+  systemctl --user restart kanade.service
   ```
 
   Only if that fails, end the graphical session. This closes every app in it, and unsaved work is lost:
