@@ -242,12 +242,12 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&wallpaper_status_call(), deadline)
             }))
         }
-        (Call::Lock, Ok(Reply::Done(text))) if let Some(number) = lock::requested(&text) => {
-            Ok(settle_lock(number, PATIENCE, |deadline| {
+        (Call::Lock, Ok(Reply::Done(text))) if let Some(request) = lock::requested(&text) => {
+            Ok(settle_lock(&request, PATIENCE, |deadline| {
                 call_until(&lock_status_call(), deadline)
             }))
         }
-        // a shell from before #196 answers with no request to wait on
+        // a shell from before #196, or any answer naming no request to wait on
         (Call::Lock, Ok(Reply::Done(_))) => Ok(Reply::Unknown(String::from(
             "the shell names no lock request to wait on, as it is older than this kanade; restart \
              it. The session may still lock",
@@ -346,10 +346,11 @@ fn settle_recording(
 
 /*
  * the shell answers a lock at once, as Amane only asks niri for it (`lock::start`), so this waits
- * until a lock screen drew for request `number`, which no lock before it can do (#196)
+ * until a lock screen drew for `request`, which no lock before it can do, and the lock still holds
+ * when asked (#196)
  */
 fn settle_lock(
-    number: u64,
+    request: &lock::Request,
     patience: Duration,
     ask: impl FnMut(Instant) -> Result<Reply, String>,
 ) -> Reply {
@@ -366,9 +367,12 @@ fn settle_lock(
         "the session may still lock",
         ask,
         |status| {
-            Some(match lock::settled(status, number)? {
+            Some(match lock::settled(status, request)? {
                 lock::Settled::Locked => Settling::Settled(Reply::Done(String::new())),
                 lock::Settled::Waiting => Settling::Waiting,
+                lock::Settled::Unlocked => Settling::Settled(Reply::Unknown(String::from(
+                    "a password typed on the lock screen unlocks the session",
+                ))),
                 lock::Settled::Lost => Settling::Settled(Reply::Unknown(String::from(
                     "the shell restarted, which lost the lock it was asked for; the session may \
                      still lock",
@@ -1030,35 +1034,50 @@ help",
     }
 
     #[test]
-    fn a_lock_settles_once_a_lock_screen_drew_for_it() {
+    fn a_lock_settles_once_a_lock_screen_drew_for_it_while_it_holds() {
         let patience = Duration::from_millis(300);
+        let request = lock::requested("requested #3 in 42.7").unwrap();
         let settled = |said: &'static [&'static str]| {
             let mut said = said.iter();
 
-            settle_lock(3, patience, move |_| {
+            settle_lock(&request, patience, move |_| {
                 Ok(Reply::Done(String::from(*said.next().unwrap())))
             })
         };
 
         // the last lock screen, drawn for #2, is no lock for #3
         assert_eq!(
-            settled(&["requested #3\nconfirmed #2", "requested #3\nconfirmed #3"]),
+            settled(&[
+                "instance 42.7\nrequested #3\nconfirmed #2",
+                "instance 42.7\nrequested #3\nconfirmed #3"
+            ]),
             Reply::Done(String::new())
         );
+        // #196: drawn for #3, then a password typed before the client asked
         assert!(matches!(
-            settled(&["requested #0\nconfirmed #0"]),
+            settled(&[
+                "instance 42.7\nrequested #3\nchecking a password",
+                "instance 42.7\nrequested #3\nunlocked"
+            ]),
+            Reply::Unknown(why) if why.contains("unlocks the session")
+        ));
+        // a restarted shell's #3
+        assert!(matches!(
+            settled(&["instance 42.9\nrequested #3\nconfirmed #3"]),
             Reply::Unknown(why) if why.contains("restarted")
         ));
 
-        let reply = settle_lock(3, patience, |_| {
-            Ok(Reply::Done(String::from("requested #3\nconfirmed #2")))
+        let reply = settle_lock(&request, patience, |_| {
+            Ok(Reply::Done(String::from(
+                "instance 42.7\nrequested #3\nconfirmed #2",
+            )))
         });
         assert!(
             matches!(&reply, Reply::Unknown(why) if why.contains("no lock screen showed")),
             "{reply:?}"
         );
 
-        let reply = settle_lock(3, patience, |_| Err(String::from("no shell")));
+        let reply = settle_lock(&request, patience, |_| Err(String::from("no shell")));
         assert!(
             matches!(&reply, Reply::Unknown(why) if why.starts_with("no shell")),
             "{reply:?}"

@@ -6,8 +6,9 @@
 //! `kanade lock` exits 0 only once a lock screen's view runs after its request (#196): Amane opens
 //! one only once niri says the session is locked, and the request first drops an unlock PAM accepted
 //! that Amane has not ended the lock for yet, so a later draw cannot be the last lock on its way
-//! out. logind's `LockedHint` may still say the last lock right after an unlock, so it is only for
-//! a crash.
+//! out. It must still hold when the client asks: no password typed since is being checked or was
+//! accepted. logind's `LockedHint` may still say the last lock right after an unlock, so it is only
+//! for a crash.
 //!
 //! A crash while locked leaves niri locked on its red screen; the user unit (`UNIT`) restarts the
 //! shell, which finds logind's `LockedHint` true and locks again, so niri swaps the dead lock for
@@ -15,7 +16,9 @@
 
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use amane::{
     Argument, Bus, Center, Column, Key, LayerWindow, Lock, Monitor, Padding, Parent, Rectangle,
@@ -43,8 +46,9 @@ const AUTO: &str = "/org/freedesktop/login1/session/auto";
 const FIELD: &str = "lock-password";
 
 /*
- * `kanade lock`'s requests, numbered from 1; the client waits until `confirmed` reaches its own.
- * Only the draw thread touches them, from the IPC handler and the view
+ * `kanade lock`'s requests, numbered from 1 in this process (`instance`); the client waits until
+ * `confirmed` reaches its own while the lock still holds. Only the draw thread touches them, from
+ * the IPC handler and the view
  */
 struct Requests {
     newest: u64,
@@ -69,10 +73,42 @@ impl Requests {
      * so far, unless a password went to PAM since: being checked, or accepted and on its way out
      */
     fn drew(&mut self, checking: bool, failed: bool) {
-        if !checking && !(self.tried && !failed) {
+        if self.holding(checking, failed) == Holding::Held {
             self.confirmed = self.newest;
         }
     }
+
+    fn status(&self, instance: &str, checking: bool, failed: bool) -> String {
+        let holding = match self.holding(checking, failed) {
+            Holding::Held => format!("confirmed #{}", self.confirmed),
+            Holding::Checking => String::from("checking a password"),
+            Holding::Unlocked => String::from("unlocked"),
+        };
+
+        format!("instance {instance}\nrequested #{}\n{holding}", self.newest)
+    }
+
+    // whether a lock confirmed may still hold, by Amane's `Lock`
+    fn holding(&self, checking: bool, failed: bool) -> Holding {
+        if checking {
+            Holding::Checking
+        } else if self.tried && !failed {
+            Holding::Unlocked
+        } else {
+            Holding::Held
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holding {
+    Held,
+
+    // a password is being checked, which may unlock
+    Checking,
+
+    // a password was accepted since the newest request, so the lock ends or has ended
+    Unlocked,
 }
 
 static REQUESTS: Mutex<Requests> = Mutex::new(Requests {
@@ -171,12 +207,22 @@ pub enum Started {
     Unknown(String),
 }
 
+// a request `start` named: the shell process it went to, and its number there
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    instance: String,
+    number: u64,
+}
+
 // where a request stands by `status`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Settled {
-    // a lock screen drew after it, with no unlock pending
+    // a lock screen drew after it, and the lock still holds
     Locked,
     Waiting,
+
+    // a password typed on the lock screen unlocks it
+    Unlocked,
 
     // the shell does not know it, as it restarted since
     Lost,
@@ -221,43 +267,74 @@ pub fn start() -> Result<Started, String> {
 
     // redraws every window, so a lock screen already shown confirms it
     Lock::start();
-    Ok(Started::Requested(format!("requested #{newest}")))
+    Ok(Started::Requested(format!(
+        "requested #{newest} in {}",
+        instance()
+    )))
 }
 
 // the request `start` names
-pub fn requested(text: &str) -> Option<u64> {
-    text.strip_prefix("requested #")?.parse().ok()
+pub fn requested(text: &str) -> Option<Request> {
+    let (number, instance) = text.strip_prefix("requested #")?.split_once(" in ")?;
+
+    Some(Request {
+        instance: String::from(instance),
+        number: number.parse().ok()?,
+    })
 }
 
-// `kanade lock status`: the newest request and the newest confirmed one, a line each
+/*
+ * `kanade lock status`: this process, the newest request, and the newest confirmed one while the
+ * lock still holds, else what may end it, a line each. Read when asked, as a password accepted
+ * after a request was confirmed ends that lock too
+ */
 pub fn status() -> String {
-    let requests = requests();
-    format!(
-        "requested #{}\nconfirmed #{}",
-        requests.newest, requests.confirmed
-    )
+    let lock = Lock::read();
+
+    requests().status(instance(), lock.checking(), lock.failed())
 }
 
-// where request `number` stands by `status`, if it parses
-pub fn settled(status: &str, number: u64) -> Option<Settled> {
-    let serial = |line: Option<&str>, word: &str| {
-        line?
-            .strip_prefix(word)?
-            .strip_prefix(" #")?
-            .parse::<u64>()
-            .ok()
-    };
+// where `request` stands by `status`, if it parses
+pub fn settled(status: &str, request: &Request) -> Option<Settled> {
     let mut lines = status.lines();
-    let newest = serial(lines.next(), "requested")?;
-    let confirmed = serial(lines.next(), "confirmed")?;
+    let instance = lines.next()?.strip_prefix("instance ")?;
+    let newest = lines
+        .next()?
+        .strip_prefix("requested #")?
+        .parse::<u64>()
+        .ok()?;
+    let holding = lines.next()?;
 
-    // a later request confirmed is a lock after this one too
-    Some(if confirmed >= number {
-        Settled::Locked
-    } else if newest >= number {
-        Settled::Waiting
-    } else {
-        Settled::Lost
+    // a restarted shell numbers from 1 again
+    if instance != request.instance {
+        return Some(Settled::Lost);
+    }
+    if newest < request.number {
+        return None;
+    }
+
+    Some(match holding {
+        "checking a password" => Settled::Waiting,
+        "unlocked" => Settled::Unlocked,
+        // a later request confirmed is a lock after this one too
+        confirmed => match confirmed.strip_prefix("confirmed #")?.parse::<u64>().ok()? {
+            confirmed if confirmed >= request.number => Settled::Locked,
+            _ => Settled::Waiting,
+        },
+    })
+}
+
+// this shell process, unlike any before it, even one with the same pid
+fn instance() -> &'static str {
+    static INSTANCE: OnceLock<String> = OnceLock::new();
+
+    INSTANCE.get_or_init(|| {
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+
+        format!("{}.{started}", process::id())
     })
 }
 
@@ -369,7 +446,7 @@ mod tests {
 
     // #196: the last lock, on its way out after an unlock, draws once more
     #[test]
-    fn only_a_draw_with_no_unlock_pending_confirms() {
+    fn a_lock_is_confirmed_only_while_no_unlock_is_pending() {
         let mut requests = Requests {
             newest: 0,
             confirmed: 0,
@@ -379,47 +456,78 @@ mod tests {
         assert_eq!(requests.request(), 1);
         requests.drew(false, false);
         assert_eq!(requests.confirmed, 1);
+        assert_eq!(requests.holding(false, false), Holding::Held);
 
         // asked again while locked, then the password is typed before the redraw
         assert_eq!(requests.request(), 2);
         requests.tried = true;
         requests.drew(true, false);
         assert_eq!(requests.confirmed, 1);
-        // accepted, the lock not ended yet
+        assert_eq!(requests.holding(true, false), Holding::Checking);
+
+        // accepted, the lock not ended yet: no draw confirms, and #1 no longer holds either
         requests.drew(false, false);
         assert_eq!(requests.confirmed, 1);
+        assert_eq!(requests.holding(false, false), Holding::Unlocked);
+
+        // #1, confirmed before, is not reported as held either
+        let request = requested("requested #1 in 42.7").unwrap();
+        let unlocking = |checking| settled(&requests.status("42.7", checking, false), &request);
+        assert_eq!(unlocking(true), Some(Settled::Waiting));
+        assert_eq!(unlocking(false), Some(Settled::Unlocked));
 
         // a wrong password keeps the lock
         requests.drew(false, true);
         assert_eq!(requests.confirmed, 2);
+        assert_eq!(requests.holding(false, true), Holding::Held);
 
         // asked again after an accepted one, which `start` dropped, so the lock stays
         assert_eq!(requests.request(), 3);
+        assert_eq!(requests.holding(false, false), Holding::Held);
         requests.drew(false, false);
         assert_eq!(requests.confirmed, 3);
     }
 
     #[test]
-    fn a_request_settles_once_confirmed_and_is_lost_to_a_restart() {
-        assert_eq!(requested("requested #3"), Some(3));
+    fn a_request_settles_while_its_lock_holds_and_is_lost_to_a_restart() {
+        let request = requested("requested #3 in 42.7").unwrap();
+        assert_eq!(
+            request,
+            Request {
+                instance: String::from("42.7"),
+                number: 3
+            }
+        );
+        assert_eq!(requested("requested #3"), None);
         assert_eq!(requested("locked"), None);
 
+        let settled = |status: &str| settled(status, &request);
         assert_eq!(
-            settled("requested #3\nconfirmed #2", 3),
+            settled("instance 42.7\nrequested #3\nconfirmed #2"),
             Some(Settled::Waiting)
         );
         assert_eq!(
-            settled("requested #3\nconfirmed #3", 3),
+            settled("instance 42.7\nrequested #3\nconfirmed #3"),
             Some(Settled::Locked)
         );
         assert_eq!(
-            settled("requested #4\nconfirmed #4", 3),
+            settled("instance 42.7\nrequested #4\nconfirmed #4"),
             Some(Settled::Locked)
         );
         assert_eq!(
-            settled("requested #1\nconfirmed #0", 3),
+            settled("instance 42.7\nrequested #3\nchecking a password"),
+            Some(Settled::Waiting)
+        );
+        assert_eq!(
+            settled("instance 42.7\nrequested #3\nunlocked"),
+            Some(Settled::Unlocked)
+        );
+        // another process's #3, confirmed or not, is not this one
+        assert_eq!(
+            settled("instance 42.9\nrequested #3\nconfirmed #3"),
             Some(Settled::Lost)
         );
-        assert_eq!(settled("locked", 3), None);
+        assert_eq!(settled("instance 42.7\nrequested #2\nconfirmed #2"), None);
+        assert_eq!(settled("requested #3\nconfirmed #3"), None);
     }
 }
