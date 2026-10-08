@@ -23,6 +23,7 @@ pub mod playback;
 pub mod power;
 pub mod privacy;
 pub mod recording;
+pub mod sleep;
 pub mod system;
 pub mod timer;
 pub mod tray;

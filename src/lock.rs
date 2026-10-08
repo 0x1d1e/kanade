@@ -17,8 +17,8 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use amane::{
     Argument, Bus, Center, Column, Key, LayerWindow, Lock, Monitor, Padding, Parent, Rectangle,
@@ -46,9 +46,9 @@ const AUTO: &str = "/org/freedesktop/login1/session/auto";
 const FIELD: &str = "lock-password";
 
 /*
- * `kanade lock`'s requests, numbered from 1 in this process (`instance`); the client waits until
- * `confirmed` reaches its own while the lock still holds. Only the draw thread touches them, from
- * the IPC handler and the view
+ * the requests of `kanade lock` and of sleep (`hold`), numbered from 1 in this process (`instance`);
+ * each waits until `confirmed` reaches its own while the lock still holds. Taken before Amane's
+ * `Lock`, never after, so a request and a password sent from the field never interleave
  */
 struct Requests {
     newest: u64,
@@ -92,6 +92,19 @@ impl Requests {
         format!("instance {instance}\nrequested #{}\n{holding}", self.newest)
     }
 
+    /*
+     * what `hold`, having asked `asked`, does next. PAM ends a check with no draw when it accepts,
+     * the lock windows closing unseen, so a check is looked at again rather than waited on
+     */
+    fn next(&self, asked: Option<u64>, checking: bool, failed: bool) -> Next {
+        match (asked, self.holding(checking, failed)) {
+            (Some(asked), Holding::Held) if self.confirmed >= asked => Next::Done,
+            (_, Holding::Checking) => Next::Look,
+            (None, _) | (_, Holding::Unlocked) => Next::Ask,
+            (Some(_), Holding::Held) => Next::Wait,
+        }
+    }
+
     // whether a lock confirmed may still hold, by Amane's `Lock`
     fn holding(&self, checking: bool, failed: bool) -> Holding {
         if checking {
@@ -115,11 +128,33 @@ enum Holding {
     Unlocked,
 }
 
+// where `hold` stands
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    // a lock screen confirmed the request, which still holds
+    Done,
+
+    // no request stands, or an unlock ended it: ask
+    Ask,
+
+    // asked: wait on a lock screen drawing
+    Wait,
+
+    // a password is being checked: look again shortly
+    Look,
+}
+
+// how often `hold` looks at a password being checked
+const LOOK: Duration = Duration::from_millis(50);
+
 static REQUESTS: Mutex<Requests> = Mutex::new(Requests {
     newest: 0,
     confirmed: 0,
     tried: false,
 });
+
+// told each time a lock screen draws, which may confirm a request or show an unlock
+static DRAWN: Condvar = Condvar::new();
 
 const WIDTH: f32 = 280.0;
 const HEIGHT: f32 = 40.0;
@@ -251,30 +286,82 @@ pub fn start() -> Result<Started, String> {
         ));
     }
 
-    let lock = Lock::read();
-    let (checking, failed) = (lock.checking(), lock.failed());
-    drop(lock);
-
-    if checking {
-        return Ok(Started::Unknown(String::from(
+    match request(&mut requests()) {
+        Some(newest) => Ok(Started::Requested(format!(
+            "requested #{newest} in {}",
+            instance()
+        ))),
+        None => Ok(Started::Unknown(String::from(
             "a password typed on the lock screen is being checked, so whether the session stays \
              locked is not known; nothing was asked, try again",
-        )));
+        ))),
+    }
+}
+
+/*
+ * asks niri for a lock as `start` says and hands back its number, or asks nothing while a password
+ * is being checked. Checked and reset under one write, so PAM cannot end a check in between
+ */
+fn request(requests: &mut Requests) -> Option<u64> {
+    let mut lock = Lock::write();
+
+    if lock.checking() {
+        return None;
     }
 
     // a wrong password is no unlock, and its "Wrong password" stays
-    if !failed {
-        *Lock::write() = Lock::new();
+    if !lock.failed() {
+        *lock = Lock::new();
     }
+    drop(lock);
 
-    let newest = requests().request();
+    let newest = requests.request();
 
     // redraws every window, so a lock screen already shown confirms it
     Lock::start();
-    Ok(Started::Requested(format!(
-        "requested #{newest} in {}",
-        instance()
-    )))
+    Some(newest)
+}
+
+/*
+ * locks the session before it sleeps (`crate::sleep`): asks for a lock and waits until a lock
+ * screen confirms it while it still holds, for at most `patience`. A password being checked is
+ * waited out and one accepted is asked over, so sleep never goes on unlocked by a password typed
+ * just before it
+ */
+pub fn hold(patience: Duration) -> Result<(), String> {
+    if pam().is_none() {
+        return Err(format!("no PAM service {PAM}, so no lock is asked"));
+    }
+
+    let deadline = Instant::now() + patience;
+    let mut requests = requests();
+    let mut asked = None;
+
+    loop {
+        let lock = Lock::read();
+        let next = requests.next(asked, lock.checking(), lock.failed());
+        drop(lock);
+
+        let left = deadline.saturating_duration_since(Instant::now());
+        let wait = match next {
+            Next::Done => return Ok(()),
+            Next::Ask => {
+                // after it a request stands, or a check began first
+                asked = request(&mut requests);
+                continue;
+            }
+            _ if left.is_zero() => {
+                return Err(format!("no lock screen confirmed it within {patience:?}"));
+            }
+            Next::Wait => left,
+            Next::Look => left.min(LOOK),
+        };
+
+        requests = DRAWN
+            .wait_timeout(requests, wait)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
 }
 
 // the request `start` names
@@ -293,9 +380,10 @@ pub fn requested(text: &str) -> Option<Request> {
  * after a request was confirmed ends that lock too
  */
 pub fn status() -> String {
+    let requests = requests();
     let lock = Lock::read();
 
-    requests().status(instance(), lock.checking(), lock.failed())
+    requests.status(instance(), lock.checking(), lock.failed())
 }
 
 // where `request` stands by `status`, if it parses
@@ -348,9 +436,12 @@ fn requests() -> MutexGuard<'static, Requests> {
 
 pub fn view(monitor: &Monitor) -> LayerWindow {
     let roles = theme::ISLAND;
+    let mut requests = requests();
     let lock = Lock::read();
 
-    requests().drew(lock.checking(), lock.failed());
+    requests.drew(lock.checking(), lock.failed());
+    drop(requests);
+    DRAWN.notify_all();
 
     let (status, color) = if lock.checking() {
         ("Checking…", roles.on_surface_variant)
@@ -440,13 +531,43 @@ fn submit(password: String) {
     }
 
     TextInput::set_text(FIELD, "");
-    requests().tried = true;
+
+    // under the requests, so one never falls between the two
+    let mut requests = requests();
+    requests.tried = true;
     Lock::unlock(&password);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #155: an accepted password ends the lock with no draw, so sleep never waits on one
+    #[test]
+    fn sleep_asks_over_an_unlock_and_looks_at_a_check_again() {
+        let mut requests = Requests {
+            newest: 0,
+            confirmed: 0,
+            tried: false,
+        };
+
+        // asked nothing while a password is checked, then again once it is not
+        assert_eq!(requests.next(None, true, false), Next::Look);
+        assert_eq!(requests.next(None, false, false), Next::Ask);
+
+        let asked = Some(requests.request());
+        assert_eq!(requests.next(asked, false, false), Next::Wait);
+        requests.drew(false, false);
+        assert_eq!(requests.next(asked, false, false), Next::Done);
+
+        // typed and checked after the lock screen confirmed it, then accepted
+        requests.tried = true;
+        assert_eq!(requests.next(asked, true, false), Next::Look);
+        assert_eq!(requests.next(asked, false, false), Next::Ask);
+
+        // a wrong password keeps the lock
+        assert_eq!(requests.next(asked, false, true), Next::Done);
+    }
 
     // #196: the last lock, on its way out after an unlock, draws once more
     #[test]

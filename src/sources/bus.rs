@@ -12,20 +12,22 @@ pub fn reachable(bus: Bus) -> bool {
     !bus.call(DBUS, PATH, DBUS, "GetId", &[]).text().is_empty()
 }
 
-// the process that has `name`, none while no one has it
-pub fn owner(bus: Bus, name: &str) -> Option<u32> {
+// the unique name, like :1.42, of whoever has `name`, which a signal names as its sender
+pub fn unique(bus: Bus, name: &str) -> Option<String> {
     let owner = bus.call(DBUS, PATH, DBUS, "GetNameOwner", &[Argument::from(name)]);
 
-    if owner.text().is_empty() {
-        return None;
-    }
+    Some(owner.text().to_owned()).filter(|owner| !owner.is_empty())
+}
 
+// the process that has `name`, none while no one has it
+pub fn owner(bus: Bus, name: &str) -> Option<u32> {
+    let owner = unique(bus, name)?;
     let pid = bus.call(
         DBUS,
         PATH,
         DBUS,
         "GetConnectionUnixProcessID",
-        &[Argument::from(owner.text())],
+        &[Argument::from(owner)],
     );
 
     Some(pid.number() as u32).filter(|&pid| pid > 0)
