@@ -118,7 +118,7 @@ Rules:
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
-- **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later.
+- **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
 - **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016).
 - **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
 
@@ -275,7 +275,7 @@ Nested-niri E2E checks idle/morph each release.
 
 - local-user IPC only; no network listener.
 - notification body plain text; action only on click; history memory-only, 20/app, 100 total.
-- clipboard history bounded; persistence off by default; sensitive-content policy required before persistence.
+- clipboard history bounded; persistence off by default; a selection marked sensitive is never read or kept, unknown state fails closed ([ADR 0019](adr/0019-clipboard-sensitive-content.md)).
 - calendar credentials/tokens never logged; weather sends only the configured coordinates, never logged; account secrets stored through system secret service, not TOML.
 - never log passwords, notification/window/media/clipboard content.
 - PAM password only enters unlock path; never store/log/echo.
@@ -324,7 +324,6 @@ Need design before commitment:
 ## Open
 
 - Track/test privacy Overlay stacking + input passthrough.
-- Define clipboard sensitive-content policy before persistence.
 - Blur waits for viable Amane/niri background-effect path.
 - Native polkit waits for safe helper stdin integration.
 - Plugins/hooks/ASR remain deferred design decisions.

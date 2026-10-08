@@ -6,6 +6,9 @@
 //! restoring another kills it. The new selection is announced like any other, so a restored entry
 //! moves to the top, and that announcement is what says the restore is done: a paste then gets it. Removing an entry or clearing the history forgets only the history, never what
 //! is on the clipboard now. What was copied is never logged, and an entry's `Debug` leaves it out.
+//! A selection its owner marks sensitive, like a password manager's, is never read (ADR 0019): only
+//! one wl-paste says is `data` is kept, and only a wl-paste that tells a sensitive one
+//! (`SENSITIVE_SINCE`) is started, checked before each start.
 
 use std::env;
 use std::ffi::OsStr;
@@ -19,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use amane::Service;
 
-use crate::sources::wake;
+use crate::sources::wake::{self, Failed};
 use crate::supervise;
 
 pub const PASTE: &str = "wl-paste";
@@ -41,6 +44,55 @@ fn watch_command(exe: &str) -> Vec<&str> {
 
     command.extend([exe, HAND_OVER]);
     command
+}
+
+/*
+ * the first wl-paste that says a selection is sensitive, one offering `x-kde-passwordManagerHint`:
+ * an older one says `data` for it (2.2), or says nothing (2.1 and older)
+ */
+pub const SENSITIVE_SINCE: (u32, u32) = (2, 3);
+
+// how long `wl-paste --version` may take
+const ASKED: Duration = Duration::from_secs(5);
+
+/*
+ * wl-paste's version, if it says which selections are sensitive; else why not, as with none on the
+ * PATH, so no history is kept
+ */
+pub fn paste_version() -> Result<String, String> {
+    let printed =
+        wake::query_within(PASTE, &["--version"], ASKED).map_err(|failed| match failed {
+            Failed::Said(said) => said,
+            Failed::Overran(limit) => format!("`{PASTE} --version` took over {limit:?}"),
+        })?;
+
+    tells_sensitive(&printed)
+}
+
+// from what `wl-paste --version` printed: `wl-clipboard 2.3.0`, then its copyright
+fn tells_sensitive(printed: &str) -> Result<String, String> {
+    let version = printed
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("wl-clipboard "))
+        .map(str::trim);
+
+    let release = version.and_then(|version| {
+        let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
+        Some((parts.next()??, parts.next()??))
+    });
+
+    let (major, minor) = SENSITIVE_SINCE;
+
+    match (version, release) {
+        (Some(version), Some(release)) if release >= SENSITIVE_SINCE => {
+            Ok(format!("{PASTE} {version}"))
+        }
+        (Some(version), Some(_)) => Err(format!(
+            "{PASTE} {version} cannot tell a sensitive copy, Kanade needs {major}.{minor} or later"
+        )),
+        _ => Err(format!("cannot tell {PASTE}'s version")),
+    }
 }
 
 // the most entries kept, the most bytes one may have, and the most all of them together may
@@ -531,14 +583,26 @@ fn paste() {
     // this Kanade even once a rebuild replaced its file, while it runs
     let exe = format!("/proc/{}/exe", std::process::id());
 
-    let error = wake::run(PASTE, &watch_command(&exe), &stop, |output| {
+    // before each start, as wl-paste may have been replaced by an older one since the last
+    let mut refused = None;
+    let tells = || {
+        paste_version().map(drop).map_err(|why| {
+            refused = Some(why.clone());
+            io::Error::other(why)
+        })
+    };
+
+    let error = wake::run_checked(PASTE, &watch_command(&exe), &stop, tells, |output| {
         watch(output, &mut record)
     });
 
     // nothing stops it
     let Some(error) = error else { return };
 
-    let why = format!("cannot run wl-paste ({error}), no clipboard history");
+    let why = match refused {
+        Some(why) => format!("{why}, no clipboard history"),
+        None => format!("cannot run wl-paste ({error}), no clipboard history"),
+    };
 
     eprintln!("kanade: {why}");
     supervise::stopped("clipboard", why);
@@ -562,9 +626,9 @@ pub fn hand_over_selection() {
 
 /*
  * writes one frame for Kanade: `data <length>[ <type>]` and the content, when the selection's state
- * is `data` (or unset, by a wl-paste older than 2.2), it holds at most ENTRY_BYTES and its type, if
- * said, is one Kanade can frame; else `-` alone, the content unread. So a sensitive selection's,
- * or one in a state Kanade does not know, never leaves wl-paste
+ * is `data`, it holds at most ENTRY_BYTES and its type, if said, is one Kanade can frame; else `-`
+ * alone, the content unread. So a sensitive selection's, or one in a state Kanade does not know or
+ * that is unset, never leaves wl-paste
  */
 fn hand_over(
     state: Option<&OsStr>,
@@ -572,7 +636,7 @@ fn hand_over(
     input: impl Read,
     mut output: impl Write,
 ) -> io::Result<()> {
-    let data = state.is_none_or(|state| state == "data");
+    let data = state.is_some_and(|state| state == "data");
     let mime = match mime.map(OsStr::to_str) {
         None => Ok(None),
         Some(Some(mime))
@@ -1001,10 +1065,10 @@ mod tests {
             (Some("clear"), None, b""),
             (Some("something new"), PLAIN, b"b"),
             (Some("data "), PLAIN, b"c"),
-            (None, None, b"d"),
+            (None, PLAIN, b"d"),
         ];
 
-        assert_eq!(recorded(&selections), [text("a"), text("d")]);
+        assert_eq!(recorded(&selections), [text("a")]);
     }
 
     #[test]
@@ -1066,6 +1130,39 @@ mod tests {
         ];
 
         assert_eq!(recorded(&selections), [text("d")]);
+    }
+
+    #[test]
+    fn only_a_wl_paste_that_tells_a_sensitive_copy_is_followed() {
+        let copyright = "\nCopyright (C) 2018-2026 Sergey Bugaev\n";
+
+        for (version, told) in [
+            ("2.3.0", true),
+            ("2.3", true),
+            ("2.10.1", true),
+            ("3.0.0", true),
+            ("2.2.1", false),
+            ("2.1.0", false),
+            ("1.9", false),
+        ] {
+            let printed = format!("wl-clipboard {version}{copyright}");
+
+            assert_eq!(tells_sensitive(&printed).is_ok(), told, "{version}");
+        }
+
+        for printed in [
+            "",
+            "wl-clipboard\n",
+            "wl-clipboard x.y\n",
+            "something 2.3.0\n",
+        ] {
+            assert!(tells_sensitive(printed).is_err(), "{printed:?}");
+        }
+
+        assert_eq!(
+            tells_sensitive(&format!("wl-clipboard 2.3.0{copyright}")),
+            Ok(String::from("wl-paste 2.3.0"))
+        );
     }
 
     #[test]
