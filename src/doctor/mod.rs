@@ -14,10 +14,11 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use amane::Bus;
+use amane::{Argument, Bus};
 
 use crate::cli::{self, Reply};
 use crate::config::{self, Config};
+use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
 use crate::sources::{bus, niri, pipewire};
@@ -79,8 +80,8 @@ impl Check {
 // fails when any check does
 pub fn run() -> ExitCode {
     let (config, problems) = config::read();
-    let shell = shell();
-    let running = shell.verdict == Verdict::Ok;
+    let (shell, pid) = shell();
+    let running = pid.is_some();
 
     let mut checks = vec![
         Check::ok(format!(
@@ -90,6 +91,7 @@ pub fn run() -> ExitCode {
         )),
         amane(include_str!("../../Cargo.lock")),
         shell,
+        unit(pid),
         niri(),
     ];
 
@@ -132,30 +134,164 @@ fn amane(lock: &str) -> Check {
     }
 }
 
-// a shell that is not running is no fault of doctor's to fix; one that cannot be talked to is
-fn shell() -> Check {
+/*
+ * a shell that is not running is no fault of doctor's to fix; one that cannot be talked to is.
+ * With the pid of one that runs and is talked to
+ */
+fn shell() -> (Check, Option<u32>) {
     match cli::call(&[String::from("status")]) {
         Ok(Reply::Done(status)) => shell_status(status.lines().next().unwrap_or_default()),
-        Ok(Reply::Refused(refused)) => Check::fail(format!("shell: refused status: {refused}")),
-        Ok(Reply::Unknown(unknown)) => Check::fail(format!("shell: status unclear: {unknown}")),
+        Ok(Reply::Refused(refused)) => (
+            Check::fail(format!("shell: refused status: {refused}")),
+            None,
+        ),
+        Ok(Reply::Unknown(unknown)) => (
+            Check::fail(format!("shell: status unclear: {unknown}")),
+            None,
+        ),
         Err(problem) if problem.starts_with("no shell is running") => {
-            Check::warn(format!("shell: {problem}"))
+            (Check::warn(format!("shell: {problem}")), None)
         }
-        Err(problem) => Check::fail(format!("shell: {problem}")),
+        Err(problem) => (Check::fail(format!("shell: {problem}")), None),
     }
 }
 
-// from the first line of its status, like "kanade 0.1.0, protocol 2"
-fn shell_status(first: &str) -> Check {
-    let protocol = first
-        .rsplit_once("protocol ")
-        .and_then(|(_, protocol)| protocol.parse::<u32>().ok());
+// from the first line of its status, like "kanade 0.1.0, protocol 3, pid 1234"
+fn shell_status(first: &str) -> (Check, Option<u32>) {
+    let said = first
+        .rsplit_once(", protocol ")
+        .and_then(|(_, rest)| rest.split_once(", pid "))
+        .and_then(|(protocol, pid)| {
+            Some((protocol.parse::<u32>().ok()?, pid.parse::<u32>().ok()?))
+        });
 
-    match protocol {
-        Some(cli::PROTOCOL) => Check::ok(format!("shell: running {first}")),
-        _ => Check::fail(format!(
-            "shell: running {first}, not protocol {}; restart it",
-            cli::PROTOCOL
+    match said {
+        Some((cli::PROTOCOL, pid)) => (Check::ok(format!("shell: running {first}")), Some(pid)),
+        _ => (
+            Check::fail(format!(
+                "shell: running {first}, not protocol {}; restart it",
+                cli::PROTOCOL
+            )),
+            None,
+        ),
+    }
+}
+
+const SYSTEMD: &str = "org.freedesktop.systemd1";
+
+// what systemd says of the unit
+#[derive(Default)]
+struct Unit {
+    load: String,
+    active: String,
+    // UnitFileState: whether the next session starts it
+    file: String,
+    // MainPID, 0 when it runs nothing
+    pid: u32,
+}
+
+/*
+ * the user unit that restarts a crashed shell, which a locked session needs (ADR 0018), with
+ * `shell` the pid of the shell doctor talked to
+ */
+fn unit(shell: Option<u32>) -> Check {
+    let bus = Bus::session();
+
+    if !bus::reachable(bus) {
+        return Check::warn(format!(
+            "unit {}: unknown, the session bus is unreachable",
+            lock::UNIT
+        ));
+    }
+
+    // GetUnit, not LoadUnit, so doctor loads nothing; it fails for a unit systemd has not
+    // loaded, like one not enabled
+    let path = bus.call(
+        SYSTEMD,
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+        "GetUnit",
+        &[Argument::from(lock::UNIT)],
+    );
+    if path.text().is_empty() {
+        return unit_check(
+            shell,
+            &Unit {
+                load: String::from("not loaded"),
+                ..Unit::default()
+            },
+        );
+    }
+
+    let property = |interface, name| bus.property(SYSTEMD, path.text(), interface, name);
+    let state = |name| {
+        let value = property("org.freedesktop.systemd1.Unit", name);
+        value.text().to_owned()
+    };
+    let pid = property("org.freedesktop.systemd1.Service", "MainPID").number();
+
+    unit_check(
+        shell,
+        &Unit {
+            load: state("LoadState"),
+            active: state("ActiveState"),
+            file: state("UnitFileState"),
+            pid: pid as u32,
+        },
+    )
+}
+
+/*
+ * whether the unit runs the shell doctor talked to, `shell` its pid, and the next session starts
+ * it again
+ */
+fn unit_check(shell: Option<u32>, state: &Unit) -> Check {
+    let unit = lock::UNIT;
+    let unrestarted = "a crashed shell is not restarted, which leaves a locked session on \
+                       niri's red screen";
+    let (load, active, file) = (&*state.load, &*state.active, &*state.file);
+    let enabled = matches!(file, "enabled" | "enabled-runtime");
+
+    match (load, active) {
+        ("loaded", "active" | "activating" | "reloading")
+            if let Some(pid) = shell
+                && pid != state.pid =>
+        {
+            Check::warn(format!(
+                "unit {unit}: {active}, but its pid {} is not the shell's {pid}, so the shell \
+                 running is not its: {unrestarted}",
+                state.pid
+            ))
+        }
+        ("loaded", "active" | "activating" | "reloading") if !enabled => Check {
+            detail: vec![format!("systemctl --user enable {unit}")],
+            ..Check::warn(format!(
+                "unit {unit}: {active} but {file}, so the next session starts no shell"
+            ))
+        },
+        ("loaded", "active" | "activating" | "reloading") => match shell {
+            Some(pid) => Check::ok(format!(
+                "unit {unit}: {active}, {file}, runs the shell, pid {pid}"
+            )),
+            None => Check::ok(format!("unit {unit}: {active}, {file}")),
+        },
+        ("loaded", "failed") => Check {
+            detail: vec![
+                String::from("once its cause is fixed:"),
+                format!("systemctl --user reset-failed {unit}"),
+                format!("systemctl --user restart {unit}"),
+            ],
+            ..Check::warn(format!(
+                "unit {unit}: failed, maybe its start limit: {unrestarted}"
+            ))
+        },
+        ("loaded", _) if shell.is_some() => Check::warn(format!(
+            "unit {unit}: {active}, so the shell running is not its: {unrestarted}"
+        )),
+        ("loaded", _) => Check::warn(format!("unit {unit}: {active}")),
+        ("", _) => Check::warn(format!("unit {unit}: unknown, systemd did not answer")),
+        _ => Check::warn(format!(
+            "unit {unit}: {load}, see the README to install it: {unrestarted}"
         )),
     }
 }
@@ -368,6 +504,7 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     bus::owner(Bus::session(), name).map(bus::process),
                     running,
                 ),
+                Provider::Pam(service) => pam_found(service, lock::pam()),
                 Provider::Niri => niri_found(niri_version()),
                 Provider::SystemService(name)
                 | Provider::SessionName(name)
@@ -417,6 +554,14 @@ fn program_found(program: &str, path: Option<impl AsRef<OsStr>>) -> Found {
     match path.and_then(|path| find(program, path.as_ref())) {
         Some(found) => Found::Present(format!("{program} at {}", found.display())),
         None => Found::Missing(format!("{program} missing from PATH")),
+    }
+}
+
+// without the service's file PAM falls back to `other`, which usually refuses every password
+fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
+    match file {
+        Some(file) => Found::Present(format!("PAM service {service} at {}", file.display())),
+        None => Found::Absent(format!("no PAM service {service}")),
     }
 }
 
@@ -501,12 +646,23 @@ version = \"9.9.9\"
     #[test]
     fn a_shell_on_another_protocol_fails() {
         assert_eq!(
-            shell_status("kanade 0.1.0, protocol 2"),
-            Check::ok(String::from("shell: running kanade 0.1.0, protocol 2"))
+            shell_status("kanade 0.1.0, protocol 3, pid 1234"),
+            (
+                Check::ok(String::from(
+                    "shell: running kanade 0.1.0, protocol 3, pid 1234"
+                )),
+                Some(1234)
+            )
         );
 
-        for first in ["kanade 0.1.0, protocol 1", "something else", ""] {
-            assert_eq!(shell_status(first).verdict, Verdict::Fail, "{first}");
+        for first in [
+            "kanade 0.1.0, protocol 2, pid 1234",
+            "kanade 0.1.0, protocol 2",
+            "something else",
+            "",
+        ] {
+            let (check, pid) = shell_status(first);
+            assert_eq!((check.verdict, pid), (Verdict::Fail, None), "{first}");
         }
     }
 
@@ -609,6 +765,71 @@ version = \"9.9.9\"
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_shell_the_unit_does_not_run_warns() {
+        let unit = |load: &str, active: &str, file: &str, pid| Unit {
+            load: String::from(load),
+            active: String::from(active),
+            file: String::from(file),
+            pid,
+        };
+
+        assert_eq!(
+            unit_check(Some(7), &unit("loaded", "active", "enabled", 7)),
+            Check::ok(String::from(
+                "unit kanade.service: active, enabled, runs the shell, pid 7"
+            ))
+        );
+        assert_eq!(
+            unit_check(Some(8), &unit("loaded", "active", "enabled", 7)).text,
+            "unit kanade.service: active, but its pid 7 is not the shell's 8, so the shell \
+             running is not its: a crashed shell is not restarted, which leaves a locked session \
+             on niri's red screen"
+        );
+
+        let disabled = unit_check(Some(7), &unit("loaded", "active", "disabled", 7));
+        assert_eq!(
+            disabled.text,
+            "unit kanade.service: active but disabled, so the next session starts no shell"
+        );
+        assert_eq!(disabled.detail, ["systemctl --user enable kanade.service"]);
+
+        assert_eq!(
+            unit_check(Some(7), &unit("loaded", "inactive", "enabled", 0)).text,
+            "unit kanade.service: inactive, so the shell running is not its: a crashed shell is \
+             not restarted, which leaves a locked session on niri's red screen"
+        );
+        assert_eq!(
+            unit_check(None, &unit("not-found", "inactive", "", 0)).text,
+            "unit kanade.service: not-found, see the README to install it: a crashed shell is \
+             not restarted, which leaves a locked session on niri's red screen"
+        );
+
+        let failed = unit_check(None, &unit("loaded", "failed", "enabled", 0));
+        assert_eq!(failed.verdict, Verdict::Warn);
+        assert_eq!(
+            failed.detail[1..],
+            [
+                "systemctl --user reset-failed kanade.service",
+                "systemctl --user restart kanade.service",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_lock_without_its_pam_service_fails() {
+        assert_eq!(
+            pam_found("login", None).check("lock", "no password unlocks"),
+            Check::fail(String::from(
+                "module lock: no PAM service login: no password unlocks"
+            ))
+        );
+        assert_eq!(
+            pam_found("login", Some(PathBuf::from("/etc/pam.d/login"))),
+            Found::Present(String::from("PAM service login at /etc/pam.d/login"))
+        );
     }
 
     #[test]

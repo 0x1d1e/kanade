@@ -10,6 +10,7 @@ use crate::dock;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::{Effect, IslandService};
+use crate::lock;
 use crate::modules;
 use crate::reload::{self, Outcome};
 use crate::settings;
@@ -79,6 +80,9 @@ fn run(call: Call) -> Reply {
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        // on the draw thread, which the password field lives on; returns before niri locks, which the
+        // client waits for
+        Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         // on the draw thread, which the window's text inputs live on
@@ -114,9 +118,10 @@ fn record(request: recording::Request) -> Reply {
 // the versions, then the config, the Modules and what went wrong with the sources, a line each
 fn status() -> Vec<String> {
     let mut lines = vec![format!(
-        "kanade {}, protocol {}",
+        "kanade {}, protocol {}, pid {}",
         env!("CARGO_PKG_VERSION"),
-        cli::PROTOCOL
+        cli::PROTOCOL,
+        std::process::id()
     )];
 
     lines.extend(reload::status());

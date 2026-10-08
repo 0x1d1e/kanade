@@ -163,7 +163,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 - **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144).
 - **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
-- **Lock**: `ext-session-lock` + PAM; no notification content; to re-lock at start on a true `LockedHint` under a systemd user unit (#154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
+- **Lock**: `ext-session-lock` + PAM (`login` service); time, date and password only, no notification content; `kanade lock`, which exits 0 once logind's `LockedHint` is true, possibly still from the previous lock (#196); re-locks at start on a true logind `LockedHint`; Kanade runs as the `kanade.service` user unit tied to `graphical-session.target`, `Restart=always` with a start limit; doctor checks PAM, logind and the unit (done, #154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
 - **Settings**: floated normal window; schema-backed overrides; page per Module; per-output keys file-only (done, #148).
 
@@ -231,15 +231,15 @@ config reload|validate|defaults
 status
 doctor
 module list|enable <name>|disable <name>
+lock
 
 # later
-lock
 session menu|suspend|reboot|poweroff|logout
 ```
 
 `status`: protocol/config versions, module/Service state, pending restart, last errors.
 
-`doctor`: read-only diagnostics by default: Amane/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. PAM/logind, matugen and capture checks land with their Modules.
+`doctor`: read-only diagnostics by default: Amane/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. Checks land with their Modules; matugen pending. Warns about a `kanade.service` unit that is not enabled or does not run the shell it talks to.
 
 ## Runtime + dependencies
 
@@ -282,7 +282,7 @@ Nested-niri E2E checks idle/morph each release.
 - privacy Overlay fullscreen-visible while module enabled.
 - lock shows no notification content.
 
-Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. The production lock, user unit and re-lock on a true logind `LockedHint` land in #154, which repeats the gate ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
+Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. Passed again in #154 on the production binary and the installed `kanade.service` unit ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 
 ## Explicit non-goals
 

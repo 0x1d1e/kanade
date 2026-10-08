@@ -20,8 +20,8 @@ use crate::sources::{
     wake, wallpaper, weather,
 };
 use crate::{
-    banners, cli, clock, cluster, config, dock, ipc, reload, settings, shadow, supervise, theme,
-    view,
+    banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings, shadow, supervise,
+    theme, view,
 };
 
 pub struct Module {
@@ -72,6 +72,9 @@ pub enum Provider {
 
     // a session bus service, running or started on demand, like the Secret Service
     SessionService(&'static str),
+
+    // a PAM service file, which checks a password
+    Pam(&'static str),
 
     // niri's IPC, which the Module cannot work without
     Niri,
@@ -857,6 +860,39 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| app,
+    },
+    /*
+     * the lock screen (ADR 0018), in the shell process; at start it locks again a session logind
+     * still counts as locked, which a crash left on niri's red screen
+     */
+    Module {
+        name: "lock",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Pam(lock::PAM),
+                without: "no password unlocks, so `kanade lock` refuses",
+            },
+            Need {
+                on: Provider::SystemService("org.freedesktop.login1"),
+                without: "no locking again after a crash while locked",
+            },
+        ],
+        settings: &[],
+        verbs: &[Verb {
+            name: "lock",
+            usage: || String::from("lock"),
+            parse: |arguments| match arguments {
+                [] => Ok(Call::Lock),
+                _ => Err(Unparsed::Usage),
+            },
+        }],
+        start: |app| {
+            lock::relock();
+            app.lock(lock::view)
+        },
     },
     // the Settings window, which writes only the settings file
     Module {

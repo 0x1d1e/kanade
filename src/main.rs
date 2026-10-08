@@ -10,6 +10,7 @@ mod doctor;
 mod icon;
 mod ipc;
 mod island;
+mod lock;
 mod modules;
 mod osd;
 mod raster;
@@ -27,7 +28,7 @@ use std::process::ExitCode;
 
 use amane::App;
 
-// with no verb, the shell, so niri's `spawn-at-startup "kanade"` starts it; else a verb for it
+// with no verb, the shell, so its user unit (`lock::UNIT`) starts it; else a verb for it
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
 
