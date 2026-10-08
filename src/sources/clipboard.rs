@@ -8,7 +8,7 @@
 //! is on the clipboard now. What was copied is never logged, and an entry's `Debug` leaves it out.
 //! A selection its owner marks sensitive, like a password manager's, is never read (ADR 0019): only
 //! one wl-paste says is `data` is kept, and only a wl-paste that tells a sensitive one
-//! (`SENSITIVE_SINCE`) runs.
+//! (`SENSITIVE_SINCE`) is started, checked before each start.
 
 use std::env;
 use std::ffi::OsStr;
@@ -578,30 +578,34 @@ fn textual(mime: &str) -> bool {
 }
 
 fn paste() {
-    let stopped = |why: String| {
-        let why = format!("{why}, no clipboard history");
-
-        eprintln!("kanade: {why}");
-        supervise::stopped("clipboard", why);
-    };
-
-    if let Err(why) = paste_version() {
-        return stopped(why);
-    }
-
     let stop = wake::Stop::default();
 
     // this Kanade even once a rebuild replaced its file, while it runs
     let exe = format!("/proc/{}/exe", std::process::id());
 
-    let error = wake::run(PASTE, &watch_command(&exe), &stop, |output| {
+    // before each start, as wl-paste may have been replaced by an older one since the last
+    let mut refused = None;
+    let tells = || {
+        paste_version().map(drop).map_err(|why| {
+            refused = Some(why.clone());
+            io::Error::other(why)
+        })
+    };
+
+    let error = wake::run_checked(PASTE, &watch_command(&exe), &stop, tells, |output| {
         watch(output, &mut record)
     });
 
     // nothing stops it
-    if let Some(error) = error {
-        stopped(format!("cannot run wl-paste ({error})"));
-    }
+    let Some(error) = error else { return };
+
+    let why = match refused {
+        Some(why) => format!("{why}, no clipboard history"),
+        None => format!("cannot run wl-paste ({error}), no clipboard history"),
+    };
+
+    eprintln!("kanade: {why}");
+    supervise::stopped("clipboard", why);
 }
 
 /*

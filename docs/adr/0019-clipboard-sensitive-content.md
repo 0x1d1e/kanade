@@ -2,7 +2,7 @@
 
 Status: accepted (roadmap 12 Polish, #162). Answers the clipboard sensitive-content policy of `docs/design.md` Security/privacy, the prerequisite for persistence.
 
-Validated (#162) on niri with wl-clipboard 2.3.0: `wl-copy --sensitive` between two plain copies left only the plain ones in the history; a `wl-paste` printing version 2.2.1 started no watcher, and stderr, `kanade status` and `kanade doctor` said why.
+Validated (#162) on niri with wl-clipboard 2.3.0: `wl-copy --sensitive` between two plain copies left only the plain ones in the history; a `wl-paste` printing version 2.2.1 started no watcher, and stderr, `kanade status` and `kanade doctor` said why. A watcher killed after its `wl-paste` was swapped for one acting as 2.2 was not started again, and a sensitive copy after it was not kept.
 
 ## Context
 
@@ -21,7 +21,7 @@ Kanade sees no offer itself: wl-paste does, and runs Kanade per selection with t
 ## Decision
 
 - **A selection marked sensitive is never read.** Only one whose `CLIPBOARD_STATE` is exactly `data` is handed to Kanade; `sensitive`, `nil`, `clear`, a state Kanade does not know, or none at all hands over `-` alone and leaves the content in wl-paste. Unset fails closed: it can only come from a wl-paste too old to tell.
-- **Only a wl-paste that tells runs.** At start the `clipboard` Module runs `wl-paste --version`; older than 2.3, or a version it cannot read, and it starts no watcher, keeps no history, says why on stderr and in `kanade status`. `kanade doctor` warns the same.
+- **Only a wl-paste that tells runs.** Before each start of its watcher, the first and each restart after it ended, the `clipboard` Module runs `wl-paste --version`; older than 2.3, or a version it cannot read, and it starts no watcher, keeps no more history, says why on stderr and in `kanade status`. `kanade doctor` warns the same.
 - **The hint is the only signal.** Kanade does not guess at content (a pattern for keys or passwords) or at the copying app, which Wayland does not name.
 - **Persistence, when it comes, stores only what this lets in.** An entry is in the history only after passing this, so a store of the history needs no second filter.
 
@@ -39,4 +39,4 @@ Kanade sees no offer itself: wl-paste does, and runs Kanade per selection with t
 
 - wl-clipboard 2.3 or later is needed for any history. A distribution still shipping 2.2 gets none until it updates.
 - A copy whose owner does not offer the hint, like a script's `wl-copy` without `--sensitive`, is kept like any other, a password too. Removing the entry or clearing the history is the remedy; the README says so.
-- wl-paste is checked once per start: one downgraded below 2.3 while Kanade runs is followed until the next start.
+- A watcher already running goes on as the wl-paste it started as: replacing the file does not change it, and the next start checks the new one. A file replaced between the check and the start is not caught.

@@ -44,7 +44,21 @@ pub fn run(
     stop: &Stop,
     follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
 ) -> Option<io::Error> {
-    keep(program, args, stop, spawn, follow)
+    keep(program, args, stop, spawn, || Ok(()), follow)
+}
+
+/*
+ * runs `program` as `run` does, but only once `check` passes before each start, the first and every
+ * one after it ended; one that fails starts it no more, and is returned as why
+ */
+pub fn run_checked(
+    program: &str,
+    args: &[&str],
+    stop: &Stop,
+    check: impl FnMut() -> io::Result<()>,
+    follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
+) -> Option<io::Error> {
+    keep(program, args, stop, spawn, check, follow)
 }
 
 /*
@@ -57,7 +71,7 @@ pub fn run_guarded(
     stop: &Stop,
     follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
 ) -> Option<io::Error> {
-    keep(program, args, stop, spawn_guarded, follow)
+    keep(program, args, stop, spawn_guarded, || Ok(()), follow)
 }
 
 fn keep(
@@ -65,12 +79,18 @@ fn keep(
     args: &[&str],
     stop: &Stop,
     spawn: fn(&str, &[&str]) -> io::Result<Child>,
+    mut check: impl FnMut() -> io::Result<()>,
     mut follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
 ) -> Option<io::Error> {
     let command = [program, args.join(" ").as_str()].join(" ");
     let mut wait = FIRST_RETRY;
 
     loop {
+        // off the lock, so a stop need not wait for it; a stop meanwhile wins
+        if let Err(error) = check() {
+            return (!stop.lock().stopped).then_some(error);
+        }
+
         // started under the lock, so a stop either comes first or finds the program to kill
         let output = {
             let mut running = stop.lock();
@@ -743,6 +763,52 @@ mod tests {
         assert!(running.join().unwrap().is_none());
         assert!(stopping.elapsed() < Duration::from_millis(300));
         assert!(runs.try_recv().is_err());
+    }
+
+    // a check that fails, as after the program was replaced by one Kanade refuses, ends the runs
+    #[test]
+    fn a_failed_check_starts_the_program_no_more() {
+        let mut checks = 0;
+        let mut runs = 0;
+
+        let error = run_checked(
+            "true",
+            &[],
+            &Stop::default(),
+            || {
+                checks += 1;
+
+                match checks {
+                    1 => Ok(()),
+                    _ => Err(io::ErrorKind::Unsupported.into()),
+                }
+            },
+            |output| {
+                runs += 1;
+                output.lines().count();
+                io::ErrorKind::UnexpectedEof.into()
+            },
+        );
+
+        assert_eq!(
+            error.map(|error| error.kind()),
+            Some(io::ErrorKind::Unsupported)
+        );
+        assert_eq!((checks, runs), (2, 1));
+
+        // failing the first, it never starts
+        let error = run_checked(
+            "kanade-no-such-program",
+            &[],
+            &Stop::default(),
+            || Err(io::ErrorKind::Unsupported.into()),
+            |_| unreachable!(),
+        );
+
+        assert_eq!(
+            error.map(|error| error.kind()),
+            Some(io::ErrorKind::Unsupported)
+        );
     }
 
     #[test]
