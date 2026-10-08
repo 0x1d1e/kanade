@@ -82,6 +82,9 @@ struct Requests {
 
     // a lock is still to be asked once Amane's check outlasting `hold` ends (`owe`)
     owed: bool,
+
+    // the sleep logind is being asked whether it ended (`awake`), one at a time
+    asking: Option<u64>,
 }
 
 impl Requests {
@@ -97,6 +100,7 @@ impl Requests {
             check: 0,
             failed: false,
             owed: false,
+            asking: None,
         }
     }
 
@@ -120,6 +124,23 @@ impl Requests {
 
         self.sleeping = false;
         std::mem::take(&mut self.refused)
+    }
+
+    // the sleep to ask logind about, unless it is being asked already
+    fn ask(&mut self) -> Option<u64> {
+        if self.asking == Some(self.sleeps) {
+            return None;
+        }
+
+        self.asking = Some(self.sleeps);
+        self.asking
+    }
+
+    // logind answered about `sleep`, or could not be asked
+    fn asked(&mut self, sleep: u64) {
+        if self.asking == Some(sleep) {
+            self.asking = None;
+        }
     }
 
     // a password typed now goes to PAM, unless the machine is on its way to sleep
@@ -510,9 +531,10 @@ fn owe(owing: &mut Requests) {
 }
 
 /*
- * the machine is on its way to sleep: from now until `woke`, no password typed goes to PAM, so none
- * can unlock before it sleeps, even while another program's inhibitor still delays it. A check
- * under way is dropped, and the lock screen says why
+ * the machine is on its way to sleep: from now until `woke`, no password typed goes to PAM, even
+ * while another program's inhibitor still delays it. Kanade's check under way is dropped, and the
+ * lock screen says why; Amane's of a password already accepted is not (`hold`), so it may still
+ * unlock briefly
  */
 pub fn sleeping() {
     let mut requests = requests();
@@ -538,23 +560,29 @@ fn opened(changed: bool) {
 /*
  * a password was typed while sleep shut the gate: logind may have woken with no
  * `PrepareForSleep(false)` heard, as when it restarted, so ask it. Off the view's thread, as logind
- * may be slow to answer; the password stays in the field to send again
+ * may be slow to answer; the password stays in the field to send again. Once per sleep at a time
+ * (`Requests::ask`), however often Enter is pressed
  */
-fn awake(sleep: u64) {
+fn awake(asking: &mut Requests) {
+    let Some(sleep) = asking.ask() else {
+        return;
+    };
+
     let asked = thread::Builder::new()
         .name(String::from("sleep ended"))
         .spawn(move || {
-            if sleep::preparing() == Some(false) {
-                let mut requests = requests();
+            let preparing = sleep::preparing();
+            let mut requests = requests();
+            requests.asked(sleep);
 
-                if requests.sleeping && requests.sleeps == sleep {
-                    opened(requests.woke(sleep));
-                    eprintln!("kanade: the machine woke unheard of; passwords are checked again");
-                }
+            if preparing == Some(false) && requests.sleeping && requests.sleeps == sleep {
+                opened(requests.woke(sleep));
+                eprintln!("kanade: the machine woke unheard of; passwords are checked again");
             }
         });
 
     if let Err(error) = asked {
+        asking.asked(sleep);
         eprintln!("kanade: cannot ask logind whether the machine woke: {error}");
     }
 }
@@ -744,7 +772,7 @@ fn submit(password: String) {
     }
     if !requests.try_password() {
         drop(lock);
-        awake(requests.sleeps);
+        awake(&mut requests);
         return;
     }
 
@@ -833,6 +861,28 @@ mod tests {
         assert!(!requests.refused);
         assert!(requests.try_password());
         assert!(requests.tried);
+    }
+
+    // #155: Enter pressed again and again while sleep shuts the gate asks logind once at a time
+    #[test]
+    fn logind_is_asked_once_per_sleep_at_a_time() {
+        let mut requests = Requests::new();
+        requests.sleep();
+
+        assert_eq!(requests.ask(), Some(1));
+        assert_eq!(requests.ask(), None);
+        requests.asked(1);
+        assert_eq!(requests.ask(), Some(1));
+
+        // a newer sleep is asked about, and the older answer frees nothing of it
+        requests.woke(1);
+        assert!(!requests.sleeping);
+        requests.sleep();
+        assert_eq!(requests.ask(), Some(2));
+        requests.asked(1);
+        assert_eq!(requests.ask(), None);
+        requests.asked(2);
+        assert_eq!(requests.ask(), Some(2));
     }
 
     // #155: a check sleep dropped unlocks nothing, however late PAM ends it
