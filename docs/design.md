@@ -187,7 +187,7 @@ Precedence: binary defaults → `~/.config/kanade/*.toml` alphabetical → `~/.l
 - migrate each file in memory before merge.
 - never rewrite user/Nix config; only GUI state auto-migrates/writes.
 - GUI value == lower layer → remove override.
-- tables deep-merge; lists replace; output overrides global.
+- tables deep-merge; lists replace; output overrides global: `[output."<name>"]` sets per-output keys only, and wins over a global value from any layer.
 - unknown key → warning with file/line.
 - writes = temp + rename.
 - export = merged current schema.

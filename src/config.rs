@@ -4,6 +4,11 @@
 //! `~/.local/state/kanade/settings.toml`), the layer the Settings app will own. Tables merge key by
 //! key; any other value, a list too, replaces the one below. Kanade never writes these files.
 //!
+//! A key the registry marks per output may also be set in `[output."<name>"]`, for the monitor of
+//! that name only (#147). An output's value wins over the global one from any layer, as the more
+//! specific; output values layer like global ones. `config::on` gives the config in effect on one
+//! output, resolved once per config, so a view never builds one while drawing.
+//!
 //! A file may name the layout it is written in with `schema_version`; without one it is the v0.1
 //! layout, version 1. An older file is migrated in memory before it applies.
 //!
@@ -15,6 +20,7 @@
 //! never stops the shell. A reload while running (`crate::reload`) is stricter: any problem keeps
 //! the config in effect whole.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
@@ -64,12 +70,36 @@ pub struct Config {
 
     // `wallpaper.directory`: where the Launcher finds wallpapers, else ~/Pictures/Wallpapers
     pub wallpapers: Option<String>,
+
+    // `output."<name>"`: each output's overrides of the keys marked per output, by output name
+    pub outputs: BTreeMap<String, Output>,
 }
 
 impl Config {
     pub fn off(&self, module: &str) -> bool {
         self.off.contains(&module)
     }
+
+    // the config of one output: the global one with that output's overrides over it
+    pub fn on(&self, output: &str) -> Cow<'_, Config> {
+        let Some(over) = self.outputs.get(output) else {
+            return Cow::Borrowed(self);
+        };
+
+        let mut config = self.clone();
+        for setting in settings().filter(|setting| over.keys.contains(&setting.key)) {
+            setting.kind.copy(&over.values, &mut config);
+        }
+
+        Cow::Owned(config)
+    }
+}
+
+// one output's overrides: the keys it sets, and their values in a config of their own
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Output {
+    keys: Vec<&'static str>,
+    values: Box<Config>,
 }
 
 impl Default for Config {
@@ -83,6 +113,7 @@ impl Default for Config {
             apps: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
+            outputs: BTreeMap::new(),
         }
     }
 }
@@ -108,7 +139,7 @@ pub struct Setting {
     // read only at start: a reload keeps the running value and reports the new one pending
     pub restart: bool,
 
-    // an output may override it (docs/design.md Config); none can yet
+    // an output may override it in `[output."<name>"]`; never a table or a key that takes a restart
     pub per_output: bool,
 }
 
@@ -320,7 +351,7 @@ pub const ISLAND: &[Setting] = &[
         ),
         example: None,
         restart: false,
-        per_output: false,
+        per_output: true,
     },
     Setting {
         key: "timings.hover",
@@ -588,6 +619,17 @@ pub fn defaults() -> String {
         }
     }
 
+    // an output's own keys, each with its default, commented
+    let mut output = vec![String::from(
+        "# for the output of this name only, over the keys above from any file",
+    )];
+    for setting in settings().filter(|setting| setting.per_output) {
+        if let Some(value) = setting.kind.value(&config) {
+            output.push(format!("# {} = {value}", setting.key));
+        }
+    }
+    sections.push(("output.\"eDP-1\"", vec![output.join("\n")]));
+
     sections
         .into_iter()
         .filter(|(_, entries)| !entries.is_empty())
@@ -600,8 +642,32 @@ pub fn defaults() -> String {
         + "\n"
 }
 
+/*
+ * a config in effect, with each overridden output's config resolved once, so a view drawing a
+ * frame only looks one up
+ */
+struct Effect {
+    config: Arc<Config>,
+    outputs: BTreeMap<String, Arc<Config>>,
+}
+
+impl Effect {
+    fn new(config: Config) -> Self {
+        let outputs = config
+            .outputs
+            .keys()
+            .map(|name| (name.clone(), Arc::new(config.on(name).into_owned())))
+            .collect();
+
+        Effect {
+            config: Arc::new(config),
+            outputs,
+        }
+    }
+}
+
 // tests never read the user's files, so they see the defaults
-static CURRENT: LazyLock<RwLock<Arc<Config>>> = LazyLock::new(|| {
+static CURRENT: LazyLock<RwLock<Effect>> = LazyLock::new(|| {
     let config = if cfg!(test) {
         Config::default()
     } else {
@@ -615,7 +681,7 @@ static CURRENT: LazyLock<RwLock<Arc<Config>>> = LazyLock::new(|| {
         config
     };
 
-    RwLock::new(Arc::new(config))
+    RwLock::new(Effect::new(config))
 });
 
 // what the config read at start skipped; a config a reload applies skipped nothing
@@ -635,12 +701,20 @@ pub fn get() -> Arc<Config> {
     CURRENT
         .read()
         .unwrap_or_else(PoisonError::into_inner)
+        .config
         .clone()
+}
+
+// the config in effect on one output, its overrides over the global one, as `Config::on` gives it
+pub fn on(output: &str) -> Arc<Config> {
+    let effect = CURRENT.read().unwrap_or_else(PoisonError::into_inner);
+
+    effect.outputs.get(output).unwrap_or(&effect.config).clone()
 }
 
 // a reload's config replaces the one in effect (`crate::reload`)
 pub fn install(config: Config) {
-    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(config);
+    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Effect::new(config);
 }
 
 /*
@@ -818,7 +892,7 @@ fn layer(
             let mut table = tree(text, table.into_inner(), &mut problems);
 
             match migrate(&mut table, migrations) {
-                Ok(()) => apply(config, &table, "", home, &mut problems),
+                Ok(()) => apply(config, &table, "", home, &mut Scope::Global, &mut problems),
                 Err(problem) => problems = vec![problem],
             }
         }
@@ -921,12 +995,32 @@ fn settings() -> impl Iterator<Item = &'static Setting> {
     modules::ALL.iter().flat_map(|module| module.settings)
 }
 
+// the keys a table may set: any, or for an output the keys marked per output, noting each it sets
+enum Scope<'a> {
+    Global,
+    Output {
+        name: &'a str,
+        keys: &'a mut Vec<&'static str>,
+    },
+}
+
+impl Scope<'_> {
+    // a key as the file names it
+    fn shown(&self, path: &str) -> String {
+        match self {
+            Scope::Global => path.to_owned(),
+            Scope::Output { name, .. } => format!("output.{name}.{path}"),
+        }
+    }
+}
+
 // sets each key of a table at `prefix` that a Module owns, and names every other
 fn apply(
     config: &mut Config,
     table: &Table,
     prefix: &str,
     home: Option<&str>,
+    scope: &mut Scope,
     problems: &mut Vec<(usize, String)>,
 ) {
     for (key, entry) in table {
@@ -934,6 +1028,12 @@ fn apply(
             "" => key.clone(),
             prefix => format!("{prefix}.{key}"),
         };
+        let shown = scope.shown(&path);
+
+        if matches!(scope, Scope::Global) && path == "output" {
+            outputs(config, entry, home, problems);
+            continue;
+        }
 
         let inside = |setting: &Setting| {
             setting
@@ -943,6 +1043,9 @@ fn apply(
         };
 
         match settings().find(|setting| setting.key == path) {
+            Some(setting) if matches!(scope, Scope::Output { .. }) && !setting.per_output => {
+                problems.push((entry.line, format!("{shown}: cannot be set per output")));
+            }
             // each Module on its own line, so one bad entry keeps the others
             Some(Setting {
                 kind: Kind::Modules(field),
@@ -961,16 +1064,59 @@ fn apply(
                 }
                 Node::Value(_) => problems.push((entry.line, format!("{path}: expected a table"))),
             },
-            Some(setting) => {
-                if let Err(what) = setting.kind.set(config, &entry.node.value(), home) {
-                    problems.push((entry.line, format!("{path}: {what}")));
+            Some(setting) => match setting.kind.set(config, &entry.node.value(), home) {
+                Ok(()) => {
+                    if let Scope::Output { keys, .. } = scope
+                        && !keys.contains(&setting.key)
+                    {
+                        keys.push(setting.key);
+                    }
                 }
-            }
-            None if settings().any(inside) => match &entry.node {
-                Node::Table(table) => apply(config, table, &path, home, problems),
-                Node::Value(_) => problems.push((entry.line, format!("{path}: expected a table"))),
+                Err(what) => problems.push((entry.line, format!("{shown}: {what}"))),
             },
-            None => problems.push((entry.line, format!("unknown key {path}"))),
+            None if settings().any(inside) => match &entry.node {
+                Node::Table(table) => apply(config, table, &path, home, scope, problems),
+                Node::Value(_) => {
+                    problems.push((entry.line, format!("{shown}: expected a table")));
+                }
+            },
+            None => problems.push((entry.line, format!("unknown key {shown}"))),
+        }
+    }
+}
+
+// `[output."<name>"]` tables, each over what the layers below gave that output
+fn outputs(
+    config: &mut Config,
+    entry: &Entry,
+    home: Option<&str>,
+    problems: &mut Vec<(usize, String)>,
+) {
+    let Node::Table(table) = &entry.node else {
+        problems.push((
+            entry.line,
+            String::from("output: expected a table of outputs"),
+        ));
+        return;
+    };
+
+    for (name, entry) in table {
+        let Node::Table(keys) = &entry.node else {
+            problems.push((entry.line, format!("output.{name}: expected a table")));
+            continue;
+        };
+
+        let mut output = config.outputs.remove(name).unwrap_or_default();
+        let mut scope = Scope::Output {
+            name,
+            keys: &mut output.keys,
+        };
+
+        apply(&mut output.values, keys, "", home, &mut scope, problems);
+
+        // none set keeps none, so an empty table changes nothing
+        if !output.keys.is_empty() {
+            config.outputs.insert(name.clone(), output);
         }
     }
 }
@@ -1065,6 +1211,7 @@ mod tests {
                 apps: BTreeMap::new(),
                 pinned: Vec::new(),
                 wallpapers: None,
+                outputs: BTreeMap::new(),
             }
         );
         assert!(config.off("media"));
@@ -1117,7 +1264,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["modules"]
         );
-        assert!(!settings().any(|setting| setting.per_output));
+        assert_eq!(
+            settings()
+                .filter(|setting| setting.per_output)
+                .map(|setting| setting.key)
+                .collect::<Vec<_>>(),
+            ["clock"]
+        );
+
+        // `Config::on` copies an output's value over whole, and `pending` reads only the global one
+        for setting in settings().filter(|setting| setting.per_output) {
+            assert!(
+                !setting.kind.table() && !setting.restart,
+                "{} cannot be per output",
+                setting.key
+            );
+        }
     }
 
     // what a key reads it gives back, so its default and its docs are what the config holds
@@ -1174,6 +1336,100 @@ mod tests {
         let next = restarted(&running, read);
         assert_eq!(next.clock, Hours::Twelve);
         assert_eq!(next.off, ["media", "timer"]);
+    }
+
+    /*
+     * an output's value wins over the global one from any layer, and output values layer like
+     * global ones; another output, or one not named, reads the global value
+     */
+    #[test]
+    fn an_output_overrides_the_global_value_from_any_layer() {
+        let first = "clock = \"12h\"\n[output.eDP-1]\nclock = \"24h\"";
+        let second = "clock = \"12h\"\n[output.\"HDMI-A-1\"]\nclock = \"24h\"";
+        let third = "clock = \"24h\"\noutput.HDMI-A-1.clock = \"12h\"\n[output.DP-2]";
+
+        let (config, problems) = layers(&[first, second, third], MIGRATIONS);
+
+        assert_eq!(problems, [vec![], vec![], vec![]]);
+        assert_eq!(config.clock, Hours::TwentyFour);
+        assert_eq!(config.on("eDP-1").clock, Hours::TwentyFour);
+        assert_eq!(config.on("HDMI-A-1").clock, Hours::Twelve);
+        assert_eq!(config.on("DP-1").clock, Hours::TwentyFour);
+
+        // an empty table sets nothing, so that output reads the global config itself
+        assert!(matches!(config.on("DP-2"), Cow::Borrowed(_)));
+        assert_eq!(config.outputs.len(), 2);
+
+        // only the overridden key differs
+        let edp = one("clock = \"12h\"\ntimings.hover = 90\noutput.eDP-1.clock = \"24h\"").0;
+        assert_eq!(
+            *edp.on("eDP-1"),
+            Config {
+                clock: Hours::TwentyFour,
+                ..edp.clone()
+            }
+        );
+    }
+
+    // a key no output may set, or a bad value, keeps what the layers below gave that output
+    #[test]
+    fn a_bad_output_key_keeps_what_is_below_and_says_where() {
+        let first = "[output.eDP-1]\nclock = \"12h\"";
+        let second = r#"
+[output.eDP-1]
+clock = "13h"
+reduced_motion = true
+timings.hover = 90
+weather = 1
+modules.media = false
+[output.DP-1]
+theme = 1
+[output]
+HDMI-A-1 = "12h"
+"#;
+
+        let (config, problems) = layers(&[first, second], MIGRATIONS);
+
+        assert_eq!(config.on("eDP-1").clock, Hours::Twelve);
+        assert_eq!(
+            *config.on("eDP-1"),
+            Config {
+                clock: Hours::Twelve,
+                ..config.clone()
+            }
+        );
+        assert_eq!(config.on("DP-1").clock, Hours::TwentyFour);
+        assert_eq!(
+            problems[1],
+            said(&[
+                (
+                    3,
+                    "output.eDP-1.clock: expected \"24h\" or \"12h\", found \"13h\""
+                ),
+                (4, "output.eDP-1.reduced_motion: cannot be set per output"),
+                (5, "output.eDP-1.timings.hover: cannot be set per output"),
+                (6, "unknown key output.eDP-1.weather"),
+                (7, "output.eDP-1.modules: cannot be set per output"),
+                (9, "output.DP-1.theme: expected a table"),
+                (11, "output.HDMI-A-1: expected a table"),
+            ])
+        );
+
+        assert_eq!(
+            one("output = 1").1,
+            said(&[(1, "output: expected a table of outputs")])
+        );
+    }
+
+    // each overridden output's config is resolved once, as `Config::on` gives it
+    #[test]
+    fn the_config_in_effect_resolves_each_output_once() {
+        let config = one("clock = \"12h\"\noutput.eDP-1.clock = \"24h\"").0;
+        let effect = Effect::new(config.clone());
+
+        assert_eq!(*effect.outputs["eDP-1"], *config.on("eDP-1"));
+        assert_eq!(effect.outputs.len(), 1);
+        assert_eq!(*effect.config, config);
     }
 
     #[test]
@@ -1482,7 +1738,12 @@ battery = false
                 );
             }
 
-            assert!(!key.starts_with("modules.") && *key != "schema_version");
+            assert!(
+                !key.starts_with("modules.")
+                    && *key != "schema_version"
+                    && *key != "output"
+                    && !key.starts_with("output.")
+            );
         }
     }
 

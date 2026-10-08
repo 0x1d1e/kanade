@@ -72,7 +72,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
             .or_else(|| small_form(&content, island.track(&monitor.name), now))
             .or_else(|| surface(&monitor.name, &content, &island, now))
             .or_else(|| surfaces::tray::strip(&monitor.name, content.presentation))
-            .or_else(|| rest(&content))
+            .or_else(|| rest(&monitor.name, &content))
             .or_else(|| placeholder(&content))
     {
         body = body.child(form.opacity(opacity));
@@ -259,17 +259,17 @@ fn abbreviation(kind: Kind) -> &'static str {
 }
 
 /*
- * the local time while nothing is happening; an Activity's small form crossfades over it, and
- * only a window that draws it redraws when the minute turns
+ * the local time, as this monitor's `clock` reads it, while nothing is happening; an Activity's
+ * small form crossfades over it, and only a window that draws it redraws when the minute turns
  */
-fn rest(content: &Content) -> Option<Rectangle> {
+fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
     if content.presentation != Presentation::Rest {
         return None;
     }
 
     Some(
         sized(Presentation::Rest).align_child(Center, Center).child(
-            Text::new(clock::now(config::get().clock))
+            Text::new(clock::now(config::on(monitor).clock))
                 .size(theme::text::LABEL)
                 .color(theme::ISLAND.on_surface)
                 .weight(theme::text::SEMIBOLD),
