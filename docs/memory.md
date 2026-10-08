@@ -62,7 +62,8 @@ The second differs by under 4 MiB in every column:
 rest             149.6   123.5    50.7    72.8   224.8   224.5 |   296.6   344.0    56.2     0.0   232.0     0.2    13.7
 unlocked         212.7   186.3   112.7    73.6   238.8   238.5 |   373.7   422.8   118.2     0.0   246.0     0.2    13.7
 ```
- journalctl reported the same peaks: `425.2M memory peak` and `422.8M memory peak`.
+
+journalctl reported the same peaks for both runs: `425.2M memory peak` and `422.8M memory peak`.
 
 What dominates:
 
