@@ -5,7 +5,7 @@
 //! moves the ring into the agenda, where Up and Down walk its events, and back. Weeks start on
 //! Monday (ADR 0015). It says when there are no calendars and when the day has no events.
 
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Instant;
 
 use amane::{
@@ -184,31 +184,74 @@ impl Browse {
 }
 
 /*
- * the events of the six weeks a month shows, so the view, which runs every frame of a morph,
- * expands the calendars again only when they or the month changed
+ * the events of the six weeks a month shows from `start`, and which of them fall on each of its
+ * days, in the order they happen. Found once for the month, so a frame neither copies the events
+ * nor looks through them all, which a rule each second fills with a limit's worth
  */
+#[derive(Debug, Default)]
+struct Month {
+    start: NaiveDate,
+    events: Events,
+    days: Vec<Vec<usize>>,
+}
+
+impl Month {
+    fn new(events: Events, start: NaiveDate) -> Self {
+        let mut days = vec![Vec::new(); 7 * WEEKS];
+
+        // only the days from its start to its end can hold an event, its end before its start
+        // across a change back from summer time
+        for (at, event) in events.occurrences.iter().enumerate() {
+            let first = event.start.min(event.end).date().max(start);
+            let last = event.start.max(event.end).date();
+
+            for (date, day) in first.iter_days().take_while(|&date| date <= last).zip(
+                days.iter_mut()
+                    .skip(usize::try_from((first - start).num_days()).unwrap_or(usize::MAX)),
+            ) {
+                if event.on(date) {
+                    day.push(at);
+                }
+            }
+        }
+
+        Month {
+            start,
+            events,
+            days,
+        }
+    }
+
+    // the events on `day`, as indices into `events`; none on a day the month does not show
+    fn on(&self, day: NaiveDate) -> &[usize] {
+        usize::try_from((day - self.start).num_days())
+            .ok()
+            .and_then(|at| self.days.get(at))
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+// the month the view last read, which it reads again only when the calendars or the month change
 #[derive(Default)]
 struct Memo {
     generation: u64,
-    start: NaiveDate,
-    events: Events,
+    month: Arc<Month>,
 }
 
 static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
 
-// the events from `start` on, for the six weeks the month shows
-fn events(calendars: &Calendars, start: NaiveDate) -> Events {
+// the events of the six weeks the month shows from `start`
+fn month_of(calendars: &Calendars, start: NaiveDate) -> Arc<Month> {
     let mut memo = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
 
-    if memo.generation != calendars.generation || memo.start != start {
+    if memo.generation != calendars.generation || memo.month.start != start {
         let end = start + Days::new(7 * WEEKS as u64);
 
-        memo.events = calendars.occurrences(start, end);
+        memo.month = Arc::new(Month::new(calendars.occurrences(start, end), start));
         memo.generation = calendars.generation;
-        memo.start = start;
     }
 
-    memo.events.clone()
+    Arc::clone(&memo.month)
 }
 
 // the Monday on or before the first of `day`'s month, where its grid starts
@@ -218,15 +261,6 @@ fn grid_start(day: NaiveDate) -> NaiveDate {
     first - Days::new(u64::from(first.weekday().num_days_from_monday()))
 }
 
-// the chosen day's events, in the order they happen
-fn on(events: &[Occurrence], day: NaiveDate) -> Vec<Occurrence> {
-    events
-        .iter()
-        .filter(|event| event.on(day))
-        .cloned()
-        .collect()
-}
-
 // the view's own read of the visit, so this never reads IslandService again
 pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let today = clock::today();
@@ -234,12 +268,8 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
     let start = grid_start(day);
-    let Events {
-        occurrences: events,
-        partial,
-    } = events(&calendars, start);
-    let agenda_events = on(&events, day);
-    let browse = browse.bounded(agenda_events.len());
+    let month = month_of(&calendars, start);
+    let browse = browse.bounded(month.on(day).len());
 
     let shape = geometry::EXPANDED_MAX;
 
@@ -253,7 +283,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             },
         ))
     } else {
-        Box::new(agenda(day, today, &agenda_events, partial, &browse))
+        Box::new(agenda(day, today, &month, &browse))
     };
 
     Rectangle::new()
@@ -263,7 +293,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Row::new(vec![
-                Box::new(month(monitor, day, today, start, &events, &browse)) as Box<dyn Widget>,
+                Box::new(grid(monitor, day, today, &month, &browse)) as Box<dyn Widget>,
                 agenda,
             ])
             .gap(SIDE_GAP),
@@ -271,14 +301,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 }
 
 // the month's name with a chevron each side, its weekdays and its six weeks
-fn month(
-    monitor: &str,
-    day: NaiveDate,
-    today: NaiveDate,
-    start: NaiveDate,
-    events: &[Occurrence],
-    browse: &Browse,
-) -> Column {
+fn grid(monitor: &str, day: NaiveDate, today: NaiveDate, month: &Month, browse: &Browse) -> Column {
     let title = Text::new(format!("{} {}", MONTHS[day.month0() as usize], day.year()))
         .size(theme::text::TITLE)
         .color(theme::ISLAND.on_surface)
@@ -318,8 +341,8 @@ fn month(
             Box::new(Row::new(
                 (0..7)
                     .map(|weekday| {
-                        let date = start + Days::new((week * 7 + weekday) as u64);
-                        let busy = events.iter().any(|event| event.on(date));
+                        let date = month.start + Days::new((week * 7 + weekday) as u64);
+                        let busy = !month.on(date).is_empty();
 
                         Box::new(cell(monitor, date, day, today, busy, !browse.agenda))
                             as Box<dyn Widget>
@@ -424,13 +447,10 @@ fn cell(
  * the chosen day's name, its events with the ring on one while it is in the agenda, and a count,
  * which says so when a rule ran to the limit and some are missing
  */
-fn agenda(
-    day: NaiveDate,
-    today: NaiveDate,
-    events: &[Occurrence],
-    partial: bool,
-    browse: &Browse,
-) -> Column {
+fn agenda(day: NaiveDate, today: NaiveDate, month: &Month, browse: &Browse) -> Column {
+    let events = month.on(day);
+    let partial = month.events.partial;
+
     let title = Text::new(named(day, today))
         .size(theme::text::TITLE)
         .color(theme::ISLAND.on_surface)
@@ -474,8 +494,9 @@ fn agenda(
                         events[browse.first..end]
                             .iter()
                             .zip(browse.first..)
-                            .map(|(event, at)| {
+                            .map(|(&event, at)| {
                                 let ring = browse.agenda && at == browse.selected;
+                                let event = &month.events.occurrences[event];
 
                                 Box::new(row(event, day, ring)) as Box<dyn Widget>
                             })
@@ -645,11 +666,7 @@ fn pressed(monitor: &str, key: Key) -> bool {
     let today = clock::today();
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
-    let count = on(
-        &events(&Calendars::read(), grid_start(day)).occurrences,
-        day,
-    )
-    .len();
+    let count = month_of(&Calendars::read(), grid_start(day)).on(day).len();
 
     let Some(browse) = browse.bounded(count).step(key, today, count) else {
         return false;
@@ -681,11 +698,7 @@ fn wheel(lines: f32) {
     let today = clock::today();
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
-    let count = on(
-        &events(&Calendars::read(), grid_start(day)).occurrences,
-        day,
-    )
-    .len();
+    let count = month_of(&Calendars::read(), grid_start(day)).on(day).len();
     let browse = browse.bounded(count);
 
     let browse = if lines > 0.0 {
@@ -910,5 +923,46 @@ mod tests {
             when(&late, today),
             format!("{} \u{2013} {}", time(22), time(0))
         );
+    }
+
+    // each day of the month holds the events that fall on it, in their order, whatever their
+    // length and wherever they start and end around the six weeks
+    #[test]
+    fn a_month_finds_each_days_events() {
+        let at = |date: NaiveDate, hour, minute| date.and_hms_opt(hour, minute, 0).unwrap();
+        let start = grid_start(today());
+        let end = start + Days::new(7 * WEEKS as u64);
+        let midnight = |date: NaiveDate| date.and_time(NaiveTime::MIN);
+
+        let mut all_day = timed(midnight(today()), midnight(day(2026, 10, 11)));
+        all_day.all_day = true;
+        let occurrences = vec![
+            timed(at(day(2026, 1, 1), 9, 0), at(day(2026, 1, 1), 10, 0)),
+            timed(at(day(2026, 9, 1), 9, 0), at(day(2026, 10, 2), 9, 0)),
+            timed(midnight(start - Days::new(1)), midnight(start)),
+            timed(at(start, 0, 0), at(start, 0, 0)),
+            all_day,
+            timed(at(today(), 22, 0), midnight(day(2026, 10, 9))),
+            // a change back from summer time ends it before it starts
+            timed(at(day(2026, 10, 25), 2, 50), at(day(2026, 10, 25), 2, 10)),
+            timed(at(end - Days::new(1), 23, 0), at(end, 1, 0)),
+            timed(midnight(end), midnight(end)),
+        ];
+        let events = Events {
+            occurrences: occurrences.clone(),
+            partial: false,
+        };
+
+        let month = Month::new(events, start);
+        for date in start.iter_days().take_while(|&date| date < end) {
+            let expected: Vec<usize> = (0..occurrences.len())
+                .filter(|&at| occurrences[at].on(date))
+                .collect();
+            assert_eq!(month.on(date), expected, "{date}");
+        }
+        assert!(month.on(start - Days::new(1)).is_empty());
+        assert!(month.on(end).is_empty());
+        assert_eq!(month.on(day(2026, 9, 28)), [1, 3]);
+        assert_eq!(month.on(today()), [4, 5]);
     }
 }
