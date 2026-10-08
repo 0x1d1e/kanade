@@ -80,8 +80,8 @@ impl Check {
 // fails when any check does
 pub fn run() -> ExitCode {
     let (config, problems) = config::read();
-    let shell = shell();
-    let running = shell.verdict == Verdict::Ok;
+    let (shell, pid) = shell();
+    let running = pid.is_some();
 
     let mut checks = vec![
         Check::ok(format!(
@@ -91,7 +91,7 @@ pub fn run() -> ExitCode {
         )),
         amane(include_str!("../../Cargo.lock")),
         shell,
-        unit(running),
+        unit(pid),
         niri(),
     ];
 
@@ -134,38 +134,67 @@ fn amane(lock: &str) -> Check {
     }
 }
 
-// a shell that is not running is no fault of doctor's to fix; one that cannot be talked to is
-fn shell() -> Check {
+/*
+ * a shell that is not running is no fault of doctor's to fix; one that cannot be talked to is.
+ * With the pid of one that runs and is talked to
+ */
+fn shell() -> (Check, Option<u32>) {
     match cli::call(&[String::from("status")]) {
         Ok(Reply::Done(status)) => shell_status(status.lines().next().unwrap_or_default()),
-        Ok(Reply::Refused(refused)) => Check::fail(format!("shell: refused status: {refused}")),
-        Ok(Reply::Unknown(unknown)) => Check::fail(format!("shell: status unclear: {unknown}")),
+        Ok(Reply::Refused(refused)) => (
+            Check::fail(format!("shell: refused status: {refused}")),
+            None,
+        ),
+        Ok(Reply::Unknown(unknown)) => (
+            Check::fail(format!("shell: status unclear: {unknown}")),
+            None,
+        ),
         Err(problem) if problem.starts_with("no shell is running") => {
-            Check::warn(format!("shell: {problem}"))
+            (Check::warn(format!("shell: {problem}")), None)
         }
-        Err(problem) => Check::fail(format!("shell: {problem}")),
+        Err(problem) => (Check::fail(format!("shell: {problem}")), None),
     }
 }
 
-// from the first line of its status, like "kanade 0.1.0, protocol 2"
-fn shell_status(first: &str) -> Check {
-    let protocol = first
-        .rsplit_once("protocol ")
-        .and_then(|(_, protocol)| protocol.parse::<u32>().ok());
+// from the first line of its status, like "kanade 0.1.0, protocol 3, pid 1234"
+fn shell_status(first: &str) -> (Check, Option<u32>) {
+    let said = first
+        .rsplit_once(", protocol ")
+        .and_then(|(_, rest)| rest.split_once(", pid "))
+        .and_then(|(protocol, pid)| {
+            Some((protocol.parse::<u32>().ok()?, pid.parse::<u32>().ok()?))
+        });
 
-    match protocol {
-        Some(cli::PROTOCOL) => Check::ok(format!("shell: running {first}")),
-        _ => Check::fail(format!(
-            "shell: running {first}, not protocol {}; restart it",
-            cli::PROTOCOL
-        )),
+    match said {
+        Some((cli::PROTOCOL, pid)) => (Check::ok(format!("shell: running {first}")), Some(pid)),
+        _ => (
+            Check::fail(format!(
+                "shell: running {first}, not protocol {}; restart it",
+                cli::PROTOCOL
+            )),
+            None,
+        ),
     }
 }
 
 const SYSTEMD: &str = "org.freedesktop.systemd1";
 
-// the user unit that restarts a crashed shell, which a locked session needs (ADR 0018)
-fn unit(running: bool) -> Check {
+// what systemd says of the unit
+#[derive(Default)]
+struct Unit {
+    load: String,
+    active: String,
+    // UnitFileState: whether the next session starts it
+    file: String,
+    // MainPID, 0 when it runs nothing
+    pid: u32,
+}
+
+/*
+ * the user unit that restarts a crashed shell, which a locked session needs (ADR 0018), with
+ * `shell` the pid of the shell doctor talked to
+ */
+fn unit(shell: Option<u32>) -> Check {
     let bus = Bus::session();
 
     if !bus::reachable(bus) {
@@ -185,27 +214,67 @@ fn unit(running: bool) -> Check {
         &[Argument::from(lock::UNIT)],
     );
     if path.text().is_empty() {
-        return unit_check(running, "not loaded", "");
+        return unit_check(
+            shell,
+            &Unit {
+                load: String::from("not loaded"),
+                ..Unit::default()
+            },
+        );
     }
 
+    let property = |interface, name| bus.property(SYSTEMD, path.text(), interface, name);
     let state = |name| {
-        let value = bus.property(SYSTEMD, path.text(), "org.freedesktop.systemd1.Unit", name);
+        let value = property("org.freedesktop.systemd1.Unit", name);
         value.text().to_owned()
     };
+    let pid = property("org.freedesktop.systemd1.Service", "MainPID").number();
 
-    unit_check(running, &state("LoadState"), &state("ActiveState"))
+    unit_check(
+        shell,
+        &Unit {
+            load: state("LoadState"),
+            active: state("ActiveState"),
+            file: state("UnitFileState"),
+            pid: pid as u32,
+        },
+    )
 }
 
-// from the unit's LoadState and ActiveState
-fn unit_check(running: bool, load: &str, active: &str) -> Check {
+/*
+ * whether the unit runs the shell doctor talked to, `shell` its pid, and the next session starts
+ * it again
+ */
+fn unit_check(shell: Option<u32>, state: &Unit) -> Check {
     let unit = lock::UNIT;
     let unrestarted = "a crashed shell is not restarted, which leaves a locked session on \
                        niri's red screen";
+    let (load, active, file) = (&*state.load, &*state.active, &*state.file);
+    let enabled = matches!(file, "enabled" | "enabled-runtime");
 
     match (load, active) {
-        ("loaded", "active" | "activating" | "reloading") => {
-            Check::ok(format!("unit {unit}: {active}"))
+        ("loaded", "active" | "activating" | "reloading")
+            if let Some(pid) = shell
+                && pid != state.pid =>
+        {
+            Check::warn(format!(
+                "unit {unit}: {active}, but its pid {} is not the shell's {pid}, so the shell \
+                 running is not its: {unrestarted}",
+                state.pid
+            ))
         }
+        ("loaded", "active" | "activating" | "reloading") if !enabled => Check {
+            detail: vec![format!("systemctl --user enable {unit}")],
+            ..Check::warn(format!(
+                "unit {unit}: {active} but {file}, so the next session starts no shell"
+            ))
+        },
+        ("loaded", "active" | "activating" | "reloading") => match shell {
+            Some(pid) => Check::ok(format!(
+                "unit {unit}: {active}, {file}, runs the shell, pid {pid}"
+            )),
+            None => Check::ok(format!("unit {unit}: {active}, {file}")),
+        },
         ("loaded", "failed") => Check {
             detail: vec![
                 String::from("once its cause is fixed:"),
@@ -216,7 +285,7 @@ fn unit_check(running: bool, load: &str, active: &str) -> Check {
                 "unit {unit}: failed, maybe its start limit: {unrestarted}"
             ))
         },
-        ("loaded", _) if running => Check::warn(format!(
+        ("loaded", _) if shell.is_some() => Check::warn(format!(
             "unit {unit}: {active}, so the shell running is not its: {unrestarted}"
         )),
         ("loaded", _) => Check::warn(format!("unit {unit}: {active}")),
@@ -577,12 +646,23 @@ version = \"9.9.9\"
     #[test]
     fn a_shell_on_another_protocol_fails() {
         assert_eq!(
-            shell_status("kanade 0.1.0, protocol 2"),
-            Check::ok(String::from("shell: running kanade 0.1.0, protocol 2"))
+            shell_status("kanade 0.1.0, protocol 3, pid 1234"),
+            (
+                Check::ok(String::from(
+                    "shell: running kanade 0.1.0, protocol 3, pid 1234"
+                )),
+                Some(1234)
+            )
         );
 
-        for first in ["kanade 0.1.0, protocol 1", "something else", ""] {
-            assert_eq!(shell_status(first).verdict, Verdict::Fail, "{first}");
+        for first in [
+            "kanade 0.1.0, protocol 2, pid 1234",
+            "kanade 0.1.0, protocol 2",
+            "something else",
+            "",
+        ] {
+            let (check, pid) = shell_status(first);
+            assert_eq!((check.verdict, pid), (Verdict::Fail, None), "{first}");
         }
     }
 
@@ -689,22 +769,45 @@ version = \"9.9.9\"
 
     #[test]
     fn a_shell_the_unit_does_not_run_warns() {
+        let unit = |load: &str, active: &str, file: &str, pid| Unit {
+            load: String::from(load),
+            active: String::from(active),
+            file: String::from(file),
+            pid,
+        };
+
         assert_eq!(
-            unit_check(true, "loaded", "active"),
-            Check::ok(String::from("unit kanade.service: active"))
+            unit_check(Some(7), &unit("loaded", "active", "enabled", 7)),
+            Check::ok(String::from(
+                "unit kanade.service: active, enabled, runs the shell, pid 7"
+            ))
         );
         assert_eq!(
-            unit_check(true, "loaded", "inactive").text,
+            unit_check(Some(8), &unit("loaded", "active", "enabled", 7)).text,
+            "unit kanade.service: active, but its pid 7 is not the shell's 8, so the shell \
+             running is not its: a crashed shell is not restarted, which leaves a locked session \
+             on niri's red screen"
+        );
+
+        let disabled = unit_check(Some(7), &unit("loaded", "active", "disabled", 7));
+        assert_eq!(
+            disabled.text,
+            "unit kanade.service: active but disabled, so the next session starts no shell"
+        );
+        assert_eq!(disabled.detail, ["systemctl --user enable kanade.service"]);
+
+        assert_eq!(
+            unit_check(Some(7), &unit("loaded", "inactive", "enabled", 0)).text,
             "unit kanade.service: inactive, so the shell running is not its: a crashed shell is \
              not restarted, which leaves a locked session on niri's red screen"
         );
         assert_eq!(
-            unit_check(false, "not-found", "inactive").text,
+            unit_check(None, &unit("not-found", "inactive", "", 0)).text,
             "unit kanade.service: not-found, see the README to install it: a crashed shell is \
              not restarted, which leaves a locked session on niri's red screen"
         );
 
-        let failed = unit_check(false, "loaded", "failed");
+        let failed = unit_check(None, &unit("loaded", "failed", "enabled", 0));
         assert_eq!(failed.verdict, Verdict::Warn);
         assert_eq!(
             failed.detail[1..],

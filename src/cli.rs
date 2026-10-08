@@ -19,14 +19,14 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
 use crate::sources::{caffeine, capture, google, osd, recording, timer, wallpaper, weather};
-use crate::{config, doctor};
+use crate::{config, doctor, lock};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
 
 // the words a call and its reply are made of; another number means a client and shell that may
 // misread each other
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 /*
  * the first word after `kanade`, with the arguments a Module owns; Modules may share a name, each
@@ -241,6 +241,13 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&wallpaper_status_call(), deadline)
             }))
         }
+        (Call::Lock, Ok(Reply::Done(_))) => Ok(settle_lock(PATIENCE, |_| match lock::locked() {
+            Some(true) => Ok(Reply::Done(String::from("locked"))),
+            Some(false) => Ok(Reply::Done(String::from("unlocked"))),
+            None => Err(String::from(
+                "logind did not say whether the session is locked",
+            )),
+        })),
         (_, reply) => reply,
     };
 
@@ -329,6 +336,32 @@ fn settle_recording(
                     Settled::Waiting => Settling::Waiting,
                 },
             )
+        },
+    )
+}
+
+/*
+ * the shell answers a lock at once, as Amane only asks niri for it (`lock::start`), so this waits
+ * until niri says the session is locked: done only then, so a suspend hook can wait on it. niri
+ * says so whichever locker holds it, and when it refuses because another one does, that one has
+ * locked. `ask` says `locked` or `unlocked`
+ */
+fn settle_lock(patience: Duration, ask: impl FnMut(Instant) -> Result<Reply, String>) -> Reply {
+    settle(
+        patience,
+        || {
+            format!(
+                "niri did not lock the session within {}s; logind's LockedHint, which niri sets \
+                 only when run as a session (niri-session), stayed false. It may still lock",
+                patience.as_secs()
+            )
+        },
+        "the session may still lock",
+        ask,
+        |status| match status {
+            "locked" => Some(Settling::Settled(Reply::Done(String::new()))),
+            "unlocked" => Some(Settling::Waiting),
+            _ => None,
         },
     )
 }
@@ -975,6 +1008,31 @@ help",
 
         assert!(
             matches!(&reply, Reply::Unknown(why) if why.contains("did not hold the inhibitor")),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
+    fn a_lock_settles_once_niri_has_locked() {
+        let patience = Duration::from_millis(300);
+        let mut said = ["unlocked", "unlocked", "locked"].iter();
+
+        assert_eq!(
+            settle_lock(patience, |_| Ok(Reply::Done(String::from(
+                *said.next().unwrap()
+            )))),
+            Reply::Done(String::new())
+        );
+
+        let reply = settle_lock(patience, |_| Ok(Reply::Done(String::from("unlocked"))));
+        assert!(
+            matches!(&reply, Reply::Unknown(why) if why.contains("did not lock the session")),
+            "{reply:?}"
+        );
+
+        let reply = settle_lock(patience, |_| Err(String::from("logind did not say")));
+        assert!(
+            matches!(&reply, Reply::Unknown(why) if why.starts_with("logind did not say")),
             "{reply:?}"
         );
     }

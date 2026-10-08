@@ -25,7 +25,7 @@ niri sets `LockedHint` itself on lock and unlock, so it outlives the shell. `/or
 All three land in #154.
 
 - **Lock stays in the shell process.** No `kanade-lock`.
-- **Kanade runs as a systemd user unit** tied to niri's graphical session, with `Restart=on-failure` and a start limit. The README starts Kanade through it instead of `spawn-at-startup`.
+- **Kanade runs as a systemd user unit** tied to niri's graphical session, with `Restart=always` and a start limit: `on-failure` leaves a shell ended by `SIGTERM` or a clean exit stopped, which strands a locked session as a crash does; `systemctl --user stop` still stops it. The README starts Kanade through it instead of `spawn-at-startup`.
 - **At start, a true `LockedHint` locks at once.** The `lock` Module reads it from `session/auto` before `App::run` and calls `Lock::start()`; a lock the compositor refuses is left alone. No Kanade-owned marker: niri's hint is the only state, and it cannot go stale on a Kanade crash.
 
 ## Alternatives
@@ -37,7 +37,7 @@ All three land in #154.
 ## Consequences
 
 - A crash while locked shows niri's red screen for about the restart delay (1 s here), then the lock screen. A password typed into the dead process is lost.
-- Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` warns about a shell the unit does not run.
+- Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` warns about a unit that is not enabled or whose `MainPID` is not the shell it talks to.
 - A lock that crashes on every start hits the unit's start limit and stays on the red screen. Recovery, from another TTY (`Ctrl+Alt+F3`): first fix the cause and restart the unit (`kanade.service`, `dist/kanade.service`), which locks again and keeps the session:
 
   ```sh
@@ -52,4 +52,4 @@ All three land in #154.
   loginctl terminate-session <niri-session-id>
   ```
 - A hung, not crashed, shell is not covered: niri sees a live client. `WatchdogSec` stays deferred: it needs real heartbeats from the shell (`sd_notify WATCHDOG=1` from a loop that proves it is alive), not only the unit setting.
-- Only `SIGKILL` was measured; a panic or abort exits the same way for `Restart=on-failure`.
+- `SIGKILL` and `SIGTERM` while locked were measured (#154); a panic, an abort or a clean exit restarts the same way under `Restart=always`.

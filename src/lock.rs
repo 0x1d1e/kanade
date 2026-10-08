@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use amane::{
     Bus, Center, Column, Key, LayerWindow, Lock, Monitor, Padding, Parent, Rectangle, Service,
-    Start, Text, TextInput, children,
+    Start, Text, TextInput, Value, children,
 };
 
 use crate::clock;
@@ -47,22 +47,32 @@ pub fn pam() -> Option<PathBuf> {
 }
 
 /*
+ * whether niri has locked the session, as logind's `LockedHint` says, or None when logind does not
+ * answer. niri sets it once every monitor shows a lock screen, whichever locker's, and clears it
+ * on unlock; only when it runs as a session, as the unit needs anyway
+ */
+pub fn locked() -> Option<bool> {
+    let hint = Bus::system().property(
+        LOGIND,
+        SESSION,
+        "org.freedesktop.login1.Session",
+        "LockedHint",
+    );
+
+    match hint {
+        Value::Bool(locked) => Some(locked),
+        _ => None,
+    }
+}
+
+/*
  * at start, before the shell runs: a session logind still counts as locked was locked by a shell
  * that died, so this one locks it again. niri refuses while another locker holds it, which Amane
  * leaves alone. Without `PAM` it locks all the same, as niri is locked anyway; only ending the
  * session gets out
  */
 pub fn relock() {
-    let locked = Bus::system()
-        .property(
-            LOGIND,
-            SESSION,
-            "org.freedesktop.login1.Session",
-            "LockedHint",
-        )
-        .bool();
-
-    if locked {
+    if locked() == Some(true) {
         eprintln!("kanade: the session is locked, locking it again");
         if pam().is_none() {
             eprintln!("kanade: no PAM service {PAM}, so no password will unlock");
@@ -71,7 +81,10 @@ pub fn relock() {
     }
 }
 
-// `kanade lock`; while locked it does nothing, so a second one keeps what is being typed
+/*
+ * `kanade lock`, which answers before niri locks; the client waits for `locked` (`cli::run`).
+ * While locked it does nothing, so a second one keeps what is being typed
+ */
 pub fn start() -> Result<(), String> {
     if pam().is_none() {
         return Err(format!(

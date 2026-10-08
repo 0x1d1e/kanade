@@ -14,7 +14,9 @@ StartLimitBurst=5
 [Service]
 # where `cargo install` puts it; change it for another install
 ExecStart=%h/.cargo/bin/kanade
-Restart=on-failure
+# always, not on-failure: a SIGTERM or a clean exit while locked strands niri on its red screen
+# as a crash does. `systemctl --user stop` still stops it
+Restart=always
 RestartSec=1
 
 [Install]
