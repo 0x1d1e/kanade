@@ -622,25 +622,34 @@ impl<O: Outside> Worker<O> {
 
     /*
      * keeps a sign-in's credentials, unless a newer sign-in or a sign-out came since, which then
-     * runs after this. They may be another account's: the events synced before stay until these
-     * are kept, then go. A sign-in not kept leaves the account it replaces as it was; a crash
+     * runs after this, including one that comes while the keyring prompts. They may be another
+     * account's: the events synced before stay until these are kept, then go. A sign-in not kept leaves the account it replaces as it was; a crash
      * between keeping and deleting leaves the events to `run`, which drops a cache synced for
      * another account
      */
     fn keep(&mut self, sign_in: u64, credentials: Credentials) -> Result<(), String> {
-        if sign_in != self.outside.sign_in() {
+        let superseded = || sign_in != self.outside.sign_in();
+        if superseded() {
             return Err(String::from("cancelled"));
         }
 
+        let marked = self.signed_in();
         self.outside.store(&credentials)?;
+
+        // a newer sign-in or a sign-out may have come while the keyring prompted
+        if superseded() {
+            self.restore(marked);
+            return Err(String::from("cancelled"));
+        }
+
         if let Err(error) = self.mark() {
-            self.restore();
+            self.restore(marked);
             return Err(format!("cannot keep the sign-in: {error}"));
         }
 
         // they would show under these credentials, so the last account comes back instead
         if let Err(why) = self.forget_events() {
-            self.restore();
+            self.restore(marked);
             return Err(format!("cannot delete the events synced before: {why}"));
         }
 
@@ -651,14 +660,18 @@ impl<O: Outside> Worker<O> {
         Ok(())
     }
 
-    // the keyring and the marker back as they were before a sign-in that was not kept
-    fn restore(&self) {
+    /*
+     * the keyring and the marker back as they were before a sign-in that was not kept: the
+     * credentials kept, else none, and the marker only if it was there (`marked`)
+     */
+    fn restore(&self, marked: bool) {
+        if !marked {
+            self.unmark();
+        }
+
         let restored = match &self.kept {
             Some(kept) => self.outside.store(kept),
-            None => {
-                self.unmark();
-                self.outside.delete()
-            }
+            None => self.outside.delete(),
         };
 
         if let Err(why) = restored {
@@ -1423,7 +1436,11 @@ mod tests {
         let _ = send.send(Message::SignOut);
         let _ = open.send(());
 
-        assert_eq!(kept.recv_timeout(Duration::from_secs(2)), Ok(Ok(())));
+        // signed out while the keyring prompted, so it is put back, not kept
+        assert_eq!(
+            kept.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(String::from("cancelled")))
+        );
         let account = ended(send, running);
 
         assert_eq!(account.state, State::SignedOut);
@@ -1656,6 +1673,72 @@ mod tests {
         ended(send, running);
 
         assert!(!dir.join("events/a.ics").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sign_in_superseded_during_a_keyring_prompt_leaves_the_account_as_it_was() {
+        let dir = scratch("superseded");
+        let shared = Shared::default();
+        shared.fake().keyring = Some(credentials("a"));
+        let _ = fs::create_dir_all(dir.join("state"));
+        let _ = fs::write(dir.join("state/marker"), "");
+        shared.sign_in.store(1, Ordering::Relaxed);
+
+        let (send, running) = worker(&shared, &dir);
+        let synced = loop {
+            let synced = shared
+                .fake()
+                .published
+                .iter()
+                .find_map(|account| account.synced);
+            if let Some(synced) = synced {
+                break synced;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        // b's store waits on the keyring's prompt
+        let (open, gate) = mpsc::channel();
+        let (storing, store_started) = mpsc::channel();
+        {
+            let mut fake = shared.fake();
+            fake.gate = Some(gate);
+            fake.storing = Some(storing);
+        }
+        let _ = send.send(Message::Signing);
+        let b = exchanged(&send, 1, "b");
+        assert!(store_started.recv_timeout(Duration::from_secs(2)).is_ok());
+
+        // c starts, as `sign_in` does, then b's prompt is answered, then c fails
+        shared.sign_in.store(2, Ordering::Relaxed);
+        let _ = send.send(Message::Signing);
+        let _ = open.send(());
+        assert_eq!(
+            b.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(String::from("cancelled")))
+        );
+        let _ = send.send(Message::Unsigned(2, String::from("access was not granted")));
+        let account = ended(send, running);
+
+        assert_eq!(shared.fake().keyring, Some(credentials("a")));
+        assert!(dir.join("events/a.ics").exists());
+        assert!(dir.join("state/marker").exists());
+        assert_eq!(
+            account,
+            Account {
+                state: State::SignedIn,
+                synced: Some(synced),
+            }
+        );
+        assert!(
+            shared
+                .fake()
+                .published
+                .iter()
+                .all(|account| account.state == State::SignedIn)
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
