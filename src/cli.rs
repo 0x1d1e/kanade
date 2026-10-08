@@ -18,7 +18,7 @@ use amane::{IpcCall, ipc_socket};
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{caffeine, capture, google, osd, recording, timer, wallpaper};
+use crate::sources::{caffeine, capture, google, osd, recording, timer, wallpaper, weather};
 use crate::{config, doctor};
 
 // the one IPC handler the shell registers, which every verb goes through
@@ -54,6 +54,7 @@ pub enum Call {
     Caffeine(caffeine::Request),
     Wallpaper(wallpaper::Request),
     Google(google::Request),
+    Weather(weather::Request),
     Osd(osd::Asked),
     Settings(Option<&'static str>),
     CloseSettings,
@@ -658,6 +659,19 @@ mod tests {
             ))
         );
 
+        // the weather's fetch and its Surface are Modules of their own sharing a verb
+        assert_eq!(
+            parsed(&["weather", "refresh"]),
+            Ok(("weather", Call::Weather(weather::Request::Refresh)))
+        );
+        assert_eq!(
+            parsed(&["weather", "open"]),
+            Ok((
+                "weather-surface",
+                Call::Island(Command::Open(Surface::Weather))
+            ))
+        );
+
         // Do Not Disturb only quiets notifications, so it goes with them
         assert_eq!(
             parsed(&["notifications", "dnd", "on"]),
@@ -686,7 +700,7 @@ mod tests {
             &["module", "list", "all"],
             &["module", "enable"],
             &["module", "disable", "island"],
-            &["module", "enable", "weather"],
+            &["module", "enable", "teleport"],
             &["module", "toggle", "media"],
             &["media", "clear"],
             &["timer"],
@@ -731,7 +745,8 @@ status
 module list|enable <name>|disable <name>
   <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
 banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
-calendar|calendar-surface|google-calendar|clipboard-surface|capture|caffeine|settings
+calendar|calendar-surface|google-calendar|weather|weather-surface|clipboard-surface|capture|\
+caffeine|settings
 {}
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
@@ -749,12 +764,14 @@ launcher open|close|toggle
 calendar open|close|toggle
 google-calendar sign-in <client.json>|sign-out|sync|status
   <client.json>: a Desktop app OAuth client, as Google Cloud downloads it
+weather refresh|status
+weather open|close|toggle
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
 settings open [<page>]|close
-  <page>: island|windows|dock|wallpaper|calendar
+  <page>: island|windows|dock|wallpaper|calendar|weather
 config defaults
 doctor
 help",

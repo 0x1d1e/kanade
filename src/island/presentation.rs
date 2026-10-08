@@ -26,11 +26,14 @@ pub enum Surface {
 
     // a month and the agenda of a day, from local calendars (#150)
     Calendar,
+
+    // the weather now and the days ahead (#152)
+    Weather,
 }
 
 impl Surface {
     #[cfg(test)]
-    pub const ALL: [Surface; 7] = [
+    pub const ALL: [Surface; 8] = [
         Surface::Media,
         Surface::Notifications,
         Surface::Controls,
@@ -38,6 +41,7 @@ impl Surface {
         Surface::Tray,
         Surface::Clipboard,
         Surface::Calendar,
+        Surface::Weather,
     ];
 
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)

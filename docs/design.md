@@ -58,7 +58,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Activities | `media`, `timer`, `battery`, `workspace` |
 | Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `weather` |
 | Overlays | `privacy`, `banners`, `osd` |
-| Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface` |
+| Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface` |
 | Utilities | `capture`, `caffeine`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `session`, `settings` |
@@ -73,7 +73,7 @@ Rules:
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `privacy` default on; disable warns indicators disappear.
 - `calendar` network/account sync optional; local calendar still works without it.
-- `weather` network-backed; no polling when disabled; bounded refresh when enabled.
+- `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
 - module toggle requires restart while Amane window registration is startup-only.
 
 `notifications` owns bus/state/history; UI separate. `windows` owns normalized niri running-window/app state; `app_id` ↔ `.desktop` matching + overrides: [ADR 0014](adr/0014-running-apps-from-desktop-entries.md). Dock never consumes raw niri objects.
@@ -120,7 +120,7 @@ Rules:
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later.
 - **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016).
-- **Weather**: current + short forecast; explicit location/config; bounded refresh; stale/error state.
+- **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
 
 ### Tray
 
@@ -219,6 +219,7 @@ notifications open|close|toggle|clear
 notifications dnd on|off|toggle
 clipboard open|close|toggle|clear
 calendar open|close|toggle
+weather open|close|toggle|refresh|status
 timer start <dur>|pause|resume|cancel
 capture screenshot area|window|output
 capture record start|stop|status
@@ -274,7 +275,7 @@ Nested-niri E2E checks idle/morph each release.
 - local-user IPC only; no network listener.
 - notification body plain text; action only on click; history memory-only, 20/app, 100 total.
 - clipboard history bounded; persistence off by default; sensitive-content policy required before persistence.
-- calendar/weather credentials/tokens never logged; account secrets stored through system secret service, not TOML.
+- calendar credentials/tokens never logged; weather sends only the configured coordinates, never logged; account secrets stored through system secret service, not TOML.
 - never log passwords, notification/window/media/clipboard content.
 - PAM password only enters unlock path; never store/log/echo.
 - polkit credentials stay external.

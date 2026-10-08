@@ -26,7 +26,7 @@ measure() {
 
 i=0
 while [ "$i" -lt "$rounds" ]; do
-    for surface in controls media notifications launcher calendar; do
+    for surface in controls media notifications launcher calendar weather; do
         measure "$surface" "$surface" open
     done
     measure collapse island collapse

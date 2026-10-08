@@ -8,6 +8,7 @@ use amane::{Notifications, Service};
 use crate::cli::{self, Call, Reply};
 use crate::dock;
 use crate::island::command::{Command, Unparsed};
+use crate::island::presentation::Surface;
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
@@ -20,7 +21,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{caffeine, google, wallpaper};
+use crate::sources::{caffeine, google, wallpaper, weather};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -74,6 +75,10 @@ fn run(call: Call) -> Reply {
         }
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // the fetch is on the weather's thread, so this answers at once
+        Call::Weather(request) => {
+            weather::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         // on the draw thread, which the window's text inputs live on
@@ -139,12 +144,22 @@ fn status() -> Vec<String> {
     if modules::on("google-calendar") {
         lines.push(google::status());
     }
+    if modules::on("weather") {
+        lines.push(weather::status());
+    }
 
     lines.extend(supervise::status());
     lines
 }
 
 fn island(command: Command) -> Reply {
+    // the Weather Surface opens only from a verb; one asked to open wants a forecast that is not
+    // old, as after a suspend (`weather::opened`). A toggle that closes it asks too, harmlessly,
+    // as only an old forecast is fetched. Another way to open it must ask as well
+    if let Command::Open(Surface::Weather) | Command::Toggle(Surface::Weather) = &command {
+        weather::opened();
+    }
+
     // its own statement, so the read is released before the write; a write wakes every window
     // even when nothing changed, so only a real change writes
     let effect = IslandService::read().resolve(command);

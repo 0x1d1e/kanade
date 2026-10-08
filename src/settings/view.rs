@@ -8,7 +8,7 @@ use amane::{
 };
 use toml::Value;
 
-use crate::config::{self, Kind, Setting};
+use crate::config::{self, Kind, Location, Setting};
 use crate::modules;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, ThemeRoles, radius};
@@ -281,7 +281,7 @@ fn control(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles) -
                 .align(Center),
             )
         }
-        Kind::Path(_) => Box::new(
+        Kind::Path(_) | Kind::Text(_) => Box::new(
             Column::new(children![
                 text_field(
                     input(setting),
@@ -294,6 +294,25 @@ fn control(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles) -
                         change(path(key, None), value);
                     },
                 ),
+                hint("Enter saves; an empty field removes this override", roles),
+            ])
+            .width(INNER)
+            .gap(6.0),
+        ),
+        Kind::Location(_) => Box::new(
+            Column::new(children![
+                text_field(input(setting), "latitude, longitude", roles, move |text| {
+                    let text = text.trim();
+                    if text.is_empty() {
+                        change(path(key, None), None);
+                        return;
+                    }
+
+                    match Location::parse(text) {
+                        Ok(value) => change(path(key, None), Some(value)),
+                        Err(why) => Settings::write().refused = Some(format!("{key}: {why}")),
+                    }
+                },),
                 hint("Enter saves; an empty field removes this override", roles),
             ])
             .width(INNER)

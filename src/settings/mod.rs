@@ -217,7 +217,12 @@ fn reset_inputs() {
 
     for setting in pages().flat_map(|module| module.settings) {
         let text = match &setting.kind {
-            Kind::Path(field) => (field.get)(&settings.read).unwrap_or_default(),
+            Kind::Path(field) | Kind::Text(field) => {
+                (field.get)(&settings.read).unwrap_or_default()
+            }
+            Kind::Location(field) => (field.get)(&settings.read)
+                .map(|at| format!("{}, {}", at.latitude, at.longitude))
+                .unwrap_or_default(),
             Kind::DesktopIds(_) | Kind::Paths(_) | Kind::AppIds(_) => String::new(),
             _ => continue,
         };

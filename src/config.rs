@@ -40,6 +40,7 @@ use crate::clock::Hours;
 use crate::island::motion::Mode;
 use crate::island::service::Timings;
 use crate::modules;
+use crate::sources::weather::Units;
 
 // plan 5.2: a level change shows for 1000-1400 ms
 const OSD: Duration = Duration::from_millis(1200);
@@ -76,6 +77,15 @@ pub struct Config {
     // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
     // directory (ADR 0015)
     pub calendars: Vec<String>,
+
+    // `weather.location`: where the weather is for; none fetches nothing (ADR 0017)
+    pub location: Option<Location>,
+
+    // `weather.place`: the location's name, as the Weather Surface titles it
+    pub place: Option<String>,
+
+    // `weather.units`: how the Weather Surface reads temperatures and speeds
+    pub units: Units,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -120,8 +130,72 @@ impl Default for Config {
             pinned: Vec::new(),
             wallpapers: None,
             calendars: Vec::new(),
+            location: None,
+            place: None,
+            units: Units::default(),
             outputs: BTreeMap::new(),
         }
+    }
+}
+
+// a point on the Earth, in degrees, north and east positive
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Location {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+impl Location {
+    const EXPECTED: &str = "expected [latitude, longitude] in degrees";
+
+    // `[latitude, longitude]`, each in range
+    fn read(value: &Value) -> Result<Location, String> {
+        let degrees = |value: &Value| {
+            value
+                .as_float()
+                .or(value.as_integer().map(|int| int as f64))
+        };
+
+        match value.as_array().map(Vec::as_slice) {
+            Some([latitude, longitude]) => match (degrees(latitude), degrees(longitude)) {
+                (Some(latitude), Some(longitude)) => Location::new(latitude, longitude),
+                _ => Err(String::from(Location::EXPECTED)),
+            },
+            _ => Err(String::from(Location::EXPECTED)),
+        }
+    }
+
+    // `latitude, longitude` as typed into Settings, as a TOML value
+    pub fn parse(text: &str) -> Result<Value, String> {
+        let degrees = |text: &str| text.trim().parse::<f64>().ok();
+
+        let (latitude, longitude) = text
+            .split_once(',')
+            .and_then(|(latitude, longitude)| Some((degrees(latitude)?, degrees(longitude)?)))
+            .ok_or("expected latitude, longitude in degrees")?;
+
+        Location::new(latitude, longitude).map(|location| location.value())
+    }
+
+    fn new(latitude: f64, longitude: f64) -> Result<Location, String> {
+        if !(-90.0..=90.0).contains(&latitude) {
+            return Err(format!("latitude {latitude} is outside -90 to 90"));
+        }
+        if !(-180.0..=180.0).contains(&longitude) {
+            return Err(format!("longitude {longitude} is outside -180 to 180"));
+        }
+
+        Ok(Location {
+            latitude,
+            longitude,
+        })
+    }
+
+    fn value(self) -> Value {
+        Value::Array(vec![
+            Value::Float(self.latitude),
+            Value::Float(self.longitude),
+        ])
     }
 }
 
@@ -176,6 +250,12 @@ pub enum Kind {
     // a file or directory, a leading `~/` the home directory; unset is none
     Path(Field<Option<String>>),
 
+    // a line of text, not empty; unset is none
+    Text(Field<Option<String>>),
+
+    // `[latitude, longitude]` in degrees; unset is none
+    Location(Field<Option<Location>>),
+
     // a list of `.desktop` file ids, the `.desktop` optional, each kept once; a layer replaces the
     // list below
     DesktopIds(Field<Vec<String>>),
@@ -220,6 +300,14 @@ impl Kind {
                 let path = value.as_str().ok_or("expected a \"path\"")?;
                 (field.set)(config, Some(expand(path, home)));
             }
+            Kind::Text(field) => {
+                let text = value
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty() && !text.contains('\n'))
+                    .ok_or("expected a line of text")?;
+                (field.set)(config, Some(text.trim().to_owned()));
+            }
+            Kind::Location(field) => (field.set)(config, Some(Location::read(value)?)),
             Kind::DesktopIds(field) => {
                 let list = value
                     .as_array()
@@ -301,7 +389,8 @@ impl Kind {
                 Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
-            Kind::Path(field) => Value::String((field.get)(config)?),
+            Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
+            Kind::Location(field) => (field.get)(config)?.value(),
             Kind::DesktopIds(field) | Kind::Paths(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
@@ -332,7 +421,8 @@ impl Kind {
             Kind::Switch(field) => field.copy(from, to),
             Kind::Millis(field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
-            Kind::Path(field) => field.copy(from, to),
+            Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
+            Kind::Location(field) => field.copy(from, to),
             Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
@@ -524,6 +614,54 @@ pub const CALENDAR: &[Setting] = &[Setting {
     restart: false,
     per_output: false,
 }];
+
+pub const WEATHER: &[Setting] = &[
+    Setting {
+        key: "weather.location",
+        help: "where the weather is for, as [latitude, longitude] in degrees, north and east \
+               positive; unset fetches nothing",
+        kind: Kind::Location(Field {
+            get: |config| config.location,
+            set: |config, location| config.location = location,
+        }),
+        example: Some("[52.52, 13.41]"),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "weather.place",
+        help: "the location's name, which the Weather Surface shows",
+        kind: Kind::Text(Field {
+            get: |config| config.place.clone(),
+            set: |config, place| config.place = place,
+        }),
+        example: Some("\"Berlin\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "weather.units",
+        help: "°C and km/h, or °F and mph",
+        kind: Kind::Choice(
+            &["metric", "imperial"],
+            Field {
+                get: |config| match config.units {
+                    Units::Metric => "metric",
+                    Units::Imperial => "imperial",
+                },
+                set: |config, units| {
+                    config.units = match units {
+                        "imperial" => Units::Imperial,
+                        _ => Units::Metric,
+                    };
+                },
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
@@ -1328,6 +1466,9 @@ mod tests {
                 pinned: Vec::new(),
                 wallpapers: None,
                 calendars: Vec::new(),
+                location: None,
+                place: None,
+                units: Units::Metric,
                 outputs: BTreeMap::new(),
             }
         );
@@ -1373,6 +1514,9 @@ mod tests {
                 "dock.pinned",
                 "wallpaper.directory",
                 "calendar.paths",
+                "weather.location",
+                "weather.place",
+                "weather.units",
             ]
         );
         assert_eq!(
@@ -1498,7 +1642,7 @@ mod tests {
 clock = "13h"
 reduced_motion = true
 timings.hover = 90
-weather = 1
+teleport = 1
 modules.media = false
 [output.DP-1]
 theme = 1
@@ -1526,7 +1670,7 @@ HDMI-A-1 = "12h"
                 ),
                 (4, "output.eDP-1.reduced_motion: cannot be set per output"),
                 (5, "output.eDP-1.timings.hover: cannot be set per output"),
-                (6, "unknown key output.eDP-1.weather"),
+                (6, "unknown key output.eDP-1.teleport"),
                 (7, "output.eDP-1.modules: cannot be set per output"),
                 (9, "output.DP-1.theme: expected a table"),
                 (11, "output.HDMI-A-1: expected a table"),
@@ -1601,7 +1745,7 @@ osd = 900
 palette = 1
 [modules]
 island = false
-weather = false
+teleport = false
 media = 0
 battery = false
 "#;
@@ -1626,7 +1770,7 @@ battery = false
                 (9, "unknown key colors"),
                 (12, "theme.palette: expected a \"path\""),
                 (14, "modules.island: the core module cannot be turned off"),
-                (15, "unknown module modules.weather"),
+                (15, "unknown module modules.teleport"),
                 (16, "modules.media: expected true or false"),
             ])
         );
@@ -1719,6 +1863,65 @@ battery = false
         assert_eq!(
             one("calendar.paths = \"~/cal\"").1,
             said(&[(1, "calendar.paths: expected a list of \"path\"s")])
+        );
+    }
+
+    // a location is two numbers in range, integers too; anything else keeps what was below
+    #[test]
+    fn a_location_is_latitude_and_longitude_in_range() {
+        let berlin = Location {
+            latitude: 52.52,
+            longitude: 13.0,
+        };
+        let first = "[weather]\nlocation = [52.52, 13]\nplace = \" Berlin \"\nunits = \"imperial\"";
+        let (config, problems) = layers(&[first], MIGRATIONS);
+
+        assert_eq!(problems, [vec![]]);
+        assert_eq!(config.location, Some(berlin));
+        assert_eq!(config.place.as_deref(), Some("Berlin"));
+        assert_eq!(config.units, Units::Imperial);
+
+        for (bad, why) in [
+            ("[91, 0]", "latitude 91 is outside -90 to 90"),
+            ("[0, -180.5]", "longitude -180.5 is outside -180 to 180"),
+            ("[nan, 0]", "latitude NaN is outside -90 to 90"),
+            ("[52.52]", Location::EXPECTED),
+            ("\"52.52, 13.41\"", Location::EXPECTED),
+        ] {
+            let (config, problems) =
+                layers(&[first, &format!("weather.location = {bad}")], MIGRATIONS);
+
+            assert_eq!(config.location, Some(berlin), "{bad}");
+            assert_eq!(
+                problems[1],
+                said(&[(1, &format!("weather.location: {why}"))]),
+                "{bad}"
+            );
+        }
+
+        for bad in ["\"  \"", "\"a\\nb\""] {
+            let (config, problems) =
+                layers(&[first, &format!("weather.place = {bad}")], MIGRATIONS);
+
+            assert_eq!(config.place.as_deref(), Some("Berlin"), "{bad}");
+            assert_eq!(
+                problems[1],
+                said(&[(1, "weather.place: expected a line of text")])
+            );
+        }
+
+        // as typed into Settings
+        assert_eq!(
+            Location::parse(" 48.85 ,2.35 "),
+            Ok(toml::Value::Array(vec![
+                toml::Value::Float(48.85),
+                toml::Value::Float(2.35)
+            ]))
+        );
+        assert!(Location::parse("52,52, 13,41").is_err());
+        assert_eq!(
+            Location::parse("-91, 0"),
+            Err(String::from("latitude -91 is outside -90 to 90"))
         );
     }
 
