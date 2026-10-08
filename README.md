@@ -100,7 +100,7 @@ From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it 
 | `lock` | locks the session: every monitor shows the time, the date and a password field, checked by PAM through its `login` service. Exits 0 once a lock screen drew for that call, 3 if not within 5 s or when a password typed on it is accepted or being checked, see [Keyboard](#keyboard). Refused without the `login` PAM service |
 | `doctor` | read-only diagnostics: Amane and niri versions, Wayland protocols, buses and sockets, the config, and what each Module on runs worse without, like a missing `pw-dump` or another notification daemon; works without a shell, exits 1 on a failure |
 
-`kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused or no shell, 2 not a verb, 3 not known whether it was done: the shell, or niri for a screenshot, got the call but did not answer in time, so it may still be done; not worth repeating blindly.
+`kanade help` prints every verb, including the `debug post` and `debug withdraw` verbs that post test Activities. A verb of a Module turned off in the config answers `module <name> is off`. With no shell running, a verb says so. Exit status: 0 done, 1 refused, no shell or a failed write to stdout (not a pipe its reader closed, as `head` does), 2 not a verb, 3 not known whether it was done: the shell, or niri for a screenshot, got the call but did not answer in time, so it may still be done; not worth repeating blindly.
 
 ## Configuration
 
