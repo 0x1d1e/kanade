@@ -7,33 +7,13 @@
 //! A file may name the layout it is written in with `schema_version`; without one it is the v0.1
 //! layout, version 1. An older file is migrated in memory before it applies.
 //!
-//! Every key is optional, and each key is registered by the one Module that owns it. A file that
+//! Every key is optional, and each key is registered by the one Module that owns it, as a
+//! `Setting`: its kind, default, help and whether it takes a restart are defined there once, and
+//! reading, checking, `kanade config defaults` and the README's defaults follow from it. A file that
 //! is not TOML is skipped whole; a key that is unknown or a value out of range is skipped alone,
 //! keeping what the layers below gave it. Either says so on stderr with file and line, so a typo
 //! never stops the shell. A reload while running (`crate::reload`) is stricter: any problem keeps
 //! the config in effect whole.
-//!
-//! ```toml
-//! reduced_motion = false
-//! clock = "24h"   # or "12h"
-//!
-//! [timings]   # milliseconds
-//! hover = 120
-//! expand = 180
-//! surface_change = 220
-//! collapse = 180
-//! grace = 250
-//! osd = 1200
-//!
-//! [theme]
-//! palette = "~/Pictures/wallpaper.jpg"
-//!
-//! [wallpaper]   # where the Launcher's `@` finds images
-//! directory = "~/Pictures/Wallpapers"
-//!
-//! [modules]   # every Module is on unless turned off here; `island` cannot be
-//! media = false
-//! ```
 
 use std::collections::BTreeMap;
 use std::env;
@@ -107,150 +87,369 @@ impl Default for Config {
     }
 }
 
-// one key a Module owns, which the registry lists with the Module; others may read it too
+/*
+ * one key a Module owns, which the registry lists with the Module; others may read it too. It is the
+ * key's whole definition: reading a file, checking a value, the default, the docs (`defaults`),
+ * a reload's pending restart and the Settings app all follow from it
+ */
 pub struct Setting {
     // dotted: `timings.hover` is `hover` in `[timings]`
     pub key: &'static str,
 
-    // stores the value, or says why it will not, keeping what was there; `home` expands a `~/`
-    pub set: fn(config: &mut Config, value: &Value, home: Option<&str>) -> Result<(), String>,
+    // what it does, a line for the docs and Settings
+    pub help: &'static str,
+
+    // what it takes, which says how it is checked and shown, and where in `Config` it goes
+    pub kind: Kind,
+
+    // a TOML value worth writing, for a key whose default sets nothing
+    pub example: Option<&'static str>,
+
+    // read only at start: a reload keeps the running value and reports the new one pending
+    pub restart: bool,
+
+    // an output may override it (docs/design.md Config); none can yet
+    pub per_output: bool,
+}
+
+// where in `Config` a key's value goes, as the one type its Kind reads
+pub struct Field<T> {
+    pub get: fn(&Config) -> T,
+    pub set: fn(&mut Config, T),
+}
+
+impl<T> Field<T> {
+    fn copy(&self, from: &Config, to: &mut Config) {
+        (self.set)(to, (self.get)(from));
+    }
+}
+
+// what a key takes; each checks a value the one way, with one wording
+pub enum Kind {
+    // true or false
+    Switch(Field<bool>),
+
+    // whole milliseconds, SHORTEST to LONGEST
+    Millis(Field<Duration>),
+
+    // one of these strings
+    Choice(&'static [&'static str], Field<&'static str>),
+
+    // a file or directory, a leading `~/` the home directory; unset is none
+    Path(Field<Option<String>>),
+
+    // a list of `.desktop` file ids, the `.desktop` optional, each kept once; a layer replaces the
+    // list below
+    DesktopIds(Field<Vec<String>>),
+
+    // a table of app id = `.desktop` file id, merged over the layers below by app id
+    AppIds(Field<BTreeMap<String, String>>),
+
+    // a table of Module name = true or false, merged by name; the Field holds the ones off
+    Modules(Field<Vec<&'static str>>),
+}
+
+impl Kind {
+    // stores a value, or says why it will not, keeping what was there; `home` expands a `~/`
+    fn set(&self, config: &mut Config, value: &Value, home: Option<&str>) -> Result<(), String> {
+        match self {
+            Kind::Switch(field) => {
+                (field.set)(config, value.as_bool().ok_or("expected true or false")?);
+            }
+            Kind::Millis(field) => (field.set)(config, millis(value)?),
+            Kind::Choice(options, field) => {
+                let expected = format!(
+                    "expected {}",
+                    options
+                        .iter()
+                        .map(|option| format!("\"{option}\""))
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                );
+                let found = value.as_str().ok_or_else(|| expected.clone())?;
+                let option = options
+                    .iter()
+                    .find(|&&option| option == found)
+                    .ok_or_else(|| format!("{expected}, found \"{found}\""))?;
+
+                (field.set)(config, option);
+            }
+            Kind::Path(field) => {
+                let path = value.as_str().ok_or("expected a \"path\"")?;
+                (field.set)(config, Some(expand(path, home)));
+            }
+            Kind::DesktopIds(field) => {
+                let list = value
+                    .as_array()
+                    .ok_or("expected a list of \"desktop file id\"s")?;
+                let mut ids: Vec<String> = Vec::new();
+
+                for id in list {
+                    let id = id
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .map(desktop)
+                        .ok_or_else(|| format!("expected a \"desktop file id\", found {id}"))?;
+
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+
+                (field.set)(config, ids);
+            }
+            Kind::AppIds(field) => {
+                let table = value
+                    .as_table()
+                    .ok_or("expected a table of app id = \"desktop file id\"")?;
+                let mut apps = (field.get)(config);
+
+                // checked whole first, so a bad one keeps all of its file's below
+                let mut given = BTreeMap::new();
+                for (app_id, id) in table {
+                    let id = id
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| format!("{app_id}: expected a \"desktop file id\""))?;
+
+                    given.insert(app_id.clone(), desktop(id));
+                }
+
+                apps.extend(given);
+                (field.set)(config, apps);
+            }
+            Kind::Modules(field) => {
+                let table = value.as_table().ok_or("expected a table")?;
+                let mut off = (field.get)(config);
+
+                for (name, value) in table {
+                    turn(&mut off, name, value)?;
+                }
+
+                (field.set)(config, off);
+            }
+        }
+
+        Ok(())
+    }
+
+    // the value as TOML, none for one that sets nothing, like an empty list
+    fn value(&self, config: &Config) -> Option<Value> {
+        let value = match self {
+            Kind::Switch(field) => Value::Boolean((field.get)(config)),
+            Kind::Millis(field) => {
+                Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
+            }
+            Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
+            Kind::Path(field) => Value::String((field.get)(config)?),
+            Kind::DesktopIds(field) => {
+                Value::Array((field.get)(config).into_iter().map(Value::String).collect())
+            }
+            Kind::AppIds(field) => Value::Table(
+                (field.get)(config)
+                    .into_iter()
+                    .map(|(app_id, id)| (app_id, Value::String(id)))
+                    .collect(),
+            ),
+            Kind::Modules(field) => Value::Table(
+                (field.get)(config)
+                    .into_iter()
+                    .map(|name| (name.to_owned(), Value::Boolean(false)))
+                    .collect(),
+            ),
+        };
+
+        match &value {
+            Value::Array(list) if list.is_empty() => None,
+            Value::Table(table) if table.is_empty() => None,
+            _ => Some(value),
+        }
+    }
+
+    // `from`'s value into `to`
+    fn copy(&self, from: &Config, to: &mut Config) {
+        match self {
+            Kind::Switch(field) => field.copy(from, to),
+            Kind::Millis(field) => field.copy(from, to),
+            Kind::Choice(_, field) => field.copy(from, to),
+            Kind::Path(field) => field.copy(from, to),
+            Kind::DesktopIds(field) => field.copy(from, to),
+            Kind::AppIds(field) => field.copy(from, to),
+            Kind::Modules(field) => field.copy(from, to),
+        }
+    }
+
+    // a table of its own keys, which a file writes as `[key]`
+    fn table(&self) -> bool {
+        matches!(self, Kind::AppIds(_) | Kind::Modules(_))
+    }
 }
 
 pub const ISLAND: &[Setting] = &[
     Setting {
         key: "reduced_motion",
-        set: |config, value, _| {
-            let reduced = value.as_bool().ok_or("expected true or false")?;
-            config.island.motion = if reduced { Mode::Reduced } else { Mode::Spring };
-            Ok(())
-        },
+        help: "the island snaps to its new shape and only fades its content, over 80 ms; \
+               KANADE_REDUCED_MOTION=1 or 0 overrides it",
+        kind: Kind::Switch(Field {
+            get: |config| config.island.motion == Mode::Reduced,
+            set: |config, reduced| {
+                config.island.motion = if reduced { Mode::Reduced } else { Mode::Spring };
+            },
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "clock",
-        set: |config, value, _| {
-            config.clock = match value.as_str() {
-                Some("24h") => Hours::TwentyFour,
-                Some("12h") => Hours::Twelve,
-                Some(other) => {
-                    return Err(format!("expected \"24h\" or \"12h\", found \"{other}\""));
-                }
-                None => return Err(String::from("expected \"24h\" or \"12h\"")),
-            };
-            Ok(())
-        },
+        help: "the time an idle island shows: \"24h\" (14:05) or \"12h\" (2:05 PM)",
+        kind: Kind::Choice(
+            &["24h", "12h"],
+            Field {
+                get: |config| match config.clock {
+                    Hours::TwentyFour => "24h",
+                    Hours::Twelve => "12h",
+                },
+                set: |config, hours| {
+                    config.clock = match hours {
+                        "12h" => Hours::Twelve,
+                        _ => Hours::TwentyFour,
+                    };
+                },
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "timings.hover",
-        set: |config, value, _| {
-            config.island.hover = millis(value)?;
-            Ok(())
-        },
+        help: "pointer resting on a Compact island before it peeks",
+        kind: Kind::Millis(Field {
+            get: |config| config.island.hover,
+            set: |config, hover| config.island.hover = hover,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "timings.expand",
-        set: |config, value, _| {
-            config.island.expand = millis(value)?;
-            Ok(())
-        },
+        help: "morph to a larger form",
+        kind: Kind::Millis(Field {
+            get: |config| config.island.expand,
+            set: |config, expand| config.island.expand = expand,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "timings.surface_change",
-        set: |config, value, _| {
-            config.island.surface_change = millis(value)?;
-            Ok(())
-        },
+        help: "one Surface replacing another, and a new track dissolving in",
+        kind: Kind::Millis(Field {
+            get: |config| config.island.surface_change,
+            set: |config, change| config.island.surface_change = change,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "timings.collapse",
-        set: |config, value, _| {
-            config.island.collapse = millis(value)?;
-            Ok(())
-        },
+        help: "morph to a smaller form",
+        kind: Kind::Millis(Field {
+            get: |config| config.island.collapse,
+            set: |config, collapse| config.island.collapse = collapse,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "timings.grace",
-        set: |config, value, _| {
-            config.island.grace = millis(value)?;
-            Ok(())
-        },
+        help: "pointer out before a Peek or Surface collapses",
+        kind: Kind::Millis(Field {
+            get: |config| config.island.grace,
+            set: |config, grace| config.island.grace = grace,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     // the island's, since `workspace` reads it as well as `osd`
     Setting {
         key: "timings.osd",
-        set: |config, value, _| {
-            config.osd = millis(value)?;
-            Ok(())
-        },
+        help: "the OSD, and a workspace switch on the island",
+        kind: Kind::Millis(Field {
+            get: |config| config.osd,
+            set: |config, osd| config.osd = osd,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
     },
     Setting {
         key: "theme.palette",
-        set: |config, value, home| {
-            let path = value.as_str().ok_or("expected a \"path\"")?;
-            config.palette = Some(expand(path, home));
-            Ok(())
-        },
+        help: "the image the theme roles beside the island take their tone from",
+        kind: Kind::Path(Field {
+            get: |config| config.palette.clone(),
+            set: |config, palette| config.palette = palette,
+        }),
+        example: Some("\"~/Pictures/wallpaper.jpg\""),
+        restart: false,
+        per_output: false,
+    },
+    // the island's, since it cannot be turned off
+    Setting {
+        key: "modules",
+        help: "every Module is on unless set to false here",
+        kind: Kind::Modules(Field {
+            get: |config| config.off.clone(),
+            set: |config, off| config.off = off,
+        }),
+        example: Some("{ media = false }"),
+
+        // Amane registers windows only at start
+        restart: true,
+        per_output: false,
     },
 ];
 
 pub const WINDOWS: &[Setting] = &[Setting {
     key: "windows.apps",
-
-    // merged over the layers below by app id; the `.desktop` may be left off
-    set: |config, value, _| {
-        let table = value
-            .as_table()
-            .ok_or("expected a table of app id = \"desktop file id\"")?;
-        let mut apps = BTreeMap::new();
-
-        for (app_id, id) in table {
-            let id = id
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| format!("{app_id}: expected a \"desktop file id\""))?;
-
-            apps.insert(app_id.clone(), desktop(id));
-        }
-
-        config.apps.extend(apps);
-        Ok(())
-    },
+    help: "app id = the .desktop file it belongs to, where Kanade's guess is wrong",
+    kind: Kind::AppIds(Field {
+        get: |config| config.apps.clone(),
+        set: |config, apps| config.apps = apps,
+    }),
+    example: Some("{ jetbrains-idea = \"intellij-idea-ultimate-edition\" }"),
+    restart: false,
+    per_output: false,
 }];
 
 pub const DOCK: &[Setting] = &[Setting {
     key: "dock.pinned",
-
-    // a list, so a layer replaces the one below; the `.desktop` may be left off, and an id given
-    // twice is kept once
-    set: |config, value, _| {
-        let list = value
-            .as_array()
-            .ok_or("expected a list of \"desktop file id\"s")?;
-        let mut pinned: Vec<String> = Vec::new();
-
-        for id in list {
-            let id = id
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .map(desktop)
-                .ok_or_else(|| format!("expected a \"desktop file id\", found {id}"))?;
-
-            if !pinned.contains(&id) {
-                pinned.push(id);
-            }
-        }
-
-        config.pinned = pinned;
-        Ok(())
-    },
+    help: ".desktop file ids, in the Dock's order",
+    kind: Kind::DesktopIds(Field {
+        get: |config| config.pinned.clone(),
+        set: |config, pinned| config.pinned = pinned,
+    }),
+    example: Some("[\"firefox\", \"kitty\"]"),
+    restart: false,
+    per_output: false,
 }];
 
 pub const WALLPAPER: &[Setting] = &[Setting {
     key: "wallpaper.directory",
-    set: |config, value, home| {
-        let path = value.as_str().ok_or("expected a \"path\"")?;
-        config.wallpapers = Some(expand(path, home));
-        Ok(())
-    },
+    help: "the images the Launcher offers after `@`, else ~/Pictures/Wallpapers",
+    kind: Kind::Path(Field {
+        get: |config| config.wallpapers.clone(),
+        set: |config, wallpapers| config.wallpapers = wallpapers,
+    }),
+    example: Some("\"~/Pictures/Wallpapers\""),
+    restart: false,
+    per_output: false,
 }];
 
 // a desktop file id, given with or without its `.desktop`
@@ -269,6 +468,136 @@ fn millis(value: &Value) -> Result<Duration, String> {
         .filter(|ms| (SHORTEST..=LONGEST).contains(ms))
         .map(Duration::from_millis)
         .ok_or_else(|| format!("{ms} is outside {SHORTEST}-{LONGEST} ms"))
+}
+
+// one `[modules]` entry over the Modules off: a Module in the registry on or off by name
+fn turn(off: &mut Vec<&'static str>, name: &str, value: &Value) -> Result<(), String> {
+    let module = modules::ALL
+        .iter()
+        .find(|module| module.name == name)
+        .ok_or_else(|| format!("unknown module modules.{name}"))?;
+
+    match value {
+        Value::Boolean(false) if module.name == modules::CORE => Err(format!(
+            "modules.{name}: the core module cannot be turned off"
+        )),
+        Value::Boolean(on) => {
+            off.retain(|&other| other != module.name);
+
+            if !on {
+                off.push(module.name);
+            }
+
+            Ok(())
+        }
+        _ => Err(format!("modules.{name}: expected true or false")),
+    }
+}
+
+/*
+ * the keys a restart would change between the running config and a read one; a key of each
+ * Module for `modules`
+ */
+pub fn pending(running: &Config, read: &Config) -> Vec<String> {
+    let mut pending = Vec::new();
+
+    for setting in settings().filter(|setting| setting.restart) {
+        let (was, will) = (setting.kind.value(running), setting.kind.value(read));
+
+        match &setting.kind {
+            Kind::Modules(_) => pending.extend(
+                modules::ALL
+                    .iter()
+                    .filter(|module| running.off(module.name) != read.off(module.name))
+                    .map(|module| format!("modules.{}", module.name)),
+            ),
+            _ if was != will => pending.push(setting.key.to_owned()),
+            _ => {}
+        }
+    }
+
+    pending
+}
+
+// a read config with the running value of each key that needs a restart
+pub fn restarted(running: &Config, read: Config) -> Config {
+    let mut next = read;
+
+    for setting in settings().filter(|setting| setting.restart) {
+        setting.kind.copy(running, &mut next);
+    }
+
+    next
+}
+
+/*
+ * the defaults as a config file, every key with what it does, one that sets nothing commented
+ * with an example: what `kanade config defaults` prints and the README shows
+ */
+pub fn defaults() -> String {
+    let config = Config::default();
+    let mut sections: Vec<(&str, Vec<String>)> = vec![("", Vec::new())];
+
+    for setting in settings() {
+        let (section, key) = match setting.key.rsplit_once('.') {
+            _ if setting.kind.table() => (setting.key, ""),
+            Some((section, key)) => (section, key),
+            None => ("", setting.key),
+        };
+
+        let mut lines = Vec::new();
+        let mut help = String::from(setting.help);
+
+        if let Kind::Millis(_) = setting.kind {
+            help.push_str(&format!(", ms {SHORTEST}-{LONGEST}"));
+        }
+        if setting.restart {
+            help.push_str(", takes a restart");
+        }
+        if setting.per_output {
+            help.push_str(", per output");
+        }
+        lines.push(format!("# {help}"));
+
+        // a key that sets nothing by default shows its example, commented
+        let (comment, value) = match setting.kind.value(&config) {
+            Some(value) => ("", Some(value)),
+            None => (
+                "# ",
+                setting.example.map(|example| {
+                    example
+                        .parse::<Value>()
+                        .expect("a setting's example is a TOML value")
+                }),
+            ),
+        };
+
+        match value {
+            Some(Value::Table(table)) if setting.kind.table() => lines.extend(
+                table
+                    .iter()
+                    .map(|(key, value)| format!("{comment}{key} = {value}")),
+            ),
+            Some(value) => lines.push(format!("{comment}{key} = {value}")),
+            None => {}
+        }
+
+        match sections.iter_mut().find(|(name, _)| *name == section) {
+            Some((_, entries)) => entries.push(lines.join("\n")),
+            None => sections.push((section, vec![lines.join("\n")])),
+        }
+    }
+
+    sections
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .map(|(section, entries)| match section {
+            "" => entries.join("\n\n"),
+            section => format!("[{section}]\n{}", entries.join("\n")),
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        + "\n"
 }
 
 // tests never read the user's files, so they see the defaults
@@ -613,51 +942,36 @@ fn apply(
                 .is_some_and(|rest| rest.starts_with('.'))
         };
 
-        if path == "modules" {
-            turn(config, entry, problems);
-        } else if let Some(setting) = settings().find(|setting| setting.key == path) {
-            if let Err(what) = (setting.set)(config, &entry.node.value(), home) {
-                problems.push((entry.line, format!("{path}: {what}")));
+        match settings().find(|setting| setting.key == path) {
+            // each Module on its own line, so one bad entry keeps the others
+            Some(Setting {
+                kind: Kind::Modules(field),
+                ..
+            }) => match &entry.node {
+                Node::Table(table) => {
+                    let mut off = (field.get)(config);
+
+                    for (name, entry) in table {
+                        if let Err(what) = turn(&mut off, name, &entry.node.value()) {
+                            problems.push((entry.line, what));
+                        }
+                    }
+
+                    (field.set)(config, off);
+                }
+                Node::Value(_) => problems.push((entry.line, format!("{path}: expected a table"))),
+            },
+            Some(setting) => {
+                if let Err(what) = setting.kind.set(config, &entry.node.value(), home) {
+                    problems.push((entry.line, format!("{path}: {what}")));
+                }
             }
-        } else if settings().any(inside) {
-            match &entry.node {
+            None if settings().any(inside) => match &entry.node {
                 Node::Table(table) => apply(config, table, &path, home, problems),
                 Node::Value(_) => problems.push((entry.line, format!("{path}: expected a table"))),
-            }
-        } else {
-            problems.push((entry.line, format!("unknown key {path}")));
+            },
+            None => problems.push((entry.line, format!("unknown key {path}"))),
         }
-    }
-}
-
-// `[modules]`: each Module in the registry on or off by name
-fn turn(config: &mut Config, entry: &Entry, problems: &mut Vec<(usize, String)>) {
-    let Node::Table(table) = &entry.node else {
-        problems.push((entry.line, String::from("modules: expected a table")));
-        return;
-    };
-
-    for (key, entry) in table {
-        let module = modules::ALL.iter().find(|module| module.name == key);
-
-        let problem = match (module, &entry.node) {
-            (None, _) => format!("unknown module modules.{key}"),
-            (Some(module), Node::Value(Value::Boolean(false))) if module.name == modules::CORE => {
-                format!("modules.{key}: the core module cannot be turned off")
-            }
-            (Some(module), Node::Value(Value::Boolean(on))) => {
-                config.off.retain(|&name| name != module.name);
-
-                if !on {
-                    config.off.push(module.name);
-                }
-
-                continue;
-            }
-            (Some(_), _) => format!("modules.{key}: expected true or false"),
-        };
-
-        problems.push((entry.line, problem));
     }
 }
 
@@ -756,11 +1070,110 @@ mod tests {
         assert!(config.off("media"));
         assert!(!config.off("timer"));
 
+        assert_eq!(one(&defaults()), (Config::default(), vec![]));
+    }
+
+    // the README shows what the registry says, so the docs cannot drift from the keys
+    #[test]
+    fn the_readme_shows_the_defaults() {
         let readme = include_str!("../README.md");
         let start = readme.find("```toml\n").expect("README shows the config") + 8;
-        let example = &readme[start..][..readme[start..].find("```").unwrap()];
+        let shown = &readme[start..][..readme[start..].find("```").unwrap()];
 
-        assert_eq!(one(example), (Config::default(), vec![]));
+        assert_eq!(
+            shown,
+            defaults(),
+            "paste `cargo run -- config defaults` into the README"
+        );
+    }
+
+    // every key v0.1 and the Modules since read is in the registry, so none became unknown
+    #[test]
+    fn every_key_is_in_the_registry() {
+        let keys: Vec<&str> = settings().map(|setting| setting.key).collect();
+
+        assert_eq!(
+            keys,
+            [
+                "reduced_motion",
+                "clock",
+                "timings.hover",
+                "timings.expand",
+                "timings.surface_change",
+                "timings.collapse",
+                "timings.grace",
+                "timings.osd",
+                "theme.palette",
+                "modules",
+                "windows.apps",
+                "dock.pinned",
+                "wallpaper.directory",
+            ]
+        );
+        assert_eq!(
+            settings()
+                .filter(|setting| setting.restart)
+                .map(|setting| setting.key)
+                .collect::<Vec<_>>(),
+            ["modules"]
+        );
+        assert!(!settings().any(|setting| setting.per_output));
+    }
+
+    // what a key reads it gives back, so its default and its docs are what the config holds
+    #[test]
+    fn each_kind_reads_back_what_it_gives() {
+        let config = Config::default();
+
+        for setting in settings() {
+            let shown = setting.kind.value(&config);
+            let example = setting
+                .example
+                .map(|example| example.parse::<Value>().unwrap());
+
+            assert!(
+                shown.is_some() != example.is_some(),
+                "{}: a default or an example, not both",
+                setting.key
+            );
+
+            // given back as read, like an id with its `.desktop`, which reads the same again
+            let mut read = Config::default();
+            let given = shown.or(example).unwrap();
+            assert_eq!(
+                setting.kind.set(&mut read, &given, None),
+                Ok(()),
+                "{}",
+                setting.key
+            );
+
+            let value = setting.kind.value(&read).expect(setting.key);
+            let mut again = Config::default();
+            assert_eq!(
+                setting.kind.set(&mut again, &value, None),
+                Ok(()),
+                "{}",
+                setting.key
+            );
+            assert_eq!(again, read, "{}", setting.key);
+        }
+    }
+
+    // a key read only at start keeps its running value, and a change to it is pending
+    #[test]
+    fn a_restart_key_keeps_its_running_value() {
+        let running = one("[modules]\nmedia = false\ntimer = false").0;
+        let read = one("clock = \"12h\"\n[modules]\ntimer = false\nbattery = false").0;
+
+        assert_eq!(
+            pending(&running, &read),
+            ["modules.battery", "modules.media"]
+        );
+        assert_eq!(pending(&running, &running), Vec::<String>::new());
+
+        let next = restarted(&running, read);
+        assert_eq!(next.clock, Hours::Twelve);
+        assert_eq!(next.off, ["media", "timer"]);
     }
 
     #[test]
