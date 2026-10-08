@@ -28,6 +28,9 @@
 //! [theme]
 //! palette = "~/Pictures/wallpaper.jpg"
 //!
+//! [wallpaper]   # where the Launcher's `@` finds images
+//! directory = "~/Pictures/Wallpapers"
+//!
 //! [modules]   # every Module is on unless turned off here; `island` cannot be
 //! media = false
 //! ```
@@ -78,6 +81,9 @@ pub struct Config {
 
     // `dock.pinned`: the `.desktop` file ids the Dock keeps, in its order
     pub pinned: Vec<String>,
+
+    // `wallpaper.directory`: where the Launcher finds wallpapers, else ~/Pictures/Wallpapers
+    pub wallpapers: Option<String>,
 }
 
 impl Config {
@@ -96,6 +102,7 @@ impl Default for Config {
             off: Vec::new(),
             apps: BTreeMap::new(),
             pinned: Vec::new(),
+            wallpapers: None,
         }
     }
 }
@@ -233,6 +240,15 @@ pub const DOCK: &[Setting] = &[Setting {
         }
 
         config.pinned = pinned;
+        Ok(())
+    },
+}];
+
+pub const WALLPAPER: &[Setting] = &[Setting {
+    key: "wallpaper.directory",
+    set: |config, value, home| {
+        let path = value.as_str().ok_or("expected a \"path\"")?;
+        config.wallpapers = Some(expand(path, home));
         Ok(())
     },
 }];
@@ -734,6 +750,7 @@ mod tests {
                 off: vec!["media"],
                 apps: BTreeMap::new(),
                 pinned: Vec::new(),
+                wallpapers: None,
             }
         );
         assert!(config.off("media"));

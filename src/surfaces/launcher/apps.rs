@@ -2,16 +2,17 @@
 
 use amane::DesktopApp;
 
-use super::emoji;
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
+use super::{emoji, wallpaper};
 
-pub struct Apps<'a>(pub &'a [DesktopApp]);
+// the apps, and whether `@` searches wallpapers instead
+pub struct Apps<'a>(pub &'a [DesktopApp], pub bool);
 
 impl LauncherProvider for Apps<'_> {
     // by name within a fit, since Amane sorts them so; an empty query finds every app
     fn find(&self, query: &str) -> Vec<Answer> {
-        // an emoji search, which no app answers
-        if query.starts_with(emoji::PREFIX) {
+        // an emoji or wallpaper search, which no app answers
+        if query.starts_with(emoji::PREFIX) || (self.1 && query.starts_with(wallpaper::PREFIX)) {
             return Vec::new();
         }
 

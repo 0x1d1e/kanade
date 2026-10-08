@@ -1,10 +1,12 @@
 //! The Launcher Surface (plan 7): a search over its providers (#138), the apps Amane's `Apps`
-//! finds, the calculator and emoji, best answer first. It opens only from IPC or a keybind, so it
-//! always holds the keyboard: typing searches, the arrow keys move the selection, Enter presses the
-//! selected answer and a click the one clicked. An app starts and the island closes; a value or an
-//! emoji is copied and the island closes once it is on the clipboard, or says it was not. It says
-//! when the apps are still being found and when nothing matches.
+//! finds, the calculator, emoji and, with the `wallpaper` Module on, wallpapers, best answer first.
+//! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
+//! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
+//! starts and the island closes; a value or an emoji is copied, or a wallpaper set, and the island
+//! closes once it is, or says it was not. It says when the apps are still being found and when
+//! nothing matches.
 
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -17,10 +19,11 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::sources::clipboard;
+use crate::sources::wallpaper::Unset;
+use crate::sources::{self, clipboard};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
-use crate::view;
+use crate::{modules, view};
 
 use super::Ring;
 
@@ -28,11 +31,13 @@ mod apps;
 mod calculator;
 mod emoji;
 mod provider;
+mod wallpaper;
 
 use apps::Apps as AppsProvider;
 use calculator::Calculator;
 use emoji::Emoji;
 use provider::{Action, Answer, Mark};
+use wallpaper::Wallpapers;
 
 // the content's width, which every row fills
 const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
@@ -74,19 +79,21 @@ pub struct Search {
     // how far the rows scrolled, in pixels
     offset: f32,
 
-    copying: Copying,
+    pressing: Pressing,
 }
 
 /*
- * a copy, from its press until it is on the clipboard or failed, of the text pressed; so the row
- * of that text says it failed, whichever is selected by then
+ * a copy or a wallpaper, from its press until it is done or failed, of the answer pressed; so the
+ * row of that answer says it failed, whichever is selected by then
  */
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-enum Copying {
+#[derive(Debug, Clone, Default, PartialEq)]
+enum Pressing {
     #[default]
     Idle,
-    Waiting(String),
-    Failed(String),
+    Waiting(Action),
+
+    // with why
+    Failed(Action, String),
 }
 
 impl Service for Search {
@@ -98,20 +105,32 @@ impl Service for Search {
 }
 
 impl Search {
-    // whether pressing `action` was a copy that failed
-    fn failed(&self, action: &Action) -> bool {
-        matches!((&self.copying, action), (Copying::Failed(failed), Action::Copy(text)) if failed == text)
+    // what its row says when pressing `action` failed, none when it did not
+    fn failed(&self, action: &Action) -> Option<String> {
+        let Pressing::Failed(failed, why) = &self.pressing else {
+            return None;
+        };
+
+        if failed != action {
+            return None;
+        }
+
+        match action {
+            Action::Copy(_) => Some(String::from("Not copied")),
+            Action::Wallpaper(_) => Some(format!("Not set: {why}")),
+            Action::Launch(_) => None,
+        }
     }
 
     /*
-     * the copy of `text` pressed in `visit` failed; nothing once that visit or that copy is over,
-     * so a stale worker never touches a later visit's Search
+     * pressing `action` in `visit` failed, for `why`; nothing once that visit or that press is
+     * over, so a stale worker never touches a later visit's Search
      */
-    fn copy_failed(&mut self, visit: u64, text: String) {
+    fn press_failed(&mut self, visit: u64, action: Action, why: String) {
         if self.visit == visit
-            && matches!(&self.copying, Copying::Waiting(waiting) if *waiting == text)
+            && matches!(&self.pressing, Pressing::Waiting(waiting) if *waiting == action)
         {
-            self.copying = Copying::Failed(text);
+            self.pressing = Pressing::Failed(action, why);
         }
     }
 
@@ -232,9 +251,34 @@ fn whole(offset: f32, count: usize) -> (usize, usize) {
     )
 }
 
+// whether the query searches wallpapers, which it does only with their Module on
+fn wallpapers(query: &str) -> bool {
+    query.trim().starts_with(wallpaper::PREFIX) && modules::on("wallpaper")
+}
+
 // what the providers find for the query, best first
 fn found(apps: &[DesktopApp], query: &str) -> Vec<Answer> {
-    provider::ranked(&[&Calculator, &AppsProvider(apps), &Emoji], query)
+    // listed only for a wallpaper search, so no other query stats the directory
+    let (images, current) = if wallpapers(query) {
+        (sources::wallpaper::images(), sources::wallpaper::current())
+    } else {
+        (Arc::default(), None)
+    };
+
+    let wallpapers = Wallpapers {
+        images: &images,
+        current: current.as_deref(),
+    };
+
+    provider::ranked(
+        &[
+            &Calculator,
+            &AppsProvider(apps, modules::on("wallpaper")),
+            &Emoji,
+            &wallpapers,
+        ],
+        query,
+    )
 }
 
 // the view's own read of the visit, so this never reads IslandService again
@@ -246,16 +290,24 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let query = search.query.trim();
     let emoji = query.starts_with(emoji::PREFIX);
+    let wallpapers = wallpapers(query);
 
     let list: Box<dyn Widget> = if !found.is_empty() {
         Box::new(list(monitor, &found, &search))
-    } else if apps.list().is_empty() && !emoji {
+    } else if wallpapers && sources::wallpaper::images().is_empty() {
+        Box::new(state(
+            "No wallpapers",
+            &format!("Add images to {}", directory()),
+        ))
+    } else if apps.list().is_empty() && !emoji && !wallpapers {
         // Amane scans every icon theme first, which takes a few seconds after Kanade starts
         Box::new(state("Finding apps", ""))
     } else {
         Box::new(state(
             if emoji {
                 "No matching emoji"
+            } else if wallpapers {
+                "No matching wallpapers"
             } else {
                 "No matching apps"
             },
@@ -280,6 +332,20 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         )
 }
 
+// where the wallpapers are looked for, the home directory as `~`
+fn directory() -> String {
+    let Some(directory) = sources::wallpaper::directory() else {
+        return String::from("the wallpaper directory");
+    };
+
+    match std::env::var_os("HOME")
+        .and_then(|home| directory.strip_prefix(home).ok().map(ToOwned::to_owned))
+    {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => directory.display().to_string(),
+    }
+}
+
 /*
  * a search icon, what is typed with the caret after it, or what to type faded; a query wider than
  * the field shows its end, where the typing is
@@ -296,7 +362,7 @@ fn field(query: &str) -> Rectangle {
         Box::new(
             Row::new(children![
                 caret,
-                Text::new("Search apps, 2+2 or :emoji")
+                Text::new(placeholder())
                     .size(QUERY)
                     .color(theme::ISLAND.on_surface_variant)
                     .weight(theme::text::MEDIUM),
@@ -328,6 +394,15 @@ fn field(query: &str) -> Rectangle {
             .gap(ICON_GAP)
             .align(Center),
         )
+}
+
+// what to type, wallpapers only with their Module on
+fn placeholder() -> &'static str {
+    if modules::on("wallpaper") {
+        "Search apps, 2+2, :emoji or @wallpaper"
+    } else {
+        "Search apps, 2+2 or :emoji"
+    }
 }
 
 // the end of `query` that fits in `width`, an ellipsis before it when the start is cut
@@ -405,7 +480,13 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
                 let selected = index == search.selected;
                 let failed = search.failed(&answer.action);
 
-                Box::new(row(monitor, search.visit, answer, selected, failed)) as Box<dyn Widget>
+                Box::new(row(
+                    monitor,
+                    search.visit,
+                    answer,
+                    selected,
+                    failed.as_deref(),
+                )) as Box<dyn Widget>
             })
             .collect(),
     )
@@ -449,10 +530,16 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
 }
 
 /*
- * the answer's mark, title and what it is, or that it was not copied; the selected one stands out,
- * and pressing one does what it does
+ * the answer's mark, title and what it is, or that pressing it failed; the selected one stands
+ * out, and pressing one does what it does
  */
-fn row(monitor: &str, visit: u64, answer: &Answer, selected: bool, failed: bool) -> Rectangle {
+fn row(
+    monitor: &str,
+    visit: u64,
+    answer: &Answer,
+    selected: bool,
+    failed: Option<&str>,
+) -> Rectangle {
     let mut lines = children![
         Text::new(&answer.title)
             .size(theme::text::BODY)
@@ -461,11 +548,7 @@ fn row(monitor: &str, visit: u64, answer: &Answer, selected: bool, failed: bool)
             .elide()
     ];
 
-    let detail = if failed {
-        "Not copied"
-    } else {
-        answer.detail.as_str()
-    };
+    let detail = failed.unwrap_or(&answer.detail);
 
     if !detail.is_empty() {
         lines.push(Box::new(
@@ -515,22 +598,27 @@ fn row(monitor: &str, visit: u64, answer: &Answer, selected: bool, failed: bool)
 }
 
 /*
- * an app's icon, a letter or sign on the quiet tile, or an emoji; nothing while an icon decodes,
- * so no row shifts
+ * an app's icon, a wallpaper, a letter or sign on the quiet tile, or an emoji; nothing while an
+ * image decodes, so no row shifts
  */
 fn mark(mark: &Mark) -> Box<dyn Widget> {
-    match mark {
-        Mark::Picture(path) => {
-            // decoded at twice its size, crisp at scale 2
-            let pixels = (ICON * 2.0) as u32;
+    // decoded at twice its size, crisp at scale 2
+    let pixels = (ICON * 2.0) as u32;
 
-            Box::new(
-                Rectangle::new()
-                    .width(ICON)
-                    .height(ICON)
-                    .fill(Image::contain(path).thumbnail(pixels, pixels)),
-            )
-        }
+    match mark {
+        Mark::Picture(path) => Box::new(
+            Rectangle::new()
+                .width(ICON)
+                .height(ICON)
+                .fill(Image::contain(path).thumbnail(pixels, pixels)),
+        ),
+        Mark::Photo(path) => Box::new(
+            Rectangle::new()
+                .width(ICON)
+                .height(ICON)
+                .radius(radius::ICON)
+                .fill(Image::cover(path).thumbnail(pixels, pixels)),
+        ),
         Mark::Tile(sign) => Box::new(view::tile(None, sign, ICON, radius::ICON, &theme::ISLAND)),
         Mark::Glyph(glyph) => Box::new(
             Rectangle::new()
@@ -568,9 +656,9 @@ pub fn key(monitor: &str, key: Key) -> bool {
         .get(search.selected)
         .map(|answer| answer.action.clone());
 
-    // a failed copy is said until the next key
-    if matches!(search.copying, Copying::Failed(_)) {
-        search.copying = Copying::Idle;
+    // a failed press is said until the next key
+    if matches!(search.pressing, Pressing::Failed(..)) {
+        search.pressing = Pressing::Idle;
     }
 
     set(search);
@@ -585,61 +673,84 @@ pub fn key(monitor: &str, key: Key) -> bool {
 }
 
 /*
- * what starts or is copied is in the way of nothing, so the island closes; a copy once it is on
- * the clipboard. One copy at a time
+ * what starts, is copied or set is in the way of nothing, so the island closes; a copy or a
+ * wallpaper once it is done. One of those at a time
  */
 fn press(monitor: &str, visit: u64, action: Action) {
-    match action {
-        Action::Launch(app) => {
-            app.launch();
-            view::collapse(monitor);
-        }
-        Action::Copy(text) => {
-            let search = Search::read().of(visit);
-
-            if matches!(search.copying, Copying::Waiting(_)) {
-                return;
-            }
-
-            set(Search {
-                copying: Copying::Waiting(text.clone()),
-                ..search
-            });
-
-            let (copying, put) = (monitor.to_owned(), text.clone());
-
-            let copy = thread::Builder::new()
-                .name("launcher-copy".into())
-                .spawn(move || {
-                    let done = clipboard::put(&put);
-
-                    if let Err(error) = &done {
-                        eprintln!("kanade: cannot copy a Launcher answer ({error})");
-                    }
-
-                    copied(&copying, visit, put, done.is_ok());
-                });
-
-            if let Err(error) = copy {
-                eprintln!("kanade: cannot copy a Launcher answer ({error})");
-                copied(monitor, visit, text, false);
-            }
-        }
-    }
-}
-
-/*
- * how the copy pressed in `visit` went: closes the island, or says it was not copied. Nothing once
- * that visit is over, so it never closes another
- */
-fn copied(monitor: &str, visit: u64, text: String, done: bool) {
-    if done {
-        IslandService::write().finish(monitor, visit, Surface::Launcher, Instant::now());
+    if let Action::Launch(app) = &action {
+        app.launch();
+        view::collapse(monitor);
         return;
     }
 
-    // checked and written under one guard, as a later visit may be writing its own Search
-    Search::write().copy_failed(visit, text);
+    let search = Search::read().of(visit);
+
+    if matches!(search.pressing, Pressing::Waiting(_)) {
+        return;
+    }
+
+    set(Search {
+        pressing: Pressing::Waiting(action.clone()),
+        ..search
+    });
+
+    let done = {
+        let (monitor, action) = (monitor.to_owned(), action.clone());
+        move |done| pressed(&monitor, visit, action, done)
+    };
+
+    let started = match &action {
+        Action::Copy(text) => copy(text.clone(), done),
+        Action::Wallpaper(path) => sources::wallpaper::set(
+            path.clone(),
+            Some(Box::new(move |set: Result<(), Unset>| {
+                done(set.map_err(|unset| String::from(unset.brief())))
+            })),
+        )
+        .map(drop)
+        .map_err(|unset| String::from(unset.brief())),
+        Action::Launch(_) => Ok(()),
+    };
+
+    if let Err(why) = started {
+        pressed(monitor, visit, action, Err(why));
+    }
+}
+
+// puts `text` on the clipboard off the draw thread, then tells `done` how it went
+fn copy(
+    text: String,
+    done: impl FnOnce(Result<(), String>) + Send + 'static,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("launcher-copy".into())
+        .spawn(move || {
+            let copied = clipboard::put(&text).map_err(|error| error.to_string());
+
+            if let Err(why) = &copied {
+                eprintln!("kanade: cannot copy a Launcher answer ({why})");
+            }
+
+            done(copied);
+        })
+        .map(drop)
+        .map_err(|error| {
+            eprintln!("kanade: cannot copy a Launcher answer ({error})");
+            error.to_string()
+        })
+}
+
+/*
+ * how pressing `action` in `visit` went: closes the island, or says it failed. Nothing once that
+ * visit is over, so it never closes another
+ */
+fn pressed(monitor: &str, visit: u64, action: Action, done: Result<(), String>) {
+    match done {
+        Ok(()) => IslandService::write().finish(monitor, visit, Surface::Launcher, Instant::now()),
+
+        // checked and written under one guard, as a later visit may be writing its own Search
+        Err(why) => Search::write().press_failed(visit, action, why),
+    }
 }
 
 // down scrolls further down the list
@@ -661,6 +772,8 @@ fn set(search: Search) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -803,25 +916,42 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_copy_marks_the_answer_pressed_not_the_selection() {
+    fn a_failed_press_marks_the_answer_pressed_not_the_selection() {
+        let copy = Action::Copy(String::from("4"));
+        let image = Action::Wallpaper(PathBuf::from("/w/sea.png"));
+
         let search = Search {
             selected: 0,
-            copying: Copying::Failed(String::from("4")),
+            pressing: Pressing::Failed(copy.clone(), String::from("no wl-copy")),
             ..Search::default()
         };
 
-        assert!(search.failed(&Action::Copy(String::from("4"))));
-        assert!(!search.failed(&Action::Copy(String::from("5"))));
+        assert_eq!(search.failed(&copy).as_deref(), Some("Not copied"));
+        assert_eq!(search.failed(&Action::Copy(String::from("5"))), None);
+        assert_eq!(search.failed(&image), None);
+
+        let search = Search {
+            pressing: Pressing::Failed(image.clone(), String::from("awww-daemon is not running")),
+            ..Search::default()
+        };
+        assert_eq!(
+            search.failed(&image).as_deref(),
+            Some("Not set: awww-daemon is not running")
+        );
 
         let waiting = Search {
-            copying: Copying::Waiting(String::from("4")),
+            pressing: Pressing::Waiting(copy.clone()),
             ..Search::default()
         };
-        assert!(!waiting.failed(&Action::Copy(String::from("4"))));
+        assert_eq!(waiting.failed(&copy), None);
     }
 
     #[test]
-    fn a_stale_failed_copy_leaves_a_later_visit_alone() {
+    fn a_stale_failed_press_leaves_a_later_visit_alone() {
+        let (four, five) = (
+            Action::Copy(String::from("4")),
+            Action::Copy(String::from("5")),
+        );
         let later = Search {
             visit: 2,
             query: String::from("fire"),
@@ -829,22 +959,22 @@ mod tests {
         };
 
         let mut search = later.clone();
-        search.copy_failed(1, String::from("4"));
+        search.press_failed(1, four.clone(), String::new());
         assert_eq!(search, later);
 
         let mut search = Search {
-            copying: Copying::Waiting(String::from("4")),
+            pressing: Pressing::Waiting(four.clone()),
             ..later.clone()
         };
-        search.copy_failed(2, String::from("5"));
+        search.press_failed(2, five, String::new());
         assert_eq!(
-            search.copying,
-            Copying::Waiting(String::from("4")),
-            "another copy"
+            search.pressing,
+            Pressing::Waiting(four.clone()),
+            "another press"
         );
 
-        search.copy_failed(2, String::from("4"));
-        assert_eq!(search.copying, Copying::Failed(String::from("4")));
+        search.press_failed(2, four.clone(), String::from("why"));
+        assert_eq!(search.pressing, Pressing::Failed(four, String::from("why")));
         assert_eq!(search.query, "fire");
     }
 
@@ -855,7 +985,7 @@ mod tests {
             query: String::from("fire"),
             selected: 2,
             offset: 40.0,
-            copying: Copying::Failed(String::from("4")),
+            pressing: Pressing::Failed(Action::Copy(String::from("4")), String::new()),
         };
 
         assert_eq!(kept.of(1), kept);
