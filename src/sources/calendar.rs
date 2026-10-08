@@ -10,7 +10,9 @@
 //!
 //! A view asks `occurrences` for the days it shows: recurrences, their exceptions and time zones
 //! come from calcard, each moment then becomes local time through `clock`. A rule is started again
-//! just before those days, so one begun long ago expands near them, not from its first occurrence.
+//! just before those days, so one begun long ago expands near them, not from its first occurrence,
+//! and a change to it and the occurrences after goes on from there. One that still runs to the
+//! limit near those days makes the result partial, which the agenda tells.
 //! An occurrence keeps its absolute start and end for order and length; its local times are for
 //! showing, and read backwards across a change back from summer time.
 
@@ -31,14 +33,13 @@ use calcard::common::timezone::Tz;
 use calcard::icalendar::dates::TimeOrDelta;
 use calcard::icalendar::timezone::TzResolver;
 use calcard::icalendar::{
-    ICalendar, ICalendarComponent, ICalendarComponentType, ICalendarDay, ICalendarFrequency,
-    ICalendarMonth, ICalendarParameterName, ICalendarProperty, ICalendarRecurrenceRule,
-    ICalendarStatus, ICalendarValue, ICalendarWeekday,
+    ICalendar, ICalendarComponent, ICalendarComponentType, ICalendarDay, ICalendarDuration,
+    ICalendarEntry, ICalendarFrequency, ICalendarMonth, ICalendarParameterName, ICalendarProperty,
+    ICalendarRecurrenceRule, ICalendarStatus, ICalendarValue, ICalendarWeekday,
 };
 use calcard::{Entry, Parser};
 use chrono::{
-    DateTime, Datelike, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Timelike,
-    Weekday,
+    DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Timelike, Weekday,
 };
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 
@@ -81,9 +82,18 @@ impl Service for Calendars {
 
 impl Calendars {
     // the events that fall on the days from `from` until `to`, in local time
-    pub fn occurrences(&self, from: NaiveDate, to: NaiveDate) -> Vec<Occurrence> {
+    pub fn occurrences(&self, from: NaiveDate, to: NaiveDate) -> Events {
         occurrences(&self.calendars, from, to, clock::local_time)
     }
+}
+
+// the events in a range, sorted by start with all-day ones first
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Events {
+    pub occurrences: Vec<Occurrence>,
+
+    // whether a rule ran to the limit near the range, so some of its occurrences are missing
+    pub partial: bool,
 }
 
 // one time an event happens, in local time
@@ -432,12 +442,6 @@ fn read(file: &Path) -> Result<Vec<ICalendar>, String> {
                 file.display()
             );
         }
-        if crowded(calendar, clock::today()) {
-            eprintln!(
-                "kanade: calendar {}: a rule shows only its first {LIMIT} occurrences",
-                file.display()
-            );
-        }
     }
 
     Ok(calendars)
@@ -484,24 +488,24 @@ fn occurrences(
     from: NaiveDate,
     to: NaiveDate,
     local: impl Fn(i64) -> Option<NaiveDateTime>,
-) -> Vec<Occurrence> {
+) -> Events {
     let (start, end) = bounds(from, to);
     let (Some(start), Some(end)) = (instant(start, &local), instant(end, &local)) else {
-        return Vec::new();
+        return Events::default();
     };
-    let mut found = Vec::new();
+    let mut found = Events::default();
 
     for calendar in calendars {
-        expand(
-            &bounded(calendar, from, to),
+        found.partial |= !expand(
+            &bounded(calendar, (start, end), &local),
             LIMIT,
             (start, end),
             &local,
-            &mut found,
+            &mut found.occurrences,
         );
     }
 
-    sort(&mut found);
+    sort(&mut found.occurrences);
     found
 }
 
@@ -512,15 +516,38 @@ fn sort(found: &mut [Occurrence]) {
     });
 }
 
-// the events of one calendar that overlap `range`, in seconds since the epoch, up to `limit`
+/*
+ * the events of one calendar that overlap `range`, in seconds since the epoch, up to `limit`;
+ * false where its rules may have run to the limit. calcard stops there and says nothing, but each
+ * occurrence it steps through it gives, but one an EXDATE takes or a change gives none for, so
+ * fewer than the limit, less those, means none was cut
+ */
 fn expand(
     calendar: &ICalendar,
     limit: usize,
     (start, end): (i64, i64),
     local: &impl Fn(i64) -> Option<NaiveDateTime>,
     found: &mut Vec<Occurrence>,
-) {
-    for event in calendar.expand_dates(Tz::Floating, limit).events {
+) -> bool {
+    let events = calendar.expand_dates(Tz::Floating, limit).events;
+
+    let recurs = calendar
+        .components
+        .iter()
+        .any(|component| rule_of(component).is_some());
+    let taken: usize = calendar
+        .components
+        .iter()
+        .flat_map(|component| &component.entries)
+        .map(|entry| match entry.name {
+            ICalendarProperty::Exdate => entry.values.len(),
+            ICalendarProperty::RecurrenceId => 1,
+            _ => 0,
+        })
+        .sum();
+    let whole = !recurs || events.len() + taken < limit;
+
+    for event in events {
         let Some(component) = calendar.component_by_id(event.comp_id) else {
             continue;
         };
@@ -546,6 +573,8 @@ fn expand(
             found.push(occurrence);
         }
     }
+
+    whole
 }
 
 // the midnights that start `from` and `to`
@@ -666,79 +695,155 @@ fn cancelled(component: &ICalendarComponent) -> bool {
 }
 
 /*
- * a copy whose recurrences run only near the range: calcard expands a rule from its first
- * occurrence until its end, so one with none, like a weekly meeting, would run to the limit and
- * crowd out the file's other events, and one long begun, like an hourly one since 2010, would
- * spend the limit on years before the range. Each ends two days past `to`, which covers any zone
- * the rule's times are in, and starts again just before `from` (`restart`); a rule that starts
- * after the range keeps only its first occurrence, which is after it too
+ * a copy whose recurrences run only near the range, in seconds since the epoch: calcard expands a
+ * rule from its first occurrence until its end, so one with none, like a weekly meeting, would
+ * run to the limit and crowd out the file's other events, and one long begun, like an hourly one
+ * since 2010, would spend the limit on years before the range. Each rule reads the range in its
+ * own zone, ends a margin past it and starts again a margin before it (`restart`); a rule that
+ * starts after the range keeps only its first occurrence, which is after it too
  */
-fn bounded(calendar: &ICalendar, from: NaiveDate, to: NaiveDate) -> Cow<'_, ICalendar> {
-    let recurs = calendar
+fn bounded<'a>(
+    calendar: &'a ICalendar,
+    (start, end): (i64, i64),
+    local: &impl Fn(i64) -> Option<NaiveDateTime>,
+) -> Cow<'a, ICalendar> {
+    if !calendar
         .components
         .iter()
-        .any(|component| rule_of(component).is_some());
-    let Some(last) = to.checked_add_days(Days::new(2)).filter(|_| recurs) else {
+        .any(|component| rule_of(component).is_some())
+    {
         return Cow::Borrowed(calendar);
-    };
-
-    // a change to an occurrence and the ones after shifts those after, so the rule keeps it
-    let split = calendar
-        .components
-        .iter()
-        .filter_map(changed_from)
-        .chain([from.and_time(NaiveTime::MIN)])
-        .min();
-    let before = split.and_then(|split| split.checked_sub_days(MARGIN));
-
-    let zones = calendar.build_tz_resolver();
-    let mut copy = calendar.clone();
-
-    for component in &mut copy.components {
-        let starts_after = start_of(component)
-            .and_then(date_of)
-            .is_some_and(|start| start > last);
-
-        component.entries.retain_mut(|entry| {
-            if entry.name != ICalendarProperty::Rrule {
-                return true;
-            }
-            if starts_after {
-                return false;
-            }
-
-            if let Some(ICalendarValue::RecurrenceRule(rule)) = entry.values.first_mut()
-                && rule
-                    .until
-                    .as_ref()
-                    .and_then(date_of)
-                    .is_none_or(|until| until > last)
-            {
-                rule.until = Some(PartialDateTime {
-                    year: u16::try_from(last.year()).ok(),
-                    month: u8::try_from(last.month()).ok(),
-                    day: u8::try_from(last.day()).ok(),
-                    hour: Some(0),
-                    minute: Some(0),
-                    second: Some(0),
-                    ..PartialDateTime::default()
-                });
-            }
-
-            true
-        });
-
-        if let Some(before) = before {
-            restart(component, &zones, before);
-        }
     }
+
+    let zones = calendar.build_tz_resolver().with_default(Tz::Floating);
+    let changes = changes(calendar, &zones);
+    let mut copy = calendar.clone();
+    let mut taken = Vec::new();
+
+    for master in &mut copy.components {
+        let (Some(rule), Some(first)) = (
+            rule_of(master).cloned(),
+            moment_of(master, ICalendarProperty::Dtstart, None, &zones),
+        ) else {
+            continue;
+        };
+        let margin = margin(&rule);
+        let (Some(before), Some(last)) = (
+            first
+                .reading(start, local)
+                .and_then(|from| from.checked_sub_signed(margin)),
+            first
+                .reading(end, local)
+                .and_then(|to| to.checked_add_signed(margin)),
+        ) else {
+            continue;
+        };
+
+        if first.at > last {
+            master
+                .entries
+                .retain(|entry| entry.name != ICalendarProperty::Rrule);
+            continue;
+        }
+
+        // calcard reads an UNTIL as the time it names, whatever its zone
+        let until = rule
+            .until
+            .as_ref()
+            .and_then(PartialDateTime::to_date_time)
+            .map(|until| until.date_time);
+        if until.is_none_or(|until| until > last) {
+            for entry in &mut master.entries {
+                if let Some(ICalendarValue::RecurrenceRule(rule)) = entry.values.first_mut() {
+                    let mut until = PartialDateTime {
+                        hour: Some(0),
+                        minute: Some(0),
+                        ..PartialDateTime::default()
+                    };
+                    write(&mut until, last);
+                    rule.until = Some(until);
+                }
+            }
+        }
+
+        taken.extend(restart(master, &first, before, &zones, calendar, &changes));
+    }
+
+    copy.components.extend(taken);
 
     Cow::Owned(copy)
 }
 
-// how far before the range a rule starts again: past any zone's offset and the days of an ISO
-// week a year's rule makes in the next year
-const MARGIN: Days = Days::new(9);
+/*
+ * how far past the range, in its own time, a rule expands each side: past a change of the clock
+ * for one more often than daily, which may run to the limit in a day; past the days of an ISO week
+ * a year's rule makes in the next year for any other
+ */
+fn margin(rule: &ICalendarRecurrenceRule) -> TimeDelta {
+    if rule.freq >= ICalendarFrequency::Hourly {
+        TimeDelta::hours(1)
+    } else {
+        TimeDelta::days(9)
+    }
+}
+
+// a change to one occurrence, or with RANGE=THISANDFUTURE to it and the ones after, as calcard reads it
+struct Change {
+    // the component, in the calendar it is in
+    index: usize,
+
+    // calcard's key for its rule: the SEQUENCE, which both share
+    sequence: i64,
+
+    // the occurrence it changes, and when it starts instead
+    from: DateTime<Tz>,
+    to: DateTime<Tz>,
+    onward: bool,
+}
+
+fn changes(calendar: &ICalendar, zones: &TzResolver<&str>) -> Vec<Change> {
+    calendar
+        .components
+        .iter()
+        .enumerate()
+        .filter_map(|(index, component)| {
+            let entry = component.property(&ICalendarProperty::RecurrenceId)?;
+            let Some(ICalendarValue::PartialDateTime(changed)) = entry.values.first() else {
+                return None;
+            };
+            let start_zone = component
+                .property(&ICalendarProperty::Dtstart)
+                .and_then(|entry| entry.tz_id());
+            let from = changed
+                .to_date_time_with_tz(zones.resolve_or_default(entry.tz_id().or(start_zone)))?;
+            let to = match start_of(component) {
+                Some(start) => start.to_date_time_with_tz(zones.resolve_or_default(start_zone))?,
+                None => from,
+            };
+
+            Some(Change {
+                index,
+                sequence: sequence(component),
+                from,
+                to,
+                onward: entry
+                    .params
+                    .iter()
+                    .any(|param| param.name == ICalendarParameterName::Range),
+            })
+        })
+        .collect()
+}
+
+fn sequence(component: &ICalendarComponent) -> i64 {
+    match component
+        .property(&ICalendarProperty::Sequence)
+        .and_then(|entry| entry.values.first())
+    {
+        Some(ICalendarValue::Integer(sequence)) => *sequence,
+        _ => i64::MAX,
+    }
+}
 
 /*
  * starts a rule again a whole number of its periods on, the last whose start is before `before`
@@ -747,20 +852,24 @@ const MARGIN: Days = Days::new(9);
  * occurrences, and their EXDATEs and RECURRENCE-IDs still match; the ones the old start made
  * before it all ended before the range. DTEND moves with DTSTART, keeping the length. A rule with
  * a COUNT counts from its own start: one under the limit expands whole, and `counted` turned a
- * longer one into an UNTIL
+ * longer one into an UNTIL. A change to the occurrences from one before the new start on goes on
+ * after it (`take_over`), the one it gives back
  */
-fn restart(component: &mut ICalendarComponent, zones: &TzResolver<&str>, before: NaiveDateTime) {
-    let Some(start) = moment_of(component, ICalendarProperty::Dtstart, None, zones) else {
-        return;
-    };
-    let end = moment_of(component, ICalendarProperty::Dtend, Some(&start), zones);
-    let Some(mut rule) = rule_of(component).cloned() else {
-        return;
-    };
+fn restart(
+    component: &mut ICalendarComponent,
+    start: &Written,
+    before: NaiveDateTime,
+    zones: &TzResolver<&str>,
+    calendar: &ICalendar,
+    changes: &[Change],
+) -> Option<ICalendarComponent> {
+    let end = moment_of(component, ICalendarProperty::Dtend, Some(start), zones);
+    let mut rule = rule_of(component)?.clone();
     if rule.count.is_some() || !restartable(&rule) {
-        return;
+        return None;
     }
 
+    let timed = start_of(component).is_some_and(PartialDateTime::has_time);
     let length = match (&end, component.property(&ICalendarProperty::Duration)) {
         (Some(end), _) => end.at - start.at,
         (None, Some(duration)) => match duration.values.first() {
@@ -769,32 +878,54 @@ fn restart(component: &mut ICalendarComponent, zones: &TzResolver<&str>, before:
             }
             _ => TimeDelta::zero(),
         },
+        (None, None) if timed => TimeDelta::zero(),
         (None, None) => TimeDelta::days(1),
     };
-    let Some(target) = before.checked_sub_signed(length.max(TimeDelta::zero())) else {
-        return;
-    };
+    let length = length.max(TimeDelta::zero());
 
-    // one that ends near the target has nothing in the range to reach
-    let until = rule.until.as_ref().and_then(PartialDateTime::to_date_time);
-    if until.is_some_and(|until| until.date_time < target + TimeDelta::days(1)) {
-        return;
-    }
+    let sequence = sequence(component);
+    let changes: Vec<&Change> = changes
+        .iter()
+        .filter(|change| change.sequence == sequence)
+        .collect();
 
     implied(&mut rule, start.at);
 
-    // a time the clock skips or repeats is no DTSTART calcard reads, so a period earlier
-    let Some(at) = (0..4).find_map(|back| {
-        let at = moved(&rule, start.at, target, back)?;
-        let shift = at - start.at;
-        let fits = at > start.at
-            && start.exists(at)
-            && end.as_ref().is_none_or(|end| end.exists(end.at + shift));
+    let mut at = moved_near(
+        &rule,
+        start,
+        end.as_ref(),
+        before.checked_sub_signed(length)?,
+    )?;
+    let mut taken = None;
 
-        fits.then_some(at)
-    }) else {
-        return;
-    };
+    // the last change onward before the new start, which calcard would have met on the way
+    let first = start.zone.from_local_datetime(&at).single()?;
+    if let Some(change) = changes
+        .iter()
+        .filter(|change| change.onward && change.from < first)
+        .max_by_key(|change| change.from)
+    {
+        taken = take_over(
+            component,
+            calendar.components.get(change.index)?,
+            change,
+            first,
+            &changes,
+            zones,
+        );
+
+        // where it cannot, the rule starts again before the first change onward, as it is
+        if taken.is_none() {
+            let earliest = changes
+                .iter()
+                .filter(|change| change.onward)
+                .map(|change| change.from.with_timezone(&start.zone).naive_local())
+                .min()?;
+            let target = earliest.checked_sub_signed(margin(&rule) + length)?;
+            at = moved_near(&rule, start, end.as_ref(), target)?;
+        }
+    }
     let shift = at - start.at;
 
     for entry in &mut component.entries {
@@ -813,21 +944,205 @@ fn restart(component: &mut ICalendarComponent, zones: &TzResolver<&str>, before:
             _ => {}
         }
     }
+
+    taken
+}
+
+/*
+ * the rule's start moved a whole number of periods on, to `target` or before; a time the clock
+ * skips or repeats is no DTSTART calcard reads, so a period earlier. None for one not after the
+ * start, or past the rule's UNTIL
+ */
+fn moved_near(
+    rule: &ICalendarRecurrenceRule,
+    start: &Written,
+    end: Option<&Written>,
+    target: NaiveDateTime,
+) -> Option<NaiveDateTime> {
+    // calcard reads UNTIL as a wall time, as `at` is
+    let until = rule.until.as_ref().and_then(PartialDateTime::to_date_time);
+
+    (0..4).find_map(|back| {
+        let at = moved(rule, start.at, target, back)?;
+        let shift = at - start.at;
+        let fits = at > start.at
+            && until.as_ref().is_none_or(|until| at <= until.date_time)
+            && start.exists(at)
+            && end.is_none_or(|end| end.exists(end.at + shift));
+
+        fits.then_some(at)
+    })
+}
+
+/*
+ * the change onward `change` made as it goes on from `first`, the restarted rule's first
+ * occurrence: calcard moves each occurrence after one by the same amount, and names it by its
+ * component, until another, so a copy of it taking over at `first` makes the same occurrences
+ * there and after. None where calcard would not: a change or an EXDATE at either end of the move,
+ * or a change before `first` that the move brings back after it
+ */
+fn take_over(
+    master: &ICalendarComponent,
+    changed: &ICalendarComponent,
+    change: &Change,
+    first: DateTime<Tz>,
+    changes: &[&Change],
+    zones: &TzResolver<&str>,
+) -> Option<ICalendarComponent> {
+    let by = change.to - change.from;
+    let moved = first.checked_add_signed(by)?;
+    let zone = first.timezone();
+
+    let clash = changes.iter().any(|other| {
+        other.from == first
+            || other.from == moved
+            || (other.from < first
+                && other
+                    .from
+                    .checked_sub_signed(by)
+                    .is_some_and(|at| at >= first))
+    });
+    let skipped = exdates(master, zones).any(|exdate| exdate == moved);
+    let timed = |component| start_of(component).map(PartialDateTime::has_time);
+    if clash || skipped || timed(master) != timed(changed) {
+        return None;
+    }
+
+    let begins = master.property(&ICalendarProperty::Dtstart)?;
+    let mut from = begins.clone();
+    from.name = ICalendarProperty::RecurrenceId;
+    from.params.extend(
+        changed
+            .property(&ICalendarProperty::RecurrenceId)?
+            .params
+            .iter()
+            .filter(|param| param.name == ICalendarParameterName::Range)
+            .cloned(),
+    );
+    let mut to = begins.clone();
+    for (entry, at) in [(&mut from, first), (&mut to, moved)] {
+        let Some(ICalendarValue::PartialDateTime(value)) = entry.values.first_mut() else {
+            return None;
+        };
+        write(value, at.with_timezone(&zone).naive_local());
+        if value.to_date_time_with_tz(zone) != Some(at) {
+            return None;
+        }
+    }
+
+    // calcard gives the occurrences after the change the rule's length
+    let lasting = changed.property(&ICalendarProperty::Dtend).is_some()
+        || changed.property(&ICalendarProperty::Duration).is_some();
+    let length = lasting.then(|| default_length(master)).flatten();
+
+    let mut taken = changed.clone();
+    taken.entries.retain(|entry| {
+        !matches!(
+            entry.name,
+            ICalendarProperty::RecurrenceId
+                | ICalendarProperty::Dtstart
+                | ICalendarProperty::Dtend
+                | ICalendarProperty::Duration
+        )
+    });
+    taken.entries.extend([from, to]);
+    if let Some(length) = length {
+        let seconds = length.num_seconds();
+        taken.entries.push(ICalendarEntry {
+            name: ICalendarProperty::Duration,
+            params: Vec::new(),
+            values: vec![ICalendarValue::Duration(ICalendarDuration {
+                neg: seconds < 0,
+                weeks: 0,
+                days: 0,
+                hours: 0,
+                minutes: 0,
+                seconds: u32::try_from(seconds.unsigned_abs()).ok()?,
+            })],
+        });
+    }
+
+    Some(taken)
+}
+
+// a rule's EXDATEs, as calcard reads them
+fn exdates<'a>(
+    master: &'a ICalendarComponent,
+    zones: &'a TzResolver<&str>,
+) -> impl Iterator<Item = DateTime<Tz>> + 'a {
+    let start_zone = master
+        .property(&ICalendarProperty::Dtstart)
+        .and_then(|entry| entry.tz_id());
+
+    master
+        .entries
+        .iter()
+        .filter(|entry| entry.name == ICalendarProperty::Exdate)
+        .flat_map(move |entry| {
+            let zone = zones.resolve_or_default(entry.tz_id().or(start_zone));
+
+            entry.values.iter().filter_map(move |value| match value {
+                ICalendarValue::PartialDateTime(at) => at.to_date_time_with_tz(zone),
+                _ => None,
+            })
+        })
+}
+
+// the length calcard gives a rule's occurrences, from the times its start and end name
+fn default_length(master: &ICalendarComponent) -> Option<TimeDelta> {
+    let start = start_of(master)?;
+    let begins = start.to_date_time()?.date_time;
+
+    if let Some(ICalendarValue::PartialDateTime(end)) = master
+        .property(&ICalendarProperty::Dtend)
+        .and_then(|entry| entry.values.first())
+    {
+        return Some(end.to_date_time()?.date_time - begins);
+    }
+    if let Some(ICalendarValue::Duration(duration)) = master
+        .property(&ICalendarProperty::Duration)
+        .and_then(|entry| entry.values.first())
+    {
+        return duration.to_time_delta();
+    }
+
+    // one with a time lasts to the end of its day, RFC 5545 3.6.1 as calcard reads it
+    if start.has_time() {
+        return Some(begins.with_hour(23)?.with_minute(59)?.with_second(59)? - begins);
+    }
+
+    Some(TimeDelta::days(1))
 }
 
 // a DTSTART or DTEND as calcard reads it: the local time it names, in its zone
 struct Written {
     at: NaiveDateTime,
 
-    // the zone it is in, none for UTC or an offset, where every time exists once
-    zone: Option<Tz>,
+    // a fixed offset for UTC or an offset, where every time exists once
+    zone: Tz,
 }
 
 impl Written {
     // whether `at` is a time calcard reads in the zone, once
     fn exists(&self, at: NaiveDateTime) -> bool {
-        self.zone
-            .is_none_or(|zone| zone.from_local_datetime(&at).single().is_some())
+        self.zone.from_local_datetime(&at).single().is_some()
+    }
+
+    // what its zone's clock reads at `at` seconds since the epoch; with none, the local clock
+    fn reading(
+        &self,
+        at: i64,
+        local: &impl Fn(i64) -> Option<NaiveDateTime>,
+    ) -> Option<NaiveDateTime> {
+        if self.zone.is_floating() {
+            return local(at);
+        }
+
+        Some(
+            DateTime::from_timestamp(at, 0)?
+                .with_timezone(&self.zone)
+                .naive_local(),
+        )
     }
 }
 
@@ -844,10 +1159,10 @@ fn moment_of(
     };
     let read = value.to_date_time()?;
 
-    let zone = match (read.offset, entry.tz_id()) {
-        (Some(_), _) => None,
-        (None, Some(name)) => Some(zones.resolve_or_default(Some(name))),
-        (None, None) => start.map_or(Some(Tz::Floating), |start| start.zone),
+    let zone = match (read.tz(), entry.tz_id()) {
+        (Some(zone), _) => zone,
+        (None, Some(name)) => zones.resolve_or_default(Some(name)),
+        (None, None) => start.map_or(Tz::Floating, |start| start.zone),
     };
 
     Some(Written {
@@ -934,7 +1249,7 @@ fn weekday(day: Weekday) -> ICalendarWeekday {
 
 /*
  * `start` a whole number of the rule's periods on, the last at or before `target`'s period, less
- * `back` more: one period, or a day's worth of a rule more often than daily. A month's or a
+ * `back` more: one period, or an hour's worth of a rule more often than hourly. A month's or a
  * year's period starts on its first day, as the rule's own days are written out
  */
 fn moved(
@@ -955,7 +1270,7 @@ fn moved(
                     ICalendarFrequency::Minutely => 60,
                     _ => 3600,
                 };
-            let periods = (target - start).num_seconds() / unit - back * (24 * 3600 / unit).max(1);
+            let periods = (target - start).num_seconds() / unit - back * (3600 / unit).max(1);
 
             start.checked_add_signed(TimeDelta::try_seconds(periods.checked_mul(unit)?)?)
         }
@@ -1001,23 +1316,6 @@ fn write(value: &mut PartialDateTime, at: NaiveDateTime) {
         value.hour = u8::try_from(at.hour()).ok();
         value.minute = u8::try_from(at.minute()).ok();
         value.second = u8::try_from(at.second()).ok();
-    }
-}
-
-// where a change to an occurrence and the ones after it, RANGE=THISANDFUTURE, takes over
-fn changed_from(component: &ICalendarComponent) -> Option<NaiveDateTime> {
-    let entry = component.property(&ICalendarProperty::RecurrenceId)?;
-    if !entry
-        .params
-        .iter()
-        .any(|param| param.name == ICalendarParameterName::Range)
-    {
-        return None;
-    }
-
-    match entry.values.first()? {
-        ICalendarValue::PartialDateTime(value) => Some(value.to_date_time()?.date_time),
-        _ => None,
     }
 }
 
@@ -1171,50 +1469,6 @@ fn starts(
 }
 
 /*
- * whether a rule `restart` cannot start again, one more often than hourly that a filter steps
- * unevenly, runs to the limit before a year from `today`, so its later occurrences never show
- */
-fn crowded(calendar: &ICalendar, today: NaiveDate) -> bool {
-    let Some(master) = calendar.components.iter().find(|component| {
-        component
-            .property(&ICalendarProperty::RecurrenceId)
-            .is_none()
-            && rule_of(component).is_some_and(|rule| rule.count.is_none() && !restartable(rule))
-    }) else {
-        return false;
-    };
-    let (Some(mut rule), Some(horizon)) = (
-        rule_of(master).cloned(),
-        today.checked_add_days(Days::new(400)),
-    ) else {
-        return false;
-    };
-    let mut walk = bare(master);
-    let Some(ICalendarValue::PartialDateTime(first)) = walk
-        .property(&ICalendarProperty::Dtstart)
-        .and_then(|entry| entry.values.first())
-    else {
-        return false;
-    };
-    let Some(start) = first.to_date_time() else {
-        return false;
-    };
-
-    if rule
-        .until
-        .as_ref()
-        .and_then(date_of)
-        .is_none_or(|until| until > horizon)
-    {
-        let mut until = PartialDateTime::default();
-        write(&mut until, horizon.and_time(NaiveTime::MIN));
-        rule.until = Some(until);
-    }
-
-    starts(&mut walk, start.date_time, &rule).len() >= LIMIT
-}
-
-/*
  * a calendar as one of its events that recur each, with their exceptions, and one of the rest:
  * calcard's limit on occurrences is for a whole calendar, so a rule that runs to it, like one
  * every minute for years, would otherwise hide the events after it. Each keeps the calendar's
@@ -1277,14 +1531,6 @@ fn series(calendar: ICalendar) -> Vec<ICalendar> {
     found
 }
 
-fn date_of(at: &PartialDateTime) -> Option<NaiveDate> {
-    NaiveDate::from_ymd_opt(
-        i32::from(at.year?),
-        u32::from(at.month?),
-        u32::from(at.day?),
-    )
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -1323,6 +1569,19 @@ mod tests {
         DateTime::from_timestamp(seconds, 0).map(|at| at.with_timezone(&zone).naive_local())
     }
 
+    // the events in a range, which all show
+    fn complete(
+        calendars: &[ICalendar],
+        from: NaiveDate,
+        to: NaiveDate,
+        local: impl Fn(i64) -> Option<NaiveDateTime>,
+    ) -> Vec<Occurrence> {
+        let found = occurrences(calendars, from, to, local);
+        assert!(!found.partial, "some of {from} to {to} missing");
+
+        found.occurrences
+    }
+
     // what calcard's whole expansion gives, with no limit and no restart
     fn whole(
         calendars: &[ICalendar],
@@ -1337,7 +1596,7 @@ mod tests {
         );
         let mut found = Vec::new();
         for calendar in calendars {
-            expand(calendar, usize::MAX, range, &local, &mut found);
+            assert!(expand(calendar, usize::MAX, range, &local, &mut found));
         }
         sort(&mut found);
         found
@@ -1370,7 +1629,7 @@ mod tests {
             "DTEND:20261008T083000Z",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
+        let found = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
 
         assert_eq!(
             found,
@@ -1395,7 +1654,7 @@ mod tests {
             "DURATION:PT1H",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 7, 1), day(2026, 8, 1), plus_two);
+        let found = complete(&calendars, day(2026, 7, 1), day(2026, 8, 1), plus_two);
 
         // 09:00 EDT is 13:00 UTC, 15:00 at UTC+2
         assert_eq!(titles(&found), [("Call", at(day(2026, 7, 7), 15, 0))]);
@@ -1412,7 +1671,7 @@ mod tests {
             "DTEND:20261008T130000",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
+        let found = complete(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
 
         assert_eq!(titles(&found), [("Lunch", at(day(2026, 10, 8), 12, 0))]);
     }
@@ -1426,7 +1685,7 @@ mod tests {
             "DTEND;VALUE=DATE:20261010",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
+        let found = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
         let trip = &found[0];
 
         assert!(trip.all_day);
@@ -1445,7 +1704,7 @@ mod tests {
             "SUMMARY:Holiday",
             "DTSTART;VALUE=DATE:20261008",
         ]));
-        let found = occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
+        let found = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
         assert_eq!(
             (found[0].start, found[0].end),
             bounds(day(2026, 10, 8), day(2026, 10, 9))
@@ -1461,7 +1720,7 @@ mod tests {
             "DTSTART:20261008T150000",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
+        let found = complete(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
 
         assert_eq!(found[0].start, found[0].end);
         assert!(found[0].on(day(2026, 10, 8)));
@@ -1477,7 +1736,7 @@ mod tests {
             "DTEND:20261009T060000",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 10, 9), day(2026, 10, 10), plus_two);
+        let found = complete(&calendars, day(2026, 10, 9), day(2026, 10, 10), plus_two);
 
         assert_eq!(
             titles(&found),
@@ -1492,7 +1751,7 @@ mod tests {
             "DTSTART:20261008T220000",
             "DTEND:20261009T000000",
         ]));
-        let found = occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
+        let found = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
         assert!(!found[0].on(day(2026, 10, 9)));
     }
 
@@ -1518,7 +1777,7 @@ mod tests {
             ]),
         ));
 
-        let found = occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
+        let found = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
 
         assert_eq!(
             titles(&found),
@@ -1530,7 +1789,7 @@ mod tests {
         );
 
         // decades on, still there
-        let found = occurrences(&calendars, day(2090, 1, 1), day(2090, 1, 8), plus_two);
+        let found = complete(&calendars, day(2090, 1, 1), day(2090, 1, 8), plus_two);
         assert_eq!(titles(&found), [("Review", at(day(2090, 1, 2), 10, 0))]);
     }
 
@@ -1560,7 +1819,7 @@ mod tests {
             ]),
         ));
 
-        let found = occurrences(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
+        let found = complete(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
 
         assert_eq!(found.iter().filter(|o| o.title == "Ping").count(), 24);
         assert!(found.iter().any(|o| o.title == "Dentist"));
@@ -1577,7 +1836,7 @@ mod tests {
             "RRULE:FREQ=HOURLY",
         ]));
 
-        let found = occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
+        let found = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
 
         assert_eq!(found.len(), 31 * 24);
         assert_eq!(found[0].start, at(day(2026, 10, 1), 0, 15));
@@ -1686,7 +1945,7 @@ mod tests {
             let mut shown = 0;
 
             for &(from, to) in &ranges {
-                let restarted = occurrences(&calendars, from, to, new_york);
+                let restarted = complete(&calendars, from, to, new_york);
                 assert_eq!(
                     restarted,
                     whole(&calendars, from, to, new_york),
@@ -1727,7 +1986,7 @@ mod tests {
             ]),
         ));
 
-        let found = occurrences(&calendars, day(2026, 10, 5), day(2026, 10, 9), plus_two);
+        let found = complete(&calendars, day(2026, 10, 5), day(2026, 10, 9), plus_two);
 
         assert_eq!(
             found,
@@ -1741,9 +2000,9 @@ mod tests {
         );
     }
 
-    // a rule that cannot start again and runs to the limit before long is told of
+    // a rule that cannot start again and runs to the limit before the range says some are missing
     #[test]
-    fn a_rule_that_runs_to_the_limit_is_told_of() {
+    fn a_rule_that_runs_to_the_limit_says_so() {
         let rule = |start: &str| {
             calendar(&event(&[
                 "UID:1",
@@ -1752,15 +2011,159 @@ mod tests {
                 "RRULE:FREQ=MINUTELY;BYHOUR=9",
             ]))
         };
+        let october =
+            |calendars| occurrences(calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two);
 
-        assert!(crowded(
-            &rule("DTSTART:20100101T090000")[0],
-            day(2026, 10, 8)
+        let old = rule("DTSTART:20100101T090000");
+        let old = october(&old);
+        assert!(old.partial);
+        assert!(old.occurrences.is_empty());
+
+        let new = rule("DTSTART:20260901T090000");
+        let new = october(&new);
+        assert!(!new.partial);
+        assert_eq!(new.occurrences.len(), 31 * 60);
+    }
+
+    // a rule each second starts again just before a day, which it fills; six weeks of it are more
+    // than the limit, and say so
+    #[test]
+    fn a_rule_each_second_fills_a_day() {
+        let calendars = calendar(&event(&[
+            "UID:tick",
+            "SUMMARY:Tick",
+            "DTSTART:20100101T000000",
+            "RRULE:FREQ=SECONDLY",
+        ]));
+
+        let found = complete(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
+        assert_eq!(found.len(), 24 * 3600);
+        assert_eq!(found[0].start, at(day(2026, 10, 8), 0, 0));
+        assert_eq!(
+            found[found.len() - 1].start,
+            day(2026, 10, 8).and_hms_opt(23, 59, 59).unwrap()
+        );
+
+        let weeks = occurrences(&calendars, day(2026, 9, 28), day(2026, 11, 9), plus_two);
+        assert!(weeks.partial);
+        assert_eq!(weeks.occurrences[0].start, at(day(2026, 9, 28), 0, 0));
+    }
+
+    // a change to an occurrence and the ones after, long before the range, still moves and names
+    // the occurrences in it, without the rule expanding from the change: the last change counts,
+    // and an EXDATE and a single change in the range still match the moved occurrences. One from
+    // 2025 to the end of the year matches calcard's whole expansion
+    #[test]
+    fn an_old_change_onward_holds_now() {
+        let series = |zone: &str, [begins, moved, again]: [&str; 3], rule: &str| {
+            calendar(&format!(
+                "{}{}{}{}",
+                event(&[
+                    "UID:hourly",
+                    "SUMMARY:Check",
+                    &format!("DTSTART{zone}:{begins}0101T000000"),
+                    "DURATION:PT10M",
+                    rule,
+                    &format!("EXDATE{zone}:20261010T121500"),
+                ]),
+                event(&[
+                    "UID:hourly",
+                    "SUMMARY:Moved",
+                    &format!("RECURRENCE-ID;RANGE=THISANDFUTURE{zone}:{moved}0301T050000"),
+                    &format!("DTSTART{zone}:{moved}0301T051500"),
+                    "DURATION:PT30M",
+                ]),
+                event(&[
+                    "UID:hourly",
+                    "SUMMARY:Moved again",
+                    &format!("RECURRENCE-ID;RANGE=THISANDFUTURE{zone}:{again}0601T101500"),
+                    &format!("DTSTART{zone}:{again}0601T103000"),
+                    "DURATION:PT30M",
+                ]),
+                event(&[
+                    "UID:hourly",
+                    "SUMMARY:Once",
+                    &format!("RECURRENCE-ID{zone}:20261012T081500"),
+                    &format!("DTSTART{zone}:20261012T090000"),
+                    "DURATION:PT5M",
+                ]),
+            ))
+        };
+
+        for zone in ["", ";TZID=America/New_York"] {
+            let recent = series(
+                zone,
+                ["2025", "2025", "2026"],
+                "RRULE:FREQ=HOURLY;UNTIL=20270101T000000",
+            );
+            for (from, to) in [
+                (day(2026, 10, 1), day(2026, 11, 1)),
+                (day(2026, 10, 26), day(2026, 11, 9)),
+            ] {
+                let found = complete(&recent, from, to, new_york);
+                assert_eq!(found, whole(&recent, from, to, new_york), "{zone} {from}");
+            }
+
+            let calendars = series(zone, ["2010", "2011", "2012"], "RRULE:FREQ=HOURLY");
+            assert_eq!(
+                complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), new_york),
+                complete(&recent, day(2026, 10, 1), day(2026, 11, 1), new_york),
+                "{zone}"
+            );
+
+            let october = complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), new_york);
+            assert_eq!(october.len(), 31 * 24 - 1, "{zone}");
+            assert!(
+                october
+                    .iter()
+                    .all(|o| o.title == "Moved again" || o.title == "Once")
+            );
+            assert!(
+                october
+                    .iter()
+                    .filter(|o| o.title == "Moved again")
+                    .all(|o| o.start.minute() == 15 && o.span.1 - o.span.0 == 600)
+            );
+            assert_eq!(
+                titles(
+                    &complete(&calendars, day(2026, 10, 12), day(2026, 10, 13), new_york)[7..10]
+                ),
+                [
+                    ("Moved again", at(day(2026, 10, 12), 7, 15)),
+                    ("Once", at(day(2026, 10, 12), 9, 0)),
+                    ("Moved again", at(day(2026, 10, 12), 9, 15)),
+                ]
+            );
+        }
+    }
+
+    // a change onward that cannot take over where the rule starts again keeps it starting before
+    // the change, so it still holds
+    #[test]
+    fn a_change_onward_that_cannot_take_over_holds() {
+        let calendars = calendar(&format!(
+            "{}{}",
+            event(&[
+                "UID:daily",
+                "SUMMARY:Day",
+                "DTSTART;VALUE=DATE:20100101",
+                "RRULE:FREQ=DAILY",
+            ]),
+            event(&[
+                "UID:daily",
+                "SUMMARY:Morning",
+                "RECURRENCE-ID;RANGE=THISANDFUTURE;VALUE=DATE:20110301",
+                "DTSTART:20110301T090000",
+                "DURATION:PT1H",
+            ]),
         ));
-        assert!(!crowded(
-            &rule("DTSTART:20260901T090000")[0],
-            day(2026, 10, 8)
-        ));
+
+        let (from, to) = (day(2026, 10, 1), day(2026, 11, 1));
+        let found = complete(&calendars, from, to, plus_two);
+        assert_eq!(found, whole(&calendars, from, to, plus_two));
+        assert!(found.iter().all(|o| o.title == "Morning"));
+        // each runs a day, the rule's own length, so the last of September reaches into the range
+        assert_eq!(found.len(), 32);
     }
 
     // a COUNT over the limit still ends at its last occurrence, which it counts from its start
@@ -1774,7 +2177,7 @@ mod tests {
         ]));
 
         // the 250000th starts 499998 minutes on: 14 Dec 2010, 05:18
-        let found = occurrences(&calendars, day(2010, 12, 14), day(2010, 12, 15), plus_two);
+        let found = complete(&calendars, day(2010, 12, 14), day(2010, 12, 15), plus_two);
         assert_eq!(found.last().unwrap().start, at(day(2010, 12, 14), 5, 18));
         assert_eq!(found.len(), 5 * 30 + 9 + 1);
     }
@@ -1798,7 +2201,7 @@ mod tests {
             ]),
         ));
 
-        let found = occurrences(&calendars, day(2026, 11, 1), day(2026, 11, 2), new_york);
+        let found = complete(&calendars, day(2026, 11, 1), day(2026, 11, 2), new_york);
 
         assert_eq!(
             titles(&found),
@@ -1833,7 +2236,7 @@ mod tests {
             ]),
         ));
 
-        let found = occurrences(&calendars, day(2026, 9, 1), day(2027, 1, 1), plus_two);
+        let found = complete(&calendars, day(2026, 9, 1), day(2027, 1, 1), plus_two);
 
         assert_eq!(found.iter().filter(|o| o.title == "Course").count(), 3);
         assert_eq!(found.iter().filter(|o| o.title == "Sprint").count(), 3);
@@ -1852,7 +2255,7 @@ mod tests {
         ));
 
         assert_eq!(
-            occurrences(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two),
+            complete(&calendars, day(2026, 10, 1), day(2026, 11, 1), plus_two),
             []
         );
     }
@@ -1866,7 +2269,7 @@ mod tests {
             event(&["UID:3", "SUMMARY:Day", "DTSTART;VALUE=DATE:20261008"]),
         ));
 
-        let found = occurrences(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
+        let found = complete(&calendars, day(2026, 10, 8), day(2026, 10, 9), plus_two);
 
         assert_eq!(
             found.iter().map(|o| o.title.as_str()).collect::<Vec<_>>(),

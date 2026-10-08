@@ -20,7 +20,7 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::sources::calendar::{Calendars, Occurrence};
+use crate::sources::calendar::{Calendars, Events, Occurrence};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
@@ -191,13 +191,13 @@ impl Browse {
 struct Memo {
     generation: u64,
     start: NaiveDate,
-    events: Vec<Occurrence>,
+    events: Events,
 }
 
 static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
 
 // the events from `start` on, for the six weeks the month shows
-fn events(calendars: &Calendars, start: NaiveDate) -> Vec<Occurrence> {
+fn events(calendars: &Calendars, start: NaiveDate) -> Events {
     let mut memo = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
 
     if memo.generation != calendars.generation || memo.start != start {
@@ -234,7 +234,10 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
     let start = grid_start(day);
-    let events = events(&calendars, start);
+    let Events {
+        occurrences: events,
+        partial,
+    } = events(&calendars, start);
     let agenda_events = on(&events, day);
     let browse = browse.bounded(agenda_events.len());
 
@@ -250,7 +253,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             },
         ))
     } else {
-        Box::new(agenda(day, today, &agenda_events, &browse))
+        Box::new(agenda(day, today, &agenda_events, partial, &browse))
     };
 
     Rectangle::new()
@@ -417,8 +420,17 @@ fn cell(
         .child(disc)
 }
 
-// the chosen day's name, its events with the ring on one while it is in the agenda, and a count
-fn agenda(day: NaiveDate, today: NaiveDate, events: &[Occurrence], browse: &Browse) -> Column {
+/*
+ * the chosen day's name, its events with the ring on one while it is in the agenda, and a count,
+ * which says so when a rule ran to the limit and some are missing
+ */
+fn agenda(
+    day: NaiveDate,
+    today: NaiveDate,
+    events: &[Occurrence],
+    partial: bool,
+    browse: &Browse,
+) -> Column {
     let title = Text::new(named(day, today))
         .size(theme::text::TITLE)
         .color(theme::ISLAND.on_surface)
@@ -438,10 +450,14 @@ fn agenda(day: NaiveDate, today: NaiveDate, events: &[Occurrence], browse: &Brow
                 .height(LIST)
                 .align_child(Center, Center)
                 .child(
-                    Text::new("No events")
-                        .size(theme::text::BODY)
-                        .color(theme::ISLAND.on_surface_variant)
-                        .weight(theme::text::MEDIUM),
+                    Text::new(if partial {
+                        "Some events not shown"
+                    } else {
+                        "No events"
+                    })
+                    .size(theme::text::BODY)
+                    .color(theme::ISLAND.on_surface_variant)
+                    .weight(theme::text::MEDIUM),
                 ),
         )
     } else {
@@ -479,6 +495,11 @@ fn agenda(day: NaiveDate, today: NaiveDate, events: &[Occurrence], browse: &Brow
         ),
         1 => String::from("1 event"),
         all => format!("{all} events"),
+    };
+    let count = if partial && !count.is_empty() {
+        format!("{count}, some not shown")
+    } else {
+        count
     };
 
     Column::new(vec![
@@ -624,7 +645,11 @@ fn pressed(monitor: &str, key: Key) -> bool {
     let today = clock::today();
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
-    let count = on(&events(&Calendars::read(), grid_start(day)), day).len();
+    let count = on(
+        &events(&Calendars::read(), grid_start(day)).occurrences,
+        day,
+    )
+    .len();
 
     let Some(browse) = browse.bounded(count).step(key, today, count) else {
         return false;
@@ -656,7 +681,11 @@ fn wheel(lines: f32) {
     let today = clock::today();
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
-    let count = on(&events(&Calendars::read(), grid_start(day)), day).len();
+    let count = on(
+        &events(&Calendars::read(), grid_start(day)).occurrences,
+        day,
+    )
+    .len();
     let browse = browse.bounded(count);
 
     let browse = if lines > 0.0 {
