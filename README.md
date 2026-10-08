@@ -8,7 +8,7 @@
   A top-center Dynamic Island for niri, built with <a href="https://github.com/MystiaFin/amane">Amane</a>.
 </p>
 
-https://github.com/user-attachments/assets/27e6837e-8cf1-4faa-8815-e5b14cdd631b
+https://github.com/user-attachments/assets/086ab84e-4144-456b-980e-5431f3439300
 
 AI-generated concept, not a capture of the current build.
 
