@@ -865,6 +865,54 @@ mod tests {
         turn_off(home);
     }
 
+    /*
+     * holding just as it is given up on, it either turns caffeine on or fails with the old holder
+     * kept, never both or neither, and leaves no holder running that nothing follows
+     */
+    #[test]
+    fn a_holder_that_holds_as_it_is_given_up_on_is_one_or_the_other() {
+        let patience = Duration::from_millis(200);
+
+        for late in [180, 190, 195, 200, 205, 210, 220] {
+            let old = spawn("exec sleep 30");
+            let old_pid = old.id();
+            let home = home(holding(1, old));
+
+            start(
+                home,
+                &format!("sleep 0.{late:03}; echo held; exec sleep 30"),
+                2,
+                patience,
+            );
+            let new_pid = lock(home)
+                .starting
+                .as_ref()
+                .map(|starting| starting.child.id());
+            let status = settled(home);
+
+            match status.on {
+                Some((2, _)) => {
+                    assert_eq!(status.failed, None, "{late}ms: {status}");
+                    assert!(!running(old_pid), "{late}ms: the old holder kept running");
+                }
+                Some((1, _)) => {
+                    assert!(
+                        matches!(status.settled(2), Settled::Failed(why) if why.contains("did not hold")),
+                        "{late}ms: {status}"
+                    );
+                    assert!(running(old_pid), "{late}ms: the old holder was let go of");
+                    assert!(
+                        !running(new_pid.unwrap()),
+                        "{late}ms: the new holder kept running"
+                    );
+                }
+                _ => panic!("{late}ms: {status}"),
+            }
+
+            turn_off(home);
+        }
+    }
+
     #[test]
     fn a_newer_on_takes_the_place_of_one_still_starting() {
         let home = home(Caffeine::default());
