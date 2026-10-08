@@ -10,19 +10,30 @@
 //! cannot start is taken again with a backoff, and `kanade status` says how it stands. Caffeine is
 //! about idle, not sleep: an asked-for suspend locks with it on too.
 //!
+//! Over Kanade's own zbus connection, not Amane's `Bus`, which never connects again once the
+//! system bus is lost. A lost bus is connected to again with a backoff; each connection asks logind
+//! whether it is on its way to sleep, as a signal may have been missed in between. Only logind
+//! saying it is not opens the gate: a bus lost, or a logind that does not answer, keeps it as it
+//! was.
+//!
 //! An idle lock is the idle daemon's, like hypridle running `kanade lock`, which honors caffeine's
 //! idle inhibitor.
 
+use std::convert::Infallible;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::{Bus, Value};
+use zbus::MatchRule;
+use zbus::blocking::fdo::DBusProxy;
+use zbus::blocking::{Connection, MessageIterator, connection};
+use zbus::names::BusName;
+use zbus::zvariant::OwnedValue;
 
-use super::bus;
 use super::caffeine::{self, HELD, INHIBIT, READY};
 use super::wake::{self, SETPRIV};
 use crate::{lock, supervise};
@@ -30,15 +41,19 @@ use crate::{lock, supervise};
 const LOGIND: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const MANAGER: &str = "org.freedesktop.login1.Manager";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+// how long logind may take to answer, so a wedged one never stalls a run
+const TIMEOUT: Duration = Duration::from_secs(2);
 
 // logind's own default for `InhibitDelayMaxUSec`, for when it does not say
 const DELAY: Duration = Duration::from_secs(5);
 
-// the wait before taking an inhibitor again, doubled each time it fails up to `LONGEST`
+// the wait before taking an inhibitor or connecting again, doubled at each failure up to `LONGEST`
 const FIRST: Duration = Duration::from_secs(1);
 const LONGEST: Duration = Duration::from_secs(300);
 
-// a holder that lasted this long was no flapping one, so the next is tried again soon
+// a holder or connection that lasted this long was no flapping one, so the next is tried again soon
 const LASTED: Duration = Duration::from_secs(60);
 
 // what the sleep thread hears, from logind and from its holders
@@ -48,8 +63,8 @@ enum Event {
     // the holder numbered so ended
     Ended(u64),
 
-    // the system bus closed
-    Gone,
+    // the system bus was lost, why
+    Gone(String),
 }
 
 // where the inhibitor stands, for `kanade status`
@@ -63,8 +78,8 @@ enum Health {
     // none, why, and when it is tried again
     Missing(String, Instant),
 
-    // the system bus closed: no sleep is heard of again
-    Gone,
+    // the system bus was lost, why, and when it is connected to again
+    Lost(String, Instant),
 }
 
 static HEALTH: Mutex<Health> = Mutex::new(Health::Starting);
@@ -138,9 +153,10 @@ pub fn status() -> String {
             "no delay inhibitor, so sleep may come before the lock: {why}; trying again in {}s",
             again.saturating_duration_since(Instant::now()).as_secs()
         ),
-        Health::Gone => {
-            String::from("the system bus closed, so the session no longer locks before sleep")
-        }
+        Health::Lost(why, again) => format!(
+            "no system bus, so sleep may come before the lock: {why}; connecting again in {}s",
+            again.saturating_duration_since(Instant::now()).as_secs()
+        ),
     };
 
     format!("sleep: {line}")
@@ -150,56 +166,70 @@ fn health(health: Health) {
     *HEALTH.lock().unwrap_or_else(PoisonError::into_inner) = health;
 }
 
-// runs on its own thread for as long as the system bus does: the holder dies with the thread
+/*
+ * runs for good on its own thread, connecting again after the system bus is lost. The gate stays
+ * as the run left it: shut while the machine may be on its way to sleep, until a run hears logind
+ * say it is not
+ */
 fn follow() {
-    let bus = Bus::system();
+    let mut again = Retry::now(Instant::now());
+
+    loop {
+        let started = Instant::now();
+        let Err(why) = run();
+
+        let now = Instant::now();
+        let at = again.ended(started.elapsed(), now);
+        eprintln!(
+            "kanade: no system bus, so sleep may come before the lock: {why}; connecting again in \
+             {:?}",
+            at - now
+        );
+        health(Health::Lost(why, at));
+
+        thread::sleep(at - now);
+    }
+}
+
+// follows logind until the system bus is lost; the holder is let go of with it
+fn run() -> Result<Infallible, String> {
+    let connection = connect().map_err(|error| format!("cannot connect: {error}"))?;
+    health(Health::Starting);
     let (tell, events) = mpsc::channel();
 
-    // subscribed before an inhibitor is taken, so no sleep falls between them
-    let signals = bus.signals(MANAGER, "PrepareForSleep");
+    // subscribed before logind is asked or an inhibitor taken, so no sleep falls between them
+    let rule =
+        format!("type='signal',path='{PATH}',interface='{MANAGER}',member='PrepareForSleep'");
+    let rule = MatchRule::try_from(rule.as_str()).map_err(|error| error.to_string())?;
+    let signals = MessageIterator::for_match_rule(rule, &connection, None)
+        .map_err(|error| format!("cannot follow logind: {error}"))?;
 
-    // a sleep begun before this thread was, as after a restart; before any signal is heard, so a
-    // wake that follows is not undone
-    if lock::preparing() == Some(true) {
-        lock::sleeping();
-        let _ = tell.send(Event::Sleep(true));
+    /*
+     * a sleep begun or ended while no run was heard, as after a restart or a lost bus; before any
+     * signal is, so one after it is not undone. Not knowing is no wake
+     */
+    match preparing_on(&connection) {
+        Some(true) => {
+            lock::sleeping();
+            let _ = tell.send(Event::Sleep(true));
+        }
+        Some(false) => lock::woke(),
+        None => eprintln!("kanade: logind does not say whether the machine is on its way to sleep"),
     }
+
+    let patience = patience(&connection);
 
     let told = tell.clone();
-    let heard = thread::Builder::new()
+    thread::Builder::new()
         .name(String::from("sleep signals"))
         .spawn(move || {
-            for signal in signals {
-                if signal.path() != PATH
-                    || bus::unique(bus, LOGIND).as_deref() != Some(signal.sender())
-                {
-                    continue;
-                }
-
-                let Some(&Value::Bool(sleeping)) = signal.arguments().first() else {
-                    continue;
-                };
-
-                // here, not after an inhibitor is taken or `InhibitDelayMaxUSec` asked
-                if sleeping {
-                    lock::sleeping();
-                } else {
-                    lock::woke();
-                }
-
-                if told.send(Event::Sleep(sleeping)).is_err() {
-                    return;
-                }
-            }
-
-            let _ = told.send(Event::Gone);
-        });
-
-    if let Err(error) = heard {
-        health(Health::Gone);
-        eprintln!("kanade: cannot follow sleep: {error}");
-        return;
-    }
+            // a panic loses logind as a closed bus would, so the run ends rather than hangs
+            let why =
+                panic::catch_unwind(AssertUnwindSafe(|| forward(signals, &connection, &told)))
+                    .unwrap_or_else(|_| String::from("following logind panicked"));
+            let _ = told.send(Event::Gone(why));
+        })
+        .map_err(|error| format!("cannot follow sleep: {error}"))?;
 
     let mut delay: Option<Delay> = None;
     let mut asleep = false;
@@ -233,17 +263,20 @@ fn follow() {
             }
         }
 
+        // never disconnected: `tell` is kept
         let event = match retry.at.filter(|_| !asleep) {
             Some(at) => match events.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(event) => event,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => Event::Gone,
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => continue,
             },
-            None => events.recv().unwrap_or(Event::Gone),
+            None => match events.recv() {
+                Ok(event) => event,
+                Err(_) => continue,
+            },
         };
 
         match event {
-            // heard twice, as when it began before this thread did, it locks once more
+            // heard twice, as when it began before this run did, it locks once more
             Event::Sleep(true) => {
                 asleep = true;
 
@@ -251,7 +284,7 @@ fn follow() {
                     eprintln!("kanade: no delay inhibitor, so sleep may come before the lock");
                 }
 
-                match lock::hold(patience(bus)) {
+                match lock::hold(patience) {
                     Ok(()) => eprintln!("kanade: locked before sleep"),
                     Err(why) => eprintln!("kanade: did not lock before sleep: {why}"),
                 }
@@ -285,17 +318,98 @@ fn follow() {
                 health(Health::Missing(why.clone(), at));
                 said = why;
             }
-            // no wake is heard of again, nor can logind be asked: the gate opens
-            Event::Gone => {
-                lock::woke();
-                health(Health::Gone);
-                eprintln!(
-                    "kanade: the system bus went away, so the session no longer locks before sleep"
-                );
-                return;
-            }
+            // the gate stays as it is: only logind saying the machine woke opens it
+            Event::Gone(why) => return Err(why),
         }
     }
+}
+
+/*
+ * shuts and opens the gate as logind says, then tells the run, until the bus is lost: why it was.
+ * Only logind's own signals count, as anyone may send one
+ */
+fn forward(signals: MessageIterator, connection: &Connection, tell: &Sender<Event>) -> String {
+    let mut logind = None;
+    let mut last = None;
+
+    for signal in signals {
+        let signal = match signal {
+            Ok(signal) => signal,
+            Err(error) => {
+                last = Some(error.to_string());
+                continue;
+            }
+        };
+
+        let Some(sender) = signal.header().sender().map(|sender| sender.to_string()) else {
+            continue;
+        };
+
+        // asked again on a stranger, as logind may have restarted
+        if logind.as_ref() != Some(&sender) {
+            logind = owner(connection);
+            if logind.as_ref() != Some(&sender) {
+                continue;
+            }
+        }
+
+        let Ok(sleeping) = signal.body().deserialize::<bool>() else {
+            continue;
+        };
+
+        // here, not after an inhibitor is taken
+        if sleeping {
+            lock::sleeping();
+        } else {
+            lock::woke();
+        }
+
+        if tell.send(Event::Sleep(sleeping)).is_err() {
+            break;
+        }
+    }
+
+    last.unwrap_or_else(|| String::from("the system bus closed"))
+}
+
+fn connect() -> zbus::Result<Connection> {
+    connection::Builder::system()?
+        .method_timeout(TIMEOUT)
+        .build()
+}
+
+// logind's unique name, which its signals name as their sender
+fn owner(connection: &Connection) -> Option<String> {
+    let name = BusName::try_from(LOGIND).ok()?;
+
+    let owner = DBusProxy::new(connection).ok()?.get_name_owner(name).ok()?;
+
+    Some(owner.to_string())
+}
+
+/*
+ * whether logind is on its way to sleep, asked on a connection of its own, as for a password typed
+ * while the gate is shut; None when it does not answer
+ */
+pub fn preparing() -> Option<bool> {
+    preparing_on(&connect().ok()?)
+}
+
+fn preparing_on(connection: &Connection) -> Option<bool> {
+    property(connection, "PreparingForSleep")?.try_into().ok()
+}
+
+fn property(connection: &Connection, name: &str) -> Option<OwnedValue> {
+    connection
+        .call_method(
+            Some(LOGIND),
+            PATH,
+            Some(PROPERTIES),
+            "Get",
+            &(MANAGER, name),
+        )
+        .and_then(|reply| reply.body().deserialize::<OwnedValue>())
+        .ok()
 }
 
 // a delay inhibitor on sleep, numbered `serial`, held once logind gave it; `tell` hears it end
@@ -383,12 +497,12 @@ fn arguments() -> Vec<String> {
     .to_vec()
 }
 
-// how long logind waits on a delay inhibitor before it sleeps anyway
-fn patience(bus: Bus) -> Duration {
-    match bus.property(LOGIND, PATH, MANAGER, "InhibitDelayMaxUSec") {
-        Value::Number(micros) if micros > 0.0 => Duration::from_micros(micros as u64),
-        _ => DELAY,
-    }
+// how long logind waits on a delay inhibitor before it sleeps anyway, asked once a run
+fn patience(connection: &Connection) -> Duration {
+    property(connection, "InhibitDelayMaxUSec")
+        .and_then(|micros| u64::try_from(micros).ok())
+        .filter(|&micros| micros > 0)
+        .map_or(DELAY, Duration::from_micros)
 }
 
 #[cfg(test)]

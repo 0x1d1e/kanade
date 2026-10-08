@@ -9,10 +9,11 @@
 //! timerfd fires at the wall minute after a resume, and a step cancels it, which redraws at once.
 //!
 //! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI. It also
-//! holds `interrupt`, which std lacks, for a child that must end cleanly, and the one place a UTC
-//! moment becomes local time, which the calendar's events need too.
+//! holds `interrupt`, which std lacks, for a child that must end cleanly, the one place a UTC
+//! moment becomes local time, which the calendar's events need too, and `authenticate`, Linux-PAM's
+//! password check, which the lock screen runs itself so it can drop a result sleep made stale.
 
-use std::ffi::{c_char, c_int, c_long};
+use std::ffi::{CString, c_char, c_int, c_long, c_void};
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -86,6 +87,53 @@ unsafe extern "C" {
         old: *mut Itimerspec,
     ) -> c_int;
     fn kill(pid: c_int, signal: c_int) -> c_int;
+
+    // PAM frees a conversation's answers with free(), so they come from the C allocator
+    fn calloc(count: usize, size: usize) -> *mut c_void;
+    fn strdup(text: *const c_char) -> *mut c_char;
+}
+
+// <security/_pam_types.h>, as Linux-PAM has it on every target
+const PAM_SUCCESS: c_int = 0;
+const PAM_CONV_ERR: c_int = 19;
+const PAM_PROMPT_ECHO_OFF: c_int = 1;
+const PAM_PROMPT_ECHO_ON: c_int = 2;
+
+#[repr(C)]
+struct PamMessage {
+    style: c_int,
+    text: *const c_char,
+}
+
+#[repr(C)]
+struct PamResponse {
+    text: *mut c_char,
+    code: c_int,
+}
+
+type Converse =
+    extern "C" fn(c_int, *mut *const PamMessage, *mut *mut PamResponse, *mut c_void) -> c_int;
+
+#[repr(C)]
+struct PamConv {
+    converse: Converse,
+    data: *mut c_void,
+}
+
+// libpam, which Amane links for its own check anyway
+#[link(name = "pam")]
+unsafe extern "C" {
+    fn pam_start(
+        service: *const c_char,
+        user: *const c_char,
+        conversation: *const PamConv,
+        handle: *mut *mut c_void,
+    ) -> c_int;
+    fn pam_authenticate(handle: *mut c_void, flags: c_int) -> c_int;
+
+    // refuses an expired or locked account too, which the password alone does not
+    fn pam_acct_mgmt(handle: *mut c_void, flags: c_int) -> c_int;
+    fn pam_end(handle: *mut c_void, status: c_int) -> c_int;
 }
 
 // the timer the thread waits on, made before any window draws
@@ -273,6 +321,81 @@ pub fn interrupt(child: &Child) -> io::Result<()> {
         0 => Ok(()),
         _ => Err(io::Error::last_os_error()),
     }
+}
+
+/*
+ * whether PAM's `service` accepts `password` for `user`, as Amane's `Lock::unlock` checks it;
+ * blocks for as long as PAM takes, seconds for a wrong one
+ */
+pub fn authenticate(service: &str, user: &str, password: &str) -> bool {
+    let (Ok(service), Ok(user), Ok(password)) = (
+        CString::new(service),
+        CString::new(user),
+        CString::new(password),
+    ) else {
+        return false;
+    };
+
+    let conversation = PamConv {
+        converse,
+        data: password.as_ptr().cast_mut().cast(),
+    };
+    let mut handle = std::ptr::null_mut();
+
+    // SAFETY: every pointer outlives the handle, which `pam_end` lets go of before this returns
+    unsafe {
+        if pam_start(
+            service.as_ptr(),
+            user.as_ptr(),
+            &raw const conversation,
+            &raw mut handle,
+        ) != PAM_SUCCESS
+        {
+            return false;
+        }
+
+        let mut status = pam_authenticate(handle, 0);
+        if status == PAM_SUCCESS {
+            status = pam_acct_mgmt(handle, 0);
+        }
+
+        pam_end(handle, status);
+        status == PAM_SUCCESS
+    }
+}
+
+// answers every prompt PAM gives with the password in `data`, and every message with nothing
+extern "C" fn converse(
+    count: c_int,
+    messages: *mut *const PamMessage,
+    responses: *mut *mut PamResponse,
+    data: *mut c_void,
+) -> c_int {
+    let Ok(count) = usize::try_from(count) else {
+        return PAM_CONV_ERR;
+    };
+    let password = data.cast::<c_char>().cast_const();
+
+    // SAFETY: Linux-PAM hands `count` messages, an array of pointers, and takes the answers,
+    // which it frees
+    unsafe {
+        let answers = calloc(count, size_of::<PamResponse>()).cast::<PamResponse>();
+        if answers.is_null() {
+            return PAM_CONV_ERR;
+        }
+
+        for index in 0..count {
+            let style = (**messages.add(index)).style;
+
+            if style == PAM_PROMPT_ECHO_OFF || style == PAM_PROMPT_ECHO_ON {
+                (*answers.add(index)).text = strdup(password);
+            }
+        }
+
+        *responses = answers;
+    }
+
+    PAM_SUCCESS
 }
 
 fn seconds() -> c_long {

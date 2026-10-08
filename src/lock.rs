@@ -28,12 +28,13 @@ use amane::{
 
 use crate::clock;
 use crate::config;
+use crate::sources::sleep;
 use crate::theme::{self, radius};
 
 // the systemd user unit that runs the shell, which `dist/` holds and the README installs
 pub const UNIT: &str = "kanade.service";
 
-// the PAM service Amane checks the password with, which Amane does not export
+// the PAM service Amane checks the password with, which Amane does not export; Kanade's too
 pub const PAM: &str = "login";
 
 // where Linux-PAM looks for a service's file, the admin's first
@@ -66,15 +67,48 @@ struct Requests {
     // the sleeps begun, so a wake found late opens only the gate of the sleep it was asked about
     sleeps: u64,
 
-    // a password was typed while `sleeping`, so the lock screen says why it waits
+    // a password was typed while `sleeping`, or its check dropped, so the lock screen says why
     refused: bool,
+
+    /*
+     * Kanade's own PAM check of a password typed, numbered `check`, before Amane's `Lock::unlock`
+     * gets it: one sleep dropped is never heard of, however late it ends
+     */
+    checking: bool,
+    check: u64,
+
+    // Kanade's check refused the last password
+    failed: bool,
+
+    // a lock is still to be asked once Amane's check outlasting `hold` ends (`owe`)
+    owed: bool,
 }
 
 impl Requests {
+    const fn new() -> Self {
+        Self {
+            newest: 0,
+            confirmed: 0,
+            tried: false,
+            sleeping: false,
+            sleeps: 0,
+            refused: false,
+            checking: false,
+            check: 0,
+            failed: false,
+            owed: false,
+        }
+    }
+
+    // shuts the gate, and drops a check under way: its password has to be typed again
     fn sleep(&mut self) {
         if !self.sleeping {
             self.sleeping = true;
             self.sleeps += 1;
+        }
+
+        if self.drop_check() {
+            self.refused = true;
         }
     }
 
@@ -96,6 +130,34 @@ impl Requests {
         }
 
         self.tried = true;
+        true
+    }
+
+    // a check under way is dropped, whether there was one: as if no password went to PAM
+    fn drop_check(&mut self) -> bool {
+        let dropped = std::mem::take(&mut self.checking);
+        if dropped {
+            self.tried = false;
+        }
+        dropped
+    }
+
+    // a check begins, which `checked` ends by its number
+    fn check(&mut self) -> u64 {
+        self.check += 1;
+        self.checking = true;
+        self.failed = false;
+        self.check
+    }
+
+    // whether the check `check` ended stands, so Amane gets a password accepted; not once dropped
+    fn checked(&mut self, check: u64, accepted: bool) -> bool {
+        if !self.checking || self.check != check {
+            return false;
+        }
+
+        self.checking = false;
+        self.failed = !accepted;
         true
     }
 
@@ -132,8 +194,8 @@ impl Requests {
 
     /*
      * what `hold`, having asked `asked`, does next. PAM ends a check with no draw when it accepts,
-     * the lock windows closing unseen, so a check is looked at again rather than waited on, past
-     * any deadline: one accepted is asked over even once the machine slept
+     * the lock windows closing unseen, so a check is looked at again rather than waited on: one
+     * accepted is asked over
      */
     fn next(&self, asked: Option<u64>, checking: bool, failed: bool) -> Next {
         match (asked, self.holding(checking, failed)) {
@@ -144,8 +206,10 @@ impl Requests {
         }
     }
 
-    // whether a lock confirmed may still hold, by Amane's `Lock`
+    // whether a lock confirmed may still hold, by Kanade's check and Amane's `Lock`
     fn holding(&self, checking: bool, failed: bool) -> Holding {
+        let (checking, failed) = (checking || self.checking, failed || self.failed);
+
         if checking {
             Holding::Checking
         } else if self.tried && !failed {
@@ -186,14 +250,7 @@ enum Next {
 // how often `hold` looks at a password being checked
 const LOOK: Duration = Duration::from_millis(50);
 
-static REQUESTS: Mutex<Requests> = Mutex::new(Requests {
-    newest: 0,
-    confirmed: 0,
-    tried: false,
-    sleeping: false,
-    sleeps: 0,
-    refused: false,
-});
+static REQUESTS: Mutex<Requests> = Mutex::new(Requests::new());
 
 // told each time a lock screen draws, which may confirm a request or show an unlock
 static DRAWN: Condvar = Condvar::new();
@@ -316,9 +373,9 @@ pub enum Settled {
  *
  * A password PAM accepted ends the lock only at Amane's next wake, and until then the lock screen
  * may still draw. So the request puts back a fresh `Lock`, as Amane does for a new lock, which
- * drops that unlock: the lock wins, and the password has to be typed again. A password still
- * being checked cannot be dropped, so then nothing is asked. Amane past `6ace43e` may end a lock
- * differently; recheck this on a bump
+ * drops that unlock: the lock wins, and the password has to be typed again. While a password is
+ * being checked nothing is asked, as Amane's check cannot be dropped. Amane past `6ace43e` may end
+ * a lock differently; recheck this on a bump
  */
 pub fn start() -> Result<Started, String> {
     if pam().is_none() {
@@ -347,7 +404,7 @@ pub fn start() -> Result<Started, String> {
 fn request(requests: &mut Requests) -> Option<u64> {
     let mut lock = Lock::write();
 
-    if lock.checking() {
+    if requests.checking || lock.checking() {
         return None;
     }
 
@@ -365,18 +422,26 @@ fn request(requests: &mut Requests) -> Option<u64> {
 }
 
 /*
- * locks the session before it sleeps (`crate::sleep`), after `sleeping` shut the gate; only the
- * signals open and shut it, so a wake heard before this runs stays heard. Asks for a lock and
- * waits until a lock screen confirms it while it still holds, for at most `patience`. A password
- * checked from before is waited out however long it takes, and one accepted is asked over: Amane
- * cannot drop a check, so its unlock is undone instead
+ * locks the session before it sleeps (`crate::sleep`), after `sleeping` shut the gate and dropped
+ * Kanade's check; only logind opens and shuts it, so a wake heard before this runs stays heard.
+ * Asks for a lock and waits until a lock screen confirms it while it still holds, for at most
+ * `patience`, so the sleep thread hears logind again by then. Amane's check of a password Kanade's
+ * accepted cannot be dropped, so it is waited out, and its unlock undone by asking over; past
+ * `patience`, by `owe`
  */
 pub fn hold(patience: Duration) -> Result<(), String> {
     if pam().is_none() {
         return Err(format!("no PAM service {PAM}, so no lock is asked"));
     }
 
-    let deadline = Instant::now() + patience;
+    settle(Some(patience))
+}
+
+// `hold` once a lock can be asked; with no `patience`, for as long as it takes
+fn settle(patience: Option<Duration>) -> Result<(), String> {
+    let deadline = patience.map(|patience| Instant::now() + patience);
+    // only ever said once it passed
+    let patience = patience.unwrap_or_default();
     let mut requests = requests();
     let mut asked = None;
 
@@ -385,7 +450,8 @@ pub fn hold(patience: Duration) -> Result<(), String> {
         let next = requests.next(asked, lock.checking(), lock.failed());
         drop(lock);
 
-        let left = deadline.saturating_duration_since(Instant::now());
+        let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let late = left.is_some_and(|left| left.is_zero());
         let wait = match next {
             Next::Done => return Ok(()),
             Next::Ask => {
@@ -393,11 +459,24 @@ pub fn hold(patience: Duration) -> Result<(), String> {
                 asked = request(&mut requests);
                 continue;
             }
-            Next::Look => LOOK,
-            Next::Wait if left.is_zero() => {
+            Next::Look if late => {
+                owe(&mut requests);
+                return Err(format!(
+                    "a password was still being checked after {patience:?}; a lock is asked once \
+                     the check ends"
+                ));
+            }
+            Next::Wait if late => {
                 return Err(format!("no lock screen confirmed it within {patience:?}"));
             }
-            Next::Wait => left,
+            Next::Look => left.map_or(LOOK, |left| LOOK.min(left)),
+            Next::Wait => match left {
+                Some(left) => left,
+                None => {
+                    requests = DRAWN.wait(requests).unwrap_or_else(PoisonError::into_inner);
+                    continue;
+                }
+            },
         };
 
         requests = DRAWN
@@ -408,11 +487,38 @@ pub fn hold(patience: Duration) -> Result<(), String> {
 }
 
 /*
+ * Amane's check outlasted `hold`, and may yet unlock while the machine sleeps: off the sleep
+ * thread, so it hears logind meanwhile, wait it out and ask over. One at a time
+ */
+fn owe(owing: &mut Requests) {
+    if std::mem::replace(&mut owing.owed, true) {
+        return;
+    }
+
+    let spawned = thread::Builder::new()
+        .name(String::from("lock owed"))
+        .spawn(|| {
+            // with no deadline, it ends only once a lock screen confirms a lock
+            let _ = settle(None);
+            requests().owed = false;
+        });
+
+    if let Err(error) = spawned {
+        owing.owed = false;
+        eprintln!("kanade: cannot wait out a password check to lock after it: {error}");
+    }
+}
+
+/*
  * the machine is on its way to sleep: from now until `woke`, no password typed goes to PAM, so none
- * can unlock before it sleeps, even while another program's inhibitor still delays it
+ * can unlock before it sleeps, even while another program's inhibitor still delays it. A check
+ * under way is dropped, and the lock screen says why
  */
 pub fn sleeping() {
-    requests().sleep();
+    let mut requests = requests();
+    let dropped = requests.checking;
+    requests.sleep();
+    opened(dropped);
 }
 
 // the machine woke, or its sleep failed: passwords go to PAM again
@@ -422,25 +528,10 @@ pub fn woke() {
     opened(requests.woke(sleep));
 }
 
-// a lock screen that said why a password waited redraws without it
-fn opened(refused: bool) {
-    if refused {
+// the lock screen redraws, as what it says changed
+fn opened(changed: bool) {
+    if changed {
         drop(Lock::write());
-    }
-}
-
-// whether logind is on its way to sleep, or None when it does not answer
-pub fn preparing() -> Option<bool> {
-    let preparing = Bus::system().property(
-        LOGIND,
-        "/org/freedesktop/login1",
-        "org.freedesktop.login1.Manager",
-        "PreparingForSleep",
-    );
-
-    match preparing {
-        Value::Bool(preparing) => Some(preparing),
-        _ => None,
     }
 }
 
@@ -453,7 +544,7 @@ fn awake(sleep: u64) {
     let asked = thread::Builder::new()
         .name(String::from("sleep ended"))
         .spawn(move || {
-            if preparing() == Some(false) {
+            if sleep::preparing() == Some(false) {
                 let mut requests = requests();
 
                 if requests.sleeping && requests.sleeps == sleep {
@@ -545,14 +636,16 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
 
     requests.drew(lock.checking(), lock.failed());
     let waiting = requests.sleeping && requests.refused;
+    let checking = requests.checking || lock.checking();
+    let failed = requests.failed || lock.failed();
     drop(requests);
     DRAWN.notify_all();
 
-    let (status, color) = if lock.checking() {
+    let (status, color) = if checking {
         ("Checking…", roles.on_surface_variant)
     } else if waiting {
         ("Locked for sleep", roles.on_surface_variant)
-    } else if lock.failed() {
+    } else if failed {
         ("Wrong password", theme::SEMANTIC.critical)
     } else {
         ("", roles.on_surface_variant)
@@ -631,22 +724,65 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
 /*
  * one try at a time: while PAM checks, or the machine is on its way to sleep, what is typed waits in
  * the field. The field empties before PAM gets the password, so a wrong one is typed again from
- * nothing
+ * nothing.
+ *
+ * Kanade checks it first, as a check Amane runs cannot be dropped: sleep drops Kanade's, so one
+ * PAM ends after the machine began to sleep unlocks nothing. Only a password Kanade's check
+ * accepted, with the gate open, goes on to Amane's `Lock::unlock`, which alone ends the lock and
+ * checks it again; usually at once, else `hold` and `owe` wait it out
  */
 fn submit(password: String) {
-    if password.is_empty() || Lock::read().checking() {
+    if password.is_empty() {
         return;
     }
 
     // under the requests, so neither a request nor `hold` falls between the two
     let mut requests = requests();
+    let mut lock = Lock::write();
+    if requests.checking || lock.checking() {
+        return;
+    }
     if !requests.try_password() {
+        drop(lock);
         awake(requests.sleeps);
         return;
     }
 
+    // a "Wrong password" of Amane's goes only with a fresh `Lock`; one failed holds no unlock
+    if lock.failed() {
+        *lock = Lock::new();
+    }
+    drop(lock);
+
+    let check = requests.check();
     TextInput::set_text(FIELD, "");
-    Lock::unlock(&password);
+
+    let checking = thread::Builder::new()
+        .name(String::from("lock check"))
+        .spawn(move || checked(check, &password));
+
+    if let Err(error) = checking {
+        eprintln!("kanade: cannot check the password: {error}");
+        requests.drop_check();
+        drop(Lock::write());
+    }
+}
+
+// runs the check `check` and hands a password accepted on to Amane, unless sleep dropped it
+fn checked(check: u64, password: &str) {
+    let accepted = env::var("USER").is_ok_and(|user| clock::authenticate(PAM, &user, password));
+
+    // under the requests, so a sleep shutting the gate falls before or after, not between
+    let mut requests = requests();
+    if !requests.checked(check, accepted) {
+        return;
+    }
+
+    if accepted {
+        Lock::unlock(password);
+    } else {
+        drop(Lock::write());
+    }
 }
 
 #[cfg(test)]
@@ -656,14 +792,7 @@ mod tests {
     // #155: an accepted password ends the lock with no draw, so sleep never waits on one
     #[test]
     fn sleep_asks_over_an_unlock_and_looks_at_a_check_again() {
-        let mut requests = Requests {
-            newest: 0,
-            confirmed: 0,
-            tried: false,
-            sleeping: false,
-            sleeps: 0,
-            refused: false,
-        };
+        let mut requests = Requests::new();
 
         // asked nothing while a password is checked, then again once it is not
         assert_eq!(requests.next(None, true, false), Next::Look);
@@ -686,14 +815,7 @@ mod tests {
     // #155: on its way to sleep, a password typed goes nowhere until the machine wakes
     #[test]
     fn no_password_goes_to_pam_while_the_machine_sleeps() {
-        let mut requests = Requests {
-            newest: 0,
-            confirmed: 0,
-            tried: false,
-            sleeping: false,
-            sleeps: 0,
-            refused: false,
-        };
+        let mut requests = Requests::new();
 
         requests.sleep();
         assert!(!requests.try_password());
@@ -713,17 +835,85 @@ mod tests {
         assert!(requests.tried);
     }
 
+    // #155: a check sleep dropped unlocks nothing, however late PAM ends it
+    #[test]
+    fn sleep_drops_a_password_being_checked() {
+        let mut requests = Requests::new();
+
+        assert!(requests.try_password());
+        let dropped = requests.check();
+        assert_eq!(requests.holding(false, false), Holding::Checking);
+
+        requests.sleep();
+        assert!(requests.refused);
+        assert_eq!(requests.holding(false, false), Holding::Held);
+        assert_eq!(requests.next(None, false, false), Next::Ask);
+
+        // accepted after the machine began to sleep, then after it woke
+        assert!(!requests.checked(dropped, true));
+        assert!(requests.woke(1));
+        assert!(!requests.checked(dropped, true));
+
+        // the next check stands, and a wrong password keeps the lock
+        assert!(requests.try_password());
+        let check = requests.check();
+        assert!(!requests.checked(dropped, true));
+        assert!(requests.checked(check, false));
+        assert_eq!(requests.holding(false, false), Holding::Held);
+    }
+
+    /*
+     * #155: a check outlasting `patience` keeps the sleep thread from logind no longer, and once it
+     * ends accepted, a lock is still asked
+     */
+    #[test]
+    fn sleep_waits_on_a_check_only_until_logind_would_sleep() {
+        REQUESTS.lock().unwrap().checking = true;
+
+        let started = Instant::now();
+        let held = settle(Some(Duration::from_millis(120)));
+        let waited = started.elapsed();
+
+        assert_eq!(
+            held,
+            Err(String::from(
+                "a password was still being checked after 120ms; a lock is asked once the check \
+                 ends"
+            ))
+        );
+        assert!(waited >= Duration::from_millis(120) && waited < Duration::from_secs(1));
+
+        let newest = {
+            let mut requests = REQUESTS.lock().unwrap();
+            assert!(requests.owed);
+            requests.checking = false;
+            requests.tried = true;
+            requests.newest
+        };
+        DRAWN.notify_all();
+
+        let started = Instant::now();
+        while REQUESTS.lock().unwrap().newest == newest {
+            assert!(started.elapsed() < Duration::from_secs(1), "no lock asked");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // a lock screen confirms it, and the debt is paid
+        REQUESTS.lock().unwrap().drew(false, false);
+        DRAWN.notify_all();
+        while REQUESTS.lock().unwrap().owed {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "the lock owed never settled"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     // #196: the last lock, on its way out after an unlock, draws once more
     #[test]
     fn a_lock_is_confirmed_only_while_no_unlock_is_pending() {
-        let mut requests = Requests {
-            newest: 0,
-            confirmed: 0,
-            tried: false,
-            sleeping: false,
-            sleeps: 0,
-            refused: false,
-        };
+        let mut requests = Requests::new();
 
         assert_eq!(requests.request(), 1);
         requests.drew(false, false);
@@ -763,14 +953,7 @@ mod tests {
     // a request after an unlock, before its lock screen draws, does not revive the last confirmation
     #[test]
     fn a_new_request_does_not_revive_a_confirmation_an_unlock_ended() {
-        let mut requests = Requests {
-            newest: 0,
-            confirmed: 0,
-            tried: false,
-            sleeping: false,
-            sleeps: 0,
-            refused: false,
-        };
+        let mut requests = Requests::new();
         let first = requested("requested #1 in 42.7").unwrap();
         let settled = |requests: &Requests| settled(&requests.status("42.7", false, false), &first);
 
