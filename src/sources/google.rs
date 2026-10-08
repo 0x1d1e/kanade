@@ -15,6 +15,11 @@
 //! the Calendar Surface and `status` show, and waits for a sign-in; the events synced before stay
 //! until a sign-out, and the local calendars are untouched either way. Sign-out revokes the grant
 //! at Google, forgets the credentials and deletes the synced files.
+//!
+//! Only the sync thread (`Worker`) keeps, uses and forgets the credentials, one message at a time,
+//! so a sign-out never interleaves with a sign-in being kept, even one waiting on a keyring prompt.
+//! A sign-in's thread only brings the code back and trades it; one cancelled by then is not kept.
+//! A sign-in kept is a new account to Kanade: the events synced before go first.
 
 mod ics;
 mod oauth;
@@ -208,10 +213,19 @@ impl Request {
 enum Message {
     Sync,
     Signing,
-    SignedIn(Credentials),
+
+    /*
+     * a sign-in's credentials, by the sign-in's number, to keep unless a newer sign-in or a
+     * sign-out came since; whether they were kept is told back, for the browser's tab
+     */
+    Exchanged {
+        sign_in: u64,
+        credentials: Credentials,
+        kept: Sender<Result<(), String>>,
+    },
 
     // a sign-in did not finish, and why
-    Unsigned(String),
+    Unsigned(u64, String),
     SignOut,
 }
 
@@ -269,17 +283,13 @@ pub fn directory() -> Option<PathBuf> {
     config::base("XDG_CACHE_HOME", ".cache", home().as_deref()).map(|dir| dir.join(DIRECTORY))
 }
 
-// a file that says a sign-in was kept, so the keyring is asked only then
+// the file that says a sign-in was kept
 fn marker() -> Option<PathBuf> {
     config::base("XDG_STATE_HOME", ".local/state", home().as_deref()).map(|dir| dir.join(MARKER))
 }
 
 fn home() -> Option<String> {
     std::env::var("HOME").ok()
-}
-
-fn signed_in() -> bool {
-    marker().is_some_and(|marker| marker.exists())
 }
 
 // starts a sign-in, answering the address the browser opens
@@ -296,7 +306,7 @@ fn sign_in(path: &Path) -> Result<String, String> {
     {
         let why = format!("cannot start a thread: {error}");
 
-        send(Message::Unsigned(why.clone()));
+        send(Message::Unsigned(sign_in, why.clone()));
         return Err(why);
     }
 
@@ -305,11 +315,14 @@ fn sign_in(path: &Path) -> Result<String, String> {
     ))
 }
 
-// the sign-in's own thread: the browser, the code, then the credentials kept
+/*
+ * the sign-in's own thread: the browser and the code. The sync thread keeps the credentials, as it
+ * runs a sign-out too, so a sign-out never comes in the middle of keeping them
+ */
 fn signing_in(pending: &Pending, sign_in: u64) {
     let cancelled = || SIGN_IN.load(Ordering::Relaxed) != sign_in;
 
-    open(&pending.address);
+    launch(OPEN, &pending.address);
 
     let signed = pending
         .wait(Instant::now() + oauth::PATIENCE, cancelled)
@@ -317,63 +330,63 @@ fn signing_in(pending: &Pending, sign_in: u64) {
             let kept = pending
                 .exchange(&agent(), &returned.code)
                 .and_then(|credentials| {
-                    if cancelled() {
-                        return Err(String::from("cancelled"));
-                    }
+                    let (told, heard) = mpsc::channel();
 
-                    secret::store(&credentials)?;
-                    mark().map_err(|error| format!("cannot keep the sign-in: {error}"))?;
-
-                    Ok(credentials)
+                    send(Message::Exchanged {
+                        sign_in,
+                        credentials,
+                        kept: told,
+                    });
+                    heard
+                        .recv()
+                        .unwrap_or_else(|_| Err(String::from("the sync thread stopped")))
                 });
 
-            returned.tell(kept.as_ref().map(|_| ()).map_err(String::as_str));
+            returned.tell(kept.as_ref().map_err(String::as_str).copied());
             kept
         });
 
-    if cancelled() {
-        return;
-    }
-
-    match signed {
-        Ok(credentials) => send(Message::SignedIn(credentials)),
-        Err(why) => {
-            eprintln!("kanade: google-calendar: not signed in: {why}");
-            send(Message::Unsigned(why));
-        }
+    if let Err(why) = signed
+        && !cancelled()
+    {
+        eprintln!("kanade: google-calendar: not signed in: {why}");
+        send(Message::Unsigned(sign_in, why));
     }
 }
 
-// the consent screen in the browser, which outlives Kanade, so only reaped
-fn open(address: &str) {
-    let opened = Command::new(OPEN)
+/*
+ * `program` on `address`, never waited on here: an opener may run as long as the browser it
+ * started, and the browser's answer must not wait for that. A thread of its own reaps it
+ */
+fn launch(program: &str, address: &str) {
+    let child = Command::new(program)
         .arg(address)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .and_then(|mut child| child.wait());
-
-    match opened {
-        Ok(status) if !status.success() => {
-            eprintln!("kanade: google-calendar: {OPEN} failed ({status})");
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("kanade: google-calendar: {program}: {error}");
+            return;
         }
-        Ok(_) => {}
-        Err(error) => eprintln!("kanade: google-calendar: {OPEN}: {error}"),
+    };
+
+    let program = program.to_owned();
+    let reaping = thread::Builder::new()
+        .name(String::from("google-open"))
+        .spawn(move || match child.wait() {
+            Ok(status) if !status.success() => {
+                eprintln!("kanade: google-calendar: {program} failed ({status})");
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("kanade: google-calendar: {program}: {error}"),
+        });
+
+    if let Err(error) = reaping {
+        eprintln!("kanade: google-calendar: the browser's opener is not reaped: {error}");
     }
-}
-
-fn mark() -> io::Result<()> {
-    let marker = marker().ok_or_else(|| io::Error::other("no home directory"))?;
-
-    if let Some(dir) = marker.parent() {
-        fs::create_dir_all(dir)?;
-    }
-
-    fs::write(
-        marker,
-        "signed in to Google Calendar; the credentials are in the keyring\n",
-    )
 }
 
 fn agent() -> Agent {
@@ -401,111 +414,359 @@ fn unreached(error: ureq::Error) -> Problem {
  */
 pub fn follow() {
     let queue = QUEUE.1.lock().unwrap_or_else(PoisonError::into_inner);
-    let agent = agent();
-    let mut kept = if signed_in() { load() } else { None };
-    let mut access = None;
-    let mut due = kept.is_some();
 
-    loop {
-        if due && let Some(credentials) = &kept {
-            sync(&agent, credentials, &mut access);
+    Worker::new(
+        Google { agent: agent() },
+        Places {
+            events: directory(),
+            marker: marker(),
+        },
+    )
+    .run(&queue);
+}
+
+// what the sync thread works with outside itself, so a test stands in for Google and the keyring
+trait Outside {
+    fn load(&self) -> Result<Option<Credentials>, String>;
+    fn store(&self, credentials: &Credentials) -> Result<(), String>;
+    fn delete(&self) -> Result<(), String>;
+
+    // ends the grant at Google; one that cannot be ended is only said
+    fn revoke(&self, credentials: &Credentials);
+
+    // each calendar shown in Google Calendar, as the name of its file and the file
+    fn fetch(
+        &self,
+        credentials: &Credentials,
+        access: &mut Option<Access>,
+    ) -> Result<Vec<(String, String)>, Problem>;
+
+    // the sign-in going on, which a sign-in's credentials must still be to be kept
+    fn sign_in(&self) -> u64;
+
+    // the calendar reads its places again
+    fn reread(&self);
+
+    // the account as the Calendar Surface and `status` read it
+    fn publish(&self, account: &Account);
+}
+
+// the real ones
+struct Google {
+    agent: Agent,
+}
+
+impl Outside for Google {
+    fn load(&self) -> Result<Option<Credentials>, String> {
+        secret::load()
+    }
+
+    fn store(&self, credentials: &Credentials) -> Result<(), String> {
+        secret::store(credentials)
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        secret::delete()
+    }
+
+    fn revoke(&self, credentials: &Credentials) {
+        if let Err(why) = oauth::revoke(&self.agent, credentials) {
+            eprintln!("kanade: google-calendar: the grant was not revoked at Google: {why}");
         }
+    }
 
-        // a refused grant waits for a sign-in, as asking again is refused again
-        let waits = kept.is_some() && Account::read().problem() != Some(&Problem::Revoked);
-        let message = if waits {
-            match queue.recv_timeout(INTERVAL) {
-                Ok(message) => message,
-                Err(RecvTimeoutError::Timeout) => Message::Sync,
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-        } else {
-            match queue.recv() {
-                Ok(message) => message,
-                Err(_) => return,
-            }
-        };
+    fn fetch(
+        &self,
+        credentials: &Credentials,
+        access: &mut Option<Access>,
+    ) -> Result<Vec<(String, String)>, Problem> {
+        fetch(&self.agent, credentials, access)
+    }
 
-        due = false;
+    fn sign_in(&self) -> u64 {
+        SIGN_IN.load(Ordering::Relaxed)
+    }
+
+    fn reread(&self) {
+        calendar::reread();
+    }
+
+    // written only on a change, as a write wakes every window
+    fn publish(&self, account: &Account) {
+        if *Account::read() != *account {
+            *Account::write() = account.clone();
+        }
+    }
+}
+
+// where the sync thread keeps things on disk
+struct Places {
+    // the synced events
+    events: Option<PathBuf>,
+
+    // the file that says a sign-in was kept, so the keyring is asked only then
+    marker: Option<PathBuf>,
+}
+
+/*
+ * the sync thread: the one place the credentials are kept, synced with and forgotten, one
+ * message at a time
+ */
+struct Worker<O> {
+    outside: O,
+    places: Places,
+    kept: Option<Credentials>,
+    access: Option<Access>,
+    account: Account,
+}
+
+impl<O: Outside> Worker<O> {
+    fn new(outside: O, places: Places) -> Self {
+        Worker {
+            outside,
+            places,
+            kept: None,
+            access: None,
+            account: Account::default(),
+        }
+    }
+
+    // until the queue closes
+    fn run(&mut self, queue: &Receiver<Message>) {
+        if self.signed_in() {
+            self.load();
+        }
+        let mut due = self.kept.is_some();
+
+        loop {
+            if due {
+                self.sync();
+            }
+
+            // a refused grant waits for a sign-in, as asking again is refused again
+            let waits = self.kept.is_some() && self.account.problem() != Some(&Problem::Revoked);
+            let message = if waits {
+                match queue.recv_timeout(INTERVAL) {
+                    Ok(message) => message,
+                    Err(RecvTimeoutError::Timeout) => Message::Sync,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                match queue.recv() {
+                    Ok(message) => message,
+                    Err(_) => return,
+                }
+            };
+
+            due = self.handle(message);
+        }
+    }
+
+    // whether to sync now
+    fn handle(&mut self, message: Message) -> bool {
         match message {
             Message::Sync => {
                 // the keyring may have been locked at start
-                if kept.is_none() && signed_in() {
-                    kept = load();
+                if self.kept.is_none() && self.signed_in() {
+                    self.load();
                 }
-                due = kept.is_some();
+                self.kept.is_some()
             }
-            Message::Signing => set(State::SigningIn, None),
-            Message::SignedIn(credentials) => {
-                kept = Some(credentials);
-                access = None;
-                due = true;
-                set(State::SignedIn, None);
+            Message::Signing => {
+                self.set(State::SigningIn, self.account.synced);
+                false
             }
-            Message::Unsigned(why) => set(State::Failed(Problem::SignIn(why)), None),
+            Message::Exchanged {
+                sign_in,
+                credentials,
+                kept,
+            } => {
+                let keeping = self.keep(sign_in, credentials);
+                let due = keeping.is_ok();
+
+                // the sign-in's thread may be gone
+                let _ = kept.send(keeping);
+                due
+            }
+            Message::Unsigned(sign_in, why) => {
+                if sign_in == self.outside.sign_in() {
+                    self.set(State::Failed(Problem::SignIn(why)), self.account.synced);
+                }
+                false
+            }
             Message::SignOut => {
-                access = None;
-                sign_out(&agent, kept.take());
+                self.sign_out();
+                false
             }
         }
     }
-}
 
-// the account's state, and when it synced if that changed; written only on a change
-fn set(state: State, synced: Option<i64>) {
-    let account = Account::read().clone();
-    let synced = synced.or(account.synced);
+    /*
+     * keeps a sign-in's credentials, unless a newer sign-in or a sign-out came since, which then
+     * runs after this. They may be another account's, so what the last one synced goes
+     */
+    fn keep(&mut self, sign_in: u64, credentials: Credentials) -> Result<(), String> {
+        if sign_in != self.outside.sign_in() {
+            return Err(String::from("cancelled"));
+        }
 
-    if account.state != state || account.synced != synced {
-        let mut account = Account::write();
-        account.state = state;
-        account.synced = synced;
+        // first, so no other account's events stay up under these credentials
+        self.forget_events()
+            .map_err(|why| format!("cannot delete the events synced before: {why}"))?;
+
+        self.outside.store(&credentials)?;
+        if let Err(error) = self.mark() {
+            let _ = self.outside.delete();
+            return Err(format!("cannot keep the sign-in: {error}"));
+        }
+
+        self.kept = Some(credentials);
+        self.access = None;
+        self.set(State::SignedIn, None);
+
+        Ok(())
     }
-}
 
-// the credentials the keyring keeps, which may prompt to unlock it
-fn load() -> Option<Credentials> {
-    match secret::load() {
-        Ok(Some(credentials)) => Some(credentials),
-        // gone from the keyring, as by a keyring app: signed out
-        Ok(None) => {
-            if let Some(marker) = marker() {
-                let _ = fs::remove_file(marker);
-            }
-            set(State::SignedOut, None);
-            None
+    fn signed_in(&self) -> bool {
+        self.places
+            .marker
+            .as_ref()
+            .is_some_and(|marker| marker.exists())
+    }
+
+    fn mark(&self) -> io::Result<()> {
+        let marker = self
+            .places
+            .marker
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no home directory"))?;
+
+        if let Some(dir) = marker.parent() {
+            fs::create_dir_all(dir)?;
         }
-        Err(why) => {
-            eprintln!("kanade: google-calendar: {why}");
-            set(State::Failed(Problem::Keyring(why)), None);
-            None
+
+        fs::write(
+            marker,
+            "signed in to Google Calendar; the credentials are in the keyring\n",
+        )
+    }
+
+    fn unmark(&self) {
+        if let Some(marker) = &self.places.marker {
+            let _ = fs::remove_file(marker);
         }
     }
-}
 
-fn sync(agent: &Agent, credentials: &Credentials, access: &mut Option<Access>) {
-    let synced = fetch(agent, credentials, access).and_then(|files| {
-        let dir = directory().ok_or_else(|| Problem::Disk(String::from("no home directory")))?;
+    // deletes the synced events, and when they were synced; why not when they could not be
+    fn forget_events(&mut self) -> Result<(), String> {
+        let gone = match &self.places.events {
+            Some(dir) => match fs::remove_dir_all(dir) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    eprintln!(
+                        "kanade: google-calendar: cannot delete {}: {error}",
+                        dir.display()
+                    );
+                    Err(error.to_string())
+                }
+                _ => Ok(()),
+            },
+            None => Ok(()),
+        };
 
-        write(&dir, &files).map_err(|error| Problem::Disk(error.to_string()))
-    });
+        self.outside.reread();
+        self.set(self.account.state.clone(), None);
 
-    match synced {
-        Ok(created) => {
-            // the calendar watches the directory only once it is there
-            if created {
-                calendar::reread();
+        gone
+    }
+
+    // the account's state, and when it last synced
+    fn set(&mut self, state: State, synced: Option<i64>) {
+        self.account = Account { state, synced };
+        self.outside.publish(&self.account);
+    }
+
+    // the credentials the keyring keeps, which may prompt to unlock it
+    fn load(&mut self) {
+        match self.outside.load() {
+            Ok(Some(credentials)) => self.kept = Some(credentials),
+            // gone from the keyring, as by a keyring app: signed out
+            Ok(None) => {
+                self.unmark();
+                self.set(State::SignedOut, self.account.synced);
             }
-
-            set(State::SignedIn, Some(now()));
-        }
-        Err(problem) => {
-            if Account::read().problem() != Some(&problem) {
-                eprintln!("kanade: google-calendar: {problem}");
+            Err(why) => {
+                eprintln!("kanade: google-calendar: {why}");
+                self.set(State::Failed(Problem::Keyring(why)), self.account.synced);
             }
-
-            set(State::Failed(problem), None);
         }
+    }
+
+    fn sync(&mut self) {
+        let Some(credentials) = &self.kept else {
+            return;
+        };
+
+        let synced = self
+            .outside
+            .fetch(credentials, &mut self.access)
+            .and_then(|files| {
+                let dir = self
+                    .places
+                    .events
+                    .as_ref()
+                    .ok_or_else(|| Problem::Disk(String::from("no home directory")))?;
+
+                write(dir, &files).map_err(|error| Problem::Disk(error.to_string()))
+            });
+
+        match synced {
+            Ok(created) => {
+                // the calendar watches the directory only once it is there
+                if created {
+                    self.outside.reread();
+                }
+
+                self.set(State::SignedIn, Some(now()));
+            }
+            Err(problem) => {
+                if self.account.problem() != Some(&problem) {
+                    eprintln!("kanade: google-calendar: {problem}");
+                }
+
+                // the events synced before are this account's, so they stay
+                self.set(State::Failed(problem), self.account.synced);
+            }
+        }
+    }
+
+    /*
+     * ends the grant at Google, forgets the credentials and deletes the synced events; what could
+     * not be done is said, and the account fails with it
+     */
+    fn sign_out(&mut self) {
+        self.access = None;
+
+        let credentials = match self.kept.take() {
+            Some(credentials) => Some(credentials),
+            None if self.signed_in() => self.outside.load().ok().flatten(),
+            None => None,
+        };
+        if let Some(credentials) = &credentials {
+            self.outside.revoke(credentials);
+        }
+
+        let mut problem = None;
+        if let Err(why) = self.outside.delete() {
+            eprintln!("kanade: google-calendar: the credentials stay in the keyring: {why}");
+            problem = Some(Problem::Keyring(why));
+        }
+
+        self.unmark();
+        if let Err(why) = self.forget_events() {
+            problem.get_or_insert(Problem::Disk(why));
+        }
+
+        self.set(problem.map_or(State::SignedOut, State::Failed), None);
     }
 }
 
@@ -736,49 +997,6 @@ fn write(dir: &Path, files: &[(String, String)]) -> io::Result<bool> {
     Ok(created)
 }
 
-/*
- * ends the grant at Google, forgets the credentials and deletes the synced events; what could not
- * be done is said, and the account fails with it
- */
-fn sign_out(agent: &Agent, kept: Option<Credentials>) {
-    let mut problem = None;
-
-    let credentials = match kept {
-        Some(credentials) => Some(credentials),
-        None if signed_in() => secret::load().ok().flatten(),
-        None => None,
-    };
-    if let Some(credentials) = &credentials
-        && let Err(why) = oauth::revoke(agent, credentials)
-    {
-        eprintln!("kanade: google-calendar: the grant was not revoked at Google: {why}");
-    }
-
-    if let Err(why) = secret::delete() {
-        eprintln!("kanade: google-calendar: the credentials stay in the keyring: {why}");
-        problem = Some(Problem::Keyring(why));
-    }
-
-    if let Some(marker) = marker() {
-        let _ = fs::remove_file(marker);
-    }
-    if let Some(dir) = directory()
-        && let Err(error) = fs::remove_dir_all(&dir)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        eprintln!(
-            "kanade: google-calendar: cannot delete {}: {error}",
-            dir.display()
-        );
-        problem.get_or_insert(Problem::Disk(error.to_string()));
-    }
-    calendar::reread();
-
-    let mut account = Account::write();
-    account.state = problem.map_or(State::SignedOut, State::Failed);
-    account.synced = None;
-}
-
 #[cfg(test)]
 mod tests {
     use std::env;
@@ -904,5 +1122,321 @@ mod tests {
                  before or it is disabled."
             ))
         );
+    }
+
+    // a scratch directory of the test's own
+    fn scratch(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("kanade-google-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+
+        dir
+    }
+
+    fn credentials(token: &str) -> Credentials {
+        Credentials {
+            client_id: String::from("id"),
+            client_secret: String::from("secret"),
+            refresh_token: String::from(token),
+        }
+    }
+
+    // Google and the keyring as a test wants them
+    #[derive(Default)]
+    struct Fake {
+        keyring: Option<Credentials>,
+
+        // what `store` waits on, and says it is waiting through
+        gate: Option<Receiver<()>>,
+        storing: Option<Sender<()>>,
+
+        // the tokens whose syncs fail, as offline
+        failing: Vec<String>,
+        revoked: Vec<String>,
+        published: Vec<Account>,
+    }
+
+    #[derive(Clone, Default)]
+    struct Shared {
+        fake: std::sync::Arc<Mutex<Fake>>,
+        sign_in: std::sync::Arc<AtomicU64>,
+    }
+
+    impl Shared {
+        fn fake(&self) -> std::sync::MutexGuard<'_, Fake> {
+            self.fake.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+    }
+
+    impl Outside for Shared {
+        fn load(&self) -> Result<Option<Credentials>, String> {
+            Ok(self.fake().keyring.clone())
+        }
+
+        fn store(&self, credentials: &Credentials) -> Result<(), String> {
+            let (gate, storing) = {
+                let mut fake = self.fake();
+                (fake.gate.take(), fake.storing.take())
+            };
+
+            // a keyring prompt the user has not answered yet
+            if let (Some(gate), Some(storing)) = (gate, storing) {
+                let _ = storing.send(());
+                let _ = gate.recv();
+            }
+
+            self.fake().keyring = Some(credentials.clone());
+            Ok(())
+        }
+
+        fn delete(&self) -> Result<(), String> {
+            self.fake().keyring = None;
+            Ok(())
+        }
+
+        fn revoke(&self, credentials: &Credentials) {
+            self.fake().revoked.push(credentials.refresh_token.clone());
+        }
+
+        fn fetch(
+            &self,
+            credentials: &Credentials,
+            _: &mut Option<Access>,
+        ) -> Result<Vec<(String, String)>, Problem> {
+            if self.fake().failing.contains(&credentials.refresh_token) {
+                return Err(Problem::Offline(String::from("timeout")));
+            }
+
+            Ok(vec![(
+                format!("{}.ics", credentials.refresh_token),
+                String::from("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+            )])
+        }
+
+        fn sign_in(&self) -> u64 {
+            self.sign_in.load(Ordering::Relaxed)
+        }
+
+        fn reread(&self) {}
+
+        fn publish(&self, account: &Account) {
+            self.fake().published.push(account.clone());
+        }
+    }
+
+    // a worker on its own thread, over places in `dir`
+    fn worker(shared: &Shared, dir: &Path) -> (Sender<Message>, thread::JoinHandle<Account>) {
+        let (send, queue) = mpsc::channel();
+        let places = Places {
+            events: Some(dir.join("events")),
+            marker: Some(dir.join("state/marker")),
+        };
+        let shared = shared.clone();
+
+        let running = thread::spawn(move || {
+            let mut worker = Worker::new(shared, places);
+            worker.run(&queue);
+            worker.account
+        });
+
+        (send, running)
+    }
+
+    fn exchanged(
+        send: &Sender<Message>,
+        sign_in: u64,
+        token: &str,
+    ) -> Receiver<Result<(), String>> {
+        let (told, heard) = mpsc::channel();
+        let _ = send.send(Message::Exchanged {
+            sign_in,
+            credentials: credentials(token),
+            kept: told,
+        });
+
+        heard
+    }
+
+    fn ended(send: Sender<Message>, running: thread::JoinHandle<Account>) -> Account {
+        drop(send);
+        running.join().unwrap_or_default()
+    }
+
+    #[test]
+    fn the_callback_is_heard_while_the_opener_still_runs() {
+        use std::io::Read;
+        use std::net::TcpStream;
+
+        let dir = scratch("opener");
+        // an opener that stays, as xdg-open may for the browser's whole life
+        let opener = dir.join("opener");
+        let _ = fs::write(&opener, "sleep 3\n");
+
+        let Ok(pending) = Pending::start(Client {
+            id: String::from("id"),
+            secret: String::from("secret"),
+        }) else {
+            panic!("cannot listen");
+        };
+
+        let started = Instant::now();
+        launch("sh", &opener.to_string_lossy());
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let field = |name: &str| {
+            pending
+                .address
+                .split(['?', '&'])
+                .find_map(|field| field.strip_prefix(name))
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
+        let state = field("state=");
+        let port: u16 = field("redirect_uri=http%3A%2F%2F127%2E0%2E0%2E1%3A")
+            .parse()
+            .unwrap_or_default();
+
+        let browser = thread::spawn(move || {
+            let mut page = String::new();
+            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+                let _ = write!(stream, "GET /?state={state}&code=c HTTP/1.1\r\n\r\n");
+                let _ = stream.read_to_string(&mut page);
+            }
+            page
+        });
+
+        let Ok(returned) = pending.wait(Instant::now() + Duration::from_secs(2), || false) else {
+            panic!("the callback was not heard while the opener ran");
+        };
+        assert_eq!(returned.code, "c");
+        assert!(started.elapsed() < Duration::from_secs(3));
+
+        returned.tell(Ok(()));
+        assert!(browser.join().unwrap_or_default().contains("is signed in"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sign_out_during_a_keyring_prompt_still_signs_out() {
+        let dir = scratch("prompt");
+        let shared = Shared::default();
+        let (open, gate) = mpsc::channel();
+        let (storing, store_started) = mpsc::channel();
+        {
+            let mut fake = shared.fake();
+            fake.gate = Some(gate);
+            fake.storing = Some(storing);
+        }
+        shared.sign_in.store(1, Ordering::Relaxed);
+
+        let (send, running) = worker(&shared, &dir);
+        let kept = exchanged(&send, 1, "a");
+
+        // the keyring prompts; meanwhile the user signs out, as `request` does
+        assert!(store_started.recv_timeout(Duration::from_secs(2)).is_ok());
+        shared.sign_in.store(2, Ordering::Relaxed);
+        let _ = send.send(Message::SignOut);
+        let _ = open.send(());
+
+        assert_eq!(kept.recv_timeout(Duration::from_secs(2)), Ok(Ok(())));
+        let account = ended(send, running);
+
+        assert_eq!(account.state, State::SignedOut);
+        assert_eq!(shared.fake().keyring, None);
+        assert!(!dir.join("state/marker").exists());
+        assert!(!dir.join("events").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sign_in_cancelled_before_it_is_kept_is_not_kept() {
+        let dir = scratch("cancelled");
+        let shared = Shared::default();
+        shared.sign_in.store(2, Ordering::Relaxed);
+
+        let (send, running) = worker(&shared, &dir);
+        let kept = exchanged(&send, 1, "a");
+
+        assert_eq!(
+            kept.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(String::from("cancelled")))
+        );
+        let account = ended(send, running);
+
+        assert_eq!(account.state, State::SignedOut);
+        assert_eq!(shared.fake().keyring, None);
+        assert!(!dir.join("state/marker").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn another_account_never_shows_the_last_ones_events() {
+        let dir = scratch("switch");
+        let shared = Shared::default();
+        {
+            let mut fake = shared.fake();
+            fake.keyring = Some(credentials("a"));
+            fake.failing.push(String::from("b"));
+        }
+        let _ = fs::create_dir_all(dir.join("state"));
+        let _ = fs::write(dir.join("state/marker"), "");
+        shared.sign_in.store(1, Ordering::Relaxed);
+
+        let (send, running) = worker(&shared, &dir);
+
+        // a's first sync, at start, then b signs in and cannot sync
+        let kept = exchanged(&send, 1, "b");
+        assert_eq!(kept.recv_timeout(Duration::from_secs(2)), Ok(Ok(())));
+        let account = ended(send, running);
+
+        let fake = shared.fake();
+        assert!(
+            fake.published
+                .iter()
+                .any(|account| account.synced.is_some())
+        );
+        assert_eq!(fake.keyring, Some(credentials("b")));
+        assert_eq!(
+            account,
+            Account {
+                state: State::Failed(Problem::Offline(String::from("timeout"))),
+                synced: None,
+            }
+        );
+        assert!(!dir.join("events/a.ics").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_sync_keeps_the_same_accounts_events() {
+        let dir = scratch("failed");
+        let shared = Shared::default();
+        shared.fake().keyring = Some(credentials("a"));
+        let _ = fs::create_dir_all(dir.join("state"));
+        let _ = fs::write(dir.join("state/marker"), "");
+
+        let (send, running) = worker(&shared, &dir);
+        // after the first sync, Google goes away
+        while !shared
+            .fake()
+            .published
+            .iter()
+            .any(|account| account.synced.is_some())
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        shared.fake().failing.push(String::from("a"));
+        let _ = send.send(Message::Sync);
+        let account = ended(send, running);
+
+        assert!(matches!(account.state, State::Failed(Problem::Offline(_))));
+        assert!(account.synced.is_some());
+        assert!(dir.join("events/a.ics").exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
