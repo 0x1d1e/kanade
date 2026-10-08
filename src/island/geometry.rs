@@ -108,9 +108,9 @@ pub fn shape(presentation: Presentation) -> Shape {
         },
         Presentation::Expanded(Surface::Controls | Surface::Tray) => CONTROLS,
         Presentation::Expanded(Surface::Media) => MEDIA,
-        Presentation::Expanded(Surface::Notifications | Surface::Launcher | Surface::Clipboard) => {
-            EXPANDED_MAX
-        }
+        Presentation::Expanded(
+            Surface::Notifications | Surface::Launcher | Surface::Clipboard | Surface::Calendar,
+        ) => EXPANDED_MAX,
     }
 }
 
@@ -263,7 +263,7 @@ mod tests {
         value.fract() == 0.0
     }
 
-    const PRESENTATIONS: [Presentation; 12] = [
+    const PRESENTATIONS: [Presentation; 13] = [
         Presentation::Rest,
         Presentation::Compact,
         Presentation::Split,
@@ -276,6 +276,7 @@ mod tests {
         Presentation::Expanded(Surface::Launcher),
         Presentation::Expanded(Surface::Tray),
         Presentation::Expanded(Surface::Clipboard),
+        Presentation::Expanded(Surface::Calendar),
     ];
 
     /*

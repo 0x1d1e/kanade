@@ -133,13 +133,18 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .namespace("kanade")
         .keyboard(keyboard)
         .on_key(move |key| {
-            // a Surface whose Module is off never opens, so its keys read nothing. Controls and the
-            // Tray go first, as Escape in a sub-surface goes back a level rather than closing
+            // a Surface whose Module is off never opens, so its keys read nothing. Controls, the
+            // Tray and the Calendar go first, as Escape in a sub-surface or the agenda goes back a
+            // level rather than closing
             if modules::on("controls") && surfaces::controls::key(&pressed, key) {
                 return;
             }
 
             if modules::on("tray") && surfaces::tray::key(&pressed, key) {
+                return;
+            }
+
+            if modules::on("calendar-surface") && surfaces::calendar::key(&pressed, key) {
                 return;
             }
 
@@ -348,6 +353,7 @@ fn surface(
             island.held(monitor),
         )),
         Surface::Clipboard => Some(surfaces::clipboard::surface(monitor, island.visit())),
+        Surface::Calendar => Some(surfaces::calendar::surface(monitor, island.visit())),
     }
 }
 
@@ -1507,9 +1513,10 @@ pub(crate) fn pin() {
 }
 
 /*
- * only the Launcher and the Clipboard take typing, and they consume their keys first, so a character
- * typed into any other held island the pointer never reached was meant for the window beneath: the
- * island lets go of the keyboard before a Space or Enter presses anything
+ * the Launcher and the Clipboard take typing, the Calendar a few letters, and they consume their
+ * keys first, so a character typed into any other held island the pointer never reached was meant
+ * for the window beneath: the island lets go of the keyboard before a Space or Enter presses
+ * anything
  */
 fn stray(monitor: &str, key: Key) {
     let island = IslandService::read();

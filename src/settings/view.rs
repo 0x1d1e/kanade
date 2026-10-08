@@ -299,53 +299,18 @@ fn control(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles) -
             .width(INNER)
             .gap(6.0),
         ),
-        Kind::DesktopIds(field) => {
-            let ids = (field.get)(read);
-
-            let mut rows: Vec<Box<dyn Widget>> = ids
-                .iter()
-                .enumerate()
-                .map(|(index, id)| {
-                    let list = ids.clone();
-                    let up = (index > 0).then(|| {
-                        let mut list = list.clone();
-                        list.swap(index - 1, index);
-                        move || change(path(key, None), Some(strings(&list)))
-                    });
-
-                    let mut without = list;
-                    without.remove(index);
-
-                    let mut actions: Vec<Box<dyn Widget>> = Vec::new();
-                    if let Some(up) = up {
-                        actions.push(Box::new(button("Up", roles, up)));
-                    }
-                    actions.push(Box::new(button("Remove", roles, move || {
-                        change(path(key, None), Some(strings(&without)));
-                    })));
-
-                    Box::new(line(id, actions, roles)) as Box<dyn Widget>
-                })
-                .collect();
-
-            rows.push(Box::new(text_field(
-                input(setting),
-                "Add a .desktop file id",
-                roles,
-                move |text| {
-                    let text = text.trim();
-                    if text.is_empty() {
-                        return;
-                    }
-
-                    let mut list = ids.clone();
-                    list.push(text.to_owned());
-                    change(path(key, None), Some(strings(&list)));
-                },
-            )));
-
-            Box::new(Column::new(rows).width(INNER).gap(6.0))
-        }
+        Kind::DesktopIds(field) => Box::new(list(
+            setting,
+            (field.get)(read),
+            "Add a .desktop file id",
+            roles,
+        )),
+        Kind::Paths(field) => Box::new(list(
+            setting,
+            (field.get)(read),
+            "Add a file or directory",
+            roles,
+        )),
         Kind::AppIds(field) => {
             let mut rows: Vec<Box<dyn Widget>> = (field.get)(read)
                 .into_iter()
@@ -412,6 +377,60 @@ fn control(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles) -
             )
         }
     }
+}
+
+// a list key's entries, each with Up and Remove, and a field that adds one at the end
+fn list(
+    setting: &'static Setting,
+    ids: Vec<String>,
+    placeholder: &str,
+    roles: &ThemeRoles,
+) -> Column {
+    let key = setting.key;
+
+    let mut rows: Vec<Box<dyn Widget>> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let list = ids.clone();
+            let up = (index > 0).then(|| {
+                let mut list = list.clone();
+                list.swap(index - 1, index);
+                move || change(path(key, None), Some(strings(&list)))
+            });
+
+            let mut without = list;
+            without.remove(index);
+
+            let mut actions: Vec<Box<dyn Widget>> = Vec::new();
+            if let Some(up) = up {
+                actions.push(Box::new(button("Up", roles, up)));
+            }
+            actions.push(Box::new(button("Remove", roles, move || {
+                change(path(key, None), Some(strings(&without)));
+            })));
+
+            Box::new(line(id, actions, roles)) as Box<dyn Widget>
+        })
+        .collect();
+
+    rows.push(Box::new(text_field(
+        input(setting),
+        placeholder,
+        roles,
+        move |text| {
+            let text = text.trim();
+            if text.is_empty() {
+                return;
+            }
+
+            let mut list = ids.clone();
+            list.push(text.to_owned());
+            change(path(key, None), Some(strings(&list)));
+        },
+    )));
+
+    Column::new(rows).width(INNER).gap(6.0)
 }
 
 // a list's text with its actions at the end

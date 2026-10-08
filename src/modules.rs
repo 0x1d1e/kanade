@@ -15,8 +15,9 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, caffeine, capture, clipboard, launch, media, network, niri,
-    notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake, wallpaper,
+    audio, battery, bluetooth, caffeine, calendar, capture, clipboard, launch, media, network,
+    niri, notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake,
+    wallpaper,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, reload, settings, shadow, supervise, theme,
@@ -642,6 +643,39 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
+    // the local calendars' events, read from iCalendar files; `calendar-surface` shows them
+    Module {
+        name: "calendar",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::CALENDAR,
+        verbs: &[],
+        start: |app| {
+            supervise::spawn("calendar", calendar::follow);
+            app
+        },
+    },
+    // a month and the agenda of a day on the island
+    Module {
+        name: "calendar-surface",
+        requires: &[CORE, "calendar"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "calendar",
+            usage: || String::from("calendar open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Calendar, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
     // the clipboard history on the island: search, copy, delete and clear
     Module {
         name: "clipboard-surface",
@@ -773,13 +807,14 @@ pub const ALL: &[Module] = &[
 ];
 
 // each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 6] = [
+const SURFACES: [(Surface, &str); 7] = [
     (Surface::Media, "media"),
     (Surface::Notifications, "notification-surface"),
     (Surface::Controls, "controls"),
     (Surface::Launcher, "launcher"),
     (Surface::Tray, "tray"),
     (Surface::Clipboard, "clipboard-surface"),
+    (Surface::Calendar, "calendar-surface"),
 ];
 
 // the Surfaces whose Module is off, which the island never opens
@@ -1370,11 +1405,18 @@ mod tests {
             Some(&State::Missing("clipboard"))
         );
 
+        let modules = off("calendar");
+        assert_eq!(
+            modules.state("calendar-surface"),
+            Some(&State::Missing("calendar"))
+        );
+
         for surface in [
             "controls",
             "launcher",
             "notification-surface",
             "clipboard-surface",
+            "calendar-surface",
         ] {
             let modules = off(surface);
 

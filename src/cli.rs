@@ -636,6 +636,15 @@ mod tests {
             ))
         );
 
+        // the calendar's verb is its Surface's, as the calendar itself has none
+        assert_eq!(
+            parsed(&["calendar", "toggle"]),
+            Ok((
+                "calendar-surface",
+                Call::Island(Command::Toggle(Surface::Calendar))
+            ))
+        );
+
         // Do Not Disturb only quiets notifications, so it goes with them
         assert_eq!(
             parsed(&["notifications", "dnd", "on"]),
@@ -709,7 +718,7 @@ status
 module list|enable <name>|disable <name>
   <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
 banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
-clipboard-surface|capture|caffeine|settings
+calendar|calendar-surface|clipboard-surface|capture|caffeine|settings
 {}
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
@@ -724,12 +733,13 @@ clipboard open|close|toggle
 controls open|close|toggle
 wallpaper set <path>|status
 launcher open|close|toggle
+calendar open|close|toggle
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
 settings open [<page>]|close
-  <page>: island|windows|dock|wallpaper
+  <page>: island|windows|dock|wallpaper|calendar
 config defaults
 doctor
 help",
