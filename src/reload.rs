@@ -21,7 +21,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
-use crate::sources::{calendar, windows};
+use crate::sources::{calendar, weather, windows};
 use crate::{dock, modules, settings, supervise, theme};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
@@ -102,6 +102,9 @@ pub fn reload() -> Outcome {
             }
             if modules::on("calendar") {
                 calendar::reread();
+            }
+            if modules::on("weather") {
+                weather::reread();
             }
 
             state.generation += 1;

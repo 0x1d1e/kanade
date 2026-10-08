@@ -13,6 +13,7 @@ pub mod media;
 pub mod notifications;
 mod slider;
 pub mod tray;
+pub mod weather;
 
 /*
  * a Surface target pressed with the left button. Only the topmost target gets a click, so a right

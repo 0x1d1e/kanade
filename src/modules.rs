@@ -17,7 +17,7 @@ use crate::island::service::IslandService;
 use crate::sources::{
     audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, launch, media,
     network, niri, notifications, osd, pipewire, power, privacy, recording, system, timer, tray,
-    wake, wallpaper,
+    wake, wallpaper, weather,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, reload, settings, shadow, supervise, theme,
@@ -718,6 +718,47 @@ pub const ALL: &[Module] = &[
             app
         },
     },
+    // the weather for `weather.location`, from Open-Meteo (ADR 0017); fetches nothing without one
+    Module {
+        name: "weather",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::WEATHER,
+        verbs: &[Verb {
+            name: "weather",
+            usage: || String::from("weather refresh|status"),
+            parse: |arguments| {
+                weather::Request::parse(arguments)
+                    .map(Call::Weather)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("weather", weather::follow);
+            app
+        },
+    },
+    // the weather now and the days ahead on the island
+    Module {
+        name: "weather-surface",
+        requires: &[CORE, "weather"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "weather",
+            usage: || String::from("weather open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Weather, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
     // the clipboard history on the island: search, copy, delete and clear
     Module {
         name: "clipboard-surface",
@@ -849,7 +890,7 @@ pub const ALL: &[Module] = &[
 ];
 
 // each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 7] = [
+const SURFACES: [(Surface, &str); 8] = [
     (Surface::Media, "media"),
     (Surface::Notifications, "notification-surface"),
     (Surface::Controls, "controls"),
@@ -857,6 +898,7 @@ const SURFACES: [(Surface, &str); 7] = [
     (Surface::Tray, "tray"),
     (Surface::Clipboard, "clipboard-surface"),
     (Surface::Calendar, "calendar-surface"),
+    (Surface::Weather, "weather-surface"),
 ];
 
 // the Surfaces whose Module is off, which the island never opens
@@ -1231,7 +1273,7 @@ mod tests {
             module("island", &[]),
             module("notifications", &["island"]),
             module("banners", &["notifications"]),
-            module("weather", &["network"]),
+            module("vpn", &["network"]),
         ];
 
         let modules = resolve(&all, |name| name == "notifications");
@@ -1242,7 +1284,7 @@ mod tests {
                 ("island", on(&[])),
                 ("notifications", State::Off),
                 ("banners", State::Missing("notifications")),
-                ("weather", State::Missing("network")),
+                ("vpn", State::Missing("network")),
             ]
         );
         assert!(!modules.on("banners"));
@@ -1252,7 +1294,7 @@ mod tests {
                 "module island is on",
                 "module notifications is off",
                 "module banners is off: it requires notifications, which is not on",
-                "module weather is off: it requires network, which is not on",
+                "module vpn is off: it requires network, which is not on",
             ]
         );
         assert_eq!(
@@ -1313,7 +1355,7 @@ mod tests {
     fn every_module_but_the_core_can_be_turned() {
         assert_eq!(named(CORE), None);
         assert_eq!(named("media"), Some("media"));
-        assert_eq!(named("weather"), None);
+        assert_eq!(named("teleport"), None);
     }
 
     // order does not matter: a requirement listed later still settles first

@@ -107,6 +107,9 @@ pub mod text {
     // a Peek's numbers, an Expanded Presentation's label
     pub const TITLE_LARGE: f32 = 17.0;
 
+    // the one number a Surface is about, like the temperature now
+    pub const DISPLAY: f32 = 44.0;
+
     pub const MEDIUM: u16 = 500;
     pub const SEMIBOLD: u16 = 600;
 }
