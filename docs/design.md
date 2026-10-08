@@ -161,7 +161,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Later
 
-- **Dock**: pinned + running unpinned + indicator; click launch/focus; recents later; `.desktop` override map (`windows.apps`, ADR 0014).
+- **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144).
 - **Wallpaper**: Kanade selects; awww renders.
 - **Lock**: `ext-session-lock` + PAM; no notification content.
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.

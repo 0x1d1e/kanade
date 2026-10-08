@@ -3,8 +3,9 @@
 //! them here as `Heard`; this keeps them, matches each `app_id` to a `.desktop` entry and publishes
 //! the result as the `Windows` Service, which holds nothing of niri's but its window ids.
 //!
-//! The `.desktop` entries are read once, when the first window comes, and read again only when an
-//! `app_id` comes that none of them matches, or the config is reloaded, so nothing polls.
+//! The `.desktop` entries are read once, when the first window comes or the Dock pins an app, and
+//! read again only when an `app_id` or pinned id comes that none of them matches, or the config is
+//! reloaded, so nothing polls.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,6 +14,8 @@ use std::{env, fs};
 
 use amane::Service;
 
+use super::icons;
+use super::launch::{Fields, Launch};
 use crate::config;
 
 // niri's window id, which stays with the window for as long as it is open
@@ -62,6 +65,12 @@ pub struct DesktopEntry {
 
     // the icon's name in the icon theme, or a path
     pub icon: Option<String>,
+
+    // the file `icon` stands for, found when the entry is published, so a view reads no theme
+    pub icon_file: Option<PathBuf>,
+
+    // how it starts, none for an entry with nothing to run
+    pub launch: Option<Launch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,10 +98,20 @@ impl Running {
     }
 }
 
-// the running apps, in the order their first open window opened
+// an app the Dock pins, by desktop file id
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pinned {
+    pub id: String,
+
+    // none while no entry has the id
+    pub entry: Option<DesktopEntry>,
+}
+
+// the running apps, in the order their first open window opened, and the pinned apps in their order
 #[derive(Debug, Default)]
 pub struct Windows {
     running: Vec<Running>,
+    pinned: Vec<Pinned>,
 }
 
 impl Service for Windows {
@@ -104,9 +123,17 @@ impl Service for Windows {
 }
 
 impl Windows {
-    #[expect(dead_code, reason = "the Dock reads it, #144")]
     pub fn running(&self) -> &[Running] {
         &self.running
+    }
+
+    pub fn pinned(&self) -> &[Pinned] {
+        &self.pinned
+    }
+
+    #[cfg(test)]
+    pub fn with(running: Vec<Running>, pinned: Vec<Pinned>) -> Self {
+        Windows { running, pinned }
     }
 
     // for `kanade status`
@@ -161,6 +188,14 @@ pub fn hear(heard: Heard) {
     }
 }
 
+// the desktop file ids the Dock pins, published with their entries whether they run or not
+pub fn pin(ids: Vec<String>) {
+    let mut tracked = TRACKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+    tracked.pins = ids;
+    tracked.publish(&data_dirs());
+}
+
 // matches every window again, with the overrides of a reloaded config and the entries as they are now
 pub fn rematch() {
     let mut tracked = TRACKED.lock().unwrap_or_else(PoisonError::into_inner);
@@ -172,22 +207,26 @@ pub fn rematch() {
 
 static TRACKED: Mutex<Tracked> = Mutex::new(Tracked {
     windows: BTreeMap::new(),
+    pins: Vec::new(),
     entries: None,
     missed: Vec::new(),
-    published: Vec::new(),
+    published: (Vec::new(), Vec::new()),
 });
 
 #[derive(Debug, Default)]
 struct Tracked {
     windows: BTreeMap<WindowId, Window>,
 
-    // none until a window needs them
+    // the desktop file ids the Dock pins
+    pins: Vec<String>,
+
+    // none until a window or pin needs them
     entries: Option<Vec<Entry>>,
 
-    // the app ids that matched nothing since the entries were last read, each once
+    // the app ids and pinned ids that matched nothing since the entries were last read, each once
     missed: Vec<String>,
 
-    published: Vec<Running>,
+    published: (Vec<Running>, Vec<Pinned>),
 }
 
 impl Tracked {
@@ -229,14 +268,60 @@ impl Tracked {
         }
     }
 
-    // groups the windows by app and writes the Service if that changed
+    // groups the windows by app, finds the pinned apps, and writes the Service if that changed
     fn publish(&mut self, dirs: &[PathBuf]) {
-        let running = self.running(dirs);
+        let published = (self.running(dirs), self.pinned(dirs));
 
-        if running != self.published {
-            Windows::write().running.clone_from(&running);
-            self.published = running;
+        if published != self.published {
+            let mut windows = Windows::write();
+
+            windows.running.clone_from(&published.0);
+            windows.pinned.clone_from(&published.1);
+            drop(windows);
+
+            self.published = published;
         }
+    }
+
+    // each pinned id with its entry, reading the entries again once for an id none has
+    fn pinned(&mut self, dirs: &[PathBuf]) -> Vec<Pinned> {
+        if self.pins.is_empty() {
+            return Vec::new();
+        }
+
+        let entries = self.entries.get_or_insert_with(|| scan(dirs));
+        let find = |entries: &[Entry], id: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.desktop.id == id)
+                .map(shown)
+        };
+
+        let new_misses = self
+            .pins
+            .iter()
+            .any(|id| find(entries, id).is_none() && !self.missed.contains(id));
+
+        if new_misses {
+            *entries = scan(dirs);
+        }
+
+        let mut pinned = Vec::new();
+
+        for id in &self.pins {
+            let entry = find(entries, id);
+
+            if entry.is_none() && !self.missed.contains(id) {
+                self.missed.push(id.clone());
+            }
+
+            pinned.push(Pinned {
+                id: id.clone(),
+                entry,
+            });
+        }
+
+        pinned
     }
 
     /*
@@ -268,7 +353,7 @@ impl Tracked {
         for window in self.windows.values() {
             let app = match window.app_id.as_deref() {
                 Some(app_id) => match matched(app_id, overrides, entries) {
-                    Some(entry) => App::Desktop(entry.desktop.clone()),
+                    Some(entry) => App::Desktop(shown(entry)),
                     None => {
                         if !self.missed.iter().any(|missed| missed == app_id) {
                             self.missed.push(app_id.to_owned());
@@ -295,6 +380,17 @@ impl Tracked {
 
         running
     }
+}
+
+// the entry as published, its icon found; each name is looked up once a run
+fn shown(entry: &Entry) -> DesktopEntry {
+    let mut desktop = entry.desktop.clone();
+
+    desktop.icon_file = desktop
+        .icon
+        .as_deref()
+        .and_then(|icon| icons::find(icon, None));
+    desktop
 }
 
 // a `.desktop` entry as matching needs it
@@ -402,7 +498,7 @@ fn scan(dirs: &[PathBuf]) -> Vec<Entry> {
                 continue;
             };
 
-            match read(id.clone(), &text) {
+            match read(id.clone(), &path, &text) {
                 Read::App(entry) => entries.push(entry),
                 Read::Other => {}
                 Read::Invalid => continue,
@@ -455,7 +551,7 @@ enum Read {
     Invalid,
 }
 
-fn read(id: String, text: &str) -> Read {
+fn read(id: String, file: &Path, text: &str) -> Read {
     let mut fields = BTreeMap::new();
     let mut inside = false;
     let mut group = false;
@@ -494,11 +590,26 @@ fn read(id: String, text: &str) -> Read {
         return Read::Other;
     }
 
+    let icon = field("Icon");
+    let flag = |key| fields.get(key) == Some(&"true");
+    let launch = Launch::of(&Fields {
+        id: &id,
+        name: &name,
+        icon: icon.as_deref(),
+        file,
+        exec: field("Exec").as_deref(),
+        path: field("Path").as_deref(),
+        terminal: flag("Terminal"),
+        dbus_activatable: flag("DBusActivatable"),
+    });
+
     Read::App(Entry {
         desktop: DesktopEntry {
             id,
             name,
-            icon: field("Icon"),
+            icon,
+            icon_file: None,
+            launch,
         },
         wm_class: field("StartupWMClass"),
     })
@@ -542,6 +653,8 @@ mod tests {
                 id: id.to_owned(),
                 name: id.to_owned(),
                 icon: None,
+                icon_file: None,
+                launch: None,
             },
             wm_class: wm_class.map(String::from),
         }
@@ -707,23 +820,76 @@ StartupWMClass=other
 ";
 
         assert_eq!(
-            read(String::from("org.gnome.Nautilus.desktop"), text),
+            read(
+                String::from("org.gnome.Nautilus.desktop"),
+                Path::new(FILE),
+                text
+            ),
             Read::App(Entry {
                 desktop: DesktopEntry {
                     id: String::from("org.gnome.Nautilus.desktop"),
                     name: String::from("Files"),
                     icon: Some(String::from("org.gnome.Nautilus")),
+                    icon_file: None,
+                    launch: Launch::of(&Fields {
+                        id: "org.gnome.Nautilus.desktop",
+                        name: "Files",
+                        icon: Some("org.gnome.Nautilus"),
+                        file: Path::new(FILE),
+                        exec: Some("nautilus --new-window"),
+                        path: None,
+                        terminal: false,
+                        dbus_activatable: false,
+                    }),
                 },
                 wm_class: None,
             })
         );
     }
 
+    #[test]
+    fn launching_reads_exec_path_terminal_and_activation() {
+        let launch = |lines: &str| {
+            let Read::App(entry) = read(
+                String::from("org.example.App.desktop"),
+                Path::new(FILE),
+                &format!("{APP}A\nIcon=a\n{lines}"),
+            ) else {
+                panic!("an app");
+            };
+
+            entry.desktop.launch
+        };
+        let expected = |exec, path, terminal, dbus_activatable| {
+            Launch::of(&Fields {
+                id: "org.example.App.desktop",
+                name: "A",
+                icon: Some("a"),
+                file: Path::new(FILE),
+                exec,
+                path,
+                terminal,
+                dbus_activatable,
+            })
+        };
+
+        assert_eq!(
+            launch("Exec=a\\sb %c %k\nPath=/srv\nTerminal=true"),
+            expected(Some("a b %c %k"), Some("/srv"), true, false)
+        );
+        assert_eq!(
+            launch("DBusActivatable=true"),
+            expected(None, None, false, true)
+        );
+        assert_eq!(launch("Exec=%U"), None);
+        assert_eq!(launch(""), None);
+    }
+
     // the spec's escapes in a string value: `\s`, `\n`, `\t`, `\r`, `\\`; any other stays as written
     #[test]
     fn string_values_decode_their_escapes() {
         let text = "[Desktop Entry]\nType=Application\nName=Foo\\sBar\\t\\\\s\\q\nIcon=foo\\\\bar\nStartupWMClass=a\\sb\\";
-        let Read::App(entry) = read(String::from("a.desktop"), text) else {
+        let Read::App(entry) = read(String::from("a.desktop"), Path::new(FILE), text) else {
             panic!("an app");
         };
 
@@ -734,7 +900,7 @@ StartupWMClass=other
 
     #[test]
     fn only_applications_that_are_not_hidden_are_entries() {
-        let read = |text: &str| read(String::from("a.desktop"), text);
+        let read = |text: &str| read(String::from("a.desktop"), Path::new(FILE), text);
         let app = |extra: &str| {
             read(&format!(
                 "[Desktop Entry]\nType=Application\nName=A\n{extra}"
@@ -770,6 +936,7 @@ StartupWMClass=other
     }
 
     const APP: &str = "[Desktop Entry]\nType=Application\nName=";
+    const FILE: &str = "/usr/share/applications/a.desktop";
 
     #[test]
     fn the_scan_reads_ids_in_order_and_the_user_hides_the_system() {
@@ -962,6 +1129,49 @@ StartupWMClass=other
         fs::remove_dir_all(dir).unwrap();
     }
 
+    // a pinned id is found whether or not it runs; one none has is read for once, then stays missing
+    #[test]
+    fn pinned_ids_find_their_entries() {
+        let (mut tracked, dirs, dir) = tracker("pinned", &["firefox"]);
+
+        tracked.pins = vec![String::from("firefox.desktop"), String::from("zed.desktop")];
+
+        let found = |pinned: Vec<Pinned>| -> Vec<(String, Option<String>)> {
+            pinned
+                .into_iter()
+                .map(|pinned| (pinned.id, pinned.entry.map(|entry| entry.name)))
+                .collect()
+        };
+
+        assert_eq!(
+            found(tracked.pinned(&dirs)),
+            [
+                (
+                    String::from("firefox.desktop"),
+                    Some(String::from("firefox"))
+                ),
+                (String::from("zed.desktop"), None),
+            ]
+        );
+        assert_eq!(tracked.missed, ["zed.desktop"]);
+
+        // installed since, but read for already: found once the entries are read again
+        write(&dir, "zed.desktop", &format!("{APP}zed"));
+        assert_eq!(tracked.pinned(&dirs)[1].entry, None);
+
+        tracked.entries = None;
+        tracked.missed.clear();
+        assert_eq!(
+            tracked.pinned(&dirs)[1]
+                .entry
+                .as_ref()
+                .map(|entry| entry.name.as_str()),
+            Some("zed")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn status_names_the_focused_and_unmatched_apps() {
         let firefox = App::Desktop(entry("firefox.desktop", None).desktop);
@@ -986,6 +1196,7 @@ StartupWMClass=other
                     windows: vec![window(4, None, false)],
                 },
             ],
+            pinned: Vec::new(),
         };
 
         assert_eq!(

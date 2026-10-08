@@ -75,6 +75,9 @@ pub struct Config {
 
     // `windows.apps`: an app id to the `.desktop` file id its windows belong to (ADR 0014)
     pub apps: BTreeMap<String, String>,
+
+    // `dock.pinned`: the `.desktop` file ids the Dock keeps, in its order
+    pub pinned: Vec<String>,
 }
 
 impl Config {
@@ -92,6 +95,7 @@ impl Default for Config {
             clock: Hours::default(),
             off: Vec::new(),
             apps: BTreeMap::new(),
+            pinned: Vec::new(),
         }
     }
 }
@@ -197,18 +201,49 @@ pub const WINDOWS: &[Setting] = &[Setting {
                 .filter(|id| !id.is_empty())
                 .ok_or_else(|| format!("{app_id}: expected a \"desktop file id\""))?;
 
-            let id = match id.strip_suffix(".desktop") {
-                Some(_) => id.to_owned(),
-                None => format!("{id}.desktop"),
-            };
-
-            apps.insert(app_id.clone(), id);
+            apps.insert(app_id.clone(), desktop(id));
         }
 
         config.apps.extend(apps);
         Ok(())
     },
 }];
+
+pub const DOCK: &[Setting] = &[Setting {
+    key: "dock.pinned",
+
+    // a list, so a layer replaces the one below; the `.desktop` may be left off, and an id given
+    // twice is kept once
+    set: |config, value, _| {
+        let list = value
+            .as_array()
+            .ok_or("expected a list of \"desktop file id\"s")?;
+        let mut pinned: Vec<String> = Vec::new();
+
+        for id in list {
+            let id = id
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(desktop)
+                .ok_or_else(|| format!("expected a \"desktop file id\", found {id}"))?;
+
+            if !pinned.contains(&id) {
+                pinned.push(id);
+            }
+        }
+
+        config.pinned = pinned;
+        Ok(())
+    },
+}];
+
+// a desktop file id, given with or without its `.desktop`
+fn desktop(id: &str) -> String {
+    match id.strip_suffix(".desktop") {
+        Some(_) => id.to_owned(),
+        None => format!("{id}.desktop"),
+    }
+}
 
 fn millis(value: &Value) -> Result<Duration, String> {
     let ms = value.as_integer().ok_or("expected milliseconds")?;
@@ -698,6 +733,7 @@ mod tests {
                 clock: Hours::Twelve,
                 off: vec!["media"],
                 apps: BTreeMap::new(),
+                pinned: Vec::new(),
             }
         );
         assert!(config.off("media"));
@@ -827,6 +863,34 @@ battery = false
                 1,
                 "windows.apps: expected a table of app id = \"desktop file id\""
             )])
+        );
+    }
+
+    // a later file's list replaces the one below
+    #[test]
+    fn pinned_apps_are_a_list_a_later_file_replaces() {
+        let first = "[dock]\npinned = [\"firefox\", \"kitty.desktop\"]";
+        let second = "dock.pinned = [\"org.kde.dolphin\", \"zed\", \"zed.desktop\"]";
+
+        let (config, problems) = layers(&[first, second], MIGRATIONS);
+
+        assert_eq!(problems, [vec![], vec![]]);
+        assert_eq!(config.pinned, ["org.kde.dolphin.desktop", "zed.desktop"]);
+
+        let (config, _) = layers(&[first], MIGRATIONS);
+        assert_eq!(config.pinned, ["firefox.desktop", "kitty.desktop"]);
+
+        // a bad one keeps the list below
+        let (config, problems) = layers(&[first, "dock.pinned = [\"a\", 2]"], MIGRATIONS);
+        assert_eq!(config.pinned, ["firefox.desktop", "kitty.desktop"]);
+        assert_eq!(
+            problems[1],
+            said(&[(1, "dock.pinned: expected a \"desktop file id\", found 2")])
+        );
+
+        assert_eq!(
+            one("dock.pinned = \"firefox\"").1,
+            said(&[(1, "dock.pinned: expected a list of \"desktop file id\"s")])
         );
     }
 
