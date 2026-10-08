@@ -1058,6 +1058,14 @@ pub fn list() -> Vec<String> {
 pub fn turn(name: &'static str, on: bool) -> Result<String, String> {
     settings::set(&["modules", name], Some(toml::Value::Boolean(on)))?;
 
+    // at once, not on the watch's debounce, so `status` right after shows the change pending
+    let refused = match reload::reload() {
+        reload::Outcome::Valid(_) => None,
+        reload::Outcome::Invalid(_) => Some(String::from(
+            "the config did not reload, see `kanade status`; a restart still applies this",
+        )),
+    };
+
     let Some(modules) = MODULES.get() else {
         return Ok(String::new());
     };
@@ -1077,6 +1085,8 @@ pub fn turn(name: &'static str, on: bool) -> Result<String, String> {
     {
         lines.push(format!("with module {name} off, {warning}"));
     }
+
+    lines.extend(refused);
 
     Ok(lines.join("\n"))
 }
