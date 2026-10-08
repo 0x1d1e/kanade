@@ -13,7 +13,7 @@ use amane::{
 
 use crate::config;
 use crate::island::geometry::Rect;
-use crate::sources::json;
+use crate::sources::launch::Launch;
 use crate::sources::niri::{self, Acted};
 use crate::sources::windows::{self, App, DesktopEntry, Window, WindowId, Windows};
 use crate::theme::{self, SEMANTIC, ThemeRoles, radius};
@@ -96,8 +96,7 @@ fn desktop(app: &App) -> Option<&DesktopEntry> {
 enum Press {
     Focus(WindowId),
 
-    // a shell command, as niri spawns it
-    Launch(String),
+    Launch(Launch),
 }
 
 /*
@@ -107,7 +106,7 @@ enum Press {
  */
 fn press(item: &Item) -> Option<Press> {
     let Some(first) = item.windows.first() else {
-        return desktop(&item.app)?.exec.clone().map(Press::Launch);
+        return desktop(&item.app)?.launch.clone().map(Press::Launch);
     };
 
     let next = item
@@ -120,20 +119,26 @@ fn press(item: &Item) -> Option<Press> {
     Some(Press::Focus(next.id))
 }
 
-// asks niri off the view thread, as an answer may take its patience
+// off the view thread, as niri's or the bus's answer may take its patience
 fn carry_out(press: Press) {
-    let action = match &press {
-        Press::Focus(id) => format!(r#"{{"Action":{{"FocusWindow":{{"id":{}}}}}}}"#, id.0),
-        Press::Launch(command) => format!(
-            r#"{{"Action":{{"SpawnSh":{{"command":{}}}}}}}"#,
-            json::quote(command)
-        ),
-    };
+    thread::spawn(move || {
+        let done = match &press {
+            Press::Focus(id) => {
+                match niri::act(&format!(
+                    r#"{{"Action":{{"FocusWindow":{{"id":{}}}}}}}"#,
+                    id.0
+                )) {
+                    Ok(Acted::Done) => Ok(()),
+                    Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
+                    Err(error) => Err(error.to_string()),
+                }
+            }
+            Press::Launch(launch) => launch.run(),
+        };
 
-    thread::spawn(move || match niri::act(&action) {
-        Ok(Acted::Done) => {}
-        Ok(Acted::Unknown(why)) => eprintln!("dock: {press:?}: niri gave no clear answer: {why}"),
-        Err(error) => eprintln!("dock: {press:?}: {error}"),
+        if let Err(error) = done {
+            eprintln!("dock: {press:?}: {error}");
+        }
     });
 }
 
@@ -306,16 +311,34 @@ fn mark(app: &App, roles: &ThemeRoles) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    use crate::sources::launch::Fields;
     use crate::sources::windows::{Pinned, Running};
 
     fn entry(id: &str, exec: Option<&str>) -> DesktopEntry {
+        let file = format!("{id}.desktop");
+
         DesktopEntry {
-            id: format!("{id}.desktop"),
+            launch: exec.and_then(|exec| launch(&file, exec)),
+            id: file,
             name: id.to_owned(),
             icon: None,
             icon_file: None,
-            exec: exec.map(String::from),
         }
+    }
+
+    fn launch(id: &str, exec: &str) -> Option<Launch> {
+        Launch::of(&Fields {
+            id,
+            name: id,
+            icon: None,
+            file: Path::new(id),
+            exec: Some(exec),
+            path: None,
+            terminal: false,
+            dbus_activatable: false,
+        })
     }
 
     fn window(id: u64, focused: bool) -> Window {
@@ -404,7 +427,7 @@ mod tests {
 
         assert_eq!(
             press(&item(vec![], Some("zed --new"))),
-            Some(Press::Launch(String::from("zed --new")))
+            launch("zed.desktop", "zed --new").map(Press::Launch)
         );
         assert_eq!(press(&item(vec![], None)), None);
 

@@ -10,6 +10,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod icons;
 pub mod json;
+pub mod launch;
 pub mod media;
 pub mod network;
 pub mod niri;

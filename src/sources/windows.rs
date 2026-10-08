@@ -15,6 +15,7 @@ use std::{env, fs};
 use amane::Service;
 
 use super::icons;
+use super::launch::{Fields, Launch};
 use crate::config;
 
 // niri's window id, which stays with the window for as long as it is open
@@ -68,8 +69,8 @@ pub struct DesktopEntry {
     // the file `icon` stands for, found when the entry is published, so a view reads no theme
     pub icon_file: Option<PathBuf>,
 
-    // what launches it: `Exec` with its field codes dropped, as no file or URL is given
-    pub exec: Option<String>,
+    // how it starts, none for an entry with nothing to run
+    pub launch: Option<Launch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -497,7 +498,7 @@ fn scan(dirs: &[PathBuf]) -> Vec<Entry> {
                 continue;
             };
 
-            match read(id.clone(), &text) {
+            match read(id.clone(), &path, &text) {
                 Read::App(entry) => entries.push(entry),
                 Read::Other => {}
                 Read::Invalid => continue,
@@ -550,7 +551,7 @@ enum Read {
     Invalid,
 }
 
-fn read(id: String, text: &str) -> Read {
+fn read(id: String, file: &Path, text: &str) -> Read {
     let mut fields = BTreeMap::new();
     let mut inside = false;
     let mut group = false;
@@ -589,34 +590,29 @@ fn read(id: String, text: &str) -> Read {
         return Read::Other;
     }
 
+    let icon = field("Icon");
+    let flag = |key| fields.get(key) == Some(&"true");
+    let launch = Launch::of(&Fields {
+        id: &id,
+        name: &name,
+        icon: icon.as_deref(),
+        file,
+        exec: field("Exec").as_deref(),
+        path: field("Path").as_deref(),
+        terminal: flag("Terminal"),
+        dbus_activatable: flag("DBusActivatable"),
+    });
+
     Read::App(Entry {
         desktop: DesktopEntry {
             id,
             name,
-            icon: field("Icon"),
+            icon,
             icon_file: None,
-            exec: field("Exec")
-                .map(|exec| without_field_codes(&exec))
-                .filter(|exec| !exec.is_empty()),
+            launch,
         },
         wm_class: field("StartupWMClass"),
     })
-}
-
-// `%f`, `%U` and the others dropped, `%%` kept as `%`, as Amane launches its apps
-fn without_field_codes(exec: &str) -> String {
-    let mut command = String::with_capacity(exec.len());
-    let mut chars = exec.chars();
-
-    while let Some(char) = chars.next() {
-        if char != '%' {
-            command.push(char);
-        } else if chars.next() == Some('%') {
-            command.push('%');
-        }
-    }
-
-    command.trim().to_owned()
 }
 
 // a string value as written, with the spec's escapes decoded; another escape stays as it is
@@ -658,7 +654,7 @@ mod tests {
                 name: id.to_owned(),
                 icon: None,
                 icon_file: None,
-                exec: None,
+                launch: None,
             },
             wm_class: wm_class.map(String::from),
         }
@@ -824,14 +820,27 @@ StartupWMClass=other
 ";
 
         assert_eq!(
-            read(String::from("org.gnome.Nautilus.desktop"), text),
+            read(
+                String::from("org.gnome.Nautilus.desktop"),
+                Path::new(FILE),
+                text
+            ),
             Read::App(Entry {
                 desktop: DesktopEntry {
                     id: String::from("org.gnome.Nautilus.desktop"),
                     name: String::from("Files"),
                     icon: Some(String::from("org.gnome.Nautilus")),
                     icon_file: None,
-                    exec: Some(String::from("nautilus --new-window")),
+                    launch: Launch::of(&Fields {
+                        id: "org.gnome.Nautilus.desktop",
+                        name: "Files",
+                        icon: Some("org.gnome.Nautilus"),
+                        file: Path::new(FILE),
+                        exec: Some("nautilus --new-window"),
+                        path: None,
+                        terminal: false,
+                        dbus_activatable: false,
+                    }),
                 },
                 wm_class: None,
             })
@@ -839,31 +848,48 @@ StartupWMClass=other
     }
 
     #[test]
-    fn exec_drops_its_field_codes() {
-        let exec = |line: &str| {
-            let Read::App(entry) = read(String::from("a.desktop"), &format!("{APP}A\n{line}"))
-            else {
+    fn launching_reads_exec_path_terminal_and_activation() {
+        let launch = |lines: &str| {
+            let Read::App(entry) = read(
+                String::from("org.example.App.desktop"),
+                Path::new(FILE),
+                &format!("{APP}A\nIcon=a\n{lines}"),
+            ) else {
                 panic!("an app");
             };
 
-            entry.desktop.exec
+            entry.desktop.launch
+        };
+        let expected = |exec, path, terminal, dbus_activatable| {
+            Launch::of(&Fields {
+                id: "org.example.App.desktop",
+                name: "A",
+                icon: Some("a"),
+                file: Path::new(FILE),
+                exec,
+                path,
+                terminal,
+                dbus_activatable,
+            })
         };
 
-        assert_eq!(exec("Exec=firefox %u").as_deref(), Some("firefox"));
         assert_eq!(
-            exec("Exec=code --new-window %F").as_deref(),
-            Some("code --new-window")
+            launch("Exec=a\\sb %c %k\nPath=/srv\nTerminal=true"),
+            expected(Some("a b %c %k"), Some("/srv"), true, false)
         );
-        assert_eq!(exec("Exec=printf 100%%").as_deref(), Some("printf 100%"));
-        assert_eq!(exec("Exec=%U"), None);
-        assert_eq!(exec(""), None);
+        assert_eq!(
+            launch("DBusActivatable=true"),
+            expected(None, None, false, true)
+        );
+        assert_eq!(launch("Exec=%U"), None);
+        assert_eq!(launch(""), None);
     }
 
     // the spec's escapes in a string value: `\s`, `\n`, `\t`, `\r`, `\\`; any other stays as written
     #[test]
     fn string_values_decode_their_escapes() {
         let text = "[Desktop Entry]\nType=Application\nName=Foo\\sBar\\t\\\\s\\q\nIcon=foo\\\\bar\nStartupWMClass=a\\sb\\";
-        let Read::App(entry) = read(String::from("a.desktop"), text) else {
+        let Read::App(entry) = read(String::from("a.desktop"), Path::new(FILE), text) else {
             panic!("an app");
         };
 
@@ -874,7 +900,7 @@ StartupWMClass=other
 
     #[test]
     fn only_applications_that_are_not_hidden_are_entries() {
-        let read = |text: &str| read(String::from("a.desktop"), text);
+        let read = |text: &str| read(String::from("a.desktop"), Path::new(FILE), text);
         let app = |extra: &str| {
             read(&format!(
                 "[Desktop Entry]\nType=Application\nName=A\n{extra}"
@@ -910,6 +936,7 @@ StartupWMClass=other
     }
 
     const APP: &str = "[Desktop Entry]\nType=Application\nName=";
+    const FILE: &str = "/usr/share/applications/a.desktop";
 
     #[test]
     fn the_scan_reads_ids_in_order_and_the_user_hides_the_system() {

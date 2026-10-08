@@ -14,8 +14,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, caffeine, capture, clipboard, media, network, niri, notifications,
-    osd, pipewire, power, privacy, recording, system, timer, tray, wake,
+    audio, battery, bluetooth, caffeine, capture, clipboard, launch, media, network, niri,
+    notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, reload, shadow, supervise, theme, view,
@@ -179,10 +179,16 @@ pub const ALL: &[Module] = &[
         requires: &[CORE, "windows"],
         optional: &[],
         warns: None,
-        needs: &[Need {
-            on: Provider::Niri,
-            without: "no running apps, and a click neither launches nor focuses",
-        }],
+        needs: &[
+            Need {
+                on: Provider::Niri,
+                without: "no running apps, and a click neither launches nor focuses",
+            },
+            Need {
+                on: Provider::Program(launch::TERMINAL),
+                without: "an app with `Terminal=true` does not launch",
+            },
+        ],
         settings: config::DOCK,
         verbs: &[],
         start: |app| {
