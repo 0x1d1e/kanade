@@ -361,14 +361,17 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
         for need in module.needs {
             let found = match need.on {
                 Provider::Program(program) => program_found(program, env::var_os("PATH")),
-                Provider::SystemService(name) if system => service_found(name),
+                Provider::SystemService(name) if system => service_found(Bus::system(), name),
+                Provider::SessionService(name) if session => service_found(Bus::session(), name),
                 Provider::SessionName(name) if session => holder(
                     name,
                     bus::owner(Bus::session(), name).map(bus::process),
                     running,
                 ),
                 Provider::Niri => niri_found(niri_version()),
-                Provider::SystemService(name) | Provider::SessionName(name) => {
+                Provider::SystemService(name)
+                | Provider::SessionName(name)
+                | Provider::SessionService(name) => {
                     Found::Missing(format!("{name} unknown, its bus is unreachable"))
                 }
             };
@@ -440,12 +443,10 @@ fn executable(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-fn service_found(name: &str) -> Found {
-    let system = Bus::system();
-
-    if bus::owner(system, name).is_some() {
+fn service_found(bus: Bus, name: &str) -> Found {
+    if bus::owner(bus, name).is_some() {
         Found::Present(format!("{name} running"))
-    } else if bus::activatable(system, name) {
+    } else if bus::activatable(bus, name) {
         Found::Present(format!("{name} starts on demand"))
     } else {
         Found::Missing(format!("{name} not running"))

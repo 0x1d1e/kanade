@@ -1,7 +1,8 @@
 //! Local calendars (#150, ADR 0015, docs/design.md Calendar): the events of the iCalendar (`.ics`)
 //! files under `calendar.paths`, else `$XDG_DATA_HOME/calendars`, which is where vdirsyncer and
-//! khal keep theirs, a directory of `.ics` files for each calendar. Kanade only reads them; nothing
-//! here talks to a network or holds an account.
+//! khal keep theirs, a directory of `.ics` files for each calendar, and of the files
+//! `google-calendar` syncs (ADR 0016). Kanade only reads them; nothing here talks to a network or
+//! holds an account.
 //!
 //! The files are read on this source's thread, parsed whole into `Calendars`, and read again
 //! after a change under a watched place settles, or a config reload. The watch is inotify on each
@@ -43,7 +44,8 @@ use chrono::{
 };
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 
-use crate::{clock, config, supervise};
+use super::google;
+use crate::{clock, config, modules, supervise};
 
 // where the calendars are without `calendar.paths`, under the XDG data directory
 const DIRECTORY: &str = "calendars";
@@ -190,7 +192,15 @@ pub fn follow() {
  */
 pub fn reread() {
     let mut watch = WATCH.lock().unwrap_or_else(PoisonError::into_inner);
-    let found = find(&places(&config::get().calendars, data_home().as_deref()));
+    let mut places = places(&config::get().calendars, data_home().as_deref());
+
+    // Google's, once the sync thread vouched for it and a sync made it, either then telling this
+    // to read again (ADR 0016)
+    if modules::on("google-calendar") {
+        places.extend(google::vouched().filter(|dir| dir.is_dir()));
+    }
+
+    let found = find(&places);
 
     if let Some(watch) = watch.as_mut() {
         arm(watch, &found.targets);
@@ -447,7 +457,7 @@ fn read(file: &Path) -> Result<Vec<ICalendar>, String> {
     Ok(calendars)
 }
 
-fn parse(text: &str) -> Result<Vec<ICalendar>, String> {
+pub(super) fn parse(text: &str) -> Result<Vec<ICalendar>, String> {
     let mut parser = Parser::new(text);
     let mut calendars = Vec::new();
     let mut problem = None;
@@ -483,7 +493,7 @@ fn parse(text: &str) -> Result<Vec<ICalendar>, String> {
  * the events of `calendars` on the days from `from` until `to`, sorted by start with all-day ones
  * first; `local` gives the local time of seconds since the epoch, so a test picks the zone
  */
-fn occurrences(
+pub(super) fn occurrences(
     calendars: &[ICalendar],
     from: NaiveDate,
     to: NaiveDate,

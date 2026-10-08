@@ -119,7 +119,7 @@ Rules:
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later.
-- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync.
+- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016).
 - **Weather**: current + short forecast; explicit location/config; bounded refresh; stale/error state.
 
 ### Tray
@@ -322,7 +322,6 @@ Need design before commitment:
 ## Open
 
 - Track/test privacy Overlay stacking + input passthrough.
-- Define Google Calendar account adapter/auth/storage.
 - Define clipboard sensitive-content policy before persistence.
 - Run lock crash proof; split on failure.
 - Blur waits for viable Amane/niri background-effect path.

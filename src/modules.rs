@@ -15,9 +15,9 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, caffeine, calendar, capture, clipboard, launch, media, network,
-    niri, notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake,
-    wallpaper,
+    audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, launch, media,
+    network, niri, notifications, osd, pipewire, power, privacy, recording, system, timer, tray,
+    wake, wallpaper,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, reload, settings, shadow, supervise, theme,
@@ -69,6 +69,9 @@ pub enum Provider {
 
     // a session bus name Kanade takes, which no other program may hold
     SessionName(&'static str),
+
+    // a session bus service, running or started on demand, like the Secret Service
+    SessionService(&'static str),
 
     // niri's IPC, which the Module cannot work without
     Niri,
@@ -675,6 +678,45 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| app,
+    },
+    /*
+     * a Google account's calendars, synced into files the calendar reads (ADR 0016); idle until
+     * signed in
+     */
+    Module {
+        name: "google-calendar",
+        requires: &[CORE, "calendar"],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::SessionService(google::SECRETS),
+                without: "no signing in, as nothing keeps the credentials",
+            },
+            Need {
+                on: Provider::Program(google::OPEN),
+                without: "no browser opened to sign in; open the address sign-in prints",
+            },
+        ],
+        settings: &[],
+        verbs: &[Verb {
+            name: "google-calendar",
+            usage: || {
+                String::from(
+                    "google-calendar sign-in <client.json>|sign-out|sync|status
+  <client.json>: a Desktop app OAuth client, as Google Cloud downloads it",
+                )
+            },
+            parse: |arguments| {
+                google::Request::parse(arguments)
+                    .map(Call::Google)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("google-calendar", google::follow);
+            app
+        },
     },
     // the clipboard history on the island: search, copy, delete and clear
     Module {

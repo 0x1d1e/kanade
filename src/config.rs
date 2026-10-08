@@ -849,7 +849,7 @@ fn files(home: Option<&str>, settings: bool, problems: &mut Vec<String>) -> Vec<
 }
 
 // an XDG base directory: the variable if set to an absolute path, else its default under home
-fn base(variable: &str, default: &str, home: Option<&str>) -> Option<PathBuf> {
+pub fn base(variable: &str, default: &str, home: Option<&str>) -> Option<PathBuf> {
     env::var_os(variable)
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
