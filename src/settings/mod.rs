@@ -51,6 +51,9 @@ pub struct Settings {
 
     // the keys whose value in the files waits for a restart
     pending: Vec<String>,
+
+    // what in the files does not apply, which a change must fix before it is written
+    skipped: Vec<String>,
 }
 
 impl Service for Settings {
@@ -92,11 +95,12 @@ struct Snapshot {
     unreadable: Option<String>,
     error: Option<String>,
     pending: Vec<String>,
+    skipped: Vec<String>,
 }
 
 impl Snapshot {
     fn take() -> Self {
-        let (read, _) = config::layers(true);
+        let (read, skipped) = config::layers(true);
         let (below, _) = config::layers(false);
 
         let (file, unreadable) =
@@ -118,6 +122,7 @@ impl Snapshot {
             file,
             unreadable,
             error: reload::error(),
+            skipped,
         }
     }
 }
@@ -133,6 +138,7 @@ pub fn refresh() {
     settings.unreadable = snapshot.unreadable;
     settings.error = snapshot.error;
     settings.pending = snapshot.pending;
+    settings.skipped = snapshot.skipped;
 }
 
 // the Modules that own settings, each a page, in the registry's order

@@ -130,7 +130,11 @@ fn page(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         settings
             .error
             .as_ref()
-            .map(|error| format!("The config was not reloaded: {error}")),
+            .map(|error| format!("The config was not reloaded: {error}"))
+            .or_else(|| {
+                (!settings.skipped.is_empty())
+                    .then(|| format!("Skipped in the config: {}", settings.skipped.join("; ")))
+            }),
     ];
     for notice in notices.into_iter().flatten() {
         top.push(Box::new(wrapped(

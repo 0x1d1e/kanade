@@ -26,19 +26,30 @@ static WRITING: Mutex<()> = Mutex::new(());
  */
 pub fn set(path: &[String], value: Option<Value>) -> Result<(), String> {
     let file = config::settings_file().ok_or("no home directory to keep settings in")?;
+    let (below, _) = config::layers(false);
+
+    set_in(&file, &below, path, value)
+}
+
+// `set` on the file at `file`, over `below`, the layers under it
+fn set_in(
+    file: &Path,
+    below: &Config,
+    path: &[String],
+    value: Option<Value>,
+) -> Result<(), String> {
     let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
 
-    let text = match fs::read_to_string(&file) {
+    let text = match fs::read_to_string(file) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(format!("{} unreadable: {error}", file.display())),
     };
 
-    let (below, _) = config::layers(false);
-    let text = change(&text, &below, path, value)
+    let text = change(&text, below, path, value)
         .map_err(|problem| format!("{} not written: {problem}", file.display()))?;
 
-    write(&file, &text).map_err(|error| format!("{} not written: {error}", file.display()))
+    write(file, &text).map_err(|error| format!("{} not written: {error}", file.display()))
 }
 
 // the file's new text, with the key at `path` set over `below`, the layers under it, or removed
@@ -67,7 +78,16 @@ fn change(
         }
     };
 
-    edit(&mut table, path, value);
+    edit(&mut table, path, value)?;
+
+    // the file as a whole must still apply, so a write never keeps or adds a key that does not
+    if let Some(problem) = config::apply_table(&mut below.clone(), &table)
+        .into_iter()
+        .next()
+    {
+        return Err(format!("{problem}; fix or reset it first"));
+    }
+
     table.insert(
         String::from("schema_version"),
         Value::Integer(config::SCHEMA_VERSION as i64),
@@ -89,10 +109,13 @@ fn nest(path: &[String], value: Value) -> toml::Table {
     toml::Table::from_iter([(path[0].clone(), value)])
 }
 
-// sets or removes the key at `path`; a table left empty by a removal goes too
-fn edit(table: &mut toml::Table, path: &[String], value: Option<Value>) {
+/*
+ * sets or removes the key at `path`; a table left empty by a removal goes too. A value where a
+ * table goes is refused, not replaced, so a write never drops what the file held
+ */
+fn edit(table: &mut toml::Table, path: &[String], value: Option<Value>) -> Result<(), String> {
     let [key, rest @ ..] = path else {
-        return;
+        return Ok(());
     };
 
     if rest.is_empty() {
@@ -101,28 +124,27 @@ fn edit(table: &mut toml::Table, path: &[String], value: Option<Value>) {
             None => drop(table.remove(key)),
         }
 
-        return;
+        return Ok(());
     }
 
-    // a value where a table goes is replaced, as the key's table is what applies
     let inner = match table.get_mut(key) {
         Some(Value::Table(inner)) => inner,
-        _ if value.is_none() => return,
-        _ => {
-            table.insert(key.clone(), Value::Table(toml::Table::new()));
-
-            match table.get_mut(key) {
-                Some(Value::Table(inner)) => inner,
-                _ => return,
-            }
-        }
+        Some(_) => return Err(format!("{key}: expected a table; fix it first")),
+        None if value.is_none() => return Ok(()),
+        None => table
+            .entry(key.clone())
+            .or_insert_with(|| Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| format!("{key}: expected a table"))?,
     };
 
-    edit(inner, rest, value);
+    edit(inner, rest, value)?;
 
     if inner.is_empty() {
         table.remove(key);
     }
+
+    Ok(())
 }
 
 // the whole text to a file beside it, flushed to disk, then renamed over it
@@ -262,7 +284,7 @@ mod tests {
     #[test]
     fn removing_keeps_the_rest() {
         let text = change(
-            "clock = \"12h\"\nfuture = 1\n[output.\"eDP-1\"]\nclock = \"24h\"\n",
+            "clock = \"12h\"\nreduced_motion = true\n[output.\"eDP-1\"]\nclock = \"24h\"\n",
             &Config::default(),
             &path("clock"),
             None,
@@ -272,7 +294,7 @@ mod tests {
         assert_eq!(
             body(&text),
             body(&format!(
-                "future = 1\nschema_version = {}\n[output.\"eDP-1\"]\nclock = \"24h\"",
+                "reduced_motion = true\nschema_version = {}\n[output.\"eDP-1\"]\nclock = \"24h\"",
                 config::SCHEMA_VERSION
             ))
         );
@@ -327,6 +349,34 @@ mod tests {
                 config::SCHEMA_VERSION
             ))
         );
+    }
+
+    // a value where a table goes, or any key the file holds that does not apply, is kept as it is
+    #[test]
+    fn a_file_that_does_not_apply_is_left_unchanged() {
+        let dir = std::env::temp_dir().join(format!("kanade-invalid-{}", std::process::id()));
+        let file = dir.join("settings.toml");
+        let apps = [path("windows.apps"), vec![String::from("kitty")]].concat();
+
+        for text in ["windows = \"invalid\"\n", "clock = \"13h\"\n"] {
+            write(&file, text).unwrap();
+
+            let refused = set_in(
+                &file,
+                &Config::default(),
+                &apps,
+                Some(Value::String(String::from("kitty"))),
+            );
+
+            assert!(refused.unwrap_err().contains("fix"));
+            assert_eq!(fs::read_to_string(&file).unwrap(), text);
+        }
+
+        // resetting the key that does not apply is what fixes it
+        set_in(&file, &Config::default(), &path("clock"), None).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("13h"));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
