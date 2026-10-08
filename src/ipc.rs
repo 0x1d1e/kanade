@@ -22,7 +22,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{caffeine, google, sleep, wallpaper, weather};
+use crate::sources::{apps, caffeine, google, sleep, wallpaper, weather};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -179,7 +179,15 @@ fn island(command: Command) -> Reply {
 
     match effect {
         Ok(Some(Effect::Dnd(dnd))) => notifications::set_dnd(dnd, Instant::now()),
-        Ok(Some(effect)) => IslandService::write().apply(effect, Instant::now()),
+        Ok(Some(effect)) => {
+            // an app installed since the last opening shows in this one (`apps::refresh`); another
+            // way to open the Launcher must refresh as well
+            if let Effect::Open(_, Surface::Launcher) = &effect {
+                apps::refresh();
+            }
+
+            IslandService::write().apply(effect, Instant::now());
+        }
         Ok(None) => {}
         Err(error) => return Reply::Refused(error.to_string()),
     }

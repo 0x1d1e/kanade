@@ -15,7 +15,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, launch, media,
+    apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, launch, media,
     network, niri, notifications, osd, pipewire, power, privacy, recording, sleep, system, timer,
     tray, wake, wallpaper, weather,
 };
@@ -429,6 +429,10 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("notifications", notifications::follow);
+
+            // the first read starts Amane's app scan, which takes seconds, so the first
+            // notifications have their app's icon (`notifications::app_icon`)
+            thread::spawn(|| drop(Apps::read()));
             app
         },
     },
@@ -628,8 +632,8 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| {
-            // the first read starts Amane's app scan, which takes seconds, so the Launcher opens on a list
-            thread::spawn(|| drop(Apps::read()));
+            // read now, so the Launcher opens on a list
+            apps::refresh();
             app
         },
     },

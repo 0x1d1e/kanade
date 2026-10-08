@@ -1,9 +1,9 @@
-//! How a desktop entry starts, as the Desktop Entry spec says, for the Dock (#144): over D-Bus for
-//! `DBusActivatable=true`, else `Exec` split into its arguments, its field codes expanded for a
-//! launch with no file or URL, run in `Path` and, for `Terminal=true`, in a terminal through
-//! `xdg-terminal-exec`. niri runs the command, so the app gets niri's environment, not Kanade's.
-//! An activatable app runs `Exec` only when the bus could not deliver `Activate`: one that got it
-//! but has not answered may be starting, and a second start would open it twice.
+//! How a desktop entry starts, as the Desktop Entry spec says, for the Dock (#144) and the Launcher
+//! (#183): over D-Bus for `DBusActivatable=true`, else `Exec` split into its arguments, its field
+//! codes expanded for a launch with no file or URL, run in `Path` and, for `Terminal=true`, in a
+//! terminal through `xdg-terminal-exec`. niri runs the command, so the app gets niri's environment,
+//! not Kanade's. An activatable app runs `Exec` only when the bus could not deliver `Activate`: one
+//! that got it but has not answered may be starting, and a second start would open it twice.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -44,6 +44,9 @@ pub struct Launch {
 struct Command {
     argv: Vec<String>,
 
+    // the arguments as `Exec` writes them, its field codes dropped, for a search to read
+    written: String,
+
     // `Path`: the working directory
     dir: Option<String>,
 
@@ -75,18 +78,43 @@ impl Launch {
             .filter(|name| bus_name(name))
             .map(String::from);
 
+        // what each code gives when it gives nothing: dropped
+        let unexpanded = Fields {
+            name: "",
+            icon: None,
+            file: Path::new(""),
+            ..*fields
+        };
+
         let command = fields
             .exec
             .and_then(split)
-            .map(|args| args.iter().flat_map(|arg| expand(arg, fields)).collect())
-            .filter(|argv: &Vec<String>| !argv.is_empty())
-            .map(|argv| Command {
+            .map(|args| {
+                let argv: Vec<String> = args.iter().flat_map(|arg| expand(arg, fields)).collect();
+                let written: Vec<String> = args
+                    .iter()
+                    .flat_map(|arg| expand(arg, &unexpanded))
+                    .filter(|arg| !arg.is_empty())
+                    .collect();
+
+                (argv, written.join(" "))
+            })
+            .filter(|(argv, _)| !argv.is_empty())
+            .map(|(argv, written)| Command {
                 argv,
+                written,
                 dir: fields.path.map(String::from),
                 terminal: fields.terminal,
             });
 
         (activate.is_some() || command.is_some()).then_some(Launch { activate, command })
+    }
+
+    // `Exec`'s arguments as written, its field codes dropped; none for an entry that only activates
+    pub fn command(&self) -> Option<&str> {
+        self.command
+            .as_ref()
+            .map(|command| command.written.as_str())
     }
 
     // starts it; blocks on the bus and niri, so off the view thread

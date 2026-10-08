@@ -1,5 +1,5 @@
-//! The Launcher Surface (plan 7): a search over its providers (#138), the apps Amane's `Apps`
-//! finds, the calculator, emoji and, with the `wallpaper` Module on, wallpapers, best answer first.
+//! The Launcher Surface (plan 7): a search over its providers (#138), the apps `sources::apps`
+//! lists, the calculator, emoji and, with the `wallpaper` Module on, wallpapers, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
 //! starts and the island closes; a value or an emoji is copied, or a wallpaper set, and the island
@@ -11,14 +11,15 @@ use std::thread;
 use std::time::Instant;
 
 use amane::{
-    Apps, Center, Column, Cursor, DesktopApp, Image, Key, Padding, Parent, Rectangle, Row, Scroll,
-    Service, Size, Stack, Start, Text, Widget, children,
+    Center, Column, Cursor, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Service, Size,
+    Stack, Start, Text, Widget, children,
 };
 
 use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::sources::apps::{App, Apps};
 use crate::sources::wallpaper::Unset;
 use crate::sources::{self, clipboard};
 use crate::theme::space::{INSET, TARGET};
@@ -257,7 +258,7 @@ fn wallpapers(query: &str) -> bool {
 }
 
 // what the providers find for the query, best first
-fn found(apps: &[DesktopApp], query: &str) -> Vec<Answer> {
+fn found(apps: &[App], query: &str) -> Vec<Answer> {
     // listed only for a wallpaper search, so no other query stats the directory
     let (images, current) = if wallpapers(query) {
         (sources::wallpaper::images(), sources::wallpaper::current())
@@ -299,8 +300,8 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             "No wallpapers",
             &format!("Add images to {}", directory()),
         ))
-    } else if apps.list().is_empty() && !emoji && !wallpapers {
-        // Amane scans every icon theme first, which takes a few seconds after Kanade starts
+    } else if !apps.found() && !emoji && !wallpapers {
+        // read once the Module starts, so only a Launcher opened at once waits
         Box::new(state("Finding apps", ""))
     } else {
         Box::new(state(
@@ -677,8 +678,16 @@ pub fn key(monitor: &str, key: Key) -> bool {
  * wallpaper once it is done. One of those at a time
  */
 fn press(monitor: &str, visit: u64, action: Action) {
-    if let Action::Launch(app) = &action {
-        app.launch();
+    if let Action::Launch(launch) = &action {
+        let launch = launch.clone();
+
+        // off the view thread, as niri's or the bus's answer may take its patience
+        thread::spawn(move || {
+            if let Err(error) = launch.run() {
+                eprintln!("launcher: {launch:?}: {error}");
+            }
+        });
+
         view::collapse(monitor);
         return;
     }
