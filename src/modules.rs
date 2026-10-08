@@ -315,6 +315,12 @@ pub const ALL: &[Module] = &[
                 supervise::spawn("osd", move || osd::follow(reads));
             }
 
+            // reads the volume fresh for `kanade osd volume`
+            if reads.audio {
+                let asks = osd::volume_asks();
+                supervise::spawn("osd-volume", move || osd::answer_volume(&asks));
+            }
+
             app.window_per_monitor(crate::osd::window)
         },
     },
