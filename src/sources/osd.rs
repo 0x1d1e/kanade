@@ -6,6 +6,9 @@
 //! kernel announces a change (`wake`), and polls while a change settles or an announcer is down; a
 //! read that finds the levels unchanged shows nothing, so an idle OSD never redraws. It reads only
 //! what the `audio` and `brightness` Modules that are on allow.
+//!
+//! `kanade osd volume|brightness` shows a level as it is, for a keybind that changes it outside
+//! Kanade.
 
 use std::time::{Duration, Instant};
 
@@ -82,11 +85,7 @@ impl Levels {
             let audio = Audio::read();
 
             (
-                Some(Volume {
-                    device: Device::Speaker,
-                    percent: audio.volume(),
-                    muted: audio.muted(),
-                }),
+                Some(speaker(&audio)),
                 Some(Volume {
                     device: Device::Microphone,
                     percent: audio.microphone_volume(),
@@ -112,6 +111,62 @@ impl Levels {
             brightness,
         }
     }
+}
+
+fn speaker(audio: &Audio) -> Volume {
+    Volume {
+        device: Device::Speaker,
+        percent: audio.volume(),
+        muted: audio.muted(),
+    }
+}
+
+// which level `kanade osd` shows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    Volume,
+    Brightness,
+}
+
+impl Asked {
+    pub fn parse(arguments: &[&str]) -> Option<Asked> {
+        match arguments {
+            ["volume"] => Some(Asked::Volume),
+            ["brightness"] => Some(Asked::Brightness),
+            _ => None,
+        }
+    }
+}
+
+/*
+ * `kanade osd volume|brightness`: the OSD for the level as it is, on the focused output. Refused
+ * while its Module is off, as nothing reads that level then, or without a backlight
+ */
+pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
+    let level = match asked {
+        Asked::Volume if !reads.audio => return Err(String::from("module audio is off")),
+        Asked::Brightness if !reads.brightness => {
+            return Err(String::from("module brightness is off"));
+        }
+        Asked::Volume => Level::Volume(speaker(&Audio::read())),
+        Asked::Brightness => {
+            /*
+             * Amane reads the backlight again only every 500 ms, and a keybind asks right after
+             * it set it, so this reads it now; a sysfs read, cheap on the draw thread
+             */
+            let mut brightness = Brightness::write();
+            brightness.update();
+
+            if !brightness.present() {
+                return Err(String::from("there is no backlight"));
+            }
+
+            Level::Brightness(brightness.percent())
+        }
+    };
+
+    Osd::write().show(level, Instant::now());
+    Ok(())
 }
 
 /*
@@ -281,6 +336,34 @@ mod tests {
         assert_eq!(
             changes(Some(unread), brightness_only),
             [Level::Brightness(50)]
+        );
+    }
+
+    #[test]
+    fn osd_asks_for_volume_or_brightness() {
+        assert_eq!(Asked::parse(&["volume"]), Some(Asked::Volume));
+        assert_eq!(Asked::parse(&["brightness"]), Some(Asked::Brightness));
+
+        for words in [&[][..], &["microphone"], &["volume", "50"], &["Volume"]] {
+            assert_eq!(Asked::parse(words), None, "{words:?}");
+        }
+    }
+
+    // refused before any Service is read, so an off Module's stays cold
+    #[test]
+    fn osd_is_refused_for_a_module_that_is_off() {
+        let off = Reads {
+            audio: false,
+            brightness: false,
+        };
+
+        assert_eq!(
+            show(Asked::Volume, off),
+            Err(String::from("module audio is off"))
+        );
+        assert_eq!(
+            show(Asked::Brightness, off),
+            Err(String::from("module brightness is off"))
         );
     }
 

@@ -18,7 +18,7 @@ use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{caffeine, capture, recording, timer};
+use crate::sources::{caffeine, capture, osd, recording, timer};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -51,6 +51,7 @@ pub enum Call {
     Screenshot(capture::Mode),
     Record(recording::Request),
     Caffeine(caffeine::Request),
+    Osd(osd::Asked),
     Reload,
     Validate,
     Status,
@@ -479,6 +480,10 @@ mod tests {
                 Call::Caffeine(caffeine::Request::Toggle(Some(Duration::from_secs(3600))))
             ))
         );
+        assert_eq!(
+            parsed(&["osd", "brightness"]),
+            Ok(("osd", Call::Osd(osd::Asked::Brightness)))
+        );
         // their Surface is its own Module, which shares the verb
         assert_eq!(
             parsed(&["notifications", "open"]),
@@ -560,6 +565,8 @@ mod tests {
             &["capture", "record", "area"],
             &["caffeine"],
             &["caffeine", "on", "forever"],
+            &["osd"],
+            &["osd", "microphone"],
             &["debug"],
             &["doctor"],
             &["help"],
@@ -582,6 +589,7 @@ status
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
   <duration>: like 90s, 25m or 1h30m, up to 24h
+osd volume|brightness
 notifications clear
 notifications dnd on|off|toggle
 notifications open|close|toggle
