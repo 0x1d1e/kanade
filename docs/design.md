@@ -162,7 +162,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 ### Later
 
 - **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144).
-- **Wallpaper**: Kanade selects; awww renders.
+- **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
 - **Lock**: `ext-session-lock` + PAM; no notification content.
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
 - **Settings**: floated normal window; schema-backed overrides.
@@ -223,6 +223,7 @@ timer start <dur>|pause|resume|cancel
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
+wallpaper set <path>|status
 osd volume|brightness
 config reload|validate
 status
@@ -233,12 +234,11 @@ module list|enable <name>|disable <name>
 lock
 session menu|suspend|reboot|poweroff|logout
 settings open [page]|close
-wallpaper set <path>
 ```
 
 `status`: protocol/config versions, module/Service state, pending restart, last errors.
 
-`doctor`: read-only diagnostics by default: Amane/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. PAM/logind, awww/matugen and capture checks land with their Modules.
+`doctor`: read-only diagnostics by default: Amane/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. PAM/logind, matugen and capture checks land with their Modules.
 
 ## Runtime + dependencies
 

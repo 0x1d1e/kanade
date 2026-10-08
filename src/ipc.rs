@@ -11,7 +11,6 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
-use crate::sources::caffeine;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
@@ -20,6 +19,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
+use crate::sources::{caffeine, wallpaper};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -67,6 +67,10 @@ fn run(call: Call) -> Reply {
         Call::Caffeine(request) => {
             caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        // handed to the wallpaper's thread, as awww takes a while; `kanade` waits on it
+        Call::Wallpaper(request) => {
+            wallpaper::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         Call::Reload => config(reload::reload(), "reloaded"),
@@ -113,6 +117,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("dock") {
         lines.push(dock::status());
+    }
+    if modules::on("wallpaper") {
+        lines.push(wallpaper::status());
     }
 
     lines.extend(supervise::status());

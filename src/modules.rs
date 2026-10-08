@@ -15,7 +15,7 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
     audio, battery, bluetooth, caffeine, capture, clipboard, launch, media, network, niri,
-    notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake,
+    notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake, wallpaper,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, reload, shadow, supervise, theme, view,
@@ -539,10 +539,46 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
+    // the wallpaper: Kanade selects, awww renders
+    Module {
+        name: "wallpaper",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(wallpaper::AWWW),
+                without: "no setting the wallpaper",
+            },
+            Need {
+                on: Provider::Program(wallpaper::DAEMON),
+                without: "no wallpaper unless one runs already",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "no wallpaper unless awww-daemon runs already, as Kanade's could outlive it",
+            },
+        ],
+        settings: config::WALLPAPER,
+        verbs: &[Verb {
+            name: "wallpaper",
+            usage: || String::from("wallpaper set <path>|status"),
+            parse: |arguments| {
+                wallpaper::Request::parse(arguments)
+                    .map(Call::Wallpaper)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("wallpaper", wallpaper::follow);
+            supervise::spawn("wallpaper-set", wallpaper::serve);
+            app
+        },
+    },
     Module {
         name: "launcher",
         requires: &[CORE],
-        optional: &[],
+        optional: &["wallpaper"],
         warns: None,
         needs: &[Need {
             on: Provider::Program(clipboard::COPY),

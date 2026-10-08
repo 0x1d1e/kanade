@@ -8,6 +8,7 @@ use std::env;
 use std::io::{self, Read};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,7 +19,7 @@ use crate::doctor;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{caffeine, capture, osd, recording, timer};
+use crate::sources::{caffeine, capture, osd, recording, timer, wallpaper};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -51,6 +52,7 @@ pub enum Call {
     Screenshot(capture::Mode),
     Record(recording::Request),
     Caffeine(caffeine::Request),
+    Wallpaper(wallpaper::Request),
     Osd(osd::Asked),
     Reload,
     Validate,
@@ -172,7 +174,27 @@ pub fn run(arguments: &[String]) -> ExitCode {
         }
     };
 
-    let reply = match (asked, call(arguments)) {
+    // the shell runs elsewhere, so a path goes to it whole
+    let asked = match asked {
+        Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
+            Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path)),
+            Err(error) => {
+                eprintln!("kanade: {}: {error}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        asked => asked,
+    };
+    let arguments = match &asked {
+        Call::Wallpaper(wallpaper::Request::Set(path)) => vec![
+            String::from("wallpaper"),
+            String::from("set"),
+            path.to_string_lossy().into_owned(),
+        ],
+        _ => arguments.to_vec(),
+    };
+
+    let reply = match (asked, call(&arguments)) {
         (
             Call::Record(request @ (recording::Request::Start | recording::Request::Stop)),
             Ok(Reply::Done(path)),
@@ -185,6 +207,13 @@ pub fn run(arguments: &[String]) -> ExitCode {
         ) if let Some(serial) = caffeine::starting(&text) => {
             Ok(settle_caffeine(serial, PATIENCE, |deadline| {
                 call_until(&caffeine_status_call(), deadline)
+            }))
+        }
+        (Call::Wallpaper(wallpaper::Request::Set(path)), Ok(Reply::Done(text)))
+            if let Some(serial) = wallpaper::setting(&text) =>
+        {
+            Ok(settle_wallpaper(serial, &path, PATIENCE, |deadline| {
+                call_until(&wallpaper_status_call(), deadline)
             }))
         }
         (_, reply) => reply,
@@ -310,8 +339,52 @@ fn settle_caffeine(
     )
 }
 
+/*
+ * the shell answers a wallpaper's set at once, as setting (`wallpaper::request`), so this waits
+ * until awww showed it, done at the path it shows
+ */
+fn settle_wallpaper(
+    serial: u64,
+    path: &Path,
+    patience: Duration,
+    ask: impl FnMut(Instant) -> Result<Reply, String>,
+) -> Reply {
+    settle(
+        patience,
+        || {
+            format!(
+                "{} did not show the wallpaper within {}s; it may still",
+                wallpaper::AWWW,
+                patience.as_secs()
+            )
+        },
+        "the wallpaper may still change",
+        ask,
+        |status| {
+            let status = wallpaper::Status::parse(status)?;
+
+            Some(match status.settled(serial) {
+                // its own path: the current one may be from a set done after it
+                wallpaper::Settled::Set => {
+                    Settling::Settled(Reply::Done(path.display().to_string()))
+                }
+                wallpaper::Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
+                wallpaper::Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
+                wallpaper::Settled::Waiting => Settling::Waiting,
+            })
+        },
+    )
+}
+
 fn status_call() -> Vec<String> {
     ["capture", "record", "status"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+fn wallpaper_status_call() -> Vec<String> {
+    ["wallpaper", "status"]
         .into_iter()
         .map(String::from)
         .collect()
@@ -416,6 +489,8 @@ fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Re
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::island::presentation::Surface;
 
@@ -478,6 +553,13 @@ mod tests {
             Ok((
                 "caffeine",
                 Call::Caffeine(caffeine::Request::Toggle(Some(Duration::from_secs(3600))))
+            ))
+        );
+        assert_eq!(
+            parsed(&["wallpaper", "set", "a b.png"]),
+            Ok((
+                "wallpaper",
+                Call::Wallpaper(wallpaper::Request::Set(PathBuf::from("a b.png")))
             ))
         );
         assert_eq!(
@@ -597,6 +679,7 @@ tray open|close|toggle
 clipboard clear
 clipboard open|close|toggle
 controls open|close|toggle
+wallpaper set <path>|status
 launcher open|close|toggle
 capture screenshot area|window|output
 capture record start|stop|status
@@ -800,6 +883,49 @@ help",
 
         assert!(
             matches!(&reply, Reply::Unknown(why) if why.contains("did not hold the inhibitor")),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_settles_once_awww_shows_it_or_fails() {
+        let patience = Duration::from_millis(300);
+        let settled = |said: &'static [&'static str]| {
+            let mut said = said.iter();
+
+            settle_wallpaper(2, Path::new("/w/a.png"), patience, move |_| {
+                Ok(Reply::Done(String::from(*said.next().unwrap())))
+            })
+        };
+
+        assert_eq!(
+            settled(&["none\nsetting #2", "current /w/a.png\n#2 set"]),
+            Reply::Done(String::from("/w/a.png"))
+        );
+        assert_eq!(
+            settled(&[
+                "none\nsetting #2",
+                "none\n#2 failed: awww-daemon is not running"
+            ]),
+            Reply::Refused(String::from("awww-daemon is not running"))
+        );
+        assert!(matches!(settled(&["none"]), Reply::Unknown(_)));
+
+        // another set done before this one was asked after: still this one's path
+        assert_eq!(
+            settled(&[
+                "none\nsetting #2\nsetting #3",
+                "current /w/b.png\n#2 set\n#3 set"
+            ]),
+            Reply::Done(String::from("/w/a.png"))
+        );
+
+        let reply = settle_wallpaper(2, Path::new("/w/a.png"), patience, |_| {
+            Ok(Reply::Done(String::from("none\nsetting #2")))
+        });
+
+        assert!(
+            matches!(&reply, Reply::Unknown(why) if why.contains("did not show the wallpaper")),
             "{reply:?}"
         );
     }

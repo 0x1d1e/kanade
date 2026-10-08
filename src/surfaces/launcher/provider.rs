@@ -40,6 +40,9 @@ pub enum Mark {
     // an app's icon
     Picture(PathBuf),
 
+    // an image cropped to fill the tile, like a wallpaper
+    Photo(PathBuf),
+
     // a letter or sign on the quiet tile
     Tile(String),
 
@@ -47,13 +50,16 @@ pub enum Mark {
     Glyph(&'static str),
 }
 
-// what pressing an answer does; either closes the island once done
+// what pressing an answer does; each closes the island once done
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Launch(DesktopApp),
 
     // puts the text on the clipboard
     Copy(String),
+
+    // sets the image as the wallpaper
+    Wallpaper(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
