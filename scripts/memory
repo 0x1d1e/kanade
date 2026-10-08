@@ -1,0 +1,95 @@
+#!/bin/sh
+# the shell's memory (#198) at Rest, with each Surface open and locked, in MiB; see docs/memory.md
+# usage: scripts/memory [sample LABEL]; measures the shell $UNIT runs, kanade-memory by default,
+# and $KANADE is the CLI, target/debug/kanade by default
+set -e
+kanade=${KANADE:-target/debug/kanade}
+unit=${UNIT:-kanade-memory}
+awk=$(dirname "$(readlink -f "$0")")/memory.awk
+
+# anything else would run the whole scenario, which locks the session
+case $1 in
+sample | '') ;;
+*)
+    echo "usage: scripts/memory [sample LABEL]" >&2
+    exit 2
+    ;;
+esac
+
+# the unit's own cgroup holds the shell and its helpers, and nothing else
+pid=$(systemctl --user show -p MainPID --value "$unit")
+if [ "${pid:-0}" = 0 ]; then
+    echo "memory: $unit runs no shell" >&2
+    exit 1
+fi
+cgroup=/sys/fs/cgroup$(sed -n 's/^0:://p' "/proc/$pid/cgroup")
+
+header() {
+    printf "%-14s %7s %7s %7s %7s %7s %7s | %7s %7s %7s %7s %7s %7s %7s\n" "" \
+        rss pss anon file gpu gpu-res cgroup peak anon cache shmem slab-r others
+}
+
+gone() {
+    echo "memory: the shell, pid $pid, is gone" >&2
+    exit 1
+}
+
+sample() {
+    rollup=$(cat "/proc/$pid/smaps_rollup" 2> /dev/null) || gone
+    # /dev/dri file descriptors, for their DRM fdinfo; several can share one client
+    dri=$(find "/proc/$pid/fd" -lname '/dev/dri/*' -printf "/proc/$pid/fdinfo/%f\n" 2> /dev/null || true)
+    others=$(grep -vx "$pid" "$cgroup/cgroup.procs" | sed 's|.*|/proc/&/smaps_rollup|')
+
+    {
+        echo "$rollup" | sed 's/^/rollup /'
+        # memory.awk reads these prefixed lines, and tests/memory.rs feeds it the same format;
+        # a descriptor or helper that went away since is skipped
+        for file in $dri; do
+            sed "s|^|fdinfo $file |" "$file" 2> /dev/null || true
+        done
+        for file in $others; do
+            sed -n 's/^Pss:/others/p' "$file" 2> /dev/null || true
+        done
+        sed 's/^/cgroup /' "$cgroup/memory.stat"
+        sed 's/^/cgroup current /' "$cgroup/memory.current"
+        # since the cgroup started; Linux 5.19 and later
+        sed 's/^/cgroup peak /' "$cgroup/memory.peak" 2> /dev/null || true
+    } | awk -v label="$1" -f "$awk"
+}
+
+if [ "$1" = sample ]; then
+    header
+    sample "${2:-now}"
+    exit
+fi
+
+# a Surface allocates as it draws: give it time to settle, still within the 5 s HOLD
+step() {
+    label=$1
+    shift
+    "$kanade" "$@" > /dev/null
+    sleep 2
+    sample "$label"
+}
+
+header
+sample rest
+for surface in controls media notifications launcher tray clipboard calendar weather; do
+    step "$surface" "$surface" open
+done
+step collapse island collapse
+step settings settings open
+step closed settings close
+
+# every monitor shows a lock screen; only the user's password ends it, even when `lock` fails
+echo "memory: locking; type your password to unlock" >&2
+"$kanade" lock
+sleep 2
+sample locked
+# `lock status` ends with `unlocked` once a password was accepted
+until "$kanade" lock status 2> /dev/null | tail -n 1 | grep -qx unlocked; do
+    kill -0 "$pid" 2> /dev/null || gone
+    sleep 1
+done
+sleep 2
+sample unlocked
