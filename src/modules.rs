@@ -14,8 +14,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    audio, battery, bluetooth, capture, clipboard, media, network, niri, notifications, osd,
-    pipewire, power, privacy, recording, system, timer, tray, wake,
+    audio, battery, bluetooth, caffeine, capture, clipboard, media, network, niri, notifications,
+    osd, pipewire, power, privacy, recording, system, timer, tray, wake,
 };
 use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
 
@@ -594,6 +594,39 @@ pub const ALL: &[Module] = &[
                     .map(Call::Record)
                     .ok_or(Unparsed::Usage),
                 _ => Err(Unparsed::Usage),
+            },
+        }],
+        start: |app| app,
+    },
+    // keeps the session from going idle while on, by systemd-inhibit, which only it starts
+    Module {
+        name: "caffeine",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(caffeine::INHIBIT),
+                without: "no caffeine",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "no caffeine, which could outlive Kanade without it",
+            },
+        ],
+        settings: &[],
+        verbs: &[Verb {
+            name: "caffeine",
+            usage: || {
+                String::from(
+                    "caffeine on|off|toggle [<duration>]|status
+  <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off",
+                )
+            },
+            parse: |arguments| {
+                caffeine::Request::parse(arguments)
+                    .map(Call::Caffeine)
+                    .ok_or(Unparsed::Usage)
             },
         }],
         start: |app| app,

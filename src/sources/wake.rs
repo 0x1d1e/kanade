@@ -128,9 +128,14 @@ fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
 // whether setpriv is on the PATH, so a program Kanade has another start, like wl-paste's watch
 // command, can go through it as `spawn` says
 pub fn guards() -> bool {
+    found(SETPRIV)
+}
+
+// whether `program` is an executable file on the PATH
+pub fn found(program: &str) -> bool {
     env::var_os("PATH").is_some_and(|path| {
         env::split_paths(&path).any(|dir| {
-            fs::metadata(dir.join(SETPRIV))
+            fs::metadata(dir.join(program))
                 .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
         })
     })
@@ -234,6 +239,21 @@ pub fn hold_file(program: &str, args: &[&str]) -> io::Result<Child> {
             .stderr(Stdio::piped())
             .spawn()
     })
+}
+
+/*
+ * starts `program` as a holder of a lock, like an inhibitor, which a kill lets go of at once. Only
+ * through setpriv, never without: a lock that outlived Kanade would be held for good. Its stdout
+ * and stderr are piped, for when it holds the lock and why it ended
+ */
+pub fn hold_lock(program: &str, args: &[&str]) -> io::Result<Child> {
+    Command::new(SETPRIV)
+        .args(["--pdeathsig", KILL, program])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 // ends what `run` runs from another thread: kills the program, or ends the wait to run it again,

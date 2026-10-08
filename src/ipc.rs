@@ -10,6 +10,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
+use crate::sources::caffeine;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
@@ -59,6 +60,10 @@ fn run(call: Call) -> Reply {
         },
         // on the draw thread, which the recorder ends with (`recording::start`); `kanade` waits on it
         Call::Record(request) => record(request),
+        // on the draw thread, which systemd-inhibit dies with (`caffeine::request`)
+        Call::Caffeine(request) => {
+            caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
         Call::Reload => config(reload::reload(), "reloaded"),
         Call::Validate => config(reload::validate(), "valid"),
 

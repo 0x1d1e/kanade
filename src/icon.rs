@@ -42,6 +42,7 @@ const SEARCH: &str = include_str!("icons/search.svg");
 const CAPTURE: &str = include_str!("icons/capture.svg");
 const STOPWATCH: &str = include_str!("icons/stopwatch.svg");
 const CAMERA: &str = include_str!("icons/camera.svg");
+const CUP: &str = include_str!("icons/cup.svg");
 const PREVIOUS: &str = include_str!("icons/previous.svg");
 const PLAY: &str = include_str!("icons/play.svg");
 const PAUSE: &str = include_str!("icons/pause.svg");
@@ -90,6 +91,9 @@ pub(crate) enum Icon {
 
     // a video camera, its lens to the right
     Camera,
+
+    // a steaming cup, for caffeine
+    Cup,
 
     // media transport; a triangle's weight sits left of its box, so Play sits right to look centered
     Previous,
@@ -206,6 +210,7 @@ impl Icon {
             Icon::Capture => &[CAPTURE],
             Icon::Stopwatch => &[STOPWATCH],
             Icon::Camera => &[CAMERA],
+            Icon::Cup => &[CUP],
             Icon::Previous => &[PREVIOUS],
             Icon::Play => &[PLAY],
             Icon::Pause => &[PAUSE],
@@ -259,7 +264,7 @@ fn content(svg: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 32] = [
+    const ALL: [Icon; 33] = [
         Icon::Speaker(0),
         Icon::Speaker(30),
         Icon::Speaker(80),
@@ -276,6 +281,7 @@ mod tests {
         Icon::Capture,
         Icon::Stopwatch,
         Icon::Camera,
+        Icon::Cup,
         Icon::Previous,
         Icon::Play,
         Icon::Pause,
@@ -370,8 +376,8 @@ mod tests {
             assert_eq!(drawn(), written);
         }
 
-        // one svg per drawing and ink, not per size: 30 drawings, each plain and crossed
-        assert_eq!(written, 60);
+        // one svg per drawing and ink, not per size: 31 drawings, each plain and crossed
+        assert_eq!(written, 62);
 
         for (path, _) in &first {
             assert!(path.exists(), "{}", path.display());
