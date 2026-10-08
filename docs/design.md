@@ -165,7 +165,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 - **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
 - **Lock**: `ext-session-lock` + PAM; no notification content.
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
-- **Settings**: floated normal window; schema-backed overrides.
+- **Settings**: floated normal window; schema-backed overrides; page per Module; per-output keys file-only (done, #148).
 
 ## Theme
 
@@ -225,6 +225,7 @@ capture record start|stop|status
 caffeine on|off|toggle [duration]|status
 wallpaper set <path>|status
 osd volume|brightness
+settings open [page]|close
 config reload|validate|defaults
 status
 doctor
@@ -233,7 +234,6 @@ doctor
 module list|enable <name>|disable <name>
 lock
 session menu|suspend|reboot|poweroff|logout
-settings open [page]|close
 ```
 
 `status`: protocol/config versions, module/Service state, pending restart, last errors.

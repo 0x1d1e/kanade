@@ -18,7 +18,8 @@ use crate::sources::{
     notifications, osd, pipewire, power, privacy, recording, system, timer, tray, wake, wallpaper,
 };
 use crate::{
-    banners, cli, clock, cluster, config, dock, ipc, reload, shadow, supervise, theme, view,
+    banners, cli, clock, cluster, config, dock, ipc, reload, settings, shadow, supervise, theme,
+    view,
 };
 
 pub struct Module {
@@ -714,6 +715,35 @@ pub const ALL: &[Module] = &[
                 caffeine::Request::parse(arguments)
                     .map(Call::Caffeine)
                     .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
+    // the Settings window, which writes only the settings file
+    Module {
+        name: "settings",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "settings",
+            usage: || {
+                let pages: Vec<&str> = settings::pages().map(|module| module.name).collect();
+
+                format!(
+                    "settings open [<page>]|close\n  <page>: {}",
+                    pages.join("|")
+                )
+            },
+            parse: |arguments| match arguments {
+                ["open"] => Ok(Call::Settings(None)),
+                ["open", page] => settings::page(page)
+                    .map(|page| Call::Settings(Some(page)))
+                    .ok_or(Unparsed::Usage),
+                ["close"] => Ok(Call::CloseSettings),
+                _ => Err(Unparsed::Usage),
             },
         }],
         start: |app| app,

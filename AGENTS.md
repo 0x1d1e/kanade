@@ -24,21 +24,17 @@ scripts/dev               # cargo build, restart the shell on each save; a faile
 - Privacy E2E: `pw-record` for the mic, `wf-recorder` for a niri cast. Webcam: `gst-launch-1.0 pipewiresrc autoconnect=false client-name=camtest ! fakesink`, then `pw-link -L <v4l2 node>:capture_1 camtest:input_1` (plain `pipewiresrc` fails with `target not found`).
 - Pointer E2E: `ydotool` needs `YDOTOOL_SOCKET=$XDG_RUNTIME_DIR/.ydotool_socket`, or clicks silently go nowhere. To check passthrough, log clicks in a fullscreen GTK window, not kitty mouse reporting, which drops clicks near the edges.
 
-## Simulated session and test network
+## E2E session and test network
 
-E2E without touching the user's own shell, input or network. The user's session usually runs over its own Wi-Fi: never disconnect it, toggle its radio, or read its secrets.
+E2E runs on the user's own niri session; no nested niri. The user's session usually runs over its own Wi-Fi: never disconnect it, toggle its radio, or read its secrets.
 
-Nested niri session:
-- `niri -c niri.kdl` from the user's session opens a winit window with a new socket (e.g. `wayland-2`). In `niri.kdl`: `output "winit" { mode "1280x800"; scale 1; }` and `hotkey-overlay { skip-at-startup; }`.
-- Run a copy of `target/debug/kanade` (so `scripts/dev` doesn't kill it) with:
-  - `WAYLAND_DISPLAY=$XDG_RUNTIME_DIR/wayland-2` as an absolute path.
-  - Its own `XDG_RUNTIME_DIR` (e.g. `/tmp/e2e/run`), so its IPC socket doesn't collide with the user's shell.
-  - `NIRI_SOCKET` set to the nested niri's socket.
-  - The same env for `./kanade <verb>`.
-- Input: `wtype`. Send a whole key sequence in one call (`wtype -k Right -s 250 -k Return`). One call per key races niri's keymap update, so keys arrive decoded with the previous call's keymap.
-- Screenshots: `grim -g` on the nested window's region of the real output. They lag about a frame.
+- The test build replaces the user's shell (one Amane shell per session): `scripts/dev` if running, else stop their `kanade` and run `target/debug/kanade`. Leave a working shell running afterwards.
+- Config/state tests: run it with a temporary `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, so the user's real config and `settings.toml` stay untouched; restart with their normal env after.
+- Input lands in the user's session: note the focused window first (`niri msg focused-window`), refocus it after, and tell the user their pointer/focus was used.
+- Keys: `wtype`. Send a whole key sequence in one call (`wtype -k Right -s 250 -k Return`). One call per key races niri's keymap update, so keys arrive decoded with the previous call's keymap. The first call after a while may race too; warm up with `wtype -k Shift_L`.
+- Screenshots: `grim -o <output>` or `grim -g "x,y wxh"`; `niri msg windows`/`outputs` give positions. They lag about a frame.
 - An island opened with `kanade controls open` is held for only 5 s after the last key (HOLD). Script each run in one shell command, and wait over 5 s between runs so it has collapsed.
-- Only the display is nested. Controls still act on the host's NetworkManager, Bluetooth, audio and power profile.
+- Controls act on the real NetworkManager, Bluetooth, audio and power profile.
   - Guard risky presses in the test build, e.g. replace `Network::set_wifi` with a log line, and revert before committing.
   - Restore anything a run changed and tell the user.
 

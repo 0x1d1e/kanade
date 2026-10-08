@@ -1,8 +1,9 @@
 //! The config (#39, #101, docs/design.md Config): TOML, read at start in layers, each over the
 //! ones before it: the defaults, then every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else
 //! `~/.config/kanade/`) in alphabetical order, then `$XDG_STATE_HOME/kanade/settings.toml` (else
-//! `~/.local/state/kanade/settings.toml`), the layer the Settings app will own. Tables merge key by
-//! key; any other value, a list too, replaces the one below. Kanade never writes these files.
+//! `~/.local/state/kanade/settings.toml`), the layer the Settings window owns (`crate::settings`).
+//! Tables merge key by key; any other value, a list too, replaces the one below. Kanade writes only
+//! the settings file, never the config directory.
 //!
 //! A key the registry marks per output may also be set in `[output."<name>"]`, for the monitor of
 //! that name only (#147). An output's value wins over the global one from any layer, as the more
@@ -43,8 +44,8 @@ use crate::modules;
 const OSD: Duration = Duration::from_millis(1200);
 
 // a timing outside this keeps its default: a spring needs some time, and a minute is no glance
-const SHORTEST: u64 = 1;
-const LONGEST: u64 = 60_000;
+pub const SHORTEST: u64 = 1;
+pub const LONGEST: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -265,7 +266,7 @@ impl Kind {
     }
 
     // the value as TOML, none for one that sets nothing, like an empty list
-    fn value(&self, config: &Config) -> Option<Value> {
+    pub fn value(&self, config: &Config) -> Option<Value> {
         let value = match self {
             Kind::Switch(field) => Value::Boolean((field.get)(config)),
             Kind::Millis(field) => {
@@ -311,7 +312,7 @@ impl Kind {
     }
 
     // a table of its own keys, which a file writes as `[key]`
-    fn table(&self) -> bool {
+    pub fn table(&self) -> bool {
         matches!(self, Kind::AppIds(_) | Kind::Modules(_))
     }
 }
@@ -722,11 +723,25 @@ pub fn install(config: Config) {
  * at start each problem is skipped alone, a reload refuses the lot
  */
 pub fn read() -> (Config, Vec<String>) {
+    let (mut config, problems) = layers(true);
+
+    if let Some(motion) = motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()) {
+        config.island.motion = motion;
+    }
+
+    (config, problems)
+}
+
+/*
+ * the layers as `read` gives them but without KANADE_REDUCED_MOTION, which no file sets, and only
+ * with the settings file for `settings`: without it is what a value there is compared with
+ */
+pub fn layers(settings: bool) -> (Config, Vec<String>) {
     let home = env::var("HOME").ok();
     let mut config = Config::default();
     let mut problems = Vec::new();
 
-    for path in files(home.as_deref(), &mut problems) {
+    for path in files(home.as_deref(), settings, &mut problems) {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -741,11 +756,16 @@ pub fn read() -> (Config, Vec<String>) {
         }
     }
 
-    if let Some(motion) = motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()) {
-        config.island.motion = motion;
-    }
-
     (config, problems)
+}
+
+// the settings file, the one layer Kanade writes
+pub fn settings_file() -> Option<PathBuf> {
+    settings_path(env::var("HOME").ok().as_deref())
+}
+
+fn settings_path(home: Option<&str>) -> Option<PathBuf> {
+    base("XDG_STATE_HOME", ".local/state", home).map(|dir| dir.join("kanade/settings.toml"))
 }
 
 // where a layer's file may appear, so `crate::reload` can watch for one
@@ -764,10 +784,7 @@ pub fn places() -> Vec<Place> {
     base("XDG_CONFIG_HOME", ".config", home)
         .map(|dir| Place::Directory(dir.join("kanade")))
         .into_iter()
-        .chain(
-            base("XDG_STATE_HOME", ".local/state", home)
-                .map(|dir| Place::File(dir.join("kanade/settings.toml"))),
-        )
+        .chain(settings_path(home).map(Place::File))
         .collect()
 }
 
@@ -777,15 +794,15 @@ pub fn layer_name(name: &OsStr) -> bool {
         && Path::new(name).extension() == Some(OsStr::new("toml"))
 }
 
-// every layer's file, in the order they apply
-fn files(home: Option<&str>, problems: &mut Vec<String>) -> Vec<PathBuf> {
+// every layer's file, in the order they apply; the settings file, the last, only for `settings`
+fn files(home: Option<&str>, settings: bool, problems: &mut Vec<String>) -> Vec<PathBuf> {
     let mut files = base("XDG_CONFIG_HOME", ".config", home)
         .map(|dir| tomls(&dir.join("kanade"), problems))
         .unwrap_or_default();
 
-    files.extend(
-        base("XDG_STATE_HOME", ".local/state", home).map(|dir| dir.join("kanade/settings.toml")),
-    );
+    if settings {
+        files.extend(settings_path(home));
+    }
 
     files
 }
@@ -848,15 +865,73 @@ enum Node {
 impl Node {
     fn value(&self) -> Value {
         match self {
-            Node::Table(table) => Value::Table(
-                table
-                    .iter()
-                    .map(|(key, entry)| (key.clone(), entry.node.value()))
-                    .collect(),
-            ),
+            Node::Table(table) => Value::Table(plain(table)),
             Node::Value(value) => value.clone(),
         }
     }
+}
+
+// a parsed file as plain TOML, without its lines
+fn plain(table: &Table) -> toml::Table {
+    table
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.node.value()))
+        .collect()
+}
+
+// plain TOML as a parsed file, each key on no line
+fn entries(table: &toml::Table) -> Table {
+    table
+        .iter()
+        .map(|(key, value)| {
+            let node = match value {
+                Value::Table(table) => Node::Table(entries(table)),
+                value => Node::Value(value.clone()),
+            };
+
+            (key.clone(), Entry { line: 0, node })
+        })
+        .collect()
+}
+
+/*
+ * the settings file's text in the current layout, for the Settings window to change a key of and
+ * write back whole; one it cannot read whole is refused, so a write never drops what it held
+ */
+pub fn settings_table(text: &str) -> Result<toml::Table, String> {
+    let parsed = DeTable::parse(text).map_err(|error| {
+        let line = error.span().map_or(1, |span| line(text, span.start));
+
+        format!("{line}: not valid TOML: {}", error.message().trim_end())
+    })?;
+
+    let mut problems = Vec::new();
+    let mut table = tree(text, parsed.into_inner(), &mut problems);
+
+    if let Some((line, problem)) = problems.into_iter().next() {
+        return Err(format!("{line}: {problem}"));
+    }
+
+    migrate(&mut table, MIGRATIONS).map_err(|(line, problem)| format!("{line}: {problem}"))?;
+
+    Ok(plain(&table))
+}
+
+// sets each key of a table as a layer would, and says what did not apply
+pub fn apply_table(config: &mut Config, table: &toml::Table) -> Vec<String> {
+    let home = env::var("HOME").ok();
+    let mut problems = Vec::new();
+
+    apply(
+        config,
+        &entries(table),
+        "",
+        home.as_deref(),
+        &mut Scope::Global,
+        &mut problems,
+    );
+
+    problems.into_iter().map(|(_, problem)| problem).collect()
 }
 
 // takes a file from the layout at its index plus one to the next, before it applies
