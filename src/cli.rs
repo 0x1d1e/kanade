@@ -18,7 +18,7 @@ use amane::{IpcCall, ipc_socket};
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{caffeine, capture, osd, recording, timer, wallpaper};
+use crate::sources::{caffeine, capture, google, osd, recording, timer, wallpaper};
 use crate::{config, doctor};
 
 // the one IPC handler the shell registers, which every verb goes through
@@ -53,6 +53,7 @@ pub enum Call {
     Record(recording::Request),
     Caffeine(caffeine::Request),
     Wallpaper(wallpaper::Request),
+    Google(google::Request),
     Osd(osd::Asked),
     Settings(Option<&'static str>),
     CloseSettings,
@@ -193,12 +194,24 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
+        Call::Google(google::Request::SignIn(path)) => match std::path::absolute(&path) {
+            Ok(path) => Call::Google(google::Request::SignIn(path)),
+            Err(error) => {
+                eprintln!("kanade: {}: {error}", path.display());
+                return ExitCode::FAILURE;
+            }
+        },
         asked => asked,
     };
     let arguments = match &asked {
         Call::Wallpaper(wallpaper::Request::Set(path)) => vec![
             String::from("wallpaper"),
             String::from("set"),
+            path.to_string_lossy().into_owned(),
+        ],
+        Call::Google(google::Request::SignIn(path)) => vec![
+            String::from("google-calendar"),
+            String::from("sign-in"),
             path.to_string_lossy().into_owned(),
         ],
         _ => arguments.to_vec(),
@@ -718,7 +731,7 @@ status
 module list|enable <name>|disable <name>
   <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
 banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
-calendar|calendar-surface|clipboard-surface|capture|caffeine|settings
+calendar|calendar-surface|google-calendar|clipboard-surface|capture|caffeine|settings
 {}
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
@@ -734,6 +747,8 @@ controls open|close|toggle
 wallpaper set <path>|status
 launcher open|close|toggle
 calendar open|close|toggle
+google-calendar sign-in <client.json>|sign-out|sync|status
+  <client.json>: a Desktop app OAuth client, as Google Cloud downloads it
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status

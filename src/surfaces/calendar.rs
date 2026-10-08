@@ -20,7 +20,9 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::modules;
 use crate::sources::calendar::{Calendars, Events, Occurrence};
+use crate::sources::google;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
@@ -273,17 +275,28 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let shape = geometry::EXPANDED_MAX;
 
+    // a Module that is off reads no Service
+    let account = modules::on("google-calendar")
+        .then(|| {
+            google::Account::read()
+                .problem()
+                .map(google::Problem::brief)
+        })
+        .flatten();
+
     let agenda: Box<dyn Widget> = if calendars.files == 0 {
         Box::new(state(
             "No calendars",
-            if config::get().calendars.is_empty() {
-                "Add .ics files to ~/.local/share/calendars"
-            } else {
-                "No .ics files in calendar.paths"
+            match account {
+                Some(problem) => problem,
+                None if config::get().calendars.is_empty() => {
+                    "Add .ics files to ~/.local/share/calendars"
+                }
+                None => "No .ics files in calendar.paths",
             },
         ))
     } else {
-        Box::new(agenda(day, today, &month, &browse))
+        Box::new(agenda(day, today, &month, &browse, account))
     };
 
     Rectangle::new()
@@ -447,7 +460,17 @@ fn cell(
  * the chosen day's name, its events with the ring on one while it is in the agenda, and a count,
  * which says so when a rule ran to the limit and some are missing
  */
-fn agenda(day: NaiveDate, today: NaiveDate, month: &Month, browse: &Browse) -> Column {
+/*
+ * the day's events, ROWS at a time, with their count under them, and why Google's do not sync,
+ * when they do not
+ */
+fn agenda(
+    day: NaiveDate,
+    today: NaiveDate,
+    month: &Month,
+    browse: &Browse,
+    account: Option<&str>,
+) -> Column {
     let events = month.on(day);
     let partial = month.events.partial;
 
@@ -522,6 +545,11 @@ fn agenda(day: NaiveDate, today: NaiveDate, month: &Month, browse: &Browse) -> C
     } else {
         count
     };
+    let count = match account {
+        Some(problem) if count.is_empty() => problem.to_owned(),
+        Some(problem) => format!("{count} \u{b7} {problem}"),
+        None => count,
+    };
 
     Column::new(vec![
         Box::new(header) as Box<dyn Widget>,
@@ -530,7 +558,8 @@ fn agenda(day: NaiveDate, today: NaiveDate, month: &Month, browse: &Browse) -> C
             Text::new(count)
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::ISLAND.on_surface_variant)
-                .weight(theme::text::MEDIUM),
+                .weight(theme::text::MEDIUM)
+                .elide(),
         ),
     ])
     .width(AGENDA)

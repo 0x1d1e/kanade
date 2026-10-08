@@ -9,6 +9,7 @@ pub mod caffeine;
 pub mod calendar;
 pub mod capture;
 pub mod clipboard;
+pub mod google;
 pub mod icons;
 pub mod json;
 pub mod launch;

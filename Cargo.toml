@@ -28,8 +28,17 @@ rustybuzz = "0.20"
 fontconfig = "0.11"
 # local calendars: iCalendar parsing, time zones and recurrence (#150, ADR 0015)
 calcard = { version = "0.3", default-features = false }
-# calcard already builds it; the dates and times of its events
-chrono = { version = "0.4", default-features = false }
+# calcard already builds it; the dates and times of its events, and Google's in their formats
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# Google Calendar sync (#151, ADR 0016): HTTPS to Google, through rustls with its web PKI roots
+ureq = "3"
+# Amane already builds it; Google's answers
+serde_json = "1"
+# ureq already builds them: the PKCE verifier's randomness and its SHA-256, its base64url, and the
+# sign-in address's escapes
+ring = "0.17"
+base64 = "0.23"
+percent-encoding = "2"
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }
