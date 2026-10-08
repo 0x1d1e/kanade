@@ -204,40 +204,27 @@ fn guarded(
     }
 }
 
-/*
- * runs `program` to do one thing and waits for it to exit (ADR 0011: an action), dying with Kanade
- * as `spawn` says; never runs it again. Says why it failed, with what it printed on stderr
- */
-pub fn act(program: &str, args: &[&str]) -> Result<(), String> {
-    query(program, args).map(drop)
-}
-
-// an action that reads one thing, as `act`, and hands back what it printed on stdout
-pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
-    let command = [program, args.join(" ").as_str()].join(" ");
-
-    let output = acting(program, args)
-        .and_then(Child::wait_with_output)
-        .map_err(|error| format!("cannot run `{command}`: {error}"))?;
-
-    acted(program, &command, &output)
-}
-
-// why an action run within a limit failed
+// why an action failed
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failed {
-    // it ran longer than the limit, so it was killed
+    // it ran longer than its limit, so it was killed
     Overran(Duration),
 
-    // as `act` says
+    // it could not run or it failed, with what it printed on stderr
     Said(String),
 }
 
 /*
- * an action as `act`, killed once it runs longer than `limit`, so one that hangs holds up nothing
- * that waits on it
+ * runs `program` to do one thing and waits for it to exit (ADR 0011: an action), dying with Kanade
+ * as `spawn` says; never runs it again. Killed once it runs longer than `limit`, so one that hangs
+ * holds up nothing that waits on it
  */
 pub fn act_within(program: &str, args: &[&str], limit: Duration) -> Result<(), Failed> {
+    query_within(program, args, limit).map(drop)
+}
+
+// an action that reads one thing, as `act_within`, and hands back what it printed on stdout
+pub fn query_within(program: &str, args: &[&str], limit: Duration) -> Result<String, Failed> {
     let command = [program, args.join(" ").as_str()].join(" ");
     let cannot = |error: io::Error| Failed::Said(format!("cannot run `{command}`: {error}"));
 
@@ -296,7 +283,6 @@ pub fn act_within(program: &str, args: &[&str], limit: Duration) -> Result<(), F
             stderr,
         },
     )
-    .map(drop)
     .map_err(Failed::Said)
 }
 
@@ -312,7 +298,7 @@ fn read(mut pipe: impl io::Read + Send + 'static, number: usize, sent: Sender<(u
     });
 }
 
-// an action started as `act` says, its output piped
+// an action started as `act_within` says, its output piped
 fn acting(program: &str, args: &[&str]) -> io::Result<Child> {
     guarded(program, args, KILL, |command| {
         command
@@ -655,6 +641,13 @@ mod tests {
 
     #[test]
     fn an_action_says_why_it_failed() {
+        let act = |program: &str, args: &[&str]| {
+            act_within(program, args, Duration::from_secs(5)).map_err(|failed| match failed {
+                Failed::Said(why) => why,
+                overran => panic!("{overran:?}"),
+            })
+        };
+
         assert_eq!(act("true", &[]), Ok(()));
 
         let missing = act("kanade-no-such-program", &["x"]).unwrap_err();
@@ -673,7 +666,10 @@ mod tests {
 
     #[test]
     fn a_query_hands_back_what_it_printed() {
-        assert_eq!(query("echo", &["graph"]), Ok("graph\n".into()));
+        assert_eq!(
+            query_within("echo", &["graph"], Duration::from_secs(5)),
+            Ok("graph\n".into())
+        );
     }
 
     #[test]

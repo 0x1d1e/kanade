@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 use amane::Service;
 
@@ -148,6 +149,10 @@ const DEFAULT_INPUT: &str = "default.audio.source";
 // the defaults asked for, which the session manager follows while those devices are there
 const CONFIGURED_OUTPUT: &str = "default.configured.audio.sink";
 const CONFIGURED_INPUT: &str = "default.configured.audio.source";
+
+// how long a wpctl or pw-dump action may run before it is killed, so one that hangs holds up
+// neither the follower nor the asks after it
+const LIMIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -489,7 +494,20 @@ fn watch(
 
 // the defaults' metadata whole, which waits for pw-dump on the follower's thread
 fn reread(id: u64) -> Result<String, String> {
-    wake::query(DUMP, &["--no-colors", &id.to_string()])
+    query(DUMP, &["--no-colors", &id.to_string()], LIMIT)
+}
+
+// an action as `wake::query_within` runs it, saying why it failed
+fn query(program: &str, args: &[&str], limit: Duration) -> Result<String, String> {
+    wake::query_within(program, args, limit).map_err(|failed| match failed {
+        wake::Failed::Overran(limit) => {
+            format!(
+                "`{program} {}` hung, killed after {limit:?}",
+                args.join(" ")
+            )
+        }
+        wake::Failed::Said(why) => why,
+    })
 }
 
 fn show(mixer: &Mixer) {
@@ -586,10 +604,14 @@ impl Ask {
 
     // waits for pw-dump and wpctl
     fn run(self) {
-        let done = perform(&self, wake::act, |id| match id {
-            Some(id) => wake::query(DUMP, &["--no-colors", &id.to_string()]),
-            None => wake::query(DUMP, &["--no-colors"]),
-        });
+        let done = perform(
+            &self,
+            |program, args| query(program, args, LIMIT).map(drop),
+            |id| match id {
+                Some(id) => reread(id),
+                None => query(DUMP, &["--no-colors"], LIMIT),
+            },
+        );
 
         match self {
             Ask::Volume(..) | Ask::Muted(..) => {
@@ -1151,6 +1173,27 @@ mod tests {
         assert_eq!(posts.len(), 2);
         assert_eq!(default_nodes(&posts[0].outputs), vec![Node::of(HEADPHONES)]);
         assert_eq!(default_nodes(&posts[1].outputs), vec![]);
+    }
+
+    // a pw-dump that hangs is killed, so the volume and mute printed after it still show
+    #[test]
+    fn a_reread_that_hangs_leaves_volume_and_mute_followed() {
+        let limit = Duration::from_millis(300);
+        let started = std::time::Instant::now();
+
+        let mut reread = |_| query("sh", &["-c", "sleep 60"], limit);
+        let mut shown = Mixer::default();
+
+        let props = r#""media.class": "Audio/Sink", "node.name": "alsa_output.analog""#;
+        let quieted = print(&[node(SPEAKER, props, "0.125, 0.125", true)]);
+        let text = [machine(), print(&[defaults(&[])]), quieted].concat();
+
+        watch(text.as_bytes(), &mut reread, &mut shown, &mut |_| {});
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let speaker = shown.outputs.iter().find(|d| d.node == Node::of(SPEAKER));
+        assert_eq!(speaker.map(|d| d.level), Some(level(50, true)));
     }
 
     // one device that both plays and records, the default of both or either
