@@ -54,6 +54,9 @@ pub struct Osd {
     // the level showing, until when
     shown: Option<(Level, Instant)>,
 
+    // when a level last showed, so an answer read before it gives way
+    last: Option<Instant>,
+
     // from niri; none while unknown or without niri, which counts every monitor as focused
     focused_output: Option<String>,
 }
@@ -62,6 +65,7 @@ impl Service for Osd {
     fn new() -> Self {
         Self {
             shown: None,
+            last: None,
             focused_output: None,
         }
     }
@@ -94,7 +98,22 @@ impl Osd {
     // shows `level` for the configured time from now, in place of what showed
     pub fn show(&mut self, level: Level, now: Instant) {
         self.shown = Some((level, now + config::get().osd));
+        self.last = Some(now);
         nudge();
+    }
+
+    /*
+     * shows `level`, read for an ask made at `asked`, unless a level showed since: that one is newer
+     * than the ask, so the latest change shows, not the slowest read
+     */
+    pub fn answer(&mut self, level: Level, asked: Instant, now: Instant) {
+        if !self.shown_since(asked) {
+            self.show(level, now);
+        }
+    }
+
+    pub fn shown_since(&self, asked: Instant) -> bool {
+        self.last.is_some_and(|last| last > asked)
     }
 
     // the OSD follows the focus to its output
@@ -120,7 +139,7 @@ impl Osd {
         self.shown.map(|(_, until)| until)
     }
 
-    fn shown_on(&self, monitor: &str) -> Option<Level> {
+    pub fn shown_on(&self, monitor: &str) -> Option<Level> {
         let focused = self
             .focused_output
             .as_deref()
@@ -268,6 +287,22 @@ mod tests {
         osd.focus(Some("DP-1".into()));
         assert_eq!(osd.shown_on("DP-1"), Some(LOUD));
         assert_eq!(osd.shown_on("eDP-1"), None);
+    }
+
+    // an answer read slowly gives way to a level shown after its ask, not before it
+    #[test]
+    fn an_answer_shows_unless_a_level_showed_since_its_ask() {
+        let asked = Instant::now();
+        let later = asked + Duration::from_millis(300);
+        let mut osd = Osd::new();
+
+        osd.show(Level::Brightness(40), asked - Duration::from_millis(1));
+        osd.answer(LOUD, asked, later);
+        assert_eq!(osd.shown_on("eDP-1"), Some(LOUD));
+
+        osd.show(Level::Brightness(40), later);
+        osd.answer(LOUD, asked, later + Duration::from_millis(1));
+        assert_eq!(osd.shown_on("eDP-1"), Some(Level::Brightness(40)));
     }
 
     // a held key: every step takes the place of the last and starts its time again

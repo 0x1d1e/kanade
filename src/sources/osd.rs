@@ -11,7 +11,7 @@
 //! Kanade.
 
 use std::sync::OnceLock;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use amane::{Audio, Brightness, Service};
@@ -155,7 +155,7 @@ pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
             return VOLUME
                 .get()
                 .ok_or_else(|| String::from("the volume thread is not running"))
-                .and_then(ask);
+                .and_then(|volume| ask(volume, Instant::now()));
         }
         Asked::Brightness => {
             /*
@@ -180,21 +180,20 @@ pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
 /*
  * `osd volume` asks the volume thread to read it: Amane's Audio hears of a change from PulseAudio
  * a beat after it is made, and a keybind asks right after it made it. Reading waits on
- * PulseAudio, so not on the draw thread
+ * PulseAudio, so not on the draw thread. Each ask carries when it was made
  */
-static VOLUME: OnceLock<SyncSender<()>> = OnceLock::new();
+static VOLUME: OnceLock<Sender<Instant>> = OnceLock::new();
 
-// never waits: full means a read is already waiting, which reads after this change too
-fn ask(volume: &SyncSender<()>) -> Result<(), String> {
-    match volume.try_send(()) {
-        Ok(()) | Err(TrySendError::Full(())) => Ok(()),
-        Err(TrySendError::Disconnected(())) => Err(String::from("the volume thread stopped")),
-    }
+// never waits: the channel is unbounded, and the thread drains it whole on each read
+fn ask(volume: &Sender<Instant>, now: Instant) -> Result<(), String> {
+    volume
+        .send(now)
+        .map_err(|_| String::from("the volume thread stopped"))
 }
 
 // the asks of `osd volume`, for the thread `answer_volume` runs on; once, while `audio` is on
-pub fn volume_asks() -> Receiver<()> {
-    let (sender, asks) = mpsc::sync_channel(1);
+pub fn volume_asks() -> Receiver<Instant> {
+    let (sender, asks) = mpsc::channel();
 
     VOLUME
         .set(sender)
@@ -203,27 +202,35 @@ pub fn volume_asks() -> Receiver<()> {
 }
 
 // runs on its own thread for good; waits on asks, so it never wakes on its own
-pub fn answer_volume(asks: &Receiver<()>) {
-    serve(asks, fresh_speaker, |level| {
-        Osd::write().show(level, Instant::now());
+pub fn answer_volume(asks: &Receiver<Instant>) {
+    serve(asks, fresh_speaker, |level, asked| {
+        // checked first under the read lock, as a write wakes every OSD window
+        if !Osd::read().shown_since(asked) {
+            Osd::write().answer(level, asked, Instant::now());
+        }
     });
 }
 
-fn serve(asks: &Receiver<()>, mut read: impl FnMut() -> Volume, mut show: impl FnMut(Level)) {
-    for () in asks {
-        show(Level::Volume(read()));
+// asks made while one is read fold into one read after them all, answered for the latest
+fn serve(
+    asks: &Receiver<Instant>,
+    mut read: impl FnMut() -> Volume,
+    mut show: impl FnMut(Level, Instant),
+) {
+    while let Ok(asked) = asks.recv() {
+        let asked = asks.try_iter().last().unwrap_or(asked);
+
+        show(Level::Volume(read()), asked);
     }
 }
 
 /*
- * Amane's own read, as its listener does on each change, so it says what Audio says once it
- * catches up; its PulseAudio connection is this thread's, kept for the next ask
+ * a fresh Audio of its own, not Amane's shared one: updating that one holds its write lock while
+ * PulseAudio answers, which would stall every view that reads it. Its PulseAudio connection is
+ * this thread's, kept for the next ask
  */
 fn fresh_speaker() -> Volume {
-    let mut audio = Audio::write();
-    audio.update();
-
-    speaker(&audio)
+    speaker(&Audio::new())
 }
 
 /*
@@ -284,6 +291,7 @@ pub fn follow(reads: Reads) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     // as `pactl subscribe` and `udevadm monitor` print them
     #[test]
@@ -438,27 +446,60 @@ mod tests {
      */
     #[test]
     fn osd_volume_shows_the_volume_read_after_the_ask() {
-        let (volume, asks) = mpsc::sync_channel(1);
+        let (volume, asks) = mpsc::channel();
+        let first = Instant::now();
+        let second = first + Duration::from_millis(100);
         let mut server = 40;
 
         server += 5;
-        assert_eq!(ask(&volume), Ok(()));
+        assert_eq!(ask(&volume, first), Ok(()));
         server += 5;
-        assert_eq!(ask(&volume), Ok(()));
+        assert_eq!(ask(&volume, second), Ok(()));
         drop(volume);
 
         let mut shown = Vec::new();
-        serve(&asks, || speaker_at(server), |level| shown.push(level));
+        serve(
+            &asks,
+            || speaker_at(server),
+            |level, asked| shown.push((level, asked)),
+        );
 
-        assert_eq!(shown, [Level::Volume(speaker_at(50))]);
+        assert_eq!(shown, [(Level::Volume(speaker_at(50)), second)]);
+    }
+
+    // brightness shows while the volume is still being read: the volume, read late, gives way
+    #[test]
+    fn a_slow_volume_read_does_not_cover_a_newer_level() {
+        let (volume, asks) = mpsc::channel();
+        let asked = Instant::now();
+        let delay = Duration::from_millis(300);
+        let osd = RefCell::new(Osd::new());
+
+        assert_eq!(ask(&volume, asked), Ok(()));
+        drop(volume);
+
+        serve(
+            &asks,
+            || {
+                osd.borrow_mut()
+                    .show(Level::Brightness(80), asked + delay / 2);
+                speaker_at(45)
+            },
+            |level, asked| osd.borrow_mut().answer(level, asked, asked + delay),
+        );
+
+        assert_eq!(osd.borrow().shown_on("eDP-1"), Some(Level::Brightness(80)));
     }
 
     #[test]
     fn osd_volume_without_its_thread_is_refused() {
-        let (volume, asks) = mpsc::sync_channel(1);
+        let (volume, asks) = mpsc::channel();
         drop(asks);
 
-        assert_eq!(ask(&volume), Err(String::from("the volume thread stopped")));
+        assert_eq!(
+            ask(&volume, Instant::now()),
+            Err(String::from("the volume thread stopped"))
+        );
     }
 
     #[test]
