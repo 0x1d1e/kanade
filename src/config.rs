@@ -73,6 +73,10 @@ pub struct Config {
     // `wallpaper.directory`: where the Launcher finds wallpapers, else ~/Pictures/Wallpapers
     pub wallpapers: Option<String>,
 
+    // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
+    // directory (ADR 0015)
+    pub calendars: Vec<String>,
+
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
 }
@@ -115,6 +119,7 @@ impl Default for Config {
             apps: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
+            calendars: Vec::new(),
             outputs: BTreeMap::new(),
         }
     }
@@ -175,6 +180,10 @@ pub enum Kind {
     // list below
     DesktopIds(Field<Vec<String>>),
 
+    // a list of files or directories, a leading `~/` the home directory, each kept once; a layer
+    // replaces the list below
+    Paths(Field<Vec<String>>),
+
     // a table of app id = `.desktop` file id, merged over the layers below by app id
     AppIds(Field<BTreeMap<String, String>>),
 
@@ -231,6 +240,24 @@ impl Kind {
 
                 (field.set)(config, ids);
             }
+            Kind::Paths(field) => {
+                let list = value.as_array().ok_or("expected a list of \"path\"s")?;
+                let mut paths: Vec<String> = Vec::new();
+
+                for path in list {
+                    let path = path
+                        .as_str()
+                        .filter(|path| !path.is_empty())
+                        .map(|path| expand(path, home))
+                        .ok_or_else(|| format!("expected a \"path\", found {path}"))?;
+
+                    if !paths.contains(&path) {
+                        paths.push(path);
+                    }
+                }
+
+                (field.set)(config, paths);
+            }
             Kind::AppIds(field) => {
                 let table = value
                     .as_table()
@@ -275,7 +302,7 @@ impl Kind {
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
             Kind::Path(field) => Value::String((field.get)(config)?),
-            Kind::DesktopIds(field) => {
+            Kind::DesktopIds(field) | Kind::Paths(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
             Kind::AppIds(field) => Value::Table(
@@ -306,7 +333,7 @@ impl Kind {
             Kind::Millis(field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) => field.copy(from, to),
-            Kind::DesktopIds(field) => field.copy(from, to),
+            Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
         }
@@ -481,6 +508,19 @@ pub const WALLPAPER: &[Setting] = &[Setting {
         set: |config, wallpapers| config.wallpapers = wallpapers,
     }),
     example: Some("\"~/Pictures/Wallpapers\""),
+    restart: false,
+    per_output: false,
+}];
+
+pub const CALENDAR: &[Setting] = &[Setting {
+    key: "calendar.paths",
+    help: "iCalendar (.ics) files and directories of them, read recursively, else \
+           $XDG_DATA_HOME/calendars",
+    kind: Kind::Paths(Field {
+        get: |config| config.calendars.clone(),
+        set: |config, calendars| config.calendars = calendars,
+    }),
+    example: Some("[\"~/.local/share/calendars\", \"~/Documents/holidays.ics\"]"),
     restart: false,
     per_output: false,
 }];
@@ -1287,6 +1327,7 @@ mod tests {
                 apps: BTreeMap::new(),
                 pinned: Vec::new(),
                 wallpapers: None,
+                calendars: Vec::new(),
                 outputs: BTreeMap::new(),
             }
         );
@@ -1331,6 +1372,7 @@ mod tests {
                 "windows.apps",
                 "dock.pinned",
                 "wallpaper.directory",
+                "calendar.paths",
             ]
         );
         assert_eq!(
@@ -1653,6 +1695,30 @@ battery = false
         assert_eq!(
             one("dock.pinned = \"firefox\"").1,
             said(&[(1, "dock.pinned: expected a list of \"desktop file id\"s")])
+        );
+    }
+
+    // a path list expands `~/`, keeps each once, and a later file's replaces the one below
+    #[test]
+    fn calendar_paths_are_a_list_of_paths() {
+        let first = "calendar.paths = [\"~/cal\", \"/srv/a.ics\", \"/home/you/cal\"]";
+        let (config, problems) = layers(&[first], MIGRATIONS);
+
+        assert_eq!(problems, [vec![]]);
+        assert_eq!(config.calendars, ["/home/you/cal", "/srv/a.ics"]);
+
+        let (config, _) = layers(&[first, "[calendar]\npaths = [\"/b.ics\"]"], MIGRATIONS);
+        assert_eq!(config.calendars, ["/b.ics"]);
+
+        let (config, problems) = layers(&[first, "calendar.paths = [\"\"]"], MIGRATIONS);
+        assert_eq!(config.calendars, ["/home/you/cal", "/srv/a.ics"]);
+        assert_eq!(
+            problems[1],
+            said(&[(1, "calendar.paths: expected a \"path\", found \"\"")])
+        );
+        assert_eq!(
+            one("calendar.paths = \"~/cal\"").1,
+            said(&[(1, "calendar.paths: expected a list of \"path\"s")])
         );
     }
 

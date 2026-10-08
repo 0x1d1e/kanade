@@ -26,6 +26,10 @@ emojis = "0.9.0"
 rustybuzz = "0.20"
 # Amane already builds it; finds the emoji font
 fontconfig = "0.11"
+# local calendars: iCalendar parsing, time zones and recurrence (#150, ADR 0015)
+calcard = { version = "0.3", default-features = false }
+# calcard already builds it; the dates and times of its events
+chrono = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }

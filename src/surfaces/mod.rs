@@ -4,6 +4,7 @@ use amane::{Button, Rectangle};
 
 use crate::theme;
 
+pub mod calendar;
 pub mod clipboard;
 pub mod controls;
 mod grid;

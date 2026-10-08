@@ -9,7 +9,8 @@
 //! timerfd fires at the wall minute after a resume, and a step cancels it, which redraws at once.
 //!
 //! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI. It also
-//! holds `interrupt`, which std lacks, for a child that must end cleanly.
+//! holds `interrupt`, which std lacks, for a child that must end cleanly, and the one place a UTC
+//! moment becomes local time, which the calendar's events need too.
 
 use std::ffi::{c_char, c_int, c_long};
 use std::fs::File;
@@ -20,6 +21,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use amane::Service;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::supervise;
 
@@ -171,6 +173,40 @@ fn follow(timer: &mut File) {
 
 // the local time now, asking for a redraw when the minute turns
 pub fn now(hours: Hours) -> String {
+    match minute() {
+        Some(local) => read(local.tm_hour, local.tm_min, hours),
+        None => String::new(),
+    }
+}
+
+// the local date now, asking for a redraw when the minute turns, so a new day shows
+pub fn today() -> NaiveDate {
+    minute().and_then(|local| date(&local)).unwrap_or_default()
+}
+
+// the local time of `seconds` since the epoch, in the time zone the clock last read
+pub fn local_time(seconds: i64) -> Option<NaiveDateTime> {
+    let local = local(c_long::try_from(seconds).ok()?)?;
+    let time = NaiveTime::from_hms_opt(
+        u32::try_from(local.tm_hour).ok()?,
+        u32::try_from(local.tm_min).ok()?,
+        // a leap second reads as the one before it
+        u32::try_from(local.tm_sec.min(59)).ok()?,
+    )?;
+
+    Some(date(&local)?.and_time(time))
+}
+
+// a time of day as `clock` reads it
+pub fn time(at: NaiveTime, hours: Hours) -> String {
+    use chrono::Timelike;
+
+    // both under 60 and 24, so they fit
+    read(at.hour() as c_int, at.minute() as c_int, hours)
+}
+
+// the local time now, the timer armed for the next minute and a redraw asked for then
+fn minute() -> Option<Tm> {
     drop(WallClock::read());
 
     let seconds = seconds();
@@ -183,10 +219,7 @@ pub fn now(hours: Hours) -> String {
         unsafe { tzset() };
     }
 
-    let Some(local) = local(seconds) else {
-        return String::new();
-    };
-
+    let local = local(seconds)?;
     let next = seconds - c_long::from(local.tm_sec) + 60;
 
     if *armed != Some(next)
@@ -196,7 +229,15 @@ pub fn now(hours: Hours) -> String {
         *armed = Some(next);
     }
 
-    read(local.tm_hour, local.tm_min, hours)
+    Some(local)
+}
+
+fn date(local: &Tm) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(
+        local.tm_year + 1900,
+        u32::try_from(local.tm_mon + 1).ok()?,
+        u32::try_from(local.tm_mday).ok()?,
+    )
 }
 
 // the local date and time now, like "2026-10-07 15-36-38", for a file name
@@ -347,6 +388,26 @@ mod tests {
         assert_eq!(c_long::from(tm.tm_sec), seconds % 60);
         assert_eq!(tm.tm_gmtoff % 60, 0);
         assert!((0..24).contains(&tm.tm_hour));
+    }
+
+    // the zone is the process's, so this checks the date and time against libc's own fields
+    #[test]
+    fn a_moment_reads_as_its_local_date_and_time() {
+        use chrono::Timelike;
+
+        let seconds = 1_700_000_000;
+        let tm = local(seconds).expect("libc reads local time");
+        let at = local_time(seconds).expect("a local time");
+
+        assert_eq!(Some(at.date()), date(&tm));
+        assert_eq!(
+            (at.hour(), at.minute(), at.second()),
+            (tm.tm_hour as u32, tm.tm_min as u32, 20)
+        );
+        assert_eq!(
+            time(NaiveTime::from_hms_opt(14, 5, 0).unwrap(), Hours::Twelve),
+            "2:05 PM"
+        );
     }
 
     #[test]

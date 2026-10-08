@@ -119,7 +119,7 @@ Rules:
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later.
-- **Calendar**: month/agenda; local sources; optional Google Calendar account sync.
+- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync.
 - **Weather**: current + short forecast; explicit location/config; bounded refresh; stale/error state.
 
 ### Tray
@@ -218,7 +218,7 @@ island collapse
 notifications open|close|toggle|clear
 notifications dnd on|off|toggle
 clipboard open|close|toggle|clear
-calendar open
+calendar open|close|toggle
 timer start <dur>|pause|resume|cancel
 capture screenshot area|window|output
 capture record start|stop|status

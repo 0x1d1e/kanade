@@ -6,6 +6,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod bus;
 pub mod caffeine;
+pub mod calendar;
 pub mod capture;
 pub mod clipboard;
 pub mod icons;

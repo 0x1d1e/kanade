@@ -23,17 +23,21 @@ pub enum Surface {
 
     // the clipboard history (#137)
     Clipboard,
+
+    // a month and the agenda of a day, from local calendars (#150)
+    Calendar,
 }
 
 impl Surface {
     #[cfg(test)]
-    pub const ALL: [Surface; 6] = [
+    pub const ALL: [Surface; 7] = [
         Surface::Media,
         Surface::Notifications,
         Surface::Controls,
         Surface::Launcher,
         Surface::Tray,
         Surface::Clipboard,
+        Surface::Calendar,
     ];
 
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
