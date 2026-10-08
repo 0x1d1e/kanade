@@ -22,7 +22,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
 use crate::sources::windows;
-use crate::{modules, supervise, theme};
+use crate::{dock, modules, supervise, theme};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -99,6 +99,9 @@ pub fn reload() -> Outcome {
             // even unchanged, so a reload also finds the `.desktop` files installed since
             if modules::on("windows") {
                 windows::rematch();
+            }
+            if modules::on("dock") {
+                dock::pin();
             }
 
             state.generation += 1;

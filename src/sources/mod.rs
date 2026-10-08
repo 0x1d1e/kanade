@@ -8,6 +8,7 @@ pub mod bus;
 pub mod caffeine;
 pub mod capture;
 pub mod clipboard;
+pub mod icons;
 pub mod json;
 pub mod media;
 pub mod network;

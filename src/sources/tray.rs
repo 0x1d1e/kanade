@@ -10,7 +10,6 @@
 //! Over zbus, not Amane's `Bus`: an item may register with only its object path, and the bus name
 //! it lives at is then the caller's, which Amane's `Method` does not give.
 
-mod icons;
 mod item;
 pub mod menu;
 mod watcher;
@@ -34,6 +33,8 @@ use zbus::fdo::RequestNameReply;
 use zbus::message::Type;
 use zbus::names::BusName;
 use zbus::zvariant::OwnedValue;
+
+use super::icons;
 
 pub use item::Status;
 use item::{Address, Described};

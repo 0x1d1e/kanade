@@ -1,7 +1,7 @@
-//! The file an item's icon name stands for: an absolute path as it is, else the item's own folder,
-//! then the user's icon theme, the themes it inherits and hicolor, then the loose pixmaps. An svg
-//! beats every png, a bigger png a smaller one. Amane keeps its own index private, so this looks up
-//! only the names items give, each once a run; a theme switched while Kanade runs shows after a
+//! The file an icon name stands for, for the tray's items and the Dock's apps: an absolute path as
+//! it is, else the item's own folder, then the user's icon theme, the themes it inherits and
+//! hicolor, then the loose pixmaps. An svg beats every png, a bigger png a smaller one. Amane keeps
+//! its own index private, so this looks up only the names given, each once a run; a theme switched while Kanade runs shows after a
 //! restart, as it does for Amane's.
 
 use std::collections::HashMap;

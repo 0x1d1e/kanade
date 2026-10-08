@@ -17,7 +17,9 @@ use crate::sources::{
     audio, battery, bluetooth, caffeine, capture, clipboard, media, network, niri, notifications,
     osd, pipewire, power, privacy, recording, system, timer, tray, wake,
 };
-use crate::{banners, cli, clock, cluster, config, ipc, reload, shadow, supervise, theme, view};
+use crate::{
+    banners, cli, clock, cluster, config, dock, ipc, reload, shadow, supervise, theme, view,
+};
 
 pub struct Module {
     pub name: &'static str,
@@ -170,6 +172,23 @@ pub const ALL: &[Module] = &[
         settings: config::WINDOWS,
         verbs: &[],
         start: |app| app,
+    },
+    // the pinned and running apps, bottom centre on every monitor
+    Module {
+        name: "dock",
+        requires: &[CORE, "windows"],
+        optional: &[],
+        warns: None,
+        needs: &[Need {
+            on: Provider::Niri,
+            without: "no running apps, and a click neither launches nor focuses",
+        }],
+        settings: config::DOCK,
+        verbs: &[],
+        start: |app| {
+            dock::pin();
+            app.window_per_monitor(dock::window)
+        },
     },
     // the privacy cluster: the microphone and camera from PipeWire, and screen casts from the
     // island's niri stream

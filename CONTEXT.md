@@ -116,6 +116,11 @@ One app's open windows, as `windows` groups them for the Dock: those whose `app_
 - **Invariant:** an override in `windows.apps` is final: one naming a missing entry leaves the app unmatched, never guessed.
 - **Avoid:** client, toplevel, task, program
 
+## Dock
+Bottom-centre strip per monitor: pinned apps (`dock.pinned`), then Running apps not pinned, a dot under each running one. A click launches an app without windows, else focuses its window, cycling while it has the focus.
+- **Invariant:** reads only `windows`, never `workspace` or raw niri objects.
+- **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
+
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.

@@ -5,6 +5,7 @@ mod cli;
 mod clock;
 mod cluster;
 mod config;
+mod dock;
 mod doctor;
 mod icon;
 mod ipc;

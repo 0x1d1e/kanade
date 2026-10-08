@@ -6,6 +6,7 @@ use std::time::Instant;
 use amane::{Notifications, Service};
 
 use crate::cli::{self, Call, Reply};
+use crate::dock;
 use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
@@ -109,6 +110,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("windows") {
         lines.push(Windows::read().status());
+    }
+    if modules::on("dock") {
+        lines.push(dock::status());
     }
 
     lines.extend(supervise::status());
