@@ -9,11 +9,12 @@
 //! directory, each subdirectory of it and each file named on its own, or the nearest parent while
 //! one does not exist yet, so watching costs no idle wakeups.
 //!
-//! A view asks `occurrences` for the days it shows: recurrences, their exceptions and time zones
-//! come from calcard, each moment then becomes local time through `clock`. A rule is started again
-//! just before those days, so one begun long ago expands near them, not from its first occurrence,
-//! and a change to it and the occurrences after goes on from there. One that still runs to the
-//! limit near those days makes the result partial, which the agenda tells.
+//! The Calendar Surface asks `occurrences`, off its draw thread, for the days it shows:
+//! recurrences, their exceptions and time zones come from calcard, each moment then becomes local
+//! time through `clock`. A rule is started again just before those days, so one begun long ago
+//! expands near them, not from its first occurrence, and a change to it and the occurrences after
+//! goes on from there. One that still runs to the limit near those days makes the result partial,
+//! which the agenda tells.
 //! An occurrence keeps its absolute start and end for order and length; its local times are for
 //! showing, and read backwards across a change back from summer time.
 
