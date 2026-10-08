@@ -223,6 +223,7 @@ timer start <dur>|pause|resume|cancel
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
+osd volume|brightness
 config reload|validate
 status
 doctor
@@ -233,7 +234,6 @@ lock
 session menu|suspend|reboot|poweroff|logout
 settings open [page]|close
 wallpaper set <path>
-osd volume|brightness
 ```
 
 `status`: protocol/config versions, module/Service state, pending restart, last errors.

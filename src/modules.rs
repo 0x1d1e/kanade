@@ -299,15 +299,26 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
-        verbs: &[],
+        verbs: &[Verb {
+            name: "osd",
+            usage: || String::from("osd volume|brightness"),
+            parse: |arguments| {
+                osd::Asked::parse(arguments)
+                    .map(Call::Osd)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
-            let reads = osd::Reads {
-                audio: on("audio"),
-                brightness: on("brightness"),
-            };
+            let reads = osd_reads();
 
             if reads.any() {
                 supervise::spawn("osd", move || osd::follow(reads));
+            }
+
+            // reads the volume fresh for `kanade osd volume`
+            if reads.audio {
+                let asks = osd::volume_asks();
+                supervise::spawn("osd-volume", move || osd::answer_volume(&asks));
             }
 
             app.window_per_monitor(crate::osd::window)
@@ -871,6 +882,14 @@ pub fn status() -> Vec<String> {
 // whether a Module runs; none do before `start`
 pub fn on(name: &str) -> bool {
     MODULES.get().is_some_and(|modules| modules.on(name))
+}
+
+// the levels the OSD reads: those of the `audio` and `brightness` Modules that are on
+pub fn osd_reads() -> osd::Reads {
+    osd::Reads {
+        audio: on("audio"),
+        brightness: on("brightness"),
+    }
 }
 
 #[cfg(test)]

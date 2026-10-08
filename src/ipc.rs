@@ -14,6 +14,7 @@ use crate::sources::caffeine;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
+use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
@@ -64,6 +65,8 @@ fn run(call: Call) -> Reply {
         Call::Caffeine(request) => {
             caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        Call::Osd(asked) => osd::show(asked, modules::osd_reads())
+            .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         Call::Reload => config(reload::reload(), "reloaded"),
         Call::Validate => config(reload::validate(), "valid"),
 

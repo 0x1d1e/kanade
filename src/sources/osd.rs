@@ -6,7 +6,12 @@
 //! kernel announces a change (`wake`), and polls while a change settles or an announcer is down; a
 //! read that finds the levels unchanged shows nothing, so an idle OSD never redraws. It reads only
 //! what the `audio` and `brightness` Modules that are on allow.
+//!
+//! `kanade osd volume|brightness` shows a level as it is, for a keybind that changes it outside
+//! Kanade.
 
+use std::sync::OnceLock;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use amane::{Audio, Brightness, Service};
@@ -82,11 +87,7 @@ impl Levels {
             let audio = Audio::read();
 
             (
-                Some(Volume {
-                    device: Device::Speaker,
-                    percent: audio.volume(),
-                    muted: audio.muted(),
-                }),
+                Some(speaker(&audio)),
                 Some(Volume {
                     device: Device::Microphone,
                     percent: audio.microphone_volume(),
@@ -112,6 +113,133 @@ impl Levels {
             brightness,
         }
     }
+}
+
+fn speaker(audio: &Audio) -> Volume {
+    Volume {
+        device: Device::Speaker,
+        percent: audio.volume(),
+        muted: audio.muted(),
+    }
+}
+
+// which level `kanade osd` shows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    Volume,
+    Brightness,
+}
+
+impl Asked {
+    pub fn parse(arguments: &[&str]) -> Option<Asked> {
+        match arguments {
+            ["volume"] => Some(Asked::Volume),
+            ["brightness"] => Some(Asked::Brightness),
+            _ => None,
+        }
+    }
+}
+
+/*
+ * `kanade osd volume|brightness`: the OSD for the level as it is, on the focused output. Refused
+ * while its Module is off, as nothing reads that level then, or without a backlight
+ */
+pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
+    let level = match asked {
+        Asked::Volume if !reads.audio => return Err(String::from("module audio is off")),
+        Asked::Brightness if !reads.brightness => {
+            return Err(String::from("module brightness is off"));
+        }
+        // shown by the volume thread, once it read it
+        Asked::Volume => {
+            return VOLUME
+                .get()
+                .ok_or_else(|| String::from("the volume thread is not running"))
+                .and_then(|volume| ask(volume, Instant::now()));
+        }
+        Asked::Brightness => {
+            /*
+             * Amane reads the backlight again only every 500 ms, and a keybind asks right after
+             * it set it, so this reads it now; a sysfs read, cheap on the draw thread
+             */
+            let mut brightness = Brightness::write();
+            brightness.update();
+
+            if !brightness.present() {
+                return Err(String::from("there is no backlight"));
+            }
+
+            Level::Brightness(brightness.percent())
+        }
+    };
+
+    Osd::write().show(level, Instant::now());
+    Ok(())
+}
+
+/*
+ * `osd volume` asks the volume thread to read it: Amane's Audio hears of a change from PulseAudio
+ * a beat after it is made, and a keybind asks right after it made it. Reading waits on
+ * PulseAudio, so not on the draw thread. Each ask carries when it was made
+ */
+static VOLUME: OnceLock<Sender<Instant>> = OnceLock::new();
+
+// never waits: the channel is unbounded, and the thread drains it whole on each read
+fn ask(volume: &Sender<Instant>, now: Instant) -> Result<(), String> {
+    volume
+        .send(now)
+        .map_err(|_| String::from("the volume thread stopped"))
+}
+
+// the asks of `osd volume`, for the thread `answer_volume` runs on; once, while `audio` is on
+pub fn volume_asks() -> Receiver<Instant> {
+    let (sender, asks) = mpsc::channel();
+
+    VOLUME
+        .set(sender)
+        .expect("the volume thread is started once");
+    asks
+}
+
+// runs on its own thread for good; waits on asks, so it never wakes on its own
+pub fn answer_volume(asks: &Receiver<Instant>) {
+    serve(asks, fresh_speaker, |level, asked| {
+        // checked first under the read lock, as a write wakes every OSD window
+        if !Osd::read().shown_since(asked) {
+            Osd::write().answer(level, asked, Instant::now());
+        }
+    });
+}
+
+/*
+ * waiting asks fold into one read, answered for the latest. A read answers only asks made before it
+ * started: one made during it may follow a change the read missed, so it reads again for that one
+ */
+fn serve(
+    asks: &Receiver<Instant>,
+    mut read: impl FnMut() -> Volume,
+    mut show: impl FnMut(Level, Instant),
+) {
+    while let Ok(first) = asks.recv() {
+        let mut asked = asks.try_iter().last().unwrap_or(first);
+        let mut volume = read();
+
+        while let Some(later) = asks.try_iter().last() {
+            asked = later;
+            volume = read();
+        }
+
+        show(Level::Volume(volume), asked);
+    }
+}
+
+/*
+ * a fresh Audio of its own, not Amane's shared one: updating that one holds its write lock while
+ * PulseAudio answers, which would stall every view that reads it. Its PulseAudio connection is
+ * this thread's, kept for the next ask
+ */
+fn fresh_speaker() -> Volume {
+    speaker(&Audio::new())
 }
 
 /*
@@ -172,6 +300,7 @@ pub fn follow(reads: Reads) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     // as `pactl subscribe` and `udevadm monitor` print them
     #[test]
@@ -281,6 +410,135 @@ mod tests {
         assert_eq!(
             changes(Some(unread), brightness_only),
             [Level::Brightness(50)]
+        );
+    }
+
+    #[test]
+    fn osd_asks_for_volume_or_brightness() {
+        assert_eq!(Asked::parse(&["volume"]), Some(Asked::Volume));
+        assert_eq!(Asked::parse(&["brightness"]), Some(Asked::Brightness));
+
+        for words in [&[][..], &["microphone"], &["volume", "50"], &["Volume"]] {
+            assert_eq!(Asked::parse(words), None, "{words:?}");
+        }
+    }
+
+    // refused before any Service is read, so an off Module's stays cold
+    #[test]
+    fn osd_is_refused_for_a_module_that_is_off() {
+        let off = Reads {
+            audio: false,
+            brightness: false,
+        };
+
+        assert_eq!(
+            show(Asked::Volume, off),
+            Err(String::from("module audio is off"))
+        );
+        assert_eq!(
+            show(Asked::Brightness, off),
+            Err(String::from("module brightness is off"))
+        );
+    }
+
+    fn speaker_at(percent: u8) -> Volume {
+        Volume {
+            device: Device::Speaker,
+            percent,
+            muted: false,
+        }
+    }
+
+    /*
+     * a keybind sets the volume, then asks at once, when Amane's Audio may still say the old one:
+     * what shows is read after the ask, and asks while one waits fold into it
+     */
+    #[test]
+    fn osd_volume_shows_the_volume_read_after_the_ask() {
+        let (volume, asks) = mpsc::channel();
+        let first = Instant::now();
+        let second = first + Duration::from_millis(100);
+        let mut server = 40;
+
+        server += 5;
+        assert_eq!(ask(&volume, first), Ok(()));
+        server += 5;
+        assert_eq!(ask(&volume, second), Ok(()));
+        drop(volume);
+
+        let mut shown = Vec::new();
+        serve(
+            &asks,
+            || speaker_at(server),
+            |level, asked| shown.push((level, asked)),
+        );
+
+        assert_eq!(shown, [(Level::Volume(speaker_at(50)), second)]);
+    }
+
+    // the volume changes and asks again while the first ask is read: only the second read shows
+    #[test]
+    fn an_ask_during_a_read_reads_again_and_the_first_read_never_shows() {
+        let (volume, asks) = mpsc::channel();
+        let first = Instant::now();
+        let second = first + Duration::from_millis(100);
+        let mut volume = Some(volume);
+        let mut server = 40;
+
+        assert_eq!(ask(volume.as_ref().unwrap(), first), Ok(()));
+
+        let mut shown = Vec::new();
+        serve(
+            &asks,
+            || {
+                let read = speaker_at(server);
+
+                // the change and its ask land while this read waits on PulseAudio
+                if let Some(volume) = volume.take() {
+                    server += 5;
+                    assert_eq!(ask(&volume, second), Ok(()));
+                }
+
+                read
+            },
+            |level, asked| shown.push((level, asked)),
+        );
+
+        assert_eq!(shown, [(Level::Volume(speaker_at(45)), second)]);
+    }
+
+    // brightness shows while the volume is still being read: the volume, read late, gives way
+    #[test]
+    fn a_slow_volume_read_does_not_cover_a_newer_level() {
+        let (volume, asks) = mpsc::channel();
+        let asked = Instant::now();
+        let delay = Duration::from_millis(300);
+        let osd = RefCell::new(Osd::new());
+
+        assert_eq!(ask(&volume, asked), Ok(()));
+        drop(volume);
+
+        serve(
+            &asks,
+            || {
+                osd.borrow_mut()
+                    .show(Level::Brightness(80), asked + delay / 2);
+                speaker_at(45)
+            },
+            |level, asked| osd.borrow_mut().answer(level, asked, asked + delay),
+        );
+
+        assert_eq!(osd.borrow().shown_on("eDP-1"), Some(Level::Brightness(80)));
+    }
+
+    #[test]
+    fn osd_volume_without_its_thread_is_refused() {
+        let (volume, asks) = mpsc::channel();
+        drop(asks);
+
+        assert_eq!(
+            ask(&volume, Instant::now()),
+            Err(String::from("the volume thread stopped"))
         );
     }
 
