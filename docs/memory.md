@@ -56,13 +56,19 @@ locked           213.2   187.2   114.0    73.1   270.9   270.6 |   407.2   407.4
 unlocked         214.4   188.0   114.2    73.7   238.8   238.5 |   374.2   425.2   119.7     0.0   246.0     0.2    13.6
 ```
 
-The second differs by under 4 MiB in every column; it ended at 212.7 MiB RSS and a 422.8 MiB peak. journalctl reported the same peaks: `425.2M memory peak` and `422.8M memory peak`.
+The second differs by under 4 MiB in every column:
+
+```
+rest             149.6   123.5    50.7    72.8   224.8   224.5 |   296.6   344.0    56.2     0.0   232.0     0.2    13.7
+unlocked         212.7   186.3   112.7    73.6   238.8   238.5 |   373.7   422.8   118.2     0.0   246.0     0.2    13.7
+```
+ journalctl reported the same peaks: `425.2M memory peak` and `422.8M memory peak`.
 
 What dominates:
 
 - GPU buffers, 225 MiB at Rest, more than the shell's whole PSS. They grow by 4 MiB with the Launcher and with collapsing, 2 MiB with the Calendar, 11 MiB with the Settings window, 4 MiB of which stay once it closes, and 32 MiB with the lock screen, which frees them on unlock.
 - Anonymous memory, 51 MiB at Rest. Media adds 21 MiB and the Calendar 33 MiB, with no calendar to show, and neither is freed when the island collapses.
-- Mapped files, 73 MiB of PSS, stay flat. Of these, 41 MiB are NVIDIA's driver libraries (`libnvidia-gpucomp`, `-glcore`, `-eglcore` and others) and 18 MiB Mesa's `libLLVM` and `libgallium`, loaded for its EGL. Both most likely load as wgpu probes every Vulkan and EGL driver. The shell draws only on the Intel GPU; `nvidia-smi` shows it holding 1 MiB there.
+- Mapped files, 73 MiB of PSS, stay flat. NVIDIA's driver libraries (`libnvidia-gpucomp`, `-glcore`, `-eglcore` and others) cost 35 MiB of PSS, 29 MiB of it mapped files and the rest anonymous, plus 3 MiB for `/dev/nvidiactl`. Mesa's `libLLVM` and `libgallium`, loaded for its EGL, cost 17 MiB, 15 MiB of it mapped files. Both most likely load as wgpu probes every Vulkan and EGL driver. The shell draws only on the Intel GPU; `nvidia-smi` shows it holding 1 MiB there.
 - The peak is above every sample twice. It is 46 MiB over Rest from startup, and 18 MiB over the lock screen during the password check and unlock.
 
 `docs/design.md` targets an RSS under 80 MB. The shell's RSS is 150 MiB at Rest and 214 MiB after every Surface, and RSS leaves out the 225 MiB of GPU buffers.

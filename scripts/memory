@@ -6,6 +6,15 @@ set -e
 kanade=${KANADE:-target/debug/kanade}
 unit=${UNIT:-kanade-memory}
 
+# anything else would run the whole scenario, which locks the session
+case $1 in
+sample | '') ;;
+*)
+    echo "usage: scripts/memory [sample LABEL]" >&2
+    exit 2
+    ;;
+esac
+
 # the unit's own cgroup holds the shell and its helpers, and nothing else
 pid=$(systemctl --user show -p MainPID --value "$unit")
 if [ "${pid:-0}" = 0 ]; then
@@ -65,14 +74,14 @@ sample() {
             printf "%-14s %s %s %s %s %s %s | %s %s %s %s %s %s %s\n", label,
                 mib(rollup["Rss:"]), mib(rollup["Pss:"]), mib(rollup["Anonymous:"]), mib(rollup["Pss_File:"]),
                 mib(total), mib(resident),
-                mib(cg["current"] / 1024), mib(cg["peak"] / 1024), mib(cg["anon"] / 1024),
+                mib(cg["current"] / 1024), ("peak" in cg ? mib(cg["peak"] / 1024) : sprintf("%7s", "-")), mib(cg["anon"] / 1024),
                 mib((cg["file"] - cg["shmem"]) / 1024), mib(cg["shmem"] / 1024),
                 mib(cg["slab_reclaimable"] / 1024), mib(others)
         }'
 }
 
-header
 if [ "$1" = sample ]; then
+    header
     sample "${2:-now}"
     exit
 fi
@@ -86,6 +95,7 @@ step() {
     sample "$label"
 }
 
+header
 sample rest
 for surface in controls media notifications launcher tray clipboard calendar weather; do
     step "$surface" "$surface" open
@@ -94,11 +104,11 @@ step collapse island collapse
 step settings settings open
 step closed settings close
 
-# every monitor shows a lock screen; only the user's password ends it
+# every monitor shows a lock screen; only the user's password ends it, even when `lock` fails
+echo "memory: locking; type your password to unlock" >&2
 "$kanade" lock
 sleep 2
 sample locked
-echo "memory: type your password to unlock" >&2
 # `lock status` ends with `unlocked` once a password was accepted
 until "$kanade" lock status 2> /dev/null | tail -n 1 | grep -qx unlocked; do
     kill -0 "$pid" 2> /dev/null || gone
