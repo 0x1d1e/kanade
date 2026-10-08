@@ -18,6 +18,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use amane::{
@@ -58,9 +59,46 @@ struct Requests {
 
     // a password went to PAM since the newest request
     tried: bool,
+
+    // from logind's `PrepareForSleep(true)` until `(false)`: no password goes to PAM (#155)
+    sleeping: bool,
+
+    // the sleeps begun, so a wake found late opens only the gate of the sleep it was asked about
+    sleeps: u64,
+
+    // a password was typed while `sleeping`, so the lock screen says why it waits
+    refused: bool,
 }
 
 impl Requests {
+    fn sleep(&mut self) {
+        if !self.sleeping {
+            self.sleeping = true;
+            self.sleeps += 1;
+        }
+    }
+
+    // `sleep` woke, if it is still the one sleeping; whether a password waited on it
+    fn woke(&mut self, sleep: u64) -> bool {
+        if self.sleeps != sleep || !self.sleeping {
+            return false;
+        }
+
+        self.sleeping = false;
+        std::mem::take(&mut self.refused)
+    }
+
+    // a password typed now goes to PAM, unless the machine is on its way to sleep
+    fn try_password(&mut self) -> bool {
+        if self.sleeping {
+            self.refused = true;
+            return false;
+        }
+
+        self.tried = true;
+        true
+    }
+
     /*
      * A new request, which only a draw after it confirms. It drops the last confirmation, which an
      * unlock may have ended since: `tried` no longer tells
@@ -94,7 +132,8 @@ impl Requests {
 
     /*
      * what `hold`, having asked `asked`, does next. PAM ends a check with no draw when it accepts,
-     * the lock windows closing unseen, so a check is looked at again rather than waited on
+     * the lock windows closing unseen, so a check is looked at again rather than waited on, past
+     * any deadline: one accepted is asked over even once the machine slept
      */
     fn next(&self, asked: Option<u64>, checking: bool, failed: bool) -> Next {
         match (asked, self.holding(checking, failed)) {
@@ -151,6 +190,9 @@ static REQUESTS: Mutex<Requests> = Mutex::new(Requests {
     newest: 0,
     confirmed: 0,
     tried: false,
+    sleeping: false,
+    sleeps: 0,
+    refused: false,
 });
 
 // told each time a lock screen draws, which may confirm a request or show an unlock
@@ -323,10 +365,11 @@ fn request(requests: &mut Requests) -> Option<u64> {
 }
 
 /*
- * locks the session before it sleeps (`crate::sleep`): asks for a lock and waits until a lock
- * screen confirms it while it still holds, for at most `patience`. A password being checked is
- * waited out and one accepted is asked over, so sleep never goes on unlocked by a password typed
- * just before it
+ * locks the session before it sleeps (`crate::sleep`), after `sleeping` shut the gate; only the
+ * signals open and shut it, so a wake heard before this runs stays heard. Asks for a lock and
+ * waits until a lock screen confirms it while it still holds, for at most `patience`. A password
+ * checked from before is waited out however long it takes, and one accepted is asked over: Amane
+ * cannot drop a check, so its unlock is undone instead
  */
 pub fn hold(patience: Duration) -> Result<(), String> {
     if pam().is_none() {
@@ -350,17 +393,78 @@ pub fn hold(patience: Duration) -> Result<(), String> {
                 asked = request(&mut requests);
                 continue;
             }
-            _ if left.is_zero() => {
+            Next::Look => LOOK,
+            Next::Wait if left.is_zero() => {
                 return Err(format!("no lock screen confirmed it within {patience:?}"));
             }
             Next::Wait => left,
-            Next::Look => left.min(LOOK),
         };
 
         requests = DRAWN
             .wait_timeout(requests, wait)
             .unwrap_or_else(PoisonError::into_inner)
             .0;
+    }
+}
+
+/*
+ * the machine is on its way to sleep: from now until `woke`, no password typed goes to PAM, so none
+ * can unlock before it sleeps, even while another program's inhibitor still delays it
+ */
+pub fn sleeping() {
+    requests().sleep();
+}
+
+// the machine woke, or its sleep failed: passwords go to PAM again
+pub fn woke() {
+    let mut requests = requests();
+    let sleep = requests.sleeps;
+    opened(requests.woke(sleep));
+}
+
+// a lock screen that said why a password waited redraws without it
+fn opened(refused: bool) {
+    if refused {
+        drop(Lock::write());
+    }
+}
+
+// whether logind is on its way to sleep, or None when it does not answer
+pub fn preparing() -> Option<bool> {
+    let preparing = Bus::system().property(
+        LOGIND,
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        "PreparingForSleep",
+    );
+
+    match preparing {
+        Value::Bool(preparing) => Some(preparing),
+        _ => None,
+    }
+}
+
+/*
+ * a password was typed while sleep shut the gate: logind may have woken with no
+ * `PrepareForSleep(false)` heard, as when it restarted, so ask it. Off the view's thread, as logind
+ * may be slow to answer; the password stays in the field to send again
+ */
+fn awake(sleep: u64) {
+    let asked = thread::Builder::new()
+        .name(String::from("sleep ended"))
+        .spawn(move || {
+            if preparing() == Some(false) {
+                let mut requests = requests();
+
+                if requests.sleeping && requests.sleeps == sleep {
+                    opened(requests.woke(sleep));
+                    eprintln!("kanade: the machine woke unheard of; passwords are checked again");
+                }
+            }
+        });
+
+    if let Err(error) = asked {
+        eprintln!("kanade: cannot ask logind whether the machine woke: {error}");
     }
 }
 
@@ -440,11 +544,14 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
     let lock = Lock::read();
 
     requests.drew(lock.checking(), lock.failed());
+    let waiting = requests.sleeping && requests.refused;
     drop(requests);
     DRAWN.notify_all();
 
     let (status, color) = if lock.checking() {
         ("Checking…", roles.on_surface_variant)
+    } else if waiting {
+        ("Locked for sleep", roles.on_surface_variant)
     } else if lock.failed() {
         ("Wrong password", theme::SEMANTIC.critical)
     } else {
@@ -522,19 +629,23 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
 }
 
 /*
- * one try at a time: while PAM checks, what is typed waits in the field. The field empties before
- * PAM gets the password, so a wrong one is typed again from nothing
+ * one try at a time: while PAM checks, or the machine is on its way to sleep, what is typed waits in
+ * the field. The field empties before PAM gets the password, so a wrong one is typed again from
+ * nothing
  */
 fn submit(password: String) {
     if password.is_empty() || Lock::read().checking() {
         return;
     }
 
-    TextInput::set_text(FIELD, "");
-
-    // under the requests, so one never falls between the two
+    // under the requests, so neither a request nor `hold` falls between the two
     let mut requests = requests();
-    requests.tried = true;
+    if !requests.try_password() {
+        awake(requests.sleeps);
+        return;
+    }
+
+    TextInput::set_text(FIELD, "");
     Lock::unlock(&password);
 }
 
@@ -549,6 +660,9 @@ mod tests {
             newest: 0,
             confirmed: 0,
             tried: false,
+            sleeping: false,
+            sleeps: 0,
+            refused: false,
         };
 
         // asked nothing while a password is checked, then again once it is not
@@ -569,6 +683,36 @@ mod tests {
         assert_eq!(requests.next(asked, false, true), Next::Done);
     }
 
+    // #155: on its way to sleep, a password typed goes nowhere until the machine wakes
+    #[test]
+    fn no_password_goes_to_pam_while_the_machine_sleeps() {
+        let mut requests = Requests {
+            newest: 0,
+            confirmed: 0,
+            tried: false,
+            sleeping: false,
+            sleeps: 0,
+            refused: false,
+        };
+
+        requests.sleep();
+        assert!(!requests.try_password());
+        assert!(!requests.tried);
+        assert!(requests.refused);
+
+        // a wake found late for the sleep before does not open the gate of the one after
+        assert!(requests.woke(1));
+        requests.sleep();
+        assert!(!requests.woke(1));
+        assert!(!requests.try_password());
+
+        // the lock screen stops saying it waits once the gate opens
+        assert!(requests.woke(2));
+        assert!(!requests.refused);
+        assert!(requests.try_password());
+        assert!(requests.tried);
+    }
+
     // #196: the last lock, on its way out after an unlock, draws once more
     #[test]
     fn a_lock_is_confirmed_only_while_no_unlock_is_pending() {
@@ -576,6 +720,9 @@ mod tests {
             newest: 0,
             confirmed: 0,
             tried: false,
+            sleeping: false,
+            sleeps: 0,
+            refused: false,
         };
 
         assert_eq!(requests.request(), 1);
@@ -620,6 +767,9 @@ mod tests {
             newest: 0,
             confirmed: 0,
             tried: false,
+            sleeping: false,
+            sleeps: 0,
+            refused: false,
         };
         let first = requested("requested #1 in 42.7").unwrap();
         let settled = |requests: &Requests| settled(&requests.status("42.7", false, false), &first);

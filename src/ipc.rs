@@ -22,7 +22,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{caffeine, google, wallpaper, weather};
+use crate::sources::{caffeine, google, sleep, wallpaper, weather};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -147,6 +147,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("dock") {
         lines.push(dock::status());
+    }
+    if modules::on("lock") {
+        lines.push(sleep::status());
     }
     if modules::on("wallpaper") {
         lines.push(wallpaper::status());
