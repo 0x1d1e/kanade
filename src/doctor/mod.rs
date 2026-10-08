@@ -100,14 +100,18 @@ pub fn run() -> ExitCode {
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
 
-    for check in &checks {
-        println!("{}", check.render());
-    }
+    let report: String = checks
+        .iter()
+        .map(|check| format!("{}\n", check.render()))
+        .collect();
 
-    match checks.iter().any(|check| check.verdict == Verdict::Fail) {
-        true => ExitCode::FAILURE,
-        false => ExitCode::SUCCESS,
-    }
+    cli::print(
+        &report,
+        match checks.iter().any(|check| check.verdict == Verdict::Fail) {
+            true => ExitCode::FAILURE,
+            false => ExitCode::SUCCESS,
+        },
+    )
 }
 
 // the pinned Amane, as Cargo.lock has it

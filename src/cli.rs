@@ -5,7 +5,7 @@
 //! act. `amane ipc call kanade <verb> [args]` reaches the same handler; it is internal.
 
 use std::env;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -157,33 +157,27 @@ pub fn usage() -> String {
 const PATIENCE: Duration = Duration::from_secs(5);
 
 /*
- * `kanade <verb> [args]`: 2 for words that are no verb, 1 for a refusal or no shell to ask, 3 when
- * it is not known whether it was done, as the shell or niri took it but did not answer
+ * `kanade <verb> [args]`: 2 for words that are no verb, 1 for a refusal, no shell to ask or a failed
+ * stdout, 3 when it is not known whether it was done, as the shell or niri took it but did not answer
  */
 pub fn run(arguments: &[String]) -> ExitCode {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
     match words[..] {
-        ["help" | "-h" | "--help"] => {
-            println!("{}", usage());
-            return ExitCode::SUCCESS;
-        }
+        ["help" | "-h" | "--help"] => return print(&format!("{}\n", usage()), ExitCode::SUCCESS),
         ["doctor"] => return doctor::run(),
-        ["config", "defaults"] => {
-            print!("{}", config::defaults());
-            return ExitCode::SUCCESS;
-        }
+        ["config", "defaults"] => return print(&config::defaults(), ExitCode::SUCCESS),
         _ => {}
     }
 
     let asked = match parse(&words) {
         Ok((_, call)) => call,
         Err(Unparsed::Usage) => {
-            eprintln!("{}", usage());
+            complain(&usage());
             return ExitCode::from(2);
         }
         Err(Unparsed::Invalid(invalid)) => {
-            eprintln!("kanade: {invalid}");
+            complain(&format!("kanade: {invalid}"));
             return ExitCode::from(2);
         }
     };
@@ -193,14 +187,14 @@ pub fn run(arguments: &[String]) -> ExitCode {
         Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
             Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path)),
             Err(error) => {
-                eprintln!("kanade: {}: {error}", path.display());
+                complain(&format!("kanade: {}: {error}", path.display()));
                 return ExitCode::FAILURE;
             }
         },
         Call::Google(google::Request::SignIn(path)) => match std::path::absolute(&path) {
             Ok(path) => Call::Google(google::Request::SignIn(path)),
             Err(error) => {
-                eprintln!("kanade: {}: {error}", path.display());
+                complain(&format!("kanade: {}: {error}", path.display()));
                 return ExitCode::FAILURE;
             }
         },
@@ -256,21 +250,47 @@ pub fn run(arguments: &[String]) -> ExitCode {
     };
 
     match reply {
-        Ok(Reply::Done(text)) => {
-            if !text.is_empty() {
-                println!("{text}");
-            }
-            ExitCode::SUCCESS
-        }
+        Ok(Reply::Done(text)) if text.is_empty() => ExitCode::SUCCESS,
+        Ok(Reply::Done(text)) => print(&format!("{text}\n"), ExitCode::SUCCESS),
         Ok(Reply::Refused(text)) | Err(text) => {
-            eprintln!("kanade: {text}");
+            complain(&format!("kanade: {text}"));
             ExitCode::FAILURE
         }
         Ok(Reply::Unknown(text)) => {
-            eprintln!("kanade: {text}");
+            complain(&format!("kanade: {text}"));
             ExitCode::from(3)
         }
     }
+}
+
+/*
+ * writes `text` to stdout and gives back `code` as the exit code. A closed pipe is no failure, as its
+ * reader, like `head`, wanted no more (#197); any other error is said on stderr and fails
+ */
+pub fn print(text: &str, code: ExitCode) -> ExitCode {
+    match written(io::stdout().lock(), text) {
+        Ok(()) => code,
+        Err(error) => {
+            complain(&format!("kanade: stdout: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// writes all of `text` to `output`, a pipe its reader closed taking it as written
+fn written(mut output: impl Write, text: &str) -> io::Result<()> {
+    match output
+        .write_all(text.as_bytes())
+        .and_then(|()| output.flush())
+    {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        written => written,
+    }
+}
+
+// writes `text` and a newline to stderr; when that fails too, nothing is left to tell
+fn complain(text: &str) {
+    drop(writeln!(io::stderr().lock(), "{text}"));
 }
 
 // where a call the shell answered at once stands, by the status it says
@@ -574,6 +594,32 @@ mod tests {
 
     fn parsed(words: &[&str]) -> Result<(&'static str, Call), Unparsed> {
         parse(words).map(|(module, call)| (module.name, call))
+    }
+
+    // a stdout that fails every write with `kind`
+    struct Failing(io::ErrorKind);
+
+    impl Write for Failing {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(self.0.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_a_closed_pipe_is_no_stdout_failure() {
+        let mut taken = Vec::new();
+        assert!(written(&mut taken, "ok\n").is_ok());
+        assert_eq!(taken, b"ok\n");
+
+        assert!(written(Failing(io::ErrorKind::BrokenPipe), "ok\n").is_ok());
+        assert_eq!(
+            written(Failing(io::ErrorKind::StorageFull), "ok\n").map_err(|error| error.kind()),
+            Err(io::ErrorKind::StorageFull)
+        );
     }
 
     #[test]
