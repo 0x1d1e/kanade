@@ -2,12 +2,14 @@
 //! <path>` and the Launcher's wallpapers (`@`) both ask `set`, which hands the image to `awww img`.
 //!
 //! awww draws through its daemon, which Kanade runs as a holder (ADR 0011) while the Module is on,
-//! so it dies with Kanade; on its next start awww shows the last image again from its own cache.
-//! When a daemon already answers, like one the compositor started, Kanade sets on that one instead.
+//! only through setpriv, so it dies with Kanade even killed; on its next start awww shows the last
+//! image again from its own cache. When a daemon already answers, like one the compositor started,
+//! Kanade sets on that one instead, setpriv or not.
 //!
 //! `awww img` decodes and scales the image itself, which takes up to a tenth of a second, so it runs
-//! on a thread of its own, one image at a time in the order asked, never on the draw thread. `set`
-//! answers at once with a serial; `kanade` waits on `status` for how it went.
+//! on a thread of its own, one image at a time in the order asked, never on the draw thread, and is
+//! killed after `LIMIT` so one that hangs holds up no set after it. `set` answers at once with a
+//! serial; `kanade` waits on `status` for how it went.
 
 use std::collections::VecDeque;
 use std::ffi::OsStr;
@@ -17,7 +19,7 @@ use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use super::wake;
 use crate::{config, supervise};
@@ -34,6 +36,9 @@ const IMAGES: &[&str] = &[
     "tiff", "webp",
 ];
 
+// how long awww may take to show an image, well over the tenth of a second it takes a large one
+const LIMIT: Duration = Duration::from_secs(10);
+
 // how many sets `status` says how they went, so a `kanade` waiting on one finds it after others
 const RECENT: usize = 16;
 
@@ -47,6 +52,9 @@ pub enum Unset {
     NoAwww,
     NoDaemon,
 
+    // awww took longer than this to show it, so it was stopped
+    Stuck(Duration),
+
     // awww would not show it, in its words
     Refused(String),
 }
@@ -58,6 +66,7 @@ impl Unset {
             Unset::NoImage(_) => "no such image",
             Unset::NoAwww => "awww not found",
             Unset::NoDaemon => "awww-daemon is not running",
+            Unset::Stuck(_) => "awww did not answer",
             Unset::Refused(_) => "awww could not show it",
         }
     }
@@ -69,6 +78,11 @@ impl fmt::Display for Unset {
             Unset::NoImage(path) => write!(f, "no image at {}", path.display()),
             Unset::NoAwww => write!(f, "{AWWW} not found; install awww to set the wallpaper"),
             Unset::NoDaemon => write!(f, "{DAEMON} is not running"),
+            Unset::Stuck(limit) => write!(
+                f,
+                "{AWWW} did not show it within {}s, so it was stopped",
+                limit.as_secs()
+            ),
             Unset::Refused(why) => f.write_str(why),
         }
     }
@@ -310,7 +324,7 @@ pub fn serve() {
             return;
         };
 
-        let shown = show(&path);
+        let shown = show(&[AWWW], &path, LIMIT);
 
         if let Err(why) = &shown {
             eprintln!(
@@ -340,31 +354,80 @@ pub fn serve() {
     }
 }
 
-// `awww img`, saying that the daemon is not running rather than awww's own words for it
-fn show(path: &Path) -> Result<(), Unset> {
+/*
+ * `awww img` through `awww`, the program and any arguments before its own, killed after `limit`;
+ * says that the daemon is not running rather than awww's own words for it
+ */
+fn show(awww: &[&str], path: &Path, limit: Duration) -> Result<(), Unset> {
     let text = path.to_str().ok_or_else(|| {
         Unset::Refused(format!("{} is not UTF-8, which awww needs", path.display()))
     })?;
 
-    wake::act(AWWW, &["img", text]).map_err(|why| match wake::act(AWWW, &["query"]) {
-        Ok(()) => Unset::Refused(why),
-        Err(_) if !wake::found(AWWW) => Unset::NoAwww,
-        Err(_) => Unset::NoDaemon,
+    let (program, before) = awww.split_first().expect("a program");
+    let act = |args: &[&str]| {
+        let args: Vec<&str> = before.iter().chain(args).copied().collect();
+        wake::act_within(program, &args, limit)
+    };
+
+    act(&["img", text]).map_err(|failed| match failed {
+        wake::Failed::Overran(limit) => Unset::Stuck(limit),
+        wake::Failed::Said(why) => match act(&["query"]) {
+            Ok(()) => Unset::Refused(why),
+            Err(_) if !wake::found(program) => Unset::NoAwww,
+            Err(_) => Unset::NoDaemon,
+        },
     })
+}
+
+// who runs the daemon the wallpaper is set on
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Daemon {
+    // one that already answers, like one the compositor started
+    Theirs,
+
+    // Kanade, through setpriv
+    Kanade,
+
+    // nobody: without setpriv one Kanade ran could outlive it
+    Nobody,
+}
+
+fn daemon(answers: bool, guards: bool) -> Daemon {
+    match (answers, guards) {
+        (true, _) => Daemon::Theirs,
+        (false, true) => Daemon::Kanade,
+        (false, false) => Daemon::Nobody,
+    }
 }
 
 /*
  * runs awww's daemon while Kanade does, again after a backoff when it ends; none when one already
- * answers, which Kanade then sets on
+ * answers, which Kanade then sets on, nor without setpriv
  */
 pub fn follow() {
-    if wake::act(AWWW, &["query"]).is_ok() {
-        eprintln!("kanade: {DAEMON} already runs, so the wallpaper is set on that one");
-        return;
+    let answers = wake::act_within(AWWW, &["query"], LIMIT).is_ok();
+
+    match daemon(answers, wake::guards()) {
+        Daemon::Theirs => {
+            eprintln!("kanade: {DAEMON} already runs, so the wallpaper is set on that one");
+            return;
+        }
+        Daemon::Nobody => {
+            let why = format!(
+                "{} not found, so {DAEMON} could outlive Kanade; no wallpaper unless one runs \
+                 already",
+                wake::SETPRIV
+            );
+
+            eprintln!("kanade: {why}");
+            supervise::stopped("wallpaper", why);
+            return;
+        }
+        Daemon::Kanade => {}
     }
 
     // what it prints only goes to stdout, read until it ends
-    let error = wake::run(DAEMON, &["--quiet"], &wake::Stop::default(), |output| {
+    let error = wake::run_guarded(DAEMON, &["--quiet"], &wake::Stop::default(), |output| {
         for line in output.lines() {
             if let Err(error) = line {
                 return error;
@@ -532,6 +595,36 @@ mod tests {
             Settled::Failed(String::from("bad image"))
         );
         assert!(matches!(status.settled(1), Settled::Lost(_)));
+    }
+
+    #[test]
+    fn kanade_runs_the_daemon_only_through_setpriv_and_when_none_answers() {
+        assert_eq!(daemon(true, true), Daemon::Theirs);
+        assert_eq!(daemon(true, false), Daemon::Theirs);
+        assert_eq!(daemon(false, true), Daemon::Kanade);
+        assert_eq!(daemon(false, false), Daemon::Nobody);
+    }
+
+    // a stand-in for awww: `img` of an image named hang never exits, any other one is shown
+    const AWWW_HANGS: &[&str] = &[
+        "sh",
+        "-c",
+        r#"case "$1 $2" in "img "*hang*) exec sleep 60 ;; "img "*|query) exit 0 ;; esac; exit 1"#,
+        "awww",
+    ];
+
+    #[test]
+    fn an_awww_that_hangs_is_stopped_and_the_next_image_is_shown() {
+        let limit = Duration::from_millis(300);
+        let started = std::time::Instant::now();
+
+        assert_eq!(
+            show(AWWW_HANGS, Path::new("/w/hang.png"), limit),
+            Err(Unset::Stuck(limit))
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        assert_eq!(show(AWWW_HANGS, Path::new("/w/sea.png"), limit), Ok(()));
     }
 
     #[test]

@@ -554,6 +554,10 @@ pub const ALL: &[Module] = &[
                 on: Provider::Program(wallpaper::DAEMON),
                 without: "no wallpaper unless one runs already",
             },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "no wallpaper unless awww-daemon runs already, as Kanade's could outlive it",
+            },
         ],
         settings: config::WALLPAPER,
         verbs: &[Verb {

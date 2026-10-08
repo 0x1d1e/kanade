@@ -42,6 +42,29 @@ pub fn run(
     program: &str,
     args: &[&str],
     stop: &Stop,
+    follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
+) -> Option<io::Error> {
+    keep(program, args, stop, spawn, follow)
+}
+
+/*
+ * runs `program` as `run` does, but only through setpriv, never without, for a program that must
+ * not outlive Kanade, like a daemon nothing else would stop. Without setpriv it cannot be started
+ */
+pub fn run_guarded(
+    program: &str,
+    args: &[&str],
+    stop: &Stop,
+    follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
+) -> Option<io::Error> {
+    keep(program, args, stop, spawn_guarded, follow)
+}
+
+fn keep(
+    program: &str,
+    args: &[&str],
+    stop: &Stop,
+    spawn: fn(&str, &[&str]) -> io::Result<Child>,
     mut follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
 ) -> Option<io::Error> {
     let command = [program, args.join(" ").as_str()].join(" ");
@@ -116,13 +139,25 @@ pub fn run(
  * leave it running for nobody; without setpriv the program runs on its own, and may outlive Kanade
  */
 fn spawn(program: &str, args: &[&str]) -> io::Result<Child> {
-    guarded(program, args, KILL, |command| {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-    })
+    guarded(program, args, KILL, followed)
+}
+
+// as `spawn`, but never without setpriv
+fn spawn_guarded(program: &str, args: &[&str]) -> io::Result<Child> {
+    followed(
+        Command::new(SETPRIV)
+            .args(["--pdeathsig", KILL, program])
+            .args(args),
+    )
+}
+
+// a program whose output `run` follows
+fn followed(command: &mut Command) -> io::Result<Child> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
 }
 
 // whether setpriv is on the PATH, so a program Kanade has another start, like wl-paste's watch
@@ -181,20 +216,96 @@ pub fn act(program: &str, args: &[&str]) -> Result<(), String> {
 pub fn query(program: &str, args: &[&str]) -> Result<String, String> {
     let command = [program, args.join(" ").as_str()].join(" ");
 
-    let child = guarded(program, args, KILL, |command| {
+    let output = acting(program, args)
+        .and_then(Child::wait_with_output)
+        .map_err(|error| format!("cannot run `{command}`: {error}"))?;
+
+    acted(program, &command, &output)
+}
+
+// why an action run within a limit failed
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failed {
+    // it ran longer than the limit, so it was killed
+    Overran(Duration),
+
+    // as `act` says
+    Said(String),
+}
+
+/*
+ * an action as `act`, killed once it runs longer than `limit`, so one that hangs holds up nothing
+ * that waits on it
+ */
+pub fn act_within(program: &str, args: &[&str], limit: Duration) -> Result<(), Failed> {
+    let command = [program, args.join(" ").as_str()].join(" ");
+    let cannot = |error: io::Error| Failed::Said(format!("cannot run `{command}`: {error}"));
+
+    let mut child = acting(program, args).map_err(cannot)?;
+
+    // each pipe read to its end on a thread of its own, which ends once the program exits
+    let (sent, received) = mpsc::channel();
+    let stdout = child.stdout.take().map(|pipe| read(pipe, 0, sent.clone()));
+    let stderr = child.stderr.take().map(|pipe| read(pipe, 1, sent));
+
+    let deadline = Instant::now() + limit;
+    let mut printed = [Vec::new(), Vec::new()];
+
+    for _ in stdout.iter().chain(&stderr) {
+        let left = deadline.saturating_duration_since(Instant::now());
+
+        match received.recv_timeout(left) {
+            Ok((pipe, bytes)) => printed[pipe] = bytes,
+            Err(RecvTimeoutError::Timeout) => {
+                drop(child.kill());
+                drop(child.wait());
+                return Err(Failed::Overran(limit));
+            }
+            // a reader that panicked, so the pipe is left unread
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let [stdout, stderr] = printed;
+    let status = child.wait().map_err(cannot)?;
+
+    acted(
+        program,
+        &command,
+        &std::process::Output {
+            status,
+            stdout,
+            stderr,
+        },
+    )
+    .map(drop)
+    .map_err(Failed::Said)
+}
+
+// reads `pipe` to its end on a thread of its own, then sends it with its number
+fn read(mut pipe: impl io::Read + Send + 'static, number: usize, sent: Sender<(usize, Vec<u8>)>) {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        drop(pipe.read_to_end(&mut bytes));
+        drop(sent.send((number, bytes)));
+    });
+}
+
+// an action started as `act` says, its output piped
+fn acting(program: &str, args: &[&str]) -> io::Result<Child> {
+    guarded(program, args, KILL, |command| {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-    });
+    })
+}
 
-    let output = child
-        .and_then(Child::wait_with_output)
-        .map_err(|error| format!("cannot run `{command}`: {error}"))?;
-
+// what an action that exited says: what it printed on stdout, else why it failed
+fn acted(program: &str, command: &str, output: &std::process::Output) -> Result<String, String> {
     if output.status.success() {
-        return String::from_utf8(output.stdout)
+        return String::from_utf8(output.stdout.clone())
             .map_err(|_| format!("`{command}` printed something that is not text"));
     }
 

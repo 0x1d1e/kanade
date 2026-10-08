@@ -8,6 +8,7 @@ use std::env;
 use std::io::{self, Read};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -174,18 +175,22 @@ pub fn run(arguments: &[String]) -> ExitCode {
     };
 
     // the shell runs elsewhere, so a path goes to it whole
-    let arguments = match &asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(path) {
-            Ok(path) => vec![
-                String::from("wallpaper"),
-                String::from("set"),
-                path.to_string_lossy().into_owned(),
-            ],
+    let asked = match asked {
+        Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
+            Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path)),
             Err(error) => {
                 eprintln!("kanade: {}: {error}", path.display());
                 return ExitCode::FAILURE;
             }
         },
+        asked => asked,
+    };
+    let arguments = match &asked {
+        Call::Wallpaper(wallpaper::Request::Set(path)) => vec![
+            String::from("wallpaper"),
+            String::from("set"),
+            path.to_string_lossy().into_owned(),
+        ],
         _ => arguments.to_vec(),
     };
 
@@ -204,10 +209,10 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&caffeine_status_call(), deadline)
             }))
         }
-        (Call::Wallpaper(wallpaper::Request::Set(_)), Ok(Reply::Done(text)))
+        (Call::Wallpaper(wallpaper::Request::Set(path)), Ok(Reply::Done(text)))
             if let Some(serial) = wallpaper::setting(&text) =>
         {
-            Ok(settle_wallpaper(serial, PATIENCE, |deadline| {
+            Ok(settle_wallpaper(serial, &path, PATIENCE, |deadline| {
                 call_until(&wallpaper_status_call(), deadline)
             }))
         }
@@ -340,6 +345,7 @@ fn settle_caffeine(
  */
 fn settle_wallpaper(
     serial: u64,
+    path: &Path,
     patience: Duration,
     ask: impl FnMut(Instant) -> Result<Reply, String>,
 ) -> Reply {
@@ -358,12 +364,10 @@ fn settle_wallpaper(
             let status = wallpaper::Status::parse(status)?;
 
             Some(match status.settled(serial) {
-                wallpaper::Settled::Set => Settling::Settled(Reply::Done(
-                    status
-                        .current
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_default(),
-                )),
+                // its own path: the current one may be from a set done after it
+                wallpaper::Settled::Set => {
+                    Settling::Settled(Reply::Done(path.display().to_string()))
+                }
                 wallpaper::Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
                 wallpaper::Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
                 wallpaper::Settled::Waiting => Settling::Waiting,
@@ -889,7 +893,7 @@ help",
         let settled = |said: &'static [&'static str]| {
             let mut said = said.iter();
 
-            settle_wallpaper(2, patience, move |_| {
+            settle_wallpaper(2, Path::new("/w/a.png"), patience, move |_| {
                 Ok(Reply::Done(String::from(*said.next().unwrap())))
             })
         };
@@ -907,7 +911,16 @@ help",
         );
         assert!(matches!(settled(&["none"]), Reply::Unknown(_)));
 
-        let reply = settle_wallpaper(2, patience, |_| {
+        // another set done before this one was asked after: still this one's path
+        assert_eq!(
+            settled(&[
+                "none\nsetting #2\nsetting #3",
+                "current /w/b.png\n#2 set\n#3 set"
+            ]),
+            Reply::Done(String::from("/w/a.png"))
+        );
+
+        let reply = settle_wallpaper(2, Path::new("/w/a.png"), patience, |_| {
             Ok(Reply::Done(String::from("none\nsetting #2")))
         });
 
