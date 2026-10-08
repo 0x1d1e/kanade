@@ -349,7 +349,10 @@ fn month_of(calendars: &Calendars, start: NaiveDate) -> Shown {
     let held = {
         let expansion = Expansion::read();
 
+        // asked for, so a month expanding meanwhile never replaces it
         if expansion.of.is_some_and(|of| wanted.met_by(of)) {
+            asked.wanted = Some(wanted);
+
             return Shown {
                 month: Arc::clone(&expansion.month),
                 pending: None,
@@ -412,7 +415,7 @@ fn month_of(calendars: &Calendars, start: NaiveDate) -> Shown {
 }
 
 /*
- * expands the month last asked for, on its own thread, until what it expanded answers what is
+ * expands the month last asked for, on its own thread, until the month shown answers what is
  * asked: the latest month asked while it ran is expanded next, and a result no longer asked for
  * never shows
  */
@@ -441,9 +444,12 @@ fn expand() {
         let start = {
             let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
 
+            // one already expanded, as a view turning back to it finds, is not expanded again
+            let expanded = Expansion::read().of;
+
             match asked.wanted {
                 Some(wanted)
-                    if !running.0.is_some_and(|expanded| wanted.met_by(expanded))
+                    if !expanded.is_some_and(|expanded| wanted.met_by(expanded))
                         && !asked.failed(wanted) =>
                 {
                     wanted.start
@@ -1376,6 +1382,36 @@ mod tests {
         drop(held);
         assert_eq!(titles(&expanded(&more, october)), ["B", "C"]);
         assert!(ended());
+    }
+
+    // turned back to a month expanded while another is expanded, the month shows on, the other is
+    // never shown once expanded, and the thread ends without expanding the month again. The
+    // calendars held keep a new thread from expanding until the month was turned back to
+    #[test]
+    fn a_month_turned_back_to_shows_on() {
+        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
+        let (october, november) = (grid_start(today()), day(2026, 10, 26));
+
+        // after none, so no other test's month shows
+        read(&[]);
+        let calendars = read(&[("a.ics", "Meeting")]);
+        let month = expanded(&calendars, october);
+        assert!(ended());
+
+        let held = Calendars::write();
+        assert_eq!(pending(&calendars, november), Some(Pending::Loading));
+        let shown = month_of(&calendars, october);
+        assert!(Arc::ptr_eq(&shown.month, &month) && shown.pending.is_none());
+
+        // the other month, expanded now, never shows
+        let other = Wanted::of(&calendars, november);
+        assert!(publish(other, Arc::new(Month::empty(november))).is_none());
+        assert!(Arc::ptr_eq(&month_of(&calendars, october).month, &month));
+        drop(held);
+
+        assert!(ended());
+        assert_eq!(Expansion::read().of, Some(Wanted::of(&calendars, october)));
+        assert!(Arc::ptr_eq(&month_of(&calendars, october).month, &month));
     }
 
     // each day of the month holds the events that fall on it, in their order, whatever their
