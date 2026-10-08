@@ -88,7 +88,7 @@ fn run(call: Call) -> Reply {
             Err(error) => Reply::Refused(error),
         },
         Call::LockStatus => Reply::Done(lock::status()),
-        // on the draw thread, which the lock screen lives on; logind is asked on the session's
+        // on the draw thread, which the lock screen lives on; logind is asked on a thread of its own
         Call::Session(leave) => session::request(leave).map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),

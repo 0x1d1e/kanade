@@ -213,8 +213,9 @@ fn satellites(
 }
 
 /*
- * a battery shows its number in its tone, a timer what is left, a recording that it records in the
- * capture tone, caffeine its cup, the rest their Kind
+ * a battery shows its number in its tone, a timer or countdown what is left, a recording that it
+ * records in the capture tone, caffeine its cup, a refusal or no answer a mark in the critical
+ * tone, the rest their Kind
  */
 fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
@@ -226,6 +227,9 @@ fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
             format!("{}s", session::left(countdown, now)),
             theme::ISLAND.on_surface,
         ),
+        Detail::Session(Leaving::Failed { .. } | Leaving::Unanswered { .. }) => {
+            label(String::from("!"), theme::SEMANTIC.critical)
+        }
         _ => label(
             abbreviation(activity.kind()).to_owned(),
             theme::ISLAND.on_surface,
@@ -430,6 +434,9 @@ fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle {
                 surfaces::session::icon(Leave::Ending(*end)).draw(14.0),
             ));
         }
+        Detail::Session(Leaving::Failed { leave, .. } | Leaving::Unanswered { leave, .. }) => {
+            row.push(Box::new(surfaces::session::icon(*leave).draw(14.0)));
+        }
         Detail::Recording(_) => row.push(Box::new(Icon::Capture.on(14.0, theme::SEMANTIC.capture))),
         Detail::Battery(charge) => row.push(Box::new(battery_icon(
             16.0,
@@ -612,6 +619,12 @@ fn session(
             *leave,
             format!("{} failed", surfaces::session::name(*leave)),
             why.as_str(),
+            serial.as_str(),
+        ),
+        Leaving::Unanswered { leave, serial } => (
+            *leave,
+            format!("{} may still happen", surfaces::session::name(*leave)),
+            session::NO_ANSWER,
             serial.as_str(),
         ),
     };

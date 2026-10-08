@@ -408,7 +408,7 @@ pub enum Ending {
     LogOut,
 }
 
-// a restart, power off or log out counting down, or one asked that did not happen
+// a restart, power off or log out counting down, or one asked that did not happen or may yet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Leaving {
     /*
@@ -428,6 +428,15 @@ pub enum Leaving {
     Failed {
         leave: Leave,
         why: String,
+        serial: String,
+    },
+
+    /*
+     * asked of logind, which never answered, so it may still be carried out; `serial` names it as
+     * a restart's refusal
+     */
+    Unanswered {
+        leave: Leave,
         serial: String,
     },
 }

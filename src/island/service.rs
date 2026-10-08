@@ -408,9 +408,9 @@ impl IslandService {
 
     /*
      * a Preempt Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
-     * existing one turned Preempt included; a repost of one already up does not, so a Surface
-     * reopened over it stays. A pending AutoExpand gives the islands back first. An AutoExpand one
-     * arriving opens its own Surface, as `auto_expand`
+     * existing one turned Preempt included, unless that is its own Surface; a repost of one already
+     * up does not, so a Surface reopened over it stays. A pending AutoExpand gives the islands back
+     * first. An AutoExpand one arriving opens its own Surface, as `auto_expand`
      */
     pub fn post(&mut self, activity: Activity, now: Instant) {
         let global = activity.scope() == Scope::Global;
@@ -438,9 +438,11 @@ impl IslandService {
             self.restore(now);
         }
 
+        // its own Surface already shows it, so stays
         let open = self
             .presentations
             .expanded()
+            .filter(|(_, surface)| Surface::own(kind) != Some(*surface))
             .map(|(monitor, _)| monitor.to_owned());
 
         match open {
@@ -703,6 +705,30 @@ impl IslandService {
                 input: Input::Collapse,
             });
             nudge();
+        }
+    }
+
+    /*
+     * collapses `surface` where it is open, as a Preempt would: the islands go back first if a
+     * pending AutoExpand would give it back, and a pending AutoExpand is not taken over
+     */
+    pub fn displace(&mut self, surface: Surface, now: Instant) {
+        if self
+            .auto
+            .as_ref()
+            .is_some_and(|auto| auto.prior.opens(surface))
+        {
+            self.restore(now);
+        }
+
+        let open = self
+            .presentations
+            .expanded()
+            .filter(|(_, open)| *open == surface)
+            .map(|(monitor, _)| monitor.to_owned());
+
+        if let Some(monitor) = open {
+            self.give(&monitor, Input::Preempt, now);
         }
     }
 
@@ -2636,6 +2662,53 @@ mod tests {
         assert!(!island.expanded(OTHER));
     }
 
+    // its own Surface already shows it, so stays open; any other collapses
+    #[test]
+    fn a_preempt_leaves_its_own_surface_open() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let countdown = Activity::new(
+            Id::new(Kind::Session, "countdown"),
+            Priority::Critical,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::Preempt,
+        )
+        .unwrap();
+
+        island.open(MONITOR, Surface::Session, now);
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now);
+        island.post(countdown.clone(), now + ms(100));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Session)
+        );
+        assert!(island.pinned(MONITOR));
+
+        island.withdraw(countdown.id(), now + ms(200));
+        island.open(MONITOR, Surface::Launcher, now + ms(200));
+        island.post(countdown.clone(), now + ms(300));
+        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        assert_eq!(shown(&island, MONITOR, now + ms(300)), Some(countdown));
+
+        // any Kind with a Surface of its own
+        let urgent = Activity::new(
+            Id::new(Kind::Notification, "urgent"),
+            Priority::Critical,
+            Lifetime::Persistent,
+            Scope::Global,
+            Interrupt::Preempt,
+        )
+        .unwrap();
+
+        island.open(MONITOR, Surface::Notifications, now + ms(400));
+        island.post(urgent, now + ms(500));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+    }
+
     #[test]
     fn critical_never_preempts_under_the_overview() {
         let now = Instant::now();
@@ -2801,6 +2874,48 @@ mod tests {
         );
         assert!(island.held(MONITOR));
         assert_eq!(island.deadline(), Some(until + HOLD));
+    }
+
+    #[test]
+    fn displacing_a_surface_closes_only_it_and_leaves_an_auto_expand_pending() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+
+        island.open(MONITOR, Surface::Launcher, now);
+        island.displace(Surface::Session, now);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Launcher)
+        );
+
+        island.open(MONITOR, Surface::Session, now);
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now);
+        island.displace(Surface::Session, now);
+        assert_eq!(island.presentation(MONITOR), Presentation::Rest);
+        assert!(!island.pinned(MONITOR));
+
+        // one an AutoExpand would give back stays closed
+        island.open(MONITOR, Surface::Session, now);
+        island.post(auto("7"), now + ms(100));
+        island.displace(Surface::Session, now + ms(200));
+        assert!(!island.expanded(MONITOR));
+        island.expire(now + ms(100) + AUTO);
+        assert!(!island.expanded(MONITOR));
+
+        // another's AutoExpand is left pending, so still gives back what it collapsed
+        let later = now + AUTO * 2;
+        island.open(MONITOR, Surface::Controls, later);
+        island.post(auto("8"), later);
+        island.displace(Surface::Session, later + ms(100));
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Notifications)
+        );
+        island.expire(later + AUTO);
+        assert_eq!(
+            island.presentation(MONITOR),
+            Presentation::Expanded(Surface::Controls)
+        );
     }
 
     #[test]

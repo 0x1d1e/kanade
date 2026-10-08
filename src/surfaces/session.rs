@@ -405,21 +405,26 @@ fn click(at: At) {
 /*
  * `at` pressed, giving where that leaves the focus. A restart, power off or log out keeps the
  * Surface open on its countdown, the ring on Cancel, and Cancel brings the ring back to its tile,
- * so a key repeated only counts down again; the rest close it
+ * so a key repeated only counts down again; the rest close it, as does a countdown already gone.
+ * One refused shows its refusal on the island, which closes the Surface
  */
 fn press(focus: Focus, at: At) -> Focus {
     match at {
         At::Tile(leave) => {
-            // a refusal shows on the island
             let requested = session::request(leave);
 
-            if let Leave::Ending(_) = leave {
-                let counting = requested.ok().and(session::counting());
-
+            if let (Leave::Ending(_), Some(counting)) =
+                (leave, requested.as_ref().ok().and(session::counting()))
+            {
                 return Focus {
-                    at: Some(counting.map_or(at, At::Cancel)),
+                    at: Some(At::Cancel(counting)),
                     ..focus
                 };
+            }
+
+            // refused, its refusal closed the Surface already
+            if requested.is_err() {
+                return focus;
             }
         }
         At::Cancel(counting) => {

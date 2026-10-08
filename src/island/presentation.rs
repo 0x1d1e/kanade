@@ -262,6 +262,13 @@ impl Prior {
     pub fn monitors(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|(monitor, ..)| monitor.as_str())
     }
+
+    // whether it gives `surface` back
+    pub fn opens(&self, surface: Surface) -> bool {
+        self.0
+            .iter()
+            .any(|(_, raised, _)| *raised == Some(Raised::Expanded(surface)))
+    }
 }
 
 // every island's Presentation by monitor
