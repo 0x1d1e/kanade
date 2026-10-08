@@ -82,7 +82,7 @@ fn run(call: Call) -> Reply {
         }
         // on the draw thread, which the password field lives on; returns before niri locks, which the
         // client waits for
-        Call::Lock => lock::start().map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
+        Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         // on the draw thread, which the window's text inputs live on

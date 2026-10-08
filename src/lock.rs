@@ -7,11 +7,13 @@
 //! shell, which finds logind's `LockedHint` true and locks again, so niri swaps the dead lock for
 //! this one.
 
+use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use amane::{
-    Bus, Center, Column, Key, LayerWindow, Lock, Monitor, Padding, Parent, Rectangle, Service,
-    Start, Text, TextInput, Value, children,
+    Argument, Bus, Center, Column, Key, LayerWindow, Lock, Monitor, Padding, Parent, Rectangle,
+    Service, Start, Text, TextInput, Value, children,
 };
 
 use crate::clock;
@@ -30,7 +32,7 @@ const PAM_DIRS: [&str; 3] = ["/etc/pam.d", "/usr/lib/pam.d", "/usr/etc/pam.d"];
 const LOGIND: &str = "org.freedesktop.login1";
 
 // the session of whoever asks; from a user unit, which has none of its own, the graphical one
-const SESSION: &str = "/org/freedesktop/login1/session/auto";
+const AUTO: &str = "/org/freedesktop/login1/session/auto";
 
 const FIELD: &str = "lock-password";
 
@@ -47,14 +49,43 @@ pub fn pam() -> Option<PathBuf> {
 }
 
 /*
- * whether niri has locked the session, as logind's `LockedHint` says, or None when logind does not
+ * the logind session niri locks, as its object path, or empty when logind names none. niri sets
+ * `LockedHint` on its `XDG_SESSION_ID`, which niri-session hands the unit; without one, `AUTO`.
+ * Found once, at start: a client in another session, like a TTY, waits on this one, not its own
+ */
+pub fn session() -> &'static str {
+    static SESSION: OnceLock<String> = OnceLock::new();
+
+    SESSION.get_or_init(|| {
+        let bus = Bus::system();
+        let id = env::var("XDG_SESSION_ID").unwrap_or_else(|_| {
+            let id = bus.property(LOGIND, AUTO, "org.freedesktop.login1.Session", "Id");
+            id.text().to_owned()
+        });
+        if id.is_empty() {
+            return String::new();
+        }
+
+        let path = bus.call(
+            LOGIND,
+            "/org/freedesktop/login1",
+            "org.freedesktop.login1.Manager",
+            "GetSession",
+            &[Argument::from(id)],
+        );
+        path.text().to_owned()
+    })
+}
+
+/*
+ * whether niri has locked `session`, as logind's `LockedHint` says, or None when logind does not
  * answer. niri sets it once every monitor shows a lock screen, whichever locker's, and clears it
  * on unlock; only when it runs as a session, as the unit needs anyway
  */
-pub fn locked() -> Option<bool> {
+pub fn locked(session: &str) -> Option<bool> {
     let hint = Bus::system().property(
         LOGIND,
-        SESSION,
+        session,
         "org.freedesktop.login1.Session",
         "LockedHint",
     );
@@ -72,7 +103,11 @@ pub fn locked() -> Option<bool> {
  * session gets out
  */
 pub fn relock() {
-    if locked() == Some(true) {
+    if session().is_empty() {
+        eprintln!("kanade: logind names no session, so a crash while locked is not locked again");
+    }
+
+    if locked(session()) == Some(true) {
         eprintln!("kanade: the session is locked, locking it again");
         if pam().is_none() {
             eprintln!("kanade: no PAM service {PAM}, so no password will unlock");
@@ -82,10 +117,10 @@ pub fn relock() {
 }
 
 /*
- * `kanade lock`, which answers before niri locks; the client waits for `locked` (`cli::run`).
- * While locked it does nothing, so a second one keeps what is being typed
+ * `kanade lock`, which answers before niri locks, with the `session` the client waits on to be
+ * `locked` (`cli::run`). While locked it does nothing, so a second one keeps what is being typed
  */
-pub fn start() -> Result<(), String> {
+pub fn start() -> Result<String, String> {
     if pam().is_none() {
         return Err(format!(
             "no PAM service {PAM} in {}, so no password would unlock",
@@ -94,7 +129,7 @@ pub fn start() -> Result<(), String> {
     }
 
     Lock::start();
-    Ok(())
+    Ok(session().to_owned())
 }
 
 pub fn view(monitor: &Monitor) -> LayerWindow {

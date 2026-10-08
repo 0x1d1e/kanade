@@ -241,13 +241,19 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&wallpaper_status_call(), deadline)
             }))
         }
-        (Call::Lock, Ok(Reply::Done(_))) => Ok(settle_lock(PATIENCE, |_| match lock::locked() {
-            Some(true) => Ok(Reply::Done(String::from("locked"))),
-            Some(false) => Ok(Reply::Done(String::from("unlocked"))),
-            None => Err(String::from(
-                "logind did not say whether the session is locked",
-            )),
-        })),
+        // the session the shell names, as the caller's own may be another, like a TTY's
+        (Call::Lock, Ok(Reply::Done(session))) if session.is_empty() => {
+            Ok(Reply::Unknown(String::from(
+                "the shell names no logind session to wait on; the session may still lock",
+            )))
+        }
+        (Call::Lock, Ok(Reply::Done(session))) => {
+            Ok(settle_lock(PATIENCE, |_| match lock::locked(&session) {
+                Some(true) => Ok(Reply::Done(String::from("locked"))),
+                Some(false) => Ok(Reply::Done(String::from("unlocked"))),
+                None => Err(format!("logind did not say whether {session} is locked")),
+            }))
+        }
         (_, reply) => reply,
     };
 
@@ -351,8 +357,9 @@ fn settle_lock(patience: Duration, ask: impl FnMut(Instant) -> Result<Reply, Str
         patience,
         || {
             format!(
-                "niri did not lock the session within {}s; logind's LockedHint, which niri sets \
-                 only when run as a session (niri-session), stayed false. It may still lock",
+                "niri did not lock the session within {}s: logind's LockedHint stayed false. niri \
+                 refuses while its VT is not shown, and sets the hint only when run as a session \
+                 (niri-session)",
                 patience.as_secs()
             )
         },
