@@ -211,16 +211,25 @@ pub fn answer_volume(asks: &Receiver<Instant>) {
     });
 }
 
-// asks made while one is read fold into one read after them all, answered for the latest
+/*
+ * waiting asks fold into one read, answered for the latest. A read answers only asks made before it
+ * started: one made during it may follow a change the read missed, so it reads again for that one
+ */
 fn serve(
     asks: &Receiver<Instant>,
     mut read: impl FnMut() -> Volume,
     mut show: impl FnMut(Level, Instant),
 ) {
-    while let Ok(asked) = asks.recv() {
-        let asked = asks.try_iter().last().unwrap_or(asked);
+    while let Ok(first) = asks.recv() {
+        let mut asked = asks.try_iter().last().unwrap_or(first);
+        let mut volume = read();
 
-        show(Level::Volume(read()), asked);
+        while let Some(later) = asks.try_iter().last() {
+            asked = later;
+            volume = read();
+        }
+
+        show(Level::Volume(volume), asked);
     }
 }
 
@@ -465,6 +474,37 @@ mod tests {
         );
 
         assert_eq!(shown, [(Level::Volume(speaker_at(50)), second)]);
+    }
+
+    // the volume changes and asks again while the first ask is read: only the second read shows
+    #[test]
+    fn an_ask_during_a_read_reads_again_and_the_first_read_never_shows() {
+        let (volume, asks) = mpsc::channel();
+        let first = Instant::now();
+        let second = first + Duration::from_millis(100);
+        let mut volume = Some(volume);
+        let mut server = 40;
+
+        assert_eq!(ask(volume.as_ref().unwrap(), first), Ok(()));
+
+        let mut shown = Vec::new();
+        serve(
+            &asks,
+            || {
+                let read = speaker_at(server);
+
+                // the change and its ask land while this read waits on PulseAudio
+                if let Some(volume) = volume.take() {
+                    server += 5;
+                    assert_eq!(ask(&volume, second), Ok(()));
+                }
+
+                read
+            },
+            |level, asked| shown.push((level, asked)),
+        );
+
+        assert_eq!(shown, [(Level::Volume(speaker_at(45)), second)]);
     }
 
     // brightness shows while the volume is still being read: the volume, read late, gives way
