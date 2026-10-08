@@ -19,7 +19,8 @@
 //! Only the sync thread (`Worker`) keeps, uses and forgets the credentials, one message at a time,
 //! so a sign-out never interleaves with a sign-in being kept, even one waiting on a keyring prompt.
 //! A sign-in's thread only brings the code back and trades it; one cancelled by then is not kept.
-//! A sign-in kept is a new account to Kanade: the events synced before go first.
+//! A sign-in kept is a new account to Kanade: the events synced before wait aside while it is
+//! kept, and go only once it is; one not kept puts them back.
 
 mod ics;
 mod oauth;
@@ -603,21 +604,28 @@ impl<O: Outside> Worker<O> {
 
     /*
      * keeps a sign-in's credentials, unless a newer sign-in or a sign-out came since, which then
-     * runs after this. They may be another account's, so what the last one synced goes
+     * runs after this. They may be another account's, so the events synced before move aside
+     * first, out of the calendar's places, and go only once these are kept; a sign-in not kept
+     * leaves the account it replaces as it was, its events and when they synced
      */
     fn keep(&mut self, sign_in: u64, credentials: Credentials) -> Result<(), String> {
         if sign_in != self.outside.sign_in() {
             return Err(String::from("cancelled"));
         }
 
-        // first, so no other account's events stay up under these credentials
-        self.forget_events()
-            .map_err(|why| format!("cannot delete the events synced before: {why}"))?;
+        let staged = self.stage()?;
+        if let Err(why) = self.install(&credentials) {
+            self.unstage(staged.as_deref());
+            return Err(why);
+        }
 
-        self.outside.store(&credentials)?;
-        if let Err(error) = self.mark() {
-            let _ = self.outside.delete();
-            return Err(format!("cannot keep the sign-in: {error}"));
+        if let Some(staged) = staged
+            && let Err(error) = fs::remove_dir_all(&staged)
+        {
+            eprintln!(
+                "kanade: google-calendar: cannot delete {}: {error}",
+                staged.display()
+            );
         }
 
         self.kept = Some(credentials);
@@ -625,6 +633,68 @@ impl<O: Outside> Worker<O> {
         self.set(State::SignedIn, None);
 
         Ok(())
+    }
+
+    /*
+     * the credentials and the marker; when the marker cannot be written, the keyring goes back to
+     * what it kept before
+     */
+    fn install(&self, credentials: &Credentials) -> Result<(), String> {
+        self.outside.store(credentials)?;
+
+        if let Err(error) = self.mark() {
+            let _ = match &self.kept {
+                Some(kept) => self.outside.store(kept),
+                None => self.outside.delete(),
+            };
+            return Err(format!("cannot keep the sign-in: {error}"));
+        }
+
+        Ok(())
+    }
+
+    // where the events synced before wait while a sign-in is kept, beside their directory
+    fn staging(&self) -> Option<PathBuf> {
+        let mut staging = self.places.events.clone()?.into_os_string();
+        staging.push(".previous");
+
+        Some(staging.into())
+    }
+
+    // the events synced before, moved aside; none when there are none
+    fn stage(&self) -> Result<Option<PathBuf>, String> {
+        let (Some(dir), Some(staged)) = (&self.places.events, self.staging()) else {
+            return Ok(None);
+        };
+
+        // one a crash left
+        let _ = fs::remove_dir_all(&staged);
+
+        match fs::rename(dir, &staged) {
+            Ok(()) => {
+                self.outside.reread();
+                Ok(Some(staged))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "cannot move the events synced before aside: {error}"
+            )),
+        }
+    }
+
+    // the events synced before, back where the calendar reads them
+    fn unstage(&self, staged: Option<&Path>) {
+        let (Some(staged), Some(dir)) = (staged, &self.places.events) else {
+            return;
+        };
+
+        if let Err(error) = fs::rename(staged, dir) {
+            eprintln!(
+                "kanade: google-calendar: cannot put back {}: {error}",
+                staged.display()
+            );
+        }
+        self.outside.reread();
     }
 
     fn signed_in(&self) -> bool {
@@ -672,6 +742,9 @@ impl<O: Outside> Worker<O> {
             },
             None => Ok(()),
         };
+        if let Some(staged) = self.staging() {
+            let _ = fs::remove_dir_all(staged);
+        }
 
         self.outside.reread();
         self.set(self.account.state.clone(), None);
@@ -1152,6 +1225,9 @@ mod tests {
 
         // the tokens whose syncs fail, as offline
         failing: Vec<String>,
+
+        // the keyring refuses to store, as when its prompt is dismissed
+        refusing: bool,
         revoked: Vec<String>,
         published: Vec<Account>,
     }
@@ -1185,7 +1261,12 @@ mod tests {
                 let _ = gate.recv();
             }
 
-            self.fake().keyring = Some(credentials.clone());
+            let mut fake = self.fake();
+            if fake.refusing {
+                return Err(String::from("the keyring was not unlocked"));
+            }
+
+            fake.keyring = Some(credentials.clone());
             Ok(())
         }
 
@@ -1407,6 +1488,46 @@ mod tests {
             }
         );
         assert!(!dir.join("events/a.ics").exists());
+        assert!(!dir.join("events.previous").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sign_in_the_keyring_refuses_leaves_the_last_account_as_it_was() {
+        let dir = scratch("refused");
+        let shared = Shared::default();
+        shared.fake().keyring = Some(credentials("a"));
+        let _ = fs::create_dir_all(dir.join("state"));
+        let _ = fs::write(dir.join("state/marker"), "");
+        shared.sign_in.store(1, Ordering::Relaxed);
+
+        let (send, running) = worker(&shared, &dir);
+        let synced = loop {
+            let synced = shared
+                .fake()
+                .published
+                .iter()
+                .find_map(|account| account.synced);
+            if let Some(synced) = synced {
+                break synced;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        shared.fake().refusing = true;
+        let kept = exchanged(&send, 1, "b");
+        assert_eq!(
+            kept.recv_timeout(Duration::from_secs(2)),
+            Ok(Err(String::from("the keyring was not unlocked")))
+        );
+        let account = ended(send, running);
+
+        assert_eq!(shared.fake().keyring, Some(credentials("a")));
+        assert!(dir.join("events/a.ics").exists());
+        assert!(!dir.join("events.previous").exists());
+        assert_eq!(account.synced, Some(synced));
+        assert_eq!(account.state, State::SignedIn);
 
         let _ = fs::remove_dir_all(&dir);
     }
