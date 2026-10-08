@@ -51,6 +51,9 @@ const DISMISS: &str = include_str!("icons/dismiss.svg");
 const BACK: &str = include_str!("icons/back.svg");
 const FORWARD: &str = include_str!("icons/forward.svg");
 const LOCK: &str = include_str!("icons/lock.svg");
+const POWER: &str = include_str!("icons/power.svg");
+const RESTART: &str = include_str!("icons/restart.svg");
+const LOG_OUT: &str = include_str!("icons/log-out.svg");
 const CHECK: &str = include_str!("icons/check.svg");
 const CLIPBOARD: &str = include_str!("icons/clipboard.svg");
 const TEXT: &str = include_str!("icons/text.svg");
@@ -116,8 +119,13 @@ pub(crate) enum Icon {
     Back,
     Forward,
 
-    // a network that takes a password
+    // a network that takes a password, and locking the session
     Lock,
+
+    // the session's menu and countdown, and powering off; sleep is `Moon`
+    Power,
+    Restart,
+    LogOut,
 
     // the one chosen of a list, like the default device
     Check,
@@ -240,6 +248,9 @@ impl Icon {
             Icon::Back => &[BACK],
             Icon::Forward => &[FORWARD],
             Icon::Lock => &[LOCK],
+            Icon::Power => &[POWER],
+            Icon::Restart => &[RESTART],
+            Icon::LogOut => &[LOG_OUT],
             Icon::Check => &[CHECK],
             Icon::Clipboard => &[CLIPBOARD],
             Icon::Text => &[TEXT],
@@ -292,7 +303,7 @@ fn content(svg: &'static str) -> &'static str {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 40] = [
+    const ALL: [Icon; 43] = [
         Icon::Speaker(0),
         Icon::Speaker(30),
         Icon::Speaker(80),
@@ -322,6 +333,9 @@ mod tests {
         Icon::Back,
         Icon::Forward,
         Icon::Lock,
+        Icon::Power,
+        Icon::Restart,
+        Icon::LogOut,
         Icon::Check,
         Icon::Clipboard,
         Icon::Text,
@@ -411,8 +425,8 @@ mod tests {
             assert_eq!(drawn(), written);
         }
 
-        // one svg per drawing and ink, not per size: 38 drawings, each plain and crossed
-        assert_eq!(written, 76);
+        // one svg per drawing and ink, not per size: 41 drawings, each plain and crossed
+        assert_eq!(written, 82);
 
         for (path, _) in &first {
             assert!(path.exists(), "{}", path.display());

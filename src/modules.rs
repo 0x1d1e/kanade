@@ -11,13 +11,14 @@ use std::thread;
 use amane::{App, Apps, Service};
 
 use crate::cli::{Call, Verb};
+use crate::island::activity::{Ending, Leave};
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, launch, media,
-    network, niri, notifications, osd, pipewire, power, privacy, recording, sleep, system, timer,
-    tray, wake, wallpaper, weather,
+    network, niri, notifications, osd, pipewire, power, privacy, recording, session, sleep, system,
+    timer, tray, wake, wallpaper, weather,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings, shadow, supervise,
@@ -911,6 +912,37 @@ pub const ALL: &[Module] = &[
             app.lock(lock::view)
         },
     },
+    /*
+     * the Session Surface and `kanade session`: lock, by the lock Module, then sleep, restart,
+     * power off and log out by logind, the last three after a countdown that cancels
+     */
+    Module {
+        name: "session",
+        requires: &[CORE],
+        optional: &["lock"],
+        warns: None,
+        needs: &[Need {
+            on: Provider::SystemService("org.freedesktop.login1"),
+            without: "no sleep, restart, power off or log out",
+        }],
+        settings: &[],
+        verbs: &[Verb {
+            name: "session",
+            usage: || String::from("session menu|suspend|reboot|poweroff|logout"),
+            parse: |arguments| match arguments {
+                ["menu"] => Ok(Call::Island(Command::Open(Surface::Session))),
+                ["suspend"] => Ok(Call::Session(Leave::Sleep)),
+                ["reboot"] => Ok(Call::Session(Leave::Ending(Ending::Restart))),
+                ["poweroff"] => Ok(Call::Session(Leave::Ending(Ending::PowerOff))),
+                ["logout"] => Ok(Call::Session(Leave::Ending(Ending::LogOut))),
+                _ => Err(Unparsed::Usage),
+            },
+        }],
+        start: |app| {
+            session::spawn();
+            app
+        },
+    },
     // the Settings window, which writes only the settings file
     Module {
         name: "settings",
@@ -943,7 +975,7 @@ pub const ALL: &[Module] = &[
 ];
 
 // each Surface the island opens, with the Module that draws it
-const SURFACES: [(Surface, &str); 8] = [
+const SURFACES: [(Surface, &str); 9] = [
     (Surface::Media, "media"),
     (Surface::Notifications, "notification-surface"),
     (Surface::Controls, "controls"),
@@ -952,6 +984,7 @@ const SURFACES: [(Surface, &str); 8] = [
     (Surface::Clipboard, "clipboard-surface"),
     (Surface::Calendar, "calendar-surface"),
     (Surface::Weather, "weather-surface"),
+    (Surface::Session, "session"),
 ];
 
 // the Surfaces whose Module is off, which the island never opens

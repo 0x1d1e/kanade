@@ -11,8 +11,8 @@ use crate::clock;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Awake, Charge, Clip, Countdown, Detail, Device, Kind, Priority, Shot, Toast,
-    Track, Volume, Workspace,
+    Action, Activity, Awake, Charge, Clip, Countdown, Detail, Device, Kind, Leave, Leaving,
+    Priority, Shot, Toast, Track, Volume, Workspace,
 };
 use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::geometry::{self, Rect, Shape};
@@ -21,7 +21,7 @@ use crate::island::satellites::{Mark, Satellites};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::shadow::{self, ShadowStyle};
-use crate::sources::{caffeine, capture, timer};
+use crate::sources::{caffeine, capture, session, timer};
 use crate::surfaces;
 use crate::theme::{self, ThemeRoles};
 
@@ -148,6 +148,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
                 return;
             }
 
+            if modules::on("session") && surfaces::session::key(&pressed, key) {
+                return;
+            }
+
             if key == Key::Escape {
                 collapse(&pressed);
 
@@ -218,6 +222,10 @@ fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
+        Detail::Session(Leaving::Counting { countdown, .. }) => label(
+            format!("{}s", session::left(countdown, now)),
+            theme::ISLAND.on_surface,
+        ),
         _ => label(
             abbreviation(activity.kind()).to_owned(),
             theme::ISLAND.on_surface,
@@ -260,6 +268,7 @@ fn abbreviation(kind: Kind) -> &'static str {
         Kind::Screenshot => "Sc",
         Kind::Recording => "Rec",
         Kind::Caffeine => "Cf",
+        Kind::Session => "Ss",
     }
 }
 
@@ -355,6 +364,11 @@ fn surface(
         Surface::Clipboard => Some(surfaces::clipboard::surface(monitor, island.visit())),
         Surface::Calendar => Some(surfaces::calendar::surface(monitor, island.visit())),
         Surface::Weather => Some(surfaces::weather::surface(monitor)),
+        Surface::Session => Some(surfaces::session::surface(
+            open,
+            island.visit(),
+            island.held(monitor),
+        )),
     }
 }
 
@@ -411,6 +425,11 @@ fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle {
 
     match activity.detail() {
         Detail::Timer(_) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Session(Leaving::Counting { end, .. }) => {
+            row.push(Box::new(
+                surfaces::session::icon(Leave::Ending(*end)).draw(14.0),
+            ));
+        }
         Detail::Recording(_) => row.push(Box::new(Icon::Capture.on(14.0, theme::SEMANTIC.capture))),
         Detail::Battery(charge) => row.push(Box::new(battery_icon(
             16.0,
@@ -475,6 +494,11 @@ fn small_form(
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 
             caffeine(presentation, awake, actions)
+        }
+        (presentation, Some(Detail::Session(leaving))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            self::session(presentation, leaving, actions, now)
         }
         _ => None,
     }
@@ -558,6 +582,49 @@ fn caffeine(presentation: Presentation, awake: &Awake, actions: &[Action]) -> Op
             actions,
             subject,
             act: caffeine::act,
+        },
+    )
+}
+
+// what counts down, then how long is left, or why it was refused
+fn session(
+    presentation: Presentation,
+    leaving: &Leaving,
+    actions: &[Action],
+    now: Instant,
+) -> Option<Rectangle> {
+    let (leave, title, line, subject) = match leaving {
+        Leaving::Counting {
+            end,
+            countdown,
+            serial,
+        } => (
+            Leave::Ending(*end),
+            format!(
+                "{} in {} s",
+                session::doing(*end),
+                session::left(countdown, now)
+            ),
+            "Unless cancelled",
+            serial.as_str(),
+        ),
+        Leaving::Failed { leave, why, serial } => (
+            *leave,
+            format!("{} failed", surfaces::session::name(*leave)),
+            why.as_str(),
+            serial.as_str(),
+        ),
+    };
+
+    titled(
+        presentation,
+        Lead::Mark(surfaces::session::icon(leave), theme::ISLAND.on_surface),
+        &title,
+        line,
+        Pills {
+            actions,
+            subject,
+            act: session::act,
         },
     )
 }

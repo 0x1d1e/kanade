@@ -291,30 +291,38 @@ pub fn pam() -> Option<PathBuf> {
 /*
  * the logind session niri locks, as its object path, or empty when logind names none. niri sets
  * `LockedHint` on its `XDG_SESSION_ID`, which niri-session hands the unit; without one, `AUTO`.
- * Found once, at start
+ * Found once logind names one, so a logind not yet answering is asked again
  */
-fn session() -> &'static str {
+pub fn session() -> &'static str {
     static SESSION: OnceLock<String> = OnceLock::new();
 
-    SESSION.get_or_init(|| {
-        let bus = Bus::system();
-        let id = env::var("XDG_SESSION_ID").unwrap_or_else(|_| {
-            let id = bus.property(LOGIND, AUTO, "org.freedesktop.login1.Session", "Id");
-            id.text().to_owned()
-        });
-        if id.is_empty() {
-            return String::new();
-        }
+    if let Some(session) = SESSION.get() {
+        return session;
+    }
 
-        let path = bus.call(
-            LOGIND,
-            "/org/freedesktop/login1",
-            "org.freedesktop.login1.Manager",
-            "GetSession",
-            &[Argument::from(id)],
-        );
-        path.text().to_owned()
-    })
+    let bus = Bus::system();
+    let id = env::var("XDG_SESSION_ID").unwrap_or_else(|_| {
+        let id = bus.property(LOGIND, AUTO, "org.freedesktop.login1.Session", "Id");
+        id.text().to_owned()
+    });
+    if id.is_empty() {
+        return "";
+    }
+
+    let path = bus.call(
+        LOGIND,
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+        "GetSession",
+        &[Argument::from(id)],
+    );
+    let path = path.text();
+
+    if path.is_empty() {
+        return "";
+    }
+
+    SESSION.get_or_init(|| path.to_owned())
 }
 
 /*
@@ -343,11 +351,13 @@ fn locked(session: &str) -> Option<bool> {
  * session gets out
  */
 pub fn relock() {
-    if session().is_empty() {
+    let session = session();
+
+    if session.is_empty() {
         eprintln!("kanade: logind names no session, so a crash while locked is not locked again");
     }
 
-    if locked(session()) == Some(true) {
+    if locked(session) == Some(true) {
         eprintln!("kanade: the session is locked, locking it again");
         if pam().is_none() {
             eprintln!("kanade: no PAM service {PAM}, so no password will unlock");

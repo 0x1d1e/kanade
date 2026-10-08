@@ -12,6 +12,7 @@ Status: accepted (design, roadmap 9 Shell essentials). Replaces "Extend Amane fi
 | StatusNotifierItem host | `tray` (#134) | no tray. `Bus` can call, read and set properties, own a name, serve methods, match and emit signals, but a served method does not learn its caller |
 | Clipboard history | `clipboard` (#136) | none |
 | Idle inhibit | `caffeine` (#141) | none. `Bus` drops UNIX fds, so it cannot hold the fd logind `Inhibit` returns |
+| Suspend, reboot, power off, log out | `session` (#156) | `Bus` calls logind but answers a refusal, like polkit's, with nothing, so the island cannot say why. zbus, as for the tray |
 
 Amane is third party (ADR 0004). A change there lands on its schedule, and Kanade moves the pin only deliberately, so "extend Amane first" leaves each of these Modules waiting. ADRs 0003 and 0004 already worked around Amane case by case with `pw-dump`, `pactl`, `udevadm` and `dbus-monitor`. This ADR makes that the rule.
 
@@ -49,7 +50,7 @@ When a later pin of Amane gains a capability, Kanade may drop its adapter in tha
 ## Consequences
 
 - `docs/design.md` Runtime + dependencies points here instead of "Extend Amane first".
-- #132, #134, #136 and #141 build adapters under this ADR.
+- #132, #134, #136, #141 and #156 build adapters under this ADR.
 - `wpctl` (WirePlumber), `wl-paste` and `wl-copy` (wl-clipboard) and `systemd-inhibit` (systemd) become runtime tools, each a required backend or an optional capability of its Module, listed by `kanade doctor`.
 - More child processes: followers blocked on a read while idle, holders idle until their state ends.
 - Kanade owns more protocol knowledge (SNI, PipeWire graph, clipboard MIME types) than a fuller Amane would ask of it.
