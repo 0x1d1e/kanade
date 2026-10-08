@@ -76,7 +76,7 @@ Rules:
 - `weather` network-backed; no polling when disabled; bounded refresh when enabled.
 - module toggle requires restart while Amane window registration is startup-only.
 
-`notifications` owns bus/state/history; UI separate. `windows` owns normalized niri running-window/app state. Dock never consumes raw niri objects.
+`notifications` owns bus/state/history; UI separate. `windows` owns normalized niri running-window/app state; `app_id` ↔ `.desktop` matching + overrides: [ADR 0014](adr/0014-running-apps-from-desktop-entries.md). Dock never consumes raw niri objects.
 
 ## Island + Arbiter
 
@@ -161,7 +161,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Later
 
-- **Dock**: pinned + running unpinned + indicator; click launch/focus; recents later; `.desktop` override map.
+- **Dock**: pinned + running unpinned + indicator; click launch/focus; recents later; `.desktop` override map (`windows.apps`, ADR 0014).
 - **Wallpaper**: Kanade selects; awww renders.
 - **Lock**: `ext-session-lock` + PAM; no notification content.
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
@@ -322,7 +322,6 @@ Need design before commitment:
 ## Open
 
 - Track/test privacy Overlay stacking + input passthrough.
-- Define Dock `app_id` ↔ `.desktop` matching + override shape.
 - Define Google Calendar account adapter/auth/storage.
 - Define clipboard sensitive-content policy before persistence.
 - Run lock crash proof; split on failure.
