@@ -72,6 +72,9 @@ pub struct Config {
 
     // the Modules turned off, each once
     pub off: Vec<&'static str>,
+
+    // `windows.apps`: an app id to the `.desktop` file id its windows belong to (ADR 0014)
+    pub apps: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -88,6 +91,7 @@ impl Default for Config {
             palette: None,
             clock: Hours::default(),
             off: Vec::new(),
+            apps: BTreeMap::new(),
         }
     }
 }
@@ -176,6 +180,35 @@ pub const ISLAND: &[Setting] = &[
         },
     },
 ];
+
+pub const WINDOWS: &[Setting] = &[Setting {
+    key: "windows.apps",
+
+    // merged over the layers below by app id; the `.desktop` may be left off
+    set: |config, value, _| {
+        let table = value
+            .as_table()
+            .ok_or("expected a table of app id = \"desktop file id\"")?;
+        let mut apps = BTreeMap::new();
+
+        for (app_id, id) in table {
+            let id = id
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| format!("{app_id}: expected a \"desktop file id\""))?;
+
+            let id = match id.strip_suffix(".desktop") {
+                Some(_) => id.to_owned(),
+                None => format!("{id}.desktop"),
+            };
+
+            apps.insert(app_id.clone(), id);
+        }
+
+        config.apps.extend(apps);
+        Ok(())
+    },
+}];
 
 fn millis(value: &Value) -> Result<Duration, String> {
     let ms = value.as_integer().ok_or("expected milliseconds")?;
@@ -664,6 +697,7 @@ mod tests {
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
                 off: vec!["media"],
+                apps: BTreeMap::new(),
             }
         );
         assert!(config.off("media"));
@@ -755,6 +789,44 @@ battery = false
                 (15, "unknown module modules.weather"),
                 (16, "modules.media: expected true or false"),
             ])
+        );
+    }
+
+    // a later file overrides an app id below it, and keeps the others
+    #[test]
+    fn app_overrides_merge_by_app_id() {
+        let first = "[windows.apps]\ncode = \"code-oss\"\nsteam_app_1 = \"game.desktop\"";
+        let second = "windows.apps.code = \"com.visualstudio.code.desktop\"\nwindows.apps.zed = \"dev.zed.Zed\"";
+        let third = "[windows.apps]\nok = \"ok\"\nbad = 2";
+
+        let (config, problems) = layers(&[first, second, third], MIGRATIONS);
+
+        assert_eq!(problems[..2], [vec![], vec![]]);
+        assert_eq!(
+            problems[2],
+            said(&[(1, "windows.apps: bad: expected a \"desktop file id\"")])
+        );
+        assert_eq!(
+            config.apps,
+            BTreeMap::from([
+                (
+                    String::from("code"),
+                    String::from("com.visualstudio.code.desktop")
+                ),
+                (String::from("steam_app_1"), String::from("game.desktop")),
+                (String::from("zed"), String::from("dev.zed.Zed.desktop")),
+            ])
+        );
+
+        // a bad one keeps all of its file's below
+        assert!(!config.apps.contains_key("ok"));
+
+        assert_eq!(
+            one("windows.apps = 1").1,
+            said(&[(
+                1,
+                "windows.apps: expected a table of app id = \"desktop file id\""
+            )])
         );
     }
 

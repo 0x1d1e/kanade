@@ -21,6 +21,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
+use crate::sources::windows;
 use crate::{modules, supervise, theme};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
@@ -93,6 +94,11 @@ pub fn reload() -> Outcome {
                 }
 
                 IslandService::write().retime(next.island);
+            }
+
+            // even unchanged, so a reload also finds the `.desktop` files installed since
+            if modules::on("windows") {
+                windows::rematch();
             }
 
             state.generation += 1;

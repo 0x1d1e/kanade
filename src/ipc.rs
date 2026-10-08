@@ -18,6 +18,7 @@ use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
+use crate::sources::windows::Windows;
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -105,6 +106,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("clipboard") {
         lines.push(Clipboard::read().status());
+    }
+    if modules::on("windows") {
+        lines.push(Windows::read().status());
     }
 
     lines.extend(supervise::status());

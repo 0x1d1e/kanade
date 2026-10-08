@@ -1,7 +1,8 @@
 //! Kanade's own niri EventStream (plan 3, 5.3): Amane's niri backend is private and tracks neither
 //! the overview nor casts. Hands the core a plain focused output and whether the overview is open,
 //! `workspace` the focused workspace, `privacy` whether anything captures the screen, and `capture`
-//! each screenshot niri saves. `ask` sends niri one request on a connection of its own.
+//! each screenshot niri saves, `windows` every window opened, closed or focused. `ask` sends niri
+//! one request on a connection of its own.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -14,6 +15,7 @@ use amane::Service;
 use super::capture;
 use super::json::Json;
 use super::privacy::Privacy;
+use super::windows::{self, Heard, Window, WindowId};
 use super::workspace;
 use crate::banners::Banners;
 use crate::island::activity::{Activity, Id, Workspace};
@@ -184,6 +186,55 @@ fn captured(event: &Json) -> Option<String> {
         .map(String::from)
 }
 
+// what a window event says; none for another event, and for those `windows` ignores, like layouts
+fn windowed(event: &Json) -> Option<Heard> {
+    if let Some(changed) = event.get("WindowsChanged") {
+        let windows = changed.get("windows").and_then(Json::as_array);
+
+        Some(Heard::All(
+            windows
+                .unwrap_or_default()
+                .iter()
+                .filter_map(window)
+                .collect(),
+        ))
+    } else if let Some(opened) = event.get("WindowOpenedOrChanged") {
+        opened.get("window").and_then(window).map(Heard::Opened)
+    } else if let Some(closed) = event.get("WindowClosed") {
+        closed
+            .get("id")
+            .and_then(Json::as_u64)
+            .map(|id| Heard::Closed(WindowId(id)))
+    } else if let Some(focus) = event.get("WindowFocusChanged") {
+        // a null id: no window has the focus
+        Some(Heard::Focused(
+            focus.get("id").and_then(Json::as_u64).map(WindowId),
+        ))
+    } else if let Some(urgency) = event.get("WindowUrgencyChanged") {
+        let id = urgency.get("id").and_then(Json::as_u64)?;
+        let urgent = urgency.get("urgent").and_then(Json::as_bool)?;
+
+        Some(Heard::Urgent(WindowId(id), urgent))
+    } else {
+        None
+    }
+}
+
+// one of niri's windows as `windows` keeps it; none without an id
+fn window(window: &Json) -> Option<Window> {
+    let flag = |key| window.get(key).and_then(Json::as_bool).unwrap_or(false);
+
+    Some(Window {
+        id: WindowId(window.get("id").and_then(Json::as_u64)?),
+        app_id: window
+            .get("app_id")
+            .and_then(Json::as_str)
+            .map(String::from),
+        focused: flag("is_focused"),
+        urgent: flag("is_urgent"),
+    })
+}
+
 // which Modules beside the core hear from niri; one that is off hears nothing
 #[derive(Debug, Clone, Copy)]
 pub struct Posts {
@@ -192,6 +243,7 @@ pub struct Posts {
     pub banners: bool,
     pub osd: bool,
     pub capture: bool,
+    pub windows: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -211,6 +263,11 @@ pub fn follow(posts: Posts) {
                     capture::captured(path);
                 }
             },
+            |heard| {
+                if posts.windows {
+                    windows::hear(heard);
+                }
+            },
         );
     });
 }
@@ -220,9 +277,10 @@ fn run(
     posted: &mut Seen,
     mut post: impl FnMut(&Seen, &Seen),
     mut shot: impl FnMut(String),
+    mut hear: impl FnMut(Heard),
 ) {
     let lost = match stream {
-        Ok(stream) => watch(stream, posted, &mut post, &mut shot),
+        Ok(stream) => watch(stream, posted, &mut post, &mut shot, &mut hear),
         Err(error) => error,
     };
 
@@ -233,6 +291,9 @@ fn run(
         post(posted, &Seen::default());
         *posted = Seen::default();
     }
+
+    // the windows niri had may be gone by the time it is back; it lists them again then
+    hear(Heard::Lost);
 }
 
 fn connect() -> io::Result<UnixStream> {
@@ -358,14 +419,16 @@ fn exchange(stream: UnixStream, request: &str, patience: Duration) -> io::Result
 }
 
 /*
- * follows niri until the stream ends, posting what changes as it was and is now, so the stream of
- * window events wakes nothing; returns why it ended
+ * follows niri until the stream ends, posting what changes as it was and is now, so an event that
+ * changes nothing the core follows wakes nothing; window events go to `hear`, which sorts out its
+ * own. Returns why it ended
  */
 fn watch(
     lines: impl BufRead,
     posted: &mut Seen,
     post: &mut impl FnMut(&Seen, &Seen),
     shot: &mut impl FnMut(String),
+    hear: &mut impl FnMut(Heard),
 ) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Niri::default();
@@ -392,6 +455,10 @@ fn watch(
 
         if let Some(path) = captured(&event) {
             shot(path);
+        }
+
+        if let Some(heard) = windowed(&event) {
+            hear(heard);
         }
 
         niri.apply(&event);
@@ -480,6 +547,7 @@ mod tests {
                 posts.push(seen.clone())
             },
             &mut |path| panic!("no screenshot was taken, yet {path}"),
+            &mut drop,
         );
 
         assert_eq!(posts.last().cloned().unwrap_or_default(), posted);
@@ -663,9 +731,81 @@ mod tests {
             &mut Seen::default(),
             &mut |_, _| {},
             &mut |path| shots.push(path),
+            &mut drop,
         );
 
         assert_eq!(shots, ["/home/k/Pictures/Screenshots/a.png", "/tmp/b.png"]);
+    }
+
+    // what `windows` hears of this stream
+    fn heard(lines: &[&str]) -> Vec<Heard> {
+        let text = [&[OK], lines].concat().join("\n");
+        let mut heard = Vec::new();
+
+        watch(
+            text.as_bytes(),
+            &mut Seen::default(),
+            &mut |_, _| {},
+            &mut drop,
+            &mut |told| heard.push(told),
+        );
+
+        heard
+    }
+
+    fn window(id: u64, app_id: Option<&str>, focused: bool, urgent: bool) -> Window {
+        Window {
+            id: WindowId(id),
+            app_id: app_id.map(String::from),
+            focused,
+            urgent,
+        }
+    }
+
+    #[test]
+    fn window_events_are_heard_as_windows() {
+        let heard = heard(&[
+            r#"{"WindowsChanged":{"windows":[{"id":1,"title":"~","app_id":"kitty","pid":7,"workspace_id":1,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{},"focus_timestamp":null},{"id":2,"title":null,"app_id":null,"pid":null,"workspace_id":null,"is_focused":false,"is_floating":true,"is_urgent":true}]}}"#,
+            r#"{"WindowOpenedOrChanged":{"window":{"id":3,"title":"a","app_id":"firefox","is_focused":true,"is_urgent":false}}}"#,
+            r#"{"WindowFocusChanged":{"id":1}}"#,
+            r#"{"WindowFocusChanged":{"id":null}}"#,
+            r#"{"WindowUrgencyChanged":{"id":3,"urgent":true}}"#,
+            r#"{"WindowClosed":{"id":3}}"#,
+            r#"{"WindowLayoutsChanged":{"changes":[]}}"#,
+            r#"{"WindowFocusTimestampChanged":{"id":1,"focus_timestamp":null}}"#,
+            r#"{"WindowOpenedOrChanged":{"window":{"title":"no id"}}}"#,
+            &overview(true),
+        ]);
+
+        assert_eq!(
+            heard,
+            [
+                Heard::All(vec![
+                    window(1, Some("kitty"), true, false),
+                    window(2, None, false, true),
+                ]),
+                Heard::Opened(window(3, Some("firefox"), true, false)),
+                Heard::Focused(Some(WindowId(1))),
+                Heard::Focused(None),
+                Heard::Urgent(WindowId(3), true),
+                Heard::Closed(WindowId(3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn losing_the_stream_forgets_the_windows() {
+        let mut heard = Vec::new();
+
+        run(
+            Err::<&[u8], _>(io::ErrorKind::NotFound.into()),
+            &mut Seen::default(),
+            |_, _| {},
+            drop,
+            |told| heard.push(told),
+        );
+
+        assert_eq!(heard, [Heard::Lost]);
     }
 
     fn cast(stream: u64) -> String {
@@ -740,6 +880,7 @@ mod tests {
             &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
             drop,
+            drop,
         );
 
         // nobody can say a cast still runs, so its capture goes too
@@ -754,11 +895,13 @@ mod tests {
             &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
             drop,
+            drop,
         );
         run(
             Ok(OK.as_bytes()),
             &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
+            drop,
             drop,
         );
 

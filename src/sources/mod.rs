@@ -24,4 +24,5 @@ pub mod timer;
 pub mod tray;
 pub mod wake;
 pub mod wifi;
+pub mod windows;
 pub mod workspace;

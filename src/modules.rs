@@ -130,14 +130,15 @@ pub const ALL: &[Module] = &[
             clock::spawn();
             shadow::prepare(shadow::ShadowStyle::island());
 
-            // Kanade's own niri stream, which `workspace`, `privacy`, `banners`, `osd` and `capture`
-            // also read when on
+            // Kanade's own niri stream, which `workspace`, `windows`, `privacy`, `banners`, `osd`
+            // and `capture` also read when on
             let posts = niri::Posts {
                 workspace: on("workspace"),
                 privacy: on("privacy"),
                 banners: on("banners"),
                 osd: on("osd"),
                 capture: on("capture"),
+                windows: on("windows"),
             };
             supervise::spawn("niri", move || niri::follow(posts));
 
@@ -153,6 +154,20 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        verbs: &[],
+        start: |app| app,
+    },
+    // the running apps for the Dock (ADR 0014), also read from the island's niri stream
+    Module {
+        name: "windows",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[Need {
+            on: Provider::Niri,
+            without: "no running windows",
+        }],
+        settings: config::WINDOWS,
         verbs: &[],
         start: |app| app,
     },

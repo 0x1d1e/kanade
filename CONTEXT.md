@@ -110,6 +110,12 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
 - **Avoid:** sticky, lock (lock is the screen locker)
 
+## Running app
+One app's open windows, as `windows` groups them for the Dock: those whose `app_id` matches one desktop entry (ADR 0014). Windows that match none group by `app_id`; a window without one stands alone.
+- **Invariant:** nothing of niri leaves `windows` but window ids.
+- **Invariant:** an override in `windows.apps` is final: one naming a missing entry leaves the app unmatched, never guessed.
+- **Avoid:** client, toplevel, task, program
+
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.
