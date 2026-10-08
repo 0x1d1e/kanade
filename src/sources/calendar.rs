@@ -9,11 +9,12 @@
 //! directory, each subdirectory of it and each file named on its own, or the nearest parent while
 //! one does not exist yet, so watching costs no idle wakeups.
 //!
-//! A view asks `occurrences` for the days it shows: recurrences, their exceptions and time zones
-//! come from calcard, each moment then becomes local time through `clock`. A rule is started again
-//! just before those days, so one begun long ago expands near them, not from its first occurrence,
-//! and a change to it and the occurrences after goes on from there. One that still runs to the
-//! limit near those days makes the result partial, which the agenda tells.
+//! The Calendar Surface asks `occurrences`, off its draw thread, for the days it shows:
+//! recurrences, their exceptions and time zones come from calcard, each moment then becomes local
+//! time through `clock`. A rule is started again just before those days, so one begun long ago
+//! expands near them, not from its first occurrence, and a change to it and the occurrences after
+//! goes on from there. One that still runs to the limit near those days makes the result partial,
+//! which the agenda tells.
 //! An occurrence keeps its absolute start and end for order and length; its local times are for
 //! showing, and read backwards across a change back from summer time.
 
@@ -67,6 +68,12 @@ const LIMIT: usize = 100_000;
 pub struct Calendars {
     // each read, so a view knows to ask again
     pub generation: u64,
+
+    /*
+     * changes on each read that finds files after none, or none after some, so a view never shows
+     * the events of files gone for those found after none
+     */
+    pub found: u64,
 
     // the `.ics` files found, read or not
     pub files: usize,
@@ -215,10 +222,37 @@ pub fn reread() {
         }
     }
 
+    store(found.files.len(), calendars);
+}
+
+// the calendars read from `files` files, as a new generation
+fn store(files: usize, calendars: Vec<ICalendar>) {
     let mut service = Calendars::write();
+
     service.generation += 1;
-    service.files = found.files.len();
+    if (service.files == 0) != (files == 0) {
+        service.found += 1;
+    }
+    service.files = files;
     service.calendars = calendars.into();
+}
+
+// the calendars, from `files`, each a name and its text, as a read of those files leaves them
+#[cfg(test)]
+pub fn read_as(files: &[(&str, &str)]) -> Calendars {
+    let calendars = files
+        .iter()
+        .flat_map(|(_, text)| parse(text).expect("a calendar"))
+        .flat_map(series)
+        .map(|mut calendar| {
+            assert!(counted(&mut calendar));
+            calendar
+        })
+        .collect();
+
+    store(files.len(), calendars);
+
+    Calendars::read().clone()
 }
 
 fn watch() -> io::Result<()> {

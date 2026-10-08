@@ -3,9 +3,12 @@
 //! or a keybind, so it holds the keyboard: the arrow keys move the chosen day, by a day or a week,
 //! `n` and `p` turn to the next and the previous month, Home or `t` goes back to today, and Tab
 //! moves the ring into the agenda, where Up and Down walk its events, and back. Weeks start on
-//! Monday (ADR 0015). It says when there are no calendars and when the day has no events.
+//! Monday (ADR 0015). It says when there are no calendars, when the day has no events, and while
+//! the month's events are expanded, which is off the draw thread.
 
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::mem;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 use std::time::Instant;
 
 use amane::{
@@ -224,6 +227,14 @@ impl Month {
         }
     }
 
+    // a month with no events yet
+    fn empty(start: NaiveDate) -> Self {
+        Month {
+            start,
+            ..Month::default()
+        }
+    }
+
     // the events on `day`, as indices into `events`; none on a day the month does not show
     fn on(&self, day: NaiveDate) -> &[usize] {
         usize::try_from((day - self.start).num_days())
@@ -233,27 +244,251 @@ impl Month {
     }
 }
 
-// the month the view last read, which it reads again only when the calendars or the month change
+/*
+ * the month last expanded for the Surface, written by the expansion's thread only, and which
+ * calendars and month it is of
+ */
 #[derive(Default)]
-struct Memo {
-    generation: u64,
+struct Expansion {
+    of: Option<Wanted>,
     month: Arc<Month>,
 }
 
-static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
-
-// the events of the six weeks the month shows from `start`
-fn month_of(calendars: &Calendars, start: NaiveDate) -> Arc<Month> {
-    let mut memo = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
-
-    if memo.generation != calendars.generation || memo.month.start != start {
-        let end = start + Days::new(7 * WEEKS as u64);
-
-        memo.month = Arc::new(Month::new(calendars.occurrences(start, end), start));
-        memo.generation = calendars.generation;
+impl Service for Expansion {
+    fn new() -> Self {
+        Expansion::default()
     }
 
-    Arc::clone(&memo.month)
+    fn listen() {}
+}
+
+// a month asked for: the calendars' generation, which run of reads, with files or without, they
+// are of, and where its grid starts
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Wanted {
+    generation: u64,
+    found: u64,
+    start: NaiveDate,
+}
+
+impl Wanted {
+    fn of(calendars: &Calendars, start: NaiveDate) -> Self {
+        Wanted {
+            generation: calendars.generation,
+            found: calendars.found,
+            start,
+        }
+    }
+
+    // whether `expanded` answers this: the same month, of these calendars or ones read since
+    fn met_by(self, expanded: Wanted) -> bool {
+        self.start == expanded.start && self.generation <= expanded.generation
+    }
+}
+
+/*
+ * the month last asked for, whether the thread expanding is running, and the months it could not
+ * expand, none older than the calendars last expanded. One thread at a time, which takes the
+ * latest asked once it is done, so a month turned past while it runs is never expanded
+ */
+struct Asked {
+    wanted: Option<Wanted>,
+    running: bool,
+    failed: Vec<Wanted>,
+}
+
+impl Asked {
+    // whether `wanted` could not be expanded, so is not tried again
+    fn failed(&self, wanted: Wanted) -> bool {
+        self.failed.iter().any(|&failed| wanted.met_by(failed))
+    }
+
+    // forgets the months that failed for calendars older than `read`, which may expand anew
+    fn forget_failed_before(&mut self, read: u64) {
+        self.failed.retain(|failed| failed.generation >= read);
+    }
+}
+
+/*
+ * while it is held only `Expansion` is taken, and `Expansion` is read only under it, so the
+ * expansion's write never waits on a view waiting for this
+ */
+static ASKED: Mutex<Asked> = Mutex::new(Asked {
+    wanted: None,
+    running: false,
+    failed: Vec::new(),
+});
+
+// why the Surface's month is not the one it asked for
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pending {
+    Loading,
+    Failed,
+}
+
+/*
+ * the month the Surface shows, without events while none of it is expanded, and why not the one
+ * asked for, when it says so
+ */
+struct Shown {
+    month: Arc<Month>,
+    pending: Option<Pending>,
+}
+
+/*
+ * the events of the six weeks the month shows from `start`, expanded off the draw thread, as a
+ * rule each second takes a limit's worth of work, too long for a frame. Files read again, edited,
+ * added or gone, keep the month shown until it is expanded anew, so a sync neither blanks it nor
+ * moves the ring; one that could not be expanded stays shown, saying so. Once none are found, the
+ * events of the files before never show again
+ */
+fn month_of(calendars: &Calendars, start: NaiveDate) -> Shown {
+    let wanted = Wanted::of(calendars, start);
+    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+    let held = {
+        let expansion = Expansion::read();
+
+        // asked for, so a month expanding meanwhile never replaces it
+        if expansion.of.is_some_and(|of| wanted.met_by(of)) {
+            asked.wanted = Some(wanted);
+
+            return Shown {
+                month: Arc::clone(&expansion.month),
+                pending: None,
+            };
+        }
+
+        // none to expand, so a thread only to free the month of files gone; asked for, so one
+        // expanding those never shows its month
+        if calendars.files == 0 && expansion.of.is_none_or(|of| of.found == wanted.found) {
+            asked.wanted = Some(wanted);
+
+            return Shown {
+                month: Arc::new(Month::empty(start)),
+                pending: None,
+            };
+        }
+
+        expansion
+            .of
+            .filter(|of| of.start == start && of.found == wanted.found)
+            .map(|_| Arc::clone(&expansion.month))
+    };
+    let shown = |pending| match held {
+        Some(month) if pending == Pending::Loading => Shown {
+            month,
+            pending: None,
+        },
+        Some(month) => Shown {
+            month,
+            pending: Some(pending),
+        },
+        None => Shown {
+            month: Arc::new(Month::empty(start)),
+            pending: Some(pending),
+        },
+    };
+
+    // asked for even when it failed, so the month expanding for one asked before never shows
+    asked.wanted = Some(wanted);
+
+    if asked.failed(wanted) {
+        return shown(Pending::Failed);
+    }
+
+    if !asked.running {
+        // not marked failed, so the next draw or key tries again
+        match thread::Builder::new()
+            .name("calendar-month".into())
+            .spawn(expand)
+        {
+            Ok(_) => asked.running = true,
+            Err(error) => {
+                eprintln!("kanade: cannot expand the calendar's month ({error})");
+                return shown(Pending::Failed);
+            }
+        }
+    }
+
+    shown(Pending::Loading)
+}
+
+/*
+ * expands the month last asked for, on its own thread, until the month shown answers what is
+ * asked: the latest month asked while it ran is expanded next, and a result no longer asked for
+ * never shows
+ */
+fn expand() {
+    // the month being expanded; a panic marks it failed and leaves another month to a new thread
+    struct Running(Option<Wanted>);
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+            asked.running = false;
+            if let Some(failed) = self.0 {
+                asked.forget_failed_before(failed.generation);
+                asked.failed.push(failed);
+            }
+
+            // a write redraws the view, to say so
+            drop(Expansion::write());
+        }
+    }
+
+    let mut running = Running(None);
+
+    loop {
+        let start = {
+            let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+            // one already expanded, as a view turning back to it finds, is not expanded again
+            let expanded = Expansion::read().of;
+
+            match asked.wanted {
+                Some(wanted)
+                    if !expanded.is_some_and(|expanded| wanted.met_by(expanded))
+                        && !asked.failed(wanted) =>
+                {
+                    wanted.start
+                }
+                // done under the lock, so a month asked for from now on starts a thread
+                _ => {
+                    asked.running = false;
+                    mem::forget(running);
+                    return;
+                }
+            }
+        };
+
+        let calendars = Calendars::read().clone();
+        let expanding = Wanted::of(&calendars, start);
+        running.0 = Some(expanding);
+
+        let end = start + Days::new(7 * WEEKS as u64);
+        let month = Arc::new(Month::new(calendars.occurrences(start, end), start));
+
+        // the month replaced is freed here, after the lock, not on the draw thread
+        let _replaced = publish(expanding, month);
+    }
+}
+
+// shows `month`, expanded as `expanding`, if it is still asked for, and gives back the one replaced
+fn publish(expanding: Wanted, month: Arc<Month>) -> Option<Arc<Month>> {
+    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+
+    if !asked.wanted.is_some_and(|wanted| wanted.met_by(expanding)) {
+        return None;
+    }
+
+    asked.forget_failed_before(expanding.generation);
+
+    let mut expansion = Expansion::write();
+    expansion.of = Some(expanding);
+
+    Some(mem::replace(&mut expansion.month, month))
 }
 
 // the Monday on or before the first of `day`'s month, where its grid starts
@@ -270,7 +505,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
     let start = grid_start(day);
-    let month = month_of(&calendars, start);
+    let Shown { month, pending } = month_of(&calendars, start);
     let browse = browse.bounded(month.on(day).len());
 
     let shape = geometry::EXPANDED_MAX;
@@ -296,7 +531,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             },
         ))
     } else {
-        Box::new(agenda(day, today, &month, &browse, account))
+        Box::new(agenda(day, today, &month, pending, &browse, account))
     };
 
     Rectangle::new()
@@ -457,17 +692,16 @@ fn cell(
 }
 
 /*
- * the chosen day's name, its events with the ring on one while it is in the agenda, and a count,
- * which says so when a rule ran to the limit and some are missing
- */
-/*
- * the day's events, ROWS at a time, with their count under them, and why Google's do not sync,
- * when they do not
+ * the chosen day's name, its events ROWS at a time with the ring on one while it is in the agenda,
+ * and their count under them, which says so when a rule ran to the limit and some are missing, and
+ * why Google's do not sync, when they do not. While the month is `pending`, it says so instead of
+ * no events, and the count says when the events shown could not be updated
  */
 fn agenda(
     day: NaiveDate,
     today: NaiveDate,
     month: &Month,
+    pending: Option<Pending>,
     browse: &Browse,
     account: Option<&str>,
 ) -> Column {
@@ -493,10 +727,11 @@ fn agenda(
                 .height(LIST)
                 .align_child(Center, Center)
                 .child(
-                    Text::new(if partial {
-                        "Some events not shown"
-                    } else {
-                        "No events"
+                    Text::new(match pending {
+                        Some(Pending::Loading) => "Loading events",
+                        Some(Pending::Failed) => "Events could not be read",
+                        None if partial => "Some events not shown",
+                        None => "No events",
                     })
                     .size(theme::text::BODY)
                     .color(theme::ISLAND.on_surface_variant)
@@ -544,6 +779,11 @@ fn agenda(
         format!("{count}, some not shown")
     } else {
         count
+    };
+    // the events of calendars since read again could not be expanded
+    let count = match pending {
+        Some(Pending::Failed) if !count.is_empty() => format!("{count}, not updated"),
+        _ => count,
     };
     let count = match account {
         Some(problem) if count.is_empty() => problem.to_owned(),
@@ -695,7 +935,8 @@ fn pressed(monitor: &str, key: Key) -> bool {
     let today = clock::today();
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
-    let count = month_of(&Calendars::read(), grid_start(day)).on(day).len();
+    let calendars = Calendars::read().clone();
+    let count = month_of(&calendars, grid_start(day)).month.on(day).len();
 
     let Some(browse) = browse.bounded(count).step(key, today, count) else {
         return false;
@@ -727,7 +968,8 @@ fn wheel(lines: f32) {
     let today = clock::today();
     let browse = Browse::read().of(visit);
     let day = browse.day(today);
-    let count = month_of(&Calendars::read(), grid_start(day)).on(day).len();
+    let calendars = Calendars::read().clone();
+    let count = month_of(&calendars, grid_start(day)).month.on(day).len();
     let browse = browse.bounded(count);
 
     let browse = if lines > 0.0 {
@@ -760,9 +1002,12 @@ fn set(browse: Browse) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use chrono::NaiveDateTime;
 
     use super::*;
+    use crate::sources::calendar;
 
     fn day(year: i32, month: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(year, month, day).unwrap()
@@ -952,6 +1197,221 @@ mod tests {
             when(&late, today),
             format!("{} \u{2013} {}", time(22), time(0))
         );
+    }
+
+    // the tests that use the calendars and the month expanded, which take turns
+    static SERVICES: Mutex<()> = Mutex::new(());
+
+    // calendar files, each a name and the title of its one event, today at four
+    fn read(files: &[(&str, &str)]) -> Calendars {
+        let texts: Vec<(&str, String)> = files
+            .iter()
+            .map(|&(name, title)| {
+                let event = format!(
+                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\n\
+                     UID:{title}@test\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261008T160000\r\n\
+                     DTEND:20261008T170000\r\nSUMMARY:{title}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+                );
+                (name, event)
+            })
+            .collect();
+        let texts: Vec<(&str, &str)> = texts
+            .iter()
+            .map(|(name, text)| (*name, text.as_str()))
+            .collect();
+
+        calendar::read_as(&texts)
+    }
+
+    fn titles(month: &Month) -> Vec<&str> {
+        month
+            .events
+            .occurrences
+            .iter()
+            .map(|event| event.title.as_str())
+            .collect()
+    }
+
+    fn pending(calendars: &Calendars, start: NaiveDate) -> Option<Pending> {
+        month_of(calendars, start).pending
+    }
+
+    // the month once expanded for `calendars`
+    fn expanded(calendars: &Calendars, start: NaiveDate) -> Arc<Month> {
+        shown_until_expanded(calendars, start)
+            .pop()
+            .expect("a month")
+    }
+
+    // each month shown for `calendars` until expanded, the expanded one last
+    fn shown_until_expanded(calendars: &Calendars, start: NaiveDate) -> Vec<Arc<Month>> {
+        let wanted = Wanted::of(calendars, start);
+        let mut months = Vec::new();
+
+        for _ in 0..5000 {
+            // first, so the month shown is the one expanded, not one held while it was
+            let expanded = Expansion::read().of == Some(wanted);
+            let shown = month_of(calendars, start);
+            months.push(shown.month);
+            match shown.pending {
+                None if expanded => return months,
+                None | Some(Pending::Loading) => thread::sleep(Duration::from_millis(1)),
+                Some(Pending::Failed) => panic!("{start} failed"),
+            }
+        }
+        panic!("{start} never expanded");
+    }
+
+    fn running() -> bool {
+        ASKED.lock().unwrap().running
+    }
+
+    // whether the thread expanding ends
+    fn ended() -> bool {
+        for _ in 0..5000 {
+            if !running() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
+    // the month asked for last shows once expanded, off the caller's thread, and the same files
+    // read again keep the month shown until then
+    #[test]
+    fn a_month_is_expanded_off_the_draw_thread() {
+        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
+        let (october, november, december) =
+            (grid_start(today()), day(2026, 10, 26), day(2026, 11, 30));
+        let files = [("a.ics", "Meeting")];
+
+        // after none, so no other test's month shows
+        read(&[]);
+        let calendars = read(&files);
+        assert_eq!(pending(&calendars, october), Some(Pending::Loading));
+        assert_eq!(titles(&expanded(&calendars, october)), ["Meeting"]);
+
+        // another month shows none of the last one's events while it is expanded
+        assert_eq!(pending(&calendars, november), Some(Pending::Loading));
+        assert_eq!(expanded(&calendars, november).start, november);
+
+        // read again, the same month shows on until it is expanded anew
+        let read_again = read(&files);
+        let shown = month_of(&read_again, november);
+        assert_eq!((shown.month.start, shown.pending), (november, None));
+        assert_eq!(expanded(&read_again, november).start, november);
+
+        // turned on while one is expanded, the month asked last shows, and the thread ends
+        assert!(pending(&read_again, december).is_some());
+        assert!(pending(&read_again, october).is_some());
+        assert_eq!(titles(&expanded(&read_again, october)), ["Meeting"]);
+        assert!(ended());
+
+        // a month no longer asked for never shows
+        let stale = Wanted::of(&read_again, december);
+        assert!(publish(stale, Arc::new(Month::empty(december))).is_none());
+        assert_eq!(Expansion::read().of, Some(Wanted::of(&read_again, october)));
+
+        // one that could not be expanded shows the last one, saying so, and is not tried again
+        let calendars = read(&files);
+        ASKED
+            .lock()
+            .unwrap()
+            .failed
+            .push(Wanted::of(&calendars, october));
+        let shown = month_of(&calendars, october);
+        assert_eq!(
+            (titles(&shown.month), shown.pending),
+            (vec!["Meeting"], Some(Pending::Failed))
+        );
+        assert!(!running());
+
+        // turned back to it while another month is expanded, that month never replaces it; the
+        // calendars held keep the thread from reading them until both were asked
+        let held = Calendars::write();
+        assert!(pending(&calendars, november).is_some());
+        assert_eq!(pending(&calendars, october), Some(Pending::Failed));
+        drop(held);
+        assert!(ended());
+        assert_eq!(Expansion::read().of, Some(Wanted::of(&read_again, october)));
+    }
+
+    // the events of files gone never show once none are found, not even while ones found since
+    // are expanded, and are freed off the caller's thread; a file added keeps the month shown.
+    // The calendars held keep the thread from expanding the new ones
+    #[test]
+    fn the_events_of_files_gone_never_show_after_none() {
+        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
+        let october = grid_start(today());
+        let shows_a = |month: &Arc<Month>| titles(month).contains(&"A");
+
+        // after none, so no other test's month shows
+        read(&[]);
+        let a = read(&[("a.ics", "A")]);
+        let month_a = expanded(&a, october);
+        assert_eq!(titles(&month_a), ["A"]);
+
+        let none = read(&[]);
+        assert!(!shows_a(&month_of(&none, october).month));
+
+        // an expansion of the files gone, still running, never shows
+        assert!(publish(Wanted::of(&a, october), month_a).is_none());
+
+        assert!(ended());
+        assert_eq!(Expansion::read().of, Some(Wanted::of(&none, october)));
+        assert!(titles(&Expansion::read().month).is_empty());
+
+        let b = read(&[("b.ics", "B")]);
+        let held = Calendars::write();
+        let shown = month_of(&b, october);
+        assert_eq!(
+            (titles(&shown.month), shown.pending),
+            (vec![], Some(Pending::Loading))
+        );
+        drop(held);
+        let months = shown_until_expanded(&b, october);
+        assert!(!months.iter().any(shows_a));
+        assert_eq!(titles(months.last().unwrap()), ["B"]);
+
+        // a file added, as a sync of one file per event does, is no other calendar
+        let more = read(&[("b.ics", "B"), ("c.ics", "C")]);
+        let held = Calendars::write();
+        let shown = month_of(&more, october);
+        assert_eq!((titles(&shown.month), shown.pending), (vec!["B"], None));
+        drop(held);
+        assert_eq!(titles(&expanded(&more, october)), ["B", "C"]);
+        assert!(ended());
+    }
+
+    // turned back to a month expanded while another is expanded, the month shows on, the other is
+    // never shown once expanded, and the thread ends without expanding the month again. The
+    // calendars held keep a new thread from expanding until the month was turned back to
+    #[test]
+    fn a_month_turned_back_to_shows_on() {
+        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
+        let (october, november) = (grid_start(today()), day(2026, 10, 26));
+
+        // after none, so no other test's month shows
+        read(&[]);
+        let calendars = read(&[("a.ics", "Meeting")]);
+        let month = expanded(&calendars, october);
+        assert!(ended());
+
+        let held = Calendars::write();
+        assert_eq!(pending(&calendars, november), Some(Pending::Loading));
+        let shown = month_of(&calendars, october);
+        assert!(Arc::ptr_eq(&shown.month, &month) && shown.pending.is_none());
+
+        // the other month, expanded now, never shows
+        let other = Wanted::of(&calendars, november);
+        assert!(publish(other, Arc::new(Month::empty(november))).is_none());
+        assert!(Arc::ptr_eq(&month_of(&calendars, october).month, &month));
+        drop(held);
+
+        assert!(ended());
+        assert_eq!(Expansion::read().of, Some(Wanted::of(&calendars, october)));
+        assert!(Arc::ptr_eq(&month_of(&calendars, october).month, &month));
     }
 
     // each day of the month holds the events that fall on it, in their order, whatever their
