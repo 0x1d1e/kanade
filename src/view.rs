@@ -269,7 +269,7 @@ fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
 
     Some(
         sized(Presentation::Rest).align_child(Center, Center).child(
-            Text::new(clock::now(config::get().on(monitor).clock))
+            Text::new(clock::now(config::on(monitor).clock))
                 .size(theme::text::LABEL)
                 .color(theme::ISLAND.on_surface)
                 .weight(theme::text::SEMIBOLD),

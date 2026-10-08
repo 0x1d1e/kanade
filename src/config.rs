@@ -6,7 +6,8 @@
 //!
 //! A key the registry marks per output may also be set in `[output."<name>"]`, for the monitor of
 //! that name only (#147). An output's value wins over the global one from any layer, as the more
-//! specific; output values layer like global ones. `Config::on` gives the config of one output.
+//! specific; output values layer like global ones. `config::on` gives the config in effect on one
+//! output, resolved once per config, so a view never builds one while drawing.
 //!
 //! A file may name the layout it is written in with `schema_version`; without one it is the v0.1
 //! layout, version 1. An older file is migrated in memory before it applies.
@@ -641,8 +642,32 @@ pub fn defaults() -> String {
         + "\n"
 }
 
+/*
+ * a config in effect, with each overridden output's config resolved once, so a view drawing a
+ * frame only looks one up
+ */
+struct Effect {
+    config: Arc<Config>,
+    outputs: BTreeMap<String, Arc<Config>>,
+}
+
+impl Effect {
+    fn new(config: Config) -> Self {
+        let outputs = config
+            .outputs
+            .keys()
+            .map(|name| (name.clone(), Arc::new(config.on(name).into_owned())))
+            .collect();
+
+        Effect {
+            config: Arc::new(config),
+            outputs,
+        }
+    }
+}
+
 // tests never read the user's files, so they see the defaults
-static CURRENT: LazyLock<RwLock<Arc<Config>>> = LazyLock::new(|| {
+static CURRENT: LazyLock<RwLock<Effect>> = LazyLock::new(|| {
     let config = if cfg!(test) {
         Config::default()
     } else {
@@ -656,7 +681,7 @@ static CURRENT: LazyLock<RwLock<Arc<Config>>> = LazyLock::new(|| {
         config
     };
 
-    RwLock::new(Arc::new(config))
+    RwLock::new(Effect::new(config))
 });
 
 // what the config read at start skipped; a config a reload applies skipped nothing
@@ -676,12 +701,20 @@ pub fn get() -> Arc<Config> {
     CURRENT
         .read()
         .unwrap_or_else(PoisonError::into_inner)
+        .config
         .clone()
+}
+
+// the config in effect on one output, its overrides over the global one, as `Config::on` gives it
+pub fn on(output: &str) -> Arc<Config> {
+    let effect = CURRENT.read().unwrap_or_else(PoisonError::into_inner);
+
+    effect.outputs.get(output).unwrap_or(&effect.config).clone()
 }
 
 // a reload's config replaces the one in effect (`crate::reload`)
 pub fn install(config: Config) {
-    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(config);
+    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Effect::new(config);
 }
 
 /*
@@ -1386,6 +1419,17 @@ HDMI-A-1 = "12h"
             one("output = 1").1,
             said(&[(1, "output: expected a table of outputs")])
         );
+    }
+
+    // each overridden output's config is resolved once, as `Config::on` gives it
+    #[test]
+    fn the_config_in_effect_resolves_each_output_once() {
+        let config = one("clock = \"12h\"\noutput.eDP-1.clock = \"24h\"").0;
+        let effect = Effect::new(config.clone());
+
+        assert_eq!(*effect.outputs["eDP-1"], *config.on("eDP-1"));
+        assert_eq!(effect.outputs.len(), 1);
+        assert_eq!(*effect.config, config);
     }
 
     #[test]
