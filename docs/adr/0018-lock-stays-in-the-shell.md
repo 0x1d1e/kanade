@@ -36,6 +36,7 @@ All three land in #154.
 
 ## Consequences
 
+- `LockedHint` is only for the restart: right after an unlock it may still say the last lock, so `kanade lock` waits on its own lock screen drawing instead (#196).
 - A crash while locked shows niri's red screen for about the restart delay (1 s here), then the lock screen. A password typed into the dead process is lost.
 - Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` warns about a unit that is not enabled or whose `MainPID` is not the shell it talks to.
 - A lock that crashes on every start hits the unit's start limit and stays on the red screen. Recovery, from another TTY (`Ctrl+Alt+F3`): first fix the cause and restart the unit (`kanade.service`, `dist/kanade.service`), which locks again and keeps the session:

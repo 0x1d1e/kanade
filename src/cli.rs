@@ -26,7 +26,7 @@ pub const HANDLER: &str = "kanade";
 
 // the words a call and its reply are made of; another number means a client and shell that may
 // misread each other
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 /*
  * the first word after `kanade`, with the arguments a Module owns; Modules may share a name, each
@@ -57,6 +57,7 @@ pub enum Call {
     Weather(weather::Request),
     Osd(osd::Asked),
     Lock,
+    LockStatus,
     Settings(Option<&'static str>),
     CloseSettings,
     Reload,
@@ -241,19 +242,16 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&wallpaper_status_call(), deadline)
             }))
         }
-        // the session the shell names, as the caller's own may be another, like a TTY's
-        (Call::Lock, Ok(Reply::Done(session))) if session.is_empty() => {
-            Ok(Reply::Unknown(String::from(
-                "the shell names no logind session to wait on; the session may still lock",
-            )))
-        }
-        (Call::Lock, Ok(Reply::Done(session))) => {
-            Ok(settle_lock(PATIENCE, |_| match lock::locked(&session) {
-                Some(true) => Ok(Reply::Done(String::from("locked"))),
-                Some(false) => Ok(Reply::Done(String::from("unlocked"))),
-                None => Err(format!("logind did not say whether {session} is locked")),
+        (Call::Lock, Ok(Reply::Done(text))) if let Some(request) = lock::requested(&text) => {
+            Ok(settle_lock(&request, PATIENCE, |deadline| {
+                call_until(&lock_status_call(), deadline)
             }))
         }
+        // a shell from before #196, or any answer naming no request to wait on
+        (Call::Lock, Ok(Reply::Done(_))) => Ok(Reply::Unknown(String::from(
+            "the shell names no lock request to wait on, as it is older than this kanade; restart \
+             it. The session may still lock",
+        ))),
         (_, reply) => reply,
     };
 
@@ -348,28 +346,38 @@ fn settle_recording(
 
 /*
  * the shell answers a lock at once, as Amane only asks niri for it (`lock::start`), so this waits
- * until niri says the session is locked; right after an unlock that may still be the last lock
- * (#196), so it is not yet enough for a suspend hook. niri says so whichever locker holds it, and
- * when it refuses because another one does, that one has locked. `ask` says `locked` or
- * `unlocked`
+ * until a lock screen drew for `request`, which no lock before it can do, and the lock still holds
+ * when asked (#196)
  */
-fn settle_lock(patience: Duration, ask: impl FnMut(Instant) -> Result<Reply, String>) -> Reply {
+fn settle_lock(
+    request: &lock::Request,
+    patience: Duration,
+    ask: impl FnMut(Instant) -> Result<Reply, String>,
+) -> Reply {
     settle(
         patience,
         || {
             format!(
-                "niri did not lock the session within {}s: logind's LockedHint stayed false. niri \
-                 refuses while its VT is not shown, and sets the hint only when run as a session \
-                 (niri-session)",
+                "no lock screen showed within {}s: niri refuses while its VT is not shown or \
+                 another locker holds the session, and a password typed meanwhile may have \
+                 unlocked it; the session may still lock",
                 patience.as_secs()
             )
         },
         "the session may still lock",
         ask,
-        |status| match status {
-            "locked" => Some(Settling::Settled(Reply::Done(String::new()))),
-            "unlocked" => Some(Settling::Waiting),
-            _ => None,
+        |status| {
+            Some(match lock::settled(status, request)? {
+                lock::Settled::Locked => Settling::Settled(Reply::Done(String::new())),
+                lock::Settled::Waiting => Settling::Waiting,
+                lock::Settled::Unlocked => Settling::Settled(Reply::Unknown(String::from(
+                    "a password typed on the lock screen unlocks the session",
+                ))),
+                lock::Settled::Lost => Settling::Settled(Reply::Unknown(String::from(
+                    "the shell restarted, which lost the lock it was asked for; the session may \
+                     still lock",
+                ))),
+            })
         },
     )
 }
@@ -461,6 +469,10 @@ fn caffeine_status_call() -> Vec<String> {
         .into_iter()
         .map(String::from)
         .collect()
+}
+
+fn lock_status_call() -> Vec<String> {
+    ["lock", "status"].into_iter().map(String::from).collect()
 }
 
 // how often `settle` asks
@@ -654,6 +666,7 @@ mod tests {
             Ok(("osd", Call::Osd(osd::Asked::Brightness)))
         );
         assert_eq!(parsed(&["lock"]), Ok(("lock", Call::Lock)));
+        assert_eq!(parsed(&["lock", "status"]), Ok(("lock", Call::LockStatus)));
         // their Surface is its own Module, which shares the verb
         assert_eq!(
             parsed(&["notifications", "open"]),
@@ -814,7 +827,7 @@ capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
-lock
+lock [status]
 settings open [<page>]|close
   <page>: island|windows|dock|wallpaper|calendar|weather
 config defaults
@@ -1021,26 +1034,52 @@ help",
     }
 
     #[test]
-    fn a_lock_settles_once_niri_has_locked() {
+    fn a_lock_settles_once_a_lock_screen_drew_for_it_while_it_holds() {
         let patience = Duration::from_millis(300);
-        let mut said = ["unlocked", "unlocked", "locked"].iter();
+        let request = lock::requested("requested #3 in 42.7").unwrap();
+        let settled = |said: &'static [&'static str]| {
+            let mut said = said.iter();
 
+            settle_lock(&request, patience, move |_| {
+                Ok(Reply::Done(String::from(*said.next().unwrap())))
+            })
+        };
+
+        // the last lock screen, drawn for #2, is no lock for #3
         assert_eq!(
-            settle_lock(patience, |_| Ok(Reply::Done(String::from(
-                *said.next().unwrap()
-            )))),
+            settled(&[
+                "instance 42.7\nrequested #3\nconfirmed #2",
+                "instance 42.7\nrequested #3\nconfirmed #3"
+            ]),
             Reply::Done(String::new())
         );
+        // #196: drawn for #3, then a password typed before the client asked
+        assert!(matches!(
+            settled(&[
+                "instance 42.7\nrequested #3\nchecking a password",
+                "instance 42.7\nrequested #3\nunlocked"
+            ]),
+            Reply::Unknown(why) if why.contains("unlocks the session")
+        ));
+        // a restarted shell's #3
+        assert!(matches!(
+            settled(&["instance 42.9\nrequested #3\nconfirmed #3"]),
+            Reply::Unknown(why) if why.contains("restarted")
+        ));
 
-        let reply = settle_lock(patience, |_| Ok(Reply::Done(String::from("unlocked"))));
+        let reply = settle_lock(&request, patience, |_| {
+            Ok(Reply::Done(String::from(
+                "instance 42.7\nrequested #3\nconfirmed #2",
+            )))
+        });
         assert!(
-            matches!(&reply, Reply::Unknown(why) if why.contains("did not lock the session")),
+            matches!(&reply, Reply::Unknown(why) if why.contains("no lock screen showed")),
             "{reply:?}"
         );
 
-        let reply = settle_lock(patience, |_| Err(String::from("logind did not say")));
+        let reply = settle_lock(&request, patience, |_| Err(String::from("no shell")));
         assert!(
-            matches!(&reply, Reply::Unknown(why) if why.starts_with("logind did not say")),
+            matches!(&reply, Reply::Unknown(why) if why.starts_with("no shell")),
             "{reply:?}"
         );
     }

@@ -156,7 +156,7 @@ fn shell() -> (Check, Option<u32>) {
     }
 }
 
-// from the first line of its status, like "kanade 0.1.0, protocol 3, pid 1234"
+// from the first line of its status, like "kanade 0.1.0, protocol 4, pid 1234"
 fn shell_status(first: &str) -> (Check, Option<u32>) {
     let said = first
         .rsplit_once(", protocol ")
@@ -646,18 +646,18 @@ version = \"9.9.9\"
     #[test]
     fn a_shell_on_another_protocol_fails() {
         assert_eq!(
-            shell_status("kanade 0.1.0, protocol 3, pid 1234"),
+            shell_status("kanade 0.1.0, protocol 4, pid 1234"),
             (
                 Check::ok(String::from(
-                    "shell: running kanade 0.1.0, protocol 3, pid 1234"
+                    "shell: running kanade 0.1.0, protocol 4, pid 1234"
                 )),
                 Some(1234)
             )
         );
 
         for first in [
-            "kanade 0.1.0, protocol 2, pid 1234",
-            "kanade 0.1.0, protocol 2",
+            "kanade 0.1.0, protocol 3, pid 1234",
+            "kanade 0.1.0, protocol 3",
             "something else",
             "",
         ] {

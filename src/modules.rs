@@ -883,9 +883,10 @@ pub const ALL: &[Module] = &[
         settings: &[],
         verbs: &[Verb {
             name: "lock",
-            usage: || String::from("lock"),
+            usage: || String::from("lock [status]"),
             parse: |arguments| match arguments {
                 [] => Ok(Call::Lock),
+                ["status"] => Ok(Call::LockStatus),
                 _ => Err(Unparsed::Usage),
             },
         }],
