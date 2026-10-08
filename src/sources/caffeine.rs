@@ -41,10 +41,10 @@ pub const OFF: &str = "off";
 const SAID: usize = 4;
 
 // what the inhibitor's command says once it runs, so once logind gave systemd-inhibit the inhibitor
-const HELD: &str = "held";
+pub const HELD: &str = "held";
 
 // how long a holder may take to say it, after which it is given up on; logind answers in milliseconds
-const READY: Duration = Duration::from_secs(2);
+pub const READY: Duration = Duration::from_secs(2);
 
 static CAFFEINE: Mutex<Caffeine> = Mutex::new(Caffeine {
     holding: None,
@@ -469,14 +469,14 @@ fn follow(
  * whether `held` says `HELD` before it closes: systemd-inhibit runs its command, which says it,
  * only once logind gave it the inhibitor
  */
-fn holds(held: Option<impl Read>) -> bool {
+pub fn holds(held: Option<impl Read>) -> bool {
     held.into_iter()
         .flat_map(|held| BufReader::new(held).lines().map_while(Result::ok))
         .any(|line| line == HELD)
 }
 
 // the last `SAID` lines `said` prints until it closes
-fn last_lines(said: Option<impl Read>) -> VecDeque<String> {
+pub fn last_lines(said: Option<impl Read>) -> VecDeque<String> {
     let mut last = VecDeque::with_capacity(SAID);
 
     for line in said
@@ -494,7 +494,7 @@ fn last_lines(said: Option<impl Read>) -> VecDeque<String> {
 }
 
 // whether a holder that exited as `status`, having printed `said`, ran out as asked, or why not
-fn ended(status: io::Result<ExitStatus>, said: VecDeque<String>) -> Result<(), String> {
+pub fn ended(status: io::Result<ExitStatus>, said: VecDeque<String>) -> Result<(), String> {
     match status {
         Ok(status) if status.success() => Ok(()),
         Ok(status) if status.code() == Some(NOT_FOUND) => Err(format!("{INHIBIT} not found")),

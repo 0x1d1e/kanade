@@ -16,8 +16,8 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
     audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, launch, media,
-    network, niri, notifications, osd, pipewire, power, privacy, recording, system, timer, tray,
-    wake, wallpaper, weather,
+    network, niri, notifications, osd, pipewire, power, privacy, recording, sleep, system, timer,
+    tray, wake, wallpaper, weather,
 };
 use crate::{
     banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings, shadow, supervise,
@@ -877,7 +877,15 @@ pub const ALL: &[Module] = &[
             },
             Need {
                 on: Provider::SystemService("org.freedesktop.login1"),
-                without: "no locking again after a crash while locked",
+                without: "no locking again after a crash while locked, nor before sleep",
+            },
+            Need {
+                on: Provider::Program(caffeine::INHIBIT),
+                without: "sleep may come before the lock",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "sleep may come before the lock",
             },
         ],
         settings: &[],
@@ -892,6 +900,7 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             lock::relock();
+            sleep::spawn();
             app.lock(lock::view)
         },
     },
