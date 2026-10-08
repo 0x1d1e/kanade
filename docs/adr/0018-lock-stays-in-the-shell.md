@@ -2,6 +2,8 @@
 
 Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split.
 
+Validated: crash recovery in a temporary test build, not committed. Pending #154: the production lock, the user unit and re-locking at start, and the gate again on the production binary and installed unit.
+
 ## Context
 
 The lock shows on Amane's `Lock` (`App::lock`, ext-session-lock, PAM through the `login` service), inside the shell process. A shell crash must not unlock the session or leave it unrecoverable. The gate: kill Kanade while locked → compositor stays locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split the lock into its own process.
@@ -20,8 +22,10 @@ niri sets `LockedHint` itself on lock and unlock, so it outlives the shell. `/or
 
 ## Decision
 
+All three land in #154.
+
 - **Lock stays in the shell process.** No `kanade-lock`.
-- **Kanade runs as a systemd user unit** with `Restart=on-failure`. #154 ships the unit and the README starts Kanade through it instead of `spawn-at-startup`.
+- **Kanade runs as a systemd user unit** tied to niri's graphical session, with `Restart=on-failure` and a start limit. The README starts Kanade through it instead of `spawn-at-startup`.
 - **At start, a true `LockedHint` locks at once.** The `lock` Module reads it from `session/auto` before `App::run` and calls `Lock::start()`; a lock the compositor refuses is left alone. No Kanade-owned marker: niri's hint is the only state, and it cannot go stale on a Kanade crash.
 
 ## Alternatives
@@ -34,6 +38,18 @@ niri sets `LockedHint` itself on lock and unlock, so it outlives the shell. `/or
 
 - A crash while locked shows niri's red screen for about the restart delay (1 s here), then the lock screen. A password typed into the dead process is lost.
 - Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` should name a shell not run by the unit (#154).
-- A lock that crashes on every start hits systemd's start limit (5 in 10 s by default) and stays on the red screen. Recovery is a TTY: `loginctl terminate-session`.
-- A hung, not crashed, shell is not covered: niri sees a live client. `WatchdogSec` can cover it later if hangs happen.
+- A lock that crashes on every start hits the unit's start limit and stays on the red screen. Recovery, from another TTY (`Ctrl+Alt+F3`): first fix the cause and restart the unit (#154 names it; `kanade.service` here), which locks again and keeps the session:
+
+  ```sh
+  systemctl --user reset-failed kanade.service
+  systemctl --user restart kanade.service
+  ```
+
+  Only if that fails, end the graphical session. This closes every app in it, and unsaved work is lost:
+
+  ```sh
+  loginctl list-sessions
+  loginctl terminate-session <niri-session-id>
+  ```
+- A hung, not crashed, shell is not covered: niri sees a live client. `WatchdogSec` stays deferred: it needs real heartbeats from the shell (`sd_notify WATCHDOG=1` from a loop that proves it is alive), not only the unit setting.
 - Only `SIGKILL` was measured; a panic or abort exits the same way for `Restart=on-failure`.

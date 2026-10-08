@@ -163,7 +163,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 - **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144).
 - **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
-- **Lock**: `ext-session-lock` + PAM; no notification content; re-locks at start on a true `LockedHint` ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
+- **Lock**: `ext-session-lock` + PAM; no notification content; to re-lock at start on a true `LockedHint` under a systemd user unit (#154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
 - **Settings**: floated normal window; schema-backed overrides; page per Module; per-output keys file-only (done, #148).
 
@@ -282,7 +282,7 @@ Nested-niri E2E checks idle/morph each release.
 - privacy Overlay fullscreen-visible while module enabled.
 - lock shows no notification content.
 
-Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 (#153): lock stays in the shell, Kanade runs as a systemd user unit, a true logind `LockedHint` at start re-locks ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
+Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. The production lock, user unit and re-lock on a true logind `LockedHint` land in #154, which repeats the gate ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 
 ## Explicit non-goals
 
