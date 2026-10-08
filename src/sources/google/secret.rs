@@ -27,6 +27,8 @@ const LABEL: &str = "Kanade: Google Calendar";
 // the OAuth client the user made in Google Cloud, and the account's grant to it
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
+    // this sign-in, random, so the synced events can say whose they are without a secret
+    pub account: String,
     pub client_id: String,
     pub client_secret: String,
     pub refresh_token: String,
@@ -36,6 +38,7 @@ pub struct Credentials {
 impl fmt::Debug for Credentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Credentials")
+            .field("account", &self.account)
             .field("client_id", &self.client_id)
             .finish_non_exhaustive()
     }
@@ -44,6 +47,7 @@ impl fmt::Debug for Credentials {
 impl Credentials {
     fn encode(&self) -> Vec<u8> {
         json!({
+            "account": self.account,
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "refresh_token": self.refresh_token,
@@ -57,6 +61,7 @@ impl Credentials {
         let field = |name: &str| Some(value.get(name)?.as_str()?.to_owned());
 
         Some(Credentials {
+            account: field("account")?,
             client_id: field("client_id")?,
             client_secret: field("client_secret")?,
             refresh_token: field("refresh_token")?,
@@ -236,6 +241,7 @@ mod tests {
 
     fn credentials() -> Credentials {
         Credentials {
+            account: String::from("a1"),
             client_id: String::from("id.apps.googleusercontent.com"),
             client_secret: String::from("GOCSPX-secret"),
             refresh_token: String::from("1//refresh"),

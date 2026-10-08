@@ -19,8 +19,10 @@
 //! Only the sync thread (`Worker`) keeps, uses and forgets the credentials, one message at a time,
 //! so a sign-out never interleaves with a sign-in being kept, even one waiting on a keyring prompt.
 //! A sign-in's thread only brings the code back and trades it; one cancelled by then is not kept.
-//! A sign-in kept is a new account to Kanade: the events synced before wait aside while it is
-//! kept, and go only once it is; one not kept puts them back.
+//! A sign-in kept is a new account to Kanade: the events synced before go once it is kept, and
+//! one not kept leaves the account it would have replaced as it was. The synced events name the
+//! sign-in they are for (`OWNER`), so after a crash between keeping one and deleting the events,
+//! the next start drops events synced for another.
 
 mod ics;
 mod oauth;
@@ -81,6 +83,10 @@ const PATIENCE: Duration = Duration::from_secs(60);
 // under the cache directory, the synced events, and under the state directory, the marker
 const DIRECTORY: &str = "kanade/google-calendar";
 const MARKER: &str = "kanade/google-calendar";
+
+// in the synced events' directory, the sign-in they were synced for (`Credentials::account`); not
+// `.ics`, so the calendar never reads it
+const OWNER: &str = ".account";
 
 // why the account does not sync
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,6 +543,14 @@ impl<O: Outside> Worker<O> {
         if self.signed_in() {
             self.load();
         }
+
+        // a sign-in kept just before a crash may have left the last account's events
+        if let Some(kept) = &self.kept
+            && !self.owns(&kept.account)
+            && self.forget_events().is_ok()
+        {
+            eprintln!("kanade: google-calendar: deleted events synced for another sign-in");
+        }
         let mut due = self.kept.is_some();
 
         loop {
@@ -573,8 +587,11 @@ impl<O: Outside> Worker<O> {
                 }
                 self.kept.is_some()
             }
+            // an account already kept stays as it stands until another is kept in its place
             Message::Signing => {
-                self.set(State::SigningIn, self.account.synced);
+                if self.kept.is_none() {
+                    self.set(State::SigningIn, self.account.synced);
+                }
                 false
             }
             Message::Exchanged {
@@ -589,8 +606,9 @@ impl<O: Outside> Worker<O> {
                 let _ = kept.send(keeping);
                 due
             }
+            // the browser's tab already said why
             Message::Unsigned(sign_in, why) => {
-                if sign_in == self.outside.sign_in() {
+                if sign_in == self.outside.sign_in() && self.kept.is_none() {
                     self.set(State::Failed(Problem::SignIn(why)), self.account.synced);
                 }
                 false
@@ -604,28 +622,26 @@ impl<O: Outside> Worker<O> {
 
     /*
      * keeps a sign-in's credentials, unless a newer sign-in or a sign-out came since, which then
-     * runs after this. They may be another account's, so the events synced before move aside
-     * first, out of the calendar's places, and go only once these are kept; a sign-in not kept
-     * leaves the account it replaces as it was, its events and when they synced
+     * runs after this. They may be another account's: the events synced before stay until these
+     * are kept, then go. A sign-in not kept leaves the account it replaces as it was; a crash
+     * between keeping and deleting leaves the events to `run`, which drops a cache synced for
+     * another account
      */
     fn keep(&mut self, sign_in: u64, credentials: Credentials) -> Result<(), String> {
         if sign_in != self.outside.sign_in() {
             return Err(String::from("cancelled"));
         }
 
-        let staged = self.stage()?;
-        if let Err(why) = self.install(&credentials) {
-            self.unstage(staged.as_deref());
-            return Err(why);
+        self.outside.store(&credentials)?;
+        if let Err(error) = self.mark() {
+            self.restore();
+            return Err(format!("cannot keep the sign-in: {error}"));
         }
 
-        if let Some(staged) = staged
-            && let Err(error) = fs::remove_dir_all(&staged)
-        {
-            eprintln!(
-                "kanade: google-calendar: cannot delete {}: {error}",
-                staged.display()
-            );
+        // they would show under these credentials, so the last account comes back instead
+        if let Err(why) = self.forget_events() {
+            self.restore();
+            return Err(format!("cannot delete the events synced before: {why}"));
         }
 
         self.kept = Some(credentials);
@@ -635,66 +651,31 @@ impl<O: Outside> Worker<O> {
         Ok(())
     }
 
-    /*
-     * the credentials and the marker; when the marker cannot be written, the keyring goes back to
-     * what it kept before
-     */
-    fn install(&self, credentials: &Credentials) -> Result<(), String> {
-        self.outside.store(credentials)?;
-
-        if let Err(error) = self.mark() {
-            let _ = match &self.kept {
-                Some(kept) => self.outside.store(kept),
-                None => self.outside.delete(),
-            };
-            return Err(format!("cannot keep the sign-in: {error}"));
-        }
-
-        Ok(())
-    }
-
-    // where the events synced before wait while a sign-in is kept, beside their directory
-    fn staging(&self) -> Option<PathBuf> {
-        let mut staging = self.places.events.clone()?.into_os_string();
-        staging.push(".previous");
-
-        Some(staging.into())
-    }
-
-    // the events synced before, moved aside; none when there are none
-    fn stage(&self) -> Result<Option<PathBuf>, String> {
-        let (Some(dir), Some(staged)) = (&self.places.events, self.staging()) else {
-            return Ok(None);
-        };
-
-        // one a crash left
-        let _ = fs::remove_dir_all(&staged);
-
-        match fs::rename(dir, &staged) {
-            Ok(()) => {
-                self.outside.reread();
-                Ok(Some(staged))
+    // the keyring and the marker back as they were before a sign-in that was not kept
+    fn restore(&self) {
+        let restored = match &self.kept {
+            Some(kept) => self.outside.store(kept),
+            None => {
+                self.unmark();
+                self.outside.delete()
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!(
-                "cannot move the events synced before aside: {error}"
-            )),
+        };
+
+        if let Err(why) = restored {
+            eprintln!("kanade: google-calendar: the keyring was not put back: {why}");
         }
     }
 
-    // the events synced before, back where the calendar reads them
-    fn unstage(&self, staged: Option<&Path>) {
-        let (Some(staged), Some(dir)) = (staged, &self.places.events) else {
-            return;
+    // whether the events on disk were synced for `account`; none on disk is no other's
+    fn owns(&self, account: &str) -> bool {
+        let Some(dir) = &self.places.events else {
+            return true;
         };
 
-        if let Err(error) = fs::rename(staged, dir) {
-            eprintln!(
-                "kanade: google-calendar: cannot put back {}: {error}",
-                staged.display()
-            );
+        match fs::read_to_string(dir.join(OWNER)) {
+            Ok(owner) => owner == account,
+            Err(error) => error.kind() == io::ErrorKind::NotFound && !dir.exists(),
         }
-        self.outside.reread();
     }
 
     fn signed_in(&self) -> bool {
@@ -727,8 +708,8 @@ impl<O: Outside> Worker<O> {
         }
     }
 
-    // deletes the synced events, and when they were synced; why not when they could not be
-    fn forget_events(&mut self) -> Result<(), String> {
+    // deletes the synced events; why not when they could not be
+    fn forget_events(&self) -> Result<(), String> {
         let gone = match &self.places.events {
             Some(dir) => match fs::remove_dir_all(dir) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => {
@@ -742,12 +723,8 @@ impl<O: Outside> Worker<O> {
             },
             None => Ok(()),
         };
-        if let Some(staged) = self.staging() {
-            let _ = fs::remove_dir_all(staged);
-        }
 
         self.outside.reread();
-        self.set(self.account.state.clone(), None);
 
         gone
     }
@@ -793,7 +770,8 @@ impl<O: Outside> Worker<O> {
                     .as_ref()
                     .ok_or_else(|| Problem::Disk(String::from("no home directory")))?;
 
-                write(dir, &files).map_err(|error| Problem::Disk(error.to_string()))
+                write(dir, &credentials.account, &files)
+                    .map_err(|error| Problem::Disk(error.to_string()))
             });
 
         match synced {
@@ -1030,14 +1008,26 @@ fn refusal(status: u16, body: &Value) -> Problem {
 }
 
 /*
- * the synced files in `dir`, each written only when it changed, and the files of calendars no
- * longer shown deleted; true when it made `dir`. Only Kanade reads them, as they hold the user's
- * events
+ * the synced files in `dir`, for the sign-in `account`, each written only when it changed, and
+ * the files of calendars no longer shown deleted; true when it made `dir`. Only Kanade reads them,
+ * as they hold the user's events
  */
-fn write(dir: &Path, files: &[(String, String)]) -> io::Result<bool> {
+fn write(dir: &Path, account: &str, files: &[(String, String)]) -> io::Result<bool> {
     let created = !dir.is_dir();
 
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+
+    // first, so the events are never another sign-in's than it names
+    let owner = dir.join(OWNER);
+    if fs::read_to_string(&owner).ok().as_deref() != Some(account) {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(owner)?
+            .write_all(account.as_bytes())?;
+    }
 
     for (name, text) in files {
         let path = dir.join(name);
@@ -1160,7 +1150,7 @@ mod tests {
         };
 
         assert!(matches!(
-            write(&dir, &files(&[("a.ics", "A"), ("b.ics", "B")])),
+            write(&dir, "a", &files(&[("a.ics", "A"), ("b.ics", "B")])),
             Ok(true)
         ));
         let mode = fs::metadata(&dir).map(|metadata| {
@@ -1172,7 +1162,10 @@ mod tests {
         let written = fs::metadata(dir.join("a.ics")).and_then(|metadata| metadata.modified());
         fs::write(dir.join("notes.txt"), "mine").ok();
 
-        assert!(matches!(write(&dir, &files(&[("a.ics", "A")])), Ok(false)));
+        assert!(matches!(
+            write(&dir, "a", &files(&[("a.ics", "A")])),
+            Ok(false)
+        ));
         assert_eq!(
             fs::metadata(dir.join("a.ics"))
                 .and_then(|metadata| metadata.modified())
@@ -1181,6 +1174,10 @@ mod tests {
         );
         assert!(!dir.join("b.ics").exists());
         assert!(dir.join("notes.txt").exists());
+        assert_eq!(
+            fs::read_to_string(dir.join(OWNER)).ok().as_deref(),
+            Some("a")
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1210,8 +1207,10 @@ mod tests {
         dir
     }
 
+    // a sign-in named by its token, which is its account too
     fn credentials(token: &str) -> Credentials {
         Credentials {
+            account: String::from(token),
             client_id: String::from("id"),
             client_secret: String::from("secret"),
             refresh_token: String::from(token),
@@ -1492,7 +1491,6 @@ mod tests {
             }
         );
         assert!(!dir.join("events/a.ics").exists());
-        assert!(!dir.join("events.previous").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1519,19 +1517,38 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         };
 
+        // the whole sign-in to b, as `sign_in` and `signing_in` send it
         shared.fake().refusing = true;
+        let _ = send.send(Message::Signing);
         let kept = exchanged(&send, 1, "b");
+        let refused = kept.recv_timeout(Duration::from_secs(2));
         assert_eq!(
-            kept.recv_timeout(Duration::from_secs(2)),
+            refused,
             Ok(Err(String::from("the keyring was not unlocked")))
         );
+        let _ = send.send(Message::Unsigned(
+            1,
+            String::from("the keyring was not unlocked"),
+        ));
         let account = ended(send, running);
 
         assert_eq!(shared.fake().keyring, Some(credentials("a")));
         assert!(dir.join("events/a.ics").exists());
-        assert!(!dir.join("events.previous").exists());
-        assert_eq!(account.synced, Some(synced));
-        assert_eq!(account.state, State::SignedIn);
+        assert_eq!(
+            account,
+            Account {
+                state: State::SignedIn,
+                synced: Some(synced),
+            }
+        );
+        // a's state throughout, never b's sign-in
+        assert!(
+            shared
+                .fake()
+                .published
+                .iter()
+                .all(|account| account.state == State::SignedIn)
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1573,6 +1590,72 @@ mod tests {
         assert!(matches!(account.state, State::Failed(Problem::Offline(_))));
         assert!(account.synced.is_some());
         assert!(dir.join("events/a.ics").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // events synced for `owner` in `dir`, and a sign-in kept for `kept`, as a crash left them
+    fn crashed(dir: &Path, owner: &str, kept: &str) -> Shared {
+        let shared = Shared::default();
+        {
+            let mut fake = shared.fake();
+            fake.keyring = Some(credentials(kept));
+            // Google is not there at the restart
+            fake.failing = vec![String::from("a"), String::from("b")];
+        }
+        let _ = fs::create_dir_all(dir.join("state"));
+        let _ = fs::write(dir.join("state/marker"), "");
+        let _ = fs::create_dir_all(dir.join("events"));
+        let _ = fs::write(dir.join("events/a.ics"), "A");
+        let _ = fs::write(dir.join("events").join(OWNER), owner);
+
+        shared
+    }
+
+    #[test]
+    fn a_crash_before_a_sign_in_is_kept_leaves_the_accounts_events() {
+        let dir = scratch("crash-before");
+        let shared = crashed(&dir, "a", "a");
+
+        let (send, running) = worker(&shared, &dir);
+        let account = ended(send, running);
+
+        assert!(dir.join("events/a.ics").exists());
+        assert!(matches!(account.state, State::Failed(Problem::Offline(_))));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_crash_after_a_sign_in_is_kept_drops_the_last_accounts_events() {
+        let dir = scratch("crash-after");
+        let shared = crashed(&dir, "a", "b");
+
+        let (send, running) = worker(&shared, &dir);
+        let account = ended(send, running);
+
+        assert!(!dir.join("events/a.ics").exists());
+        assert_eq!(
+            account,
+            Account {
+                state: State::Failed(Problem::Offline(String::from("timeout"))),
+                synced: None,
+            }
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn events_that_name_no_sign_in_are_dropped() {
+        let dir = scratch("unowned");
+        let shared = crashed(&dir, "a", "a");
+        let _ = fs::remove_file(dir.join("events").join(OWNER));
+
+        let (send, running) = worker(&shared, &dir);
+        ended(send, running);
+
+        assert!(!dir.join("events/a.ics").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

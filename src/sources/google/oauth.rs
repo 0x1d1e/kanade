@@ -197,6 +197,7 @@ impl Pending {
             .ok_or("Google gave no refresh token")?;
 
         Ok(Credentials {
+            account: random(16)?,
             client_id: self.client.id.clone(),
             client_secret: self.client.secret.clone(),
             refresh_token: refresh_token.to_owned(),
