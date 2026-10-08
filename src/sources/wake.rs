@@ -243,12 +243,17 @@ pub fn act_within(program: &str, args: &[&str], limit: Duration) -> Result<(), F
 
     let mut child = acting(program, args).map_err(cannot)?;
 
-    // each pipe read to its end on a thread of its own, which ends once the program exits
+    // each pipe read to its end on a thread of its own, which ends once the program closes it
     let (sent, received) = mpsc::channel();
     let stdout = child.stdout.take().map(|pipe| read(pipe, 0, sent.clone()));
     let stderr = child.stderr.take().map(|pipe| read(pipe, 1, sent));
 
     let deadline = Instant::now() + limit;
+    let overran = |mut child: Child| {
+        drop(child.kill());
+        drop(child.wait());
+        Err(Failed::Overran(limit))
+    };
     let mut printed = [Vec::new(), Vec::new()];
 
     for _ in stdout.iter().chain(&stderr) {
@@ -256,18 +261,31 @@ pub fn act_within(program: &str, args: &[&str], limit: Duration) -> Result<(), F
 
         match received.recv_timeout(left) {
             Ok((pipe, bytes)) => printed[pipe] = bytes,
-            Err(RecvTimeoutError::Timeout) => {
-                drop(child.kill());
-                drop(child.wait());
-                return Err(Failed::Overran(limit));
-            }
+            Err(RecvTimeoutError::Timeout) => return overran(child),
             // a reader that panicked, so the pipe is left unread
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
 
+    /*
+     * it closes its pipes as it exits, so this is checked once or twice; one that closed them and
+     * runs on is checked every `EXITING` until the deadline
+     */
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(cannot)? {
+            break status;
+        }
+
+        let left = deadline.saturating_duration_since(Instant::now());
+
+        if left.is_zero() {
+            return overran(child);
+        }
+
+        thread::sleep(left.min(EXITING));
+    };
+
     let [stdout, stderr] = printed;
-    let status = child.wait().map_err(cannot)?;
 
     acted(
         program,
@@ -281,6 +299,9 @@ pub fn act_within(program: &str, args: &[&str], limit: Duration) -> Result<(), F
     .map(drop)
     .map_err(Failed::Said)
 }
+
+// how often an action that closed its pipes is checked for having exited
+const EXITING: Duration = Duration::from_millis(10);
 
 // reads `pipe` to its end on a thread of its own, then sends it with its number
 fn read(mut pipe: impl io::Read + Send + 'static, number: usize, sent: Sender<(usize, Vec<u8>)>) {
@@ -601,6 +622,28 @@ mod tests {
         settle: Duration::from_secs(1),
         idle: None,
     };
+
+    #[test]
+    fn an_action_that_overruns_is_killed_even_with_its_pipes_closed() {
+        let limit = Duration::from_millis(300);
+
+        for script in ["sleep 60", "exec >/dev/null 2>&1; sleep 60"] {
+            let started = Instant::now();
+
+            assert_eq!(
+                act_within("sh", &["-c", script], limit),
+                Err(Failed::Overran(limit)),
+                "{script}"
+            );
+            assert!(started.elapsed() < Duration::from_secs(5), "{script}");
+        }
+
+        assert_eq!(act_within("sh", &["-c", "exec >&-; exit 0"], limit), Ok(()));
+        assert!(matches!(
+            act_within("sh", &["-c", "exit 3"], limit),
+            Err(Failed::Said(_))
+        ));
+    }
 
     #[test]
     fn retries_back_off_until_a_run_is_healthy() {
