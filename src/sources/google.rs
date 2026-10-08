@@ -761,7 +761,11 @@ impl<O: Outside> Worker<O> {
     // the credentials the keyring keeps, which may prompt to unlock it
     fn load(&mut self) {
         match self.outside.load() {
-            Ok(Some(credentials)) => self.kept = Some(credentials),
+            // signed in before the first sync ends, so `sync` and `status` know it meanwhile
+            Ok(Some(credentials)) => {
+                self.kept = Some(credentials);
+                self.set(State::SignedIn, self.account.synced);
+            }
             // gone from the keyring, as by a keyring app: signed out
             Ok(None) => {
                 self.unmark();
@@ -1541,6 +1545,18 @@ mod tests {
         let _ = fs::write(dir.join("state/marker"), "");
 
         let (send, running) = worker(&shared, &dir);
+        while shared.fake().published.is_empty() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        // signed in from the load, before the first sync ends
+        assert_eq!(
+            shared.fake().published[0],
+            Account {
+                state: State::SignedIn,
+                synced: None
+            }
+        );
+
         // after the first sync, Google goes away
         while !shared
             .fake()
