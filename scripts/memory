@@ -5,7 +5,7 @@
 set -e
 kanade=${KANADE:-target/debug/kanade}
 unit=${UNIT:-kanade-memory}
-awk=$(dirname "$0")/memory.awk
+awk=$(dirname "$(readlink -f "$0")")/memory.awk
 
 # anything else would run the whole scenario, which locks the session
 case $1 in
@@ -42,6 +42,7 @@ sample() {
 
     {
         echo "$rollup" | sed 's/^/rollup /'
+        # memory.awk reads these prefixed lines, and tests/memory.rs feeds it the same format;
         # a descriptor or helper that went away since is skipped
         for file in $dri; do
             sed "s|^|fdinfo $file |" "$file" 2> /dev/null || true

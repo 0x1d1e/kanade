@@ -33,14 +33,18 @@ fn fdinfo(fd: u32, pdev: Option<&str>, client: u32, mib: u32) -> String {
     });
     format!(
         "fdinfo {file} drm-driver:\ti915\n{pdev}fdinfo {file} drm-client-id:\t{client}\n\
-         fdinfo {file} drm-total-system0:\t{mib} MiB\nfdinfo {file} drm-resident-system0:\t{mib} MiB\n\
-         fdinfo {file} drm-total-cycles-rcs:\t999999\n"
+         fdinfo {file} drm-total-system0:\t{kib} KiB\nfdinfo {file} drm-resident-system0:\t{kib} KiB\n\
+         fdinfo {file} drm-total-stolen-system0:\t0\nfdinfo {file} drm-total-cycles-rcs:\t999999\n",
+        kib = mib * 1024
     )
 }
 
 #[test]
 fn one_client_on_several_descriptors_counts_once() {
-    let sample = fdinfo(3, Some("0000:00:02.0"), 7, 100) + &fdinfo(4, Some("0000:00:02.0"), 7, 100);
+    // and a descriptor without DRM stats, as the NVIDIA driver's
+    let sample = fdinfo(3, Some("0000:00:02.0"), 7, 100)
+        + &fdinfo(4, Some("0000:00:02.0"), 7, 100)
+        + "fdinfo /proc/1/fdinfo/5 pos:\t0\n";
     assert_eq!(gpu(&sample), ("100.0".into(), "100.0".into()));
 }
 
