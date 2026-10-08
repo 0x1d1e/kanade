@@ -377,7 +377,8 @@ const DEPTH: usize = 8;
 
 /*
  * every application entry in the dirs, in order: an id in an earlier dir hides the same id in a
- * later one, even when it is `Hidden`, which is how a user deletes a system entry
+ * later one, even when it is `Hidden`, which is how a user deletes a system entry. A file that
+ * cannot be read, or is no desktop entry, hides nothing, as the spec skips it
  */
 fn scan(dirs: &[PathBuf]) -> Vec<Entry> {
     let mut seen = HashSet::new();
@@ -393,16 +394,21 @@ fn scan(dirs: &[PathBuf]) -> Vec<Entry> {
                 continue;
             };
 
-            if !seen.insert(id.clone()) {
+            if seen.contains(&id) {
                 continue;
             }
 
-            if let Some(entry) = fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| read(id, &text))
-            {
-                entries.push(entry);
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+
+            match read(id.clone(), &text) {
+                Read::App(entry) => entries.push(entry),
+                Read::Other => {}
+                Read::Invalid => continue,
             }
+
+            seen.insert(id);
         }
     }
 
@@ -435,39 +441,95 @@ fn id(dir: &Path, path: &Path) -> Option<String> {
     Some(path.strip_prefix(dir).ok()?.to_str()?.replace('/', "-"))
 }
 
-// none for a file that is no application, or is `Hidden`, meaning deleted; `NoDisplay` still names its windows
-fn read(id: String, text: &str) -> Option<Entry> {
+// what a `.desktop` file is
+#[derive(Debug, PartialEq, Eq)]
+enum Read {
+    // an application; `NoDisplay` still names its windows
+    App(Entry),
+
+    // an entry, so it hides the same id in a later dir, but no app: `Hidden`, meaning deleted, or of
+    // another `Type`
+    Other,
+
+    // no desktop entry: no `[Desktop Entry]`, or no `Type` or `Name`
+    Invalid,
+}
+
+fn read(id: String, text: &str) -> Read {
     let mut fields = BTreeMap::new();
     let mut inside = false;
+    let mut group = false;
 
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             inside = line == "[Desktop Entry]";
+            group |= inside;
         } else if inside && let Some((key, value)) = line.split_once('=') {
             // the first wins, as the spec forbids a key twice
             fields.entry(key.trim()).or_insert(value.trim());
         }
     }
 
-    if fields.get("Type") != Some(&"Application") || fields.get("Hidden") == Some(&"true") {
-        return None;
-    }
-
     let field = |key| {
         fields
             .get(key)
             .filter(|value| !value.is_empty())
-            .map(|value| (*value).to_owned())
+            .map(|value| unescape(value))
     };
 
-    Some(Entry {
+    if !group {
+        return Read::Invalid;
+    }
+
+    // `Hidden` alone deletes, with no `Type` or `Name`
+    if fields.get("Hidden") == Some(&"true") {
+        return Read::Other;
+    }
+
+    let (Some(kind), Some(name)) = (field("Type"), field("Name")) else {
+        return Read::Invalid;
+    };
+
+    if kind != "Application" {
+        return Read::Other;
+    }
+
+    Read::App(Entry {
         desktop: DesktopEntry {
             id,
-            name: field("Name")?,
+            name,
             icon: field("Icon"),
         },
         wm_class: field("StartupWMClass"),
     })
+}
+
+// a string value as written, with the spec's escapes decoded; another escape stays as it is
+fn unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+
+    while let Some(char) = chars.next() {
+        if char != '\\' {
+            out.push(char);
+            continue;
+        }
+
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -646,7 +708,7 @@ StartupWMClass=other
 
         assert_eq!(
             read(String::from("org.gnome.Nautilus.desktop"), text),
-            Some(Entry {
+            Read::App(Entry {
                 desktop: DesktopEntry {
                     id: String::from("org.gnome.Nautilus.desktop"),
                     name: String::from("Files"),
@@ -657,37 +719,40 @@ StartupWMClass=other
         );
     }
 
+    // the spec's escapes in a string value: `\s`, `\n`, `\t`, `\r`, `\\`; any other stays as written
     #[test]
-    fn only_applications_that_are_not_hidden_are_entries() {
-        let app = |extra: &str| {
-            read(
-                String::from("a.desktop"),
-                &format!("[Desktop Entry]\nType=Application\nName=A\n{extra}"),
-            )
+    fn string_values_decode_their_escapes() {
+        let text = "[Desktop Entry]\nType=Application\nName=Foo\\sBar\\t\\\\s\\q\nIcon=foo\\\\bar\nStartupWMClass=a\\sb\\";
+        let Read::App(entry) = read(String::from("a.desktop"), text) else {
+            panic!("an app");
         };
 
-        assert!(app("").is_some());
-        assert!(app("NoDisplay=true").is_some());
-        assert!(app("Hidden=false").is_some());
-        assert_eq!(app("Hidden=true"), None);
-        assert_eq!(
-            read(
-                String::from("a.desktop"),
-                "[Desktop Entry]\nType=Link\nName=A"
-            ),
-            None
-        );
-        assert_eq!(
-            read(
-                String::from("a.desktop"),
-                "[Desktop Entry]\nType=Application"
-            ),
-            None
-        );
-        assert_eq!(
-            read(String::from("a.desktop"), "Type=Application\nName=A"),
-            None
-        );
+        assert_eq!(entry.desktop.name, "Foo Bar\t\\s\\q");
+        assert_eq!(entry.desktop.icon.as_deref(), Some("foo\\bar"));
+        assert_eq!(entry.wm_class.as_deref(), Some("a b\\"));
+    }
+
+    #[test]
+    fn only_applications_that_are_not_hidden_are_entries() {
+        let read = |text: &str| read(String::from("a.desktop"), text);
+        let app = |extra: &str| {
+            read(&format!(
+                "[Desktop Entry]\nType=Application\nName=A\n{extra}"
+            ))
+        };
+
+        assert!(matches!(app(""), Read::App(_)));
+        assert!(matches!(app("NoDisplay=true"), Read::App(_)));
+        assert!(matches!(app("Hidden=false"), Read::App(_)));
+        assert_eq!(app("Hidden=true"), Read::Other);
+        assert_eq!(read("[Desktop Entry]\nHidden=true"), Read::Other);
+        assert_eq!(read("[Desktop Entry]\nType=Link\nName=A"), Read::Other);
+
+        assert_eq!(read("[Desktop Entry]\nType=Application"), Read::Invalid);
+        assert_eq!(read("[Desktop Entry]\nName=A"), Read::Invalid);
+        assert_eq!(read("Type=Application\nName=A"), Read::Invalid);
+        assert_eq!(read("Hidden=true"), Read::Invalid);
+        assert_eq!(read(""), Read::Invalid);
     }
 
     // a fresh dir under the temp dir, gone first if a run before left it
@@ -734,6 +799,34 @@ StartupWMClass=other
                 (String::from("kde-dolphin.desktop"), String::from("Dolphin")),
             ]
         );
+    }
+
+    // a user's file that cannot be read, or is no desktop entry, leaves the id to the system's
+    #[test]
+    fn an_unreadable_or_invalid_user_entry_falls_back_to_the_system() {
+        let root = temp("fallback");
+        let (user, system) = (root.join("user"), root.join("system"));
+
+        fs::create_dir_all(&user).unwrap();
+        std::os::unix::fs::symlink(root.join("nowhere"), user.join("firefox.desktop")).unwrap();
+        write(&user, "editor.desktop", "not a desktop entry");
+        write(
+            &user,
+            "nameless.desktop",
+            "[Desktop Entry]\nType=Application",
+        );
+        write(&system, "firefox.desktop", &format!("{APP}Firefox"));
+        write(&system, "editor.desktop", &format!("{APP}Editor"));
+        write(&system, "nameless.desktop", &format!("{APP}Named"));
+
+        let read: Vec<String> = scan(&[user, system])
+            .into_iter()
+            .map(|entry| entry.desktop.name)
+            .collect();
+
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(read, ["Editor", "Firefox", "Named"]);
     }
 
     fn window(id: u64, app_id: Option<&str>, focused: bool) -> Window {

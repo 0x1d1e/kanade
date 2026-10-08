@@ -18,7 +18,7 @@ The Dock (#144) shows each running app once, with its name and icon, beside the 
   5. the last dot-separated part of the file id, ignoring case.
 
   Within a rule the entry read first wins: the XDG data dirs in order, the user's first, then by path. An exact rule beats a looser one even for an entry read later.
-- **Entries** are the `[Desktop Entry]` sections of `applications/**/*.desktop` under `XDG_DATA_HOME` and `XDG_DATA_DIRS`, with the spec's file ids (`kde/dolphin.desktop` is `kde-dolphin.desktop`) and the first id found shadowing the rest. `Hidden=true` deletes the entry, also shadowing a system one; `NoDisplay=true` is kept, since such apps still open windows.
+- **Entries** are the `[Desktop Entry]` sections of `applications/**/*.desktop` under `XDG_DATA_HOME` and `XDG_DATA_DIRS`, with the spec's file ids (`kde/dolphin.desktop` is `kde-dolphin.desktop`) and the first id found shadowing the rest. `Hidden=true` deletes the entry, also shadowing a system one; `NoDisplay=true` is kept, since such apps still open windows. A file that cannot be read, or has no `[Desktop Entry]` with `Type` and `Name`, is skipped and shadows nothing. String values have the spec's escapes (`\s`, `\n`, `\t`, `\r`, `\\`) decoded.
 - **No polling, no inotify.** Entries are read when the first window comes, again when an `app_id` comes that none matches (each such `app_id` once, so an unknown game does not rescan on every window), and on `kanade config reload`.
 - **Override shape**: `[windows.apps]`, `app_id = "desktop file id"`, the `.desktop` optional. Keys are exact `app_id`s. Layers merge by `app_id`.
 
