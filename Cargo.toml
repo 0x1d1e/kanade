@@ -30,6 +30,8 @@ fontconfig = "0.11"
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = "1"
+# the launch test talks to a mock app over a socket pair, with no bus between
+zbus = { version = "5", features = ["p2p"] }
 
 # unoptimised dependencies are too slow for smooth animation; Kanade itself stays
 # unoptimised so a save rebuilds quickly

@@ -2,11 +2,14 @@
 //! `DBusActivatable=true`, else `Exec` split into its arguments, its field codes expanded for a
 //! launch with no file or URL, run in `Path` and, for `Terminal=true`, in a terminal through
 //! `xdg-terminal-exec`. niri runs the command, so the app gets niri's environment, not Kanade's.
+//! An activatable app runs `Exec` only when the bus could not deliver `Activate`: one that got it
+//! but has not answered may be starting, and a second start would open it twice.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
-use zbus::blocking::Connection;
+use zbus::blocking::{Connection, connection};
 use zbus::zvariant::Value;
 
 use super::json;
@@ -18,12 +21,22 @@ pub const TERMINAL: &str = "xdg-terminal-exec";
 
 const APPLICATION: &str = "org.freedesktop.Application";
 
+// how long an app has to answer `Activate`, as long as libdbus waits by default
+const ANSWER: Duration = Duration::from_secs(25);
+
+// the bus's own errors for a call it could not deliver: no such app, or it failed to start one
+const UNDELIVERED: [&str; 2] = [
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+];
+const SPAWN: &str = "org.freedesktop.DBus.Error.Spawn.";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     // the bus name to activate, the file id without `.desktop`, for `DBusActivatable=true`
     activate: Option<String>,
 
-    // `Exec`; for an activatable entry, what runs when activation fails
+    // `Exec`; for an activatable entry, what runs when the bus could not deliver `Activate`
     command: Option<Command>,
 }
 
@@ -76,38 +89,71 @@ impl Launch {
         (activate.is_some() || command.is_some()).then_some(Launch { activate, command })
     }
 
-    /*
-     * starts it, activating it first when it is activatable and running `Exec` when that fails;
-     * blocks on the bus and niri, so off the view thread
-     */
+    // starts it; blocks on the bus and niri, so off the view thread
     pub fn run(&self) -> Result<(), String> {
-        let activated = self.activate.as_deref().map(activate);
+        self.start(
+            |name| match connection::Builder::session()
+                .and_then(|bus| bus.method_timeout(ANSWER).build())
+            {
+                Ok(bus) => activate(&bus, name),
+                Err(error) => Activation::Undelivered(format!("no session bus: {error}")),
+            },
+            Command::run,
+        )
+    }
+
+    // activates it when it is activatable, running `Exec` only when that was not delivered
+    fn start(
+        &self,
+        activate: impl FnOnce(&str) -> Activation,
+        spawn: impl FnOnce(&Command) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let activated = self.activate.as_deref().map(|name| (name, activate(name)));
 
         match (activated, &self.command) {
-            (Some(Ok(())), _) => Ok(()),
-            (Some(Err(error)), None) => Err(error),
-            (Some(Err(_)) | None, Some(command)) => command.run(),
+            (Some((_, Activation::Done)), _) => Ok(()),
+            (Some((name, Activation::Unknown(why))), _) => Err(format!(
+                "activating {name}: {why}; it may still start, so Exec does not run"
+            )),
+            (Some((name, Activation::Undelivered(why))), None) => {
+                Err(format!("activating {name}: {why}"))
+            }
+            (Some((_, Activation::Undelivered(_))) | None, Some(command)) => spawn(command),
             (None, None) => Err(String::from("nothing to launch")),
         }
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Activation {
+    Done,
+
+    // the bus says no app got `Activate`, so starting it another way starts it once
+    Undelivered(String),
+
+    // an app may have got it: no answer in time, the connection lost, or the app's own error
+    Unknown(String),
+}
+
 // `org.freedesktop.Application.Activate`, which D-Bus starts the app for
-fn activate(name: &str) -> Result<(), String> {
+fn activate(bus: &Connection, name: &str) -> Activation {
     let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
 
-    Connection::session()
-        .and_then(|bus| {
-            bus.call_method(
-                Some(name),
-                path.as_str(),
-                Some(APPLICATION),
-                "Activate",
-                &(HashMap::<&str, Value>::new(),),
-            )
-        })
-        .map(drop)
-        .map_err(|error| format!("activating {name}: {error}"))
+    match bus.call_method(
+        Some(name),
+        path.as_str(),
+        Some(APPLICATION),
+        "Activate",
+        &(HashMap::<&str, Value>::new(),),
+    ) {
+        Ok(_) => Activation::Done,
+        Err(zbus::Error::MethodError(error, _, _))
+            if UNDELIVERED.contains(&error.as_str()) || error.starts_with(SPAWN) =>
+        {
+            Activation::Undelivered(error.to_string())
+        }
+        Err(error) => Activation::Unknown(error.to_string()),
+    }
 }
 
 impl Command {
@@ -375,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn an_activatable_entry_activates_with_exec_as_a_fallback() {
+    fn an_activatable_entry_activates_with_exec_in_reserve() {
         let activatable = |id, exec| {
             Launch::of(&Fields {
                 id,
@@ -406,6 +452,112 @@ mod tests {
             activatable("org.example.app-name.desktop", None).and_then(|launch| launch.activate),
             Some(String::from("org.example.app-name"))
         );
+    }
+
+    /*
+     * an activatable app on a socket pair, with no bus between, that answers `Activate` as `answer`
+     * says, or never; gives the client and whether the app got `Activate`
+     */
+    fn app(answer: Option<&'static str>) -> (Connection, std::sync::mpsc::Receiver<String>) {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (got, activated) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let app = connection::Builder::async_io_unix_stream(theirs)
+                .server(zbus::Guid::generate())
+                .unwrap()
+                .p2p()
+                .build()
+                .unwrap();
+
+            // until the client hangs up
+            for message in zbus::blocking::MessageIterator::from(&app).map_while(Result::ok) {
+                let header = message.header();
+
+                if header.member().is_some_and(|member| member == "Activate") {
+                    got.send(header.path().unwrap().to_string()).unwrap();
+
+                    if let Some(error) = answer {
+                        app.reply_error(&header, error, &("no",)).unwrap();
+                    }
+                }
+            }
+        });
+
+        let bus = connection::Builder::async_io_unix_stream(ours)
+            .p2p()
+            .method_timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+
+        (bus, activated)
+    }
+
+    fn launch_with_exec() -> Launch {
+        Launch::of(&Fields {
+            dbus_activatable: true,
+            ..fields("app")
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn an_app_that_got_activate_but_never_answers_is_not_started_again() {
+        let (bus, activated) = app(None);
+        let mut spawned = false;
+
+        let started = launch_with_exec().start(
+            |name| activate(&bus, name),
+            |_| {
+                spawned = true;
+                Ok(())
+            },
+        );
+
+        assert_eq!(activated.try_recv().as_deref(), Ok("/org/example/App"));
+        assert!(started.is_err_and(|error| error.contains("Exec does not run")));
+        assert!(!spawned);
+    }
+
+    #[test]
+    fn exec_runs_only_when_the_bus_could_not_deliver_activate() {
+        let outcome = |answer| {
+            let (bus, _activated) = app(Some(answer));
+            let mut spawned = false;
+            let started = launch_with_exec().start(
+                |name| activate(&bus, name),
+                |_| {
+                    spawned = true;
+                    Ok(())
+                },
+            );
+
+            (started.is_ok(), spawned)
+        };
+
+        assert_eq!(
+            outcome("org.freedesktop.DBus.Error.ServiceUnknown"),
+            (true, true)
+        );
+        assert_eq!(
+            outcome("org.freedesktop.DBus.Error.Spawn.ChildExited"),
+            (true, true)
+        );
+
+        // the app's own error: it got `Activate`, so it may be on its way
+        assert_eq!(outcome("org.example.App.Error.Busy"), (false, false));
+        assert_eq!(
+            outcome("org.freedesktop.DBus.Error.NoReply"),
+            (false, false)
+        );
+
+        // nothing to fall back to
+        let (bus, _activated) = app(Some("org.freedesktop.DBus.Error.ServiceUnknown"));
+        let bare = Launch {
+            command: None,
+            ..launch_with_exec()
+        };
+        assert!(bare.start(|name| activate(&bus, name), |_| Ok(())).is_err());
     }
 
     #[test]
