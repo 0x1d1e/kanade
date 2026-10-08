@@ -1,34 +1,57 @@
 #!/bin/sh
-# the shell's memory (#198) at idle, with each Surface open and locked, in MiB; see docs/memory.md
-# usage: scripts/memory [sample LABEL]; $KANADE is the CLI, target/debug/kanade by default
+# the shell's memory (#198) at Rest, with each Surface open and locked, in MiB; see docs/memory.md
+# usage: scripts/memory [sample LABEL]; measures the shell $UNIT runs, kanade-memory by default,
+# and $KANADE is the CLI, target/debug/kanade by default
 set -e
 kanade=${KANADE:-target/debug/kanade}
+unit=${UNIT:-kanade-memory}
 
-# the oldest kanade is the shell; a CLI call is newer
-pid=$(pgrep -xo kanade) || { echo "memory: no shell running" >&2; exit 1; }
+# the unit's own cgroup holds the shell and its helpers, and nothing else
+pid=$(systemctl --user show -p MainPID --value "$unit")
+if [ "${pid:-0}" = 0 ]; then
+    echo "memory: $unit runs no shell" >&2
+    exit 1
+fi
 cgroup=/sys/fs/cgroup$(sed -n 's/^0:://p' "/proc/$pid/cgroup")
 
+header() {
+    printf "%-14s %7s %7s %7s %7s %7s %7s | %7s %7s %7s %7s %7s %7s %7s\n" "" \
+        rss pss anon file gpu gpu-res cgroup peak anon cache shmem slab-r others
+}
+
+gone() {
+    echo "memory: the shell, pid $pid, is gone" >&2
+    exit 1
+}
+
 sample() {
+    rollup=$(cat "/proc/$pid/smaps_rollup" 2> /dev/null) || gone
     # /dev/dri file descriptors, for their DRM fdinfo; several can share one client
     dri=$(find "/proc/$pid/fd" -lname '/dev/dri/*' -printf "/proc/$pid/fdinfo/%f\n" 2> /dev/null || true)
     others=$(grep -vx "$pid" "$cgroup/cgroup.procs" | sed 's|.*|/proc/&/smaps_rollup|')
 
     {
-        sed 's/^/rollup /' "/proc/$pid/smaps_rollup"
-        # a descriptor or helper that went away since is skipped; with none, nothing is read
-        # shellcheck disable=SC2086
-        awk '{ print "fdinfo", FILENAME, $0 }' $dri < /dev/null 2> /dev/null || true
+        echo "$rollup" | sed 's/^/rollup /'
+        # a descriptor or helper that went away since is skipped
+        for file in $dri; do
+            sed "s|^|fdinfo $file |" "$file" 2> /dev/null || true
+        done
+        for file in $others; do
+            sed -n 's/^Pss:/others/p' "$file" 2> /dev/null || true
+        done
         sed 's/^/cgroup /' "$cgroup/memory.stat"
-        echo "cgroup current $(($(cat "$cgroup/memory.current") / 1024))"
-        echo "cgroup peak $(($(cat "$cgroup/memory.peak") / 1024))"
-        # shellcheck disable=SC2086
-        cat $others < /dev/null 2> /dev/null | sed -n 's/^Pss:/others/p'
+        sed 's/^/cgroup current /' "$cgroup/memory.current"
+        # since the cgroup started; Linux 5.19 and later
+        sed 's/^/cgroup peak /' "$cgroup/memory.peak" 2> /dev/null || true
     } | awk -v label="$1" '
         $1 == "rollup" { rollup[$2] = $3 }
         # DRM fdinfo (drm-usage-stats), once per client: the GPU buffers the driver holds for the
-        # shell, in no RSS, as its maps of them count none
+        # shell, in no RSS, as its maps of them count none. drm-total-cycles-* is engine time
         $1 == "fdinfo" && $3 == "drm-client-id:" { client[$2] = $4 }
-        $1 == "fdinfo" && $3 ~ /^drm-(total|resident)-/ { split($3, key, "-"); size[$2, key[2]] += unit($4, $5) }
+        $1 == "fdinfo" && $3 ~ /^drm-(total|resident)-/ && $3 !~ /-cycles-/ {
+            split($3, key, "-")
+            size[$2, key[2]] += unit($4, $5)
+        }
         $1 == "cgroup" { cg[$2] = $3 }
         $1 == "others" { others += $2 }
         function unit(n, u) { return u == "MiB" ? n * 1024 : u == "GiB" ? n * 1048576 : u == "KiB" ? n : n / 1024 }
@@ -39,18 +62,16 @@ sample() {
                 total += size[fd, "total"]
                 resident += size[fd, "resident"]
             }
-            if (!header++) printf "%-14s %7s %7s %7s %7s %7s %7s | %7s %7s %7s %7s %7s %7s %7s\n",
-                "", "rss", "pss", "anon", "file", "gpu", "gpu-res",
-                "cgroup", "peak", "anon", "cache", "shmem", "slab-r", "others"
             printf "%-14s %s %s %s %s %s %s | %s %s %s %s %s %s %s\n", label,
                 mib(rollup["Rss:"]), mib(rollup["Pss:"]), mib(rollup["Anonymous:"]), mib(rollup["Pss_File:"]),
                 mib(total), mib(resident),
-                mib(cg["current"]), mib(cg["peak"]), mib(cg["anon"] / 1024),
+                mib(cg["current"] / 1024), mib(cg["peak"] / 1024), mib(cg["anon"] / 1024),
                 mib((cg["file"] - cg["shmem"]) / 1024), mib(cg["shmem"] / 1024),
                 mib(cg["slab_reclaimable"] / 1024), mib(others)
         }'
 }
 
+header
 if [ "$1" = sample ]; then
     sample "${2:-now}"
     exit
@@ -62,10 +83,10 @@ step() {
     shift
     "$kanade" "$@" > /dev/null
     sleep 2
-    sample "$label" | tail -n 1
+    sample "$label"
 }
 
-sample idle
+sample rest
 for surface in controls media notifications launcher tray clipboard calendar weather; do
     step "$surface" "$surface" open
 done
@@ -76,8 +97,12 @@ step closed settings close
 # every monitor shows a lock screen; only the user's password ends it
 "$kanade" lock
 sleep 2
-sample locked | tail -n 1
+sample locked
 echo "memory: type your password to unlock" >&2
-until "$kanade" lock status | grep -qx unlocked; do sleep 1; done
+# `lock status` ends with `unlocked` once a password was accepted
+until "$kanade" lock status 2> /dev/null | tail -n 1 | grep -qx unlocked; do
+    kill -0 "$pid" 2> /dev/null || gone
+    sleep 1
+done
 sleep 2
-sample unlocked | tail -n 1
+sample unlocked
