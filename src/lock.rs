@@ -61,10 +61,14 @@ struct Requests {
 }
 
 impl Requests {
-    // a new request, which only a draw after it confirms
+    /*
+     * A new request, which only a draw after it confirms. It drops the last confirmation, which an
+     * unlock may have ended since: `tried` no longer tells
+     */
     fn request(&mut self) -> u64 {
         self.newest += 1;
         self.tried = false;
+        self.confirmed = 0;
         self.newest
     }
 
@@ -462,12 +466,12 @@ mod tests {
         assert_eq!(requests.request(), 2);
         requests.tried = true;
         requests.drew(true, false);
-        assert_eq!(requests.confirmed, 1);
+        assert_eq!(requests.confirmed, 0);
         assert_eq!(requests.holding(true, false), Holding::Checking);
 
         // accepted, the lock not ended yet: no draw confirms, and #1 no longer holds either
         requests.drew(false, false);
-        assert_eq!(requests.confirmed, 1);
+        assert_eq!(requests.confirmed, 0);
         assert_eq!(requests.holding(false, false), Holding::Unlocked);
 
         // #1, confirmed before, is not reported as held either
@@ -486,6 +490,34 @@ mod tests {
         assert_eq!(requests.holding(false, false), Holding::Held);
         requests.drew(false, false);
         assert_eq!(requests.confirmed, 3);
+    }
+
+    // a request after an unlock, before its lock screen draws, does not revive the last confirmation
+    #[test]
+    fn a_new_request_does_not_revive_a_confirmation_an_unlock_ended() {
+        let mut requests = Requests {
+            newest: 0,
+            confirmed: 0,
+            tried: false,
+        };
+        let first = requested("requested #1 in 42.7").unwrap();
+        let settled = |requests: &Requests| settled(&requests.status("42.7", false, false), &first);
+
+        requests.request();
+        requests.drew(false, false);
+        assert_eq!(settled(&requests), Some(Settled::Locked));
+
+        // unlocked
+        requests.tried = true;
+        assert_eq!(settled(&requests), Some(Settled::Unlocked));
+
+        // asked again while unlocked; niri has not locked yet
+        assert_eq!(requests.request(), 2);
+        assert_eq!(settled(&requests), Some(Settled::Waiting));
+
+        requests.drew(false, false);
+        assert_eq!(requests.confirmed, 2);
+        assert_eq!(settled(&requests), Some(Settled::Locked));
     }
 
     #[test]
