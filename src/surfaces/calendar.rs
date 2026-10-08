@@ -568,7 +568,7 @@ fn when(event: &Occurrence, day: NaiveDate) -> String {
     let ends = event.end.date() == day || event.end == day.and_time(NaiveTime::MIN) + Days::new(1);
 
     match (starts, ends) {
-        _ if event.start == event.end => time(event.start.time()),
+        _ if event.moment() => time(event.start.time()),
         (true, true) => format!(
             "{} \u{2013} {}",
             time(event.start.time()),
@@ -850,6 +850,7 @@ mod tests {
             location: None,
             start,
             end,
+            span: (start.and_utc().timestamp(), end.and_utc().timestamp()),
             all_day: false,
         }
     }
