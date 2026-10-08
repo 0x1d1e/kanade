@@ -1,6 +1,7 @@
 // produce Activities from system state, or the Services the views read; may use Amane services
 // and Island::write()
 
+pub mod apps;
 pub mod audio;
 pub mod battery;
 pub mod bluetooth;
@@ -9,6 +10,7 @@ pub mod caffeine;
 pub mod calendar;
 pub mod capture;
 pub mod clipboard;
+pub mod desktop;
 pub mod google;
 pub mod icons;
 pub mod json;

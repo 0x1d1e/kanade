@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use amane::DesktopApp;
+use crate::sources::launch::Launch;
 
 /*
  * how well an answer fits the query, best first. Every provider ranks on this one scale, so their
@@ -53,7 +53,7 @@ pub enum Mark {
 // what pressing an answer does; each closes the island once done
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    Launch(DesktopApp),
+    Launch(Launch),
 
     // puts the text on the clipboard
     Copy(String),

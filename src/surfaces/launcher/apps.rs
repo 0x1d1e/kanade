@@ -1,15 +1,15 @@
-// the apps Amane's `Apps` finds, as a Launcher provider; pressing one starts it
+// the apps `sources::apps` lists, as a Launcher provider; pressing one starts it
 
-use amane::DesktopApp;
+use crate::sources::apps::App;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
 use super::{emoji, wallpaper};
 
 // the apps, and whether `@` searches wallpapers instead
-pub struct Apps<'a>(pub &'a [DesktopApp], pub bool);
+pub struct Apps<'a>(pub &'a [App], pub bool);
 
 impl LauncherProvider for Apps<'_> {
-    // by name within a fit, since Amane sorts them so; an empty query finds every app
+    // by name within a fit, since the list is sorted so; an empty query finds every app
     fn find(&self, query: &str) -> Vec<Answer> {
         // an emoji or wallpaper search, which no app answers
         if query.starts_with(emoji::PREFIX) || (self.1 && query.starts_with(wallpaper::PREFIX)) {
@@ -23,9 +23,9 @@ impl LauncherProvider for Apps<'_> {
             .filter_map(|app| {
                 let fit = fit(
                     &query,
-                    app.name(),
-                    app.description().unwrap_or_default(),
-                    app.exec(),
+                    &app.name,
+                    app.description.as_deref().unwrap_or_default(),
+                    app.command(),
                 )?;
 
                 Some(answer(app, fit))
@@ -54,11 +54,11 @@ fn fit(query: &str, name: &str, description: &str, exec: &str) -> Option<Fit> {
 }
 
 // the app's icon, or its name's initial for one without
-fn answer(app: &DesktopApp, fit: Fit) -> Answer {
-    let mark = match app.icon_path() {
-        Some(path) => Mark::Picture(path.to_owned()),
+fn answer(app: &App, fit: Fit) -> Answer {
+    let mark = match &app.icon_file {
+        Some(path) => Mark::Picture(path.clone()),
         None => Mark::Tile(
-            app.name()
+            app.name
                 .chars()
                 .next()
                 .map_or_else(String::new, |initial| initial.to_uppercase().collect()),
@@ -67,10 +67,10 @@ fn answer(app: &DesktopApp, fit: Fit) -> Answer {
 
     Answer {
         fit,
-        title: app.name().to_owned(),
-        detail: app.description().unwrap_or_default().to_owned(),
+        title: app.name.clone(),
+        detail: app.description.clone().unwrap_or_default(),
         mark,
-        action: Action::Launch(app.clone()),
+        action: Action::Launch(app.launch.clone()),
     }
 }
 
