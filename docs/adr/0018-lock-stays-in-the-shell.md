@@ -2,7 +2,7 @@
 
 Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split.
 
-Validated: crash recovery in a temporary test build (#153), to repeat in #154 on the production binary and the installed `kanade.service` unit.
+Validated: crash recovery in a temporary test build (#153), then again in #154 on the production binary and the installed `kanade.service` unit, with the start limit and its recovery.
 
 ## Context
 

@@ -282,7 +282,7 @@ Nested-niri E2E checks idle/morph each release.
 - privacy Overlay fullscreen-visible while module enabled.
 - lock shows no notification content.
 
-Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. To repeat in #154 on the production binary and the installed `kanade.service` unit ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
+Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. Passed again in #154 on the production binary and the installed `kanade.service` unit ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 
 ## Explicit non-goals
 

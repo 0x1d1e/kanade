@@ -142,8 +142,8 @@ pub fn view(monitor: &Monitor) -> LayerWindow {
         );
 
     // niri sizes a lock screen to its monitor, so this size is never used. Escape takes the focus
-    // from the field, and the window gets the keys the field no longer does: emptying the field
-    // redraws, which focuses it again
+    // from the field and goes on to the window, which redraws after its on_key; the redraw
+    // focuses the field again, so the next key types. Without an on_key nothing would redraw
     LayerWindow::new()
         .width(1.0)
         .height(1.0)
