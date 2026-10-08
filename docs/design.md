@@ -229,9 +229,9 @@ settings open [page]|close
 config reload|validate|defaults
 status
 doctor
+module list|enable <name>|disable <name>
 
 # later
-module list|enable <name>|disable <name>
 lock
 session menu|suspend|reboot|poweroff|logout
 ```

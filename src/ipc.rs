@@ -87,6 +87,9 @@ fn run(call: Call) -> Reply {
         Call::Validate => config(reload::validate(), "valid"),
 
         Call::Status => Reply::Done(status().join("\n")),
+        Call::Modules => Reply::Done(modules::list().join("\n")),
+        // through the settings file's writes, which the Settings window shares
+        Call::Turn(name, on) => modules::turn(name, on).map_or_else(Reply::Refused, Reply::Done),
     }
 }
 

@@ -59,6 +59,10 @@ pub enum Call {
     Reload,
     Validate,
     Status,
+    Modules,
+
+    // a Module, turned on or off
+    Turn(&'static str, bool),
 }
 
 // what the shell answers; a refusal exits with failure
@@ -523,6 +527,15 @@ mod tests {
             Ok(("island", Call::Validate))
         );
         assert_eq!(parsed(&["status"]), Ok(("island", Call::Status)));
+        assert_eq!(parsed(&["module", "list"]), Ok(("island", Call::Modules)));
+        assert_eq!(
+            parsed(&["module", "disable", "media"]),
+            Ok(("island", Call::Turn("media", false)))
+        );
+        assert_eq!(
+            parsed(&["module", "enable", "notification-surface"]),
+            Ok(("island", Call::Turn("notification-surface", true)))
+        );
         assert_eq!(
             parsed(&["settings", "open"]),
             Ok(("settings", Call::Settings(None)))
@@ -647,6 +660,12 @@ mod tests {
             &["config"],
             &["config", "reload", "now"],
             &["status", "now"],
+            &["module"],
+            &["module", "list", "all"],
+            &["module", "enable"],
+            &["module", "disable", "island"],
+            &["module", "enable", "weather"],
+            &["module", "toggle", "media"],
             &["media", "clear"],
             &["timer"],
             &["timer", "start"],
@@ -687,6 +706,10 @@ with no verb, runs the shell; a verb asks the running one:
 island collapse
 config reload|validate
 status
+module list|enable <name>|disable <name>
+  <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
+banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
+clipboard-surface|capture|caffeine|settings
 {}
 media open|close|toggle
 timer start <duration>|pause|resume|cancel

@@ -14,8 +14,8 @@ use toml::Value;
 use crate::config::{self, Config};
 
 // what the file starts with, as nobody should edit it by hand
-const HEADER: &str =
-    "# written by Kanade's Settings window; your own config goes in ~/.config/kanade/\n";
+const HEADER: &str = "# written by Kanade's Settings window and `kanade module`; your own config \
+                      goes in ~/.config/kanade/\n";
 
 // one write at a time, so two never read the same file and lose one's change
 static WRITING: Mutex<()> = Mutex::new(());
