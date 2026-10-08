@@ -54,6 +54,8 @@ pub enum Call {
     Caffeine(caffeine::Request),
     Wallpaper(wallpaper::Request),
     Osd(osd::Asked),
+    Settings(Option<&'static str>),
+    CloseSettings,
     Reload,
     Validate,
     Status,
@@ -522,6 +524,18 @@ mod tests {
         );
         assert_eq!(parsed(&["status"]), Ok(("island", Call::Status)));
         assert_eq!(
+            parsed(&["settings", "open"]),
+            Ok(("settings", Call::Settings(None)))
+        );
+        assert_eq!(
+            parsed(&["settings", "open", "dock"]),
+            Ok(("settings", Call::Settings(Some("dock"))))
+        );
+        assert_eq!(
+            parsed(&["settings", "close"]),
+            Ok(("settings", Call::CloseSettings))
+        );
+        assert_eq!(
             parsed(&["debug", "withdraw", "timer", "timer"]).map(|(module, _)| module),
             Ok("island")
         );
@@ -653,6 +667,8 @@ mod tests {
             &["caffeine", "on", "forever"],
             &["osd"],
             &["osd", "microphone"],
+            &["settings"],
+            &["settings", "open", "launcher"],
             &["debug"],
             &["doctor"],
             &["help"],
@@ -689,6 +705,8 @@ capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
+settings open [<page>]|close
+  <page>: island|windows|dock|wallpaper
 config defaults
 doctor
 help",

@@ -14,6 +14,7 @@ mod modules;
 mod osd;
 mod raster;
 mod reload;
+mod settings;
 mod shadow;
 mod sources;
 mod supervise;

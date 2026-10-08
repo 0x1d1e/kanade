@@ -11,6 +11,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::service::{Effect, IslandService};
 use crate::modules;
 use crate::reload::{self, Outcome};
+use crate::settings;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard::{self, Clipboard};
 use crate::sources::notifications::{self, Daemon};
@@ -73,6 +74,15 @@ fn run(call: Call) -> Reply {
         }
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
+        // on the draw thread, which the window's text inputs live on
+        Call::Settings(page) => {
+            settings::open(page);
+            Reply::Done(String::new())
+        }
+        Call::CloseSettings => {
+            settings::close();
+            Reply::Done(String::new())
+        }
         Call::Reload => config(reload::reload(), "reloaded"),
         Call::Validate => config(reload::validate(), "valid"),
 

@@ -22,7 +22,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
 use crate::sources::windows;
-use crate::{dock, modules, supervise, theme};
+use crate::{dock, modules, settings, supervise, theme};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -123,7 +123,22 @@ pub fn reload() -> Outcome {
         }
     }
 
+    // after the lock, as the window's snapshot reads the last error
+    drop(state);
+    if modules::on("settings") {
+        settings::refresh();
+    }
+
     outcome
+}
+
+// the last reload's problems, none once one applies
+pub fn error() -> Option<String> {
+    STATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .error
+        .clone()
 }
 
 // what a reload would come to, changing nothing
