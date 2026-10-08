@@ -21,7 +21,7 @@ use crate::config::{self, Config};
 use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{bus, niri, pipewire};
+use crate::sources::{bus, clipboard, niri, pipewire};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -506,6 +506,10 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                 ),
                 Provider::Pam(service) => pam_found(service, lock::pam()),
                 Provider::Niri => niri_found(niri_version()),
+                Provider::Paste => match clipboard::paste_version() {
+                    Ok(version) => Found::Present(version),
+                    Err(why) => Found::Missing(why),
+                },
                 Provider::SystemService(name)
                 | Provider::SessionName(name)
                 | Provider::SessionService(name) => {

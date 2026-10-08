@@ -78,6 +78,9 @@ pub enum Provider {
 
     // niri's IPC, which the Module cannot work without
     Niri,
+
+    // wl-paste, new enough to say which copies are sensitive (`clipboard::SENSITIVE_SINCE`)
+    Paste,
 }
 
 // what a source that waits on an announcer does without it (`sources::wake`)
@@ -502,7 +505,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[
             Need {
-                on: Provider::Program(clipboard::PASTE),
+                on: Provider::Paste,
                 without: "no clipboard history",
             },
             Need {
