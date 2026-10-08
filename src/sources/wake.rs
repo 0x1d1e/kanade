@@ -242,17 +242,18 @@ pub fn hold_file(program: &str, args: &[&str]) -> io::Result<Child> {
 }
 
 /*
- * starts `program` as a holder of a lock, like an inhibitor, which a kill lets go of at once. Its
- * stderr is piped, for why it ended
+ * starts `program` as a holder of a lock, like an inhibitor, which a kill lets go of at once. Only
+ * through setpriv, never without: a lock that outlived Kanade would be held for good. Its stdout
+ * and stderr are piped, for when it holds the lock and why it ended
  */
 pub fn hold_lock(program: &str, args: &[&str]) -> io::Result<Child> {
-    guarded(program, args, KILL, |command| {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-    })
+    Command::new(SETPRIV)
+        .args(["--pdeathsig", KILL, program])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 // ends what `run` runs from another thread: kills the program, or ends the wait to run it again,

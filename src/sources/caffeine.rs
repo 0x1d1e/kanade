@@ -7,11 +7,13 @@
 //! cannot hold the fd it hands back, so `systemd-inhibit` is a holder (ADR 0011): caffeine is on
 //! while it runs. A duration is its command, `sleep`, so the inhibitor ends on its own, counted
 //! like the timer while the machine is awake. Ending on its own, it ended caffeine, which is never
-//! turned on again.
+//! turned on again. It runs only through setpriv, so it dies with Kanade; otherwise it could hold
+//! the inhibitor for good, with no Kanade left that knows of it.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, ChildStderr};
+use std::io::{self, BufRead, BufReader, Read};
+use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,7 +22,7 @@ use amane::Service;
 
 use super::capture::SHOWN;
 use super::timer;
-use super::wake::{self, NOT_FOUND};
+use super::wake::{self, NOT_FOUND, SETPRIV};
 use crate::island::activity::{
     Action, Activity, Awake, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
@@ -33,6 +35,12 @@ pub const OFF: &str = "off";
 
 // the last lines systemd-inhibit printed, which say why it ended
 const SAID: usize = 4;
+
+// what the inhibitor's command says once it runs, so once logind gave systemd-inhibit the inhibitor
+const HELD: &str = "held";
+
+// how long `on` waits for that on the draw thread; logind answers in milliseconds
+const READY: Duration = Duration::from_secs(2);
 
 static CAFFEINE: Mutex<Caffeine> = Mutex::new(Caffeine {
     holding: None,
@@ -106,7 +114,7 @@ pub fn request(request: Request) -> Result<String, String> {
 
 /*
  * holds a new inhibitor, then lets go of the old one, if on, so caffeine never lapses; on again
- * starts its duration over
+ * starts its duration over. A new one that fails leaves the old one on
  */
 fn turn_on(caffeine: &mut Caffeine, length: Option<Duration>) -> Result<String, String> {
     // setpriv says a missing program only once running, which is too late to refuse `on`
@@ -114,27 +122,30 @@ fn turn_on(caffeine: &mut Caffeine, length: Option<Duration>) -> Result<String, 
         return Err(format!("{INHIBIT} not found"));
     }
 
+    // without it the inhibitor outlives Kanade, held for good by nothing that can let go of it
+    if !wake::found(SETPRIV) {
+        return Err(format!(
+            "{SETPRIV} not found, so the inhibitor could outlive Kanade"
+        ));
+    }
+
     let arguments = arguments(length);
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
-    let mut child = wake::hold_lock(INHIBIT, &arguments)
+    let child = wake::hold_lock(INHIBIT, &arguments)
         .map_err(|error| format!("cannot run {INHIBIT}: {error}"))?;
 
-    let serial = caffeine.issued + 1;
-    let said = child.stderr.take();
-    let followed = thread::Builder::new()
-        .name(String::from("caffeine"))
-        .spawn(move || follow(said, serial));
+    caffeine.issued += 1;
+    let serial = caffeine.issued;
 
-    if let Err(error) = followed {
-        drop(child.kill());
-        drop(child.wait());
+    if let Err(why) = swap(caffeine, child, serial, READY) {
+        // a keybind has no reply to read
+        if caffeine.holding.is_none() {
+            IslandService::write().post(failed(why.clone()), Instant::now());
+        }
 
-        return Err(format!("cannot follow {INHIBIT}: {error}"));
+        return Err(why);
     }
-
-    caffeine.issued = serial;
-    release(caffeine.holding.replace(Holding { serial, child }));
 
     // under the lock, so its end, which takes it, posts after
     IslandService::write().post(on(serial, length), Instant::now());
@@ -143,6 +154,49 @@ fn turn_on(caffeine: &mut Caffeine, length: Option<Duration>) -> Result<String, 
         Some(length) => format!("on for {}", self::length(length)),
         None => String::from("on until turned off"),
     })
+}
+
+/*
+ * makes `child`, as `serial`, the holder once it says it holds the inhibitor, letting go of the old
+ * one only then; kills it instead when it does not say so within `patience`
+ */
+fn swap(
+    caffeine: &mut Caffeine,
+    mut child: Child,
+    serial: u64,
+    patience: Duration,
+) -> Result<(), String> {
+    let (held, said) = (child.stdout.take(), child.stderr.take());
+    let (ready, readiness) = mpsc::channel();
+
+    let followed = thread::Builder::new()
+        .name(String::from("caffeine"))
+        .spawn(move || follow(held, said, serial, ready));
+
+    if let Err(error) = followed {
+        drop(child.kill());
+        drop(child.wait());
+
+        return Err(format!("cannot follow {INHIBIT}: {error}"));
+    }
+
+    match readiness.recv_timeout(patience) {
+        Ok(Ok(())) => {
+            release(caffeine.holding.replace(Holding { serial, child }));
+            Ok(())
+        }
+        // ending at all before it held, it failed, even as `sleep` would end
+        Ok(Err(said)) => ended(child.wait(), said)
+            .and_then(|()| Err(format!("{INHIBIT} ended before it held the inhibitor"))),
+        Err(_) => {
+            drop(child.kill());
+            drop(child.wait());
+
+            Err(format!(
+                "{INHIBIT} did not hold the inhibitor within {patience:?}"
+            ))
+        }
+    }
 }
 
 fn turn_off(caffeine: &mut Caffeine) {
@@ -176,10 +230,24 @@ pub fn act(key: &str, serial: &str) {
 }
 
 /*
- * reads what systemd-inhibit prints until it exits, then takes the Activity away, or shows why
+ * tells `ready` once the holder says it holds the inhibitor, or what it printed before it ended
+ * without. Then reads what it prints until it exits, and takes the Activity away, or shows why
  * caffeine failed
  */
-fn follow(said: Option<ChildStderr>, serial: u64) {
+fn follow(
+    held: Option<ChildStdout>,
+    said: Option<ChildStderr>,
+    serial: u64,
+    ready: Sender<Result<(), VecDeque<String>>>,
+) {
+    if !holds(held) {
+        drop(ready.send(Err(last_lines(said))));
+        return;
+    }
+
+    // none listens once it was given up on, and its end below finds it let go of
+    drop(ready.send(Ok(())));
+
     let said = last_lines(said);
     let mut caffeine = lock();
 
@@ -189,6 +257,16 @@ fn follow(said: Option<ChildStderr>, serial: u64) {
         Some(Err(why)) => IslandService::write().post(failed(why), Instant::now()),
         None => {}
     }
+}
+
+/*
+ * whether `held` says `HELD` before it closes: systemd-inhibit runs its command, which says it,
+ * only once logind gave it the inhibitor
+ */
+fn holds(held: Option<impl Read>) -> bool {
+    held.into_iter()
+        .flat_map(|held| BufReader::new(held).lines().map_while(Result::ok))
+        .any(|line| line == HELD)
 }
 
 // the last `SAID` lines `said` prints until it closes
@@ -218,7 +296,18 @@ fn end(caffeine: &mut Caffeine, serial: u64, said: VecDeque<String>) -> Option<R
         .holding
         .take_if(|holding| holding.serial == serial)?;
 
-    let ended = match holding.child.wait() {
+    let ended = ended(holding.child.wait(), said);
+
+    if let Err(why) = &ended {
+        eprintln!("caffeine: turned off on its own: {why}");
+    }
+
+    Some(ended)
+}
+
+// whether a holder that exited as `status`, having printed `said`, ran out as asked, or why not
+fn ended(status: io::Result<ExitStatus>, said: VecDeque<String>) -> Result<(), String> {
+    match status {
         Ok(status) if status.success() => Ok(()),
         Ok(status) if status.code() == Some(NOT_FOUND) => Err(format!("{INHIBIT} not found")),
         Ok(status) => {
@@ -230,16 +319,13 @@ fn end(caffeine: &mut Caffeine, serial: u64, said: VecDeque<String>) -> Option<R
             })
         }
         Err(error) => Err(format!("{INHIBIT}: {error}")),
-    };
-
-    if let Err(why) = &ended {
-        eprintln!("caffeine: turned off on its own: {why}");
     }
-
-    Some(ended)
 }
 
-// an idle inhibitor that blocks, held by its command: `sleep` for a duration, else for good
+/*
+ * an idle inhibitor that blocks, held by its command, which says `HELD`, then sleeps for the
+ * duration, else for good
+ */
 fn arguments(length: Option<Duration>) -> Vec<String> {
     let held = match length {
         Some(length) => length.as_secs().to_string(),
@@ -251,7 +337,9 @@ fn arguments(length: Option<Duration>) -> Vec<String> {
         "--who=Kanade",
         "--why=Caffeine is on",
         "--mode=block",
-        "sleep",
+        "sh",
+        "-c",
+        &format!("echo {HELD}; exec sleep \"$0\""),
         &held,
     ]
     .map(String::from)
@@ -337,9 +425,10 @@ mod tests {
 
         assert_eq!(
             held(Some(Duration::from_secs(5400))),
-            "--what=idle --who=Kanade --why=Caffeine is on --mode=block sleep 5400"
+            "--what=idle --who=Kanade --why=Caffeine is on --mode=block \
+             sh -c echo held; exec sleep \"$0\" 5400"
         );
-        assert!(held(None).ends_with(" sleep infinity"));
+        assert!(held(None).ends_with(" infinity"));
     }
 
     #[test]
@@ -376,6 +465,7 @@ mod tests {
     fn spawn(script: &str) -> Child {
         Command::new("sh")
             .args(["-c", script])
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("sh runs")
@@ -406,6 +496,102 @@ mod tests {
 
         assert_eq!(end(&mut caffeine, 1, VecDeque::new()), None);
         assert!(caffeine.holding.is_some());
+
+        release(caffeine.holding.take());
+    }
+
+    // the old holder's pid names a process until it is let go of and reaped
+    fn running(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    #[test]
+    fn the_old_holder_is_let_go_of_only_once_the_new_one_holds() {
+        let old = spawn("exec sleep 30");
+        let pid = old.id();
+        let mut caffeine = holding(1, old);
+        let started = Instant::now();
+
+        let swapped = thread::scope(|scope| {
+            let swapping = scope.spawn(|| {
+                swap(
+                    &mut caffeine,
+                    spawn("sleep 0.5; echo held; exec sleep 30"),
+                    2,
+                    READY,
+                )
+            });
+
+            thread::sleep(Duration::from_millis(250));
+            assert!(running(pid), "the old holder was let go of too early");
+
+            swapping.join().unwrap()
+        });
+
+        assert_eq!(swapped, Ok(()));
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        assert!(!running(pid));
+        assert_eq!(
+            caffeine.holding.as_ref().map(|holding| holding.serial),
+            Some(2)
+        );
+
+        release(caffeine.holding.take());
+    }
+
+    #[test]
+    fn a_holder_that_never_holds_is_given_up_on_and_the_old_one_kept() {
+        let mut caffeine = holding(1, spawn("exec sleep 30"));
+
+        let why = swap(
+            &mut caffeine,
+            spawn("exec sleep 30"),
+            2,
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+
+        assert!(why.contains("did not hold the inhibitor"), "{why}");
+        assert_eq!(
+            caffeine.holding.as_ref().map(|holding| holding.serial),
+            Some(1)
+        );
+
+        release(caffeine.holding.take());
+    }
+
+    #[test]
+    fn a_holder_that_ends_well_before_it_holds_failed() {
+        let mut caffeine = holding(1, spawn("exec sleep 30"));
+
+        let why = swap(&mut caffeine, spawn("true"), 2, READY).unwrap_err();
+
+        assert!(why.ends_with("ended before it held the inhibitor"), "{why}");
+        assert_eq!(
+            caffeine.holding.as_ref().map(|holding| holding.serial),
+            Some(1)
+        );
+
+        release(caffeine.holding.take());
+    }
+
+    #[test]
+    fn a_holder_that_fails_before_it_holds_says_why_and_the_old_one_is_kept() {
+        let mut caffeine = holding(1, spawn("exec sleep 30"));
+
+        let why = swap(
+            &mut caffeine,
+            spawn("echo 'Failed to inhibit: Access denied' >&2; exit 1"),
+            2,
+            READY,
+        )
+        .unwrap_err();
+
+        assert!(why.ends_with(": Failed to inhibit: Access denied"), "{why}");
+        assert_eq!(
+            caffeine.holding.as_ref().map(|holding| holding.serial),
+            Some(1)
+        );
 
         release(caffeine.holding.take());
     }

@@ -604,10 +604,16 @@ pub const ALL: &[Module] = &[
         requires: &[CORE],
         optional: &[],
         warns: None,
-        needs: &[Need {
-            on: Provider::Program(caffeine::INHIBIT),
-            without: "no caffeine",
-        }],
+        needs: &[
+            Need {
+                on: Provider::Program(caffeine::INHIBIT),
+                without: "no caffeine",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "no caffeine, which could outlive Kanade without it",
+            },
+        ],
         settings: &[],
         verbs: &[Verb {
             name: "caffeine",
