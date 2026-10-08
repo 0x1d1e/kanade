@@ -80,9 +80,14 @@ fn run(call: Call) -> Reply {
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
-        // on the draw thread, which the password field lives on; returns before niri locks, which the
-        // client waits for
-        Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
+        // on the draw thread, which the password field and the lock screen live on; returns before
+        // niri locks, which the client waits for (`lock status`)
+        Call::Lock => match lock::start() {
+            Ok(lock::Started::Requested(text)) => Reply::Done(text),
+            Ok(lock::Started::Unknown(why)) => Reply::Unknown(why),
+            Err(error) => Reply::Refused(error),
+        },
+        Call::LockStatus => Reply::Done(lock::status()),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         // on the draw thread, which the window's text inputs live on

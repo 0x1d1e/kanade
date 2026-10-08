@@ -163,7 +163,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 - **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144).
 - **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
-- **Lock**: `ext-session-lock` + PAM (`login` service); time, date and password only, no notification content; `kanade lock`, which exits 0 once logind's `LockedHint` is true, possibly still from the previous lock (#196); re-locks at start on a true logind `LockedHint`; Kanade runs as the `kanade.service` user unit tied to `graphical-session.target`, `Restart=always` with a start limit; doctor checks PAM, logind and the unit (done, #154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
+- **Lock**: `ext-session-lock` + PAM (`login` service); time, date and password only, no notification content; `kanade lock`, which exits 0 once a lock screen drew for that call, dropping an accepted unlock Amane has not ended yet, and 3 when that is not known, as while a password is checked (#196); re-locks at start on a true logind `LockedHint`; Kanade runs as the `kanade.service` user unit tied to `graphical-session.target`, `Restart=always` with a start limit; doctor checks PAM, logind and the unit (done, #154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 - **Session**: lock/sleep/restart/poweroff/logout via logind; 60 s destructive countdown.
 - **Settings**: floated normal window; schema-backed overrides; page per Module; per-output keys file-only (done, #148).
 

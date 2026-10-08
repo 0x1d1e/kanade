@@ -221,7 +221,7 @@ Mod+Alt+K hotkey-overlay-title="Caffeine" { spawn "kanade" "caffeine" "toggle"; 
 Mod+Alt+L hotkey-overlay-title="Lock" { spawn "kanade" "lock"; }
 ```
 
-An idle daemon locks the same way, like hypridle's `lock_cmd = kanade lock`. `kanade lock` waits until logind says the session is locked, but right after an unlock that may still be the previous lock ([#196](https://github.com/0x1d1e/kanade/issues/196)), so it does not yet make locking before suspend reliable. On the lock screen, type the password and press Enter.
+An idle daemon locks the same way, like hypridle's `lock_cmd = kanade lock`. `kanade lock` exits 0 only once a lock screen has drawn for that call, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 when that is not known within 5 s, as while another locker holds the session or when a password typed meanwhile unlocks it, and at once while a password is being checked. On the lock screen, type the password and press Enter.
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
 
