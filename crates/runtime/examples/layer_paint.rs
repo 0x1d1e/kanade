@@ -6,7 +6,7 @@
 use kanade_runtime::{
     raster,
     wayland::{Event, LayerRuntime, ShmFrame},
-    window::{Alignment, Edge, KeyboardMode, Layer, Rect, Spec},
+    window::{Alignment, Edge, KeyboardMode, Layer, Spec},
 };
 
 fn main() -> Result<(), String> {

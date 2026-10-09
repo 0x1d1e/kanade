@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::time::Instant;
 use std::os::fd::AsFd;
+use std::time::Instant;
 
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
@@ -22,9 +22,9 @@ use wayland_client::{
         wl_buffer::WlBuffer,
         wl_callback::{self, WlCallback},
         wl_compositor::WlCompositor,
+        wl_keyboard::{self, WlKeyboard},
         wl_output::WlOutput,
         wl_pointer::{self, WlPointer},
-        wl_keyboard::{self, WlKeyboard},
         wl_region::WlRegion,
         wl_registry::{self, WlRegistry},
         wl_seat::{self, WlSeat},
@@ -38,9 +38,9 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
 };
 
-use crate::window::{Alignment, Edge, KeyboardMode, Layer, Spec, State, WindowId};
 use crate::input::{KeyEvent, Keyboard, RepeatInfo};
 use crate::keymap::Mapper;
+use crate::window::{Alignment, Edge, KeyboardMode, Layer, Spec, State, WindowId};
 
 /// Events emitted in arrival order; niri and the Wayland compositor are the
 /// sole authorities for configure and frame readiness.
@@ -578,7 +578,11 @@ impl Dispatch<WlKeyboard, ()> for Listener {
                 }
             }
             wl_keyboard::Event::Modifiers {
-                mods_depressed, mods_latched, mods_locked, group, ..
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
             } => {
                 if let Some(mapper) = &mut listener.mapper {
                     mapper.modifiers(mods_depressed, mods_latched, mods_locked, group);
@@ -590,11 +594,17 @@ impl Dispatch<WlKeyboard, ()> for Listener {
                 }
             }
             wl_keyboard::Event::Key {
-                key, state: wayland_client::WEnum::Value(state), ..
+                key,
+                state: wayland_client::WEnum::Value(state),
+                ..
             } => {
-                let Some(keys) = &mut listener.keys else { return };
+                let Some(keys) = &mut listener.keys else {
+                    return;
+                };
                 let result = match state {
-                    wl_keyboard::KeyState::Pressed => listener.mapper.as_ref()
+                    wl_keyboard::KeyState::Pressed => listener
+                        .mapper
+                        .as_ref()
                         .and_then(|mapper| keys.press(mapper.stroke(key), Instant::now())),
                     wl_keyboard::KeyState::Released => keys.release(key),
                     _ => None,

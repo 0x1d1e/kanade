@@ -24,7 +24,8 @@ impl Mapper {
     }
 
     pub fn modifiers(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
-        self.state.update_mask(depressed, latched, locked, 0, 0, group);
+        self.state
+            .update_mask(depressed, latched, locked, 0, 0, group);
     }
 
     pub fn stroke(&self, physical: u32) -> Stroke {
