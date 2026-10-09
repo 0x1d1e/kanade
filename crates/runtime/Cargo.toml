@@ -8,3 +8,5 @@ publish = false
 # The new platform/runtime is developed beside the existing Amane shell until
 # every public Kanade behavior has a tested native implementation.
 [dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

@@ -1,0 +1,30 @@
+name: Native runtime checks
+
+on:
+  push:
+    branches: [native-runtime]
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/runtime/**"
+      - ".github/workflows/native-runtime.yml"
+
+jobs:
+  native-runtime:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype6-dev libpulse-dev libpam0g-dev libvulkan-dev
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Native runtime test
+        run: cargo test -p kanade-runtime --locked
+      - name: Native runtime lint
+        run: cargo clippy -p kanade-runtime --all-targets --locked -- -D warnings
