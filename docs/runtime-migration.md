@@ -52,7 +52,7 @@ runtime mechanisms together, domain rules in existing modules.
 - [ ] Pointer: hover/leave, click/release, drag, scroll, cursors, hit testing while geometry changes
 - [ ] Keyboard: xkb keymap, press/release, repeat, shortcuts, text input, IME considerations
 - [ ] Clipboard, drag-and-drop, MIME negotiation, sensitive-content protection
-- [ ] Lazy Services, per-window invalidation, timers, scheduled animation, IPC/CLI
+- [ ] Lazy Services, per-window invalidation, timers, scheduled animation; native Unix-socket IPC transport implemented, CLI policy cutover pending
 - [ ] Island Rest/Compact/Split/Peek/Expanded + satellites, all Activities and controls
 - [ ] All Surfaces, including Calendar scrolling, Launcher, Tray and Clipboard
 - [ ] Dock, banners, OSD, privacy cluster, lock screen and Settings

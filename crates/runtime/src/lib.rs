@@ -25,3 +25,5 @@ pub mod reactive;
 pub mod wake;
 
 pub mod chrome;
+
+pub mod ipc;
