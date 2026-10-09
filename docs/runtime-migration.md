@@ -16,8 +16,13 @@ input/keymap handling, output discovery, Service invalidation, a Wayland SHM
 visibility probe, and a wgpu liquid-glass pass. **These components do not yet
 constitute a native Kanade shell**: there is no GPU Wayland presentation or
 live capture bridge, no complete UI, and no native main executable.
-The existing binary still uses Amane. Only a full native migration with
-verified parity can remove the dependency.
+The existing binary still uses Amane. `cargo run -p kanade-runtime --example native_shell`
+is an intentionally limited executable exercising native layer-shell + xdg
+windows and the new IPC socket with one Wayland connection. Drive it using
+`cargo run -p kanade-runtime --example native_cli -- status`,
+`settings open`, `settings close`, or `exit`. It draws placeholder pixels,
+not the existing Island/Settings UI. Run it only in a graphical niri session.
+Only a full native migration with verified parity can remove the dependency.
 
 ## Dependencies and ownership
 
