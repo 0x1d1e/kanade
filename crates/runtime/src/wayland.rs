@@ -60,7 +60,11 @@ pub enum Event {
         y: f64,
     },
     PointerLeave(WindowId),
-    OutputReady { id: u32, name: String, scale: i32 },
+    OutputReady {
+        id: u32,
+        name: String,
+        scale: i32,
+    },
     OutputRemoved(u32),
     Keyboard(KeyEvent),
     PointerMotion {
@@ -176,7 +180,9 @@ impl LayerRuntime {
                     listener.outputs.insert(
                         global.name,
                         Output {
-                            proxy: globals.registry().bind(global.name, 4, &handle, global.name),
+                            proxy: globals
+                                .registry()
+                                .bind(global.name, 4, &handle, global.name),
                             name: None,
                             scale: 1,
                         },
@@ -477,9 +483,11 @@ impl Dispatch<WlRegistry, GlobalListContents> for Listener {
         qh: &QueueHandle<Self>,
     ) {
         match event {
-            wl_registry::Event::Global { name, interface, version }
-                if interface == "wl_output" && version >= 4 =>
-            {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == "wl_output" && version >= 4 => {
                 state.outputs.entry(name).or_insert_with(|| Output {
                     proxy: registry.bind(name, 4, qh, name),
                     name: None,
