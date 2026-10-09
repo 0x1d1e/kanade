@@ -76,6 +76,15 @@ fn run() -> Result<(), String> {
                         active.push(frame);
                     }
                 }
+                // Reapply the most recent configured size after the previous
+                // buffer's frame callback releases the render gate.
+                Event::FrameReady(ready) if ready == id && runtime.needs_frame(id) => {
+                    let (width, height) = last_size;
+                    let frame = runtime.shm_frame(width, height, &frame_pixels(width, height)?)?;
+                    if runtime.present(id, &frame.buffer)? {
+                        active.push(frame);
+                    }
+                }
                 Event::PointerEnter { id: on, x, y } | Event::PointerMotion { id: on, x, y }
                     if on == id =>
                 {
@@ -114,6 +123,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::frame_pixels;
+    use kanade_runtime::window::State;
+
+    #[test]
+    fn pending_configures_are_retried_at_the_latest_size() {
+        let mut state = State::default();
+        state.show();
+        state.configure();
+        assert!(state.begin_frame());
+        state.submitted(false);
+        let mut latest = (720, 540);
+        state.configure();
+        assert!(!state.begin_frame());
+        latest = (940, 600);
+        state.configure();
+        assert!(!state.begin_frame());
+        state.frame_callback();
+        assert!(state.needs_frame());
+        assert_eq!(latest, (940, 600));
+        assert!(state.begin_frame());
+        assert_eq!(frame_pixels(latest.0, latest.1).unwrap().len(), 940 * 600 * 4);
+    }
 
     #[test]
     fn diagnostic_panel_respects_resizing() {

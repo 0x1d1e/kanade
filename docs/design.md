@@ -245,7 +245,15 @@ session menu|suspend|reboot|poweroff|logout
 
 ## Runtime + dependencies
 
-**Decision:** keep Amane. Kanade owns Cargo/build. Amane = UI/Wayland/rendering/input/window/IPC library, not build-system owner.
+**Target (ADR 0023):** Replace Amane entirely with Kanade-owned Wayland,
+input, rendering, window and IPC functionality in `crates/runtime`.
+The production shell remains on Amane during the migration, until behavioral,
+security and performance parity are verified on niri. Do not add more Amane
+workarounds or patch upstream Amane/niri.
+
+**Legacy production constraints (only for the current Amane-based `src/`
+implementation, not the target native runtime):** Kanade owns Cargo/build.
+The following rules describe the old shell while it remains in service.
 
 - `Cargo.toml` authoritative; pin Amane revision.
 - normal workflow: `cargo run`, `cargo test`, `cargo clippy`; repo watcher may restart on save.
@@ -253,18 +261,18 @@ session menu|suspend|reboot|poweroff|logout
 - `amane ipc call` may remain internal; public CLI stays `kanade ...`.
 - add normal Rust crates when they deepen Kanade.
 - no second shell/UI framework: no Quickshell/Qt/GTK/Iced/Slint alongside Amane.
-- do not directly add low-level Wayland/render deps for behavior Amane should own.
+- do not add new low-level Wayland/render workarounds to the Amane-based `src/` shell; implement missing capabilities in `crates/runtime`.
 - capability Amane lacks (per-app audio, devices, tray, clipboard, idle inhibit) → Kanade adapter over Amane's `Bus`, external tools or a non-Wayland crate (zbus for the tray); don't wait on Amane. Wayland boundary holds; external semantics stop at the adapter. [ADR 0011](adr/0011-kanade-adapters-where-amane-lacks-a-capability.md).
-- Amane owns Kanade's Wayland runtime/UI seam. Direct Wayland deps only for isolated diagnostics/preflight that implement no shell behavior: `wayland-client` lives only in `src/doctor/` (registry globals for `kanade doctor`), enforced by `src/boundary.rs`.
-- switch from Amane only if it blocks core invariant: privacy Overlay, secure lock, focus/input, zero-idle rendering, required protocol access.
+- the old `src/` shell restricts direct Wayland through `src/boundary.rs`; `crates/runtime` owns the native Wayland runtime intentionally and is exempt from this legacy rule.
+- cut over to the native runtime only after ADR 0023's complete parity and live validation gates; no permanent dual-runtime release.
 
 References, not dependencies: Suzuha = Amane full-shell proof; Noctalia v5 = native-shell/config/plugin architecture; DMS = UI/backend service split; iNiR = Niri/Island UX + deferred surfaces; Caelestia = visual/motion/launcher reference.
 
 ## Constraints + SLOs
 
 - niri ≥26.04; no geometry fullscreen heuristic.
-- Amane + niri = hard architecture deps.
-- views never block; no modifier/key-up → no custom Alt-Tab; no text key-repeat yet.
+- niri is the supported compositor; Amane is a temporary dependency of the working binary, not of the native target.
+- views never block; the native runtime supports compositor key press/release and repeat; text-input/IME parity remains pending.
 - source thread or Service listener panic → logged, restarted after 5 s (Amane restarts Services, `src/supervise.rs` sources); view panic may kill shell.
 - feature deps scoped: PipeWire audio/privacy; NM/BlueZ/PPD controls; logind/PAM session; awww/matugen/hypridle/wlsunset optional; network only for enabled remote-backed features.
 
