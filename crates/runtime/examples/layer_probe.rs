@@ -27,7 +27,11 @@ fn main() -> Result<(), String> {
     loop {
         for event in runtime.dispatch()? {
             match event {
-                Event::Configured { id: configured, width, height } if configured == id => {
+                Event::Configured {
+                    id: configured,
+                    width,
+                    height,
+                } if configured == id => {
                     println!("native layer configured: {width}x{height}");
                     runtime.remove(id);
                     return Ok(());

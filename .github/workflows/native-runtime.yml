@@ -3,12 +3,6 @@ name: Native runtime checks
 on:
   push:
     branches: [native-runtime]
-  pull_request:
-    paths:
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "crates/runtime/**"
-      - ".github/workflows/native-runtime.yml"
 
 jobs:
   native-runtime:
@@ -22,10 +16,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libfontconfig1-dev libfreetype6-dev libpulse-dev libpam0g-dev libvulkan-dev
-      - name: Format source for compilation (report differences)
-        run: |
-          cargo fmt --all
-          git diff --exit-code || echo "Formatting changes remain to be committed"
+      - name: Format
+        run: cargo fmt --all --check
       - name: Native runtime test
         run: cargo test -p kanade-runtime --locked
       - name: Native runtime lint

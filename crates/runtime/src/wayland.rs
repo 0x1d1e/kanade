@@ -63,7 +63,6 @@ struct Listener {
 }
 
 impl Listener {
-
     fn id_for_layer(&self, layer: &ZwlrLayerSurfaceV1) -> Option<WindowId> {
         self.windows
             .iter()
@@ -82,8 +81,8 @@ pub struct LayerRuntime {
 impl LayerRuntime {
     /// Fail with an explanatory error if this compositor lacks layer-shell.
     pub fn connect() -> Result<Self, String> {
-        let connection = Connection::connect_to_env()
-            .map_err(|e| format!("connecting to Wayland: {e}"))?;
+        let connection =
+            Connection::connect_to_env().map_err(|e| format!("connecting to Wayland: {e}"))?;
         let (globals, queue) = registry_queue_init::<Listener>(&connection)
             .map_err(|e| format!("Wayland registry: {e}"))?;
         let handle = queue.handle();
@@ -153,7 +152,12 @@ impl LayerRuntime {
         }
 
         update_layer(&window.layer, &spec);
-        set_input(&self.compositor, &self.queue.handle(), &window.surface, &spec);
+        set_input(
+            &self.compositor,
+            &self.queue.handle(),
+            &window.surface,
+            &spec,
+        );
         window.spec = spec;
         window.state.invalidate();
         window.surface.commit();
@@ -179,7 +183,9 @@ impl LayerRuntime {
             .configured_size
             .ok_or_else(|| format!("window {} has no configure", id.0))?;
         window.surface.attach(Some(buffer), 0, 0);
-        window.surface.damage_buffer(0, 0, width as i32, height as i32);
+        window
+            .surface
+            .damage_buffer(0, 0, width as i32, height as i32);
         window.surface.frame(&self.queue.handle(), id);
         window.surface.commit();
         Ok(true)
@@ -268,7 +274,12 @@ fn update_layer(layer: &ZwlrLayerSurfaceV1, spec: &Spec) {
     });
 }
 
-fn set_input(compositor: &WlCompositor, qh: &QueueHandle<Listener>, surface: &WlSurface, spec: &Spec) {
+fn set_input(
+    compositor: &WlCompositor,
+    qh: &QueueHandle<Listener>,
+    surface: &WlSurface,
+    spec: &Spec,
+) {
     let region: WlRegion = compositor.create_region(qh, ());
     for rect in spec.input_regions() {
         region.add(rect.x, rect.y, rect.width as i32, rect.height as i32);
@@ -311,11 +322,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Listener {
             } => {
                 layer.ack_configure(serial);
                 if let Some(window) = listener.windows.get_mut(&id) {
-                    let actual_width = if width == 0 {
-                        window.spec.width
-                    } else {
-                        width
-                    };
+                    let actual_width = if width == 0 { window.spec.width } else { width };
                     let actual_height = if height == 0 {
                         window.spec.height
                     } else {

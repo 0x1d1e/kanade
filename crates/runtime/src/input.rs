@@ -153,7 +153,11 @@ impl Keyboard {
         let window = self.focused?;
         let position = self.held.iter().position(|held| held.code == code)?;
         let stroke = self.held.remove(position);
-        if self.active.as_ref().is_some_and(|active| active.stroke.code == code) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.stroke.code == code)
+        {
             self.active = None;
         }
 
@@ -215,7 +219,10 @@ mod tests {
         let mut keyboard = keyboard();
         let now = Instant::now();
         assert_eq!(
-            keyboard.press(stroke(22, Key::Backspace), now).unwrap().phase,
+            keyboard
+                .press(stroke(22, Key::Backspace), now)
+                .unwrap()
+                .phase,
             Phase::Press
         );
         assert_eq!(keyboard.release(22).unwrap().phase, Phase::Release);
@@ -230,16 +237,25 @@ mod tests {
         keyboard.press(stroke(22, Key::Backspace), now);
         assert_eq!(keyboard.repeat_due(now + Duration::from_millis(199)), None);
         assert_eq!(
-            keyboard.repeat_due(now + Duration::from_millis(200)).unwrap().phase,
+            keyboard
+                .repeat_due(now + Duration::from_millis(200))
+                .unwrap()
+                .phase,
             Phase::Repeat
         );
         assert_eq!(keyboard.repeat_due(now + Duration::from_millis(219)), None);
         assert_eq!(
-            keyboard.repeat_due(now + Duration::from_millis(220)).unwrap().phase,
+            keyboard
+                .repeat_due(now + Duration::from_millis(220))
+                .unwrap()
+                .phase,
             Phase::Repeat
         );
         assert_eq!(
-            keyboard.repeat_due(now + Duration::from_secs(5)).unwrap().phase,
+            keyboard
+                .repeat_due(now + Duration::from_secs(5))
+                .unwrap()
+                .phase,
             Phase::Repeat
         );
         assert_eq!(keyboard.repeat_due(now + Duration::from_secs(5)), None);
@@ -263,7 +279,9 @@ mod tests {
         let now = Instant::now();
         let mapped = stroke(58, Key::Backspace);
         keyboard.press(mapped.clone(), now);
-        let event = keyboard.repeat_due(now + Duration::from_millis(200)).unwrap();
+        let event = keyboard
+            .repeat_due(now + Duration::from_millis(200))
+            .unwrap();
         assert_eq!(event.stroke, mapped);
         assert_eq!(keyboard.release(58).unwrap().stroke, mapped);
     }
@@ -281,7 +299,10 @@ mod tests {
         keyboard.press(stroke(22, Key::Backspace), now);
         assert_eq!(keyboard.repeat_due(now + Duration::from_millis(599)), None);
         assert_eq!(
-            keyboard.repeat_due(now + Duration::from_millis(600)).unwrap().phase,
+            keyboard
+                .repeat_due(now + Duration::from_millis(600))
+                .unwrap()
+                .phase,
             Phase::Repeat
         );
     }
