@@ -20,12 +20,7 @@ fn main() -> Result<(), String> {
             align: Alignment::Center,
             keyboard: KeyboardMode::None,
             exclusive_zone: -1,
-            input: vec![Rect {
-                x: 0,
-                y: 0,
-                width: 300,
-                height: 60,
-            }],
+            input: vec![],
         },
         None,
     );
@@ -36,7 +31,11 @@ fn main() -> Result<(), String> {
     loop {
         for event in runtime.dispatch()? {
             match event {
-                Event::Configured { id: configured, width, height } if configured == id => {
+                Event::Configured {
+                    id: configured,
+                    width,
+                    height,
+                } if configured == id => {
                     if shown.is_none() {
                         let pixels = raster::pill(width, height, height as f32 * 0.5)?;
                         let frame = runtime.shm_frame(width, height, &pixels)?;

@@ -145,7 +145,8 @@ impl LayerRuntime {
         let mut file = tempfile::tempfile().map_err(|e| format!("SHM backing file: {e}"))?;
         file.set_len(size as u64)
             .map_err(|e| format!("SHM resize: {e}"))?;
-        file.write_all(pixels).map_err(|e| format!("SHM write: {e}"))?;
+        file.write_all(pixels)
+            .map_err(|e| format!("SHM write: {e}"))?;
         let handle = self.queue.handle();
         let pool: WlShmPool = self.shm.create_pool(&file, size, &handle, ());
         let buffer = pool.create_buffer(
@@ -158,7 +159,10 @@ impl LayerRuntime {
             (),
         );
         pool.destroy();
-        Ok(ShmFrame { buffer, _file: file })
+        Ok(ShmFrame {
+            buffer,
+            _file: file,
+        })
     }
 
     /// A buffer is never attached before the compositor's first configure.
