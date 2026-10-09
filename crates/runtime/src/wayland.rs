@@ -745,6 +745,11 @@ impl LayerRuntime {
             if self.listener.pointer_at == Some(id) {
                 self.listener.pointer_at = None;
             }
+            if let Some(keys) = &mut self.listener.keys
+                && keys.focused() == Some(id)
+            {
+                keys.focus(None);
+            }
             window.layer.destroy();
             window.surface.destroy();
         } else if let Some(window) = self.listener.toplevels.remove(&id) {
