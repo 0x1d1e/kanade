@@ -25,7 +25,7 @@ fn frame_pixels(width: u32, height: u32) -> Result<Vec<u8>, String> {
         return Err("settings buffer exceeds Wayland SHM limit".into());
     }
     let mut data = vec![0u8; size];
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[35, 28, 23, 255]);
     }
     let panel_width = width.saturating_sub(64).min(480);
