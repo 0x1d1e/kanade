@@ -70,9 +70,9 @@ mod tests {
     #[test]
     fn compositor_xkb_keymap_drives_logical_keys() {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(
-            &context, "", "", "us", "", None, xkb::COMPILE_NO_FLAGS,
-        ).expect("system must provide a US XKB layout");
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::COMPILE_NO_FLAGS)
+                .expect("system must provide a US XKB layout");
         let mut mapper = Mapper::compile(keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))
             .expect("compiled XKB layout can be loaded from the compositor");
         assert_eq!(mapper.stroke(14).logical, Key::Backspace);
