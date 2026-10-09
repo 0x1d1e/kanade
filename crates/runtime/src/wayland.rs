@@ -544,7 +544,6 @@ impl LayerRuntime {
             };
             let wayland_ready = fds[0].revents().contains(PollFlags::IN);
             let sources_ready = fds[1].revents().contains(PollFlags::IN);
-            drop(fds);
             if wayland_ready {
                 guard.read().map_err(|e| format!("reading Wayland: {e}"))?;
             } else {
