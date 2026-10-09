@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
+use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -41,6 +42,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 use crate::input::{KeyEvent, Keyboard, RepeatInfo};
+use crate::wake::{self, Waker};
 use crate::keymap::Mapper;
 use crate::window::{Alignment, Edge, KeyboardMode, Layer, Spec, State, WindowId};
 
@@ -56,6 +58,7 @@ pub enum Event {
     FrameReady(WindowId),
     Closed(WindowId),
     BufferReleased(WlBuffer),
+    SourcesChanged,
     PointerEnter {
         id: WindowId,
         x: f64,
@@ -145,8 +148,9 @@ impl Drop for ShmFrame {
 }
 
 pub struct LayerRuntime {
-    connection: Connection,
     queue: EventQueue<Listener>,
+    wake: Waker,
+    wake_reader: UnixStream,
     listener: Listener,
     compositor: WlCompositor,
     shell: ZwlrLayerShellV1,
@@ -193,15 +197,22 @@ impl LayerRuntime {
             }
         });
 
+        let (wake, wake_reader) = wake::pair().map_err(|e| format!("runtime wake: {e}"))?;
         Ok(Self {
-            connection,
             queue,
+            wake,
+            wake_reader,
             listener,
             compositor,
             shell,
             shm,
             _seat: seat,
         })
+    }
+
+    /// Thread-safe wake handle for event-driven OS adapters.
+    pub fn waker(&self) -> Waker {
+        self.wake.clone()
     }
 
     /// All names are compositor-provided. Do not infer display order from ID.
@@ -406,10 +417,10 @@ impl LayerRuntime {
                     tv_nsec: duration.subsec_nanos() as _,
                 }
             });
-            let mut fds = [PollFd::from_borrowed_fd(
-                guard.connection_fd(),
-                PollFlags::IN,
-            )];
+            let mut fds = [
+                PollFd::from_borrowed_fd(guard.connection_fd(), PollFlags::IN),
+                PollFd::new(&self.wake_reader, PollFlags::IN),
+            ];
             let ready = match poll(&mut fds, timeout.as_ref()) {
                 Ok(ready) => ready,
                 Err(rustix::io::Errno::INTR) => {
@@ -421,10 +432,21 @@ impl LayerRuntime {
                     return Err(format!("polling Wayland: {error}"));
                 }
             };
-            if ready > 0 {
+            let wayland_ready = fds[0].revents().contains(PollFlags::IN);
+            let sources_ready = fds[1].revents().contains(PollFlags::IN);
+            drop(fds);
+            if wayland_ready {
                 guard.read().map_err(|e| format!("reading Wayland: {e}"))?;
             } else {
                 drop(guard);
+            }
+            if sources_ready && wake::drain(&mut self.wake_reader)
+                .map_err(|e| format!("reading wake: {e}"))?
+            {
+                self.listener.events.push(Event::SourcesChanged);
+            }
+            if ready != 0 && !wayland_ready && !sources_ready {
+                return Err("Wayland/event wake fd closed or failed".into());
             }
         }
         Ok(std::mem::take(&mut self.listener.events))
