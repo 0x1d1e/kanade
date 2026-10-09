@@ -10,11 +10,13 @@
 //! This is NOT the replacement UI, login/session lock, or a second production
 //! shell implementation. No Amane or niri processes are altered.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::path::Path;
 use std::process::ExitCode;
 
 use kanade_runtime::{
+    chrome::{hit_test, ChromeAction},
     ipc::{Incoming, Server},
     raster,
     wayland::{Event, LayerRuntime, ShmFrame},
@@ -49,6 +51,8 @@ struct Shell {
     island: WindowId,
     settings: Option<WindowId>,
     buffers: Vec<ShmFrame>,
+    sizes: BTreeMap<WindowId, (u32, u32)>,
+    pointer: (f64, f64),
     running: bool,
 }
 
@@ -84,6 +88,8 @@ impl Shell {
             island,
             settings: None,
             buffers: Vec::new(),
+            sizes: BTreeMap::new(),
+            pointer: (0.0, 0.0),
             running: true,
         })
     }
@@ -117,6 +123,7 @@ impl Shell {
             Command::CloseSettings => {
                 if let Some(id) = self.settings.take() {
                     self.runtime.remove(id);
+                    self.sizes.remove(&id);
                 }
                 ("ok\n".into(), false)
             }
@@ -152,7 +159,15 @@ impl Shell {
         while self.running {
             for event in self.runtime.dispatch()? {
                 match event {
-                    Event::Configured { id, width, height } => self.present(id, width, height)?,
+                    Event::Configured { id, width, height } => {
+                        self.sizes.insert(id, (width, height));
+                        self.present(id, width, height)?;
+                    }
+                    Event::FrameReady(id) if self.runtime.needs_frame(id) => {
+                        if let Some((width, height)) = self.sizes.get(&id).copied() {
+                            self.present(id, width, height)?;
+                        }
+                    }
                     Event::BufferReleased(buffer) => {
                         self.buffers.retain(|frame| frame.buffer != buffer);
                     }
@@ -164,6 +179,27 @@ impl Shell {
                     Event::Closed(id) if Some(id) == self.settings => {
                         self.runtime.remove(id);
                         self.settings = None;
+                        self.sizes.remove(&id);
+                    }
+                    Event::PointerEnter { id, x, y }
+                    | Event::PointerMotion { id, x, y } if Some(id) == self.settings => {
+                        self.pointer = (x, y);
+                    }
+                    Event::PointerButton {
+                        id,
+                        button: 0x110,
+                        pressed: true,
+                        serial,
+                    } if Some(id) == self.settings => {
+                        if let Some((width, height)) = self.sizes.get(&id).copied() {
+                            match hit_test(width, height, self.pointer.0, self.pointer.1) {
+                                ChromeAction::Move => self.runtime.move_toplevel(id, serial)?,
+                                ChromeAction::Resize(edge) => {
+                                    self.runtime.resize_toplevel(id, serial, edge)?;
+                                }
+                                ChromeAction::Content => {}
+                            }
+                        }
                     }
                     Event::PointerButton {
                         id,
