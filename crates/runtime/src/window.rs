@@ -108,6 +108,7 @@ impl State {
 
     pub fn hide(&mut self) {
         self.visible = false;
+        self.configured = false;
         self.frame_ready = false;
         self.dirty = false;
     }
@@ -119,7 +120,9 @@ impl State {
     }
 
     pub fn frame_callback(&mut self) {
-        self.frame_ready = true;
+        if self.visible && self.configured {
+            self.frame_ready = true;
+        }
     }
 
     /// Returns true exactly once per available frame while visible and dirty.
@@ -221,6 +224,7 @@ mod tests {
         state.show();
         state.configure();
         state.hide();
+        state.frame_callback(); // A callback from the old mapping is stale.
         assert!(!state.begin_frame());
         state.show();
         assert!(!state.begin_frame());

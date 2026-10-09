@@ -42,7 +42,7 @@ pub enum Event {
     },
     FrameReady(WindowId),
     Closed(WindowId),
-    BufferReleased,
+    BufferReleased(WlBuffer),
 }
 
 /// Retains one layer surface and its mutable compositor state.
@@ -364,14 +364,14 @@ impl Dispatch<WlCallback, WindowId> for Listener {
 impl Dispatch<WlBuffer, ()> for Listener {
     fn event(
         listener: &mut Self,
-        _: &WlBuffer,
+        buffer: &WlBuffer,
         event: wayland_client::protocol::wl_buffer::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if matches!(event, wayland_client::protocol::wl_buffer::Event::Release) {
-            listener.events.push(Event::BufferReleased);
+            listener.events.push(Event::BufferReleased(buffer.clone()));
         }
     }
 }

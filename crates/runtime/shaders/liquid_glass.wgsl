@@ -51,24 +51,32 @@ fn backdrop_at(pixel: vec2<f32>) -> vec3<f32> {
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let pixel = input.uv * glass.body.xy;
     let signed = distance_to_body(pixel);
+    let inside = max(-signed, 0.0);
     let band = max(glass.body.w, 0.001);
-    let edge = 1.0 - smoothstep(0.0, band, max(-signed, 0.0));
+    let rim = 1.0 - smoothstep(0.0, band, inside);
     let normal = outward_normal(pixel);
-    let amount = max(glass.optics.x, 0.0) * edge * edge;
-    let chroma = max(glass.optics.y, 0.0) * edge;
-    let base = pixel + normal * amount;
-    let r = backdrop_at(base - normal * chroma).r;
-    let g = backdrop_at(base).g;
-    let b = backdrop_at(base + normal * chroma).b;
-    let refraction = vec3<f32>(r, g, b);
-    let tint_amount = clamp(glass.tint.a * glass.optics.z, 0.0, 1.0);
-    let transmitted = mix(refraction, glass.tint.rgb, tint_amount);
+
+    // Read only beyond the visible body. The center is transparent tint,
+    // not the previous Island content captured on the screen.
+    let reach = max(glass.optics.x, 0.0) * rim * rim;
+    let base = pixel + normal * (inside + 1.5 + reach);
+    let chroma = max(glass.optics.y, 0.0) * rim;
+    let red = backdrop_at(base - normal * chroma).r;
+    let green = backdrop_at(base).g;
+    let blue = backdrop_at(base + normal * chroma).b;
+    let refraction = vec3<f32>(red, green, blue);
+
     let lighting = normalize(glass.light.xy + vec2<f32>(0.00001));
     let facing = max(dot(normal, lighting), 0.0);
-    let specular = pow(facing, 5.0) * edge * max(glass.optics.w, 0.0);
-    let color = clamp(transmitted + vec3<f32>(specular), vec3<f32>(0.0), vec3<f32>(1.0));
-    // Premultiplied AA output. No discard, so implicit texture derivatives
-    // remain defined for every pixel and corners do not flicker.
+    let specular = pow(facing, 5.0) * rim * max(glass.optics.w, 0.0);
+    let rim_rgb = clamp(refraction + vec3<f32>(specular), vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // Premultiplied alpha: transmitted center remains compositor-backed.
+    // Only the optical band samples a screenshot, avoiding self-feedback.
     let coverage = 1.0 - smoothstep(-0.5, 0.5, signed);
-    return vec4<f32>(color * coverage, coverage);
+    let rim_alpha = rim * coverage;
+    let tint_alpha = clamp(glass.tint.a * glass.optics.z, 0.0, 1.0) * coverage;
+    let alpha = rim_alpha + tint_alpha * (1.0 - rim_alpha);
+    let rgb = rim_rgb * rim_alpha + glass.tint.rgb * tint_alpha * (1.0 - rim_alpha);
+    return vec4<f32>(rgb, alpha);
 }
