@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
+use std::os::fd::AsFd;
 
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
@@ -168,7 +169,7 @@ impl LayerRuntime {
         file.write_all(pixels)
             .map_err(|e| format!("SHM write: {e}"))?;
         let handle = self.queue.handle();
-        let pool: WlShmPool = self.shm.create_pool(&file, size, &handle, ());
+        let pool: WlShmPool = self.shm.create_pool(file.as_fd(), size, &handle, ());
         let buffer = pool.create_buffer(
             0,
             width,
