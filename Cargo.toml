@@ -5,6 +5,9 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+[workspace]
+members = ["crates/runtime"]
+
 [dependencies]
 amane = { git = "https://github.com/MystiaFin/amane", rev = "6ace43e5c69cd4b39bb06b28c20fc4b883422519" }
 # Amane already builds it; only `kanade doctor` lists the compositor's globals with it (#105),

@@ -1,6 +1,6 @@
 # Kanade
 
-niri shell built on Amane, centered on an adaptive activity island. Before architecture or scope work, read `docs/design.md` (target design; decisions in `docs/adr/`). v0.1 plan, history only: `docs/archived/plan.md`.
+niri shell migrating from Amane to a Kanade-owned native runtime, centered on an adaptive activity island. Before architecture or scope work, read `docs/design.md` (target design; decisions in `docs/adr/`). v0.1 plan, history only: `docs/archived/plan.md`.
 
 Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
 
@@ -9,9 +9,9 @@ Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs,
 Run from repo root.
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test                # unit tests, incl. the island/ purity check
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                # unit tests, incl. the island/ purity check
 cargo run                 # the shell against the pinned Amane
 scripts/dev               # cargo build, restart the shell on each save; a failed build keeps the old one
 ```
@@ -46,6 +46,11 @@ Test Wi-Fi network (`mac80211_hwsim`): `scripts/test-network up`, then `down` to
 - iwd AP mode doesn't work: NM resets the device to station mode.
 - `src/sources/wifi.rs` uses the first Wi-Fi device. For a run, temporarily pin `device()` to the client's `Interface`, and revert before committing.
 - A wrong password shows up as device state FAILED with reason NO_SECRETS.
+
+## Native runtime migration
+
+See `docs/adr/0023-kanade-owned-runtime.md` and `docs/runtime-migration.md`.
+Do not add new Amane bypasses for missing renderer/input functionality. Implement the native equivalent, then remove Amane after behavioral/performance parity.
 
 ## Amane pin
 

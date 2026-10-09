@@ -1,0 +1,10 @@
+[package]
+name = "kanade-runtime"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# The new platform/runtime is developed beside the existing Amane shell until
+# every public Kanade behavior has a tested native implementation.
+[dependencies]
