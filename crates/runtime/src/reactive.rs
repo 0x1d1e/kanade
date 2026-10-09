@@ -46,7 +46,10 @@ impl Reactive {
         let Some((window, new)) = self.drawing.take() else {
             return Err("no view is recording dependencies");
         };
-        let old = self.observed.insert(window, new.clone()).unwrap_or_default();
+        let old = self
+            .observed
+            .insert(window, new.clone())
+            .unwrap_or_default();
         for removed in old.difference(&new) {
             if let Some(readers) = self.readers.get_mut(removed) {
                 readers.remove(&window);
