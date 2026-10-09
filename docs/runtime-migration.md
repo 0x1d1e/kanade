@@ -11,10 +11,13 @@ No Amane or niri fork/patch/issues/PRs.
 flip to the native runtime only after an explicit parity gate. There is no
 permanent runtime abstraction switching between Amane and native.
 
-`crates/runtime` starts with Amane-independent keyboard and window state
-machines. It is **not yet a Wayland backend, GPU renderer, or running shell**.
-The existing binary still uses Amane. Incremental commits should implement
-real vertical slices; do not turn declarations into claims of functionality.
+`crates/runtime` now contains a compiling native layer-shell backend,
+input/keymap handling, output discovery, Service invalidation, a Wayland SHM
+visibility probe, and a wgpu liquid-glass pass. **These components do not yet
+constitute a native Kanade shell**: there is no GPU Wayland presentation or
+live capture bridge, no complete UI, and no native main executable.
+The existing binary still uses Amane. Only a full native migration with
+verified parity can remove the dependency.
 
 ## Dependencies and ownership
 

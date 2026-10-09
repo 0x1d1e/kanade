@@ -58,6 +58,10 @@ The exact `rev` of `amane` in `Cargo.toml`. Bump it deliberately; never follow A
 
 ## Rules
 
+- Kanade is 0x1d1e's experimental shell. Invent when that improves the product; macOS and other shells are references to learn from and surpass, not ceilings. Do not rebuild generic infrastructure for its own sake.
+- Visual effects first, resource optimization later: prioritize convincing liquid-glass optics and motion; measure CPU, GPU and memory after correctness and visual parity. This never waives session-lock safety, privacy guarantees, data integrity, input security or working-shell recovery.
+- Prefer a coherent native rendering/input primitive over another Amane-dependent workaround. One proven pipeline beats parallel adapters; no per-frame screenshot-to-PNG transfer.
+
 - Never open an issue or PR on Amane or niri, nor write a custom patch, fork or vendored change for either. Build everything in Kanade, working around their gaps from Kanade's side.
 
 - `island/` is Amane-free except `island/service.rs`; enforced by `src/boundary.rs` (syn-based, covers aliases, nested modules, macros, `super`/`crate` escapes).
