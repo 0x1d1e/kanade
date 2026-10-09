@@ -106,7 +106,9 @@ pub fn shape(presentation: Presentation) -> Shape {
             width: REST.width + f32::from(slots) * TRAY_SLOT + TRAY_END,
             ..TRAY
         },
-        Presentation::Expanded(Surface::Controls | Surface::Tray | Surface::Weather) => CONTROLS,
+        Presentation::Expanded(
+            Surface::Controls | Surface::Tray | Surface::Weather | Surface::Session,
+        ) => CONTROLS,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(
             Surface::Notifications | Surface::Launcher | Surface::Clipboard | Surface::Calendar,
@@ -263,7 +265,7 @@ mod tests {
         value.fract() == 0.0
     }
 
-    const PRESENTATIONS: [Presentation; 14] = [
+    const PRESENTATIONS: [Presentation; 15] = [
         Presentation::Rest,
         Presentation::Compact,
         Presentation::Split,
@@ -278,6 +280,7 @@ mod tests {
         Presentation::Expanded(Surface::Clipboard),
         Presentation::Expanded(Surface::Calendar),
         Presentation::Expanded(Surface::Weather),
+        Presentation::Expanded(Surface::Session),
     ];
 
     /*

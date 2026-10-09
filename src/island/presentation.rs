@@ -29,11 +29,14 @@ pub enum Surface {
 
     // the weather now and the days ahead (#152)
     Weather,
+
+    // lock, sleep, restart, power off and log out, and the countdown to the last three (#156)
+    Session,
 }
 
 impl Surface {
     #[cfg(test)]
-    pub const ALL: [Surface; 8] = [
+    pub const ALL: [Surface; 9] = [
         Surface::Media,
         Surface::Notifications,
         Surface::Controls,
@@ -42,6 +45,7 @@ impl Surface {
         Surface::Clipboard,
         Surface::Calendar,
         Surface::Weather,
+        Surface::Session,
     ];
 
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
@@ -49,6 +53,7 @@ impl Surface {
         match kind {
             Kind::Media => Some(Surface::Media),
             Kind::Notification => Some(Surface::Notifications),
+            Kind::Session => Some(Surface::Session),
             _ => None,
         }
     }
@@ -256,6 +261,13 @@ impl Prior {
     // the islands it puts back
     pub fn monitors(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|(monitor, ..)| monitor.as_str())
+    }
+
+    // whether it gives `surface` back
+    pub fn opens(&self, surface: Surface) -> bool {
+        self.0
+            .iter()
+            .any(|(_, raised, _)| *raised == Some(Raised::Expanded(surface)))
     }
 }
 

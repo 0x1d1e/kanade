@@ -11,6 +11,7 @@ mod grid;
 pub mod launcher;
 pub mod media;
 pub mod notifications;
+pub mod session;
 mod slider;
 pub mod tray;
 pub mod weather;

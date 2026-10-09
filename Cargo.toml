@@ -13,8 +13,8 @@ wayland-client = "0.31"
 # Amane already builds it; for the config watch (#102)
 inotify = { version = "0.11", default-features = false }
 serde = "1"
-# Amane already builds it; the tray reads who called the watcher, which Amane's `Bus` does not give
-# (#134, ADR 0011)
+# Amane already builds it; the tray reads who called the watcher, and the session logind's refusals,
+# which Amane's `Bus` does not give (#134, #156, ADR 0011)
 zbus = "5"
 # zbus already builds it; the flags zbus takes a bus name with
 enumflags2 = "0.7"

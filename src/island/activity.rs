@@ -23,10 +23,11 @@ pub enum Kind {
     Screenshot,
     Recording,
     Caffeine,
+    Session,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 13] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -39,6 +40,7 @@ impl Kind {
         Kind::Screenshot,
         Kind::Recording,
         Kind::Caffeine,
+        Kind::Session,
     ];
 
     // as IPC names it
@@ -56,6 +58,7 @@ impl Kind {
             Kind::Screenshot => "screenshot",
             Kind::Recording => "recording",
             Kind::Caffeine => "caffeine",
+            Kind::Session => "session",
         }
     }
 
@@ -226,6 +229,8 @@ pub enum Detail {
     Recording(Clip),
 
     Caffeine(Awake),
+
+    Session(Leaving),
 }
 
 impl Detail {
@@ -243,6 +248,7 @@ impl Detail {
             Detail::Screenshot(_) => Some(Kind::Screenshot),
             Detail::Recording(_) => Some(Kind::Recording),
             Detail::Caffeine(_) => Some(Kind::Caffeine),
+            Detail::Session(_) => Some(Kind::Session),
         }
     }
 
@@ -383,6 +389,55 @@ pub enum Awake {
     // ended without being turned off, for why
     Failed {
         why: String,
+    },
+}
+
+// what the Session menu asks: a lock or sleep at once, an `Ending` only after a countdown
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leave {
+    Lock,
+    Sleep,
+    Ending(Ending),
+}
+
+// a leave that ends what is open, so it is asked only once a countdown runs out
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    Restart,
+    PowerOff,
+    LogOut,
+}
+
+// a restart, power off or log out counting down, or one asked that did not happen or may yet
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leaving {
+    /*
+     * asked of logind once `countdown` runs out; `serial` names this countdown, so a stale Cancel
+     * never cancels a newer one
+     */
+    Counting {
+        end: Ending,
+        countdown: Countdown,
+        serial: String,
+    },
+
+    /*
+     * refused or failed, for why. `serial` names a restart's, power off's or log out's, so a
+     * Dismiss meant for one since replaced does nothing; empty for a lock's or sleep's, which pass
+     */
+    Failed {
+        leave: Leave,
+        why: String,
+        serial: String,
+    },
+
+    /*
+     * asked of logind, which never answered, so it may still be carried out; `serial` names it as
+     * a restart's refusal
+     */
+    Unanswered {
+        leave: Leave,
+        serial: String,
     },
 }
 
@@ -685,7 +740,7 @@ mod tests {
                 Interrupt::AutoExpand(OSD),
             );
 
-            if matches!(kind, Kind::Media | Kind::Notification) {
+            if matches!(kind, Kind::Media | Kind::Notification | Kind::Session) {
                 assert!(activity.is_ok(), "{kind:?}");
             } else {
                 assert_eq!(

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use amane::{IpcCall, ipc_socket};
 
+use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
@@ -58,6 +59,7 @@ pub enum Call {
     Osd(osd::Asked),
     Lock,
     LockStatus,
+    Session(Leave),
     Settings(Option<&'static str>),
     CloseSettings,
     Reload,
@@ -590,6 +592,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::island::activity::Ending;
     use crate::island::presentation::Surface;
 
     fn parsed(words: &[&str]) -> Result<(&'static str, Call), Unparsed> {
@@ -713,6 +716,14 @@ mod tests {
         );
         assert_eq!(parsed(&["lock"]), Ok(("lock", Call::Lock)));
         assert_eq!(parsed(&["lock", "status"]), Ok(("lock", Call::LockStatus)));
+        assert_eq!(
+            parsed(&["session", "menu"]),
+            Ok(("session", Call::Island(Command::Open(Surface::Session))))
+        );
+        assert_eq!(
+            parsed(&["session", "poweroff"]),
+            Ok(("session", Call::Session(Leave::Ending(Ending::PowerOff))))
+        );
         // their Surface is its own Module, which shares the verb
         assert_eq!(
             parsed(&["notifications", "open"]),
@@ -825,6 +836,9 @@ mod tests {
             &["osd"],
             &["osd", "microphone"],
             &["lock", "now"],
+            &["session"],
+            &["session", "lock"],
+            &["session", "reboot", "now"],
             &["settings"],
             &["settings", "open", "launcher"],
             &["debug"],
@@ -849,7 +863,7 @@ module list|enable <name>|disable <name>
   <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
 banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
 calendar|calendar-surface|google-calendar|weather|weather-surface|clipboard-surface|capture|\
-caffeine|lock|settings
+caffeine|lock|session|settings
 {}
 media open|close|toggle
 timer start <duration>|pause|resume|cancel
@@ -874,6 +888,7 @@ capture record start|stop|status
 caffeine on|off|toggle [<duration>]|status
   <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
 lock [status]
+session menu|suspend|reboot|poweroff|logout
 settings open [<page>]|close
   <page>: island|windows|dock|wallpaper|calendar|weather
 config defaults

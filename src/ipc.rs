@@ -22,7 +22,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{apps, caffeine, google, sleep, wallpaper, weather};
+use crate::sources::{apps, caffeine, google, session, sleep, wallpaper, weather};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -88,6 +88,8 @@ fn run(call: Call) -> Reply {
             Err(error) => Reply::Refused(error),
         },
         Call::LockStatus => Reply::Done(lock::status()),
+        // on the draw thread, which the lock screen lives on; logind is asked on a thread of its own
+        Call::Session(leave) => session::request(leave).map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
         // on the draw thread, which the window's text inputs live on
