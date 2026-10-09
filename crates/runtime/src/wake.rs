@@ -18,7 +18,12 @@ pub fn pair() -> io::Result<(Waker, UnixStream)> {
     let (reader, writer) = UnixStream::pair()?;
     reader.set_nonblocking(true)?;
     writer.set_nonblocking(true)?;
-    Ok((Waker { writer: Arc::new(Mutex::new(writer)) }, reader))
+    Ok((
+        Waker {
+            writer: Arc::new(Mutex::new(writer)),
+        },
+        reader,
+    ))
 }
 
 impl Waker {
@@ -28,7 +33,10 @@ impl Waker {
             Ok(1) => Ok(()),
             // A full socket already contains a wake, so it is sufficient.
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
-            Ok(_) => Err(io::Error::new(io::ErrorKind::WriteZero, "wake write failed")),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "wake write failed",
+            )),
             Err(error) => Err(error),
         }
     }
@@ -40,7 +48,12 @@ pub fn drain(reader: &mut UnixStream) -> io::Result<bool> {
     let mut bytes = [0; 1024];
     loop {
         match reader.read(&mut bytes) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::BrokenPipe, "wake writer closed")),
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "wake writer closed",
+                ));
+            }
             Ok(_) => received = true,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(received),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,

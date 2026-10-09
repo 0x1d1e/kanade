@@ -42,8 +42,8 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 use crate::input::{KeyEvent, Keyboard, RepeatInfo};
-use crate::wake::{self, Waker};
 use crate::keymap::Mapper;
+use crate::wake::{self, Waker};
 use crate::window::{Alignment, Edge, KeyboardMode, Layer, Spec, State, WindowId};
 
 /// Events emitted in arrival order; niri and the Wayland compositor are the
@@ -440,8 +440,8 @@ impl LayerRuntime {
             } else {
                 drop(guard);
             }
-            if sources_ready && wake::drain(&mut self.wake_reader)
-                .map_err(|e| format!("reading wake: {e}"))?
+            if sources_ready
+                && wake::drain(&mut self.wake_reader).map_err(|e| format!("reading wake: {e}"))?
             {
                 self.listener.events.push(Event::SourcesChanged);
             }
