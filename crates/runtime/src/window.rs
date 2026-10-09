@@ -91,13 +91,18 @@ pub struct State {
     configured: bool,
     visible: bool,
     frame_ready: bool,
+    awaiting_frame: bool,
     dirty: bool,
 }
 
 impl State {
     pub fn configure(&mut self) {
         self.configured = true;
-        self.frame_ready = true;
+        // Configure is not a substitute for the previous frame callback.
+        // Resizes during an in-flight presentation must not bypass pacing.
+        if !self.awaiting_frame {
+            self.frame_ready = true;
+        }
         self.dirty = true;
     }
 
@@ -110,6 +115,7 @@ impl State {
         self.visible = false;
         self.configured = false;
         self.frame_ready = false;
+        self.awaiting_frame = false;
         self.dirty = false;
     }
 
@@ -120,7 +126,8 @@ impl State {
     }
 
     pub fn frame_callback(&mut self) {
-        if self.visible && self.configured {
+        if self.visible && self.configured && self.awaiting_frame {
+            self.awaiting_frame = false;
             self.frame_ready = true;
         }
     }
@@ -131,6 +138,7 @@ impl State {
             return false;
         }
         self.frame_ready = false;
+        self.awaiting_frame = true;
         self.dirty = false;
         true
     }
@@ -216,6 +224,24 @@ mod tests {
         assert!(state.needs_frame());
         state.frame_callback();
         assert!(state.begin_frame());
+    }
+
+    #[test]
+    fn configure_does_not_bypass_an_outstanding_frame() {
+        let mut state = State::default();
+        state.show();
+        state.configure();
+        assert!(state.begin_frame());
+        state.submitted(false);
+        // Resize while the compositor has not yet completed the first frame.
+        state.configure();
+        assert!(state.needs_frame());
+        assert!(!state.begin_frame());
+        state.frame_callback();
+        assert!(state.begin_frame());
+        // A duplicate callback for the old frame is not an extra credit.
+        state.frame_callback();
+        assert!(!state.begin_frame());
     }
 
     #[test]
