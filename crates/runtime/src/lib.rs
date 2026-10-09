@@ -15,3 +15,5 @@ pub mod wayland;
 pub mod effects;
 
 pub mod gpu;
+
+pub mod raster;

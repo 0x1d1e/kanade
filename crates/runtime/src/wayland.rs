@@ -10,6 +10,8 @@
 //! use the same input, event and frame scheduling contracts.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
 
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
@@ -21,6 +23,8 @@ use wayland_client::{
         wl_output::WlOutput,
         wl_region::WlRegion,
         wl_registry::{self, WlRegistry},
+        wl_shm::{self, WlShm},
+        wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
     },
 };
@@ -70,12 +74,27 @@ impl Listener {
     }
 }
 
+/// Owns backing memory until the compositor has released the buffer.
+/// The caller must retain this value after present() until BufferReleased
+/// names the same WlBuffer, or until the entire Wayland connection closes.
+pub struct ShmFrame {
+    pub buffer: WlBuffer,
+    _file: File,
+}
+
+impl Drop for ShmFrame {
+    fn drop(&mut self) {
+        self.buffer.destroy();
+    }
+}
+
 pub struct LayerRuntime {
     connection: Connection,
     queue: EventQueue<Listener>,
     listener: Listener,
     compositor: WlCompositor,
     shell: ZwlrLayerShellV1,
+    shm: WlShm,
 }
 
 impl LayerRuntime {
@@ -89,6 +108,9 @@ impl LayerRuntime {
         let compositor = globals
             .bind::<WlCompositor, _, _>(&handle, 4..=6, ())
             .map_err(|e| format!("wl_compositor: {e}"))?;
+        let shm = globals
+            .bind::<WlShm, _, _>(&handle, 1..=1, ())
+            .map_err(|e| format!("wl_shm: {e}"))?;
         let shell = globals
             .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
@@ -99,7 +121,44 @@ impl LayerRuntime {
             listener: Listener::default(),
             compositor,
             shell,
+            shm,
         })
+    }
+
+    /// The small SHM path is only a visibility/Wayland smoke-test renderer.
+    /// It is not the final GPU backend. Pixels must be premultiplied
+    /// little-endian BGRA (Wayland ARGB8888).
+    pub fn shm_frame(&self, width: u32, height: u32, pixels: &[u8]) -> Result<ShmFrame, String> {
+        let stride = width.checked_mul(4).ok_or("SHM stride overflow")?;
+        let len = stride.checked_mul(height).ok_or("SHM size overflow")?;
+        let size = i32::try_from(len).map_err(|_| "SHM frame too large")?;
+        let stride = i32::try_from(stride).map_err(|_| "SHM stride too large")?;
+        let width = i32::try_from(width).map_err(|_| "SHM width too large")?;
+        let height = i32::try_from(height).map_err(|_| "SHM height too large")?;
+        if size == 0 || pixels.len() != size as usize {
+            return Err("SHM pixel data must match positive frame dimensions".into());
+        }
+
+        // Anonymous, unlinked temporary file. The compositor sees the FD,
+        // not a filename, and the file is never reused while its buffer
+        // might be held by a surface.
+        let mut file = tempfile::tempfile().map_err(|e| format!("SHM backing file: {e}"))?;
+        file.set_len(size as u64)
+            .map_err(|e| format!("SHM resize: {e}"))?;
+        file.write_all(pixels).map_err(|e| format!("SHM write: {e}"))?;
+        let handle = self.queue.handle();
+        let pool: WlShmPool = self.shm.create_pool(&file, size, &handle, ());
+        let buffer = pool.create_buffer(
+            0,
+            width,
+            height,
+            stride,
+            wl_shm::Format::Argb8888,
+            &handle,
+            (),
+        );
+        pool.destroy();
+        Ok(ShmFrame { buffer, _file: file })
     }
 
     /// A buffer is never attached before the compositor's first configure.
@@ -379,6 +438,8 @@ impl Dispatch<WlBuffer, ()> for Listener {
 delegate_noop!(Listener: WlCompositor);
 delegate_noop!(Listener: ZwlrLayerShellV1);
 delegate_noop!(Listener: WlRegion);
+delegate_noop!(Listener: ignore WlShm);
+delegate_noop!(Listener: WlShmPool);
 delegate_noop!(Listener: ignore WlSurface);
 
 #[cfg(test)]
