@@ -60,7 +60,12 @@ mod tests {
         )
         .validate(&module)
         .expect("valid liquid-glass shader");
-        assert!(module.entry_points.iter().any(|e| e.name == "fragment_main"));
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|e| e.name == "fragment_main")
+        );
         assert!(module.entry_points.iter().any(|e| e.name == "vertex_main"));
     }
 }
