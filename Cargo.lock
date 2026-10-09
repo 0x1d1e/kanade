@@ -1024,6 +1024,7 @@ dependencies = [
 name = "kanade-runtime"
 version = "0.1.0"
 dependencies = [
+ "xkbcommon",
  "tempfile",
  "wgpu",
  "naga",

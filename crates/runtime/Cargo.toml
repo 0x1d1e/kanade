@@ -13,6 +13,7 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 wgpu = { version = "29", default-features = true }
 tempfile = "3"
+xkbcommon = "0.8"
 
 [dev-dependencies]
 naga = { version = "29", features = ["wgsl-in"] }

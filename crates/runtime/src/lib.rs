@@ -17,3 +17,5 @@ pub mod effects;
 pub mod gpu;
 
 pub mod raster;
+
+pub mod keymap;

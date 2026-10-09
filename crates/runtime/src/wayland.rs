@@ -11,7 +11,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::time::Instant;
 use std::os::fd::AsFd;
 
 use wayland_client::{
@@ -23,6 +24,7 @@ use wayland_client::{
         wl_compositor::WlCompositor,
         wl_output::WlOutput,
         wl_pointer::{self, WlPointer},
+        wl_keyboard::{self, WlKeyboard},
         wl_region::WlRegion,
         wl_registry::{self, WlRegistry},
         wl_seat::{self, WlSeat},
@@ -37,6 +39,8 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 };
 
 use crate::window::{Alignment, Edge, KeyboardMode, Layer, Spec, State, WindowId};
+use crate::input::{KeyEvent, Keyboard, RepeatInfo};
+use crate::keymap::Mapper;
 
 /// Events emitted in arrival order; niri and the Wayland compositor are the
 /// sole authorities for configure and frame readiness.
@@ -56,6 +60,7 @@ pub enum Event {
         y: f64,
     },
     PointerLeave(WindowId),
+    Keyboard(KeyEvent),
     PointerMotion {
         id: WindowId,
         x: f64,
@@ -90,6 +95,9 @@ struct Listener {
     events: Vec<Event>,
     pointer: Option<WlPointer>,
     pointer_at: Option<WindowId>,
+    keyboard: Option<WlKeyboard>,
+    keys: Option<Keyboard>,
+    mapper: Option<Mapper>,
 }
 
 impl Listener {
@@ -492,6 +500,21 @@ impl Dispatch<WlSeat, ()> for Listener {
             capabilities: wayland_client::WEnum::Value(caps),
         } = event
         {
+            if caps.contains(wl_seat::Capability::Keyboard) {
+                if state.keyboard.is_none() {
+                    state.keyboard = Some(seat.get_keyboard(qh, ()));
+                    state.keys = Some(Keyboard::new(RepeatInfo::from_wayland(0, 0)));
+                }
+            } else {
+                if let Some(keyboard) = state.keyboard.take() {
+                    keyboard.release();
+                }
+                if let Some(keys) = &mut state.keys {
+                    keys.focus(None);
+                }
+                state.keys = None;
+                state.mapper = None;
+            }
             if caps.contains(wl_seat::Capability::Pointer) {
                 if state.pointer.is_none() {
                     state.pointer = Some(seat.get_pointer(qh, ()));
@@ -504,6 +527,83 @@ impl Dispatch<WlSeat, ()> for Listener {
                     state.events.push(Event::PointerLeave(id));
                 }
             }
+        }
+    }
+}
+
+impl Dispatch<WlKeyboard, ()> for Listener {
+    fn event(
+        listener: &mut Self,
+        keyboard: &WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if listener.keyboard.as_ref() != Some(keyboard) {
+            return;
+        }
+        match event {
+            wl_keyboard::Event::Keymap {
+                format: wayland_client::WEnum::Value(wl_keyboard::KeymapFormat::XkbV1),
+                fd,
+                size,
+            } => {
+                // Reject malformed and oversized compositor keymaps without
+                // allocation pressure or falling back to a US keyboard.
+                listener.mapper = None;
+                if size == 0 || size > 2 * 1024 * 1024 {
+                    return;
+                }
+                let mut bytes = vec![0u8; size as usize];
+                let mut file = File::from(fd);
+                if file.read_exact(&mut bytes).is_ok()
+                    && let Ok(source) = String::from_utf8(bytes)
+                {
+                    listener.mapper = Mapper::compile(source.trim_end_matches('\0').into());
+                }
+                if let Some(keys) = &mut listener.keys {
+                    keys.focus(None);
+                }
+            }
+            wl_keyboard::Event::Enter { surface, .. } => {
+                let id = listener.id_for_surface(&surface);
+                if let Some(keys) = &mut listener.keys {
+                    keys.focus(id);
+                }
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                if let Some(keys) = &mut listener.keys {
+                    keys.focus(None);
+                }
+            }
+            wl_keyboard::Event::Modifiers {
+                mods_depressed, mods_latched, mods_locked, group, ..
+            } => {
+                if let Some(mapper) = &mut listener.mapper {
+                    mapper.modifiers(mods_depressed, mods_latched, mods_locked, group);
+                }
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                if let Some(keys) = &mut listener.keys {
+                    keys.configure_repeat(RepeatInfo::from_wayland(rate, delay), Instant::now());
+                }
+            }
+            wl_keyboard::Event::Key {
+                key, state: wayland_client::WEnum::Value(state), ..
+            } => {
+                let Some(keys) = &mut listener.keys else { return };
+                let result = match state {
+                    wl_keyboard::KeyState::Pressed => listener.mapper.as_ref()
+                        .and_then(|mapper| keys.press(mapper.stroke(key), Instant::now())),
+                    wl_keyboard::KeyState::Released => keys.release(key),
+                    _ => None,
+                };
+                if let Some(event) = result {
+                    listener.events.push(Event::Keyboard(event));
+                }
+            }
+            _ => {}
         }
     }
 }
