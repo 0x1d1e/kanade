@@ -197,7 +197,11 @@ mod tests {
     const OTHER: WindowId = WindowId(8);
 
     fn stroke(code: u32, logical: Key) -> Stroke {
-        Stroke { code, logical, repeatable: true }
+        Stroke {
+            code,
+            logical,
+            repeatable: true,
+        }
     }
 
     fn keyboard() -> Keyboard {
@@ -210,7 +214,10 @@ mod tests {
     fn short_tap_never_repeats() {
         let mut keyboard = keyboard();
         let now = Instant::now();
-        assert_eq!(keyboard.press(stroke(22, Key::Backspace), now).unwrap().phase, Phase::Press);
+        assert_eq!(
+            keyboard.press(stroke(22, Key::Backspace), now).unwrap().phase,
+            Phase::Press
+        );
         assert_eq!(keyboard.release(22).unwrap().phase, Phase::Release);
         assert_eq!(keyboard.repeat_due(now + Duration::from_secs(2)), None);
         assert_eq!(keyboard.next_repeat(), None);
@@ -222,10 +229,19 @@ mod tests {
         let now = Instant::now();
         keyboard.press(stroke(22, Key::Backspace), now);
         assert_eq!(keyboard.repeat_due(now + Duration::from_millis(199)), None);
-        assert_eq!(keyboard.repeat_due(now + Duration::from_millis(200)).unwrap().phase, Phase::Repeat);
+        assert_eq!(
+            keyboard.repeat_due(now + Duration::from_millis(200)).unwrap().phase,
+            Phase::Repeat
+        );
         assert_eq!(keyboard.repeat_due(now + Duration::from_millis(219)), None);
-        assert_eq!(keyboard.repeat_due(now + Duration::from_millis(220)).unwrap().phase, Phase::Repeat);
-        assert_eq!(keyboard.repeat_due(now + Duration::from_secs(5)).unwrap().phase, Phase::Repeat);
+        assert_eq!(
+            keyboard.repeat_due(now + Duration::from_millis(220)).unwrap().phase,
+            Phase::Repeat
+        );
+        assert_eq!(
+            keyboard.repeat_due(now + Duration::from_secs(5)).unwrap().phase,
+            Phase::Repeat
+        );
         assert_eq!(keyboard.repeat_due(now + Duration::from_secs(5)), None);
     }
 
@@ -264,7 +280,10 @@ mod tests {
         keyboard.configure_repeat(RepeatInfo::from_wayland(25, 600), now);
         keyboard.press(stroke(22, Key::Backspace), now);
         assert_eq!(keyboard.repeat_due(now + Duration::from_millis(599)), None);
-        assert_eq!(keyboard.repeat_due(now + Duration::from_millis(600)).unwrap().phase, Phase::Repeat);
+        assert_eq!(
+            keyboard.repeat_due(now + Duration::from_millis(600)).unwrap().phase,
+            Phase::Repeat
+        );
     }
 
     #[test]
@@ -288,8 +307,14 @@ mod tests {
 
     #[test]
     fn rate_is_bounded_even_for_absurd_compositor_values() {
-        assert_eq!(RepeatInfo::from_wayland(10_000, -10).interval, Some(Duration::from_millis(1)));
+        assert_eq!(
+            RepeatInfo::from_wayland(10_000, -10).interval,
+            Some(Duration::from_millis(1))
+        );
         assert_eq!(RepeatInfo::from_wayland(-1, 100).interval, None);
-        assert_eq!(RepeatInfo::from_wayland(50, 200).delay, Duration::from_millis(200));
+        assert_eq!(
+            RepeatInfo::from_wayland(50, 200).delay,
+            Duration::from_millis(200)
+        );
     }
 }
