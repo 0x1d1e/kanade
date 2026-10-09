@@ -22,10 +22,10 @@ use wayland_client::{
         wl_callback::{self, WlCallback},
         wl_compositor::WlCompositor,
         wl_output::WlOutput,
-        wl_region::WlRegion,
-        wl_seat::{self, WlSeat},
         wl_pointer::{self, WlPointer},
+        wl_region::WlRegion,
         wl_registry::{self, WlRegistry},
+        wl_seat::{self, WlSeat},
         wl_shm::{self, WlShm},
         wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
@@ -50,11 +50,27 @@ pub enum Event {
     FrameReady(WindowId),
     Closed(WindowId),
     BufferReleased(WlBuffer),
-    PointerEnter { id: WindowId, x: f64, y: f64 },
+    PointerEnter {
+        id: WindowId,
+        x: f64,
+        y: f64,
+    },
     PointerLeave(WindowId),
-    PointerMotion { id: WindowId, x: f64, y: f64 },
-    PointerButton { id: WindowId, button: u32, pressed: bool },
-    PointerScroll { id: WindowId, x: f64, y: f64 },
+    PointerMotion {
+        id: WindowId,
+        x: f64,
+        y: f64,
+    },
+    PointerButton {
+        id: WindowId,
+        button: u32,
+        pressed: bool,
+    },
+    PointerScroll {
+        id: WindowId,
+        x: f64,
+        y: f64,
+    },
 }
 
 /// Retains one layer surface and its mutable compositor state.
@@ -474,7 +490,8 @@ impl Dispatch<WlSeat, ()> for Listener {
     ) {
         if let wl_seat::Event::Capabilities {
             capabilities: wayland_client::WEnum::Value(caps),
-        } = event {
+        } = event
+        {
             if caps.contains(wl_seat::Capability::Pointer) {
                 if state.pointer.is_none() {
                     state.pointer = Some(seat.get_pointer(qh, ()));
@@ -505,14 +522,21 @@ impl Dispatch<WlPointer, ()> for Listener {
             return;
         }
         match event {
-            wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => {
+            wl_pointer::Event::Enter {
+                surface,
+                surface_x,
+                surface_y,
+                ..
+            } => {
                 if let Some(previous) = state.pointer_at.take() {
                     state.events.push(Event::PointerLeave(previous));
                 }
                 if let Some(id) = state.id_for_surface(&surface) {
                     state.pointer_at = Some(id);
                     state.events.push(Event::PointerEnter {
-                        id, x: surface_x, y: surface_y,
+                        id,
+                        x: surface_x,
+                        y: surface_y,
                     });
                 }
             }
@@ -521,7 +545,11 @@ impl Dispatch<WlPointer, ()> for Listener {
                     state.events.push(Event::PointerLeave(id));
                 }
             }
-            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
                 if let Some(id) = state.pointer_at {
                     state.events.push(Event::PointerMotion {
                         id, x: surface_x, y: surface_y,
@@ -542,7 +570,9 @@ impl Dispatch<WlPointer, ()> for Listener {
                 }
             }
             wl_pointer::Event::Axis {
-                axis: wayland_client::WEnum::Value(axis), value, ..
+                axis: wayland_client::WEnum::Value(axis),
+                value,
+                ..
             } => {
                 if let Some(id) = state.pointer_at {
                     let (x, y) = match axis {
