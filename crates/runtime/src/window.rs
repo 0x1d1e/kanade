@@ -157,16 +157,41 @@ mod tests {
             keyboard: KeyboardMode::OnDemand,
             exclusive_zone: -1,
             input: vec![
-                Rect { x: 150, y: 0, width: 260, height: 40 },
-                Rect { x: 600, y: 5, width: 20, height: 20 },
-                Rect { x: -10, y: -10, width: 30, height: 25 },
+                Rect {
+                    x: 150,
+                    y: 0,
+                    width: 260,
+                    height: 40,
+                },
+                Rect {
+                    x: 600,
+                    y: 5,
+                    width: 20,
+                    height: 20,
+                },
+                Rect {
+                    x: -10,
+                    y: -10,
+                    width: 30,
+                    height: 25,
+                },
             ],
         };
         assert_eq!(
             spec.input_regions(),
             vec![
-                Rect { x: 150, y: 0, width: 260, height: 40 },
-                Rect { x: 0, y: 0, width: 20, height: 15 },
+                Rect {
+                    x: 150,
+                    y: 0,
+                    width: 260,
+                    height: 40,
+                },
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 15,
+                },
             ]
         );
     }
