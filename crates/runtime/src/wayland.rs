@@ -552,7 +552,9 @@ impl Dispatch<WlPointer, ()> for Listener {
             } => {
                 if let Some(id) = state.pointer_at {
                     state.events.push(Event::PointerMotion {
-                        id, x: surface_x, y: surface_y,
+                        id,
+                        x: surface_x,
+                        y: surface_y,
                     });
                 }
             }
