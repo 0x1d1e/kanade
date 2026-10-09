@@ -6,7 +6,6 @@
 //! wl_buffer presentation. Close the window to stop the test. This is NOT
 //! the finished Settings UI.
 
-use std::collections::BTreeMap;
 use kanade_runtime::{
     raster,
     wayland::{Event, LayerRuntime, ShmFrame},
@@ -14,6 +13,9 @@ use kanade_runtime::{
 };
 
 fn frame_pixels(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    if width == 0 || height == 0 {
+        return Err("settings dimensions must be positive".into());
+    }
     let size = u64::from(width).checked_mul(u64::from(height))
         .and_then(|n| n.checked_mul(4))
         .and_then(|n| usize::try_from(n).ok())
@@ -51,8 +53,7 @@ fn run() -> Result<(), String> {
     let id: WindowId = runtime.create_toplevel(
         680, 520, "Kanade Native Settings — Protocol Probe", "kanade",
     )?;
-    let mut active: BTreeMap<wayland_client::protocol::wl_buffer::WlBuffer, ShmFrame> =
-        BTreeMap::new();
+    let mut active: Vec<ShmFrame> = Vec::new();
     loop {
         for event in runtime.dispatch()? {
             match event {
@@ -61,11 +62,11 @@ fn run() -> Result<(), String> {
                     // Each presented buffer has its own backing file.
                     let frame = runtime.shm_frame(width, height, &frame_pixels(width, height)?)?;
                     if runtime.present(id, &frame.buffer)? {
-                        active.insert(frame.buffer.clone(), frame);
+                        active.push(frame);
                     }
                 }
                 Event::BufferReleased(buffer) => {
-                    active.remove(&buffer);
+                    active.retain(|frame| frame.buffer != buffer);
                 }
                 Event::Closed(closed) if closed == id => {
                     runtime.remove(id);
