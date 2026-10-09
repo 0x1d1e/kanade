@@ -84,6 +84,9 @@ impl Reactive {
 
     /// Unsubscribe all types on window close, monitor unplug and module off.
     pub fn remove(&mut self, window: WindowId) {
+        if self.drawing.as_ref().is_some_and(|(id, _)| *id == window) {
+            self.drawing = None;
+        }
         self.dirty.remove(&window);
         if let Some(old) = self.observed.remove(&window) {
             for ty in old {

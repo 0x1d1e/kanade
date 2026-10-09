@@ -30,7 +30,7 @@ impl Mapper {
 
     pub fn stroke(&self, physical: u32) -> Stroke {
         // wl_keyboard sends evdev keycodes; XKB codes are offset by 8.
-        let keycode = xkb::Keycode::new(physical + 8);
+        let keycode = xkb::Keycode::new(physical.saturating_add(8));
         let symbol = self.state.key_get_one_sym(keycode).raw();
         let logical = match symbol {
             0xff0d | 0xff8d => Key::Enter,
@@ -66,6 +66,20 @@ impl Mapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compositor_xkb_keymap_drives_logical_keys() {
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap = xkb::Keymap::new_from_names(
+            &context, "", "", "us", "", None, xkb::COMPILE_NO_FLAGS,
+        ).expect("system must provide a US XKB layout");
+        let mut mapper = Mapper::compile(keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))
+            .expect("compiled XKB layout can be loaded from the compositor");
+        assert_eq!(mapper.stroke(14).logical, Key::Backspace);
+        assert_eq!(mapper.stroke(30).logical, Key::Text("a".into()));
+        assert!(!mapper.stroke(42).repeatable); // Left Shift.
+        mapper.modifiers(0, 0, 0, 0);
+    }
 
     #[test]
     fn malformed_keymap_fails_closed() {

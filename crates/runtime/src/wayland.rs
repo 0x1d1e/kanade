@@ -15,7 +15,7 @@ use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::time::Instant;
 
-use rustix::event::{poll, PollFd, PollFlags, Timespec};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
@@ -406,7 +406,10 @@ impl LayerRuntime {
                     tv_nsec: duration.subsec_nanos() as _,
                 }
             });
-            let mut fds = [PollFd::from_borrowed_fd(guard.connection_fd(), PollFlags::IN)];
+            let mut fds = [PollFd::from_borrowed_fd(
+                guard.connection_fd(),
+                PollFlags::IN,
+            )];
             let ready = match poll(&mut fds, timeout.as_ref()) {
                 Ok(ready) => ready,
                 Err(rustix::io::Errno::INTR) => {
