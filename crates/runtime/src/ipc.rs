@@ -174,10 +174,7 @@ fn serve(
             break;
         }
         if !fds[0].revents().contains(PollFlags::IN) {
-            if fds[0]
-                .revents()
-                .intersects(PollFlags::HUP | PollFlags::ERR)
-            {
+            if fds[0].revents().intersects(PollFlags::HUP | PollFlags::ERR) {
                 break;
             }
             continue;
