@@ -36,7 +36,8 @@ enum Command {
 }
 
 fn command(arguments: &[String]) -> Command {
-    match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    match words.as_slice() {
         ["status"] => Command::Status,
         ["settings", "open"] => Command::OpenSettings,
         ["settings", "close"] => Command::CloseSettings,
@@ -96,10 +97,8 @@ impl Shell {
 
     fn open_settings(&mut self) -> Result<(), String> {
         if self.settings.is_none() {
-            self.settings = Some(
-                self.runtime
-                    .create_toplevel(680, 520, "Kanade Native Probe", "kanade")?,
-            );
+            let id = self.runtime.create_toplevel(680, 520, "Kanade Native Probe", "kanade")?;
+            self.settings = Some(id);
         }
         Ok(())
     }
@@ -109,7 +108,11 @@ impl Shell {
             Command::Status => (
                 format!(
                     "ok\nnative shell probe; Settings {}; no Amane UI",
-                    if self.settings.is_some() { "open" } else { "closed" }
+                    if self.settings.is_some() {
+                        "open"
+                    } else {
+                        "closed"
+                    }
                 ),
                 false,
             ),
@@ -263,8 +266,14 @@ mod tests {
     #[test]
     fn native_commands_do_not_claim_unimplemented_features() {
         assert_eq!(command(&["status".into()]), Command::Status);
-        assert_eq!(command(&["settings".into(), "open".into()]), Command::OpenSettings);
-        assert_eq!(command(&["settings".into(), "close".into()]), Command::CloseSettings);
+        assert_eq!(
+            command(&["settings".into(), "open".into()]),
+            Command::OpenSettings
+        );
+        assert_eq!(
+            command(&["settings".into(), "close".into()]),
+            Command::CloseSettings
+        );
         assert_eq!(command(&["exit".into()]), Command::Exit);
         assert_eq!(command(&["lock".into()]), Command::Unsupported);
         assert_eq!(command(&["screenshot".into()]), Command::Unsupported);

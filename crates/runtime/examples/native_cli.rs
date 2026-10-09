@@ -25,7 +25,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(reply) if reply.starts_with("refused\n") => {
-            eprintln!("kanade native CLI: {}", reply.trim_start_matches("refused\n"));
+            eprintln!(
+                "kanade native CLI: {}",
+                reply.trim_start_matches("refused\n")
+            );
             ExitCode::FAILURE
         }
         Ok(reply) => {
