@@ -253,8 +253,10 @@ impl LayerRuntime {
             .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
 
-        let mut listener = Listener::default();
-        listener.shm = Some(shm.clone());
+        let mut listener = Listener {
+            shm: Some(shm.clone()),
+            ..Listener::default()
+        };
         globals.contents().with_list(|list| {
             for global in list {
                 if global.interface == "wl_output" && global.version >= 4 {
