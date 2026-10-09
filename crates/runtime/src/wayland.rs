@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
+use std::os::unix::fs::FileExt;
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
@@ -35,6 +36,10 @@ use wayland_client::{
         wl_shm_pool::WlShmPool,
         wl_surface::WlSurface,
     },
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
@@ -59,6 +64,8 @@ pub enum Event {
     Closed(WindowId),
     BufferReleased(WlBuffer),
     SourcesChanged,
+    Backdrop(Backdrop),
+    CaptureFailed { output: String },
     PointerEnter {
         id: WindowId,
         x: f64,
@@ -89,6 +96,68 @@ pub enum Event {
     },
 }
 
+/// A real screen capture, not a wallpaper substitute. The caller may upload
+/// rgba immediately with gpu::upload_backdrop. No optical work happens on CPU.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Backdrop {
+    pub output: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+enum PixelOrder {
+    Bgra,
+    Rgba,
+}
+
+struct Capture {
+    frame: ZwlrScreencopyFrameV1,
+    output: String,
+    size: Option<(u32, u32, u32, PixelOrder)>,
+    flipped: bool,
+    file: Option<File>,
+    buffer: Option<WlBuffer>,
+}
+
+impl Capture {
+    fn pixels(&self) -> Option<Backdrop> {
+        let (width, height, stride, order) = self.size?;
+        let file = self.file.as_ref()?;
+        let len = usize::try_from(u64::from(stride) * u64::from(height)).ok()?;
+        let mut raw = vec![0; len];
+        file.read_exact_at(&mut raw, 0).ok()?;
+        let mut rgba = vec![0; width as usize * height as usize * 4];
+        for y in 0..height as usize {
+            let source_y = if self.flipped { height as usize - y - 1 } else { y };
+            for x in 0..width as usize {
+                let pos = source_y * stride as usize + x * 4;
+                let pixel = &raw[pos..pos + 4];
+                let (r, g, b) = match order {
+                    PixelOrder::Bgra => (pixel[2], pixel[1], pixel[0]),
+                    PixelOrder::Rgba => (pixel[0], pixel[1], pixel[2]),
+                };
+                let dest = (y * width as usize + x) * 4;
+                rgba[dest..dest + 4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+        Some(Backdrop {
+            output: self.output.clone(),
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    fn destroy(self) {
+        self.frame.destroy();
+        if let Some(buffer) = self.buffer {
+            buffer.destroy();
+        }
+    }
+}
+
 /// Retains one layer surface and its mutable compositor state.
 struct Window {
     surface: WlSurface,
@@ -117,6 +186,9 @@ struct Listener {
     keys: Option<Keyboard>,
     mapper: Option<Mapper>,
     outputs: BTreeMap<u32, Output>,
+    captures: BTreeMap<u64, Capture>,
+    next_capture: u64,
+    shm: Option<WlShm>,
 }
 
 impl Listener {
@@ -155,6 +227,7 @@ pub struct LayerRuntime {
     compositor: WlCompositor,
     shell: ZwlrLayerShellV1,
     shm: WlShm,
+    copy: Option<ZwlrScreencopyManagerV1>,
     _seat: WlSeat,
 }
 
@@ -175,11 +248,13 @@ impl LayerRuntime {
         let shm = globals
             .bind::<WlShm, _, _>(&handle, 1..=1, ())
             .map_err(|e| format!("wl_shm: {e}"))?;
+        let copy = globals.bind::<ZwlrScreencopyManagerV1, _, _>(&handle, 3..=3, ()).ok();
         let shell = globals
             .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
 
         let mut listener = Listener::default();
+        listener.shm = Some(shm.clone());
         globals.contents().with_list(|list| {
             for global in list {
                 if global.interface == "wl_output" && global.version >= 4 {
@@ -206,6 +281,7 @@ impl LayerRuntime {
             compositor,
             shell,
             shm,
+            copy,
             _seat: seat,
         })
     }
@@ -222,6 +298,40 @@ impl LayerRuntime {
             .values()
             .find(|output| output.name.as_deref() == Some(name))
             .map(|output| &output.proxy)
+    }
+
+    /// Captures a small real output rectangle for the GPU glass shader.
+    /// Returns immediately; the Backdrop event carries the pixels when ready.
+    /// Compositor denial or missing wlr-screencopy is reported as an error.
+    pub fn capture_region(
+        &mut self,
+        output: &str,
+        rect: crate::window::Rect,
+    ) -> Result<u64, String> {
+        let manager = self.copy.as_ref().ok_or("compositor does not support wlr-screencopy")?;
+        let target = self.output(output).ok_or("output is not available")?.clone();
+        if rect.width == 0 || rect.height == 0
+            || i32::try_from(rect.width).is_err()
+            || i32::try_from(rect.height).is_err()
+        {
+            return Err("capture region has invalid dimensions".into());
+        }
+        let id = self.listener.next_capture;
+        self.listener.next_capture += 1;
+        let frame = manager.capture_output_region(
+            0, &target, rect.x, rect.y,
+            rect.width as i32, rect.height as i32,
+            &self.queue.handle(), id,
+        );
+        self.listener.captures.insert(id, Capture {
+            frame,
+            output: output.into(),
+            size: None,
+            flipped: false,
+            file: None,
+            buffer: None,
+        });
+        Ok(id)
     }
 
     /// The small SHM path is only a visibility/Wayland smoke-test renderer.
@@ -867,7 +977,88 @@ impl Dispatch<WlPointer, ()> for Listener {
     }
 }
 
+impl Dispatch<ZwlrScreencopyFrameV1, u64> for Listener {
+    fn event(
+        state: &mut Self,
+        frame: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        id: &u64,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let Some(capture) = state.captures.get_mut(id) else { return };
+        if capture.frame != *frame {
+            return; // An old frame finished after it was replaced.
+        }
+        match event {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format: wayland_client::WEnum::Value(format),
+                width, height, stride,
+            } if capture.buffer.is_none() => {
+                let order = match format {
+                    wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888 => Some(PixelOrder::Bgra),
+                    wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888 => Some(PixelOrder::Rgba),
+                    _ => None,
+                };
+                let bytes = stride.checked_mul(height).and_then(|n| i32::try_from(n).ok());
+                if stride >= width.saturating_mul(4) && width > 0 && height > 0
+                    && let (Some(order), Some(bytes), Some(shm)) = (order, bytes, &state.shm)
+                    && bytes > 0 && bytes <= 64 * 1024 * 1024
+                    && let Ok(file) = tempfile::tempfile()
+                    && file.set_len(bytes as u64).is_ok()
+                {
+                    let pool = shm.create_pool(file.as_fd(), bytes, qh, ());
+                    let buffer = pool.create_buffer(
+                        0, width as i32, height as i32, stride as i32,
+                        format, qh, (),
+                    );
+                    pool.destroy();
+                    capture.size = Some((width, height, stride, order));
+                    capture.file = Some(file);
+                    capture.buffer = Some(buffer);
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Flags {
+                flags: wayland_client::WEnum::Value(flags),
+            } => {
+                capture.flipped = flags.contains(zwlr_screencopy_frame_v1::Flags::YInvert);
+            }
+            zwlr_screencopy_frame_v1::Event::BufferDone => {
+                if let Some(buffer) = &capture.buffer {
+                    frame.copy(buffer);
+                } else {
+                    if let Some(failed) = state.captures.remove(id) {
+                        let output = failed.output.clone();
+                        failed.destroy();
+                        state.events.push(Event::CaptureFailed { output });
+                    }
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => {
+                if let Some(done) = state.captures.remove(id) {
+                    let output = done.output.clone();
+                    if let Some(pixels) = done.pixels() {
+                        state.events.push(Event::Backdrop(pixels));
+                    } else {
+                        state.events.push(Event::CaptureFailed { output });
+                    }
+                    done.destroy();
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Failed => {
+                if let Some(failed) = state.captures.remove(id) {
+                    let output = failed.output.clone();
+                    failed.destroy();
+                    state.events.push(Event::CaptureFailed { output });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 delegate_noop!(Listener: WlCompositor);
+delegate_noop!(Listener: ZwlrScreencopyManagerV1);
 delegate_noop!(Listener: ZwlrLayerShellV1);
 delegate_noop!(Listener: WlRegion);
 delegate_noop!(Listener: ignore WlShm);

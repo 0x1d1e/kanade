@@ -19,6 +19,50 @@ pub struct GlassInstance {
     uniform: wgpu::Buffer,
 }
 
+/// Upload a compositor-captured RGBA frame directly into a filterable GPU
+/// texture. No PNG, no CPU refraction. DMA-BUF import can replace the upload
+/// without changing GlassPass or any of the Island domain.
+pub fn upload_backdrop(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    backdrop: &crate::wayland::Backdrop,
+) -> Result<wgpu::Texture, String> {
+    let width = backdrop.width;
+    let height = backdrop.height;
+    if width == 0 || height == 0
+        || u64::from(width) * u64::from(height) * 4 != backdrop.rgba.len() as u64
+    {
+        return Err("captured texture dimensions do not match pixels".into());
+    }
+    let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("kanade live backdrop"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &backdrop.rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        size,
+    );
+    Ok(texture)
+}
+
 impl GlassPass {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
