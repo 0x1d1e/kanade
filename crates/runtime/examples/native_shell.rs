@@ -16,7 +16,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use kanade_runtime::{
-    chrome::{hit_test, ChromeAction},
+    chrome::{ChromeAction, hit_test},
     ipc::{Incoming, Server},
     raster,
     wayland::{Event, LayerRuntime, ShmFrame},
@@ -97,7 +97,9 @@ impl Shell {
 
     fn open_settings(&mut self) -> Result<(), String> {
         if self.settings.is_none() {
-            let id = self.runtime.create_toplevel(680, 520, "Kanade Native Probe", "kanade")?;
+            let id = self
+                .runtime
+                .create_toplevel(680, 520, "Kanade Native Probe", "kanade")?;
             self.settings = Some(id);
         }
         Ok(())
@@ -184,8 +186,9 @@ impl Shell {
                         self.settings = None;
                         self.sizes.remove(&id);
                     }
-                    Event::PointerEnter { id, x, y }
-                    | Event::PointerMotion { id, x, y } if Some(id) == self.settings => {
+                    Event::PointerEnter { id, x, y } | Event::PointerMotion { id, x, y }
+                        if Some(id) == self.settings =>
+                    {
                         self.pointer = (x, y);
                     }
                     Event::PointerButton {
