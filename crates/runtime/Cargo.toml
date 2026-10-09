@@ -11,5 +11,7 @@ publish = false
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
+wgpu = { version = "29", default-features = true }
+
 [dev-dependencies]
 naga = { version = "29", features = ["wgsl-in"] }

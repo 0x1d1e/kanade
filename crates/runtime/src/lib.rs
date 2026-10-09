@@ -13,3 +13,5 @@ pub mod window;
 pub mod wayland;
 
 pub mod effects;
+
+pub mod gpu;
