@@ -727,10 +727,10 @@ impl LayerRuntime {
             if self.listener.pointer_at == Some(id) {
                 self.listener.pointer_at = None;
             }
-            if let Some(keys) = &mut self.listener.keys {
-                if keys.focused() == Some(id) {
-                    keys.focus(None);
-                }
+            if let Some(keys) = &mut self.listener.keys
+                && keys.focused() == Some(id)
+            {
+                keys.focus(None);
             }
             window.toplevel.destroy();
             window.xdg_surface.destroy();
