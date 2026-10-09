@@ -142,7 +142,10 @@ mod tests {
         assert!(state.needs_frame());
         assert_eq!(latest, (940, 600));
         assert!(state.begin_frame());
-        assert_eq!(frame_pixels(latest.0, latest.1).unwrap().len(), 940 * 600 * 4);
+        assert_eq!(
+            frame_pixels(latest.0, latest.1).unwrap().len(),
+            940 * 600 * 4
+        );
     }
 
     #[test]
