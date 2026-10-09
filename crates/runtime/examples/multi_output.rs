@@ -28,7 +28,7 @@ fn spec() -> Spec {
 fn main() -> Result<(), String> {
     let mut runtime = LayerRuntime::connect()?;
     let mut outputs = BTreeMap::<u32, WindowId>::new();
-    let mut frames = BTreeMap::<WindowId, ShmFrame>::new();
+    let mut frames = Vec::<ShmFrame>::new();
 
     loop {
         for event in runtime.dispatch()? {
@@ -47,7 +47,6 @@ fn main() -> Result<(), String> {
                 Event::OutputRemoved(output) => {
                     if let Some(window) = outputs.remove(&output) {
                         runtime.remove(window);
-                        frames.remove(&window);
                     }
                 }
                 Event::Configured { id, width, height } => {
@@ -56,16 +55,15 @@ fn main() -> Result<(), String> {
                     let pixels = raster::pill(width, height, height as f32 * 0.5)?;
                     let next = runtime.shm_frame(width, height, &pixels)?;
                     if runtime.present(id, &next.buffer)? {
-                        frames.insert(id, next);
+                        frames.push(next);
                         runtime.submitted(id, false);
                     }
                 }
                 Event::BufferReleased(released) => {
-                    frames.retain(|_, frame| frame.buffer != released);
+                    frames.retain(|frame| frame.buffer != released);
                 }
                 Event::Closed(window) => {
                     runtime.remove(window);
-                    frames.remove(&window);
                     outputs.retain(|_, id| *id != window);
                 }
                 _ => {}
