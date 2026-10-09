@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
+    Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
     protocol::{
         wl_buffer::WlBuffer,
@@ -21,7 +21,7 @@ use wayland_client::{
         wl_output::WlOutput,
         wl_region::WlRegion,
         wl_registry::{self, WlRegistry},
-        wl_surface::{self, WlSurface},
+        wl_surface::WlSurface,
     },
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
@@ -63,11 +63,6 @@ struct Listener {
 }
 
 impl Listener {
-    fn id_for_surface(&self, surface: &WlSurface) -> Option<WindowId> {
-        self.windows
-            .iter()
-            .find_map(|(id, window)| (&window.surface == surface).then_some(*id))
-    }
 
     fn id_for_layer(&self, layer: &ZwlrLayerSurfaceV1) -> Option<WindowId> {
         self.windows
@@ -96,7 +91,7 @@ impl LayerRuntime {
             .bind::<WlCompositor, _, _>(&handle, 4..=6, ())
             .map_err(|e| format!("wl_compositor: {e}"))?;
         let shell = globals
-            .bind::<ZwlrLayerShellV1, _, _>(&handle, 1..=5, ())
+            .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
 
         Ok(Self {
@@ -316,8 +311,16 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for Listener {
             } => {
                 layer.ack_configure(serial);
                 if let Some(window) = listener.windows.get_mut(&id) {
-                    let actual_width = if width == 0 { window.spec.width } else { width };
-                    let actual_height = if height == 0 { window.spec.height } else { height };
+                    let actual_width = if width == 0 {
+                        window.spec.width
+                    } else {
+                        width
+                    };
+                    let actual_height = if height == 0 {
+                        window.spec.height
+                    } else {
+                        height
+                    };
                     window.configured_size = Some((actual_width, actual_height));
                     window.state.configure();
                     listener.events.push(Event::Configured {

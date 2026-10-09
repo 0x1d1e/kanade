@@ -4,7 +4,7 @@
 //! callbacks to State events. The Island is still responsible for its spring,
 //! layout, Activity selection and Surface contents.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

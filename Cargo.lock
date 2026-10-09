@@ -1023,6 +1023,10 @@ dependencies = [
 [[package]]
 name = "kanade-runtime"
 version = "0.1.0"
+dependencies = [
+ "wayland-client",
+ "wayland-protocols-wlr",
+]
 
 [[package]]
 name = "khronos-egl"
