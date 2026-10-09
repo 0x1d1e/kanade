@@ -37,6 +37,11 @@ use wayland_client::{
         wl_surface::WlSurface,
     },
 };
+use wayland_protocols::xdg::shell::client::{
+    xdg_surface::{self, XdgSurface},
+    xdg_toplevel::{self, XdgToplevel},
+    xdg_wm_base::{self, XdgWmBase},
+};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
@@ -167,6 +172,19 @@ struct Window {
     configured_size: Option<(u32, u32)>,
 }
 
+/// Normal compositor-managed xdg_toplevel. Settings is freely resizable and
+/// managed by niri, unlike an Island layer surface. Both participate in the
+/// same input, frame and service event loop.
+struct Toplevel {
+    surface: WlSurface,
+    xdg_surface: XdgSurface,
+    toplevel: XdgToplevel,
+    preferred: (u32, u32),
+    pending: Option<(u32, u32)>,
+    configured_size: Option<(u32, u32)>,
+    state: State,
+}
+
 /// One bound wl_output and its last complete logical state.
 struct Output {
     proxy: WlOutput,
@@ -179,6 +197,7 @@ struct Output {
 struct Listener {
     next_id: u64,
     windows: BTreeMap<WindowId, Window>,
+    toplevels: BTreeMap<WindowId, Toplevel>,
     events: Vec<Event>,
     pointer: Option<WlPointer>,
     pointer_at: Option<WindowId>,
@@ -196,6 +215,23 @@ impl Listener {
         self.windows
             .iter()
             .find_map(|(id, window)| (&window.surface == surface).then_some(*id))
+            .or_else(|| {
+                self.toplevels
+                    .iter()
+                    .find_map(|(id, window)| (&window.surface == surface).then_some(*id))
+            })
+    }
+
+    fn id_for_xdg_surface(&self, surface: &XdgSurface) -> Option<WindowId> {
+        self.toplevels
+            .iter()
+            .find_map(|(id, window)| (&window.xdg_surface == surface).then_some(*id))
+    }
+
+    fn id_for_xdg_toplevel(&self, surface: &XdgToplevel) -> Option<WindowId> {
+        self.toplevels
+            .iter()
+            .find_map(|(id, window)| (&window.toplevel == surface).then_some(*id))
     }
 
     fn id_for_layer(&self, layer: &ZwlrLayerSurfaceV1) -> Option<WindowId> {
@@ -226,6 +262,7 @@ pub struct LayerRuntime {
     listener: Listener,
     compositor: WlCompositor,
     shell: ZwlrLayerShellV1,
+    xdg: Option<XdgWmBase>,
     shm: WlShm,
     copy: Option<ZwlrScreencopyManagerV1>,
     _seat: WlSeat,
@@ -252,6 +289,7 @@ impl LayerRuntime {
         let shell = globals
             .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
+        let xdg = globals.bind::<XdgWmBase, _, _>(&handle, 1..=6, ()).ok();
 
         let mut listener = Listener {
             shm: Some(shm.clone()),
@@ -282,6 +320,7 @@ impl LayerRuntime {
             listener,
             compositor,
             shell,
+            xdg,
             shm,
             copy,
             _seat: seat,
@@ -415,6 +454,73 @@ impl LayerRuntime {
         id
     }
 
+    /// Create a compositor-managed, freely resizable desktop window.
+    ///
+    /// Use xdg-shell for Settings, not layer-shell with exclusive keyboard
+    /// focus. The initial empty commit requests a configure; a real buffer
+    /// may be attached only once Event::Configured has been received.
+    pub fn create_toplevel(
+        &mut self,
+        width: u32,
+        height: u32,
+        title: &str,
+        app_id: &str,
+    ) -> Result<WindowId, String> {
+        let wm = self.xdg.as_ref().ok_or("compositor lacks xdg_wm_base")?;
+        if width == 0 || height == 0
+            || i32::try_from(width).is_err()
+            || i32::try_from(height).is_err()
+        {
+            return Err("xdg window dimensions must be positive and fit i32".into());
+        }
+        let qh = self.queue.handle();
+        let id = WindowId(self.listener.next_id);
+        self.listener.next_id += 1;
+        let surface = self.compositor.create_surface(&qh, ());
+        let xdg_surface = wm.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg_surface.get_toplevel(&qh, ());
+        toplevel.set_title(title.into());
+        toplevel.set_app_id(app_id.into());
+        toplevel.set_min_size(320, 240);
+
+        let mut state = State::default();
+        state.show();
+        self.listener.toplevels.insert(
+            id,
+            Toplevel {
+                surface: surface.clone(),
+                xdg_surface,
+                toplevel,
+                preferred: (width, height),
+                pending: None,
+                configured_size: None,
+                state,
+            },
+        );
+        surface.commit();
+        Ok(id)
+    }
+
+    /// Ask the compositor to resize the toplevel. A new buffer must use the
+    /// most recent Configured dimensions, not the unacknowledged request.
+    pub fn set_toplevel_min_size(
+        &mut self,
+        id: WindowId,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let toplevel = self
+            .listener
+            .toplevels
+            .get_mut(&id)
+            .ok_or_else(|| format!("unknown xdg window {}", id.0))?;
+        let width = i32::try_from(width).map_err(|_| "minimum width exceeds i32")?;
+        let height = i32::try_from(height).map_err(|_| "minimum height exceeds i32")?;
+        toplevel.toplevel.set_min_size(width, height);
+        toplevel.surface.commit();
+        Ok(())
+    }
+
     pub fn update(&mut self, id: WindowId, spec: Spec) -> Result<(), String> {
         let window = self
             .listener
@@ -444,24 +550,29 @@ impl LayerRuntime {
     ///
     /// The buffer's lifetime is the caller's responsibility until Release.
     pub fn present(&mut self, id: WindowId, buffer: &WlBuffer) -> Result<bool, String> {
-        let window = self
-            .listener
-            .windows
-            .get_mut(&id)
-            .ok_or_else(|| format!("unknown window {}", id.0))?;
-        if !window.state.begin_frame() {
-            return Ok(false);
-        }
-
-        let (width, height) = window
-            .configured_size
-            .ok_or_else(|| format!("window {} has no configure", id.0))?;
-        window.surface.attach(Some(buffer), 0, 0);
-        window
-            .surface
-            .damage_buffer(0, 0, width as i32, height as i32);
-        window.surface.frame(&self.queue.handle(), id);
-        window.surface.commit();
+        let (surface, (width, height)) = if let Some(window) = self.listener.windows.get_mut(&id) {
+            if !window.state.begin_frame() {
+                return Ok(false);
+            }
+            let size = window
+                .configured_size
+                .ok_or_else(|| format!("window {} has no configure", id.0))?;
+            (window.surface.clone(), size)
+        } else if let Some(window) = self.listener.toplevels.get_mut(&id) {
+            if !window.state.begin_frame() {
+                return Ok(false);
+            }
+            let size = window
+                .configured_size
+                .ok_or_else(|| format!("xdg window {} has no configure", id.0))?;
+            (window.surface.clone(), size)
+        } else {
+            return Err(format!("unknown window {}", id.0));
+        };
+        surface.attach(Some(buffer), 0, 0);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.frame(&self.queue.handle(), id);
+        surface.commit();
         Ok(true)
     }
 
@@ -471,11 +582,15 @@ impl LayerRuntime {
     pub fn submitted(&mut self, id: WindowId, animation_active: bool) {
         if let Some(window) = self.listener.windows.get_mut(&id) {
             window.state.submitted(animation_active);
+        } else if let Some(window) = self.listener.toplevels.get_mut(&id) {
+            window.state.submitted(animation_active);
         }
     }
 
     pub fn invalidate(&mut self, id: WindowId) {
         if let Some(window) = self.listener.windows.get_mut(&id) {
+            window.state.invalidate();
+        } else if let Some(window) = self.listener.toplevels.get_mut(&id) {
             window.state.invalidate();
         }
     }
@@ -484,7 +599,14 @@ impl LayerRuntime {
         self.listener
             .windows
             .get(&id)
-            .is_some_and(|window| window.state.needs_frame())
+            .map(|window| window.state.needs_frame())
+            .or_else(|| {
+                self.listener
+                    .toplevels
+                    .get(&id)
+                    .map(|window| window.state.needs_frame())
+            })
+            .unwrap_or(false)
     }
 
     /// Wait on the actual Wayland fd until an event or keyboard repeat is due.
@@ -569,6 +691,18 @@ impl LayerRuntime {
                 self.listener.pointer_at = None;
             }
             window.layer.destroy();
+            window.surface.destroy();
+        } else if let Some(window) = self.listener.toplevels.remove(&id) {
+            if self.listener.pointer_at == Some(id) {
+                self.listener.pointer_at = None;
+            }
+            if let Some(keys) = &mut self.listener.keys {
+                if keys.focused() == Some(id) {
+                    keys.focus(None);
+                }
+            }
+            window.toplevel.destroy();
+            window.xdg_surface.destroy();
             window.surface.destroy();
         }
     }
@@ -691,6 +825,76 @@ impl Dispatch<WlRegistry, GlobalListContents> for Listener {
     }
 }
 
+impl Dispatch<XdgWmBase, ()> for Listener {
+    fn event(
+        _: &mut Self,
+        wm: &XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<XdgToplevel, ()> for Listener {
+    fn event(
+        listener: &mut Self,
+        toplevel: &XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(id) = listener.id_for_xdg_toplevel(toplevel) else {
+            return;
+        };
+        match event {
+            xdg_toplevel::Event::Configure { width, height, .. } => {
+                if let Some(window) = listener.toplevels.get_mut(&id) {
+                    // Zero dimensions mean the compositor leaves size to us.
+                    // Never allocate a buffer with a negative or zero size.
+                    let width = u32::try_from(width).unwrap_or(0);
+                    let height = u32::try_from(height).unwrap_or(0);
+                    window.pending = Some((width, height));
+                }
+            }
+            xdg_toplevel::Event::Close => listener.events.push(Event::Closed(id)),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<XdgSurface, ()> for Listener {
+    fn event(
+        listener: &mut Self,
+        surface: &XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(id) = listener.id_for_xdg_surface(surface) else {
+            return;
+        };
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+            if let Some(window) = listener.toplevels.get_mut(&id) {
+                let (width, height) = window.pending.take().unwrap_or((0, 0));
+                let previous = window.configured_size.unwrap_or(window.preferred);
+                let width = if width == 0 { previous.0 } else { width };
+                let height = if height == 0 { previous.1 } else { height };
+                window.configured_size = Some((width, height));
+                window.state.configure();
+                listener.events.push(Event::Configured { id, width, height });
+            }
+        }
+    }
+}
+
 impl Dispatch<ZwlrLayerSurfaceV1, ()> for Listener {
     fn event(
         listener: &mut Self,
@@ -744,6 +948,9 @@ impl Dispatch<WlCallback, WindowId> for Listener {
         _: &QueueHandle<Self>,
     ) {
         if let Some(window) = listener.windows.get_mut(id) {
+            window.state.frame_callback();
+            listener.events.push(Event::FrameReady(*id));
+        } else if let Some(window) = listener.toplevels.get_mut(id) {
             window.state.frame_callback();
             listener.events.push(Event::FrameReady(*id));
         }

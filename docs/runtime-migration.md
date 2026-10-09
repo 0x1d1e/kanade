@@ -41,7 +41,7 @@ runtime mechanisms together, domain rules in existing modules.
 
 - [ ] One native event loop, connection, output/seat registry and hotplug
 - [ ] Layer-shell surfaces, dynamic anchoring, placement, input masks, exclusive zones
-- [ ] XDG settings window: move, resize, keyboard focus, close and scale
+- [ ] XDG settings window: native toplevel create/configure/resize/close implemented in runtime; keyboard focus, layout and scale parity remain
 - [ ] Session-lock protocol and crash/restart/re-lock safety equivalent to #154/#199/#200
 - [ ] GPU device/surfaces, present scheduling, resize, device-lost recovery
 - [ ] Quad/polygon/path, transforms, clipping, opacity, rounded borders and shadow

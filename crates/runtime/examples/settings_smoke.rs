@@ -1,0 +1,100 @@
+//! Native compositor-managed settings-window handshake; no Amane UI.
+//!
+//! cargo run -p kanade-runtime --example settings_smoke
+//!
+//! Draws a plain diagnostic panel to verify xdg-shell configure, resize and
+//! wl_buffer presentation. Close the window to stop the test. This is NOT
+//! the finished Settings UI.
+
+use std::collections::BTreeMap;
+use kanade_runtime::{
+    raster,
+    wayland::{Event, LayerRuntime, ShmFrame},
+    window::WindowId,
+};
+
+fn frame_pixels(width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let size = u64::from(width).checked_mul(u64::from(height))
+        .and_then(|n| n.checked_mul(4))
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("settings buffer is too large")?;
+    if size > i32::MAX as usize {
+        return Err("settings buffer exceeds Wayland SHM limit".into());
+    }
+    let mut data = vec![0u8; size];
+    for pixel in data.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[35, 28, 23, 255]);
+    }
+    let panel_width = width.saturating_sub(64).min(480);
+    let panel_height = height.saturating_sub(64).min(100);
+    if panel_width > 0 && panel_height > 0 {
+        let panel = raster::pill(panel_width, panel_height, 18.0)?;
+        let start_x = (width - panel_width) / 2;
+        let start_y = (height - panel_height) / 2;
+        for y in 0..panel_height as usize {
+            let target = (((start_y as usize + y) * width as usize) + start_x as usize) * 4;
+            let source = y * panel_width as usize * 4;
+            for x in 0..panel_width as usize {
+                let at = source + x * 4;
+                if panel[at + 3] != 0 {
+                    data[target + x * 4..target + x * 4 + 4]
+                        .copy_from_slice(&panel[at..at + 4]);
+                }
+            }
+        }
+    }
+    Ok(data)
+}
+
+fn run() -> Result<(), String> {
+    let mut runtime = LayerRuntime::connect()?;
+    let id: WindowId = runtime.create_toplevel(
+        680, 520, "Kanade Native Settings — Protocol Probe", "kanade",
+    )?;
+    let mut active: BTreeMap<wayland_client::protocol::wl_buffer::WlBuffer, ShmFrame> =
+        BTreeMap::new();
+    loop {
+        for event in runtime.dispatch()? {
+            match event {
+                Event::Configured { id: configured, width, height } if configured == id => {
+                    // A size may change while a previous buffer is in use.
+                    // Each presented buffer has its own backing file.
+                    let frame = runtime.shm_frame(width, height, &frame_pixels(width, height)?)?;
+                    if runtime.present(id, &frame.buffer)? {
+                        active.insert(frame.buffer.clone(), frame);
+                    }
+                }
+                Event::BufferReleased(buffer) => {
+                    active.remove(&buffer);
+                }
+                Event::Closed(closed) if closed == id => {
+                    runtime.remove(id);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("kanade native settings probe: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_pixels;
+
+    #[test]
+    fn diagnostic_panel_respects_resizing() {
+        let a = frame_pixels(640, 480).unwrap();
+        let b = frame_pixels(360, 260).unwrap();
+        assert_eq!(a.len(), 640 * 480 * 4);
+        assert_eq!(b.len(), 360 * 260 * 4);
+        assert_eq!(a[3], 255);
+        assert!(frame_pixels(0, u32::MAX).is_err());
+    }
+}

@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
 
 wgpu = { version = "29", default-features = true }
 tempfile = "3"
