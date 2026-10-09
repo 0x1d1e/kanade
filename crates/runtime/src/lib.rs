@@ -23,3 +23,5 @@ pub mod keymap;
 pub mod reactive;
 
 pub mod wake;
+
+pub mod chrome;

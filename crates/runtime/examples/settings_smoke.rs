@@ -7,6 +7,7 @@
 //! the finished Settings UI.
 
 use kanade_runtime::{
+    chrome::{hit_test, ChromeAction},
     raster,
     wayland::{Event, LayerRuntime, ShmFrame},
     window::WindowId,
@@ -54,15 +55,29 @@ fn run() -> Result<(), String> {
         680, 520, "Kanade Native Settings — Protocol Probe", "kanade",
     )?;
     let mut active: Vec<ShmFrame> = Vec::new();
+    let mut last_size = (680u32, 520u32);
+    let mut pointer = (0.0, 0.0);
     loop {
         for event in runtime.dispatch()? {
             match event {
                 Event::Configured { id: configured, width, height } if configured == id => {
+                    last_size = (width, height);
                     // A size may change while a previous buffer is in use.
                     // Each presented buffer has its own backing file.
                     let frame = runtime.shm_frame(width, height, &frame_pixels(width, height)?)?;
                     if runtime.present(id, &frame.buffer)? {
                         active.push(frame);
+                    }
+                }
+                Event::PointerEnter { id: on, x, y }
+                | Event::PointerMotion { id: on, x, y } if on == id => {
+                    pointer = (x, y);
+                }
+                Event::PointerButton { id: on, button: 0x110, pressed: true, serial } if on == id => {
+                    match hit_test(last_size.0, last_size.1, pointer.0, pointer.1) {
+                        ChromeAction::Move => runtime.move_toplevel(id, serial)?,
+                        ChromeAction::Resize(edge) => runtime.resize_toplevel(id, serial, edge)?,
+                        ChromeAction::Content => {}
                     }
                 }
                 Event::BufferReleased(buffer) => {

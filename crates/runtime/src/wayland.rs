@@ -93,6 +93,7 @@ pub enum Event {
         id: WindowId,
         button: u32,
         pressed: bool,
+        serial: u32,
     },
     PointerScroll {
         id: WindowId,
@@ -503,6 +504,36 @@ impl LayerRuntime {
 
     /// Ask the compositor to resize the toplevel. A new buffer must use the
     /// most recent Configured dimensions, not the unacknowledged request.
+    /// Start an interactive compositor-managed move. The serial must come
+    /// from a fresh, focused pointer button press on this same window/seat.
+    /// The compositor decides when to accept it; no niri IPC coordinate hack.
+    pub fn move_toplevel(&self, id: WindowId, press_serial: u32) -> Result<(), String> {
+        let window = self
+            .listener
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| format!("unknown xdg window {}", id.0))?;
+        window.toplevel.move_(&self._seat, press_serial);
+        Ok(())
+    }
+
+    /// Begin the compositor's normal interactive resize. Geometry stays
+    /// authoritative in subsequent xdg_toplevel/configure events.
+    pub fn resize_toplevel(
+        &self,
+        id: WindowId,
+        press_serial: u32,
+        edge: xdg_toplevel::ResizeEdge,
+    ) -> Result<(), String> {
+        let window = self
+            .listener
+            .toplevels
+            .get(&id)
+            .ok_or_else(|| format!("unknown xdg window {}", id.0))?;
+        window.toplevel.resize(&self._seat, press_serial, edge);
+        Ok(())
+    }
+
     pub fn set_toplevel_min_size(
         &mut self,
         id: WindowId,
@@ -1155,6 +1186,7 @@ impl Dispatch<WlPointer, ()> for Listener {
             }
             wl_pointer::Event::Button {
                 button,
+                serial,
                 state: wayland_client::WEnum::Value(button_state),
                 ..
             } => {
@@ -1163,6 +1195,7 @@ impl Dispatch<WlPointer, ()> for Listener {
                         id,
                         button,
                         pressed: button_state == wl_pointer::ButtonState::Pressed,
+                        serial,
                     });
                 }
             }
