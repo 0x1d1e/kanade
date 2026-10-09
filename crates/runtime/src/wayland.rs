@@ -15,6 +15,8 @@ use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::time::Instant;
 
+use rustix::event::{poll, PollFd, PollFlags, Timespec};
+
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
@@ -362,18 +364,66 @@ impl LayerRuntime {
             .is_some_and(|window| window.state.needs_frame())
     }
 
-    /// This returns events already dispatched or waits for Wayland messages.
-    /// It does not redraw, busy-loop or create timers on its own.
+    /// Wait on the actual Wayland fd until an event or keyboard repeat is due.
+    /// This has zero idle wakeups: without an active repeating key the poll
+    /// has no timeout. No device-node access or second keyboard connection.
+    ///
+    /// IPC and external Sources will join the same event loop before cutover.
     pub fn dispatch(&mut self) -> Result<Vec<Event>, String> {
-        if self.listener.events.is_empty() {
-            self.queue
-                .blocking_dispatch(&mut self.listener)
+        while self.listener.events.is_empty() {
+            let dispatched = self
+                .queue
+                .dispatch_pending(&mut self.listener)
                 .map_err(|e| format!("Wayland dispatch: {e}"))?;
-        }
+            if dispatched != 0 && !self.listener.events.is_empty() {
+                break;
+            }
+            self.queue
+                .flush()
+                .map_err(|e| format!("Wayland flush: {e}"))?;
 
-        self.connection
-            .flush()
-            .map_err(|e| format!("Wayland flush: {e}"))?;
+            let now = Instant::now();
+            let due = self.listener.keys.as_ref().and_then(Keyboard::next_repeat);
+            if due.is_some_and(|due| due <= now) {
+                if let Some(keys) = &mut self.listener.keys
+                    && let Some(repeated) = keys.repeat_due(now)
+                {
+                    self.listener.events.push(Event::Keyboard(repeated));
+                }
+                continue;
+            }
+
+            // read_guard is required while polling to coordinate the socket
+            // with Wayland's queue. If pending events already exist, dispatch
+            // them rather than waiting and starving another queue reader.
+            let Some(guard) = self.queue.prepare_read() else {
+                continue;
+            };
+            let timeout = due.map(|deadline| {
+                let duration = deadline.saturating_duration_since(Instant::now());
+                Timespec {
+                    tv_sec: duration.as_secs().min(i64::MAX as u64) as i64,
+                    tv_nsec: duration.subsec_nanos() as _,
+                }
+            });
+            let mut fds = [PollFd::from_borrowed_fd(guard.connection_fd(), PollFlags::IN)];
+            let ready = match poll(&mut fds, timeout.as_ref()) {
+                Ok(ready) => ready,
+                Err(rustix::io::Errno::INTR) => {
+                    drop(guard);
+                    continue;
+                }
+                Err(error) => {
+                    drop(guard);
+                    return Err(format!("polling Wayland: {error}"));
+                }
+            };
+            if ready > 0 {
+                guard.read().map_err(|e| format!("reading Wayland: {e}"))?;
+            } else {
+                drop(guard);
+            }
+        }
         Ok(std::mem::take(&mut self.listener.events))
     }
 
