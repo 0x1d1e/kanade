@@ -42,13 +42,13 @@ use wayland_protocols::xdg::shell::client::{
     xdg_toplevel::{self, XdgToplevel},
     xdg_wm_base::{self, XdgWmBase},
 };
-use wayland_protocols_wlr::screencopy::v1::client::{
-    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
-    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
-};
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 };
 
 use crate::input::{KeyEvent, Keyboard, RepeatInfo};
@@ -70,7 +70,9 @@ pub enum Event {
     BufferReleased(WlBuffer),
     SourcesChanged,
     Backdrop(Backdrop),
-    CaptureFailed { output: String },
+    CaptureFailed {
+        output: String,
+    },
     PointerEnter {
         id: WindowId,
         x: f64,
@@ -136,7 +138,11 @@ impl Capture {
         file.read_exact_at(&mut raw, 0).ok()?;
         let mut rgba = vec![0; width as usize * height as usize * 4];
         for y in 0..height as usize {
-            let source_y = if self.flipped { height as usize - y - 1 } else { y };
+            let source_y = if self.flipped {
+                height as usize - y - 1
+            } else {
+                y
+            };
             for x in 0..width as usize {
                 let pos = source_y * stride as usize + x * 4;
                 let pixel = &raw[pos..pos + 4];
@@ -286,7 +292,9 @@ impl LayerRuntime {
         let shm = globals
             .bind::<WlShm, _, _>(&handle, 1..=1, ())
             .map_err(|e| format!("wl_shm: {e}"))?;
-        let copy = globals.bind::<ZwlrScreencopyManagerV1, _, _>(&handle, 3..=3, ()).ok();
+        let copy = globals
+            .bind::<ZwlrScreencopyManagerV1, _, _>(&handle, 3..=3, ())
+            .ok();
         let shell = globals
             .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
@@ -350,9 +358,16 @@ impl LayerRuntime {
         output: &str,
         rect: crate::window::Rect,
     ) -> Result<u64, String> {
-        let manager = self.copy.as_ref().ok_or("compositor does not support wlr-screencopy")?;
-        let target = self.output(output).ok_or("output is not available")?.clone();
-        if rect.width == 0 || rect.height == 0
+        let manager = self
+            .copy
+            .as_ref()
+            .ok_or("compositor does not support wlr-screencopy")?;
+        let target = self
+            .output(output)
+            .ok_or("output is not available")?
+            .clone();
+        if rect.width == 0
+            || rect.height == 0
             || i32::try_from(rect.width).is_err()
             || i32::try_from(rect.height).is_err()
         {
@@ -361,18 +376,26 @@ impl LayerRuntime {
         let id = self.listener.next_capture;
         self.listener.next_capture += 1;
         let frame = manager.capture_output_region(
-            0, &target, rect.x, rect.y,
-            rect.width as i32, rect.height as i32,
-            &self.queue.handle(), id,
+            0,
+            &target,
+            rect.x,
+            rect.y,
+            rect.width as i32,
+            rect.height as i32,
+            &self.queue.handle(),
+            id,
         );
-        self.listener.captures.insert(id, Capture {
-            frame,
-            output: output.into(),
-            size: None,
-            flipped: false,
-            file: None,
-            buffer: None,
-        });
+        self.listener.captures.insert(
+            id,
+            Capture {
+                frame,
+                output: output.into(),
+                size: None,
+                flipped: false,
+                file: None,
+                buffer: None,
+            },
+        );
         Ok(id)
     }
 
@@ -468,7 +491,8 @@ impl LayerRuntime {
         app_id: &str,
     ) -> Result<WindowId, String> {
         let wm = self.xdg.as_ref().ok_or("compositor lacks xdg_wm_base")?;
-        if width == 0 || height == 0
+        if width == 0
+            || height == 0
             || i32::try_from(width).is_err()
             || i32::try_from(height).is_err()
         {
@@ -920,7 +944,9 @@ impl Dispatch<XdgSurface, ()> for Listener {
                 let height = if height == 0 { previous.1 } else { height };
                 window.configured_size = Some((width, height));
                 window.state.configure();
-                listener.events.push(Event::Configured { id, width, height });
+                listener
+                    .events
+                    .push(Event::Configured { id, width, height });
             }
         }
     }
@@ -1227,31 +1253,45 @@ impl Dispatch<ZwlrScreencopyFrameV1, u64> for Listener {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        let Some(capture) = state.captures.get_mut(id) else { return };
+        let Some(capture) = state.captures.get_mut(id) else {
+            return;
+        };
         if capture.frame != *frame {
             return; // An old frame finished after it was replaced.
         }
         match event {
             zwlr_screencopy_frame_v1::Event::Buffer {
                 format: wayland_client::WEnum::Value(format),
-                width, height, stride,
+                width,
+                height,
+                stride,
             } if capture.buffer.is_none() => {
                 let order = match format {
                     wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888 => Some(PixelOrder::Bgra),
                     wl_shm::Format::Abgr8888 | wl_shm::Format::Xbgr8888 => Some(PixelOrder::Rgba),
                     _ => None,
                 };
-                let bytes = stride.checked_mul(height).and_then(|n| i32::try_from(n).ok());
-                if stride >= width.saturating_mul(4) && width > 0 && height > 0
+                let bytes = stride
+                    .checked_mul(height)
+                    .and_then(|n| i32::try_from(n).ok());
+                if stride >= width.saturating_mul(4)
+                    && width > 0
+                    && height > 0
                     && let (Some(order), Some(bytes), Some(shm)) = (order, bytes, &state.shm)
-                    && bytes > 0 && bytes <= 64 * 1024 * 1024
+                    && bytes > 0
+                    && bytes <= 64 * 1024 * 1024
                     && let Ok(file) = tempfile::tempfile()
                     && file.set_len(bytes as u64).is_ok()
                 {
                     let pool = shm.create_pool(file.as_fd(), bytes, qh, ());
                     let buffer = pool.create_buffer(
-                        0, width as i32, height as i32, stride as i32,
-                        format, qh, (),
+                        0,
+                        width as i32,
+                        height as i32,
+                        stride as i32,
+                        format,
+                        qh,
+                        (),
                     );
                     pool.destroy();
                     capture.size = Some((width, height, stride, order));

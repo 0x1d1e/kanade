@@ -55,14 +55,38 @@ mod tests {
     fn native_chrome_has_eight_resize_edges() {
         let w = 640;
         let h = 480;
-        assert_eq!(hit_test(w, h, 1.0, 1.0), ChromeAction::Resize(ResizeEdge::TopLeft));
-        assert_eq!(hit_test(w, h, 638.0, 1.0), ChromeAction::Resize(ResizeEdge::TopRight));
-        assert_eq!(hit_test(w, h, 638.0, 478.0), ChromeAction::Resize(ResizeEdge::BottomRight));
-        assert_eq!(hit_test(w, h, 1.0, 478.0), ChromeAction::Resize(ResizeEdge::BottomLeft));
-        assert_eq!(hit_test(w, h, 10.0, 1.0), ChromeAction::Resize(ResizeEdge::Top));
-        assert_eq!(hit_test(w, h, 10.0, 478.0), ChromeAction::Resize(ResizeEdge::Bottom));
-        assert_eq!(hit_test(w, h, 1.0, 60.0), ChromeAction::Resize(ResizeEdge::Left));
-        assert_eq!(hit_test(w, h, 638.0, 60.0), ChromeAction::Resize(ResizeEdge::Right));
+        assert_eq!(
+            hit_test(w, h, 1.0, 1.0),
+            ChromeAction::Resize(ResizeEdge::TopLeft)
+        );
+        assert_eq!(
+            hit_test(w, h, 638.0, 1.0),
+            ChromeAction::Resize(ResizeEdge::TopRight)
+        );
+        assert_eq!(
+            hit_test(w, h, 638.0, 478.0),
+            ChromeAction::Resize(ResizeEdge::BottomRight)
+        );
+        assert_eq!(
+            hit_test(w, h, 1.0, 478.0),
+            ChromeAction::Resize(ResizeEdge::BottomLeft)
+        );
+        assert_eq!(
+            hit_test(w, h, 10.0, 1.0),
+            ChromeAction::Resize(ResizeEdge::Top)
+        );
+        assert_eq!(
+            hit_test(w, h, 10.0, 478.0),
+            ChromeAction::Resize(ResizeEdge::Bottom)
+        );
+        assert_eq!(
+            hit_test(w, h, 1.0, 60.0),
+            ChromeAction::Resize(ResizeEdge::Left)
+        );
+        assert_eq!(
+            hit_test(w, h, 638.0, 60.0),
+            ChromeAction::Resize(ResizeEdge::Right)
+        );
     }
 
     #[test]

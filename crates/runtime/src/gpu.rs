@@ -29,12 +29,17 @@ pub fn upload_backdrop(
 ) -> Result<wgpu::Texture, String> {
     let width = backdrop.width;
     let height = backdrop.height;
-    if width == 0 || height == 0
+    if width == 0
+        || height == 0
         || u64::from(width) * u64::from(height) * 4 != backdrop.rgba.len() as u64
     {
         return Err("captured texture dimensions do not match pixels".into());
     }
-    let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("kanade live backdrop"),
         size,

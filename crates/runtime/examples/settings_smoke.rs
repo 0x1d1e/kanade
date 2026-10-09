@@ -7,7 +7,7 @@
 //! the finished Settings UI.
 
 use kanade_runtime::{
-    chrome::{hit_test, ChromeAction},
+    chrome::{ChromeAction, hit_test},
     raster,
     wayland::{Event, LayerRuntime, ShmFrame},
     window::WindowId,
@@ -17,7 +17,8 @@ fn frame_pixels(width: u32, height: u32) -> Result<Vec<u8>, String> {
     if width == 0 || height == 0 {
         return Err("settings dimensions must be positive".into());
     }
-    let size = u64::from(width).checked_mul(u64::from(height))
+    let size = u64::from(width)
+        .checked_mul(u64::from(height))
         .and_then(|n| n.checked_mul(4))
         .and_then(|n| usize::try_from(n).ok())
         .ok_or("settings buffer is too large")?;
@@ -40,8 +41,7 @@ fn frame_pixels(width: u32, height: u32) -> Result<Vec<u8>, String> {
             for x in 0..panel_width as usize {
                 let at = source + x * 4;
                 if panel[at + 3] != 0 {
-                    data[target + x * 4..target + x * 4 + 4]
-                        .copy_from_slice(&panel[at..at + 4]);
+                    data[target + x * 4..target + x * 4 + 4].copy_from_slice(&panel[at..at + 4]);
                 }
             }
         }
@@ -52,7 +52,10 @@ fn frame_pixels(width: u32, height: u32) -> Result<Vec<u8>, String> {
 fn run() -> Result<(), String> {
     let mut runtime = LayerRuntime::connect()?;
     let id: WindowId = runtime.create_toplevel(
-        680, 520, "Kanade Native Settings — Protocol Probe", "kanade",
+        680,
+        520,
+        "Kanade Native Settings — Protocol Probe",
+        "kanade",
     )?;
     let mut active: Vec<ShmFrame> = Vec::new();
     let mut last_size = (680u32, 520u32);
@@ -60,7 +63,11 @@ fn run() -> Result<(), String> {
     loop {
         for event in runtime.dispatch()? {
             match event {
-                Event::Configured { id: configured, width, height } if configured == id => {
+                Event::Configured {
+                    id: configured,
+                    width,
+                    height,
+                } if configured == id => {
                     last_size = (width, height);
                     // A size may change while a previous buffer is in use.
                     // Each presented buffer has its own backing file.
@@ -69,17 +76,21 @@ fn run() -> Result<(), String> {
                         active.push(frame);
                     }
                 }
-                Event::PointerEnter { id: on, x, y }
-                | Event::PointerMotion { id: on, x, y } if on == id => {
+                Event::PointerEnter { id: on, x, y } | Event::PointerMotion { id: on, x, y }
+                    if on == id =>
+                {
                     pointer = (x, y);
                 }
-                Event::PointerButton { id: on, button: 0x110, pressed: true, serial } if on == id => {
-                    match hit_test(last_size.0, last_size.1, pointer.0, pointer.1) {
-                        ChromeAction::Move => runtime.move_toplevel(id, serial)?,
-                        ChromeAction::Resize(edge) => runtime.resize_toplevel(id, serial, edge)?,
-                        ChromeAction::Content => {}
-                    }
-                }
+                Event::PointerButton {
+                    id: on,
+                    button: 0x110,
+                    pressed: true,
+                    serial,
+                } if on == id => match hit_test(last_size.0, last_size.1, pointer.0, pointer.1) {
+                    ChromeAction::Move => runtime.move_toplevel(id, serial)?,
+                    ChromeAction::Resize(edge) => runtime.resize_toplevel(id, serial, edge)?,
+                    ChromeAction::Content => {}
+                },
                 Event::BufferReleased(buffer) => {
                     active.retain(|frame| frame.buffer != buffer);
                 }
