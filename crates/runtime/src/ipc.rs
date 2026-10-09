@@ -69,12 +69,18 @@ impl Server {
         fs::create_dir_all(&private)?;
         let metadata = fs::symlink_metadata(&private)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "IPC directory is not private"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "IPC directory is not private",
+            ));
         }
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700))?;
         let socket = private.join("native.sock");
         if fs::symlink_metadata(&socket).is_ok() {
-            return Err(io::Error::new(io::ErrorKind::AddrInUse, "native IPC socket already exists"));
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "native IPC socket already exists",
+            ));
         }
         let listener = UnixListener::bind(&socket)?;
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
@@ -141,7 +147,10 @@ fn serve(
         let reply = match request_from(&mut stream) {
             Ok(argv) => {
                 let (sender, response) = mpsc::channel();
-                match requests.try_send(Incoming { argv, response: sender }) {
+                match requests.try_send(Incoming {
+                    argv,
+                    response: sender,
+                }) {
                     Ok(()) => {
                         if waker.wake().is_err() {
                             String::from("unknown\nnative event loop is unavailable")
@@ -170,7 +179,10 @@ fn request_from(stream: &mut UnixStream) -> Result<Vec<String>, String> {
     let envelope: Envelope =
         serde_json::from_slice(&payload).map_err(|_| "invalid JSON request".to_owned())?;
     if envelope.version != PROTOCOL {
-        return Err(format!("unsupported CLI protocol version {}", envelope.version));
+        return Err(format!(
+            "unsupported CLI protocol version {}",
+            envelope.version
+        ));
     }
     if envelope.argv.len() > MAX_ARGUMENTS {
         return Err("too many command arguments".into());
@@ -192,7 +204,10 @@ fn read_frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
     stream.read_exact(&mut len)?;
     let len = u32::from_be_bytes(len) as usize;
     if len == 0 || len > MAX_BYTES {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "IPC frame exceeds limit"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "IPC frame exceeds limit",
+        ));
     }
     let mut frame = vec![0u8; len];
     stream.read_exact(&mut frame)?;
@@ -240,7 +255,10 @@ mod tests {
             if wake::drain(&mut reader).unwrap() {
                 break server.drain();
             }
-            assert!(start.elapsed() < Duration::from_secs(3), "native IPC did not wake Wayland");
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "native IPC did not wake Wayland"
+            );
             thread::sleep(Duration::from_millis(5));
         };
         let [command] = <[_; 1]>::try_from(commands).unwrap_or_else(|_| panic!("one command"));
@@ -266,6 +284,10 @@ mod tests {
         let mut stream = UnixStream::connect(server.path()).unwrap();
         stream.write_all(&(u32::MAX).to_be_bytes()).unwrap();
         let response = read_frame(&mut stream).unwrap();
-        assert!(String::from_utf8(response).unwrap().starts_with("refused\n"));
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("refused\n")
+        );
     }
 }
