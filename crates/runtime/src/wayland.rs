@@ -513,7 +513,7 @@ impl LayerRuntime {
             .toplevels
             .get(&id)
             .ok_or_else(|| format!("unknown xdg window {}", id.0))?;
-        window.toplevel.move_(&self._seat, press_serial);
+        window.toplevel._move(&self._seat, press_serial);
         Ok(())
     }
 
