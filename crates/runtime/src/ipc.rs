@@ -11,7 +11,7 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +19,7 @@ use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use rustix::event::{PollFd, PollFlags, poll};
 use serde::{Deserialize, Serialize};
 
 use crate::wake::Waker;
@@ -56,6 +57,8 @@ impl Incoming {
 pub struct Server {
     socket: PathBuf,
     closing: Arc<AtomicBool>,
+    stop: UnixStream,
+    socket_identity: (u64, u64),
     worker: Option<JoinHandle<()>>,
     requests: mpsc::Receiver<Incoming>,
 }
@@ -82,14 +85,18 @@ impl Server {
                 "native IPC socket already exists",
             ));
         }
+        // Private shutdown signal is independent of the public socket's path.
+        let (stop, stop_reader) = UnixStream::pair()?;
         let listener = UnixListener::bind(&socket)?;
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        let socket_metadata = fs::metadata(&socket)?;
+        let socket_identity = (socket_metadata.dev(), socket_metadata.ino());
         let (sender, requests) = mpsc::sync_channel(MAX_QUEUED);
         let closing = Arc::new(AtomicBool::new(false));
         let thread_closing = closing.clone();
         let worker = match thread::Builder::new()
             .name("kanade-native-ipc".into())
-            .spawn(move || serve(listener, sender, waker, thread_closing))
+            .spawn(move || serve(listener, stop_reader, sender, waker, thread_closing))
         {
             Ok(worker) => worker,
             Err(error) => {
@@ -101,6 +108,8 @@ impl Server {
         Ok(Self {
             socket,
             closing,
+            stop,
+            socket_identity,
             worker: Some(worker),
             requests,
         })
@@ -120,27 +129,68 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.closing.store(true, Ordering::Release);
-        // An accept call is interrupted by a local connection, not a timer.
-        let unblocked = UnixStream::connect(&self.socket).is_ok();
-        if unblocked && let Some(worker) = self.worker.take() {
+        // Even if the public pathname was unlinked, this private peer can
+        // wake the listener. Always join, rather than silently leak a thread.
+        drop(self.stop.write_all(&[1]));
+        if let Some(worker) = self.worker.take() {
             drop(worker.join());
         }
-        drop(fs::remove_file(&self.socket));
+        // Never unlink a replacement path that another process now owns.
+        if let Ok(metadata) = fs::symlink_metadata(&self.socket)
+            && (metadata.dev(), metadata.ino()) == self.socket_identity
+        {
+            drop(fs::remove_file(&self.socket));
+        }
     }
 }
 
 fn serve(
     listener: UnixListener,
+    stop_reader: UnixStream,
     requests: mpsc::SyncSender<Incoming>,
     waker: Waker,
     closing: Arc<AtomicBool>,
 ) {
-    for accepted in listener.incoming() {
+    // Both FDs sleep in one blocking poll. No idle timer, and the internal
+    // shutdown peer remains valid when the on-disk listener path is gone.
+    loop {
         if closing.load(Ordering::Acquire) {
             break;
         }
-        let Ok(mut stream) = accepted else {
+        let mut fds = [
+            PollFd::new(&listener, PollFlags::IN),
+            PollFd::new(&stop_reader, PollFlags::IN),
+        ];
+        match poll(&mut fds, None) {
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => break,
+            Ok(_) => {}
+        }
+        if closing.load(Ordering::Acquire)
+            || fds[1]
+                .revents()
+                .intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR)
+        {
             break;
+        }
+        if !fds[0].revents().contains(PollFlags::IN) {
+            if fds[0]
+                .revents()
+                .intersects(PollFlags::HUP | PollFlags::ERR)
+            {
+                break;
+            }
+            continue;
+        }
+        let (mut stream, _) = match listener.accept() {
+            Ok(accepted) => accepted,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.kind() == io::ErrorKind::Interrupted =>
+            {
+                continue;
+            }
+            Err(_) => break,
         };
         drop(stream.set_read_timeout(Some(TIMEOUT)));
         drop(stream.set_write_timeout(Some(TIMEOUT)));
@@ -274,6 +324,31 @@ mod tests {
         let first = Server::bind(temp.path(), wake.clone()).unwrap();
         assert!(Server::bind(temp.path(), wake).is_err());
         assert!(first.path().exists());
+    }
+
+    #[test]
+    fn unreachable_public_socket_does_not_leak_worker_on_shutdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let (wake, _) = wake::pair().unwrap();
+        let server = Server::bind(temp.path(), wake).unwrap();
+        let path = server.path().to_owned();
+        fs::remove_file(&path).unwrap();
+        let begin = Instant::now();
+        drop(server);
+        assert!(begin.elapsed() < Duration::from_secs(2));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn shutdown_cannot_unlink_a_replacement_socket_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let (wake, _) = wake::pair().unwrap();
+        let server = Server::bind(temp.path(), wake).unwrap();
+        let path = server.path().to_owned();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        drop(server);
+        assert_eq!(fs::read(&path).unwrap(), b"replacement");
     }
 
     #[test]
