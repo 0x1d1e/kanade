@@ -99,7 +99,11 @@ impl GlassPass {
             cache: None,
         });
 
-        Self { pipeline, layout, sampler }
+        Self {
+            pipeline,
+            layout,
+            sampler,
+        }
     }
 
     /// The backdrop must be a filterable 2D texture with TEXTURE_BINDING.
@@ -130,7 +134,10 @@ impl GlassPass {
                 },
             ],
         });
-        GlassInstance { bind_group, uniform }
+        GlassInstance {
+            bind_group,
+            uniform,
+        }
     }
 
     /// Record one pass. Transparent fallback is the caller's responsibility
