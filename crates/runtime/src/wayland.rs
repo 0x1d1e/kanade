@@ -22,6 +22,8 @@ use wayland_client::{
         wl_compositor::WlCompositor,
         wl_output::WlOutput,
         wl_region::WlRegion,
+        wl_seat::{self, WlSeat},
+        wl_pointer::{self, WlPointer},
         wl_registry::{self, WlRegistry},
         wl_shm::{self, WlShm},
         wl_shm_pool::WlShmPool,
@@ -37,7 +39,7 @@ use crate::window::{Alignment, Edge, KeyboardMode, Layer, Spec, State, WindowId}
 
 /// Events emitted in arrival order; niri and the Wayland compositor are the
 /// sole authorities for configure and frame readiness.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Configured {
         id: WindowId,
@@ -47,6 +49,11 @@ pub enum Event {
     FrameReady(WindowId),
     Closed(WindowId),
     BufferReleased(WlBuffer),
+    PointerEnter { id: WindowId, x: f64, y: f64 },
+    PointerLeave(WindowId),
+    PointerMotion { id: WindowId, x: f64, y: f64 },
+    PointerButton { id: WindowId, button: u32, pressed: bool },
+    PointerScroll { id: WindowId, x: f64, y: f64 },
 }
 
 /// Retains one layer surface and its mutable compositor state.
@@ -64,9 +71,17 @@ struct Listener {
     next_id: u64,
     windows: BTreeMap<WindowId, Window>,
     events: Vec<Event>,
+    pointer: Option<WlPointer>,
+    pointer_at: Option<WindowId>,
 }
 
 impl Listener {
+    fn id_for_surface(&self, surface: &WlSurface) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .find_map(|(id, window)| (&window.surface == surface).then_some(*id))
+    }
+
     fn id_for_layer(&self, layer: &ZwlrLayerSurfaceV1) -> Option<WindowId> {
         self.windows
             .iter()
@@ -95,6 +110,7 @@ pub struct LayerRuntime {
     compositor: WlCompositor,
     shell: ZwlrLayerShellV1,
     shm: WlShm,
+    _seat: WlSeat,
 }
 
 impl LayerRuntime {
@@ -108,6 +124,9 @@ impl LayerRuntime {
         let compositor = globals
             .bind::<WlCompositor, _, _>(&handle, 4..=6, ())
             .map_err(|e| format!("wl_compositor: {e}"))?;
+        let seat = globals
+            .bind::<WlSeat, _, _>(&handle, 1..=9, ())
+            .map_err(|e| format!("wl_seat: {e}"))?;
         let shm = globals
             .bind::<WlShm, _, _>(&handle, 1..=1, ())
             .map_err(|e| format!("wl_shm: {e}"))?;
@@ -122,6 +141,7 @@ impl LayerRuntime {
             compositor,
             shell,
             shm,
+            _seat: seat,
         })
     }
 
@@ -293,6 +313,9 @@ impl LayerRuntime {
 
     pub fn remove(&mut self, id: WindowId) {
         if let Some(window) = self.listener.windows.remove(&id) {
+            if self.listener.pointer_at == Some(id) {
+                self.listener.pointer_at = None;
+            }
             window.layer.destroy();
             window.surface.destroy();
         }
@@ -435,6 +458,101 @@ impl Dispatch<WlBuffer, ()> for Listener {
     ) {
         if matches!(event, wayland_client::protocol::wl_buffer::Event::Release) {
             listener.events.push(Event::BufferReleased(buffer.clone()));
+        }
+    }
+}
+
+impl Dispatch<WlSeat, ()> for Listener {
+    fn event(
+        state: &mut Self,
+        seat: &WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: wayland_client::WEnum::Value(caps),
+        } = event {
+            if caps.contains(wl_seat::Capability::Pointer) {
+                if state.pointer.is_none() {
+                    state.pointer = Some(seat.get_pointer(qh, ()));
+                }
+            } else {
+                if let Some(pointer) = state.pointer.take() {
+                    pointer.release();
+                }
+                if let Some(id) = state.pointer_at.take() {
+                    state.events.push(Event::PointerLeave(id));
+                }
+            }
+        }
+    }
+}
+
+impl Dispatch<WlPointer, ()> for Listener {
+    fn event(
+        state: &mut Self,
+        pointer: &WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // Queued input from a removed device must not act on a new pointer.
+        if state.pointer.as_ref() != Some(pointer) {
+            return;
+        }
+        match event {
+            wl_pointer::Event::Enter { surface, surface_x, surface_y, .. } => {
+                if let Some(previous) = state.pointer_at.take() {
+                    state.events.push(Event::PointerLeave(previous));
+                }
+                if let Some(id) = state.id_for_surface(&surface) {
+                    state.pointer_at = Some(id);
+                    state.events.push(Event::PointerEnter {
+                        id, x: surface_x, y: surface_y,
+                    });
+                }
+            }
+            wl_pointer::Event::Leave { .. } => {
+                if let Some(id) = state.pointer_at.take() {
+                    state.events.push(Event::PointerLeave(id));
+                }
+            }
+            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                if let Some(id) = state.pointer_at {
+                    state.events.push(Event::PointerMotion {
+                        id, x: surface_x, y: surface_y,
+                    });
+                }
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: wayland_client::WEnum::Value(button_state),
+                ..
+            } => {
+                if let Some(id) = state.pointer_at {
+                    state.events.push(Event::PointerButton {
+                        id,
+                        button,
+                        pressed: button_state == wl_pointer::ButtonState::Pressed,
+                    });
+                }
+            }
+            wl_pointer::Event::Axis {
+                axis: wayland_client::WEnum::Value(axis), value, ..
+            } => {
+                if let Some(id) = state.pointer_at {
+                    let (x, y) = match axis {
+                        wl_pointer::Axis::HorizontalScroll => (value, 0.0),
+                        wl_pointer::Axis::VerticalScroll => (0.0, value),
+                        _ => (0.0, 0.0),
+                    };
+                    state.events.push(Event::PointerScroll { id, x, y });
+                }
+            }
+            _ => {}
         }
     }
 }
