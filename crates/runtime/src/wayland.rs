@@ -60,6 +60,8 @@ pub enum Event {
         y: f64,
     },
     PointerLeave(WindowId),
+    OutputReady { id: u32, name: String, scale: i32 },
+    OutputRemoved(u32),
     Keyboard(KeyEvent),
     PointerMotion {
         id: WindowId,
@@ -87,6 +89,13 @@ struct Window {
     configured_size: Option<(u32, u32)>,
 }
 
+/// One bound wl_output and its last complete logical state.
+struct Output {
+    proxy: WlOutput,
+    name: Option<String>,
+    scale: i32,
+}
+
 /// No platform or renderer state leaks into Kanade's Activity domain.
 #[derive(Default)]
 struct Listener {
@@ -98,6 +107,7 @@ struct Listener {
     keyboard: Option<WlKeyboard>,
     keys: Option<Keyboard>,
     mapper: Option<Mapper>,
+    outputs: BTreeMap<u32, Output>,
 }
 
 impl Listener {
@@ -159,15 +169,40 @@ impl LayerRuntime {
             .bind::<ZwlrLayerShellV1, _, _>(&handle, 4..=5, ())
             .map_err(|e| format!("wlr-layer-shell: {e}"))?;
 
+        let mut listener = Listener::default();
+        globals.contents().with_list(|list| {
+            for global in list {
+                if global.interface == "wl_output" && global.version >= 4 {
+                    listener.outputs.insert(
+                        global.name,
+                        Output {
+                            proxy: globals.registry().bind(global.name, 4, &handle, global.name),
+                            name: None,
+                            scale: 1,
+                        },
+                    );
+                }
+            }
+        });
+
         Ok(Self {
             connection,
             queue,
-            listener: Listener::default(),
+            listener,
             compositor,
             shell,
             shm,
             _seat: seat,
         })
+    }
+
+    /// All names are compositor-provided. Do not infer display order from ID.
+    pub fn output(&self, name: &str) -> Option<&WlOutput> {
+        self.listener
+            .outputs
+            .values()
+            .find(|output| output.name.as_deref() == Some(name))
+            .map(|output| &output.proxy)
     }
 
     /// The small SHM path is only a visibility/Wayland smoke-test renderer.
@@ -399,17 +434,66 @@ fn set_input(
     region.destroy();
 }
 
-impl Dispatch<WlRegistry, GlobalListContents> for Listener {
+impl Dispatch<WlOutput, u32> for Listener {
     fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wl_registry::Event,
-        _: &GlobalListContents,
+        state: &mut Self,
+        _: &WlOutput,
+        event: wayland_client::protocol::wl_output::Event,
+        global: &u32,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // GlobalListContents tracks registry changes. Dynamic outputs will
-        // be managed by the output/seat layer, not silently hardcoded here.
+        let Some(output) = state.outputs.get_mut(global) else {
+            return;
+        };
+        match event {
+            wayland_client::protocol::wl_output::Event::Name { name } => {
+                output.name = Some(name);
+            }
+            wayland_client::protocol::wl_output::Event::Scale { factor } => {
+                output.scale = factor.max(1);
+            }
+            wayland_client::protocol::wl_output::Event::Done => {
+                if let Some(name) = &output.name {
+                    state.events.push(Event::OutputReady {
+                        id: *global,
+                        name: name.clone(),
+                        scale: output.scale,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlRegistry, GlobalListContents> for Listener {
+    fn event(
+        state: &mut Self,
+        registry: &WlRegistry,
+        event: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_registry::Event::Global { name, interface, version }
+                if interface == "wl_output" && version >= 4 =>
+            {
+                state.outputs.entry(name).or_insert_with(|| Output {
+                    proxy: registry.bind(name, 4, qh, name),
+                    name: None,
+                    scale: 1,
+                });
+            }
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(output) = state.outputs.remove(&name) {
+                    output.proxy.release();
+                    state.events.push(Event::OutputRemoved(name));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
