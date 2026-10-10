@@ -20,9 +20,10 @@ pub fn find<A: PartialEq>(grid: &[Vec<(A, f32)>], at: &A) -> Option<Place> {
 }
 
 /*
- * the place a key moves to, none for a key that does not move or an arrow at an edge. Up and Down
+ * the place a key moves to, none for a key that does not move or a move that stays put. Up and Down
  * go to the target in the next row nearest across, Home and End to the first and last. Tab reads
- * on, row by row, and wraps to the first after the last
+ * on, row by row, and wraps to the first after the last; it is always taken, even when that is
+ * where the ring already is, so it still shows a hidden ring
  */
 pub fn moved<A>(place: Place, key: Key, grid: &[Vec<(A, f32)>]) -> Option<Place> {
     let across = grid[place.row][place.column].1;
@@ -68,5 +69,20 @@ pub fn moved<A>(place: Place, key: Key, grid: &[Vec<(A, f32)>]) -> Option<Place>
         _ => return None,
     };
 
-    (to != place).then_some(to)
+    (key == Key::Tab || to != place).then_some(to)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a lone target, as a Tray with one item and no menu
+    #[test]
+    fn tab_is_taken_on_the_only_target() {
+        let grid = vec![vec![((), 0.5)]];
+        let place = Place { row: 0, column: 0 };
+
+        assert_eq!(moved(place, Key::Tab, &grid), Some(place));
+        assert_eq!(moved(place, Key::Right, &grid), None);
+    }
 }
