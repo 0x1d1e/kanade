@@ -1,9 +1,10 @@
 //! Kanade's own niri EventStream (plan 3, 5.3), tracking the overview and casts too. It writes what
-//! niri says as the `Niri` Service, a plain focused output, whether the overview is open, the
-//! focused workspace, whether anything casts and the window each output shows, and knows none of
-//! what reads it: a Module `watch`es `Niri` in its own start. A screenshot niri saves and each
-//! window it opens, closes or focuses are events, not state, so a Module takes those by `on_screenshot`
-//! and `on_windows`. `ask` sends niri one request on a connection of its own.
+//! niri says as the `Niri` Service: a plain focused output, whether the overview is open and how
+//! many times it opened, the focused workspace, whether anything casts and the window each output
+//! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. A screenshot
+//! niri saves and each window it opens, closes or focuses are events, not state, so a Module takes
+//! those by `on_screenshot` and `on_windows`. `ask` sends niri one request on a connection of its
+//! own.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -15,9 +16,7 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::service::Service;
 
-use super::fullscreen::Showing;
 use super::json::Json;
-use super::windows::{Heard, Window, WindowId};
 use crate::island::activity::Workspace;
 use crate::supervise;
 
@@ -28,6 +27,9 @@ pub struct Seen {
     pub focused_output: Option<String>,
 
     pub overview: bool,
+
+    // how many times the overview has opened, so one opened and closed between two looks still shows
+    pub overviews: u32,
 
     // none while unknown, like focus
     pub workspace: Option<Focused>,
@@ -52,6 +54,52 @@ impl Service for Niri {
 
     // written only by `follow`
     fn listen() {}
+}
+
+// the window an output shows, as niri says: its active workspace's active window
+#[derive(Debug, Clone, PartialEq)]
+pub struct Showing {
+    pub app_id: Option<String>,
+
+    // logical, as an output's size is
+    pub tile: (f64, f64),
+}
+
+// niri's window id, which stays with the window for as long as it is open
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+    pub id: WindowId,
+
+    // the Wayland app id; none until the app sets one, and some never do
+    pub app_id: Option<String>,
+
+    pub focused: bool,
+
+    // asks for attention
+    pub urgent: bool,
+}
+
+// what niri said of its windows
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heard {
+    // every window, replacing those known
+    All(Vec<Window>),
+
+    // one window, new or changed; one that is focused takes the focus from every other
+    Opened(Window),
+
+    Closed(WindowId),
+
+    // none: no window has the focus
+    Focused(Option<WindowId>),
+
+    Urgent(WindowId, bool),
+
+    // the stream ended, so no window is known
+    Lost,
 }
 
 // the focused workspace, as niri last said
@@ -91,6 +139,8 @@ struct Known {
     focused: Option<u64>,
 
     overview: bool,
+
+    overviews: u32,
 
     // every cast by stream id
     casts: HashSet<u64>,
@@ -188,6 +238,10 @@ impl Known {
         } else if let Some(overview) = event.get("OverviewOpenedOrClosed")
             && let Some(open) = overview.get("is_open").and_then(Json::as_bool)
         {
+            if open && !self.overview {
+                self.overviews = self.overviews.wrapping_add(1);
+            }
+
             self.overview = open;
         } else if let Some(changed) = event.get("CastsChanged") {
             let casts = changed.get("casts").and_then(Json::as_array);
@@ -235,6 +289,7 @@ impl Known {
         Seen {
             focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
+            overviews: self.overviews,
             workspace,
             casting: !self.casts.is_empty(),
             shown,
@@ -650,6 +705,23 @@ mod tests {
         assert_eq!(posts.last().cloned().unwrap_or_default(), posted);
 
         (posts, lost.kind())
+    }
+
+    // a watcher that looks once sees only the last post
+    #[test]
+    fn an_overview_opened_and_closed_is_counted() {
+        let (posts, _) = posts(&[
+            OK,
+            WORKSPACES,
+            &overview(true),
+            &activated(2, true),
+            &overview(false),
+        ]);
+        let last = posts.last().expect("the stream changed things");
+
+        assert!(!last.overview);
+        assert_eq!(last.overviews, 1);
+        assert_eq!(last.workspace.as_ref().map(|focused| focused.id), Some(2));
     }
 
     #[test]

@@ -48,11 +48,16 @@ pub fn follow() {
  * had the focus shows: focus moving to another output, by a window or the pointer, is no switch,
  * and a list that only renumbers is none either. The overview opening takes a shown switch away,
  * so it does not come back when the overview closes; switches inside it show nothing, nor does
- * the one that closes it, which niri tells beside the close
+ * the one that closes it, which niri tells beside the close. An overview that opened and closed
+ * between two looks is told by its count, and shows nothing either
  */
 pub fn change(before: &Seen, now: &Seen) -> Option<Change> {
     if now.overview {
         return (!before.overview).then(|| Change::Withdraw(id()));
+    }
+
+    if now.overviews != before.overviews {
+        return Some(Change::Withdraw(id()));
     }
 
     if before.overview {
@@ -87,9 +92,11 @@ mod tests {
     use crate::island::activity::Workspace;
     use crate::sources::niri::Focused;
 
-    fn on(id: u64, overview: bool) -> Seen {
+    // workspace `id` focused, the overview `opened` times so far and open now or not
+    fn on(id: u64, opened: u32, overview: bool) -> Seen {
         Seen {
             overview,
+            overviews: opened,
             workspace: Some(Focused {
                 id,
                 output: Some(String::from("eDP-1")),
@@ -107,10 +114,19 @@ mod tests {
     // may reach this together
     #[test]
     fn closing_the_overview_on_another_workspace_shows_no_switch() {
-        assert_eq!(change(&on(1, true), &on(2, false)), None);
+        assert_eq!(change(&on(1, 1, true), &on(2, 1, false)), None);
         assert!(matches!(
-            change(&on(1, false), &on(2, false)),
+            change(&on(1, 1, false), &on(2, 1, false)),
             Some(Change::Post(_))
+        ));
+    }
+
+    // opened, a workspace chosen and closed before the next look: only the count shows it
+    #[test]
+    fn an_overview_opened_and_closed_between_looks_shows_no_switch() {
+        assert!(matches!(
+            change(&on(1, 0, false), &on(2, 1, false)),
+            Some(Change::Withdraw(_))
         ));
     }
 }

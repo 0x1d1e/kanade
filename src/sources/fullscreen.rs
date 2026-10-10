@@ -14,16 +14,7 @@ use std::collections::BTreeMap;
 use kanade_runtime::service::Service;
 use kanade_runtime::{FullscreenWindow, Monitor, Toplevels};
 
-use super::niri::Niri;
-
-// the window an output shows, as niri says: its active workspace's active window
-#[derive(Debug, Clone, PartialEq)]
-pub struct Showing {
-    pub app_id: Option<String>,
-
-    // logical, as an output's size is
-    pub tile: (f64, f64),
-}
+use super::niri::{Niri, Showing};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Fullscreen {
