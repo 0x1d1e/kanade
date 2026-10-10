@@ -1,7 +1,7 @@
 //! Kanade's own niri EventStream (plan 3, 5.3), tracking the overview and casts too. Hands the core a plain focused output and whether the overview is open,
 //! and the window each output shows (`fullscreen`), `workspace` the focused workspace, `privacy` whether anything captures the screen, and `capture`
-//! each screenshot niri saves, `windows` every window opened, closed or focused, and `dock` the
-//! outputs still connected. `ask` sends niri one request on a connection of its own.
+//! each screenshot niri saves, and `windows` every window opened, closed or focused. `ask` sends
+//! niri one request on a connection of its own.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -17,9 +17,7 @@ use super::json::Json;
 use super::privacy::Privacy;
 use super::windows::{self, Heard, Window, WindowId};
 use super::workspace;
-use crate::autohide;
-use crate::banners::{self, Banners};
-use crate::dock;
+use crate::banners::Banners;
 use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
 use crate::supervise;
@@ -37,9 +35,6 @@ pub struct Seen {
 
     // niri has at least one cast, paused ones included
     pub casting: bool,
-
-    // every output, as niri keeps a workspace on each; sorted, and empty while unknown
-    pub outputs: Vec<String>,
 
     // the window each output shows, by output; empty while unknown
     pub shown: BTreeMap<String, Showing>,
@@ -219,15 +214,6 @@ impl Niri {
             },
         });
 
-        let mut outputs: Vec<String> = self
-            .workspaces
-            .values()
-            .filter_map(|listed| listed.output.clone())
-            .collect();
-
-        outputs.sort();
-        outputs.dedup();
-
         let shown = self
             .workspaces
             .values()
@@ -244,7 +230,6 @@ impl Niri {
             overview: self.overview,
             workspace,
             casting: !self.casts.is_empty(),
-            outputs,
             shown,
         }
     }
@@ -357,7 +342,6 @@ pub struct Posts {
     pub banners: bool,
     pub capture: bool,
     pub windows: bool,
-    pub dock: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -588,17 +572,11 @@ fn watch(
     io::ErrorKind::UnexpectedEof.into()
 }
 
-// the outputs niri has, as they change; a lost stream knows none, which is not every output gone
-fn outputs<'a>(before: &Seen, seen: &'a Seen) -> Option<&'a [String]> {
-    (before.outputs != seen.outputs && !seen.outputs.is_empty()).then_some(&seen.outputs[..])
-}
-
 /*
  * the core hears of focus and the overview only when they change, of the focused workspace only
  * as a switch, so a list that only renumbers wakes nothing; the privacy cluster hears of casts
- * only as the first starts or the last stops, the Banners of focus only as it moves, the Dock
- * and the Island's autohide of the outputs only as one comes or goes, `fullscreen` of the windows
- * shown only as one changes
+ * only as the first starts or the last stops, the Banners of focus only as it moves, `fullscreen`
+ * of the windows shown only as one changes
  */
 fn post(posts: Posts, before: &Seen, seen: &Seen) {
     if before.shown != seen.shown {
@@ -611,18 +589,6 @@ fn post(posts: Posts, before: &Seen, seen: &Seen) {
 
     if posts.banners && before.focused_output != seen.focused_output {
         Banners::write().focus(seen.focused_output.clone(), Instant::now());
-    }
-
-    if let Some(outputs) = outputs(before, seen) {
-        autohide::outputs(outputs);
-
-        if posts.banners {
-            banners::outputs(outputs);
-        }
-
-        if posts.dock {
-            dock::outputs(outputs);
-        }
     }
 
     let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);

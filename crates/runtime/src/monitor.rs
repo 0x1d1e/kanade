@@ -20,6 +20,10 @@ impl Monitors {
     pub fn all(&self) -> &[Monitor] {
         &self.all
     }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.all.iter().any(|monitor| monitor.name == name)
+    }
 }
 
 impl Service for Monitors {

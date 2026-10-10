@@ -10,6 +10,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kanade_runtime::Monitors;
 use kanade_runtime::service::Service;
 
 use crate::config;
@@ -108,31 +109,6 @@ impl Out {
 #[derive(Default)]
 struct Outs {
     by: HashMap<String, Out>,
-
-    // the outputs that left, until niri lists them again, so a late draw of one adds none back
-    left: Vec<String>,
-}
-
-impl Outs {
-    fn outputs(&mut self, present: &[String]) {
-        self.left.retain(|left| !present.contains(left));
-
-        let gone: Vec<String> = self
-            .by
-            .keys()
-            .filter(|monitor| !present.contains(monitor))
-            .cloned()
-            .collect();
-
-        for monitor in gone {
-            self.by.remove(&monitor);
-            self.left.push(monitor);
-        }
-    }
-
-    fn left(&self, monitor: &str) -> bool {
-        self.left.iter().any(|left| left == monitor)
-    }
 }
 
 static OUT: Mutex<Option<Outs>> = Mutex::new(None);
@@ -161,10 +137,6 @@ pub fn out(monitor: &str, idle: bool, forced: bool, now: Instant) -> (f32, bool)
     }
 
     let outs = outs.get_or_insert_with(Outs::default);
-
-    if outs.left(monitor) {
-        return (1.0, false);
-    }
 
     let step = outs
         .by
@@ -206,12 +178,13 @@ pub fn moving(monitor: &str, now: Instant) -> bool {
         .is_some_and(|out| out.spring.mode() == Mode::Spring && !out.spring.settled(now))
 }
 
-// niri's outputs, as one comes or goes: one replugged comes back out, as new
-pub fn outputs(present: &[String]) {
-    OUT.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(Outs::default)
-        .outputs(present);
+// an output that left keeps no slide, so one replugged under its name starts out and idle afresh
+pub fn forget_gone() {
+    let monitors = Monitors::read();
+
+    if let Some(outs) = OUT.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+        outs.by.retain(|monitor, _| monitors.has(monitor));
+    }
 }
 
 /*

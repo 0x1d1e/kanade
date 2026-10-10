@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use crate::sources::notifications::{Notification, Notifications, Urgency};
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Button, Center, Column, Cursor, Horizontal, InputArea, Layer, LayerWindow, Monitor, Padding,
-    Rectangle, Row, Size, Stack as Layers, Start, Text, Vertical, Widget, Zone, children,
+    Button, Center, Column, Cursor, Horizontal, InputArea, Layer, LayerWindow, Monitor, Monitors,
+    Padding, Rectangle, Row, Size, Stack as Layers, Start, Text, Vertical, Widget, Zone, children,
     request_frame,
 };
 
@@ -176,16 +176,18 @@ pub fn showing(monitor: &str) -> bool {
     modules::on("banners") && !Banners::read().shown_on(monitor).is_empty()
 }
 
-// niri's outputs, as one comes or goes: one unplugged mid-way forgets its Banners' places
-pub fn outputs(present: &[String]) {
+// forgets the outputs that left, with their Banners' places
+pub fn forget_gone() {
+    let monitors = Monitors::read();
+
     MOTIONS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .retain(|monitor, _| present.contains(monitor));
+        .retain(|monitor, _| monitors.has(monitor));
     PANES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .retain(|monitor, _| present.contains(monitor));
+        .retain(|monitor, _| monitors.has(monitor));
 }
 
 fn nudge() {
