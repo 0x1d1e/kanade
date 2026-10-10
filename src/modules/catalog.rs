@@ -16,8 +16,8 @@ use crate::sources::{
     session, sleep, system, timer, tray, wake, wallpaper, weather,
 };
 use crate::{
-    banners, cli, clock, config, dock, ipc, lock, reload, settings, shadow, supervise, surfaces,
-    theme, view,
+    autohide, banners, cli, clock, config, dock, ipc, lock, reload, settings, shadow, supervise,
+    surfaces, theme, view,
 };
 
 use super::{CORE, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -120,21 +120,21 @@ pub const ALL: &[Module] = &[
                 view::peek(),
                 Instant::now(),
             );
+            service::watch::<Monitors>(autohide::forget_gone);
             IslandService::write().withhold(&withheld());
             theme::follow(config.palette.as_deref());
             reload::spawn();
             clock::spawn();
             shadow::prepare();
 
-            // Kanade's own niri stream, which `workspace`, `windows`, `privacy`, `banners`,
-            // `capture` and `dock` also read when on
+            // Kanade's own niri stream, which `workspace`, `windows`, `privacy`, `banners` and
+            // `capture` also read when on
             let posts = niri::Posts {
                 workspace: on("workspace"),
                 privacy: on("privacy"),
                 banners: on("banners"),
                 capture: on("capture"),
                 windows: on("windows"),
-                dock: on("dock"),
             };
             supervise::spawn("niri", move || niri::follow(posts));
 
@@ -197,6 +197,8 @@ pub const ALL: &[Module] = &[
         verbs: &[],
         start: |app| {
             dock::pin();
+            service::watch::<Monitors>(dock::forget_gone);
+
             app.window_per_monitor(dock::reserve)
                 .window_per_monitor(dock::window)
         },
@@ -451,7 +453,11 @@ pub const ALL: &[Module] = &[
         needs: &[],
         settings: &[],
         verbs: &[],
-        start: |app| app.window_per_monitor(banners::window),
+        start: |app| {
+            service::watch::<Monitors>(banners::forget_gone);
+
+            app.window_per_monitor(banners::window)
+        },
     },
     // the three share one system bus watcher, which follows only the daemons of those that are on
     Module {

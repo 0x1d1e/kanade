@@ -9,13 +9,13 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
 - [ ] Surface visit state is still copied by the visit-scoped Searches and Browse
   - `Search` (clipboard, launcher) and `Browse` (calendar) still repeat the `of(visit)` reset; give them the visit helper.
   - Tab navigates only in notifications and clipboard; decide whether `grid::moved` takes it for every Surface.
-- [ ] niri is a hub that knows its consumers; three modules re-implement output lifecycle
-  - `sources/niri.rs` pushes into Fullscreen, Privacy, Banners focus, `autohide::outputs`, `banners::outputs`, `dock::outputs`, `IslandService`, `windows::hear` and `capture::captured`, gated by the six-flag `Posts` built in `modules/catalog.rs`. The source depends upward on `banners`, `dock` and `autohide`.
-  - `autohide`, `dock` and `banners` each hand-roll "forget this output when it leaves"; `autohide::Outs` and `dock::Pointers` also keep a `left` list so a late draw does not re-add it.
-  - The runtime already publishes `Monitors` and `service::watch` (ADR 0035). Make it the one presence authority, each module pruning its per-output maps from a watcher registered in its own start; drop `niri::outputs()` and the `banners`/`dock` flags of `Posts`.
-  - Later: one niri-state Service that Privacy, Banners and Fullscreen derive from by watching, removing the rest of `Posts`.
-  - Risks: niri's output list and the Wayland monitor list are different events (the `left` lists exist for a real race); keep writes narrow, since any Service write redraws every reader (see Glass).
-  - Verify: unplug and replug an output with the Dock, a Banner and autohide active; nothing stale draws, a replugged output comes back as new, idle frames stay 0. It touches lock, privacy and fullscreen paths: run the AGENTS.md lock-safety checks.
+- [x] Output presence: `Monitors` is the one authority; `autohide`, `banners` and `dock` prune from a watcher in their own start (#214)
+  - Not run: the unplug and replug with the Dock, a Banner and autohide active (one output on the dev machine). Nothing stale should draw, a replugged output should come back as new, idle frames stay 0.
+  - Watchers see only the latest list, so an output destroyed and created again between two derives keeps its state, a stale hover included.
+- [ ] niri is still a hub that knows its consumers
+  - `sources/niri.rs` pushes into Fullscreen, Privacy, Banners focus, `IslandService`, `windows::hear` and `capture::captured`, gated by the five-flag `Posts` built in `modules/catalog.rs`. The source depends upward on `banners`.
+  - One niri-state Service that Privacy, Banners and Fullscreen derive from by watching would remove `Posts`.
+  - Risk: any Service write redraws every reader (see Glass); keep writes narrow.
 - [ ] Restart-surviving worker queue is declared four times (low-level)
   - `google.rs`, `weather.rs` and `wallpaper.rs` declare an identical `static QUEUE: LazyLock<(Sender<T>, Mutex<Receiver<T>>)>`; `island/service.rs` and `banners/mod.rs` have the `SyncSender` NUDGE variant. A small `supervise::Queue<T>` would absorb them.
 - [ ] `PoisonError::into_inner` is spelled out at 147 sites; a small lock helper would replace them (low-level).

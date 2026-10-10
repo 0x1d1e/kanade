@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Button, Center, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor, Padding,
-    Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone, request_frame,
+    Button, Center, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor, Monitors,
+    Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone, request_frame,
 };
 
 use crate::autohide::{DELAY, HIDE, SHOW, TRIGGER};
@@ -462,7 +462,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         let last = drawn.get(&monitor.name).copied();
         let next = Drawn::next(last, autohide, config.island.motion, shown, covered, now);
 
-        remember(&mut drawn, &pointers, &monitor.name, next);
+        drawn.insert(monitor.name.clone(), next);
         next
     };
 
@@ -1481,13 +1481,6 @@ fn reaches(
  */
 static DRAWN: LazyLock<Mutex<HashMap<String, Drawn>>> = LazyLock::new(Default::default);
 
-// keeps what a Dock drew; an output that left keeps nothing to slide or fade from, should it return
-fn remember(drawn: &mut HashMap<String, Drawn>, pointers: &Pointers, monitor: &str, next: Drawn) {
-    if pointers.here(monitor) {
-        drawn.insert(monitor.to_owned(), next);
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Drawn {
     // how far it had faded for the Island, 0 to 1
@@ -2066,23 +2059,6 @@ impl Canvas {
 #[derive(Default)]
 pub struct Pointers {
     by: HashMap<String, Pointer>,
-
-    // every output niri last said it has
-    present: Vec<String>,
-
-    /*
-     * the outputs that left, until niri lists them again: a late event from one adds nothing, while
-     * one from an output that came before niri said is kept. One plugged back under its name is
-     * still left until then, so a pointer entering its Dock first is missed until it leaves and
-     * comes back; niri says well before a hand gets there
-     */
-    left: Vec<String>,
-}
-
-impl Pointers {
-    fn here(&self, monitor: &str) -> bool {
-        !self.left.iter().any(|output| output == monitor)
-    }
 }
 
 impl Service for Pointers {
@@ -2177,11 +2153,10 @@ impl Pointer {
 // read first, as a write redraws the Dock of its output
 fn hover(monitor: &str, inside: bool) {
     let unchanged = |pointers: &Pointers| {
-        !pointers.here(monitor)
-            || pointers
-                .by
-                .get(monitor)
-                .is_some_and(|pointer| pointer.inside == inside)
+        pointers
+            .by
+            .get(monitor)
+            .is_some_and(|pointer| pointer.inside == inside)
     };
 
     if unchanged(&Pointers::read()) {
@@ -2190,13 +2165,6 @@ fn hover(monitor: &str, inside: bool) {
 
     let now = Instant::now();
     let mut pointers = Pointers::write();
-
-    // the output may have left meanwhile
-    if !pointers.here(monitor) {
-        pointers.quiet();
-
-        return;
-    }
 
     pointers.part(&monitor);
 
@@ -2275,43 +2243,15 @@ fn hover(monitor: &str, inside: bool) {
     }
 }
 
-/*
- * niri's outputs, each time they change: one unplugged takes its Dock with it, and the pointer's
- * leave with it, so the Dock forgets it was hovered and how it last drew there, for one replugged
- * to come back as new
- */
-pub fn outputs(present: &[String]) {
-    let here = |monitor: &String| present.contains(monitor);
+// an output that left keeps no hover or last frame, so one replugged under its name starts as new
+pub fn forget_gone() {
+    let monitors = Monitors::read();
+    let here = |monitor: &String| monitors.has(monitor);
 
-    // read first, as a write redraws every Dock: unchanged, unless an output came or went
-    let unchanged =
-        |pointers: &Pointers| pointers.present == present && pointers.by.keys().all(&here);
-
-    let drawn_here = || {
-        DRAWN
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .keys()
-            .all(&here)
-    };
-
-    if unchanged(&Pointers::read()) && drawn_here() {
-        return;
+    // read first, as a write redraws every Dock
+    if !Pointers::read().by.keys().all(here) {
+        Pointers::write().by.retain(|monitor, _| here(monitor));
     }
-
-    // first, so a Dock drawing meanwhile finds its output gone and keeps nothing
-    let mut pointers = Pointers::write();
-
-    let pointers = &mut *pointers;
-    let known = pointers.present.iter().chain(pointers.by.keys());
-    let left: Vec<String> = known.filter(|monitor| !here(monitor)).cloned().collect();
-
-    pointers.left.retain(|monitor| !here(monitor));
-    pointers.left.extend(left);
-    pointers.left.sort();
-    pointers.left.dedup();
-    pointers.present = present.to_vec();
-    pointers.by.retain(|monitor, _| here(monitor));
 
     DRAWN
         .lock()
@@ -2326,11 +2266,10 @@ fn pointed(monitor: &str, x: f32) {
     }
 
     let unchanged = |pointers: &Pointers| {
-        !pointers.here(monitor)
-            || pointers
-                .by
-                .get(monitor)
-                .is_some_and(|pointer| pointer.x == x && pointer.growing == pointer.inside)
+        pointers
+            .by
+            .get(monitor)
+            .is_some_and(|pointer| pointer.x == x && pointer.growing == pointer.inside)
     };
 
     if unchanged(&Pointers::read()) {
@@ -2339,12 +2278,6 @@ fn pointed(monitor: &str, x: f32) {
 
     let now = Instant::now();
     let mut pointers = Pointers::write();
-
-    if !pointers.here(monitor) {
-        pointers.quiet();
-
-        return;
-    }
 
     pointers.part(&monitor);
 
