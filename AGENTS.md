@@ -4,6 +4,8 @@ niri shell on its own runtime (ADR 0028), centered on an adaptive activity islan
 
 Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
 
+Precedence: `CONTEXT.md` defines the implemented domain invariants; `docs/design.md` the target architecture; ADRs record decisions and supersessions (history, not current state). Update the affected ones in the same change as an architectural change.
+
 User docs: `README.md` is the short overview; install, CLI, config, keyboard and limitations live in `docs/wiki/`. The config page holds `kanade config defaults` verbatim (checked by a unit test).
 
 ## Commands
@@ -13,7 +15,7 @@ Run from repo root.
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace    # the few unit tests, incl. the island/ purity check (see Tests and CI)
+cargo test --workspace    # targeted unit tests, incl. the island/ purity check (see Tests and CI)
 cargo run                 # the shell
 scripts/dev               # cargo build, restart the shell on each save; a failed build keeps the old one
 ```
@@ -30,7 +32,7 @@ scripts/dev               # cargo build, restart the shell on each save; a faile
 
 ## Tests and CI
 
-Few tests, on purpose. Real behavior is checked by E2E on the user's session (below); a unit test is for what E2E cannot reach cheaply or what is costly to get wrong.
+Targeted tests, on purpose. Real behavior is checked by E2E on the user's session (below); a unit test is for what E2E cannot reach cheaply or what is costly to get wrong.
 
 - Write a unit test only for: an enforced boundary or invariant (`src/boundary.rs`, `island/` purity, the Arbiter's rules); safety (session lock, privacy, input security); data integrity (config, settings and state files, recurrence and time maths, parsers of outside input); the runtime's core; a confirmed defect, once, at the seam it crossed.
 - Do not write one for layout, geometry or motion numbers, view code, constants, or a rule it only restates; look at it running instead. A test that fails whenever the code is touched, or that you would delete rather than fix, should not exist. Delete such a test you meet, in the change that touches it.
@@ -70,7 +72,7 @@ Commit locally during a phase; push nothing until it ends. Then squash the PR br
 
 - Kanade comes from 0x1d1e, an experimental lab: invent, don't just reuse. macOS and other shells, docks and tools are references to learn from and surpass, not ceilings. Build what no one has thought to build, where it makes the shell better. Do not rebuild generic infrastructure for its own sake.
 
-- Until 1.0, ship the product fast; performance waits for 1.0. A look or motion that matches or surpasses macOS wins over its CPU, GPU or memory cost, and resource use is neither measured nor a gate. Reviews fix high-level issues: wrong behavior a user meets, architecture, session-lock safety, privacy, data integrity, input security, working-shell recovery. Low-level ones (resource use, polish, code-level cleanups) go to `TODO.md` unfixed. `cargo fmt`, `clippy` and `cargo test` still pass locally before every merge (CI runs only the tests).
+- Until 1.0, ship the product fast; behavior and visual quality come before optimization. A look or motion that matches or surpasses macOS wins over its CPU, GPU or memory cost. Performance is not a merge gate: measure (baselines above) when investigating resource use or validating a performance-specific change, not as a routine check. Reviews fix high-level issues: wrong behavior a user meets, architecture, session-lock safety, privacy, data integrity, input security, working-shell recovery. Low-level ones (resource use, polish, code-level cleanups) go to `TODO.md` unfixed. `cargo fmt`, `clippy` and `cargo test` still pass locally before every merge (CI runs only the tests).
 
 - Prefer a coherent primitive in the runtime over another crate with its own Wayland connection. One proven pipeline beats parallel adapters; no per-frame screenshot-to-PNG transfer.
 
