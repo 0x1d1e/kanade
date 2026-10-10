@@ -34,6 +34,6 @@ Rule 6 does not ship in v0.1, and no geometry heuristic ships. Kanade waits for 
 
 ## Consequences
 
-- In v0.1 the island stays visible over fullscreen video and games. The README says so.
+- In v0.1 the island stays visible over fullscreen video and games. The wiki says so.
 - #35 waits on niri #2836 and a niri release that includes it. The source then joins `src/sources/niri.rs`, which already follows the EventStream.
 - Rule 6's unit and E2E checks (plan §9) stay conditional until then.

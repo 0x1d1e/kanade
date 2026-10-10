@@ -38,5 +38,5 @@ Kanade sees no offer itself: wl-paste does, and runs Kanade per selection with t
 ## Consequences
 
 - wl-clipboard 2.3 or later is needed for any history. A distribution still shipping 2.2 gets none until it updates.
-- A copy whose owner does not offer the hint, like a script's `wl-copy` without `--sensitive`, is kept like any other, a password too. Removing the entry or clearing the history is the remedy; the README says so.
+- A copy whose owner does not offer the hint, like a script's `wl-copy` without `--sensitive`, is kept like any other, a password too. Removing the entry or clearing the history is the remedy; the wiki says so.
 - A watcher already running goes on as the wl-paste it started as: replacing the file does not change it, and the next start checks the new one. A file replaced between the check and the start is not caught.

@@ -4,6 +4,8 @@ niri shell on its own runtime (ADR 0028), centered on an adaptive activity islan
 
 Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
 
+User docs: `README.md` is the short overview; install, CLI, config, keyboard and limitations live in `docs/wiki/`. The config page holds `kanade config defaults` verbatim (checked by a unit test).
+
 ## Commands
 
 Run from repo root.

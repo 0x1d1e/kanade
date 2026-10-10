@@ -270,7 +270,7 @@ fn unit_check(shell: Option<u32>, state: &Unit) -> Check {
         ("loaded", _) => Check::warn(format!("unit {unit}: {active}")),
         ("", _) => Check::warn(format!("unit {unit}: unknown, systemd did not answer")),
         _ => Check::warn(format!(
-            "unit {unit}: {load}, see the README to install it: {unrestarted}"
+            "unit {unit}: {load}, see docs/wiki/Installation.md to install it: {unrestarted}"
         )),
     }
 }

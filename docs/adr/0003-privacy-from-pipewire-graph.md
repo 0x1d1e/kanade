@@ -33,6 +33,6 @@ Measured in #34 on PipeWire 1.6.9 with WirePlumber:
 ## Consequences
 
 - Privacy ships in v0.1. With nothing above it, it is the primary. A Satellite shows it only beside another Critical Activity.
-- An app that opens `/dev/video*` or ALSA directly is not shown. The README says so.
+- An app that opens `/dev/video*` or ALSA directly is not shown. The wiki says so.
 - A filter that holds the mic open all the time, such as an always-on noise suppression chain, counts as capture and keeps the indicator on.
 - pw-dump is a runtime dependency. It ships in the `pipewire` package.

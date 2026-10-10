@@ -220,7 +220,7 @@ file change → debounce → parse → migrate → merge → validate
 
 `status` reports config generation, last reload error, pending-restart keys.
 
-Schema registry (`config::Setting`, per Module) defines each setting once: key/kind/default/validation/help/restart/per-output. Drives parsing, validation, reload restart, docs (`kanade config defaults`, README), Settings.
+Schema registry (`config::Setting`, per Module) defines each setting once: key/kind/default/validation/help/restart/per-output. Drives parsing, validation, reload restart, docs (`kanade config defaults`, the wiki's Configuration page), Settings.
 
 ## CLI
 

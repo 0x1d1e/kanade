@@ -25,7 +25,7 @@ niri sets `LockedHint` itself on lock and unlock, so it outlives the shell. `/or
 All three land in #154.
 
 - **Lock stays in the shell process.** No `kanade-lock`.
-- **Kanade runs as a systemd user unit** tied to niri's graphical session, with `Restart=always` and a start limit: `on-failure` leaves a shell ended by `SIGTERM` or a clean exit stopped, which strands a locked session as a crash does; `systemctl --user stop` still stops it. The README starts Kanade through it instead of `spawn-at-startup`.
+- **Kanade runs as a systemd user unit** tied to niri's graphical session, with `Restart=always` and a start limit: `on-failure` leaves a shell ended by `SIGTERM` or a clean exit stopped, which strands a locked session as a crash does; `systemctl --user stop` still stops it. The wiki's Installation page starts Kanade through it instead of `spawn-at-startup`.
 - **At start, a true `LockedHint` locks at once.** The `lock` Module reads it from `session/auto` before `App::run` and calls `Lock::start()`; a lock the compositor refuses is left alone. No Kanade-owned marker: niri's hint is the only state, and it cannot go stale on a Kanade crash.
 
 ## Alternatives

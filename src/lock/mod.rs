@@ -36,7 +36,7 @@ use self::scene::decode;
 pub use self::scene::scene;
 use self::who::look_up;
 
-// the systemd user unit that runs the shell, which `dist/` holds and the README installs
+// the systemd user unit that runs the shell, which `dist/` holds and docs/wiki/Installation.md installs
 pub const UNIT: &str = "kanade.service";
 
 const LOGIND: &str = "org.freedesktop.login1";

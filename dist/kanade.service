@@ -1,5 +1,5 @@
 # Kanade, run with niri's graphical session (ADR 0018). A crash while locked leaves niri locked on
-# its red screen; the restart locks it again. Install: see the README.
+# its red screen; the restart locks it again. Install: see docs/wiki/Installation.md.
 
 [Unit]
 Description=Kanade shell for niri

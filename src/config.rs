@@ -16,7 +16,7 @@
 //!
 //! Every key is optional, and each key is registered by the one Module that owns it, as a
 //! `Setting`: its kind, default, help and whether it takes a restart are defined there once, and
-//! reading, checking, `kanade config defaults` and the README's defaults follow from it. A file that
+//! reading, checking, `kanade config defaults` and the wiki's Configuration defaults follow from it. A file that
 //! is not TOML is skipped whole; a key that is unknown or a value out of range is skipped alone,
 //! keeping what the layers below gave it. Either says so on stderr with file and line, so a typo
 //! never stops the shell. A reload while running (`crate::reload`) is stricter: any problem keeps
@@ -1298,7 +1298,7 @@ pub fn restarted(running: &Config, read: Config) -> Config {
 
 /*
  * the defaults as a config file, every key with what it does, one that sets nothing commented
- * with an example: what `kanade config defaults` prints and the README shows
+ * with an example: what `kanade config defaults` prints and the wiki's Configuration page shows
  */
 pub fn defaults() -> String {
     let config = Config::default();
@@ -2071,17 +2071,20 @@ mod tests {
         assert_eq!(one(&defaults()), (Config::default(), vec![]));
     }
 
-    // the README shows what the registry says, so the docs cannot drift from the keys
+    // the wiki's Configuration page shows what the registry says, so the docs cannot drift from the keys
     #[test]
-    fn the_readme_shows_the_defaults() {
-        let readme = include_str!("../README.md");
-        let start = readme.find("```toml\n").expect("README shows the config") + 8;
-        let shown = &readme[start..][..readme[start..].find("```").unwrap()];
+    fn the_wiki_shows_the_defaults() {
+        let page = include_str!("../docs/wiki/Configuration.md");
+        let start = page
+            .find("```toml\n")
+            .expect("Configuration page shows the config")
+            + 8;
+        let shown = &page[start..][..page[start..].find("```").unwrap()];
 
         assert_eq!(
             shown,
             defaults(),
-            "paste `cargo run -- config defaults` into the README"
+            "paste `cargo run -- config defaults` into docs/wiki/Configuration.md"
         );
     }
 
