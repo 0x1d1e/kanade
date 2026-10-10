@@ -4,17 +4,11 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
 
 ## Architecture (full review)
 
-- [ ] Surface visit and keyboard-ring state is copied per Surface (first move)
-  - Seven Surfaces keep a visit-scoped Service reset by `of(visit)`: `Focus` in session, notifications, tray and controls, `Search` in clipboard and launcher, `Browse` in calendar.
-  - The four `Focus` structs repeat `visit`/`at`/`shown`/`offset`, `place`/`found`/`lost`/`ring`/`row`, the `step` skeleton, and the free fns `focus(monitor)` and `set(focus)`.
-  - The copies drifted:
-    - "A hidden ring: the first key only reveals it" uses a fixed key list in tray and session, and "only a key that would act or move" in controls and notifications.
-    - `lost()` exists only in tray and controls.
-    - Tab navigates only in notifications and clipboard.
-  - Move the visit-scoped ring into `surfaces/grid.rs` (or `surfaces/ring.rs`): a generic `Ring<A>` with `visit`, `at`, `shown`, `of`, `place`, `lost`, `ring`, `row`, the reveal rule, and the fresh read plus change-only write. Each Surface's `Focus` keeps its extras (`sub`, `item`/`entered`, `offset`) and its own `At` and grid. Notifications' ragged `Place::moved` stays local.
-  - Migrate one Surface at a time (session, tray, controls, notifications; calendar, clipboard and launcher take only the visit helper), deleting each copy.
-  - Pick the unified reveal rule first; prefer controls' (reveal only if the key would act or move). It changes tray and session slightly.
-  - Verify: one unit test of the reveal rule at the shared seam; `wtype` E2E per Surface (ring appears without acting, second key acts, a removed target hides the ring).
+- [x] Keyboard ring shared by Session, Tray, Controls and Notifications (`surfaces/ring.rs`, `surfaces::store`, controls' reveal rule)
+  - Notifications embeds `Ring` for its state and keeps a local, equivalent reveal because its ring re-seats by `At::place`.
+- [ ] Surface visit state is still copied by the visit-scoped Searches and Browse
+  - `Search` (clipboard, launcher) and `Browse` (calendar) still repeat the `of(visit)` reset; give them the visit helper.
+  - Tab navigates only in notifications and clipboard; decide whether `grid::moved` takes it for every Surface.
 - [ ] niri is a hub that knows its consumers; three modules re-implement output lifecycle
   - `sources/niri.rs` pushes into Fullscreen, Privacy, Banners focus, `autohide::outputs`, `banners::outputs`, `dock::outputs`, `IslandService`, `windows::hear` and `capture::captured`, gated by the six-flag `Posts` built in `modules/catalog.rs`. The source depends upward on `banners`, `dock` and `autohide`.
   - `autohide`, `dock` and `banners` each hand-roll "forget this output when it leaves"; `autohide::Outs` and `dock::Pointers` also keep a `left` list so a late draw does not re-add it.

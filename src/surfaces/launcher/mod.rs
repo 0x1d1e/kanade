@@ -32,7 +32,7 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
 
-use super::{Ring, controls};
+use super::{Outline, controls, store};
 
 mod apps;
 mod calculator;
@@ -768,7 +768,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         search.pressing = Pressing::Idle;
     }
 
-    set(search);
+    store(search);
 
     IslandService::write().attend(monitor, Instant::now());
 
@@ -812,7 +812,7 @@ fn press(monitor: &str, visit: u64, action: Action) {
         return;
     }
 
-    set(Search {
+    store(Search {
         pressing: Pressing::Waiting(action.clone()),
         ..search
     });
@@ -905,12 +905,5 @@ fn wheel(lines: f32) {
     let search = Search::read().of(visit);
     let count = found(Apps::read().list(), &search.query).len();
 
-    set(search.bounded(count).wheel(lines, count));
-}
-
-// a write wakes the window even when nothing changed, so only write a real change
-fn set(search: Search) {
-    if *Search::read() != search {
-        *Search::write() = search;
-    }
+    store(search.bounded(count).wheel(lines, count));
 }

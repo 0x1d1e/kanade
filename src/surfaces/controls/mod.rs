@@ -22,8 +22,8 @@ use kanade_runtime::{
 };
 
 use self::focus::{Act, At, Focus, Subsurface};
-use super::Ring;
 use super::slider::Slider;
+use super::{Outline, store};
 use crate::cluster;
 use crate::icon::Icon;
 use crate::island::activity::Uplink;
@@ -830,8 +830,7 @@ fn click(act: Act) {
 fn hide() -> u64 {
     let visit = IslandService::read().visit();
 
-    let mut focus = Focus::read().of(visit, false);
-    focus.shown = false;
+    let focus = Focus::read().of(visit, false).hidden();
 
     set(focus);
 
@@ -850,7 +849,7 @@ fn scroll(pixels: f32) {
 
     let most = list::most(grid.len().saturating_sub(1));
 
-    focus.shown = false;
+    focus = focus.hidden();
     focus.offset = (focus.offset + pixels).clamp(0.0, most);
 
     set(focus);
@@ -1099,10 +1098,7 @@ fn join(focus: Focus) -> Focus {
     focus.out()
 }
 
-/*
- * a write wakes the window even when nothing changed, so only write a real change. Out of a
- * sub-surface, its daemon stops being read for it
- */
+// out of a sub-surface, its daemon stops being read for it
 fn set(focus: Focus) {
     if !matches!(
         focus.sub,
@@ -1115,7 +1111,5 @@ fn set(focus: Focus) {
         bluez::unwatch();
     }
 
-    if *Focus::read() != focus {
-        *Focus::write() = focus;
-    }
+    store(focus);
 }

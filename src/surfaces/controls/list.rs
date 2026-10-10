@@ -12,7 +12,7 @@ use super::focus::{Act, At};
 use crate::icon::Icon;
 use crate::island::geometry;
 use crate::sources::system::Radio;
-use crate::surfaces::{RING, Ring};
+use crate::surfaces::{Outline, RING};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 

@@ -24,7 +24,7 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 use crate::view;
 
-use super::{RING, Ring};
+use super::{Outline, RING, store};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -866,7 +866,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         search.copying = Copying::Idle;
     }
 
-    set(search);
+    store(search);
 
     IslandService::write().attend(monitor, Instant::now());
 
@@ -890,7 +890,7 @@ fn run(monitor: &str, visit: u64, press: Press) {
                 return;
             }
 
-            set(Search {
+            store(Search {
                 copying: Copying::Waiting,
                 ..search
             });
@@ -924,10 +924,10 @@ fn copied(monitor: &str, visit: u64, done: bool) {
         return;
     }
 
-    // read apart, since `set` writes
+    // read apart, since `store` writes
     let search = Search::read().of(visit);
 
-    set(Search {
+    store(Search {
         copying: Copying::Failed,
         ..search
     });
@@ -941,14 +941,9 @@ fn wheel(lines: f32) {
     let search = Search::read().of(visit);
     let count = found(&entries, &search.query).len();
 
-    set(search
-        .bounded(count, !entries.is_empty())
-        .wheel(lines, count));
-}
-
-// a write wakes the window even when nothing changed, so only write a real change
-fn set(search: Search) {
-    if *Search::read() != search {
-        *Search::write() = search;
-    }
+    store(
+        search
+            .bounded(count, !entries.is_empty())
+            .wheel(lines, count),
+    );
 }

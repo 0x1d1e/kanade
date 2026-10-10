@@ -13,8 +13,8 @@ use kanade_runtime::{
 };
 
 use self::focus::{Act, At, Focus};
-use super::Ring;
 use super::controls::list;
+use super::{Outline, store};
 use crate::icon::Icon;
 use crate::island::geometry::{self, TRAY_SLOT, TRAY_SLOTS};
 use crate::island::presentation::{Presentation, Surface};
@@ -189,7 +189,7 @@ fn open(monitor: &str, item: &Item, pinned: bool) {
     let visit = IslandService::read().visit();
     let focus = Focus::read().of(visit, false);
 
-    set(focus.into_menu(item.key()));
+    store(focus.into_menu(item.key()));
     menu::open(item);
 }
 
@@ -564,7 +564,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         None => focus,
     };
 
-    set(focus);
+    store(focus);
 
     IslandService::write().attend(monitor, Instant::now());
 
@@ -577,7 +577,7 @@ fn click(act: Act) {
     let menu = Menu::read().clone();
     let focus = level(Focus::read().of(visit, false), &items, &menu).hidden();
 
-    set(self::act(focus, act, &items, &menu));
+    store(self::act(focus, act, &items, &menu));
 }
 
 // what a key or click asks for done, giving where that leaves the focus
@@ -661,7 +661,7 @@ fn scroll(pixels: f32) {
     let most = list::most(grid.len().saturating_sub(focus.header()));
     focus.offset = (focus.offset + pixels).clamp(0.0, most);
 
-    set(focus);
+    store(focus);
 }
 
 // `focus` scrolled to where its rows show, the ringed one whole
@@ -670,11 +670,4 @@ fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
 
     focus.offset = list::scrolled(focus.offset, count, focus.row(grid));
     focus
-}
-
-// a write wakes the window even when nothing changed, so only write a real change
-fn set(focus: Focus) {
-    if *Focus::read() != focus {
-        *Focus::write() = focus;
-    }
 }

@@ -6,7 +6,8 @@
 use kanade_runtime::Key;
 use kanade_runtime::service::Service;
 
-use crate::surfaces::grid::{Place, find, moved};
+use crate::surfaces::grid::moved;
+use crate::surfaces::ring::Ring;
 
 // what the ring can be on, by what it is, so an item or entry moving keeps it
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,19 +34,13 @@ pub enum Act {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Focus {
-    visit: u64,
+    ring: Ring<At>,
 
     // the item whose menu shows, by its key; none is the items
     pub item: Option<u64>,
 
     // the submenus entered, by their entries' ids, outermost first
     pub entered: Vec<i32>,
-
-    // none is the level's first target
-    at: Option<At>,
-
-    // the ring shows: from the start when opened from the keyboard, else from the first key
-    pub shown: bool,
 
     // how far the rows scrolled, in pixels
     pub offset: f32,
@@ -62,12 +57,11 @@ impl Service for Focus {
 impl Focus {
     // this visit's focus; one kept from an earlier visit is over
     pub fn of(&self, visit: u64, held: bool) -> Focus {
-        if self.visit == visit {
+        if self.ring.current(visit) {
             self.clone()
         } else {
             Focus {
-                visit,
-                shown: held,
+                ring: Ring::start(visit, held),
                 ..Focus::default()
             }
         }
@@ -90,51 +84,25 @@ impl Focus {
         grid
     }
 
-    // where the ring is in `grid`: on its target, or the first row when that is gone or unchosen
-    fn place(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        let row = if grid.len() > self.header() {
-            self.header()
-        } else {
-            0
-        };
-
-        self.found(grid)
-            .or_else(|| (!grid.is_empty()).then_some(Place { row, column: 0 }))
-    }
-
-    fn found(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        find(grid, self.at.as_ref()?)
-    }
-
-    // its target gone, the ring hides until a key puts it on what took its place
-    fn lost(&self, grid: &[Vec<(At, f32)>]) -> bool {
-        self.at.is_some() && self.found(grid).is_none()
-    }
-
     // what the ring shows on in `grid`, none while it hides
     pub fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        (self.shown && !self.lost(grid))
-            .then(|| self.place(grid))
-            .flatten()
-            .map(|place| grid[place.row][place.column].0.clone())
+        self.ring.on(grid, self.header())
     }
 
     // the row of the list the ring shows in, so the list scrolls to show it
     pub fn row(&self, grid: &[Vec<(At, f32)>]) -> Option<usize> {
-        (self.shown && !self.lost(grid))
-            .then(|| self.place(grid))
-            .flatten()
-            .and_then(|place| place.row.checked_sub(self.header()))
+        self.ring
+            .row(grid, self.header())?
+            .checked_sub(self.header())
     }
 
     // into `item`'s menu, at its top
     pub fn into_menu(self, item: u64) -> Focus {
         Focus {
+            ring: self.ring.top(),
             item: Some(item),
             entered: Vec::new(),
-            at: None,
             offset: 0.0,
-            ..self
         }
     }
 
@@ -143,7 +111,7 @@ impl Focus {
         self.entered.push(id);
 
         Focus {
-            at: None,
+            ring: self.ring.top(),
             offset: 0.0,
             ..self
         }
@@ -161,7 +129,7 @@ impl Focus {
         };
 
         Focus {
-            at: Some(at),
+            ring: self.ring.onto(at),
             offset: 0.0,
             ..self
         }
@@ -171,7 +139,7 @@ impl Focus {
     pub fn within(mut self, depth: usize) -> Focus {
         if depth < self.entered.len() {
             self.entered.truncate(depth);
-            self.at = None;
+            self.ring = self.ring.top();
             self.offset = 0.0;
         }
 
@@ -181,18 +149,17 @@ impl Focus {
     // back at the items, the menu's item gone
     pub fn without_menu(self) -> Focus {
         Focus {
+            ring: self.ring.top(),
             item: None,
             entered: Vec::new(),
-            at: None,
             offset: 0.0,
-            ..self
         }
     }
 
     // the ring hides, the pointer being what moves now
     pub fn hidden(self) -> Focus {
         Focus {
-            shown: false,
+            ring: self.ring.hidden(),
             ..self
         }
     }
@@ -209,39 +176,12 @@ impl Focus {
             return menu.then(|| (self.out(), None));
         }
 
-        let Some(place) = self.place(grid) else {
+        let Some(place) = self.ring.place(grid, self.header()) else {
             // a menu with nothing in it yet still goes back
             return (menu && key == Key::Left).then(|| (self.out(), None));
         };
 
         let at = grid[place.row][place.column].0.clone();
-        let single = grid[place.row].len() == 1;
-
-        if !self.shown || self.lost(grid) {
-            let shown = matches!(
-                key,
-                Key::Up
-                    | Key::Down
-                    | Key::Left
-                    | Key::Right
-                    | Key::Home
-                    | Key::End
-                    | Key::Enter
-                    | Key::Space
-            );
-
-            if !shown {
-                return None;
-            }
-
-            let focus = Focus {
-                at: Some(at),
-                shown: true,
-                ..self
-            };
-
-            return Some((focus, None));
-        }
 
         let act = match (key, &at) {
             (Key::Enter | Key::Space, _) => Some(Act::Press(at.clone())),
@@ -249,20 +189,31 @@ impl Focus {
             _ => None,
         };
 
+        // a menu's rows are one target wide, so Left goes back a level
+        let back = menu && grid[place.row].len() == 1 && key == Key::Left;
+        let to = moved(place, key, grid);
+
+        if act.is_none() && !back && to.is_none() {
+            return None;
+        }
+
+        if let Some(ring) = self.ring.revealed(grid, self.header()) {
+            return Some((Focus { ring, ..self }, None));
+        }
+
         if act.is_some() {
             return Some((self, act));
         }
 
-        // a menu's rows are one target wide, so Left goes back a level
-        if menu && single && key == Key::Left {
+        if back {
             return Some((self.out(), None));
         }
 
-        let to = moved(place, key, grid)?;
+        let to = to?;
 
         Some((
             Focus {
-                at: Some(grid[to.row][to.column].0.clone()),
+                ring: self.ring.onto(grid[to.row][to.column].0.clone()),
                 ..self
             },
             None,

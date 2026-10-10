@@ -2,6 +2,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use kanade_runtime::service::Service;
 use kanade_runtime::{Button, Rectangle};
 
 use crate::theme;
@@ -13,6 +14,7 @@ mod grid;
 pub mod launcher;
 pub mod media;
 pub mod notifications;
+mod ring;
 pub mod session;
 mod slider;
 pub mod tray;
@@ -44,15 +46,22 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
     }
 }
 
+// a write wakes the window even when nothing changed, so only write a real change
+fn store<S: Service + PartialEq>(next: S) {
+    if *S::read() != next {
+        *S::write() = next;
+    }
+}
+
 // the keyboard focus, thick enough to see on any part
 const RING: f32 = 2.0;
 
 // the one focus mark every Surface draws, so the keyboard reads the same everywhere
-trait Ring {
+trait Outline {
     fn border_if(self, ring: bool) -> Self;
 }
 
-impl Ring for Rectangle {
+impl Outline for Rectangle {
     fn border_if(self, ring: bool) -> Self {
         if ring {
             self.border(RING, theme::island().on_surface)

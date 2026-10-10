@@ -30,7 +30,7 @@ use crate::sources::google;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
-use super::Ring;
+use super::{Outline, store};
 
 // the content's height, which both sides fill
 const HEIGHT: f32 = geometry::CALENDAR.height - 2.0 * INSET;
@@ -943,7 +943,7 @@ fn pressed(monitor: &str, key: Key) -> bool {
         return false;
     };
 
-    set(browse);
+    store(browse);
     IslandService::write().attend(monitor, Instant::now());
 
     true
@@ -953,7 +953,7 @@ fn pressed(monitor: &str, key: Key) -> bool {
 fn choose(monitor: &str, date: NaiveDate) {
     let visit = IslandService::read().visit();
 
-    set(Browse {
+    store(Browse {
         day: Some(date),
         agenda: false,
         selected: 0,
@@ -991,12 +991,5 @@ fn wheel(lines: f32) {
         browse
     };
 
-    set(browse);
-}
-
-// a write wakes the window even when nothing changed, so only write a real change
-fn set(browse: Browse) {
-    if *Browse::read() != browse {
-        *Browse::write() = browse;
-    }
+    store(browse);
 }

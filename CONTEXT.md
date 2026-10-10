@@ -79,6 +79,7 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 ## Sub-surface
 A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has four: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, and Audio, from the speaker level's chevron. In the Tray Surface an item's menu is one, from its chevron or its slot, and each submenu another below it.
 - **Invariant:** every target in a Surface and its sub-surfaces is a key away. Arrows move a ring between targets, Enter or Space presses, Escape leaves a sub-surface for the level it came from, ringed on the target that entered it, and collapses the island only from the top level.
+- **Invariant:** a hidden ring (a Surface opened by pointer, or its target gone) is shown by the first key that would act or move, which does nothing else; any other key does nothing. Session, Tray and Controls share it through `surfaces/ring.rs`; Notifications keeps an equivalent local one.
 - **Invariant:** a sub-surface lasts one opening of its Surface. The Surface opens at its top level.
 - **Invariant:** a password never prints, in a log or a `Debug`; it lives only until NetworkManager has it.
 - **Avoid:** detail (an Activity's Detail), page, view

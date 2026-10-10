@@ -10,8 +10,9 @@ use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Rectangle, Row, Start, Text, Widget, children,
 };
 
-use super::Ring;
-use super::grid::{Place, find, moved};
+use super::grid::moved;
+use super::ring::Ring;
+use super::{Outline, store};
 use crate::icon::Icon;
 use crate::island::activity::{Ending, Leave};
 use crate::island::geometry;
@@ -52,13 +53,7 @@ enum At {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Focus {
-    visit: u64,
-
-    // none is the first target
-    at: Option<At>,
-
-    // the ring shows: from the start when opened from the keyboard, else from the first key
-    shown: bool,
+    ring: Ring<At>,
 }
 
 impl Service for Focus {
@@ -72,29 +67,17 @@ impl Service for Focus {
 impl Focus {
     // this visit's focus; one kept from an earlier visit is over
     fn of(&self, visit: u64, held: bool) -> Focus {
-        if self.visit == visit {
+        if self.ring.current(visit) {
             self.clone()
         } else {
             Focus {
-                visit,
-                shown: held,
-                at: None,
+                ring: Ring::start(visit, held),
             }
         }
     }
 
-    // on its target, or the first when that is gone or unchosen
-    fn place(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        self.at
-            .and_then(|at| find(grid, &at))
-            .or_else(|| (!grid.is_empty()).then_some(Place { row: 0, column: 0 }))
-    }
-
     fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        self.shown
-            .then(|| self.place(grid))
-            .flatten()
-            .map(|place| grid[place.row][place.column].0)
+        self.ring.on(grid, 0)
     }
 
     /*
@@ -103,45 +86,26 @@ impl Focus {
      * that the ring was not seen on
      */
     fn step(self, key: Key, grid: &[Vec<(At, f32)>]) -> Option<(Focus, Option<At>)> {
-        let place = self.place(grid)?;
+        let place = self.ring.place(grid, 0)?;
         let at = grid[place.row][place.column].0;
 
-        if !self.shown {
-            let shown = matches!(
-                key,
-                Key::Left
-                    | Key::Right
-                    | Key::Up
-                    | Key::Down
-                    | Key::Home
-                    | Key::End
-                    | Key::Enter
-                    | Key::Space
-            );
+        let act = matches!(key, Key::Enter | Key::Space).then_some(at);
+        let to = moved(place, key, grid);
 
-            return shown.then_some((
-                Focus {
-                    at: Some(at),
-                    shown: true,
-                    ..self
-                },
-                None,
-            ));
+        if act.is_none() && to.is_none() {
+            return None;
         }
 
-        if matches!(key, Key::Enter | Key::Space) {
-            return Some((self, Some(at)));
+        if let Some(ring) = self.ring.revealed(grid, 0) {
+            return Some((Focus { ring }, None));
         }
 
-        let to = moved(place, key, grid)?;
+        let ring = match to {
+            Some(to) => self.ring.onto(grid[to.row][to.column].0),
+            None => self.ring,
+        };
 
-        Some((
-            Focus {
-                at: Some(grid[to.row][to.column].0),
-                ..self
-            },
-            None,
-        ))
+        Some((Focus { ring }, act))
     }
 }
 
@@ -377,7 +341,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         None => focus,
     };
 
-    set(focus);
+    store(focus);
 
     IslandService::write().attend(monitor, Instant::now());
 
@@ -396,11 +360,10 @@ fn click(at: At) {
         island.visit()
     };
     let focus = Focus {
-        shown: false,
-        ..Focus::read().of(visit, false)
+        ring: Focus::read().of(visit, false).ring.hidden(),
     };
 
-    set(press(focus, at));
+    store(press(focus, at));
 }
 
 /*
@@ -418,8 +381,7 @@ fn press(focus: Focus, at: At) -> Focus {
                 (leave, requested.as_ref().ok().and(session::counting()))
             {
                 return Focus {
-                    at: Some(At::Cancel(counting)),
-                    ..focus
+                    ring: focus.ring.onto(At::Cancel(counting)),
                 };
             }
 
@@ -432,8 +394,7 @@ fn press(focus: Focus, at: At) -> Focus {
             session::act(session::CANCEL, &counting.serial.to_string());
 
             return Focus {
-                at: Some(At::Tile(Leave::Ending(counting.end))),
-                ..focus
+                ring: focus.ring.onto(At::Tile(Leave::Ending(counting.end))),
             };
         }
         At::Now(counting) => session::act(session::NOW, &counting.serial.to_string()),
@@ -452,9 +413,60 @@ fn close() {
     }
 }
 
-// a write wakes the window even when nothing changed, so only write a real change
-fn set(focus: Focus) {
-    if *Focus::read() != focus {
-        *Focus::write() = focus;
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::island::activity::Countdown;
+
+    #[test]
+    fn a_hidden_ring_is_shown_by_a_key_before_any_key_presses() {
+        let grid = vec![vec![
+            (At::Tile(Leave::Sleep), 0.25),
+            (At::Tile(Leave::Lock), 0.75),
+        ]];
+        let hidden = Focus::default().of(1, false);
+
+        let (shown, act) = hidden.step(Key::Enter, &grid).unwrap();
+
+        assert_eq!(act, None);
+        assert_eq!(shown.ring(&grid), Some(At::Tile(Leave::Sleep)));
+        assert_eq!(
+            shown.step(Key::Enter, &grid).unwrap().1,
+            Some(At::Tile(Leave::Sleep))
+        );
+    }
+
+    fn counting(serial: u64) -> Counting {
+        Counting {
+            end: Ending::Restart,
+            countdown: Countdown::new(Duration::from_secs(30), Instant::now()),
+            serial,
+        }
+    }
+
+    // a key meant for one countdown must never press another that replaced it unseen
+    #[test]
+    fn a_replaced_countdown_hides_the_ring_until_a_key_shows_it() {
+        let (a, b) = (counting(1), counting(2));
+        let before = grid(Some(&a));
+        let after = grid(Some(&b));
+
+        let ringed = Focus {
+            ring: Ring::start(1, true).onto(At::Cancel(a)),
+        };
+
+        assert_eq!(ringed.ring(&before), Some(At::Cancel(a)));
+        assert_eq!(ringed.ring(&after), None);
+
+        let (revealed, act) = ringed.step(Key::Enter, &after).unwrap();
+
+        assert_eq!(act, None);
+        assert_eq!(revealed.ring(&after), Some(At::Cancel(b)));
+
+        let (_, act) = revealed.step(Key::Enter, &after).unwrap();
+
+        assert_eq!(act, Some(At::Cancel(b)));
     }
 }

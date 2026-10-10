@@ -10,7 +10,8 @@ use super::list;
 use crate::sources::audio::Node;
 use crate::sources::power::Profile;
 use crate::sources::wifi::Secret;
-use crate::surfaces::grid::{Place, find, moved};
+use crate::surfaces::grid::moved;
+use crate::surfaces::ring::Ring;
 
 // a password is at most 64 characters, the WPA key itself as hex
 const MOST_SECRET: usize = 64;
@@ -98,16 +99,10 @@ pub enum Act {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Focus {
-    visit: u64,
+    ring: Ring<At>,
 
     // none is the top level
     pub sub: Option<Subsurface>,
-
-    // none is the level's first target
-    at: Option<At>,
-
-    // the ring shows: from the start when opened from the keyboard, else from the first key
-    pub shown: bool,
 
     // how far a listing sub-surface's rows scrolled, in pixels
     pub offset: f32,
@@ -184,56 +179,24 @@ impl Focus {
 
     // this visit's focus; one kept from an earlier visit is over
     pub fn of(&self, visit: u64, held: bool) -> Focus {
-        if self.visit == visit {
+        if self.ring.current(visit) {
             self.clone()
         } else {
             Focus {
-                visit,
-                shown: held,
+                ring: Ring::start(visit, held),
                 ..Focus::default()
             }
         }
     }
 
-    /*
-     * where the ring is in `grid`: on its target, or the level's first one when that is gone or
-     * none was chosen. A listing sub-surface starts on its first row, as that is what it is for
-     */
-    fn place(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        let first = if self.listing() && grid.len() > 1 {
-            Place { row: 1, column: 0 }
-        } else {
-            Place { row: 0, column: 0 }
-        };
-
-        self.found(grid)
-            .or_else(|| (!grid.is_empty()).then_some(first))
-    }
-
-    // where its target is in `grid`, none when it has none or that is gone
-    fn found(&self, grid: &[Vec<(At, f32)>]) -> Option<Place> {
-        find(grid, self.at.as_ref()?)
-    }
-
-    /*
-     * its target gone from `grid`, as a network or device leaves while the ring is on it. The ring
-     * hides until a key puts it on what took its place, so nothing is pressed it was not seen on
-     */
-    fn lost(&self, grid: &[Vec<(At, f32)>]) -> bool {
-        self.at.is_some() && self.found(grid).is_none()
-    }
-
-    // what the ring is on in `grid`, none on a level without one
-    pub fn at(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        self.place(grid)
-            .map(|place| grid[place.row][place.column].0.clone())
+    // the rows above a listing sub-surface's, its header
+    fn header(&self) -> usize {
+        usize::from(self.listing())
     }
 
     // what the ring shows on in `grid`, none while it hides
     pub fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        (self.shown && !self.lost(grid))
-            .then(|| self.at(grid))
-            .flatten()
+        self.ring.on(grid, self.header())
     }
 
     /*
@@ -241,19 +204,23 @@ impl Focus {
      * listing scrolls to show it
      */
     pub fn row(&self, grid: &[Vec<(At, f32)>]) -> Option<usize> {
-        (self.shown && !self.lost(grid))
-            .then(|| self.place(grid))
-            .flatten()
-            .map(|place| place.row)
+        self.ring.row(grid, self.header())
+    }
+
+    // the ring hides, the pointer being what moves now
+    pub fn hidden(self) -> Focus {
+        Focus {
+            ring: self.ring.hidden(),
+            ..self
+        }
     }
 
     // into a listing sub-surface, at its top
     pub fn enter(self, sub: Subsurface) -> Focus {
         Focus {
+            ring: self.ring.top(),
             sub: Some(sub),
-            at: None,
             offset: 0.0,
-            ..self
         }
     }
 
@@ -264,7 +231,7 @@ impl Focus {
                 ssid: ssid.to_owned(),
                 secret: Secret::default(),
             }),
-            at: Some(At::Network(ssid.to_owned())),
+            ring: self.ring.onto(At::Network(ssid.to_owned())),
             ..self
         }
     }
@@ -274,25 +241,22 @@ impl Focus {
         match &self.sub {
             None => self,
             Some(Subsurface::Wifi) => Focus {
+                ring: self.ring.onto(At::Wifi),
                 sub: None,
-                at: Some(At::Wifi),
                 offset: 0.0,
-                ..self
             },
             Some(Subsurface::Bluetooth) => Focus {
+                ring: self.ring.onto(At::Bluetooth),
                 sub: None,
-                at: Some(At::Bluetooth),
                 offset: 0.0,
-                ..self
             },
             Some(Subsurface::Audio) => Focus {
+                ring: self.ring.onto(At::Audio),
                 sub: None,
-                at: Some(At::Audio),
                 offset: 0.0,
-                ..self
             },
             Some(Subsurface::Password { ssid, .. }) => Focus {
-                at: Some(At::Network(ssid.clone())),
+                ring: self.ring.onto(At::Network(ssid.clone())),
                 sub: Some(Subsurface::Wifi),
                 ..self
             },
@@ -313,7 +277,7 @@ impl Focus {
             return self.sub.is_some().then(|| (self.out(), None));
         }
 
-        let place = self.place(grid)?;
+        let place = self.ring.place(grid, self.header())?;
         let at = grid[place.row][place.column].0.clone();
         let level = at.level();
 
@@ -334,21 +298,14 @@ impl Focus {
             return None;
         }
 
-        if !self.shown || self.lost(grid) {
-            return Some((
-                Focus {
-                    shown: true,
-                    at: Some(at),
-                    ..self
-                },
-                None,
-            ));
+        if let Some(ring) = self.ring.revealed(grid, self.header()) {
+            return Some((Focus { ring, ..self }, None));
         }
 
         let mut focus = self;
 
         if let Some(moved) = moved {
-            focus.at = Some(grid[moved.row][moved.column].0.clone());
+            focus.ring = focus.ring.onto(grid[moved.row][moved.column].0.clone());
 
             // the list is the rows after the header
             if focus.listing() {

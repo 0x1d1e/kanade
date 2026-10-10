@@ -22,7 +22,8 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 use crate::view;
 
-use super::{RING, Ring};
+use super::ring::Ring;
+use super::{Outline, RING, store};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -65,13 +66,8 @@ const WHEEL: f32 = 40.0;
  */
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Focus {
-    visit: u64,
-
     // none is the first part: the newest card, or Do Not Disturb with none
-    at: Option<At>,
-
-    // the ring shows: from the start when opened from the keyboard, else from the first key
-    shown: bool,
+    ring: Ring<At>,
 
     // how far the cards scrolled, in pixels
     offset: f32,
@@ -88,12 +84,11 @@ impl Service for Focus {
 impl Focus {
     // this visit's focus; one kept from an earlier visit is over
     fn of(&self, visit: u64, held: bool) -> Focus {
-        if self.visit == visit {
+        if self.ring.current(visit) {
             self.clone()
         } else {
             Focus {
-                visit,
-                shown: held,
+                ring: Ring::start(visit, held),
                 ..Focus::default()
             }
         }
@@ -425,7 +420,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
     let daemon = Daemon::read().clone();
 
     let focus = Focus::read().of(visit, held);
-    let ring = (open && focus.shown).then(|| At::place(focus.at, &shapes));
+    let ring = (open && focus.ring.shown).then(|| At::place(focus.ring.at, &shapes));
     let offset = focus.offset.clamp(0.0, most(&shapes));
 
     let list: Box<dyn Widget> = match daemon {
@@ -858,7 +853,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         return false;
     };
 
-    set(focus);
+    store(focus);
 
     IslandService::write().attend(monitor, Instant::now());
 
@@ -880,7 +875,7 @@ impl Focus {
         cards: &[Card],
         shapes: &[Shape],
     ) -> Option<(Focus, Option<Press>)> {
-        let place = At::place(self.at, shapes);
+        let place = At::place(self.ring.at, shapes);
 
         let press = match key {
             Key::Enter | Key::Space => Some(press(cards, shapes, place)),
@@ -894,14 +889,14 @@ impl Focus {
             return None;
         }
 
-        if !self.shown {
-            self.shown = true;
+        if !self.ring.shown {
+            self.ring.shown = true;
 
             return Some((self, None));
         }
 
         if let Some(moved) = moved {
-            self.at = Some(At::on(moved, shapes));
+            self.ring = self.ring.onto(At::on(moved, shapes));
             self.offset = reveal(self.offset.clamp(0.0, most(shapes)), shapes, moved.row);
         }
 
@@ -919,9 +914,11 @@ fn press(cards: &[Card], shapes: &[Shape], place: Place) -> Press {
 
 // a press from the pointer hides the ring, which is for the keyboard
 fn click(monitor: &str, press: Press) {
-    set(Focus {
-        shown: false,
-        ..focus(monitor)
+    let focus = focus(monitor);
+
+    store(Focus {
+        ring: focus.ring.hidden(),
+        ..focus
     });
 
     run(monitor, press);
@@ -959,7 +956,7 @@ fn wheel(monitor: &str, lines: f32) {
     let mut focus = focus(monitor);
     focus.offset = (focus.offset.clamp(0.0, most) + lines * WHEEL).clamp(0.0, most);
 
-    set(focus);
+    store(focus);
 }
 
 // this visit's focus, a fresh one when the stored one is from an earlier opening
@@ -971,11 +968,4 @@ fn focus(monitor: &str) -> Focus {
     };
 
     Focus::read().of(visit, held)
-}
-
-// a write wakes the window even when nothing changed, so only write a real change
-fn set(focus: Focus) {
-    if *Focus::read() != focus {
-        *Focus::write() = focus;
-    }
 }
