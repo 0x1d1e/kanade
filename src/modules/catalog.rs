@@ -11,9 +11,11 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, google, keys, launch,
-    media, network, niri, notifications, osd, pipewire, power, privacy, radios, recording, seat,
-    session, sleep, system, timer, tray, wake, wallpaper, weather,
+    apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, fullscreen, google,
+    keys, launch, media, network,
+    niri::{self, Niri},
+    notifications, osd, pipewire, power, privacy, radios, recording, seat, session, sleep, system,
+    timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
     autohide, banners, cli, clock, config, dock, ipc, lock, reload, settings, shadow, supervise,
@@ -127,16 +129,17 @@ pub const ALL: &[Module] = &[
             clock::spawn();
             shadow::prepare();
 
-            // Kanade's own niri stream, which `workspace`, `windows`, `privacy`, `banners` and
-            // `capture` also read when on
-            let posts = niri::Posts {
-                workspace: on("workspace"),
-                privacy: on("privacy"),
-                banners: on("banners"),
-                capture: on("capture"),
-                windows: on("windows"),
-            };
-            supervise::spawn("niri", move || niri::follow(posts));
+            // what Kanade's own niri stream says; the Modules that read it watch it in their own
+            // start, and `modules::start` runs the stream once they have
+            service::watch::<Niri>(|| {
+                let seen = Niri::read().seen.clone();
+                let mut island = IslandService::write();
+
+                if !island.set_niri(seen.focused_output, seen.overview, Instant::now()) {
+                    island.quiet();
+                }
+            });
+            service::watch::<Niri>(fullscreen::follow_shown);
 
             // the keyboards, for the OSD's keys and lights; typing and key repeat are the runtime's
             if on("osd") {
@@ -149,7 +152,7 @@ pub const ALL: &[Module] = &[
                 .ipc(cli::HANDLER, ipc::answer)
         },
     },
-    // read from the island's niri stream, so it starts nothing of its own
+    // a switch the island's niri stream tells of
     Module {
         name: "workspace",
         about: "A workspace switch, shown on the Island",
@@ -159,9 +162,12 @@ pub const ALL: &[Module] = &[
         needs: &[],
         settings: &[],
         verbs: &[],
-        start: |app| app,
+        start: |app| {
+            service::watch::<Niri>(workspace::follow);
+            app
+        },
     },
-    // the running apps for the Dock (ADR 0014), also read from the island's niri stream
+    // the running apps for the Dock (ADR 0014), from the island's niri stream
     Module {
         name: "windows",
         about: "Matches niri's windows to their apps, for the Dock",
@@ -174,7 +180,10 @@ pub const ALL: &[Module] = &[
         }],
         settings: config::WINDOWS,
         verbs: &[],
-        start: |app| app,
+        start: |app| {
+            niri::on_windows(windows::hear);
+            app
+        },
     },
     // the pinned and running apps, bottom centre on every monitor
     Module {
@@ -218,6 +227,7 @@ pub const ALL: &[Module] = &[
         settings: &[],
         verbs: &[],
         start: |app| {
+            service::watch::<Niri>(privacy::follow_casts);
             supervise::spawn("privacy", privacy::follow);
             app
         },
@@ -455,6 +465,7 @@ pub const ALL: &[Module] = &[
         verbs: &[],
         start: |app| {
             service::watch::<Monitors>(banners::forget_gone);
+            service::watch::<Niri>(banners::follow_focus);
 
             app.window_per_monitor(banners::window)
         },
@@ -882,7 +893,10 @@ pub const ALL: &[Module] = &[
                 _ => Err(Unparsed::Usage),
             },
         }],
-        start: |app| app,
+        start: |app| {
+            niri::on_screenshot(capture::captured);
+            app
+        },
     },
     // keeps the session from going idle while on, by systemd-inhibit, which only it starts
     Module {
