@@ -51,7 +51,8 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Launcher | typing searches apps, a sum like `2+2*3`, emoji after `:` (`:smile`), or a wallpaper after `@` (`@moon`), or where Kanade goes (`wifi`, `bluetooth`, `clipboard`, a setting like `magnification` or a page like `dock settings`); Up/Down/Home/End move the selection, Enter starts the app, copies the value or emoji, sets the wallpaper, or opens Controls, the Clipboard or Settings |
 | Clipboard | typing searches, arrows, Tab, Home and End move the ring, Enter copies the entry, deletes it or clears the history, whichever the ring is on |
 | Calendar | Left/Right move a day, Up/Down a week, `n`/`p` a month, Home or `t` go to today; Tab or Enter enters the day's agenda, where Up/Down move through its events; Tab, Enter or Escape leave it |
-| Session | arrows move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
-| Tray | arrows move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
+| Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
+| Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
+| Controls | Up/Down and Tab move the ring, Left/Right move it or adjust a slider, Enter or Space presses what it is on |
 | Media, Controls, Weather, Session | a typed character collapses an island opened from a keybind, so it goes to the window beneath |
 

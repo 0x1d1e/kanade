@@ -24,6 +24,7 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 use crate::view;
 
+use super::visit::Visited;
 use super::{Outline, RING, store};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
@@ -114,19 +115,20 @@ enum Press {
     Clear,
 }
 
-impl Search {
-    // this visit's search; one kept from an earlier visit is over
-    fn of(&self, visit: u64) -> Search {
-        if self.visit == visit {
-            self.clone()
-        } else {
-            Search {
-                visit,
-                ..Search::default()
-            }
-        }
+impl Visited for Search {
+    fn visit(&self) -> u64 {
+        self.visit
     }
 
+    fn begin(visit: u64) -> Self {
+        Search {
+            visit,
+            ..Search::default()
+        }
+    }
+}
+
+impl Search {
     /*
      * the search after a key and whether it presses what the ring is on, none when the key is not
      * for the Surface. `count` is how many entries the query finds and `any` whether the history

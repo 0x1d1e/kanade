@@ -30,6 +30,7 @@ use crate::sources::google;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
+use super::visit::Visited;
 use super::{Outline, store};
 
 // the content's height, which both sides fill
@@ -108,19 +109,20 @@ impl Service for Browse {
     fn listen() {}
 }
 
-impl Browse {
-    // this visit's browse; one kept from an earlier visit is over
-    fn of(&self, visit: u64) -> Browse {
-        if self.visit == visit {
-            *self
-        } else {
-            Browse {
-                visit,
-                ..Browse::default()
-            }
-        }
+impl Visited for Browse {
+    fn visit(&self) -> u64 {
+        self.visit
     }
 
+    fn begin(visit: u64) -> Self {
+        Browse {
+            visit,
+            ..Browse::default()
+        }
+    }
+}
+
+impl Browse {
     fn day(&self, today: NaiveDate) -> NaiveDate {
         self.day.unwrap_or(today)
     }

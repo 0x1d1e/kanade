@@ -12,6 +12,9 @@
   <a href="docs/wiki/Installation.md">Install</a> | <a href="docs/wiki/CLI.md">CLI</a> | <a href="docs/wiki/Configuration.md">Configuration</a> | <a href="docs/wiki/Keyboard.md">Keyboard</a> | <a href="docs/wiki/Limitations.md">Limitations</a> | <a href="docs/design.md">Design</a>
 </p>
 
+> [!WARNING]
+> Kanade is in a very immature phase. Expect bugs, missing pieces and breaking changes to config, CLI and behavior until 1.0. See [Limitations](docs/wiki/Limitations.md) for known gaps.
+
 ## About
 
 Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri), written in Rust on its own Wayland and GPU runtime. Its center is the Island: one pill at the top center of each monitor that changes shape for what is happening. At rest it shows the clock. Activities such as the playing track, volume, brightness, Caps Lock, Num Lock, airplane mode, workspace changes, notifications, battery and a timer take it over for as long as they last.

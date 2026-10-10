@@ -32,6 +32,7 @@ use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
 
+use super::visit::Visited;
 use super::{Outline, controls, store};
 
 mod apps;
@@ -123,6 +124,19 @@ impl Service for Search {
     fn listen() {}
 }
 
+impl Visited for Search {
+    fn visit(&self) -> u64 {
+        self.visit
+    }
+
+    fn begin(visit: u64) -> Self {
+        Search {
+            visit,
+            ..Search::default()
+        }
+    }
+}
+
 impl Search {
     // what its row says when pressing `action` failed, none when it did not
     fn failed(&self, action: &Action) -> Option<String> {
@@ -158,18 +172,6 @@ impl Search {
     fn open_refused(&mut self, visit: u64, action: Action, why: &str) {
         if self.visit == visit {
             self.pressing = Pressing::Failed(action, String::from(why));
-        }
-    }
-
-    // this visit's search; one kept from an earlier visit is over
-    fn of(&self, visit: u64) -> Search {
-        if self.visit == visit {
-            self.clone()
-        } else {
-            Search {
-                visit,
-                ..Search::default()
-            }
         }
     }
 
