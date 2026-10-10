@@ -12,10 +12,9 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
 - [x] Output presence: `Monitors` is the one authority; `autohide`, `banners` and `dock` prune from a watcher in their own start (#214)
   - Not run: the unplug and replug with the Dock, a Banner and autohide active (one output on the dev machine). Nothing stale should draw, a replugged output should come back as new, idle frames stay 0.
   - Watchers see only the latest list, so an output destroyed and created again between two derives keeps its state, a stale hover included.
-- [ ] niri is still a hub that knows its consumers
-  - `sources/niri.rs` pushes into Fullscreen, Privacy, Banners focus, `IslandService`, `windows::hear` and `capture::captured`, gated by the five-flag `Posts` built in `modules/catalog.rs`. The source depends upward on `banners`.
-  - One niri-state Service that Privacy, Banners and Fullscreen derive from by watching would remove `Posts`.
-  - Risk: any Service write redraws every reader (see Glass); keep writes narrow.
+- [x] niri is a Service its readers watch (`sources/niri.rs`, ADR 0038)
+  - Fullscreen, Privacy, Banners, the core and the workspace switch watch `Niri` in their own start; windows and screenshots take niri's events by `niri::on_windows` and `niri::on_screenshot`. `Posts` is gone.
+  - Not run: losing the stream (restart niri). It should clear the dots and the shown windows, and they stay cleared: the stream is not reconnected.
 - [ ] Restart-surviving worker queue is declared four times (low-level)
   - `google.rs`, `weather.rs` and `wallpaper.rs` declare an identical `static QUEUE: LazyLock<(Sender<T>, Mutex<Receiver<T>>)>`; `island/service.rs` and `banners/mod.rs` have the `SyncSender` NUDGE variant. A small `supervise::Queue<T>` would absorb them.
 - [ ] `PoisonError::into_inner` is spelled out at 147 sites; a small lock helper would replace them (low-level).

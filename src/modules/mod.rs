@@ -11,8 +11,8 @@ use kanade_runtime::App;
 
 use crate::cli::Verb;
 use crate::island::presentation::Surface;
-use crate::sources::osd;
-use crate::{config, reload, settings};
+use crate::sources::{niri, osd};
+use crate::{config, reload, settings, supervise};
 
 mod catalog;
 
@@ -342,6 +342,9 @@ pub fn start(mut app: App) -> App {
             (_, None) => {}
         }
     }
+
+    // after every Module has taken the window and screenshot events it hears, so none is missed
+    supervise::spawn("niri", niri::follow);
 
     app
 }

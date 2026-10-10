@@ -14,19 +14,24 @@ use std::collections::BTreeMap;
 use kanade_runtime::service::Service;
 use kanade_runtime::{FullscreenWindow, Monitor, Toplevels};
 
-// the window an output shows, as niri says: its active workspace's active window
-#[derive(Debug, Clone, PartialEq)]
-pub struct Showing {
-    pub app_id: Option<String>,
-
-    // logical, as an output's size is
-    pub tile: (f64, f64),
-}
+use super::niri::{Niri, Showing};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Fullscreen {
     // by output, empty while unknown
     pub shown: BTreeMap<String, Showing>,
+}
+
+// a watcher of `Niri`: the window each output shows; the same again changes nothing
+pub fn follow_shown() {
+    let niri = Niri::read();
+    let mut fullscreen = Fullscreen::write();
+
+    if fullscreen.shown == niri.seen.shown {
+        fullscreen.quiet();
+    } else {
+        fullscreen.shown.clone_from(&niri.seen.shown);
+    }
 }
 
 // whether a fullscreen window covers `monitor`
