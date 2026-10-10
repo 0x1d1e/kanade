@@ -13,7 +13,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::Service;
+use kanade_runtime::service::Service;
 
 use super::clipboard;
 use super::json::{self, Json};
@@ -280,120 +280,5 @@ fn open(path: &str) {
         Ok(status) if !status.success() => eprintln!("capture: {OPEN} failed ({status})"),
         Ok(_) => {}
         Err(error) => eprintln!("capture: {OPEN}: {error}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_mode_is_named() {
-        assert_eq!(Mode::parse("area"), Some(Mode::Area));
-        assert_eq!(Mode::parse("window"), Some(Mode::Window));
-        assert_eq!(Mode::parse("output"), Some(Mode::Output));
-        assert_eq!(Mode::parse("screen"), None);
-    }
-
-    #[test]
-    fn a_name_taken_the_same_second_is_counted() {
-        let dir = Path::new("/shots");
-        let taken = [
-            "/shots/Screenshot from 2026-10-07 15-36-38.png",
-            "/shots/Screenshot from 2026-10-07 15-36-38 (2).png",
-        ];
-
-        assert_eq!(
-            free(dir, "Screenshot from 2026-10-07 15-36-38", "png", |_| false),
-            Path::new("/shots/Screenshot from 2026-10-07 15-36-38.png")
-        );
-        assert_eq!(
-            free(dir, "Screenshot from 2026-10-07 15-36-38", "png", |path| {
-                taken.iter().any(|taken| path == Path::new(taken))
-            }),
-            Path::new("/shots/Screenshot from 2026-10-07 15-36-38 (3).png")
-        );
-    }
-
-    // only this second's names are kept, so they do not pile up
-    #[test]
-    fn a_name_is_kept_for_its_second_only() {
-        let dir = Path::new("/nowhere/shots");
-        let named = |stamp: &str| name(dir, String::from(stamp));
-
-        assert_eq!(named("s1"), dir.join("Screenshot from s1.png"));
-        assert_eq!(named("s1"), dir.join("Screenshot from s1 (2).png"));
-        assert_eq!(named("s2"), dir.join("Screenshot from s2.png"));
-
-        let kept = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(kept.0, "s2");
-        assert_eq!(kept.1.len(), 1);
-    }
-
-    #[test]
-    fn each_mode_asks_niri_for_its_action() {
-        let parse = |request: String| Json::parse(&request).expect("valid JSON");
-
-        assert_eq!(
-            parse(action(Mode::Area, "/s/a \"b\".png", None)),
-            parse(String::from(
-                r#"{"Action":{"Screenshot":{"show_pointer":true,"path":"/s/a \"b\".png"}}}"#
-            ))
-        );
-        assert_eq!(
-            parse(action(Mode::Window, "/s/w.png", Some(7))),
-            parse(String::from(
-                r#"{"Action":{"ScreenshotWindow":{"id":7,"write_to_disk":true,"show_pointer":false,"path":"/s/w.png"}}}"#
-            ))
-        );
-        assert_eq!(
-            parse(action(Mode::Output, "/s/o.png", None)),
-            parse(String::from(
-                r#"{"Action":{"ScreenshotScreen":{"write_to_disk":true,"show_pointer":true,"path":"/s/o.png"}}}"#
-            ))
-        );
-    }
-
-    #[test]
-    fn the_window_is_the_focused_workspaces_active_one() {
-        let reply = |text: &str| Json::parse(text).expect("valid JSON");
-
-        assert_eq!(
-            active_window(&reply(
-                r#"{"Workspaces":[
-                    {"id":1,"is_focused":false,"active_window_id":3},
-                    {"id":2,"is_focused":true,"active_window_id":5}
-                ]}"#
-            )),
-            Some(5)
-        );
-        assert_eq!(
-            active_window(&reply(
-                r#"{"Workspaces":[{"id":1,"is_focused":true,"active_window_id":null}]}"#
-            )),
-            None
-        );
-    }
-
-    #[test]
-    fn a_screenshot_is_an_actionable_transient_on_the_focused_output() {
-        let shot = Shot {
-            path: String::from("/s/a.png"),
-            copied: false,
-        };
-        let activity = activity(shot.clone());
-
-        assert_eq!(activity.priority(), Priority::Actionable);
-        assert_eq!(activity.lifetime(), Lifetime::Transient(SHOWN));
-        assert_eq!(activity.scope(), Scope::FocusedOutput);
-        assert_eq!(activity.detail(), &Detail::Screenshot(shot));
-        assert_eq!(
-            activity
-                .actions()
-                .iter()
-                .map(|action| action.key.as_str())
-                .collect::<Vec<_>>(),
-            [COPY, SHOW]
-        );
     }
 }

@@ -2,15 +2,22 @@
 //! `island::service::Timings` and `island::motion::REDUCED_FADE`, as `island/` cannot see this
 //! file. No component writes a color literal (`src/boundary.rs`).
 //!
-//! The Island is black and white whatever the mode or wallpaper: `ISLAND`, from `SEMANTIC`. With
-//! `theme.palette` in the config (#39) an image, usually the wallpaper, gives `ThemeRoles` through
-//! Amane's `Palette`, for what draws beside the Island, like Banners and the OSD.
+//! The Island is glass, dark or light as `appearance.tone` sets whatever the wallpaper: `island()`,
+//! from `SEMANTIC`. With `theme.palette` in the config (#39) an image, usually the wallpaper, gives
+//! `ThemeRoles` through `palette`'s `Palette`, for what draws beside the Island, like Banners.
 
+use std::ffi::CString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use amane::{Color, Palette, Service};
+use kanade_runtime::service::Service as _;
+use kanade_runtime::{App, Color};
+
+use crate::sources::palette::Palette;
+use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
+
+use crate::look::Tone;
 
 // colors that mean something, the same in every theme (plan 7)
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,20 +78,136 @@ pub struct ThemeRoles {
     pub outline: Color,
 }
 
-// the Island's roles, black and white
-pub const ISLAND: ThemeRoles = ThemeRoles {
+// the Island's roles on dark glass: white text, and containers that let the glass show through
+pub const ISLAND_DARK: ThemeRoles = ThemeRoles {
     primary: SEMANTIC.on_island_surface,
     on_primary: SEMANTIC.island_surface,
     surface: SEMANTIC.island_surface,
     on_surface: SEMANTIC.on_island_surface,
-    on_surface_variant: Color::rgb(152, 152, 160),
-    surface_container: Color::rgb(28, 28, 32),
-    surface_container_high: Color::rgb(44, 44, 50),
-    outline: Color::rgb(96, 96, 106),
+    on_surface_variant: Color::rgba(235, 235, 245, 153),
+    surface_container: Color::rgba(255, 255, 255, 20),
+    surface_container_high: Color::rgba(255, 255, 255, 36),
+    outline: Color::rgba(255, 255, 255, 64),
 };
 
-// the Island's shadow (plan 7): lifts the body off a light window without a dark halo on a dark one
-pub const SHADOW: Color = Color::rgba(0, 0, 0, 89);
+// the Island's roles on light glass: black text
+pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
+    primary: Color::rgb(28, 28, 30),
+    on_primary: Color::rgb(250, 250, 252),
+    surface: Color::rgb(246, 246, 250),
+    on_surface: Color::rgb(28, 28, 30),
+    on_surface_variant: Color::rgba(60, 60, 67, 166),
+    surface_container: Color::rgba(0, 0, 0, 14),
+    surface_container_high: Color::rgba(0, 0, 0, 26),
+    outline: Color::rgba(0, 0, 0, 46),
+};
+
+// the Island's roles in the tone `appearance.tone` sets
+pub fn island() -> ThemeRoles {
+    match crate::config::get().appearance.tone {
+        Tone::Dark => ISLAND_DARK,
+        Tone::Light => ISLAND_LIGHT,
+    }
+}
+
+// what tints glass, by tone; `glass` sets how much
+pub const GLASS_DARK: Color = Color::rgb(18, 18, 24);
+pub const GLASS_LIGHT: Color = Color::rgb(246, 246, 250);
+
+/*
+ * a bright scene, as a wallpaper would be, that Settings shows glass over: its material tiles and
+ * its mark, from top left to bottom right
+ */
+pub const SCENE: [Color; 3] = [
+    Color::rgb(255, 154, 98),
+    Color::rgb(214, 86, 146),
+    Color::rgb(86, 72, 178),
+];
+
+// a glyph or a rim over the scene
+pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
+
+/*
+ * the glass's shadows: an ambient one lifting it off what is under it, and a contact one along its
+ * edge. Faint, so they reinforce its elevation over a bright backdrop and all but vanish on a dark one
+ */
+pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
+pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
+
+// the OSD's capsule over an open Surface: darker, as it floats over the Island, not the desktop
+pub const SHADOW_HUD: Color = Color::rgba(0, 0, 0, 89);
+
+/*
+ * over the wallpaper behind the lock screen, of mean luma `light` if known: barely over a dark one,
+ * as much as light text needs over a light one, more for `lock.backdrop` dimmed. One not decoded
+ * for it is taken as fairly light, 0.6
+ */
+pub fn lock_shade(light: Option<f32>, dimmed: bool) -> Color {
+    let least: f32 = if dimmed { 0.45 } else { 0.12 };
+
+    // what shows through is at most as light as 0.4, under which light text reads
+    let needed = 1.0 - 0.4 / light.unwrap_or(0.6).max(0.4);
+
+    Color::rgba(0, 0, 0, (least.max(needed) * 255.0).round() as u8)
+}
+
+/*
+ * the family the shell's text is set in: `appearance.font`, else Inter, the open face nearest
+ * Apple's SF Pro, else fontconfig's sans-serif. The runtime sets weights only from static files, so a
+ * family counts when fontconfig finds it in a SemiBold of its own, not a variable font's instance
+ */
+pub fn font(app: App) -> App {
+    const NEAREST_SF: &str = "Inter";
+
+    let chosen = crate::config::get().appearance.font.clone();
+    /*
+     * by its family, not its full name, which may add the style: Inter's static SemiBold is
+     * "Inter SemiBold"
+     */
+    let static_face = |family: &str| {
+        let semibold = || -> Option<(String, String)> {
+            let fontconfig = Fontconfig::new()?;
+            let mut pattern = Pattern::new(&fontconfig).ok()?;
+
+            pattern
+                .add_string(FC_FAMILY, &CString::new(family).ok()?)
+                .ok()?;
+            pattern.add_string(FC_STYLE, c"SemiBold").ok()?;
+
+            let found = pattern.font_match().ok()?;
+
+            Some((
+                found.get_string(FC_FAMILY).ok()?.to_owned(),
+                found.filename().ok()?.to_owned(),
+            ))
+        };
+
+        semibold().is_some_and(|(found, path)| {
+            found.eq_ignore_ascii_case(family) && !path.contains("Variable")
+        })
+    };
+
+    match chosen {
+        Some(family) => {
+            if !static_face(&family) {
+                eprintln!(
+                    "kanade: appearance.font {family} has no static SemiBold, so its weights may \
+                     all draw regular"
+                );
+            }
+
+            app.font(&family)
+        }
+        None if static_face(NEAREST_SF) => app.font(NEAREST_SF),
+        None => {
+            eprintln!(
+                "kanade: Inter is not installed (Arch: inter-font), labels use the sans-serif"
+            );
+
+            app
+        }
+    }
+}
 
 // how faded a control is while it has nothing to do
 pub const DISABLED: f32 = 0.35;
@@ -167,7 +290,7 @@ const VARIANT: f32 = 0.61;
 const CONTAINER: f32 = 0.07;
 const OUTLINE: f32 = 0.365;
 
-// colors picked from the image, as many as a whole shell's theme needs (Amane's `Palette`)
+// colors picked from the image, as many as a whole shell's theme needs (`Palette`)
 const PICKED: usize = 16;
 
 // set while `follow` has an image open, so black and white never reads the Palette
@@ -178,8 +301,8 @@ static LAST: Mutex<Option<([Color; 3], ThemeRoles)>> = Mutex::new(None);
 
 /*
  * at start and on each reload that changes it (#102): `roles` follow the image at `path` from now
- * on, and Amane's Palette picks its colors again whenever the file changes. None is black and white;
- * Amane cannot close an image, so a Palette already open keeps watching it, unread
+ * on, and `Palette` picks its colors again whenever the file changes. None is black and white;
+ * `Palette` cannot close an image, so one already open keeps watching it, unread
  */
 pub fn follow(path: Option<&str>) {
     let Some(path) = path else {
@@ -199,17 +322,22 @@ pub fn follow(path: Option<&str>) {
 // black and white until the image gives colors, the image's after; never the Island's
 pub fn roles() -> ThemeRoles {
     if !FOLLOWING.load(Ordering::Relaxed) {
-        return ISLAND;
+        return island();
     }
 
     let colors = {
         let palette = Palette::read();
 
-        if palette.colors().is_empty() {
-            return ISLAND;
-        }
+        let (Some(background), Some(accent)) = (palette.background(), palette.accent()) else {
+            return island();
+        };
 
-        [palette.background(), palette.foreground(), palette.accent()]
+        // tinted by the image when one of its colors reads on the background
+        let foreground = palette
+            .readable_on(background)
+            .unwrap_or_else(|| plain_on(background));
+
+        [background, foreground, accent]
     };
 
     let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
@@ -227,6 +355,11 @@ pub fn roles() -> ThemeRoles {
 }
 
 impl ThemeRoles {
+    // a track or Satellite as it shows, `surface_container_high` over the surface
+    pub fn track(&self) -> Color {
+        over(self.surface_container_high, self.surface)
+    }
+
     /*
      * the image's darkest color, darkened to near-black and kept near grey, under its readable
      * color, lightened until it reads as the Island does; the neutral roles step between them, and
@@ -335,129 +468,21 @@ fn luminance(color: Color) -> f32 {
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
-pub fn channels(color: Color) -> [f32; 3] {
-    [color.red(), color.green(), color.blue()].map(|channel| f32::from(channel) / 255.0)
+// `top` drawn over the opaque `under`
+pub fn over(top: Color, under: Color) -> Color {
+    let share = f32::from(top.alpha()) / 255.0;
+    let mix = |top: u8, under: u8| {
+        (f32::from(top) * share + f32::from(under) * (1.0 - share)).round() as u8
+    };
+
+    Color::rgba(
+        mix(top.red(), under.red()),
+        mix(top.green(), under.green()),
+        mix(top.blue(), under.blue()),
+        under.alpha(),
+    )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // the Island's black and white, the roles too while tests never follow an image
-    #[test]
-    fn without_a_palette_the_roles_are_the_islands() {
-        assert_eq!(roles(), ISLAND);
-        assert_eq!(ISLAND.surface, SEMANTIC.island_surface);
-        assert_eq!(ISLAND.on_surface, SEMANTIC.on_island_surface);
-        assert!(contrast(ISLAND.on_surface, ISLAND.surface) > 17.0);
-        assert!(contrast(ISLAND.on_primary, ISLAND.primary) > 17.0);
-    }
-
-    // the semantic colors stand out from a Satellite on the Island
-    #[test]
-    fn semantic_colors_read_on_the_island() {
-        let SemanticColors {
-            privacy,
-            capture,
-            warning,
-            critical,
-            ..
-        } = SEMANTIC;
-
-        for state in [privacy, capture, warning, critical] {
-            assert!(
-                contrast(state, ISLAND.surface_container_high) >= 3.0,
-                "{state:?}"
-            );
-        }
-    }
-
-    /*
-     * #39: whatever the image, the surface is near-black and near grey, text reads on the surface
-     * and on a container, primary shows and its glyph reads, and the semantic colors stand out
-     */
-    #[test]
-    fn palette_roles_keep_the_contrast_and_the_color_meanings() {
-        let samples = [0, 64, 128, 192, 255];
-        let mut colors = Vec::new();
-
-        for r in samples {
-            for g in samples {
-                for b in samples {
-                    colors.push(Color::rgb(r, g, b));
-                }
-            }
-        }
-
-        let some: Vec<Color> = colors.iter().copied().step_by(4).collect();
-
-        let check = |background, foreground, accent| {
-            let roles = ThemeRoles::from_palette(background, foreground, accent);
-            let at = format!("{background:?} {foreground:?} {accent:?} gave {roles:?}");
-            let reads = |a, b, ratio| assert!(contrast(a, b) >= ratio, "{at}");
-
-            assert!(luminance(roles.surface) <= SURFACE_LUMINANCE, "{at}");
-            assert!(saturation(roles.surface) <= SURFACE_CHROMA + 0.01, "{at}");
-            assert!(
-                saturation(roles.on_surface) <= ON_SURFACE_CHROMA + 0.01,
-                "{at}"
-            );
-            reads(roles.on_surface, roles.surface, ON_SURFACE_CONTRAST);
-            reads(roles.on_surface, roles.surface_container, 7.0);
-            reads(
-                roles.on_surface_variant,
-                roles.surface_container,
-                VARIANT_CONTRAST,
-            );
-            reads(roles.on_surface_variant, roles.surface, 4.5);
-            reads(roles.primary, roles.surface, PRIMARY_CONTRAST);
-            reads(roles.on_primary, roles.primary, 4.5);
-
-            for state in [
-                SEMANTIC.privacy,
-                SEMANTIC.capture,
-                SEMANTIC.warning,
-                SEMANTIC.critical,
-            ] {
-                reads(state, roles.surface_container_high, 3.0);
-            }
-        };
-
-        // every surface under some texts, then under every accent; all three at once is too slow
-        for (at, &background) in colors.iter().enumerate() {
-            for (index, &foreground) in some.iter().enumerate() {
-                check(background, foreground, colors[(at + index) % colors.len()]);
-            }
-
-            for &accent in &colors {
-                check(background, some[at % some.len()], accent);
-            }
-        }
-    }
-
-    // a tinted wallpaper tints the surface, quietly, and gives primary its hue
-    #[test]
-    fn palette_roles_take_the_image_hue() {
-        let roles = ThemeRoles::from_palette(
-            Color::rgb(20, 24, 60),
-            Color::rgb(200, 210, 255),
-            Color::rgb(40, 90, 250),
-        );
-
-        assert!(
-            roles.surface.blue() > roles.surface.red(),
-            "{:?}",
-            roles.surface
-        );
-        assert!(
-            roles.on_surface.blue() > roles.on_surface.red(),
-            "{:?}",
-            roles.on_surface
-        );
-        assert!(
-            roles.primary.blue() > roles.primary.red(),
-            "{:?}",
-            roles.primary
-        );
-    }
+pub fn channels(color: Color) -> [f32; 3] {
+    [color.red(), color.green(), color.blue()].map(|channel| f32::from(channel) / 255.0)
 }

@@ -1,7 +1,7 @@
 //! What every Surface's keyboard shares: its targets as rows, each with where its middle is across
 //! the Surface from 0 to 1, and how the arrows move a ring between them.
 
-use amane::Key;
+use kanade_runtime::Key;
 
 // a place in a grid
 #[derive(Debug, Clone, Copy, PartialEq)]

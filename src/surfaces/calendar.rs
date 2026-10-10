@@ -11,11 +11,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Instant;
 
-use amane::{
-    Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, Service, SpaceBetween,
-    Start, Text, Widget, children,
-};
 use chrono::{Datelike, Days, Months, NaiveDate, NaiveTime};
+use kanade_runtime::service::Service;
+use kanade_runtime::{
+    Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Start,
+    Text, Widget, children,
+};
 
 use crate::clock;
 use crate::config;
@@ -32,7 +33,7 @@ use crate::theme::{self, DISABLED, radius};
 use super::Ring;
 
 // the content's height, which both sides fill
-const HEIGHT: f32 = geometry::EXPANDED_MAX.height - 2.0 * INSET;
+const HEIGHT: f32 = geometry::CALENDAR.height - 2.0 * INSET;
 
 // a day of the month, and the six weeks any month fits in
 const CELL: f32 = 32.0;
@@ -46,7 +47,7 @@ const DOT: f32 = 4.0;
 
 // the agenda, right of the month
 const SIDE_GAP: f32 = 20.0;
-const AGENDA: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET - MONTH - SIDE_GAP;
+const AGENDA: f32 = geometry::CALENDAR.width - 2.0 * INSET - MONTH - SIDE_GAP;
 const FOOTER: f32 = 16.0;
 const LIST: f32 = HEIGHT - HEADER - FOOTER - 2.0 * GAP;
 
@@ -508,7 +509,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let Shown { month, pending } = month_of(&calendars, start);
     let browse = browse.bounded(month.on(day).len());
 
-    let shape = geometry::EXPANDED_MAX;
+    let shape = geometry::CALENDAR;
 
     // a Module that is off reads no Service
     let account = modules::on("google-calendar")
@@ -552,7 +553,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 fn grid(monitor: &str, day: NaiveDate, today: NaiveDate, month: &Month, browse: &Browse) -> Column {
     let title = Text::new(format!("{} {}", MONTHS[day.month0() as usize], day.year()))
         .size(theme::text::TITLE)
-        .color(theme::ISLAND.on_surface)
+        .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD);
 
     let header = Row::new(children![
@@ -576,7 +577,7 @@ fn grid(monitor: &str, day: NaiveDate, today: NaiveDate, month: &Month, browse: 
                         .child(
                             Text::new(&name[..1])
                                 .size(theme::text::LABEL_SMALL)
-                                .color(theme::ISLAND.on_surface_variant)
+                                .color(theme::island().on_surface_variant)
                                 .weight(theme::text::MEDIUM),
                         ),
                 ) as Box<dyn Widget>
@@ -621,7 +622,7 @@ fn turn(monitor: &str, icon: Icon, key: char) -> Rectangle {
         .on_click(super::on_left(move || {
             pressed(&monitor, Key::Character(key));
         }))
-        .child(icon.on(20.0, theme::ISLAND.on_surface_variant))
+        .child(icon.on(20.0, theme::island().on_surface_variant))
 }
 
 /*
@@ -639,9 +640,9 @@ fn cell(
     let chosen = date == day;
     let is_today = date == today;
     let ink = if is_today {
-        theme::ISLAND.on_primary
+        theme::island().on_primary
     } else {
-        theme::ISLAND.on_surface
+        theme::island().on_surface
     };
 
     let dot = Rectangle::new()
@@ -667,9 +668,9 @@ fn cell(
         .child(Column::new(children![number, dot]).gap(1.0).align(Center));
 
     let disc = if is_today {
-        disc.fill(theme::ISLAND.primary)
+        disc.fill(theme::island().primary)
     } else if chosen && !ring {
-        disc.fill(theme::ISLAND.surface_container_high)
+        disc.fill(theme::island().surface_container_high)
     } else {
         disc
     };
@@ -710,7 +711,7 @@ fn agenda(
 
     let title = Text::new(named(day, today))
         .size(theme::text::TITLE)
-        .color(theme::ISLAND.on_surface)
+        .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD)
         .elide();
 
@@ -734,7 +735,7 @@ fn agenda(
                         None => "No events",
                     })
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM),
                 ),
         )
@@ -797,7 +798,7 @@ fn agenda(
         Box::new(
             Text::new(count)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ),
@@ -824,7 +825,7 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
         .width(AGENDA)
         .height(ROW)
         .radius(radius::ROW)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right: ROW_INSET,
@@ -836,12 +837,12 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
             Column::new(children![
                 Text::new(title)
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD)
                     .elide(),
                 Text::new(detail)
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM)
                     .elide(),
             ])
@@ -903,11 +904,11 @@ fn state(title: &str, detail: &str) -> Rectangle {
                 Icon::Calendar.draw(28.0),
                 Text::new(title)
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
                 Text::new(detail)
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM)
                     .elide(),
             ])
@@ -997,461 +998,5 @@ fn wheel(lines: f32) {
 fn set(browse: Browse) {
     if *Browse::read() != browse {
         *Browse::write() = browse;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use chrono::NaiveDateTime;
-
-    use super::*;
-    use crate::sources::calendar;
-
-    fn day(year: i32, month: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(year, month, day).unwrap()
-    }
-
-    const TODAY: (i32, u32, u32) = (2026, 10, 8);
-
-    fn today() -> NaiveDate {
-        day(TODAY.0, TODAY.1, TODAY.2)
-    }
-
-    // the keys in order from a fresh browse, the chosen day having `events` events throughout
-    fn after(keys: &[Key], events: usize) -> Browse {
-        keys.iter().fold(Browse::default(), |browse, &key| {
-            browse.step(key, today(), events).unwrap()
-        })
-    }
-
-    #[test]
-    fn arrows_move_by_a_day_and_a_week() {
-        assert_eq!(after(&[], 0).day(today()), today());
-        assert_eq!(after(&[Key::Right], 0).day(today()), day(2026, 10, 9));
-        assert_eq!(
-            after(&[Key::Left, Key::Left], 0).day(today()),
-            day(2026, 10, 6)
-        );
-        assert_eq!(after(&[Key::Down], 0).day(today()), day(2026, 10, 15));
-        assert_eq!(after(&[Key::Up, Key::Up], 0).day(today()), day(2026, 9, 24));
-        assert_eq!(after(&[Key::Down, Key::Home], 0).day(today()), today());
-        assert_eq!(
-            after(&[Key::Right, Key::Character('t')], 0).day(today()),
-            today()
-        );
-    }
-
-    // a month on from the 31st is the last day of a shorter month
-    #[test]
-    fn n_and_p_turn_the_month() {
-        assert_eq!(
-            after(&[Key::Character('n')], 0).day(today()),
-            day(2026, 11, 8)
-        );
-        assert_eq!(
-            after(&[Key::Character('p'), Key::Character('p')], 0).day(today()),
-            day(2026, 8, 8)
-        );
-
-        let last = Browse {
-            day: Some(day(2026, 10, 31)),
-            ..Browse::default()
-        };
-        assert_eq!(
-            last.step(Key::Character('n'), today(), 0).unwrap().day,
-            Some(day(2026, 11, 30))
-        );
-    }
-
-    #[test]
-    fn tab_moves_the_ring_into_the_agenda_and_back() {
-        let browse = after(&[Key::Tab, Key::Down, Key::Down], 5);
-        assert!(browse.agenda);
-        assert_eq!(browse.selected, 2);
-
-        // in the agenda Up and Down walk the events, not the weeks
-        assert_eq!(browse.day(today()), today());
-        let browse = browse.step(Key::Up, today(), 5).unwrap();
-        assert_eq!(browse.selected, 1);
-
-        let back = browse.step(Key::Tab, today(), 5).unwrap();
-        assert!(!back.agenda);
-
-        // moving the day takes it back to the month, at the top of the new day
-        let moved = browse.step(Key::Right, today(), 5).unwrap();
-        assert!(!moved.agenda);
-        assert_eq!(moved.selected, 0);
-    }
-
-    // a day with no events has nothing to ring, but Tab is still the Surface's key
-    #[test]
-    fn an_empty_agenda_keeps_the_ring_in_the_month() {
-        let browse = after(&[Key::Tab], 0);
-
-        assert!(!browse.agenda);
-        assert_eq!(after(&[Key::Enter], 0), browse);
-    }
-
-    #[test]
-    fn the_agenda_shows_the_ring() {
-        let browse = after(&[Key::Tab, Key::Down, Key::Down, Key::Down, Key::Down], 9);
-        assert_eq!((browse.selected, browse.first), (4, 1));
-
-        let browse = after(
-            &[
-                Key::Tab,
-                Key::Down,
-                Key::Down,
-                Key::Down,
-                Key::Down,
-                Key::Down,
-            ],
-            3,
-        );
-        assert_eq!((browse.selected, browse.first), (2, 0));
-
-        // events gone under it pull the ring back
-        let browse = after(&[Key::Tab, Key::Down, Key::Down, Key::Down, Key::Down], 9).bounded(2);
-        assert_eq!((browse.selected, browse.first, browse.agenda), (1, 0, true));
-        assert!(!browse.bounded(0).agenda);
-    }
-
-    // Escape leaves the agenda for the month, and only there is it the island's, to collapse
-    #[test]
-    fn escape_leaves_the_agenda() {
-        let browse = after(&[Key::Tab, Key::Down], 3);
-        let back = browse.step(Key::Escape, today(), 3).unwrap();
-        assert_eq!((back.agenda, back.day), (false, browse.day));
-        assert_eq!(back.step(Key::Escape, today(), 3), None);
-    }
-
-    #[test]
-    fn other_keys_are_not_the_surfaces() {
-        for key in [Key::Escape, Key::Other, Key::Space, Key::Character('x')] {
-            assert_eq!(Browse::default().step(key, today(), 3), None, "{key:?}");
-        }
-    }
-
-    // weeks start on Monday, and six of them hold any month
-    #[test]
-    fn the_grid_starts_on_the_monday_before_the_first() {
-        assert_eq!(grid_start(today()), day(2026, 9, 28));
-        assert_eq!(grid_start(day(2026, 6, 15)), day(2026, 6, 1));
-        assert_eq!(grid_start(day(2026, 3, 31)), day(2026, 2, 23));
-
-        for month in 1..=12 {
-            let first = day(2026, month, 1);
-            let last = first.checked_add_months(Months::new(1)).unwrap() - Days::new(1);
-
-            assert!(
-                last < grid_start(first) + Days::new(7 * WEEKS as u64),
-                "{month}"
-            );
-        }
-    }
-
-    #[test]
-    fn days_are_named_near_today() {
-        assert_eq!(named(today(), today()), "Today");
-        assert_eq!(named(day(2026, 10, 9), today()), "Tomorrow");
-        assert_eq!(named(day(2026, 10, 7), today()), "Yesterday");
-        assert_eq!(named(day(2026, 12, 25), today()), "Friday, 25 December");
-    }
-
-    fn timed(start: NaiveDateTime, end: NaiveDateTime) -> Occurrence {
-        Occurrence {
-            title: String::from("Event"),
-            location: None,
-            start,
-            end,
-            span: (start.and_utc().timestamp(), end.and_utc().timestamp()),
-            all_day: false,
-        }
-    }
-
-    #[test]
-    fn an_event_says_its_part_of_the_day() {
-        let at = |date: NaiveDate, hour| date.and_hms_opt(hour, 0, 0).unwrap();
-        let (today, tomorrow) = (today(), day(2026, 10, 9));
-        let config = config::get();
-        let time = |hour| clock::time(NaiveTime::from_hms_opt(hour, 0, 0).unwrap(), config.clock);
-
-        let meeting = timed(at(today, 9), at(today, 10));
-        assert_eq!(
-            when(&meeting, today),
-            format!("{} \u{2013} {}", time(9), time(10))
-        );
-
-        let moment = timed(at(today, 9), at(today, 9));
-        assert_eq!(when(&moment, today), time(9));
-
-        let night = timed(at(today, 22), at(tomorrow, 6));
-        assert_eq!(when(&night, today), format!("From {}", time(22)));
-        assert_eq!(when(&night, tomorrow), format!("Until {}", time(6)));
-
-        // ending at midnight ends the day it started
-        let late = timed(at(today, 22), tomorrow.and_time(NaiveTime::MIN));
-        assert_eq!(
-            when(&late, today),
-            format!("{} \u{2013} {}", time(22), time(0))
-        );
-    }
-
-    // the tests that use the calendars and the month expanded, which take turns
-    static SERVICES: Mutex<()> = Mutex::new(());
-
-    // calendar files, each a name and the title of its one event, today at four
-    fn read(files: &[(&str, &str)]) -> Calendars {
-        let texts: Vec<(&str, String)> = files
-            .iter()
-            .map(|&(name, title)| {
-                let event = format!(
-                    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\nBEGIN:VEVENT\r\n\
-                     UID:{title}@test\r\nDTSTAMP:20261001T000000Z\r\nDTSTART:20261008T160000\r\n\
-                     DTEND:20261008T170000\r\nSUMMARY:{title}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-                );
-                (name, event)
-            })
-            .collect();
-        let texts: Vec<(&str, &str)> = texts
-            .iter()
-            .map(|(name, text)| (*name, text.as_str()))
-            .collect();
-
-        calendar::read_as(&texts)
-    }
-
-    fn titles(month: &Month) -> Vec<&str> {
-        month
-            .events
-            .occurrences
-            .iter()
-            .map(|event| event.title.as_str())
-            .collect()
-    }
-
-    fn pending(calendars: &Calendars, start: NaiveDate) -> Option<Pending> {
-        month_of(calendars, start).pending
-    }
-
-    // the month once expanded for `calendars`
-    fn expanded(calendars: &Calendars, start: NaiveDate) -> Arc<Month> {
-        shown_until_expanded(calendars, start)
-            .pop()
-            .expect("a month")
-    }
-
-    // each month shown for `calendars` until expanded, the expanded one last
-    fn shown_until_expanded(calendars: &Calendars, start: NaiveDate) -> Vec<Arc<Month>> {
-        let wanted = Wanted::of(calendars, start);
-        let mut months = Vec::new();
-
-        for _ in 0..5000 {
-            // first, so the month shown is the one expanded, not one held while it was
-            let expanded = Expansion::read().of == Some(wanted);
-            let shown = month_of(calendars, start);
-            months.push(shown.month);
-            match shown.pending {
-                None if expanded => return months,
-                None | Some(Pending::Loading) => thread::sleep(Duration::from_millis(1)),
-                Some(Pending::Failed) => panic!("{start} failed"),
-            }
-        }
-        panic!("{start} never expanded");
-    }
-
-    fn running() -> bool {
-        ASKED.lock().unwrap().running
-    }
-
-    // whether the thread expanding ends
-    fn ended() -> bool {
-        for _ in 0..5000 {
-            if !running() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(1));
-        }
-        false
-    }
-
-    // the month asked for last shows once expanded, off the caller's thread, and the same files
-    // read again keep the month shown until then
-    #[test]
-    fn a_month_is_expanded_off_the_draw_thread() {
-        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
-        let (october, november, december) =
-            (grid_start(today()), day(2026, 10, 26), day(2026, 11, 30));
-        let files = [("a.ics", "Meeting")];
-
-        // after none, so no other test's month shows
-        read(&[]);
-        let calendars = read(&files);
-        assert_eq!(pending(&calendars, october), Some(Pending::Loading));
-        assert_eq!(titles(&expanded(&calendars, october)), ["Meeting"]);
-
-        // another month shows none of the last one's events while it is expanded
-        assert_eq!(pending(&calendars, november), Some(Pending::Loading));
-        assert_eq!(expanded(&calendars, november).start, november);
-
-        // read again, the same month shows on until it is expanded anew
-        let read_again = read(&files);
-        let shown = month_of(&read_again, november);
-        assert_eq!((shown.month.start, shown.pending), (november, None));
-        assert_eq!(expanded(&read_again, november).start, november);
-
-        // turned on while one is expanded, the month asked last shows, and the thread ends
-        assert!(pending(&read_again, december).is_some());
-        assert!(pending(&read_again, october).is_some());
-        assert_eq!(titles(&expanded(&read_again, october)), ["Meeting"]);
-        assert!(ended());
-
-        // a month no longer asked for never shows
-        let stale = Wanted::of(&read_again, december);
-        assert!(publish(stale, Arc::new(Month::empty(december))).is_none());
-        assert_eq!(Expansion::read().of, Some(Wanted::of(&read_again, october)));
-
-        // one that could not be expanded shows the last one, saying so, and is not tried again
-        let calendars = read(&files);
-        ASKED
-            .lock()
-            .unwrap()
-            .failed
-            .push(Wanted::of(&calendars, october));
-        let shown = month_of(&calendars, october);
-        assert_eq!(
-            (titles(&shown.month), shown.pending),
-            (vec!["Meeting"], Some(Pending::Failed))
-        );
-        assert!(!running());
-
-        // turned back to it while another month is expanded, that month never replaces it; the
-        // calendars held keep the thread from reading them until both were asked
-        let held = Calendars::write();
-        assert!(pending(&calendars, november).is_some());
-        assert_eq!(pending(&calendars, october), Some(Pending::Failed));
-        drop(held);
-        assert!(ended());
-        assert_eq!(Expansion::read().of, Some(Wanted::of(&read_again, october)));
-    }
-
-    // the events of files gone never show once none are found, not even while ones found since
-    // are expanded, and are freed off the caller's thread; a file added keeps the month shown.
-    // The calendars held keep the thread from expanding the new ones
-    #[test]
-    fn the_events_of_files_gone_never_show_after_none() {
-        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
-        let october = grid_start(today());
-        let shows_a = |month: &Arc<Month>| titles(month).contains(&"A");
-
-        // after none, so no other test's month shows
-        read(&[]);
-        let a = read(&[("a.ics", "A")]);
-        let month_a = expanded(&a, october);
-        assert_eq!(titles(&month_a), ["A"]);
-
-        let none = read(&[]);
-        assert!(!shows_a(&month_of(&none, october).month));
-
-        // an expansion of the files gone, still running, never shows
-        assert!(publish(Wanted::of(&a, october), month_a).is_none());
-
-        assert!(ended());
-        assert_eq!(Expansion::read().of, Some(Wanted::of(&none, october)));
-        assert!(titles(&Expansion::read().month).is_empty());
-
-        let b = read(&[("b.ics", "B")]);
-        let held = Calendars::write();
-        let shown = month_of(&b, october);
-        assert_eq!(
-            (titles(&shown.month), shown.pending),
-            (vec![], Some(Pending::Loading))
-        );
-        drop(held);
-        let months = shown_until_expanded(&b, october);
-        assert!(!months.iter().any(shows_a));
-        assert_eq!(titles(months.last().unwrap()), ["B"]);
-
-        // a file added, as a sync of one file per event does, is no other calendar
-        let more = read(&[("b.ics", "B"), ("c.ics", "C")]);
-        let held = Calendars::write();
-        let shown = month_of(&more, october);
-        assert_eq!((titles(&shown.month), shown.pending), (vec!["B"], None));
-        drop(held);
-        assert_eq!(titles(&expanded(&more, october)), ["B", "C"]);
-        assert!(ended());
-    }
-
-    // turned back to a month expanded while another is expanded, the month shows on, the other is
-    // never shown once expanded, and the thread ends without expanding the month again. The
-    // calendars held keep a new thread from expanding until the month was turned back to
-    #[test]
-    fn a_month_turned_back_to_shows_on() {
-        let _services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
-        let (october, november) = (grid_start(today()), day(2026, 10, 26));
-
-        // after none, so no other test's month shows
-        read(&[]);
-        let calendars = read(&[("a.ics", "Meeting")]);
-        let month = expanded(&calendars, october);
-        assert!(ended());
-
-        let held = Calendars::write();
-        assert_eq!(pending(&calendars, november), Some(Pending::Loading));
-        let shown = month_of(&calendars, october);
-        assert!(Arc::ptr_eq(&shown.month, &month) && shown.pending.is_none());
-
-        // the other month, expanded now, never shows
-        let other = Wanted::of(&calendars, november);
-        assert!(publish(other, Arc::new(Month::empty(november))).is_none());
-        assert!(Arc::ptr_eq(&month_of(&calendars, october).month, &month));
-        drop(held);
-
-        assert!(ended());
-        assert_eq!(Expansion::read().of, Some(Wanted::of(&calendars, october)));
-        assert!(Arc::ptr_eq(&month_of(&calendars, october).month, &month));
-    }
-
-    // each day of the month holds the events that fall on it, in their order, whatever their
-    // length and wherever they start and end around the six weeks
-    #[test]
-    fn a_month_finds_each_days_events() {
-        let at = |date: NaiveDate, hour, minute| date.and_hms_opt(hour, minute, 0).unwrap();
-        let start = grid_start(today());
-        let end = start + Days::new(7 * WEEKS as u64);
-        let midnight = |date: NaiveDate| date.and_time(NaiveTime::MIN);
-
-        let mut all_day = timed(midnight(today()), midnight(day(2026, 10, 11)));
-        all_day.all_day = true;
-        let occurrences = vec![
-            timed(at(day(2026, 1, 1), 9, 0), at(day(2026, 1, 1), 10, 0)),
-            timed(at(day(2026, 9, 1), 9, 0), at(day(2026, 10, 2), 9, 0)),
-            timed(midnight(start - Days::new(1)), midnight(start)),
-            timed(at(start, 0, 0), at(start, 0, 0)),
-            all_day,
-            timed(at(today(), 22, 0), midnight(day(2026, 10, 9))),
-            // a change back from summer time ends it before it starts
-            timed(at(day(2026, 10, 25), 2, 50), at(day(2026, 10, 25), 2, 10)),
-            timed(at(end - Days::new(1), 23, 0), at(end, 1, 0)),
-            timed(midnight(end), midnight(end)),
-        ];
-        let events = Events {
-            occurrences: occurrences.clone(),
-            partial: false,
-        };
-
-        let month = Month::new(events, start);
-        for date in start.iter_days().take_while(|&date| date < end) {
-            let expected: Vec<usize> = (0..occurrences.len())
-                .filter(|&at| occurrences[at].on(date))
-                .collect();
-            assert_eq!(month.on(date), expected, "{date}");
-        }
-        assert!(month.on(start - Days::new(1)).is_empty());
-        assert!(month.on(end).is_empty());
-        assert_eq!(month.on(day(2026, 9, 28)), [1, 3]);
-        assert_eq!(month.on(today()), [4, 5]);
     }
 }

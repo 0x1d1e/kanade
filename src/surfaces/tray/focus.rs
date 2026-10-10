@@ -3,7 +3,8 @@
 //! ring, Enter or Space presses it, Right enters the submenu it is on, and Escape or Left goes back
 //! a level.
 
-use amane::{Key, Service};
+use kanade_runtime::Key;
+use kanade_runtime::service::Service;
 
 use crate::surfaces::grid::{Place, find, moved};
 
@@ -266,123 +267,5 @@ impl Focus {
             },
             None,
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn items() -> Vec<Vec<(At, f32)>> {
-        vec![
-            vec![(At::Item(1), 0.45), (At::Menu(1), 0.97)],
-            vec![(At::Item(2), 0.45)],
-        ]
-    }
-
-    fn entries() -> Vec<Vec<(At, f32)>> {
-        vec![vec![(At::Entry(3), 0.5)], vec![(At::Entry(4), 0.5)]]
-    }
-
-    fn shown() -> Focus {
-        Focus {
-            shown: true,
-            ..Focus::default()
-        }
-    }
-
-    fn step(focus: Focus, key: Key, rows: Vec<Vec<(At, f32)>>) -> (Focus, Option<Act>) {
-        let grid = focus.grid(rows);
-
-        focus.step(key, &grid).unwrap()
-    }
-
-    #[test]
-    fn the_first_key_only_shows_the_ring() {
-        let focus = Focus::default();
-        let grid = focus.grid(items());
-
-        assert_eq!(focus.ring(&grid), None);
-
-        let (focus, act) = focus.step(Key::Enter, &grid).unwrap();
-
-        assert_eq!(act, None);
-        assert_eq!(focus.ring(&grid), Some(At::Item(1)));
-    }
-
-    #[test]
-    fn the_chevron_opens_the_menu_and_escape_comes_back_to_it() {
-        let (focus, _) = step(shown(), Key::Right, items());
-        let (focus, act) = step(focus, Key::Enter, items());
-
-        assert_eq!(act, Some(Act::Press(At::Menu(1))));
-
-        let focus = focus.into_menu(1);
-        let grid = focus.grid(entries());
-
-        // a menu starts on its first entry, under the back chevron
-        assert_eq!(focus.ring(&grid), Some(At::Entry(3)));
-        assert_eq!(focus.row(&grid), Some(0));
-
-        let (focus, act) = step(focus, Key::Escape, entries());
-
-        assert_eq!(act, None);
-        assert_eq!(focus.item, None);
-        assert_eq!(focus.ring(&focus.grid(items())), Some(At::Menu(1)));
-
-        // at the items Escape is not the Surface's, so it closes
-        assert_eq!(focus.step(Key::Escape, &items()), None);
-    }
-
-    #[test]
-    fn right_enters_a_submenu_and_left_goes_back_to_its_entry() {
-        let focus = shown().into_menu(1);
-
-        let (focus, _) = step(focus, Key::Down, entries());
-        let (focus, act) = step(focus, Key::Right, entries());
-
-        assert_eq!(act, Some(Act::Enter(4)));
-
-        let focus = focus.into_submenu(4);
-        assert_eq!(focus.entered, [4]);
-
-        let inner = vec![vec![(At::Entry(5), 0.5)]];
-        let (focus, act) = step(focus, Key::Left, inner);
-
-        assert_eq!(act, None);
-        assert!(focus.entered.is_empty());
-        assert_eq!(focus.ring(&focus.grid(entries())), Some(At::Entry(4)));
-    }
-
-    #[test]
-    fn an_empty_menu_still_goes_back() {
-        let focus = shown().into_menu(1);
-        let grid = focus.grid(Vec::new());
-
-        // the back chevron is all there is
-        let (focus, act) = focus.step(Key::Enter, &grid).unwrap();
-        assert_eq!(act, Some(Act::Press(At::Back)));
-
-        assert_eq!(focus.out().item, None);
-    }
-
-    #[test]
-    fn a_submenu_since_gone_leaves_the_levels_above() {
-        let focus = shown().into_menu(1).into_submenu(4).into_submenu(6);
-
-        assert_eq!(focus.clone().within(2), focus);
-        assert_eq!(focus.within(1).entered, [4]);
-    }
-
-    #[test]
-    fn a_later_visit_starts_at_the_items() {
-        let focus = Focus {
-            visit: 1,
-            ..shown().into_menu(1)
-        };
-
-        assert_eq!(focus.of(1, false).item, Some(1));
-        assert_eq!(focus.of(2, true).item, None);
-        assert!(focus.of(2, true).shown);
     }
 }

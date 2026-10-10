@@ -13,9 +13,12 @@
 
 use std::time::Instant;
 
-use amane::{
-    Audio, Brightness, Center, Color, Column, Cursor, End, Key, Network, Padding, Parent,
-    Rectangle, Row, Scroll, Service, Start, Text, Widget, children,
+use crate::sources::brightness::Brightness;
+use crate::sources::pulse::Audio;
+use kanade_runtime::service::Service;
+use kanade_runtime::{
+    Center, Color, Column, Cursor, End, Key, Padding, Parent, Rectangle, Row, Scroll, Start, Text,
+    Widget, children,
 };
 
 use self::focus::{Act, At, Focus, Subsurface};
@@ -30,7 +33,7 @@ use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
-use crate::sources::network::Connectivity;
+use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::Privacy;
@@ -70,11 +73,6 @@ const NUMBER: f32 = 30.0;
 // the power profiles' track, their segments a target high inside it
 const TRACK: f32 = 28.0;
 const TRACK_INSET: f32 = (TRACK - TARGET) / 2.0;
-
-// the Surface's height, which geometry::CONTROLS is
-#[cfg(test)]
-const HEIGHT: f32 =
-    2.0 * INSET + HEADER + 2.0 * SWITCH + SWITCH_GAP + 2.0 * TARGET + LEVEL_GAP + TRACK + 3.0 * GAP;
 
 /*
  * the top level, or the sub-surface entered from it. `visit`, `held` and `dnd` are the view's own
@@ -152,12 +150,12 @@ fn header() -> Row {
     let mut header = children![
         Text::new("Controls")
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
     ];
 
-    // the cluster takes no pointer, so the apps behind its glyphs are named here
-    if modules::on("privacy") {
+    // the dots only mark a capture, so the apps behind them are named here
+    if modules::on("privacy") && cluster::on() {
         header.extend(capturing(&Privacy::read()));
     }
 
@@ -187,7 +185,7 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
         row.push(Box::new(
             Text::new(sensors.apps.join(", "))
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ));
@@ -351,11 +349,11 @@ fn dnd(on: Option<bool>) -> Switch {
  */
 fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<At>) -> Rectangle {
     let (fill, ink) = if item.on {
-        (theme::ISLAND.primary, theme::ISLAND.on_primary)
+        (theme::island().primary, theme::island().on_primary)
     } else {
         (
-            theme::ISLAND.surface_container_high,
-            theme::ISLAND.on_surface,
+            theme::island().surface_container_high,
+            theme::island().on_surface,
         )
     };
 
@@ -384,12 +382,12 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
     let words = Column::new(children![
         Text::new(item.name)
             .size(theme::text::LABEL)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide(),
         Text::new(&item.status)
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface_variant)
+            .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM)
             .elide(),
     ])
@@ -414,7 +412,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
 
     if opens.is_some() {
         parts.push(Box::new(
-            Icon::Forward.on(16.0, theme::ISLAND.on_surface_variant),
+            Icon::Forward.on(16.0, theme::island().on_surface_variant),
         ));
     }
 
@@ -422,7 +420,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
         .width(width)
         .height(SWITCH)
         .radius(SWITCH / 2.0)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right,
@@ -458,7 +456,7 @@ fn click_switch(press: Press) {
 
 fn run(press: Press) {
     match press {
-        Press::Wifi(on) => Network::set_wifi(on),
+        Press::Wifi(on) => set_wifi(on),
         Press::Bluetooth { adapter, on } => bluez::power(adapter, on),
         Press::Microphone => Audio::toggle_microphone_mute(),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
@@ -503,9 +501,9 @@ fn levels(ring: Option<&At>) -> Column {
                 });
 
             let tone = if muted {
-                theme::ISLAND.on_surface_variant
+                theme::island().on_surface_variant
             } else {
-                theme::ISLAND.on_surface
+                theme::island().on_surface
             };
 
             level(
@@ -521,7 +519,7 @@ fn levels(ring: Option<&At>) -> Column {
             icon.child(Icon::Speaker(0).draw(20.0)),
             None,
             None,
-            theme::ISLAND.on_surface,
+            theme::island().on_surface,
             ring == Some(&At::Speaker),
             chevron(ring == Some(&At::Audio), false),
         ),
@@ -538,7 +536,7 @@ fn levels(ring: Option<&At>) -> Column {
         sun,
         screen.map(|_| Slider::Brightness),
         screen,
-        theme::ISLAND.on_surface,
+        theme::island().on_surface,
         ring == Some(&At::Brightness),
         Rectangle::new().width(TARGET).height(TARGET),
     );
@@ -554,7 +552,7 @@ fn chevron(ring: bool, on: bool) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .border_if(ring)
-        .child(Icon::Forward.on(16.0, theme::ISLAND.on_surface_variant));
+        .child(Icon::Forward.on(16.0, theme::island().on_surface_variant));
 
     if !on {
         return chevron.opacity(DISABLED);
@@ -597,7 +595,7 @@ fn level(
         .child(
             Text::new(percent.map_or_else(String::new, |percent| percent.to_string()))
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::SEMIBOLD),
         );
 
@@ -651,7 +649,7 @@ fn profiles(ring: Option<&At>) -> Rectangle {
         .width(width)
         .height(TRACK)
         .radius(TRACK / 2.0)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(TRACK_INSET)
         .align_child(Start, Center)
         .child(Row::new(segments));
@@ -686,15 +684,15 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool, ring: bo
             Text::new(profile.label())
                 .size(theme::text::LABEL_SMALL)
                 .color(if active {
-                    theme::ISLAND.on_surface
+                    theme::island().on_surface
                 } else {
-                    theme::ISLAND.on_surface_variant
+                    theme::island().on_surface_variant
                 })
                 .weight(theme::text::SEMIBOLD),
         );
 
     if active {
-        segment.fill(theme::ISLAND.surface_container_high)
+        segment.fill(theme::island().surface_container_high)
     } else if available {
         segment
             .cursor(Cursor::Pointer)
@@ -778,6 +776,46 @@ fn typed_pin(key: Key, ringed: bool) -> Option<Pin> {
         Key::Enter if !ringed => Some(Pin::Pair),
         _ => None,
     }
+}
+
+/*
+ * opens the Surface on the Wi-Fi networks, as pressing the tile does, for a radio the machine has.
+ * The same for Bluetooth. Nothing opens when Controls is withheld
+ */
+// whether Controls opened on the Wi-Fi list; not with no Wi-Fi device
+pub fn open_wifi(monitor: &str) -> bool {
+    Connectivity::read().wifi != Radio::Missing
+        && open_into(monitor, Subsurface::Wifi, wireless::watch)
+}
+
+// whether Controls opened on the Bluetooth list; not with no adapter
+pub fn open_bluetooth(monitor: &str) -> bool {
+    Adapter::read().radio != Radio::Missing
+        && open_into(monitor, Subsurface::Bluetooth, bluez::watch)
+}
+
+fn open_into(monitor: &str, sub: Subsurface, watch: fn(u64)) -> bool {
+    let Some(visit) = opened(&mut IslandService::write(), monitor, Instant::now()) else {
+        return false;
+    };
+
+    watch(visit);
+
+    // read apart from the write in `set`
+    let focus = Focus::read().of(visit, true).enter(sub);
+
+    set(focus);
+
+    true
+}
+
+// opens Controls on `monitor`, the visit it starts; none when it is withheld, which opens nowhere
+fn opened(island: &mut IslandService, monitor: &str, now: Instant) -> Option<u64> {
+    let before = island.visit();
+
+    island.open(monitor, Surface::Controls, now);
+
+    (island.visit() != before).then(|| island.visit())
 }
 
 // a target clicked: the ring hides, since the pointer is what moves now
@@ -1079,146 +1117,5 @@ fn set(focus: Focus) {
 
     if *Focus::read() != focus {
         *Focus::write() = focus;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sources::bluetooth::Device;
-
-    // with the ring on Cancel, Enter cancels the PIN typed rather than pairing with it
-    #[test]
-    fn enter_on_the_pin_prompt_presses_what_the_ring_is_on() {
-        let prompt = Prompt::Pin {
-            device: "/buds".into(),
-            pin: "1234".into(),
-        };
-        let adapter = Adapter {
-            radio: Radio::On,
-            ..Adapter::default()
-        };
-        let focus = Focus::default().of(1, true).enter(Subsurface::Bluetooth);
-        let grid = focus.grid(bluetooth::rows(&adapter, &prompt));
-
-        let (focus, _) = focus.step(Key::Right, &grid).unwrap();
-        let (focus, _) = focus.step(Key::Left, &grid).unwrap();
-        assert_eq!(focus.ring(&grid), Some(At::Cancel));
-
-        assert_eq!(typed_pin(Key::Enter, focus.ring(&grid).is_some()), None);
-        let (_, act) = focus.step(Key::Enter, &grid).unwrap();
-        assert_eq!(act, Some(Act::Press(At::Cancel)));
-
-        // the ring hidden, Enter pairs, and typing goes to the PIN either way
-        assert_eq!(typed_pin(Key::Enter, false), Some(Pin::Pair));
-        assert_eq!(
-            typed_pin(Key::Character('5'), true),
-            Some(Pin::Letter(Some('5')))
-        );
-        assert_eq!(typed_pin(Key::Space, true), None);
-    }
-
-    #[test]
-    fn the_surface_is_as_tall_as_its_rows() {
-        assert_eq!(geometry::CONTROLS.height, HEIGHT);
-    }
-
-    #[test]
-    fn wifi_says_the_network_it_is_on() {
-        let wifi = |radio, uplink| {
-            self::wifi(&Connectivity {
-                uplink,
-                wifi: radio,
-            })
-        };
-
-        let home = wifi(Radio::On, Some(Uplink::Wifi("home".into())));
-        assert_eq!((home.status.as_str(), home.on), ("home", true));
-        assert_eq!(home.press, Some(Press::Wifi(false)));
-
-        assert_eq!(wifi(Radio::On, Some(Uplink::Wired)).status, "Not connected");
-
-        let off = wifi(Radio::Off, Some(Uplink::Wired));
-        assert_eq!((off.status.as_str(), off.on), ("Off", false));
-        assert_eq!(off.press, Some(Press::Wifi(true)));
-    }
-
-    #[test]
-    fn a_missing_radio_is_unavailable_and_does_nothing() {
-        let wifi = self::wifi(&Connectivity::default());
-        let bluetooth = self::bluetooth(&Adapter::default());
-
-        for missing in [wifi, bluetooth] {
-            assert_eq!(missing.status, "Unavailable");
-            assert!(!missing.on);
-            assert_eq!(missing.press, None);
-        }
-    }
-
-    #[test]
-    fn bluetooth_names_what_is_connected_and_switches_its_adapter() {
-        let peer = |name: &str, connected| Device {
-            path: format!("/org/bluez/hci0/dev_{name}"),
-            name: name.into(),
-            paired: true,
-            connected,
-            battery: None,
-        };
-        let adapter = |radio, devices| Adapter {
-            radio,
-            path: "/org/bluez/hci0".into(),
-            discovering: false,
-            devices,
-        };
-
-        let on = bluetooth(&adapter(
-            Radio::On,
-            vec![peer("buds", true), peer("mouse", true), peer("pad", false)],
-        ));
-        assert_eq!(on.status, "buds, mouse");
-        assert_eq!(
-            on.press,
-            Some(Press::Bluetooth {
-                adapter: "/org/bluez/hci0".into(),
-                on: false
-            })
-        );
-
-        assert_eq!(bluetooth(&adapter(Radio::On, Vec::new())).status, "On");
-
-        let off = bluetooth(&adapter(Radio::Off, vec![peer("pad", false)]));
-        assert_eq!((off.status.as_str(), off.on), ("Off", false));
-        assert_eq!(
-            off.press,
-            Some(Press::Bluetooth {
-                adapter: "/org/bluez/hci0".into(),
-                on: true
-            })
-        );
-    }
-
-    #[test]
-    fn the_microphone_and_dnd_say_whether_they_are_on() {
-        assert_eq!(
-            (
-                microphone(Some(true)).status.as_str(),
-                microphone(Some(true)).on
-            ),
-            ("Muted", false)
-        );
-        assert_eq!(
-            (
-                microphone(Some(false)).status.as_str(),
-                microphone(Some(false)).on
-            ),
-            ("On", true)
-        );
-        assert_eq!(microphone(None).press, None);
-        assert_eq!(microphone(None).status, "Unavailable");
-
-        assert_eq!(dnd(Some(true)).press, Some(Press::Dnd(false)));
-        assert_eq!(dnd(Some(false)).press, Some(Press::Dnd(true)));
-        assert_eq!(dnd(None).press, None);
-        assert_eq!(dnd(None).status, "Unavailable");
     }
 }

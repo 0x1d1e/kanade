@@ -11,18 +11,22 @@
 //! killed after `LIMIT` so one that hangs holds up no set after it. `set` answers at once with a
 //! serial; `kanade` waits on `status` for how it went.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read};
+use std::panic;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
+use kanade_runtime::service::Service;
+
 use super::wake;
-use crate::{config, supervise};
+use crate::{config, modules, supervise};
 
 pub const AWWW: &str = "awww";
 pub const DAEMON: &str = "awww-daemon";
@@ -38,6 +42,10 @@ const IMAGES: &[&str] = &[
 
 // how long awww may take to show an image, well over the tenth of a second it takes a large one
 const LIMIT: Duration = Duration::from_secs(10);
+
+// how often, and how far apart, a daemon not yet answering what it shows is asked again
+const TRIES: u32 = 5;
+const AGAIN: Duration = Duration::from_secs(1);
 
 // how many sets `status` says how they went, so a `kanade` waiting on one finds it after others
 const RECENT: usize = 16;
@@ -342,6 +350,11 @@ pub fn serve() {
                 wallpaper.current = Some(path);
             }
 
+            // the lock screen shows the new one from its first frame
+            if shown.is_ok() && modules::on("lock") {
+                look();
+            }
+
             if wallpaper.done.len() == RECENT {
                 wallpaper.done.pop_front();
             }
@@ -520,147 +533,457 @@ fn image(path: &Path) -> bool {
             .is_some_and(|extension| IMAGES.contains(&extension.to_lowercase().as_str()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/*
+ * the image awww shows on each output, by its name, as the lock screen draws it behind the clock;
+ * looked up as a lock is asked (`look`), as a wallpaper may have been set by anything since
+ */
+#[derive(Debug, Default)]
+pub struct Shown {
+    by: HashMap<String, Showing>,
+}
 
-    #[test]
-    fn set_takes_one_path_and_status_nothing() {
-        assert_eq!(
-            Request::parse(&["set", "a.png"]),
-            Some(Request::Set(PathBuf::from("a.png")))
-        );
-        assert_eq!(Request::parse(&["status"]), Some(Request::Status));
+// an image awww shows, and how light it is, 0 to 1, none for one Kanade does not decode
+#[derive(Debug, Clone, PartialEq)]
+pub struct Showing {
+    pub path: PathBuf,
+    pub light: Option<f32>,
+}
 
-        for words in [
-            &[][..],
-            &["set"],
-            &["set", ""],
-            &["set", "a.png", "b.png"],
-            &["status", "now"],
-            &["get"],
-        ] {
-            assert_eq!(Request::parse(words), None, "{words:?}");
+impl Service for Shown {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn listen() {}
+}
+
+impl Shown {
+    pub fn on(&self, output: &str) -> Option<&Showing> {
+        self.by.get(output)
+    }
+}
+
+/*
+ * asks awww what it shows, off the caller's thread; a daemon still starting, as at login, is asked
+ * again a few times, and one never answering leaves what was known
+ */
+pub fn look() {
+    /*
+     * which look is newest, and which wrote last: one still asking again never overwrites what a
+     * later one found, nor is what it finds thrown away for a later one that found nothing
+     */
+    static LOOKS: AtomicU64 = AtomicU64::new(0);
+    static WROTE: Mutex<u64> = Mutex::new(0);
+
+    let this = LOOKS.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // awww looked for off the caller's thread too, as it may be asked on the way to sleep
+    let spawned = std::thread::Builder::new()
+        .name(String::from("wallpaper look"))
+        .spawn(move || {
+            if !wake::found(AWWW) {
+                return;
+            }
+
+            let mut said = wake::query_within(AWWW, &["query"], LIMIT);
+
+            for _ in 0..TRIES {
+                if said.is_ok() {
+                    break;
+                }
+
+                std::thread::sleep(AGAIN);
+                said = wake::query_within(AWWW, &["query"], LIMIT);
+            }
+
+            let Ok(said) = said else {
+                return;
+            };
+            // a wallpaper that is no image the lock screen decodes is as none: it shows solid
+            let by: HashMap<String, Showing> = shown(&said)
+                .into_iter()
+                .filter(|(_, path)| format(path).is_some())
+                .map(|(output, path)| {
+                    let light = lightness(&path);
+
+                    (output, Showing { path, light })
+                })
+                .collect();
+
+            // held while written, so looks write in turn
+            let mut wrote = WROTE.lock().unwrap_or_else(PoisonError::into_inner);
+
+            // a look older than one written is dropped, so a later one is never undone
+            if *wrote >= this {
+                return;
+            }
+            *wrote = this;
+
+            // read first, as a write redraws the lock screens
+            if Shown::read().by != by {
+                Shown::write().by = by;
+            }
+        });
+
+    if let Err(error) = spawned {
+        eprintln!("kanade: cannot ask awww for the wallpaper: {error}");
+    }
+}
+
+// how many wallpapers' lightness is kept
+const KNOWN_MOST: usize = 16;
+
+/*
+ * how light the image at `path` is, its mean luma, 0 to 1: any `Format`, none
+ * for one too large. Kept by the file's modification time, as decoding a large one takes a tenth
+ * of a second, and decoded one at a time, as each may take a few hundred megabytes
+ */
+fn lightness(path: &Path) -> Option<f32> {
+    type Known = HashMap<PathBuf, (SystemTime, Option<f32>)>;
+    static KNOWN: LazyLock<Mutex<Known>> = LazyLock::new(Mutex::default);
+    static DECODING: Mutex<()> = Mutex::new(());
+
+    let changed = fs::metadata(path).and_then(|file| file.modified()).ok()?;
+    let known = |known: &Known| {
+        known
+            .get(path)
+            .filter(|(when, _)| *when == changed)
+            .map(|(_, light)| *light)
+    };
+
+    // KNOWN is left unlocked while decoding, so reading it waits on nothing; a look waits for one
+    let decoding = DECODING.lock().unwrap_or_else(PoisonError::into_inner);
+
+    // under DECODING, so two looks at once decode it once
+    if let Some(light) = known(&KNOWN.lock().unwrap_or_else(PoisonError::into_inner)) {
+        return light;
+    }
+
+    // a decoder that panics on a bad file lets the look go on, with the wallpaper's lightness unknown
+    let light = panic::catch_unwind(|| decoded_light(path)).ok().flatten();
+    drop(decoding);
+
+    let mut known = KNOWN.lock().unwrap_or_else(PoisonError::into_inner);
+
+    // a few wallpapers are enough to know; a slideshow through hundreds keeps none of them for long
+    if known.len() >= KNOWN_MOST {
+        known.clear();
+    }
+    known.insert(path.to_owned(), (changed, light));
+
+    light
+}
+
+// what the lock screen decodes: all but svg told by how they start, svg by name
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Png,
+    Jpeg,
+    Webp,
+    Gif,
+    Svg,
+}
+
+pub fn format(path: &Path) -> Option<Format> {
+    let mut start = [0; 12];
+    let read = fs::File::open(path)
+        .and_then(|mut file| file.read(&mut start))
+        .ok()?;
+    let start = &start[..read];
+
+    if start.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(Format::Png)
+    } else if start.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some(Format::Jpeg)
+    } else if start.starts_with(b"RIFF")
+        && start.get(8..).is_some_and(|rest| rest.starts_with(b"WEBP"))
+    {
+        Some(Format::Webp)
+    } else if start.starts_with(b"GIF8") {
+        Some(Format::Gif)
+    } else {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+            .then_some(Format::Svg)
+    }
+}
+
+// how many rows of a png are read for its lightness: one in so many
+const ROWS: usize = 8;
+
+// the most pixels an image read for its lightness may have, an 8K screen's
+const MOST_PIXELS: usize = 7680 * 4320;
+
+fn decoded_light(path: &Path) -> Option<f32> {
+    let (pixels, components) = match format(path)? {
+        // row by row, keeping a few, so even a huge one takes little memory
+        Format::Png => {
+            let file = io::BufReader::new(fs::File::open(path).ok()?);
+            let mut decoder = png::Decoder::new(file);
+            decoder.set_transformations(png::Transformations::normalize_to_color8());
+
+            let mut reader = decoder.read_info().ok()?;
+            let info = reader.info();
+            if info.width as usize * info.height as usize > MOST_PIXELS {
+                return None;
+            }
+
+            let components = reader.output_color_type().0.samples();
+            let mut pixels = Vec::new();
+            let mut row = 0;
+
+            // an interlaced one's passes are each spread over the whole image, so every few rows still are
+            while let Some(read) = reader.next_row().ok()? {
+                if row % ROWS == 0 {
+                    pixels.extend_from_slice(read.data());
+                }
+                row += 1;
+            }
+
+            (pixels, components)
+        }
+        Format::Jpeg => {
+            // read as it decodes, so one too large is let go on its header
+            let file = io::BufReader::new(fs::File::open(path).ok()?);
+            let mut decoder = zune_jpeg::JpegDecoder::new(file);
+            decoder.decode_headers().ok()?;
+
+            let (width, height) = decoder.dimensions()?;
+            if width * height > MOST_PIXELS {
+                return None;
+            }
+
+            let pixels = decoder.decode().ok()?;
+
+            (pixels, decoder.output_colorspace()?.num_components())
+        }
+        // whole, as there is no cheaper way to a mean; a still, a first frame or a drawing is small
+        Format::Webp | Format::Gif | Format::Svg => {
+            let (_, _, rgba) = decoded(path)?;
+            return light(&rgba, 4);
+        }
+    };
+
+    light(&pixels, components)
+}
+
+// the longest side an svg is drawn at: sharp enough to cover a 4K output, whatever size it asks
+const VECTOR_SIDE: f32 = 3840.0;
+
+// the most bytes an svg is read from
+const MOST_SVG: u64 = 8 << 20;
+
+/*
+ * an image whole, as 8-bit RGBA with plain alpha, for the lock screen to draw: the first frame of
+ * a webp or gif, an svg drawn at `VECTOR_SIDE`; none past `MOST_PIXELS`, told by its header
+ */
+pub fn decoded(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+    match format(path)? {
+        Format::Png => {
+            let file = io::BufReader::new(fs::File::open(path).ok()?);
+            let mut decoder = png::Decoder::new(file);
+            decoder.set_transformations(png::Transformations::normalize_to_color8());
+
+            let mut reader = decoder.read_info().ok()?;
+            let info = reader.info();
+            let (width, height) = (info.width, info.height);
+            if width as usize * height as usize > MOST_PIXELS {
+                return None;
+            }
+
+            let mut pixels = vec![0; reader.output_buffer_size()?];
+            let frame = reader.next_frame(&mut pixels).ok()?;
+            pixels.truncate(frame.buffer_size());
+
+            let rgba = match frame.color_type.samples() {
+                4 => pixels,
+                3 => rgba(&pixels, 3, |pixel| [pixel[0], pixel[1], pixel[2], 255]),
+                2 => rgba(&pixels, 2, |pixel| [pixel[0], pixel[0], pixel[0], pixel[1]]),
+                1 => rgba(&pixels, 1, |pixel| [pixel[0], pixel[0], pixel[0], 255]),
+                _ => return None,
+            };
+
+            Some((width, height, rgba))
+        }
+        Format::Jpeg => {
+            let file = io::BufReader::new(fs::File::open(path).ok()?);
+            let options = zune_jpeg::zune_core::options::DecoderOptions::default()
+                .jpeg_set_out_colorspace(zune_jpeg::zune_core::colorspace::ColorSpace::RGBA);
+            let mut decoder = zune_jpeg::JpegDecoder::new_with_options(file, options);
+            decoder.decode_headers().ok()?;
+
+            let (width, height) = decoder.dimensions()?;
+            if width * height > MOST_PIXELS {
+                return None;
+            }
+
+            let pixels = decoder.decode().ok()?;
+
+            Some((
+                u32::try_from(width).ok()?,
+                u32::try_from(height).ok()?,
+                pixels,
+            ))
+        }
+        Format::Webp => {
+            let file = io::BufReader::new(fs::File::open(path).ok()?);
+            let mut decoder = image_webp::WebPDecoder::new(file).ok()?;
+
+            let (width, height) = decoder.dimensions();
+            if width as usize * height as usize > MOST_PIXELS {
+                return None;
+            }
+
+            let mut pixels = vec![0; decoder.output_buffer_size()?];
+            decoder.read_image(&mut pixels).ok()?;
+
+            let rgba = if decoder.has_alpha() {
+                pixels
+            } else {
+                rgba(&pixels, 3, |pixel| [pixel[0], pixel[1], pixel[2], 255])
+            };
+
+            Some((width, height, rgba))
+        }
+        Format::Gif => {
+            let file = io::BufReader::new(fs::File::open(path).ok()?);
+            let mut options = gif::DecodeOptions::new();
+            options.set_color_output(gif::ColorOutput::RGBA);
+
+            // the crate's own 50 MB would refuse a screen past 12 MP, below `MOST_PIXELS`
+            options.set_memory_limit(gif::MemoryLimit::Bytes(std::num::NonZeroU64::new(
+                MOST_PIXELS as u64 * 4,
+            )?));
+
+            let mut decoder = options.read_info(file).ok()?;
+            let (width, height) = (usize::from(decoder.width()), usize::from(decoder.height()));
+            if width * height > MOST_PIXELS {
+                return None;
+            }
+
+            // the first frame, which may cover only part of the screen, on a clear one
+            let frame = decoder.read_next_frame().ok()??;
+            let mut canvas = vec![0; width * height * 4];
+            let (left, top) = (usize::from(frame.left), usize::from(frame.top));
+            let across = usize::from(frame.width);
+
+            // what lies past the screen's edge is clipped
+            let visible = across.min(width.saturating_sub(left)) * 4;
+
+            for (row, pixels) in frame.buffer.chunks_exact(across * 4).enumerate() {
+                let start = ((top + row) * width + left) * 4;
+
+                if top + row >= height {
+                    break;
+                }
+                canvas[start..start + visible].copy_from_slice(&pixels[..visible]);
+            }
+
+            Some((
+                u32::from(decoder.width()),
+                u32::from(decoder.height()),
+                canvas,
+            ))
+        }
+        Format::Svg => {
+            // read up to a byte past the cap, so a longer one is refused and a special file is no wait
+            let mut bytes = Vec::new();
+            fs::File::open(path)
+                .ok()?
+                .take(MOST_SVG + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            if bytes.len() as u64 > MOST_SVG {
+                return None;
+            }
+
+            let tree =
+                resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default()).ok()?;
+            let size = tree.size();
+            let scale = VECTOR_SIDE / size.width().max(size.height());
+            let (width, height) = (
+                (size.width() * scale).ceil() as u32,
+                (size.height() * scale).ceil() as u32,
+            );
+
+            // none for an svg with no size to draw at
+            let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+            resvg::render(
+                &tree,
+                resvg::tiny_skia::Transform::from_scale(scale, scale),
+                &mut pixmap.as_mut(),
+            );
+
+            // tiny-skia keeps premultiplied alpha, the lock screen takes plain
+            let rgba = pixmap
+                .pixels()
+                .iter()
+                .flat_map(|pixel| {
+                    let plain = pixel.demultiply();
+                    [plain.red(), plain.green(), plain.blue(), plain.alpha()]
+                })
+                .collect();
+
+            Some((width, height, rgba))
         }
     }
+}
 
-    #[test]
-    fn a_relative_path_or_no_file_is_refused_at_once() {
-        assert!(request(Request::Set(PathBuf::from("a.png"))).is_err());
+// pixels of `components` each, made RGBA one by one
+fn rgba(pixels: &[u8], components: usize, each: impl Fn(&[u8]) -> [u8; 4]) -> Vec<u8> {
+    pixels.chunks_exact(components).flat_map(each).collect()
+}
 
-        let missing = request(Request::Set(PathBuf::from("/kanade/no/such/image.png")));
-        assert_eq!(
-            missing,
-            Err(String::from("no image at /kanade/no/such/image.png"))
-        );
+// the mean luma of 8-bit pixels of `components` each, gray or red, green and blue first
+fn light(pixels: &[u8], components: usize) -> Option<f32> {
+    if components == 0 {
+        return None;
     }
 
-    #[test]
-    fn status_round_trips() {
-        for status in [
-            Status {
-                current: None,
-                pending: Vec::new(),
-                done: Vec::new(),
-            },
-            Status {
-                current: Some(PathBuf::from("/w/sea shore.png")),
-                pending: vec![4, 5],
-                done: vec![
-                    (2, None),
-                    (3, Some(String::from("awww-daemon is not running"))),
-                ],
-            },
-        ] {
-            assert_eq!(Status::parse(&status.to_string()), Some(status));
-        }
+    // every few pixels is as good a mean, at a fraction of the time
+    let (sum, count) = pixels
+        .chunks_exact(components)
+        .step_by(7)
+        .map(|pixel| match pixel {
+            [red, green, blue, ..] => {
+                0.2126 * f32::from(*red) + 0.7152 * f32::from(*green) + 0.0722 * f32::from(*blue)
+            }
+            [gray, ..] => f32::from(*gray),
+            [] => 0.0,
+        })
+        .fold((0.0, 0u32), |(sum, count), luma| (sum + luma, count + 1));
 
-        assert_eq!(Status::parse(""), None);
-        assert_eq!(Status::parse("on"), None);
-        assert_eq!(Status::parse("none\n#x set"), None);
+    (count > 0).then(|| sum / count as f32 / 255.0)
+}
+
+/*
+ * the images in what `awww query` says, a line per output like
+ * `: eDP-1: 1920x1080, scale: 1, currently displaying: image: /path`, its namespace first if any;
+ * an output showing a color has none
+ */
+fn shown(said: &str) -> HashMap<String, PathBuf> {
+    let mut shown = HashMap::new();
+
+    // an output under several namespaces keeps the first awww lists
+    let said = said.lines().filter_map(|line| {
+        let (head, path) = line.split_once("currently displaying: image: ")?;
+        let pieces: Vec<&str> = head.split([':', ',']).map(str::trim).collect();
+
+        // the output's name is the piece before its size
+        let name = pieces.windows(2).find_map(|pair| {
+            let size = pair[1].split_once('x')?;
+            let number = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+
+            (number(size.0) && number(size.1) && !pair[0].is_empty()).then_some(pair[0])
+        })?;
+
+        // a path may end in spaces; only the line's end is cut
+        Some((name.to_owned(), PathBuf::from(path.trim_end_matches('\r'))))
+    });
+
+    for (name, path) in said {
+        shown.entry(name).or_insert(path);
     }
 
-    #[test]
-    fn a_set_settles_once_done_or_is_lost_once_forgotten() {
-        let status = Status {
-            current: Some(PathBuf::from("/w/a.png")),
-            pending: vec![5],
-            done: vec![(3, None), (4, Some(String::from("bad image")))],
-        };
-
-        assert_eq!(status.settled(5), Settled::Waiting);
-        assert_eq!(status.settled(3), Settled::Set);
-        assert_eq!(
-            status.settled(4),
-            Settled::Failed(String::from("bad image"))
-        );
-        assert!(matches!(status.settled(1), Settled::Lost(_)));
-    }
-
-    #[test]
-    fn kanade_runs_the_daemon_only_through_setpriv_and_when_none_answers() {
-        assert_eq!(daemon(true, true), Daemon::Theirs);
-        assert_eq!(daemon(true, false), Daemon::Theirs);
-        assert_eq!(daemon(false, true), Daemon::Kanade);
-        assert_eq!(daemon(false, false), Daemon::Nobody);
-    }
-
-    // a stand-in for awww: `img` of an image named hang never exits, any other one is shown
-    const AWWW_HANGS: &[&str] = &[
-        "sh",
-        "-c",
-        r#"case "$1 $2" in "img "*hang*) exec sleep 60 ;; "img "*|query) exit 0 ;; esac; exit 1"#,
-        "awww",
-    ];
-
-    #[test]
-    fn an_awww_that_hangs_is_stopped_and_the_next_image_is_shown() {
-        let limit = Duration::from_millis(300);
-        let started = std::time::Instant::now();
-
-        assert_eq!(
-            show(AWWW_HANGS, Path::new("/w/hang.png"), limit),
-            Err(Unset::Stuck(limit))
-        );
-        assert!(started.elapsed() < Duration::from_secs(5));
-
-        assert_eq!(show(AWWW_HANGS, Path::new("/w/sea.png"), limit), Ok(()));
-    }
-
-    #[test]
-    fn the_reply_to_a_set_names_its_serial() {
-        assert_eq!(setting("setting #7"), Some(7));
-        assert_eq!(setting("setting #"), None);
-        assert_eq!(setting("none"), None);
-    }
-
-    #[test]
-    fn only_images_awww_decodes_are_listed_by_name() {
-        let directory =
-            std::env::temp_dir().join(format!("kanade-wallpapers-{}", std::process::id()));
-        drop(fs::remove_dir_all(&directory));
-        fs::create_dir_all(directory.join("nested.png")).unwrap();
-
-        for name in [
-            "b.JPG",
-            "a.png",
-            "C.webp",
-            ".hidden.png",
-            "clip.mp4",
-            "notes.txt",
-            "noext",
-        ] {
-            fs::write(directory.join(name), b"").unwrap();
-        }
-
-        let names: Vec<String> = list(&directory)
-            .iter()
-            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(names, ["a.png", "b.JPG", "C.webp"]);
-        assert!(list(&directory.join("missing")).is_empty());
-
-        fs::remove_dir_all(&directory).unwrap();
-    }
+    shown
 }

@@ -1,6 +1,6 @@
 # 18. Lock stays in the shell
 
-Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split.
+Status: accepted (roadmap 11 Session, #153). Answers the lock ship gate of `docs/design.md` Security/privacy: no `kanade-lock` split. Amended by ADR 0025: the lock stays in the shell process, held by the `kanade-lock` crate over its own connection, not Amane's `Lock`, and the password is checked once.
 
 Validated: crash recovery in a temporary test build (#153), then again in #154 on the production binary and the installed `kanade.service` unit, with the start limit and its recovery.
 
@@ -37,7 +37,7 @@ All three land in #154.
 ## Consequences
 
 - `LockedHint` is only for the restart: right after an unlock it may still say the last lock, so `kanade lock` waits on its own lock screen drawing instead (#196).
-- Kanade checks a password with PAM itself before Amane's `Lock::unlock`, which alone ends the lock, checks it again (#155): Kanade's check can be dropped when sleep comes, Amane's cannot. So every unlock runs the `login` stack twice; a stack with `pam_fprintd` or `pam_u2f` asks for a finger or key twice, and one that refuses a second success in a row says Wrong password after a right one.
+- Kanade checks a password with PAM itself before Amane's `Lock::unlock`, which alone ends the lock, checks it again (#155): Kanade's check can be dropped when sleep comes, Amane's cannot. So every unlock runs the `login` stack twice; a stack with `pam_fprintd` or `pam_u2f` asks for a finger or key twice, and one that refuses a second success in a row says Wrong password after a right one. Superseded by ADR 0025: Kanade's own lock client ends the lock, with no check of its own, so the stack runs once.
 - A crash while locked shows niri's red screen for about the restart delay (1 s here), then the lock screen. A password typed into the dead process is lost.
 - Without the user unit, as with `spawn-at-startup`, nothing restarts the shell: the session stays on the red screen until another locker or a TTY ends it. `kanade doctor` warns about a unit that is not enabled or whose `MainPID` is not the shell it talks to.
 - A lock that crashes on every start hits the unit's start limit and stays on the red screen. Recovery, from another TTY (`Ctrl+Alt+F3`): first fix the cause and restart the unit (`kanade.service`, `dist/kanade.service`), which locks again and keeps the session:

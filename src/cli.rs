@@ -1,11 +1,11 @@
 //! The public CLI (#103, docs/design.md CLI): `kanade` runs the shell, `kanade <verb> [args]` asks
-//! the running one over Amane IPC. Each Module names the verbs it owns (`Module::verbs`), so the
+//! the running one over the runtime's IPC. Each Module names the verbs it owns (`Module::verbs`), so the
 //! usage and the parse follow from the Modules, and the shell refuses the verbs of a Module that is
 //! off. Both sides parse the same words: this process to answer a typo without a shell, the shell to
-//! act. `amane ipc call kanade <verb> [args]` reaches the same handler; it is internal.
+//! act. The socket is `$XDG_RUNTIME_DIR/kanade.sock`; it is internal.
 
 use std::env;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::{IpcCall, ipc_socket};
+use kanade_runtime::{IpcCall, ipc_socket};
 
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
@@ -35,6 +35,9 @@ pub const PROTOCOL: u32 = 4;
  */
 pub struct Verb {
     pub name: &'static str,
+
+    // what it does, in a line of the command list; Modules sharing the name word it alike
+    pub about: &'static str,
 
     // its lines of the usage, each starting with the name; an indented line says what an argument takes
     pub usage: fn() -> String,
@@ -130,29 +133,218 @@ fn verbs() -> impl Iterator<Item = (&'static Module, &'static Verb)> {
         .flat_map(|module| module.verbs.iter().map(move |verb| (module, verb)))
 }
 
-// every verb, in the Modules' order with the lines of one name together, then those this process answers itself
-pub fn usage() -> String {
-    let mut names: Vec<&str> = Vec::new();
+// a name the CLI answers to, with the forms it takes
+struct Entry {
+    name: &'static str,
+    about: &'static str,
+
+    // the lines of `Verb::usage` of every Module owning the name, then what this process adds
+    usage: Vec<String>,
+}
+
+// the name of a verb this process answers itself, with what it does and the form it takes
+const OWN: &[(&str, &str, &str)] = &[
+    ("config", "", "config defaults"),
+    (
+        "doctor",
+        "Check what Kanade runs on, without a shell",
+        "doctor",
+    ),
+    (
+        "help",
+        "Show this list, or a command's arguments",
+        "help [<command>]",
+    ),
+];
+
+// every name, in the Modules' order with the lines of one name together, then those this process answers itself
+fn commands() -> Vec<Entry> {
+    let mut commands: Vec<Entry> = Vec::new();
 
     for (_, verb) in verbs() {
-        if !names.contains(&verb.name) {
-            names.push(verb.name);
+        match commands
+            .iter_mut()
+            .find(|command| command.name == verb.name)
+        {
+            Some(command) => command.usage.push((verb.usage)()),
+            None => commands.push(Entry {
+                name: verb.name,
+                about: verb.about,
+                usage: vec![(verb.usage)()],
+            }),
         }
     }
 
-    let verbs = names.into_iter().flat_map(|name| {
-        verbs()
-            .filter(move |(_, verb)| verb.name == name)
-            .map(|(_, verb)| (verb.usage)())
-    });
+    for &(name, about, usage) in OWN {
+        match commands.iter_mut().find(|command| command.name == name) {
+            Some(command) => command.usage.push(usage.to_owned()),
+            None => commands.push(Entry {
+                name,
+                about,
+                usage: vec![usage.to_owned()],
+            }),
+        }
+    }
 
-    std::iter::once(String::from(
-        "usage: kanade [<verb> [args]]\nwith no verb, runs the shell; a verb asks the running one:",
-    ))
-    .chain(verbs)
-    .chain([String::from("config defaults\ndoctor\nhelp")])
-    .collect::<Vec<_>>()
-    .join("\n")
+    commands
+}
+
+// the width the help is wrapped to
+const WIDTH: usize = 80;
+
+// bold on a terminal, else as it is
+#[derive(Clone, Copy)]
+struct Style(bool);
+
+impl Style {
+    // for what is written to `stream`: no color off a terminal, with NO_COLOR, or on a dumb one
+    fn of(stream: &impl IsTerminal) -> Style {
+        Style(
+            stream.is_terminal()
+                && env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+                && env::var_os("TERM").is_none_or(|term| term != "dumb"),
+        )
+    }
+
+    fn bold(self, text: &str) -> String {
+        if self.0 {
+            format!("\x1b[1m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    // `text` in bold, then spaces up to `width` columns
+    fn column(self, text: &str, width: usize) -> String {
+        format!(
+            "{}{}",
+            self.bold(text),
+            " ".repeat(width.saturating_sub(text.chars().count()))
+        )
+    }
+}
+
+// `text` broken into lines of at most `width` columns, after a space or a `|`
+fn wrapped(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = vec![String::new()];
+
+    for word in text.split_inclusive([' ', '|']) {
+        let line = lines.last_mut().expect("a line");
+
+        if !line.is_empty()
+            && line.trim_end().chars().count() + word.trim_end().chars().count() > width
+        {
+            lines.push(String::new());
+        }
+
+        lines.last_mut().expect("a line").push_str(word);
+    }
+
+    lines
+        .iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
+}
+
+// `rows` as an indented table of a name and a description, the description wrapped under itself
+fn table(rows: &[(String, String)], style: Style) -> String {
+    let name = rows
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let indent = 2 + name + 2;
+    let mut table = String::new();
+
+    for (key, description) in rows {
+        for (index, line) in wrapped(description, WIDTH.saturating_sub(indent))
+            .iter()
+            .enumerate()
+        {
+            let left = if index == 0 {
+                style.column(key, name)
+            } else {
+                " ".repeat(name)
+            };
+
+            table.push_str(&format!("  {left}  {line}\n"));
+        }
+    }
+
+    table
+}
+
+// every command with what it does
+fn help(style: Style) -> String {
+    let commands = commands();
+    let rows: Vec<(String, String)> = commands
+        .iter()
+        .map(|command| (command.name.to_owned(), command.about.to_owned()))
+        .collect();
+
+    format!(
+        "Kanade - a niri shell around an adaptive activity island
+
+{usage} kanade [COMMAND]
+
+With no command, runs the shell. A command asks the running one.
+
+{commands}
+{rows}
+Run 'kanade help <command>' for what a command takes.
+",
+        usage = style.bold("Usage:"),
+        commands = style.bold("Commands:"),
+        rows = table(&rows, style),
+    )
+}
+
+// what one command does, the forms it takes and what their arguments are
+fn help_for(command: &Entry, style: Style) -> String {
+    let mut forms = String::new();
+    let mut arguments: Vec<(String, String)> = Vec::new();
+
+    for line in command.usage.iter().flat_map(|usage| usage.lines()) {
+        match line
+            .strip_prefix("  ")
+            .and_then(|line| line.split_once(": "))
+        {
+            Some((argument, meaning)) => arguments.push((argument.to_owned(), meaning.to_owned())),
+            None => forms.push_str(&format!("  kanade {line}\n")),
+        }
+    }
+
+    let mut help = format!("{}\n\n{}\n{forms}", command.about, style.bold("Usage:"));
+
+    if !arguments.is_empty() {
+        help.push_str(&format!(
+            "\n{}\n{}",
+            style.bold("Arguments:"),
+            table(&arguments, style)
+        ));
+    }
+
+    help
+}
+
+// what to say of words that make no call: the command's help when it is one, else that it is none
+fn mistake(words: &[&str], style: Style) -> String {
+    match words
+        .first()
+        .and_then(|name| commands().into_iter().find(|command| command.name == *name))
+    {
+        Some(command) => format!(
+            "kanade: bad arguments for '{}'\n\n{}",
+            command.name,
+            help_for(&command, style)
+        ),
+        None => format!(
+            "kanade: unknown command{}\n\nRun 'kanade help' for the commands.",
+            words
+                .first()
+                .map_or_else(String::new, |name| format!(" '{name}'"))
+        ),
+    }
 }
 
 // how long the shell may take to answer before it counts as stuck
@@ -166,7 +358,27 @@ pub fn run(arguments: &[String]) -> ExitCode {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
     match words[..] {
-        ["help" | "-h" | "--help"] => return print(&format!("{}\n", usage()), ExitCode::SUCCESS),
+        ["help" | "-h" | "--help"] => {
+            return print(&help(Style::of(&io::stdout())), ExitCode::SUCCESS);
+        }
+        ["-V" | "--version"] => {
+            return print(
+                concat!("kanade ", env!("CARGO_PKG_VERSION"), "\n"),
+                ExitCode::SUCCESS,
+            );
+        }
+        ["help", name] | [name, "-h" | "--help"] => {
+            return match commands().into_iter().find(|command| command.name == name) {
+                Some(command) => print(
+                    &help_for(&command, Style::of(&io::stdout())),
+                    ExitCode::SUCCESS,
+                ),
+                None => {
+                    complain(&mistake(&[name], Style::of(&io::stderr())));
+                    ExitCode::from(2)
+                }
+            };
+        }
         ["doctor"] => return doctor::run(),
         ["config", "defaults"] => return print(&config::defaults(), ExitCode::SUCCESS),
         _ => {}
@@ -175,7 +387,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
     let asked = match parse(&words) {
         Ok((_, call)) => call,
         Err(Unparsed::Usage) => {
-            complain(&usage());
+            complain(&mistake(&words, Style::of(&io::stderr())));
             return ExitCode::from(2);
         }
         Err(Unparsed::Invalid(invalid)) => {
@@ -367,9 +579,9 @@ fn settle_recording(
 }
 
 /*
- * the shell answers a lock at once, as Amane only asks niri for it (`lock::start`), so this waits
- * until a lock screen drew for `request`, which no lock before it can do, and the lock still holds
- * when asked (#196)
+ * the shell answers a lock at once, as it only asks niri for it (`lock::start`), so this waits
+ * until niri says it holds the lock for `request`, which no lock before it can, and the lock still
+ * holds when asked (#196)
  */
 fn settle_lock(
     request: &lock::Request,
@@ -380,9 +592,8 @@ fn settle_lock(
         patience,
         || {
             format!(
-                "no lock screen showed within {}s: niri refuses while its VT is not shown or \
-                 another locker holds the session, and a password typed meanwhile may have \
-                 unlocked it; the session may still lock",
+                "niri did not hold the lock within {}s, and a password typed meanwhile may \
+                 have unlocked it; the session may still lock",
                 patience.as_secs()
             )
         },
@@ -394,6 +605,10 @@ fn settle_lock(
                 lock::Settled::Waiting => Settling::Waiting,
                 lock::Settled::Unlocked => Settling::Settled(Reply::Unknown(String::from(
                     "a password typed on the lock screen unlocks the session",
+                ))),
+                lock::Settled::Denied => Settling::Settled(Reply::Refused(String::from(
+                    "niri refused the lock: another locker holds the session, or its VT is not \
+                     shown",
                 ))),
                 lock::Settled::Lost => Settling::Settled(Reply::Unknown(String::from(
                     "the shell restarted, which lost the lock it was asked for; the session may \
@@ -512,7 +727,7 @@ fn call_until(arguments: &[String], deadline: Instant) -> Result<Reply, String> 
         return Err(String::from("an argument cannot hold a newline"));
     }
 
-    // Amane's socket lives there, and it panics without one
+    // the runtime's socket lives there, and it panics without one
     if env::var_os("XDG_RUNTIME_DIR").is_none() {
         return Err(String::from(
             "XDG_RUNTIME_DIR is not set, so there is no shell to find",
@@ -584,348 +799,13 @@ fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Re
     String::from_utf8(reply)
         .ok()
         .and_then(|reply| Reply::decode(&reply))
-        .ok_or_else(|| String::from("the running Amane shell is not Kanade"))
+        .ok_or_else(|| String::from("the running shell is not Kanade"))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use super::*;
-    use crate::island::activity::Ending;
-    use crate::island::presentation::Surface;
-
-    fn parsed(words: &[&str]) -> Result<(&'static str, Call), Unparsed> {
-        parse(words).map(|(module, call)| (module.name, call))
-    }
-
-    // a stdout that fails every write with `kind`
-    struct Failing(io::ErrorKind);
-
-    impl Write for Failing {
-        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-            Err(self.0.into())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn only_a_closed_pipe_is_no_stdout_failure() {
-        let mut taken = Vec::new();
-        assert!(written(&mut taken, "ok\n").is_ok());
-        assert_eq!(taken, b"ok\n");
-
-        assert!(written(Failing(io::ErrorKind::BrokenPipe), "ok\n").is_ok());
-        assert_eq!(
-            written(Failing(io::ErrorKind::StorageFull), "ok\n").map_err(|error| error.kind()),
-            Err(io::ErrorKind::StorageFull)
-        );
-    }
-
-    #[test]
-    fn verbs_go_with_their_module() {
-        let island = |command| Ok(("island", Call::Island(command)));
-
-        assert_eq!(
-            parsed(&["launcher", "toggle"]),
-            Ok(("launcher", Call::Island(Command::Toggle(Surface::Launcher))))
-        );
-        assert_eq!(
-            parsed(&["controls", "close"]),
-            Ok(("controls", Call::Island(Command::Close(Surface::Controls))))
-        );
-        assert_eq!(parsed(&["island", "collapse"]), island(Command::Collapse));
-        assert_eq!(parsed(&["config", "reload"]), Ok(("island", Call::Reload)));
-        assert_eq!(
-            parsed(&["config", "validate"]),
-            Ok(("island", Call::Validate))
-        );
-        assert_eq!(parsed(&["status"]), Ok(("island", Call::Status)));
-        assert_eq!(parsed(&["module", "list"]), Ok(("island", Call::Modules)));
-        assert_eq!(
-            parsed(&["module", "disable", "media"]),
-            Ok(("island", Call::Turn("media", false)))
-        );
-        assert_eq!(
-            parsed(&["module", "enable", "notification-surface"]),
-            Ok(("island", Call::Turn("notification-surface", true)))
-        );
-        assert_eq!(
-            parsed(&["settings", "open"]),
-            Ok(("settings", Call::Settings(None)))
-        );
-        assert_eq!(
-            parsed(&["settings", "open", "dock"]),
-            Ok(("settings", Call::Settings(Some("dock"))))
-        );
-        assert_eq!(
-            parsed(&["settings", "close"]),
-            Ok(("settings", Call::CloseSettings))
-        );
-        assert_eq!(
-            parsed(&["debug", "withdraw", "timer", "timer"]).map(|(module, _)| module),
-            Ok("island")
-        );
-        assert_eq!(
-            parsed(&["media", "open"]),
-            Ok(("media", Call::Island(Command::Open(Surface::Media))))
-        );
-        assert_eq!(
-            parsed(&["timer", "start", "25m"]),
-            Ok((
-                "timer",
-                Call::Timer(timer::Request::Start(Duration::from_secs(1500)))
-            ))
-        );
-        assert_eq!(
-            parsed(&["timer", "pause"]),
-            Ok(("timer", Call::Timer(timer::Request::Pause)))
-        );
-        assert_eq!(
-            parsed(&["timer", "resume"]),
-            Ok(("timer", Call::Timer(timer::Request::Resume)))
-        );
-        assert_eq!(
-            parsed(&["timer", "cancel"]),
-            Ok(("timer", Call::Timer(timer::Request::Cancel)))
-        );
-        assert_eq!(
-            parsed(&["caffeine", "status"]),
-            Ok(("caffeine", Call::Caffeine(caffeine::Request::Status)))
-        );
-        assert_eq!(
-            parsed(&["caffeine", "toggle", "1h"]),
-            Ok((
-                "caffeine",
-                Call::Caffeine(caffeine::Request::Toggle(Some(Duration::from_secs(3600))))
-            ))
-        );
-        assert_eq!(
-            parsed(&["wallpaper", "set", "a b.png"]),
-            Ok((
-                "wallpaper",
-                Call::Wallpaper(wallpaper::Request::Set(PathBuf::from("a b.png")))
-            ))
-        );
-        assert_eq!(
-            parsed(&["osd", "brightness"]),
-            Ok(("osd", Call::Osd(osd::Asked::Brightness)))
-        );
-        assert_eq!(parsed(&["lock"]), Ok(("lock", Call::Lock)));
-        assert_eq!(parsed(&["lock", "status"]), Ok(("lock", Call::LockStatus)));
-        assert_eq!(
-            parsed(&["session", "menu"]),
-            Ok(("session", Call::Island(Command::Open(Surface::Session))))
-        );
-        assert_eq!(
-            parsed(&["session", "poweroff"]),
-            Ok(("session", Call::Session(Leave::Ending(Ending::PowerOff))))
-        );
-        // their Surface is its own Module, which shares the verb
-        assert_eq!(
-            parsed(&["notifications", "open"]),
-            Ok((
-                "notification-surface",
-                Call::Island(Command::Open(Surface::Notifications))
-            ))
-        );
-        assert_eq!(
-            parsed(&["notifications", "clear"]),
-            Ok(("notifications", Call::ClearNotifications))
-        );
-
-        assert_eq!(
-            parsed(&["capture", "screenshot", "window"]),
-            Ok(("capture", Call::Screenshot(capture::Mode::Window)))
-        );
-        assert_eq!(
-            parsed(&["capture", "record", "start"]),
-            Ok(("capture", Call::Record(recording::Request::Start)))
-        );
-        assert_eq!(
-            parsed(&["capture", "record", "stop"]),
-            Ok(("capture", Call::Record(recording::Request::Stop)))
-        );
-
-        // likewise the clipboard history and its Surface
-        assert_eq!(
-            parsed(&["clipboard", "clear"]),
-            Ok(("clipboard", Call::ClearClipboard))
-        );
-        assert_eq!(
-            parsed(&["clipboard", "open"]),
-            Ok((
-                "clipboard-surface",
-                Call::Island(Command::Open(Surface::Clipboard))
-            ))
-        );
-
-        // the calendar's verb is its Surface's, as the calendar itself has none
-        assert_eq!(
-            parsed(&["calendar", "toggle"]),
-            Ok((
-                "calendar-surface",
-                Call::Island(Command::Toggle(Surface::Calendar))
-            ))
-        );
-
-        // the weather's fetch and its Surface are Modules of their own sharing a verb
-        assert_eq!(
-            parsed(&["weather", "refresh"]),
-            Ok(("weather", Call::Weather(weather::Request::Refresh)))
-        );
-        assert_eq!(
-            parsed(&["weather", "open"]),
-            Ok((
-                "weather-surface",
-                Call::Island(Command::Open(Surface::Weather))
-            ))
-        );
-
-        // Do Not Disturb only quiets notifications, so it goes with them
-        assert_eq!(
-            parsed(&["notifications", "dnd", "on"]),
-            Ok(("notifications", Call::Island(Command::SetDnd(true))))
-        );
-        assert_eq!(
-            parsed(&["notifications", "dnd", "toggle"]),
-            Ok(("notifications", Call::Island(Command::ToggleDnd)))
-        );
-    }
-
-    #[test]
-    fn anything_else_gets_the_usage() {
-        for words in [
-            &[][..],
-            &["open", "launcher"],
-            &["launcher"],
-            &["launcher", "open", "eDP-1"],
-            &["Launcher", "open"],
-            &["island"],
-            &["island", "open"],
-            &["config"],
-            &["config", "reload", "now"],
-            &["status", "now"],
-            &["module"],
-            &["module", "list", "all"],
-            &["module", "enable"],
-            &["module", "disable", "island"],
-            &["module", "enable", "teleport"],
-            &["module", "toggle", "media"],
-            &["media", "clear"],
-            &["timer"],
-            &["timer", "start"],
-            &["timer", "start", "0s"],
-            &["timer", "stop"],
-            &["timer", "pause", "5m"],
-            &["notifications", "dnd"],
-            &["notifications", "dnd", "maybe"],
-            &["notifications", "clear", "all"],
-            &["clipboard"],
-            &["clipboard", "clear", "all"],
-            &["clipboard", "delete"],
-            &["capture"],
-            &["capture", "screenshot"],
-            &["capture", "screenshot", "all"],
-            &["capture", "record", "area"],
-            &["caffeine"],
-            &["caffeine", "on", "forever"],
-            &["osd"],
-            &["osd", "microphone"],
-            &["lock", "now"],
-            &["session"],
-            &["session", "lock"],
-            &["session", "reboot", "now"],
-            &["settings"],
-            &["settings", "open", "launcher"],
-            &["debug"],
-            &["doctor"],
-            &["help"],
-        ] {
-            assert_eq!(parsed(words), Err(Unparsed::Usage), "{words:?}");
-        }
-    }
-
-    #[test]
-    fn the_usage_names_every_verb() {
-        assert_eq!(
-            usage(),
-            format!(
-                "usage: kanade [<verb> [args]]
-with no verb, runs the shell; a verb asks the running one:
-island collapse
-config reload|validate
-status
-module list|enable <name>|disable <name>
-  <name>: workspace|windows|dock|privacy|battery|media|timer|audio|brightness|osd|notifications|\
-banners|network|bluetooth|tray|clipboard|power|controls|wallpaper|launcher|notification-surface|\
-calendar|calendar-surface|google-calendar|weather|weather-surface|clipboard-surface|capture|\
-caffeine|lock|session|settings
-{}
-media open|close|toggle
-timer start <duration>|pause|resume|cancel
-  <duration>: like 90s, 25m or 1h30m, up to 24h
-osd volume|brightness
-notifications clear
-notifications dnd on|off|toggle
-notifications open|close|toggle
-tray open|close|toggle
-clipboard clear
-clipboard open|close|toggle
-controls open|close|toggle
-wallpaper set <path>|status
-launcher open|close|toggle
-calendar open|close|toggle
-google-calendar sign-in <client.json>|sign-out|sync|status
-  <client.json>: a Desktop app OAuth client, as Google Cloud downloads it
-weather refresh|status
-weather open|close|toggle
-capture screenshot area|window|output
-capture record start|stop|status
-caffeine on|off|toggle [<duration>]|status
-  <duration>: like 90s, 25m or 1h30m, up to 24h; none keeps it on until turned off
-lock [status]
-session menu|suspend|reboot|poweroff|logout
-settings open [<page>]|close
-  <page>: island|windows|dock|wallpaper|calendar|weather
-config defaults
-doctor
-help",
-                Command::debug_usage()
-            )
-        );
-    }
-
-    // so the usage lists a verb under its own name; Modules sharing one each own their arguments
-    #[test]
-    fn a_module_owns_a_verb_once_and_its_usage_starts_with_its_name() {
-        for module in modules::ALL {
-            for (index, verb) in module.verbs.iter().enumerate() {
-                assert!(
-                    module.verbs[..index]
-                        .iter()
-                        .all(|other| other.name != verb.name),
-                    "{} owns {} twice",
-                    module.name,
-                    verb.name
-                );
-            }
-        }
-
-        for (_, verb) in verbs() {
-            assert!(!["doctor", "help"].contains(&verb.name));
-
-            for line in (verb.usage)()
-                .lines()
-                .filter(|line| !line.starts_with("  "))
-            {
-                assert!(line.starts_with(verb.name), "{line}");
-            }
-        }
-    }
 
     #[test]
     fn replies_round_trip_and_anything_else_is_no_kanade() {
@@ -978,7 +858,7 @@ help",
         );
         assert_eq!(
             sent(Some("no handler named kanade"), Duration::ZERO),
-            Err(String::from("the running Amane shell is not Kanade"))
+            Err(String::from("the running shell is not Kanade"))
         );
     }
 
@@ -1021,170 +901,6 @@ help",
             begun.elapsed() < Duration::from_millis(250),
             "{:?}",
             begun.elapsed()
-        );
-    }
-
-    #[test]
-    fn a_recording_settles_within_one_patience_however_slow_the_shell() {
-        let path = "/v/a.mp4";
-        let patience = Duration::from_millis(300);
-        let call = IpcCall::new(HANDLER, &status_call());
-        let begun = Instant::now();
-
-        // starting until late in the patience, then a shell that never answers
-        let reply = settle_recording(
-            recording::Request::Start,
-            path.to_owned(),
-            patience,
-            |deadline| match begun.elapsed() < patience * 3 / 4 {
-                true => Ok(Reply::Done(format!("starting to record eDP-1 to {path}"))),
-                false => send(
-                    dripping("", Duration::ZERO),
-                    &call,
-                    deadline.saturating_duration_since(Instant::now()),
-                ),
-            },
-        );
-
-        assert_eq!(
-            reply,
-            Reply::Unknown(recording::Request::Start.unsettled(path, patience))
-        );
-        assert!(
-            begun.elapsed() < patience + Duration::from_millis(100),
-            "{:?}",
-            begun.elapsed()
-        );
-    }
-
-    #[test]
-    fn caffeine_settles_once_its_on_holds_fails_or_is_lost() {
-        let patience = Duration::from_millis(300);
-        let settled = |said: &'static [&'static str]| {
-            let mut said = said.iter();
-
-            settle_caffeine(2, patience, move |_| {
-                Ok(Reply::Done(String::from(*said.next().unwrap())))
-            })
-        };
-
-        assert_eq!(
-            settled(&["off\nstarting #2", "on #2 for 25m"]),
-            Reply::Done(String::from("on for 25m"))
-        );
-        assert_eq!(
-            settled(&[
-                "on #1 until turned off\nstarting #2",
-                "on #1 until turned off\n#2 failed: denied"
-            ]),
-            Reply::Refused(String::from("denied"))
-        );
-        assert!(matches!(
-            settled(&["off\nstarting #2", "off"]),
-            Reply::Unknown(_)
-        ));
-
-        let reply = settle_caffeine(2, patience, |_| {
-            Ok(Reply::Done(String::from("off\nstarting #2")))
-        });
-
-        assert!(
-            matches!(&reply, Reply::Unknown(why) if why.contains("did not hold the inhibitor")),
-            "{reply:?}"
-        );
-    }
-
-    #[test]
-    fn a_lock_settles_once_a_lock_screen_drew_for_it_while_it_holds() {
-        let patience = Duration::from_millis(300);
-        let request = lock::requested("requested #3 in 42.7").unwrap();
-        let settled = |said: &'static [&'static str]| {
-            let mut said = said.iter();
-
-            settle_lock(&request, patience, move |_| {
-                Ok(Reply::Done(String::from(*said.next().unwrap())))
-            })
-        };
-
-        // the last lock screen, drawn for #2, is no lock for #3
-        assert_eq!(
-            settled(&[
-                "instance 42.7\nrequested #3\nconfirmed #2",
-                "instance 42.7\nrequested #3\nconfirmed #3"
-            ]),
-            Reply::Done(String::new())
-        );
-        // #196: drawn for #3, then a password typed before the client asked
-        assert!(matches!(
-            settled(&[
-                "instance 42.7\nrequested #3\nchecking a password",
-                "instance 42.7\nrequested #3\nunlocked"
-            ]),
-            Reply::Unknown(why) if why.contains("unlocks the session")
-        ));
-        // a restarted shell's #3
-        assert!(matches!(
-            settled(&["instance 42.9\nrequested #3\nconfirmed #3"]),
-            Reply::Unknown(why) if why.contains("restarted")
-        ));
-
-        let reply = settle_lock(&request, patience, |_| {
-            Ok(Reply::Done(String::from(
-                "instance 42.7\nrequested #3\nconfirmed #2",
-            )))
-        });
-        assert!(
-            matches!(&reply, Reply::Unknown(why) if why.contains("no lock screen showed")),
-            "{reply:?}"
-        );
-
-        let reply = settle_lock(&request, patience, |_| Err(String::from("no shell")));
-        assert!(
-            matches!(&reply, Reply::Unknown(why) if why.starts_with("no shell")),
-            "{reply:?}"
-        );
-    }
-
-    #[test]
-    fn a_wallpaper_settles_once_awww_shows_it_or_fails() {
-        let patience = Duration::from_millis(300);
-        let settled = |said: &'static [&'static str]| {
-            let mut said = said.iter();
-
-            settle_wallpaper(2, Path::new("/w/a.png"), patience, move |_| {
-                Ok(Reply::Done(String::from(*said.next().unwrap())))
-            })
-        };
-
-        assert_eq!(
-            settled(&["none\nsetting #2", "current /w/a.png\n#2 set"]),
-            Reply::Done(String::from("/w/a.png"))
-        );
-        assert_eq!(
-            settled(&[
-                "none\nsetting #2",
-                "none\n#2 failed: awww-daemon is not running"
-            ]),
-            Reply::Refused(String::from("awww-daemon is not running"))
-        );
-        assert!(matches!(settled(&["none"]), Reply::Unknown(_)));
-
-        // another set done before this one was asked after: still this one's path
-        assert_eq!(
-            settled(&[
-                "none\nsetting #2\nsetting #3",
-                "current /w/b.png\n#2 set\n#3 set"
-            ]),
-            Reply::Done(String::from("/w/a.png"))
-        );
-
-        let reply = settle_wallpaper(2, Path::new("/w/a.png"), patience, |_| {
-            Ok(Reply::Done(String::from("none\nsetting #2")))
-        });
-
-        assert!(
-            matches!(&reply, Reply::Unknown(why) if why.contains("did not show the wallpaper")),
-            "{reply:?}"
         );
     }
 

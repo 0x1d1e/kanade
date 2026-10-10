@@ -1,5 +1,5 @@
 /*
- * an emoji as the picture its color font holds. Amane draws a letter from its outline, and color
+ * an emoji as the picture its color font holds. The runtime draws a letter from its outline, and color
  * emoji fonts like Noto Color Emoji have none, only a png per emoji; so the png is written as a
  * file and drawn like an app's icon
  */

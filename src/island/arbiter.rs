@@ -170,13 +170,35 @@ impl Arbiter {
         self.dnd
     }
 
+    /*
+     * the primary and its Satellites. The OSD answers a key for a moment, so it takes the island
+     * whole: no Satellite beside it, they come back with what it hid
+     */
     pub fn frame(&self, now: Instant, island: Island) -> Frame {
         let ranked = self.ranked(now, island.focused);
-        let primary = self.primary(&ranked, island.focused, now);
+
+        self.framed(&ranked, island.focused, now)
+    }
+
+    /*
+     * the Frame under the OSD, as if no Feedback were posted: what a Peek or an open Surface keeps
+     * showing while the OSD floats over it
+     */
+    pub fn beneath(&self, now: Instant, island: Island) -> Frame {
+        let mut ranked = self.ranked(now, island.focused);
+        ranked.retain(|entry| entry.activity.priority() != Priority::Feedback);
+
+        self.framed(&ranked, island.focused, now)
+    }
+
+    fn framed(&self, ranked: &[&Entry], focused: bool, now: Instant) -> Frame {
+        let primary = self.primary(ranked, focused, now);
+        let feedback =
+            primary.is_some_and(|index| ranked[index].activity.priority() == Priority::Feedback);
         let mut satellites: Vec<Activity> = ranked
             .iter()
             .enumerate()
-            .filter(|&(index, _)| Some(index) != primary)
+            .filter(|&(index, _)| Some(index) != primary && !feedback)
             .map(|(_, entry)| entry.activity.clone())
             .filter(|activity| {
                 activity.lifetime() == Lifetime::Persistent
@@ -191,6 +213,17 @@ impl Arbiter {
             satellites,
             overflow,
         }
+    }
+
+    /*
+     * the primary an island last settled on, when it became the primary, and when it expires if
+     * Transient: a repost keeps its since and pushes its expiry back
+     */
+    pub fn shown(&self, island: Island) -> Option<(&Id, Instant, Option<Instant>)> {
+        let shown = self.shown[usize::from(island.focused)].as_ref()?;
+        let entry = self.activities.get(&shown.id)?;
+
+        Some((&shown.id, shown.since, entry.expiry()))
     }
 
     // the live Activities on an island, highest first
@@ -292,9 +325,9 @@ mod tests {
         persistent(Id::new(Kind::Timer, "countdown"), Priority::Ongoing)
     }
 
-    // a workspace switch: Transient, Osd, FocusedOutput, interrupting nothing (ADR 0007)
+    // a workspace switch: Transient, Glance, FocusedOutput, interrupting nothing (ADR 0007)
     fn workspace() -> Activity {
-        shown(Id::new(Kind::Workspace, "eDP-1"), Priority::Osd, OSD)
+        shown(Id::new(Kind::Workspace, "eDP-1"), Priority::Glance, OSD)
     }
 
     fn primary(arbiter: &Arbiter, now: Instant) -> Option<Id> {
@@ -302,6 +335,26 @@ mod tests {
             .frame(now, FOCUSED)
             .primary
             .map(|activity| activity.id().clone())
+    }
+
+    // the OSD is a moment's answer: the timer it covers comes back as the primary, not a satellite
+    #[test]
+    fn an_osd_shows_alone_and_beneath_it_the_frame_stays() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+        let osd = shown(Id::new(Kind::Volume, "osd"), Priority::Feedback, OSD);
+
+        arbiter.post(countdown(), t0);
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(osd.clone(), t0 + ms(10));
+
+        let frame = arbiter.frame(t0 + ms(10), FOCUSED);
+        assert_eq!(frame.primary, Some(osd));
+        assert!(frame.satellites.is_empty());
+        assert_eq!(frame.overflow, 0);
+
+        let beneath = arbiter.beneath(t0 + ms(10), FOCUSED);
+        assert_eq!(beneath.primary, Some(countdown()));
     }
 
     #[test]

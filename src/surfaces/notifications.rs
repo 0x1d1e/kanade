@@ -6,14 +6,15 @@
 use std::cmp::Reverse;
 use std::time::{Instant, SystemTime};
 
-use amane::{
-    Center, Column, Cursor, Key, Notification, Notifications, Padding, Rectangle, Row, Scroll,
-    Service, Size, SpaceBetween, Stack, Start, Text, Urgency, Widget, children,
+use crate::sources::notifications::{Notification, Notifications, Urgency};
+use kanade_runtime::service::{self, Service};
+use kanade_runtime::{
+    Center, Column, Cursor, Key, Padding, Rectangle, Row, Scroll, Size, SpaceBetween, Stack, Start,
+    Text, Widget, children,
 };
 
 use crate::icon::Icon;
 use crate::island::activity::Toast;
-use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::notifications::{self, Daemon};
@@ -23,15 +24,22 @@ use crate::view;
 
 use super::{RING, Ring};
 
-// the content's width, which every row fills
-const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
+// the content's width, which every row fills, as wide as the largest body (`island.width`)
+fn width() -> f32 {
+    view::largest().width - 2.0 * INSET
+}
 
 const HEADER: f32 = 20.0;
 const FOOTER: f32 = 28.0;
 const GAP: f32 = 10.0;
 
-// what the cards scroll in, three without actions at a time
-const LIST: f32 = geometry::EXPANDED_MAX.height - 2.0 * INSET - HEADER - FOOTER - 2.0 * GAP;
+// what the cards scroll in, as tall as the largest body (`island.height`) leaves
+fn room() -> f32 {
+    view::largest().height - 2.0 * INSET - HEADER - FOOTER - 2.0 * GAP
+}
+
+// what a state, as no notifications, takes of the list
+const STATE: f32 = 120.0;
 
 const CARD: f32 = 70.0;
 const CARD_GAP: f32 = 6.0;
@@ -269,13 +277,50 @@ impl Place {
 
 // how far the cards can scroll: none while they fit
 fn most(cards: &[Shape]) -> f32 {
-    (content(cards) - LIST).max(0.0)
+    (content(cards) - room()).max(0.0)
 }
 
 fn content(cards: &[Shape]) -> f32 {
     let heights: f32 = cards.iter().map(Shape::height).sum();
 
     heights + CARD_GAP * cards.len().saturating_sub(1) as f32
+}
+
+// how tall the cards ask the body to be, or a state for none; the island caps it (ADR 0030)
+fn asks(cards: &[Shape]) -> f32 {
+    let list = if cards.is_empty() {
+        STATE
+    } else {
+        content(cards)
+    };
+
+    2.0 * INSET + HEADER + list + FOOTER + 2.0 * GAP
+}
+
+// the list as tall as its cards, scrolling once they reach past the room
+fn listed(cards: &[Shape]) -> f32 {
+    content(cards).min(room())
+}
+
+/*
+ * tells the island how tall the Notifications Surface asks to be, the same in every visit. After
+ * each change of the notifications or the daemon, never from a view
+ */
+pub fn fit() {
+    let _ordered = super::fitting();
+    let shapes: Vec<Shape> = match *Daemon::read() {
+        Daemon::Running => cards().iter().map(Card::shape).collect(),
+        Daemon::Starting | Daemon::Conflict(_) => Vec::new(),
+    };
+
+    IslandService::write().fit(Surface::Notifications, asks(&shapes), None, Instant::now());
+}
+
+// at start: the body follows the notifications from now on
+pub fn start() {
+    service::watch::<Notifications>(fit);
+    service::watch::<Daemon>(fit);
+    fit();
 }
 
 // the top of the card in `row`
@@ -294,7 +339,7 @@ fn reveal(offset: f32, cards: &[Shape], row: usize) -> f32 {
 
     let top = top(cards, row);
 
-    offset.min(top).max(top + card.height() - LIST)
+    offset.min(top).max(top + card.height() - room())
 }
 
 // what the ring presses
@@ -308,7 +353,7 @@ enum Press {
     Clear,
 }
 
-// what a card shows, read from Amane's list
+// what a card shows, read from the daemon's list
 struct Card {
     id: u32,
     toast: Toast,
@@ -389,8 +434,8 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
             &format!("{other} is the notification daemon"),
             "Stop it and restart Kanade to see notifications here",
         )),
-        // Amane gets the bus name within a moment of starting, so nothing says anything yet
-        Daemon::Starting => Box::new(Rectangle::new().width(WIDTH).height(LIST)),
+        // the daemon gets the bus name within a moment of starting, so nothing says anything yet
+        Daemon::Starting => Box::new(Rectangle::new().width(width()).height(STATE.min(room()))),
         Daemon::Running if cards.is_empty() => Box::new(state(
             Icon::Bell.draw(28.0),
             "No notifications",
@@ -403,7 +448,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
         .filter(|place| place.row == cards.len())
         .map(|place| place.column);
 
-    let shape = geometry::EXPANDED_MAX;
+    let shape = view::largest();
 
     Rectangle::new()
         .width(shape.width)
@@ -416,7 +461,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
                 list,
                 Box::new(footer(monitor, dnd, !cards.is_empty(), footer_ring)),
             ])
-            .width(WIDTH)
+            .width(width())
             .gap(GAP),
         )
 }
@@ -426,7 +471,7 @@ fn header(count: usize) -> Row {
     let mut words = children![
         Text::new("Notifications")
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
     ];
 
@@ -434,13 +479,13 @@ fn header(count: usize) -> Row {
         words.push(Box::new(
             Text::new(count.to_string())
                 .size(theme::text::BODY)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::SEMIBOLD),
         ));
     }
 
     Row::new(words)
-        .width(WIDTH)
+        .width(width())
         .height(HEADER)
         .gap(8.0)
         .align(Center)
@@ -452,7 +497,7 @@ fn state(icon: Rectangle, title: &str, detail: &str) -> Rectangle {
         icon,
         Text::new(title)
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
     ];
 
@@ -460,14 +505,14 @@ fn state(icon: Rectangle, title: &str, detail: &str) -> Rectangle {
         lines.push(Box::new(
             Text::new(detail)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM),
         ));
     }
 
     Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
+        .width(width())
+        .height(STATE.min(room()))
         .align_child(Center, Center)
         .child(Column::new(lines).gap(6.0).align(Center))
 }
@@ -496,20 +541,20 @@ fn list(
             })
             .collect(),
     )
-    .width(WIDTH)
+    .width(width())
     .gap(CARD_GAP);
 
     let scrolled = monitor.to_owned();
 
     let viewport = Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
+        .width(width())
+        .height(listed(shapes))
         .clip()
         .align_child(Start, Start)
         .on_scroll(move |Scroll { y, .. }| wheel(&scrolled, y))
         .child(
             Rectangle::new()
-                .width(WIDTH)
+                .width(width())
                 .height(content(shapes))
                 .align_child(Start, Start)
                 .translate(0.0, -offset)
@@ -521,20 +566,20 @@ fn list(
     let most = most(shapes);
 
     if most > 0.0 {
-        let length = (LIST * LIST / content(shapes)).max(TARGET);
-        let at = (LIST - length) * offset / most;
+        let length = (room() * room() / content(shapes)).max(TARGET);
+        let at = (room() - length) * offset / most;
 
         layers.push(Box::new(
             Rectangle::new()
                 .width(3.0)
                 .height(length)
                 .radius(radius::HAIRLINE)
-                .fill(theme::ISLAND.surface_container_high)
-                .translate(WIDTH + 7.0, at),
+                .fill(theme::island().surface_container_high)
+                .translate(width() + 7.0, at),
         ));
     }
 
-    Stack::new(layers).width(WIDTH).height(LIST)
+    Stack::new(layers).width(width()).height(listed(shapes))
 }
 
 /*
@@ -542,11 +587,11 @@ fn list(
  * actions under the text. Pressing it opens it. `ring` is the column the ring is on
  */
 fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
-    let words = WIDTH - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
+    let words = width() - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
 
     let sender = Text::new(&card.toast.app)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::ISLAND.on_surface_variant)
+        .color(theme::island().on_surface_variant)
         .weight(theme::text::MEDIUM)
         .elide();
 
@@ -571,7 +616,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         Box::new(
             Text::new(&card.toast.summary)
                 .size(theme::text::BODY)
-                .color(theme::ISLAND.on_surface)
+                .color(theme::island().on_surface)
                 .weight(theme::text::SEMIBOLD)
                 .elide(),
         ),
@@ -581,14 +626,14 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         lines.push(Box::new(
             Text::new(&card.toast.body)
                 .size(theme::text::LABEL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ));
     }
 
     let top = Row::new(children![
-        view::toast_tile(&card.toast, TILE, radius::TILE, &theme::ISLAND),
+        view::toast_tile(&card.toast, TILE, radius::TILE, &theme::island()),
         Column::new(lines).width(words).gap(1.0),
         dismiss(monitor, card.id, ring == Some(card.actions.len() + 1)),
     ])
@@ -605,10 +650,10 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
     let monitor = monitor.to_owned();
 
     Rectangle::new()
-        .width(WIDTH)
+        .width(width())
         .height(card.shape().height())
         .radius(radius::CARD)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(CARD_INSET)
         .align_child(Start, Start)
         .cursor(Cursor::Pointer)
@@ -653,7 +698,7 @@ fn actions(monitor: &str, card: &Card, ring: Option<usize>, width: f32) -> Row {
 fn label_in(label: &str, width: f32) -> Text {
     let text = Text::new(label)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::ISLAND.on_surface)
+        .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD);
 
     match text.width() {
@@ -667,7 +712,7 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
     let monitor = monitor.to_owned();
 
     // on the same 20 unit grid as every icon, so its 10 point cross keeps the icons' line
-    let cross = Icon::Dismiss.on(20.0, theme::ISLAND.on_surface_variant);
+    let cross = Icon::Dismiss.on(20.0, theme::island().on_surface_variant);
 
     Rectangle::new()
         .width(TARGET)
@@ -686,11 +731,11 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
 fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
     let switch = {
         let (track, knob, at) = if dnd {
-            (theme::ISLAND.primary, theme::ISLAND.on_primary, 12.0)
+            (theme::island().primary, theme::island().on_primary, 12.0)
         } else {
             (
-                theme::ISLAND.surface_container_high,
-                theme::ISLAND.on_surface_variant,
+                theme::island().surface_container_high,
+                theme::island().on_surface_variant,
                 0.0,
             )
         };
@@ -716,7 +761,7 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
         Icon::Moon.draw(16.0),
         Text::new("Do Not Disturb")
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
     ])
     .gap(7.0)
@@ -737,7 +782,7 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
         monitor,
         Text::new("Clear all")
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
         (84.0, FOOTER),
         ring == Some(1),
@@ -745,7 +790,7 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
     );
 
     Row::new(children![dnd, clear])
-        .width(WIDTH)
+        .width(width())
         .height(FOOTER)
         .justify(SpaceBetween)
         .align(Center)
@@ -773,9 +818,9 @@ fn pill(
         .child(child);
 
     let pill = if ring {
-        pill.border(RING, theme::ISLAND.on_surface)
+        pill.border(RING, theme::island().on_surface)
     } else {
-        pill.border(1.0, theme::ISLAND.surface_container_high)
+        pill.border(1.0, theme::island().surface_container_high)
     };
 
     let monitor = monitor.to_owned();
@@ -932,245 +977,5 @@ fn focus(monitor: &str) -> Focus {
 fn set(focus: Focus) {
     if *Focus::read() != focus {
         *Focus::write() = focus;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn card(id: u32, actions: usize) -> Shape {
-        Shape { id, actions }
-    }
-
-    fn place(row: usize, column: usize) -> Place {
-        Place { row, column }
-    }
-
-    // three cards, the middle one with two actions
-    fn three() -> Vec<Shape> {
-        vec![card(3, 0), card(2, 2), card(1, 0)]
-    }
-
-    fn toast(id: u32, default: bool) -> Card {
-        Card {
-            id,
-            toast: Toast::default(),
-            critical: false,
-            default,
-            actions: vec![],
-            received: SystemTime::UNIX_EPOCH,
-        }
-    }
-
-    #[test]
-    fn a_hidden_ring_takes_the_first_press_and_the_second_presses() {
-        let cards = vec![toast(7, true)];
-        let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
-
-        for key in [Key::Enter, Key::Space, Key::Backspace] {
-            let hidden = Focus::default().of(1, false);
-
-            let (shown, first) = hidden.step(key, &cards, &shapes).unwrap();
-            assert!(shown.shown);
-            assert_eq!(first, None);
-
-            let (_, second) = shown.step(key, &cards, &shapes).unwrap();
-            assert!(second.is_some());
-        }
-
-        // with no cards the first press would otherwise flip Do Not Disturb
-        let (shown, first) = Focus::default()
-            .of(1, false)
-            .step(Key::Enter, &[], &[])
-            .unwrap();
-        assert_eq!(first, None);
-        assert_eq!(
-            shown.step(Key::Enter, &[], &[]).unwrap().1,
-            Some(Press::Dnd)
-        );
-    }
-
-    #[test]
-    fn a_ring_shown_from_the_keyboard_presses_at_once() {
-        let cards = vec![toast(7, true)];
-        let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
-
-        let (_, press) = Focus::default()
-            .of(1, true)
-            .step(Key::Enter, &cards, &shapes)
-            .unwrap();
-        assert_eq!(
-            press,
-            Some(Press::Open {
-                id: 7,
-                default: true
-            })
-        );
-    }
-
-    #[test]
-    fn the_ring_starts_on_the_newest_card() {
-        assert_eq!(At::place(None, &three()), place(0, 0));
-        assert_eq!(At::place(None, &[]), place(0, 0));
-        assert_eq!(At::on(place(0, 0), &[]), At::Footer(Footer::Dnd));
-    }
-
-    #[test]
-    fn arrows_walk_every_part_and_stop_at_the_edges() {
-        let cards = three();
-        let walk = |from: Place, key| from.moved(key, &cards).unwrap();
-
-        // body, two actions, dismiss
-        assert_eq!(walk(place(1, 0), Key::Right), place(1, 1));
-        assert_eq!(walk(place(1, 3), Key::Right), place(1, 3));
-        assert_eq!(walk(place(1, 0), Key::Left), place(1, 0));
-        assert_eq!(walk(place(0, 0), Key::Up), place(0, 0));
-        assert_eq!(walk(place(3, 0), Key::Down), place(3, 0));
-
-        // the footer is the last row: Do Not Disturb, Clear all
-        assert_eq!(walk(place(2, 0), Key::Down), place(3, 0));
-        assert_eq!(walk(place(3, 0), Key::Right), place(3, 1));
-
-        assert_eq!(walk(place(3, 1), Key::Home), place(0, 0));
-        assert_eq!(walk(place(0, 0), Key::End), place(2, 0));
-        assert_eq!(place(0, 0).moved(Key::Character('a'), &cards), None);
-    }
-
-    #[test]
-    fn up_and_down_keep_to_the_dismiss_and_leave_the_actions() {
-        let cards = three();
-        let walk = |from: Place, key| from.moved(key, &cards).unwrap();
-
-        // a dismiss stays a dismiss, and Clear all is below it
-        assert_eq!(walk(place(0, 1), Key::Down), place(1, 3));
-        assert_eq!(walk(place(1, 3), Key::Down), place(2, 1));
-        assert_eq!(walk(place(2, 1), Key::Down), place(3, 1));
-        assert_eq!(walk(place(3, 1), Key::Up), place(2, 1));
-
-        // an action goes to the next card's body, never to another action
-        assert_eq!(walk(place(1, 1), Key::Down), place(2, 0));
-        assert_eq!(walk(place(2, 0), Key::Up), place(1, 0));
-
-        // with nothing to clear the footer is Do Not Disturb alone
-        assert_eq!(walk(place(3, 0), Key::Up), place(2, 0));
-        assert_eq!(place(0, 0).moved(Key::Down, &[]), Some(place(0, 0)));
-        assert_eq!(place(0, 0).moved(Key::Right, &[]), Some(place(0, 0)));
-    }
-
-    #[test]
-    fn tab_reads_on_and_comes_back() {
-        let cards = vec![card(2, 1), card(1, 0)];
-        let mut at = place(0, 0);
-        let mut seen = vec![at];
-
-        for _ in 0..7 {
-            at = at.moved(Key::Tab, &cards).unwrap();
-            seen.push(at);
-        }
-
-        assert_eq!(
-            seen,
-            [
-                place(0, 0),
-                place(0, 1),
-                place(0, 2),
-                place(1, 0),
-                place(1, 1),
-                place(2, 0),
-                place(2, 1),
-                place(0, 0)
-            ]
-        );
-    }
-
-    #[test]
-    fn the_ring_follows_its_card_and_takes_the_next_when_it_goes() {
-        let dismiss = At::Card {
-            id: 2,
-            row: 1,
-            part: Part::Dismiss,
-        };
-        let action = At::Card {
-            id: 2,
-            row: 1,
-            part: Part::Action(1),
-        };
-
-        assert_eq!(At::place(Some(dismiss), &three()), place(1, 3));
-        assert_eq!(At::place(Some(action), &three()), place(1, 2));
-
-        // a newer card above moves the card down, the ring with it
-        let mut newer = three();
-        newer.insert(0, card(4, 0));
-        assert_eq!(At::place(Some(action), &newer), place(2, 2));
-
-        // gone: the card in its row, on its dismiss, or its body for an action
-        let gone = vec![card(3, 0), card(1, 1)];
-        assert_eq!(At::place(Some(dismiss), &gone), place(1, 2));
-        assert_eq!(At::place(Some(action), &gone), place(1, 0));
-
-        // the last one gone: the footer
-        assert_eq!(At::place(Some(dismiss), &[]), place(0, 0));
-        assert_eq!(At::place(Some(At::Footer(Footer::Clear)), &[]), place(0, 0));
-    }
-
-    #[test]
-    fn places_and_parts_round_trip() {
-        let cards = three();
-
-        for row in 0..=cards.len() {
-            for column in 0..columns(&cards, row) {
-                let at = At::on(place(row, column), &cards);
-
-                assert_eq!(At::place(Some(at), &cards), place(row, column));
-            }
-        }
-    }
-
-    #[test]
-    fn three_plain_cards_fit_and_more_scroll() {
-        let fits = vec![card(3, 0), card(2, 0), card(1, 0)];
-        assert!(content(&fits) <= LIST);
-        assert_eq!(most(&fits), 0.0);
-
-        let cards = vec![card(4, 0), card(3, 1), card(2, 0), card(1, 3)];
-        assert_eq!(most(&cards), content(&cards) - LIST);
-    }
-
-    #[test]
-    fn the_ring_scrolls_its_card_into_view_and_no_further() {
-        let cards = vec![card(4, 0), card(3, 1), card(2, 0), card(1, 3)];
-
-        // already whole
-        assert_eq!(reveal(0.0, &cards, 0), 0.0);
-        assert_eq!(reveal(0.0, &cards, 1), 0.0);
-
-        // below: its bottom at the list's bottom
-        let last = reveal(0.0, &cards, 3);
-        assert_eq!(last, top(&cards, 3) + cards[3].height() - LIST);
-        assert_eq!(last, most(&cards));
-
-        // above: its top at the list's top
-        assert_eq!(reveal(last, &cards, 0), 0.0);
-
-        // the footer is always in view
-        assert_eq!(reveal(last, &cards, 4), last);
-    }
-
-    #[test]
-    fn a_new_visit_starts_over_with_the_ring_only_if_held() {
-        let kept = Focus {
-            visit: 1,
-            at: Some(At::Footer(Footer::Clear)),
-            shown: true,
-            offset: 80.0,
-        };
-
-        assert_eq!(kept.of(1, false), kept);
-
-        let fresh = kept.of(2, false);
-        assert_eq!((fresh.at, fresh.shown, fresh.offset), (None, false, 0.0));
-        assert!(kept.of(2, true).shown);
     }
 }

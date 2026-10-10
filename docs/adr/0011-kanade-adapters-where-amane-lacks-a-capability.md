@@ -22,11 +22,11 @@ When the pinned Amane lacks a capability a Module needs, Kanade builds an adapte
 
 1. **D-Bus through Amane's `Bus`**, when the service speaks D-Bus and `Bus` carries what it needs.
 2. **An external tool** from the package that owns the capability: `pw-dump`, `pw-metadata` and `wpctl` for audio, `wl-paste` and `wl-copy` for the clipboard, `systemd-inhibit` for idle inhibit.
-3. **A normal Rust crate**, when neither of the above is sound and the crate deepens Kanade. Never a Wayland or render crate. The tray's watcher and host use zbus, which Amane already builds: an item that registers with only its object path, as libappindicator's do, lives at its caller's bus name, which `Bus` does not give.
+3. **A normal Rust crate**, when neither of the above is sound and the crate deepens Kanade. Never a Wayland or render crate (amended by [ADR 0020](0020-liquid-glass-over-its-own-connection.md): `crates/glass` captures the screen for liquid glass). The tray's watcher and host use zbus, which Amane already builds: an item that registers with only its object path, as libappindicator's do, lives at its caller's bus name, which `Bus` does not give.
 
 Every adapter keeps these rules:
 
-- **The Wayland boundary holds.** No Wayland client outside `src/doctor/`, enforced by `src/boundary.rs`. A capability reachable only through a Wayland protocol, like wlr data-control for the clipboard, goes through an external tool that speaks it.
+- **The Wayland boundary holds.** No Wayland client outside `src/doctor/`, enforced by `src/boundary.rs`, and the crates with a connection of their own (ADR 0025, 0028). A capability reachable only through a Wayland protocol, like wlr data-control for the clipboard, goes through an external tool that speaks it.
 - **External semantics stop at the adapter.** It hands the rest of Kanade Kanade types, through a Service or `Island::write()`. Tool output, D-Bus paths and PipeWire ids go no further. `island/` stays unaware of it.
 - **No idle cost.** It wakes on announcements, not a timer (ADR 0004).
 - **A child process's lifetime follows its role.** Every one dies with Kanade (`setpriv --pdeathsig KILL`) and stays in the foreground, so the kernel can kill it.

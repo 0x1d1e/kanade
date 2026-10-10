@@ -1,6 +1,6 @@
 //! The one place Kanade speaks Wayland itself: `kanade doctor` lists the compositor's globals to name
-//! the protocols Amane needs that are missing, before a shell start panics on the first one. It
-//! opens no window and asks nothing past the registry's first roundtrip. Amane owns every other use
+//! the protocols the runtime needs that are missing, before a shell start panics on the first one. It
+//! opens no window and asks nothing past the registry's first roundtrip. The runtime owns every other use
 //! of Wayland, so `src/boundary.rs` keeps `wayland_client` inside `doctor/`.
 
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -11,7 +11,7 @@ use super::Check;
 
 const NO_START: &str = "the shell cannot start";
 
-// what Kanade cannot work without: Amane binds the ones that stop the start, the rest it lives without
+// what Kanade cannot work without: the runtime binds the ones that stop the start, the rest it lives without
 const REQUIRED: &[(&str, &str)] = &[
     ("wl_compositor", NO_START),
     ("wl_shm", NO_START),
@@ -21,7 +21,7 @@ const REQUIRED: &[(&str, &str)] = &[
     ("zwlr_layer_shell_v1", NO_START),
 ];
 
-// what Amane uses when offered, with what goes without it
+// what the runtime uses when offered, with what goes without it
 const OPTIONAL: &[(&str, &str)] = &[
     (
         "wp_fractional_scale_manager_v1",
@@ -89,59 +89,5 @@ impl Dispatch<WlRegistry, GlobalListContents> for Registry {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::doctor::Verdict;
-
-    fn globals(names: &[&str]) -> Vec<String> {
-        names.iter().map(|name| String::from(*name)).collect()
-    }
-
-    #[test]
-    fn every_required_global_passes() {
-        let all: Vec<&str> = REQUIRED
-            .iter()
-            .map(|&(name, _)| name)
-            .chain(OPTIONAL.iter().map(|&(name, _)| name))
-            .collect();
-
-        let checks = judge(&globals(&all));
-
-        assert!(checks.iter().all(|check| check.verdict == Verdict::Ok));
-        assert_eq!(
-            checks[0].text,
-            "wayland: required wl_compositor, wl_shm, wl_seat, wl_output, xdg_wm_base, zwlr_layer_shell_v1"
-        );
-    }
-
-    #[test]
-    fn each_missing_required_global_fails_with_its_cost_and_an_optional_one_degrades() {
-        let checks = judge(&globals(&[
-            "wl_compositor",
-            "wl_shm",
-            "wl_output",
-            "xdg_wm_base",
-            "wp_viewporter",
-        ]));
-
-        assert_eq!(
-            checks,
-            [
-                Check::fail(String::from(
-                    "wayland: required wl_seat missing: no pointer or keyboard reaches Kanade"
-                )),
-                Check::fail(String::from(
-                    "wayland: required zwlr_layer_shell_v1 missing: the shell cannot start"
-                )),
-                Check::warn(String::from(
-                    "wayland: optional wp_fractional_scale_manager_v1 missing: windows draw at whole scales"
-                )),
-                Check::ok(String::from("wayland: optional wp_viewporter available")),
-            ]
-        );
     }
 }

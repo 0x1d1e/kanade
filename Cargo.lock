@@ -28,27 +28,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "amane"
-version = "0.1.1"
-source = "git+https://github.com/MystiaFin/amane?rev=6ace43e5c69cd4b39bb06b28c20fc4b883422519#6ace43e5c69cd4b39bb06b28c20fc4b883422519"
-dependencies = [
- "fontconfig",
- "inotify",
- "libpulse-binding",
- "png",
- "resvg",
- "serde_json",
- "smithay-client-toolkit",
- "ttf-parser",
- "vello",
- "wayland-backend",
- "wayland-client",
- "wgpu",
- "zbus",
- "zune-jpeg",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -295,6 +274,12 @@ dependencies = [
  "quote",
  "syn 3.0.6",
 ]
+
+[[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "bytes"
@@ -731,6 +716,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "weezl",
+]
+
+[[package]]
 name = "gl_generator"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -915,6 +909,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
+]
+
+[[package]]
 name = "imagesize"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -999,25 +1003,64 @@ dependencies = [
 name = "kanade"
 version = "0.1.0"
 dependencies = [
- "amane",
  "base64",
  "calcard",
  "chrono",
+ "crc32fast",
  "emojis",
  "enumflags2",
  "fontconfig",
+ "gif",
+ "image-webp",
  "inotify",
+ "kanade-lock",
+ "kanade-runtime",
+ "libpulse-binding",
  "percent-encoding",
+ "png",
  "proc-macro2",
+ "resvg",
  "ring",
  "rustybuzz",
  "serde",
  "serde_json",
+ "simd-adler32",
  "syn 2.0.119",
  "toml",
  "ureq",
  "wayland-client",
  "zbus",
+ "zeroize",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "kanade-lock"
+version = "0.1.0"
+dependencies = [
+ "rustybuzz",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+ "wayland-protocols",
+ "zeroize",
+]
+
+[[package]]
+name = "kanade-runtime"
+version = "0.1.0"
+dependencies = [
+ "fontconfig",
+ "png",
+ "resvg",
+ "smithay-client-toolkit",
+ "ttf-parser",
+ "vello",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols-wlr",
+ "wgpu",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1535,6 +1578,12 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
@@ -2535,6 +2584,12 @@ checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
 ]
+
+[[package]]
+name = "weezl"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "wgpu"

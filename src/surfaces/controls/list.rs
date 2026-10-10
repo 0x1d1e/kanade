@@ -2,7 +2,7 @@
 //! with a back chevron, a title and a radio's switch, then rows that scroll under it, or what it
 //! means while there are none.
 
-use amane::{
+use kanade_runtime::{
     Center, Column, Cursor, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Stack, Start,
     Text, Widget, children,
 };
@@ -45,6 +45,16 @@ const WHEEL: f32 = 40.0;
 // how far `count` rows can scroll: none while they fit
 pub fn most(count: usize) -> f32 {
     (content(count) - LIST).max(0.0)
+}
+
+/*
+ * how tall a list Surface of `count` rows under a header asks the body to be, a state for none; the
+ * island caps it at the Controls' height (ADR 0030)
+ */
+pub fn asks(count: usize) -> f32 {
+    let rows = if count == 0 { LIST } else { content(count) };
+
+    2.0 * INSET + HEADER + GAP + rows
 }
 
 fn content(count: usize) -> f32 {
@@ -94,7 +104,7 @@ pub fn header(title: &str, radio: Option<Radio>, ring: Option<&At>) -> Row {
         back(ring == Some(&At::Back)),
         Text::new(title)
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
     ])
     .gap(8.0)
@@ -132,14 +142,14 @@ pub fn back(ring: bool) -> Rectangle {
 fn toggle(radio: Radio, ring: bool) -> Rectangle {
     let (track, knob, at) = if radio == Radio::On {
         (
-            theme::ISLAND.primary,
-            theme::ISLAND.on_primary,
+            theme::island().primary,
+            theme::island().on_primary,
             TOGGLE - TARGET,
         )
     } else {
         (
-            theme::ISLAND.surface_container_high,
-            theme::ISLAND.on_surface_variant,
+            theme::island().surface_container_high,
+            theme::island().on_surface_variant,
             0.0,
         )
     };
@@ -183,10 +193,10 @@ fn toggle(radio: Radio, ring: bool) -> Rectangle {
 // what it means, in the middle of where the rows go
 pub fn state(icon: Icon, title: &str, detail: &str) -> Rectangle {
     let mut lines = children![
-        icon.on(28.0, theme::ISLAND.on_surface_variant),
+        icon.on(28.0, theme::island().on_surface_variant),
         Text::new(title)
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
     ];
 
@@ -194,7 +204,7 @@ pub fn state(icon: Icon, title: &str, detail: &str) -> Rectangle {
         lines.push(Box::new(
             Text::new(detail)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM),
         ));
     }
@@ -255,7 +265,7 @@ pub fn scrolling(
                 .width(3.0)
                 .height(length)
                 .radius(radius::HAIRLINE)
-                .fill(theme::ISLAND.surface_container_high)
+                .fill(theme::island().surface_container_high)
                 .translate(WIDTH + 7.0, at),
         ));
     }
@@ -278,7 +288,7 @@ pub fn row(
     let mut lines = children![
         Text::new(name)
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide()
     ];
@@ -290,7 +300,7 @@ pub fn row(
                 .color(if error {
                     theme::SEMANTIC.critical
                 } else {
-                    theme::ISLAND.on_surface_variant
+                    theme::island().on_surface_variant
                 })
                 .weight(theme::text::MEDIUM)
                 .elide(),
@@ -335,7 +345,7 @@ pub fn frame(content: Row, ring: bool) -> Rectangle {
         .child(content);
 
     if ring {
-        row.fill(theme::ISLAND.surface_container).border_if(true)
+        row.fill(theme::island().surface_container).border_if(true)
     } else {
         row
     }
@@ -345,7 +355,7 @@ pub fn frame(content: Row, ring: bool) -> Rectangle {
 pub fn label(text: &str) -> Text {
     Text::new(text)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::ISLAND.on_surface)
+        .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD)
 }
 
@@ -365,9 +375,9 @@ pub fn pill(child: Text, width: f32, ring: bool, act: Option<Act>) -> Rectangle 
         .child(child);
 
     let pill = if ring {
-        pill.border(RING, theme::ISLAND.on_surface)
+        pill.border(RING, theme::island().on_surface)
     } else {
-        pill.border(1.0, theme::ISLAND.surface_container_high)
+        pill.border(1.0, theme::island().surface_container_high)
     };
 
     match act {
@@ -377,39 +387,5 @@ pub fn pill(child: Text, width: f32, ring: bool, act: Option<Act>) -> Rectangle 
                 super::click(act.clone());
             })),
         None => pill.opacity(DISABLED),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn four_rows_fit_and_more_scroll() {
-        assert_eq!(most(ROWS), 0.0);
-        assert!(most(ROWS + 1) > 0.0);
-    }
-
-    #[test]
-    fn revealing_a_row_scrolls_the_least() {
-        // already showing, nothing moves
-        assert_eq!(reveal(0.0, 1, 10), 0.0);
-
-        // below, it comes up to the bottom edge
-        assert_eq!(reveal(0.0, ROWS, 10), top(ROWS) + ROW - LIST);
-
-        // above, it comes down to the top edge
-        assert_eq!(reveal(most(10), 0, 10), 0.0);
-    }
-
-    #[test]
-    fn the_list_follows_the_ringed_row() {
-        // the ring on the eighth, out of sight, brings it up
-        assert_eq!(scrolled(0.0, 10, Some(7)), reveal(0.0, 7, 10));
-
-        // with no ring on a row, the list stays where it was, as far as it can
-        assert_eq!(scrolled(40.0, 10, None), 40.0);
-        assert_eq!(scrolled(1e6, 10, None), most(10));
-        assert_eq!(scrolled(40.0, 2, Some(1)), 0.0);
     }
 }

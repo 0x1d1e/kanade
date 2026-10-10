@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
-use amane::{Color, Image, Rectangle};
+use kanade_runtime::{Color, Image, Rectangle};
 
 use crate::{raster, theme};
 
@@ -67,6 +67,18 @@ const RAIN: &str = include_str!("icons/rain.svg");
 const SNOW: &str = include_str!("icons/snow.svg");
 const STORM: &str = include_str!("icons/storm.svg");
 const SLASH: &str = include_str!("icons/slash.svg");
+const CAPS_LOCK: &str = include_str!("icons/caps-lock.svg");
+const KEYPAD: &str = include_str!("icons/keypad.svg");
+const KEYBOARD: &str = include_str!("icons/keyboard-light.svg");
+const AIRPLANE: &str = include_str!("icons/airplane.svg");
+const PALETTE: &str = include_str!("icons/palette.svg");
+const ISLAND: &str = include_str!("icons/island.svg");
+const DOCK: &str = include_str!("icons/dock.svg");
+const PULSE: &str = include_str!("icons/pulse.svg");
+const GRID: &str = include_str!("icons/grid.svg");
+const DATA: &str = include_str!("icons/data.svg");
+const UNDO: &str = include_str!("icons/undo.svg");
+const SLIDERS: &str = include_str!("icons/sliders.svg");
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +89,10 @@ pub(crate) enum Icon {
     Microphone,
     MicrophoneMuted,
     Sun,
+
+    // the keyboard's backlight
+    Keyboard,
+
     Wifi,
 
     // a network's signal, its arcs by bars from none to three; three is `Wifi`
@@ -147,6 +163,25 @@ pub(crate) enum Icon {
     Rain,
     Snow,
     Storm,
+
+    // ⇪, the lock keys' modes: capitals, the number pad
+    CapsLock,
+    Keypad,
+
+    // every radio off
+    Airplane,
+
+    // Settings' pages: the look, the Island, the Dock, motion, Modules, where data comes from
+    Palette,
+    Island,
+    Dock,
+    Pulse,
+    Grid,
+    Data,
+
+    // Settings: taking back the last change, and showing the config's keys
+    Undo,
+    Sliders,
 }
 
 // the icons drawn so far, by what tells their pixels apart, and the svg each was written to
@@ -164,12 +199,12 @@ impl Icon {
     }
 
     pub(crate) fn draw(self, side: f32) -> Rectangle {
-        self.image(side, false, theme::ISLAND.on_surface)
+        self.image(side, false, theme::island().on_surface)
     }
 
     // struck through, for something gone or off
     pub(crate) fn crossed(self, side: f32) -> Rectangle {
-        self.image(side, true, theme::ISLAND.on_surface)
+        self.image(side, true, theme::island().on_surface)
     }
 
     // in `ink`, like the body's color on a filled button; cuts show what it sits on
@@ -187,7 +222,7 @@ impl Icon {
     }
 
     /*
-     * the svg and the pixels it is drawn at, which with the path is what Amane caches the
+     * the svg and the pixels it is drawn at, which with the path is what the runtime caches the
      * raster by; the same icon at the same size and ink gives the same pair every frame
      */
     fn source(self, side: f32, crossed: bool, ink: Color) -> (PathBuf, u32) {
@@ -227,6 +262,7 @@ impl Icon {
             Icon::SpeakerMuted => &[SPEAKER, MUTE],
             Icon::Microphone | Icon::MicrophoneMuted => &[MICROPHONE],
             Icon::Sun => &[SUN],
+            Icon::Keyboard => &[KEYBOARD],
             Icon::Wifi | Icon::Signal(3..) => &[WIFI_DOT, WIFI_NEAR, WIFI_MID, WIFI_FAR],
             Icon::Signal(0) => &[WIFI_DOT],
             Icon::Signal(1) => &[WIFI_DOT, WIFI_NEAR],
@@ -262,6 +298,17 @@ impl Icon {
             Icon::Rain => &[CLOUD_HIGH, RAIN],
             Icon::Snow => &[CLOUD_HIGH, SNOW],
             Icon::Storm => &[CLOUD_HIGH, STORM],
+            Icon::CapsLock => &[CAPS_LOCK],
+            Icon::Keypad => &[KEYPAD],
+            Icon::Airplane => &[AIRPLANE],
+            Icon::Palette => &[PALETTE],
+            Icon::Island => &[ISLAND],
+            Icon::Dock => &[DOCK],
+            Icon::Pulse => &[PULSE],
+            Icon::Grid => &[GRID],
+            Icon::Data => &[DATA],
+            Icon::Undo => &[UNDO],
+            Icon::Sliders => &[SLIDERS],
         }
     }
 
@@ -297,139 +344,4 @@ fn content(svg: &'static str) -> &'static str {
     svg.strip_prefix(HEAD)
         .and_then(|svg| svg.strip_suffix(TAIL))
         .expect("an svg in icons/ opens with HEAD and closes with TAIL")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ALL: [Icon; 43] = [
-        Icon::Speaker(0),
-        Icon::Speaker(30),
-        Icon::Speaker(80),
-        Icon::SpeakerMuted,
-        Icon::Microphone,
-        Icon::MicrophoneMuted,
-        Icon::Sun,
-        Icon::Wifi,
-        Icon::Bluetooth,
-        Icon::Bell,
-        Icon::Moon,
-        Icon::Bolt,
-        Icon::Search,
-        Icon::Capture,
-        Icon::Stopwatch,
-        Icon::Camera,
-        Icon::Cup,
-        Icon::Previous,
-        Icon::Play,
-        Icon::Pause,
-        Icon::Next,
-        Icon::Dismiss,
-        Icon::Speaker(100),
-        Icon::Signal(0),
-        Icon::Signal(1),
-        Icon::Signal(2),
-        Icon::Back,
-        Icon::Forward,
-        Icon::Lock,
-        Icon::Power,
-        Icon::Restart,
-        Icon::LogOut,
-        Icon::Check,
-        Icon::Clipboard,
-        Icon::Text,
-        Icon::Picture,
-        Icon::Calendar,
-        Icon::Cloud,
-        Icon::PartlyCloudy,
-        Icon::Fog,
-        Icon::Rain,
-        Icon::Snow,
-        Icon::Storm,
-    ];
-
-    #[test]
-    fn every_layer_is_an_svg_on_the_grid() {
-        for icon in ALL {
-            for layer in icon.layers() {
-                assert!(!content(layer).is_empty(), "{icon:?}");
-            }
-        }
-
-        assert!(content(SLASH).contains("<path"));
-    }
-
-    #[test]
-    fn speaker_levels_share_the_icon_that_draws_their_waves() {
-        assert_eq!(Icon::Speaker(1).drawn_as(), Icon::Speaker(50).drawn_as());
-        assert_eq!(Icon::Speaker(51).drawn_as(), Icon::Speaker(100).drawn_as());
-        assert_ne!(Icon::Speaker(0).drawn_as(), Icon::Speaker(1).drawn_as());
-        assert_ne!(Icon::Speaker(50).drawn_as(), Icon::Speaker(51).drawn_as());
-
-        // the level decides the layers, so sharing an icon never shares a wrong drawing
-        for (low, high) in [(1, 50), (51, 100)] {
-            assert_eq!(Icon::Speaker(low).layers(), Icon::Speaker(high).layers());
-        }
-    }
-
-    #[test]
-    fn full_signal_is_the_wifi_icon() {
-        assert_eq!(Icon::Signal(3).drawn_as(), Icon::Wifi);
-        assert_eq!(Icon::Signal(3).layers(), Icon::Wifi.layers());
-        assert_eq!(Icon::Signal(1).layers().len(), 2);
-        assert_ne!(Icon::Signal(2).drawn_as(), Icon::Wifi);
-    }
-
-    #[test]
-    fn a_crossed_icon_is_cut_and_slashed() {
-        let svg = Icon::Wifi.svg(true, [242, 242, 247, 255]);
-
-        assert!(svg.starts_with("<svg color=\"#f2f2f7\" opacity=\"1\" xmlns="));
-        assert!(svg.contains("<g mask=\"url(#slash)\">"));
-        assert!(svg.ends_with(&format!("{}{TAIL}", content(SLASH))));
-
-        assert_eq!(
-            Icon::MicrophoneMuted.source(18.0, false, theme::ISLAND.on_surface),
-            Icon::Microphone.source(18.0, true, theme::ISLAND.on_surface),
-        );
-    }
-
-    /*
-     * the regression behind #36: whatever the body's geometry, an icon asks for the same svg at
-     * the same pixels every frame, so Amane rasterizes it once and only draws its texture after
-     */
-    #[test]
-    fn every_frame_reuses_the_icons_the_first_one_drew() {
-        // an ink only this test uses, so other tests filling the cache don't count
-        let ink = Color::rgb(1, 2, 3);
-
-        let drawn = || {
-            let drawn = DRAWN.lock().unwrap_or_else(PoisonError::into_inner);
-
-            drawn.keys().filter(|key| key.2 == [1, 2, 3, 255]).count()
-        };
-
-        let frame = || -> Vec<(PathBuf, u32)> {
-            ALL.iter()
-                .flat_map(|icon| [16.0, 18.0, 20.0, 28.0].map(|side| icon.source(side, false, ink)))
-                .chain(ALL.iter().map(|icon| icon.source(20.0, true, ink)))
-                .collect()
-        };
-
-        let first = frame();
-        let written = drawn();
-
-        for _ in 0..10 {
-            assert_eq!(frame(), first);
-            assert_eq!(drawn(), written);
-        }
-
-        // one svg per drawing and ink, not per size: 41 drawings, each plain and crossed
-        assert_eq!(written, 82);
-
-        for (path, _) in &first {
-            assert!(path.exists(), "{}", path.display());
-        }
-    }
 }

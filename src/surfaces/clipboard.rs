@@ -3,15 +3,16 @@
 //! searches, the arrow keys move a ring over each entry, its delete and Clear all, and Enter
 //! presses what the ring is on. Pressing an entry copies it and closes the island once it is on the
 //! clipboard, or says it was not copied. It says when the history is empty and when nothing matches. Text shows as its first words; an image only as its
-//! kind and size, since Amane draws images from files and the history never leaves memory.
+//! kind and size, since the runtime draws images from files and the history never leaves memory.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Instant;
 
-use amane::{
-    Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, Service, Size,
-    SpaceBetween, Stack, Start, Text, Widget, children,
+use kanade_runtime::service::{self, Service};
+use kanade_runtime::{
+    Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, Size, SpaceBetween,
+    Stack, Start, Text, Widget, children,
 };
 
 use crate::icon::Icon;
@@ -25,20 +26,30 @@ use crate::view;
 
 use super::{RING, Ring};
 
-// the content's width, which every row fills
-const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
+// the content's width, which every row fills, as wide as the largest body (`island.width`)
+fn width() -> f32 {
+    view::largest().width - 2.0 * INSET
+}
 
 const FIELD: f32 = 44.0;
 const FIELD_INSET: f32 = 16.0;
 const FOOTER: f32 = 28.0;
 const GAP: f32 = 12.0;
 
-// what the rows scroll in, `ROWS` at a time
-const LIST: f32 = geometry::EXPANDED_MAX.height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP;
+// what the rows scroll in, as tall as the largest body (`island.height`) leaves
+fn room() -> f32 {
+    view::largest().height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP
+}
+
+// what a state, as an empty history, takes of the list
+const STATE: f32 = 120.0;
+
+// `ROWS` at a time in the least largest body, more in a taller one
+const LEAST_LIST: f32 = geometry::CALENDAR.height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP;
 
 const ROWS: usize = 4;
 const ROW_GAP: f32 = 6.0;
-const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
+const ROW: f32 = (LEAST_LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 const ROW_INSET: f32 = 8.0;
 
 const ICON: f32 = 28.0;
@@ -236,11 +247,56 @@ impl Search {
 
 // how far `count` rows can scroll: none while they fit
 fn most(count: usize) -> f32 {
-    (content(count) - LIST).max(0.0)
+    (content(count) - room()).max(0.0)
 }
 
 fn content(count: usize) -> f32 {
     count as f32 * ROW + count.saturating_sub(1) as f32 * ROW_GAP
+}
+
+// how tall `count` entries found ask the body to be, or a state for none; the island caps it (ADR 0030)
+fn asks(count: usize) -> f32 {
+    let list = if count == 0 { STATE } else { content(count) };
+
+    2.0 * INSET + FIELD + list + FOOTER + 2.0 * GAP
+}
+
+// the list as tall as its rows, scrolling once they reach past the room
+fn listed(count: usize) -> f32 {
+    content(count).min(room())
+}
+
+/*
+ * tells the island how tall the Clipboard asks to be: a new visit lists the whole history, the one
+ * open what its query found. After each change of the history or the search, never from a view
+ */
+pub fn fit() {
+    let _ordered = super::fitting();
+    let visit = IslandService::read().visit();
+
+    let (fresh, open) = {
+        let entries = Clipboard::read().entries().to_vec();
+        let query = Search::read().of(visit).query;
+
+        (
+            asks(found(&entries, "").len()),
+            asks(found(&entries, &query).len()),
+        )
+    };
+
+    IslandService::write().fit(
+        Surface::Clipboard,
+        fresh,
+        Some((visit, open)),
+        Instant::now(),
+    );
+}
+
+// at start: the body follows the history and the search from now on
+pub fn start() {
+    service::watch::<Clipboard>(fit);
+    service::watch::<Search>(fit);
+    fit();
 }
 
 fn top(row: usize) -> f32 {
@@ -251,14 +307,14 @@ fn top(row: usize) -> f32 {
 fn reveal(offset: f32, row: usize) -> f32 {
     let top = top(row);
 
-    offset.min(top).max(top + ROW - LIST)
+    offset.min(top).max(top + ROW - room())
 }
 
 // the rows any part of shows at `offset`, as a range; only these are built (#36)
 fn shown(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
     let first = (offset / step).floor() as usize;
-    let end = ((offset + LIST) / step).ceil() as usize;
+    let end = ((offset + room()) / step).ceil() as usize;
 
     (first.min(count), end.min(count))
 }
@@ -267,7 +323,7 @@ fn shown(offset: f32, count: usize) -> (usize, usize) {
 fn whole(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
     let first = (offset / step).ceil() as usize;
-    let last = ((offset + LIST + ROW_GAP) / step).floor() as usize;
+    let last = ((offset + room() + ROW_GAP) / step).floor() as usize;
 
     (
         first.min(count.saturating_sub(1)),
@@ -456,7 +512,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         Box::new(list(monitor, &found, &search))
     };
 
-    let shape = geometry::EXPANDED_MAX;
+    let shape = view::largest();
 
     Rectangle::new()
         .width(shape.width)
@@ -469,7 +525,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
                 list,
                 Box::new(footer(&search, found.len(), entries.len())),
             ])
-            .width(WIDTH)
+            .width(width())
             .gap(GAP),
         )
 }
@@ -479,12 +535,12 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
  * the field shows its end, where the typing is
  */
 fn field(query: &str) -> Rectangle {
-    let room = WIDTH - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
+    let room = width() - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
 
     let caret = Rectangle::new()
         .width(CARET)
         .height(QUERY + 4.0)
-        .fill(theme::ISLAND.on_surface);
+        .fill(theme::island().on_surface);
 
     let typed: Box<dyn Widget> = if query.is_empty() {
         Box::new(
@@ -492,7 +548,7 @@ fn field(query: &str) -> Rectangle {
                 caret,
                 Text::new("Search clipboard")
                     .size(QUERY)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM),
             ])
             .align(Center),
@@ -502,10 +558,10 @@ fn field(query: &str) -> Rectangle {
     };
 
     Rectangle::new()
-        .width(WIDTH)
+        .width(width())
         .height(FIELD)
         .radius(FIELD / 2.0)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right: FIELD_INSET,
@@ -515,7 +571,7 @@ fn field(query: &str) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::ISLAND.on_surface_variant))
+                Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
                     as Box<dyn Widget>,
                 typed,
             ])
@@ -529,7 +585,7 @@ fn tail(query: &str, width: f32) -> Text {
     let text = |shown: &str| {
         Text::new(shown)
             .size(QUERY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::MEDIUM)
     };
     let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
@@ -557,26 +613,26 @@ fn tail(query: &str, width: f32) -> Text {
 fn state(title: &str, detail: &str) -> Rectangle {
     let detail = Text::new(detail)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::ISLAND.on_surface_variant)
+        .color(theme::island().on_surface_variant)
         .weight(theme::text::MEDIUM);
 
     // centred while it fits, elided only when a long query does not, since elided text fills its
     // width
     let detail = match detail.width() {
-        Size::Fixed(natural) if natural <= WIDTH => detail,
+        Size::Fixed(natural) if natural <= width() => detail,
         _ => detail.elide(),
     };
 
     Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
+        .width(width())
+        .height(STATE.min(room()))
         .align_child(Center, Center)
         .child(
             Column::new(children![
                 Icon::Clipboard.draw(28.0),
                 Text::new(title)
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
                 detail,
             ])
@@ -603,18 +659,18 @@ fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
             })
             .collect(),
     )
-    .width(WIDTH)
+    .width(width())
     .gap(ROW_GAP);
 
     let viewport = Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
+        .width(width())
+        .height(listed(found.len()))
         .clip()
         .align_child(Start, Start)
         .on_scroll(|Scroll { y, .. }| wheel(y))
         .child(
             Rectangle::new()
-                .width(WIDTH)
+                .width(width())
                 .height(content(end - first))
                 .align_child(Start, Start)
                 .translate(0.0, top(first) - search.offset)
@@ -626,20 +682,22 @@ fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
     let most = most(found.len());
 
     if most > 0.0 {
-        let length = (LIST * LIST / content(found.len())).max(TARGET);
-        let at = (LIST - length) * search.offset / most;
+        let length = (room() * room() / content(found.len())).max(TARGET);
+        let at = (room() - length) * search.offset / most;
 
         layers.push(Box::new(
             Rectangle::new()
                 .width(3.0)
                 .height(length)
                 .radius(radius::HAIRLINE)
-                .fill(theme::ISLAND.surface_container_high)
-                .translate(WIDTH + 7.0, at),
+                .fill(theme::island().surface_container_high)
+                .translate(width() + 7.0, at),
         ));
     }
 
-    Stack::new(layers).width(WIDTH).height(LIST)
+    Stack::new(layers)
+        .width(width())
+        .height(listed(found.len()))
 }
 
 /*
@@ -657,21 +715,21 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
     let title = Text::new(&summary.title)
         .size(theme::text::BODY)
         .color(if summary.named {
-            theme::ISLAND.on_surface_variant
+            theme::island().on_surface_variant
         } else {
-            theme::ISLAND.on_surface
+            theme::island().on_surface
         })
         .weight(theme::text::SEMIBOLD)
         .elide();
 
     let detail = Text::new(&summary.detail)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::ISLAND.on_surface_variant)
+        .color(theme::island().on_surface_variant)
         .weight(theme::text::MEDIUM)
         .elide();
 
     let row = Rectangle::new()
-        .width(WIDTH)
+        .width(width())
         .height(ROW)
         .radius(radius::ROW)
         .padding(Padding {
@@ -688,7 +746,7 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
                     .width(ICON)
                     .height(ICON)
                     .align_child(Center, Center)
-                    .child(kind.on(20.0, theme::ISLAND.on_surface_variant)),
+                    .child(kind.on(20.0, theme::island().on_surface_variant)),
                 Column::new(children![title, detail]).width(Parent).gap(1.0),
                 delete(entry.id, ring == Some(true)),
             ])
@@ -698,7 +756,7 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
         );
 
     let row = if ring.is_some() {
-        row.fill(theme::ISLAND.surface_container)
+        row.fill(theme::island().surface_container)
     } else {
         row
     };
@@ -721,7 +779,7 @@ fn delete(id: u64, ring: bool) -> Rectangle {
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
         .on_click(super::on_left(move || clipboard::remove(id)))
-        .child(Icon::Dismiss.on(20.0, theme::ISLAND.on_surface_variant))
+        .child(Icon::Dismiss.on(20.0, theme::island().on_surface_variant))
         .border_if(ring)
 }
 
@@ -740,7 +798,7 @@ fn footer(search: &Search, found: usize, all: usize) -> Row {
 
     let label = Text::new("Clear all")
         .size(theme::text::LABEL_SMALL)
-        .color(theme::ISLAND.on_surface)
+        .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD);
 
     let pill = Rectangle::new()
@@ -751,9 +809,9 @@ fn footer(search: &Search, found: usize, all: usize) -> Row {
         .child(label);
 
     let pill = if search.clear {
-        pill.border(RING, theme::ISLAND.on_surface)
+        pill.border(RING, theme::island().on_surface)
     } else {
-        pill.border(1.0, theme::ISLAND.surface_container_high)
+        pill.border(1.0, theme::island().surface_container_high)
     };
 
     let pill = if all > 0 {
@@ -766,11 +824,11 @@ fn footer(search: &Search, found: usize, all: usize) -> Row {
     Row::new(children![
         Text::new(count)
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface_variant)
+            .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM),
         pill,
     ])
-    .width(WIDTH)
+    .width(width())
     .height(FOOTER)
     .justify(SpaceBetween)
     .align(Center)
@@ -892,273 +950,5 @@ fn wheel(lines: f32) {
 fn set(search: Search) {
     if *Search::read() != search {
         *Search::write() = search;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-
-    fn text(id: u64, text: &str) -> Entry {
-        Entry {
-            id,
-            content: Content::Text(text.into()),
-        }
-    }
-
-    fn image(id: u64, mime: &str, len: usize) -> Entry {
-        Entry {
-            id,
-            content: Content::Image {
-                mime: String::from(mime),
-                bytes: Arc::from(vec![0; len]),
-            },
-        }
-    }
-
-    // the keys in order, from a fresh search over `count` entries found in a history with any
-    fn after(keys: &[Key], count: usize, any: bool) -> Search {
-        keys.iter().fold(Search::default(), |search, &key| {
-            search.step(key, count, any).unwrap().0
-        })
-    }
-
-    #[test]
-    fn typing_edits_the_query_and_starts_at_the_top() {
-        let search = after(&[Key::Down, Key::Right, Key::Character('k')], 10, true);
-        assert_eq!(
-            (search.query.as_str(), search.selected, search.delete),
-            ("k", 0, false)
-        );
-
-        let search = after(
-            &[
-                Key::Character('a'),
-                Key::Space,
-                Key::Backspace,
-                Key::Backspace,
-            ],
-            10,
-            true,
-        );
-        assert_eq!(search.query, "");
-
-        // nothing left to erase is still the Surface's key, not the window's
-        assert!(search.step(Key::Backspace, 10, true).is_some());
-
-        for key in [Key::Escape, Key::Other] {
-            assert_eq!(Search::default().step(key, 10, true), None, "{key:?}");
-        }
-    }
-
-    #[test]
-    fn the_ring_moves_over_entries_their_delete_and_clear_all() {
-        let at = |search: &Search| (search.selected, search.delete, search.clear);
-
-        assert_eq!(
-            at(&after(&[Key::Down, Key::Right], 3, true)),
-            (1, true, false)
-        );
-        assert_eq!(
-            at(&after(&[Key::Right, Key::Left], 3, true)),
-            (0, false, false)
-        );
-
-        // past the last entry to Clear all and no further, then back up in the same column
-        let clear = after(&[Key::End, Key::Right, Key::Down, Key::Down], 3, true);
-        assert_eq!(at(&clear), (2, true, true));
-        assert_eq!(
-            at(&clear.clone().step(Key::Right, 3, true).unwrap().0),
-            (2, true, true)
-        );
-        assert_eq!(
-            at(&clear.step(Key::Up, 3, true).unwrap().0),
-            (2, true, false)
-        );
-
-        assert_eq!(
-            at(&after(&[Key::Down, Key::Home], 3, true)),
-            (0, false, false)
-        );
-
-        // Tab reads on: each entry, its delete, then Clear all and back to the first
-        let tabs = (0..7)
-            .scan(Search::default(), |search, _| {
-                *search = search.clone().step(Key::Tab, 3, true).unwrap().0;
-                Some(at(search))
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            tabs,
-            [
-                (0, true, false),
-                (1, false, false),
-                (1, true, false),
-                (2, false, false),
-                (2, true, false),
-                (2, false, true),
-                (0, false, false),
-            ]
-        );
-    }
-
-    #[test]
-    fn with_nothing_found_only_clear_all_is_reachable() {
-        let search = after(&[Key::Right], 0, true);
-        assert!(!search.delete);
-        assert!(!search.step(Key::Enter, 0, true).unwrap().1);
-
-        assert!(after(&[Key::Down], 0, true).clear);
-        assert!(after(&[Key::Tab], 0, true).clear);
-
-        // an empty history has nothing to clear
-        assert!(!after(&[Key::Down], 0, false).clear);
-        assert!(!after(&[Key::Tab], 0, false).clear);
-    }
-
-    #[test]
-    fn enter_presses_what_the_ring_is_on() {
-        let found = [text(9, "a"), text(4, "b")];
-        let press = |keys: &[Key]| {
-            let search = after(keys, 2, true);
-            let (search, presses) = search.step(Key::Enter, 2, true).unwrap();
-
-            presses.then(|| search.press(&found, true)).flatten()
-        };
-
-        assert_eq!(press(&[]), Some(Press::Copy(found[0].clone())));
-        assert_eq!(press(&[Key::Down]), Some(Press::Copy(found[1].clone())));
-        assert_eq!(press(&[Key::Down, Key::Right]), Some(Press::Remove(4)));
-        assert_eq!(press(&[Key::End, Key::Down]), Some(Press::Clear));
-    }
-
-    #[test]
-    fn a_deleted_entry_leaves_the_ring_on_the_next_or_the_last() {
-        let search = after(&[Key::End, Key::Right], 3, true);
-
-        // the last deleted: on the one before, still on its delete
-        let bounded = search.clone().bounded(2, true);
-        assert_eq!((bounded.selected, bounded.delete), (1, true));
-
-        // all of them: on nothing until there is something again
-        let cleared = search.bounded(0, false);
-        assert_eq!(
-            (cleared.selected, cleared.delete, cleared.clear),
-            (0, false, false)
-        );
-    }
-
-    #[test]
-    fn the_selection_scrolls_into_view() {
-        let mut search = Search::default();
-        for _ in 0..ROWS {
-            search = search.step(Key::Down, 20, true).unwrap().0;
-        }
-        assert_eq!(search.offset, top(ROWS) + ROW - LIST);
-
-        let search = search.step(Key::End, 20, true).unwrap().0;
-        assert_eq!(search.offset, most(20));
-
-        // Clear all is outside the list, so the rows stay where they were
-        let search = search.step(Key::Down, 20, true).unwrap().0;
-        assert_eq!((search.clear, search.offset), (true, most(20)));
-    }
-
-    #[test]
-    fn rows_fill_the_list() {
-        assert_eq!(content(ROWS), LIST);
-        assert_eq!(shown(0.0, 50), (0, ROWS));
-        const { assert!(ROW >= 40.0) };
-    }
-
-    #[test]
-    fn every_word_of_the_query_matches_in_any_case() {
-        let entry = text(1, "Hello, Wörld\nfrom Kanade");
-        let found = |query: &str| matches(&entry.content, query);
-
-        assert!(found("hello"));
-        assert!(found("KANADE hello"));
-        assert!(found("WÖRLD"), "beyond ASCII");
-        assert!(found("   "));
-        assert!(!found("hello there"));
-
-        let png = image(2, "image/png", 10);
-        assert!(matches(&png.content, "image"));
-        assert!(matches(&png.content, "PNG"));
-        assert!(!matches(&png.content, "jpeg"));
-        assert!(!matches(&png.content, "hello"));
-    }
-
-    #[test]
-    fn a_search_is_kept_until_the_query_or_history_changes() {
-        let ids = |found: Vec<Entry>| found.iter().map(|entry| entry.id).collect::<Vec<_>>();
-
-        // ids only this test uses, as the memo is shared
-        let mut history = vec![text(9001, "alpha"), text(9002, "beta")];
-        assert_eq!(ids(found(&history, "a")), [9001, 9002]);
-        assert_eq!(ids(found(&history, "alp")), [9001]);
-
-        history.insert(0, text(9003, "alpine"));
-        assert_eq!(ids(found(&history, "alp")), [9003, 9001]);
-
-        history.remove(1);
-        assert_eq!(ids(found(&history, "alp")), [9003]);
-    }
-
-    #[test]
-    fn a_row_says_what_an_entry_holds() {
-        let summary = summarize(&text(1, "  first\tline\n\nsecond  ").content);
-        assert_eq!(
-            summary,
-            Summary {
-                title: String::from("first line second"),
-                detail: String::from("3 lines"),
-                named: false,
-            }
-        );
-
-        assert_eq!(summarize(&text(1, "x").content).detail, "1 character");
-        assert_eq!(summarize(&text(1, "héllo").content).detail, "5 characters");
-
-        let blank = summarize(&text(1, " \n ").content);
-        assert_eq!((blank.title.as_str(), blank.named), ("Blank text", true));
-
-        let long = summarize(&text(1, &"word ".repeat(10_000)).content);
-        assert!(long.title.chars().count() < PREVIEW + 10);
-
-        let png = summarize(&image(1, "image/png", 1_234_567).content);
-        assert_eq!(
-            (png.title.as_str(), png.detail.as_str()),
-            ("Image", "PNG, 1.2 MB")
-        );
-        assert_eq!(
-            summarize(&image(1, "image/svg+xml", 999).content).detail,
-            "SVG, 999 B"
-        );
-        assert_eq!(size(12_300), "12.3 kB");
-    }
-
-    #[test]
-    fn a_new_visit_starts_empty() {
-        let kept = Search {
-            visit: 1,
-            query: String::from("pass"),
-            selected: 2,
-            delete: true,
-            clear: false,
-            offset: 40.0,
-            copying: Copying::Failed,
-        };
-
-        assert_eq!(kept.of(1), kept);
-        assert_eq!(
-            kept.of(2),
-            Search {
-                visit: 2,
-                ..Search::default()
-            }
-        );
     }
 }

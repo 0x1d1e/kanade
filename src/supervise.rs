@@ -1,4 +1,4 @@
-//! Restarting a source thread that panicked (#95, docs/design.md Constraints + SLOs). Amane does
+//! Restarting a source thread that panicked (#95, docs/design.md Constraints + SLOs). The runtime does
 //! this for a Service's `listen()`; Kanade's own source threads come back the same way, so one bad
 //! reading costs a pause rather than the source for good. What a source has posted lives outside
 //! what restarts, so a restart neither posts it again nor forgets to withdraw it. A source's thread
@@ -12,7 +12,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-// how long a source that panicked waits before it runs again, as Amane waits for a Service
+// how long a source that panicked waits before it runs again, as the runtime waits for a Service
 pub const RESTART: Duration = Duration::from_secs(5);
 
 /*

@@ -2,12 +2,12 @@
 
 use std::fs;
 
-use amane::{Argument, Bus};
+use crate::bus::{Argument, Bus};
 
 const DBUS: &str = "org.freedesktop.DBus";
 const PATH: &str = "/org/freedesktop/DBus";
 
-// whether the bus answers at all; Amane's Bus answers nothing for one it could not reach
+// whether the bus answers at all; `Bus` answers nothing for one it could not reach
 pub fn reachable(bus: Bus) -> bool {
     !bus.call(DBUS, PATH, DBUS, "GetId", &[]).text().is_empty()
 }

@@ -2,7 +2,7 @@
 //! saved ones, and the password a secured one asks for. Each network says how it is joined, or why
 //! its last join failed. A password shows as dots only.
 
-use amane::{
+use kanade_runtime::{
     Center, Column, End, Padding, Rectangle, Row, Size, Stack, Start, Text, Widget, children,
 };
 
@@ -104,8 +104,8 @@ fn row(network: &wifi::Network, join: &Join, ring: bool) -> Rectangle {
 
     // the full fan faint behind the bars it has
     let signal = Stack::new(children![
-        Icon::Wifi.on(ICON, theme::ISLAND.surface_container_high),
-        Icon::Signal(network.bars).on(ICON, theme::ISLAND.on_surface),
+        Icon::Wifi.on(ICON, theme::island().surface_container_high),
+        Icon::Signal(network.bars).on(ICON, theme::island().on_surface),
     ])
     .width(ICON)
     .height(ICON);
@@ -114,7 +114,7 @@ fn row(network: &wifi::Network, join: &Join, ring: bool) -> Rectangle {
 
     if network.security.locked() {
         trailing.push(Box::new(
-            Icon::Lock.on(16.0, theme::ISLAND.on_surface_variant),
+            Icon::Lock.on(16.0, theme::island().on_surface_variant),
         ));
     }
 
@@ -155,7 +155,7 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
         list::back(false),
         Text::new(format!("Join \u{201c}{ssid}\u{201d}"))
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide(),
     ])
@@ -175,7 +175,7 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
         .color(if error {
             theme::SEMANTIC.critical
         } else {
-            theme::ISLAND.on_surface_variant
+            theme::island().on_surface_variant
         })
         .weight(theme::text::MEDIUM);
 
@@ -209,12 +209,12 @@ fn field(secret: &Secret) -> Rectangle {
     let caret = Rectangle::new()
         .width(CARET)
         .height(DOTS + 4.0)
-        .fill(theme::ISLAND.on_surface);
+        .fill(theme::island().on_surface);
 
     let dots = |count: usize| {
         Text::new("\u{2022}".repeat(count))
             .size(DOTS)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::MEDIUM)
     };
     let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= room);
@@ -225,7 +225,7 @@ fn field(secret: &Secret) -> Rectangle {
                 caret,
                 Text::new("Password")
                     .size(DOTS)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM),
             ])
             .align(Center),
@@ -244,7 +244,7 @@ fn field(secret: &Secret) -> Rectangle {
         .width(WIDTH)
         .height(FIELD)
         .radius(FIELD / 2.0)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right: FIELD_INSET,
@@ -254,7 +254,7 @@ fn field(secret: &Secret) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Lock.on(TARGET, theme::ISLAND.on_surface_variant))
+                Box::new(Icon::Lock.on(TARGET, theme::island().on_surface_variant))
                     as Box<dyn Widget>,
                 typed,
             ])

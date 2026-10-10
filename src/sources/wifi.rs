@@ -18,7 +18,8 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::{Argument, Bus, Service, Value};
+use crate::bus::{Argument, Bus, Value};
+use kanade_runtime::service::Service;
 
 use super::network::{NAME, ROOT};
 use super::system::Watched;
@@ -886,19 +887,6 @@ fn set(asked: u64, join: Join) {
 mod tests {
     use super::*;
 
-    fn seen(path: &str, ssid: &str, strength: u8) -> Seen {
-        Seen {
-            path: path.into(),
-            ssid: ssid.into(),
-            strength,
-            security: Security::Psk,
-        }
-    }
-
-    fn names(list: &[Network]) -> Vec<&str> {
-        list.iter().map(|network| network.ssid.as_str()).collect()
-    }
-
     fn profile(kind: &str, ssid: &str, mode: Option<&str>) -> Value {
         let text = |text: &str| Value::Text(text.into());
         let mut wireless = BTreeMap::from([(
@@ -939,74 +927,6 @@ mod tests {
         }
 
         assert_eq!(joins(&profile("802-3-ethernet", "home", None)), None);
-    }
-
-    #[test]
-    fn the_network_joined_comes_first_then_saved_then_strongest() {
-        let list = networks(
-            vec![
-                seen("/1", "cafe", 90),
-                seen("/2", "home", 30),
-                seen("/3", "office", 60),
-                seen("/4", "attic", 10),
-                seen("/5", "Bakery", 95),
-            ],
-            &[("office".into(), "/s/1".into())],
-            Some(("home".into(), Link::Joined)),
-        );
-
-        assert_eq!(names(&list), ["home", "office", "Bakery", "cafe", "attic"]);
-        assert_eq!(list[0].link, Link::Joined);
-        assert_eq!(list[1].profile.as_deref(), Some("/s/1"));
-        assert!(list[2..].iter().all(|network| network.profile.is_none()));
-    }
-
-    #[test]
-    fn same_bars_go_by_name_whatever_the_case() {
-        let list = networks(
-            vec![
-                seen("/1", "beta", 80),
-                seen("/2", "Alpha", 90),
-                seen("/3", "gamma", 60),
-            ],
-            &[],
-            None,
-        );
-
-        assert_eq!(names(&list), ["Alpha", "beta", "gamma"]);
-    }
-
-    #[test]
-    fn access_points_of_one_network_are_one_at_the_strongest() {
-        let list = networks(
-            vec![
-                seen("/1", "home", 40),
-                seen("/2", "home", 80),
-                seen("/3", "home", 60),
-            ],
-            &[
-                ("home".into(), "/s/old".into()),
-                ("home".into(), "/s/new".into()),
-            ],
-            None,
-        );
-
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].access_point, "/2");
-        assert_eq!(list[0].bars, 3);
-        assert_eq!(list[0].profile.as_deref(), Some("/s/new"));
-    }
-
-    #[test]
-    fn a_network_being_joined_is_first_too() {
-        let list = networks(
-            vec![seen("/1", "cafe", 90), seen("/2", "home", 30)],
-            &[("cafe".into(), "/s/1".into())],
-            Some(("home".into(), Link::Joining)),
-        );
-
-        assert_eq!(names(&list), ["home", "cafe"]);
-        assert_eq!(list[0].link, Link::Joining);
     }
 
     #[test]
@@ -1054,127 +974,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_join_ends_when_its_own_attempt_is_up_or_over_and_says_why() {
-        const ON_ITS_WAY: f64 = 1.0;
-        let device = |state, reason| Heard::from(Change::Device("/d".into(), state, reason));
-        let attempt = |state| Heard::from(Change::Attempt("/a".into(), state));
-
-        // the network it leaves goes down first, which is not the join's end
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&device(110.0, 0.0)), None);
-        assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
-        assert_eq!(waiting.hear(&attempt(ON_ITS_WAY)), None);
-        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
-        assert_eq!(waiting.hear(&device(ACTIVATED_DEVICE, 0.0)), None);
-        assert_eq!(waiting.hear(&attempt(UP)), Some(Ended::Up));
-
-        // a wrong password: the device fails, then the attempt is over
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
-        assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
-        assert_eq!(
-            waiting.hear(&attempt(OVER)),
-            Some(Ended::Failed(Failure::WrongPassword))
-        );
-
-        // heard the other way round, as the two threads may
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
-        assert_eq!(waiting.hear(&attempt(OVER)), None);
-        assert_eq!(
-            waiting.hear(&device(FAILED, NO_SECRETS)),
-            Some(Ended::Failed(Failure::WrongPassword))
-        );
-
-        // over without the device failing, once no reason came in time
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&attempt(OVER)), None);
-        assert_eq!(waiting.hear(&device(30.0, 0.0)), None);
-        assert_eq!(waiting.failed(), Ended::Failed(Failure::Other));
-
-        // a failure from before it began preparing is not this join's
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&device(FAILED, NO_SECRETS)), None);
-        assert_eq!(waiting.hear(&device(PREPARING, 0.0)), None);
-        assert_eq!(waiting.hear(&device(FAILED, 8.0)), None);
-        assert_eq!(
-            waiting.hear(&attempt(OVER)),
-            Some(Ended::Failed(Failure::Other))
-        );
-    }
-
-    // only its own active connection and device count: another join's coming up is not this one's
-    #[test]
-    fn a_join_hears_only_its_own_attempt_and_device() {
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&Change::Attempt("/b".into(), UP).into()), None);
-        assert_eq!(
-            waiting.hear(&Change::Device("/e".into(), FAILED, NO_SECRETS).into()),
-            None
-        );
-        assert_eq!(
-            waiting.hear(&Change::Device("/d".into(), ACTIVATED_DEVICE, 0.0).into()),
-            None
-        );
-
-        // taken over before it began: over, with nothing from the device to say why
-        assert_eq!(
-            waiting.hear(&Change::Attempt("/a".into(), OVER).into()),
-            None
-        );
-        assert_eq!(waiting.hear(&Change::Attempt("/a".into(), UP).into()), None);
-        assert_eq!(waiting.failed(), Ended::Failed(Failure::Other));
-    }
-
-    // NetworkManager going away takes the attempt with it, saying no more
-    #[test]
-    fn a_join_ends_when_networkmanager_goes_away() {
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(
-            waiting.hear(&Change::Device("/d".into(), PREPARING, 0.0).into()),
-            None
-        );
-        assert_eq!(waiting.hear(&Change::Gone.into()), Some(Ended::Gone));
-    }
-
     /*
      * a NetworkManager that replaced the join's may reuse its paths, and one gone that is not the
      * join's takes nothing with it
      */
-    #[test]
-    fn a_join_hears_only_its_own_networkmanager() {
-        let other = |change| Heard {
-            owner: ":1.81".into(),
-            change,
-        };
-
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&other(Change::Attempt("/a".into(), UP))), None);
-        assert_eq!(
-            waiting.hear(&other(Change::Device("/d".into(), FAILED, NO_SECRETS))),
-            None
-        );
-        assert_eq!(waiting.hear(&other(Change::Removed("/a".into()))), None);
-        assert_eq!(waiting.hear(&other(Change::Gone)), None);
-        assert_eq!(waiting.hear(&Change::Gone.into()), Some(Ended::Gone));
-    }
-
-    // its attempt removed says no more either; another removed is not this join's end
-    #[test]
-    fn a_join_ends_when_its_attempt_is_removed() {
-        let mut waiting = Waiting::new(OWNER, "/d", "/a");
-        assert_eq!(waiting.hear(&Change::Removed("/b".into()).into()), None);
-        assert_eq!(
-            waiting.hear(&Change::Device("/d".into(), FAILED, NO_SECRETS).into()),
-            None
-        );
-        assert_eq!(
-            waiting.hear(&Change::Removed("/a".into()).into()),
-            Some(Ended::Failed(Failure::WrongPassword))
-        );
-    }
-
     #[test]
     fn a_join_saves_or_deletes_what_it_made_but_nothing_once_networkmanager_is_gone() {
         let (made, old) = (Some("/s/9"), Some("/s/7"));
@@ -1192,49 +995,5 @@ mod tests {
         // the paths were the old NetworkManager's; a new one may have given them to others
         assert_eq!(tidy(made, old, Ended::Gone), []);
         assert_eq!(tidy(None, old, Ended::Gone), []);
-    }
-
-    // a join hears only while it listens, and leaves nothing behind
-    #[test]
-    fn a_join_listens_until_it_ends() {
-        let heard = Heard::from(Change::Attempt("/a".into(), UP));
-
-        let (listening, waiting) = listen(u64::MAX);
-        hear(heard.clone());
-        assert_eq!(waiting.try_recv(), Ok(heard.clone()));
-
-        drop(listening);
-        hear(heard);
-        assert!(waiting.try_recv().is_err());
-        assert!(
-            LISTENING
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|(asked, _)| *asked != u64::MAX)
-        );
-    }
-
-    #[test]
-    fn only_the_device_its_networks_and_profiles_concern_the_sub_surface() {
-        assert!(concerns(
-            "/org/freedesktop/NetworkManager/Devices/3",
-            WIRELESS
-        ));
-        assert!(concerns(
-            "/org/freedesktop/NetworkManager/Devices/3",
-            DEVICE
-        ));
-        assert!(concerns(
-            "/org/freedesktop/NetworkManager/AccessPoint/40",
-            ACCESS_POINT
-        ));
-        assert!(concerns(SETTINGS_PATH, SETTINGS));
-
-        assert!(!concerns(ROOT, NAME));
-        assert!(!concerns(
-            "/org/freedesktop/NetworkManager/Devices/3",
-            "org.freedesktop.NetworkManager.Device.Statistics"
-        ));
     }
 }

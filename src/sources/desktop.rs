@@ -1,5 +1,5 @@
-//! The `.desktop` entries in the XDG data dirs (ADR 0014), read as Kanade needs them, since Amane's
-//! `DesktopApp` has neither the file id nor how the entry launches (ADR 0011). The Dock matches
+//! The `.desktop` entries in the XDG data dirs (ADR 0014), with the file id and how the entry
+//! launches (ADR 0011). The Dock matches
 //! windows and pins to them (`windows`), the Launcher lists them (`apps`), and both start them the
 //! one way `launch` says.
 

@@ -1,10 +1,10 @@
 # Third-party notices
 
-Kanade's own source is under the [MIT License](LICENSE). It vendors no third-party code, fonts or artwork: the icons in `src/icons/` are drawn for Kanade. The crates below are fetched by Cargo, each under its own license, and are linked into the `kanade` binary. Anyone distributing that binary must include their copyright and license notices, which each crate ships in its source.
+Kanade's own source is under the [MIT License](LICENSE). Code ported from Amane, `crates/runtime` (ADR 0028), `src/bus.rs` and the Services in `src/sources/`, stays under Amane's notice below. Kanade vendors no other third-party code, fonts or artwork: the icons in `src/icons/` are drawn for Kanade. The crates below are fetched by Cargo, each under its own license, and are linked into the `kanade` binary. Anyone distributing that binary must include their copyright and license notices, which each crate ships in its source.
 
 ## Amane
 
-Kanade is built on [Amane](https://github.com/MystiaFin/amane), pinned in `Cargo.toml`.
+Kanade's runtime is ported from [Amane](https://github.com/MystiaFin/amane) (ADR 0028), and is Kanade's own code since; Kanade no longer depends on it.
 
 ```
 MIT License
@@ -41,8 +41,8 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | Crate | Version | License | Source |
 |---|---|---|---|
 | adler2 | v2.0.1 | 0BSD OR MIT OR Apache-2.0 | https://github.com/oyvindln/adler2 |
+| ahash | v0.8.12 | MIT OR Apache-2.0 | https://github.com/tkaitchuck/ahash |
 | allocator-api2 | v0.2.21 | MIT OR Apache-2.0 | https://github.com/zakarumych/allocator-api2 |
-| amane | v0.1.1 | MIT | https://github.com/MystiaFin/amane |
 | arrayref | v0.3.9 | BSD-2-Clause | https://github.com/droundy/arrayref |
 | arrayvec | v0.7.8 | MIT OR Apache-2.0 | https://github.com/bluss/arrayvec |
 | ash | v0.38.0+1.3.281 | MIT OR Apache-2.0 | https://github.com/ash-rs/ash |
@@ -57,18 +57,24 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | async-task | v4.7.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/async-task |
 | async-trait | v0.1.92 | MIT OR Apache-2.0 | https://github.com/dtolnay/async-trait |
 | atomic-waker | v1.1.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/atomic-waker |
+| base64 | v0.23.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | bitflags | v2.13.2 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags |
 | bit-set | v0.9.1 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-set |
 | bit-vec | v0.9.1 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-vec |
 | blocking | v1.7.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/blocking |
 | bytemuck_derive | v1.12.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck |
 | bytemuck | v1.25.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck |
+| bytes | v1.12.1 | MIT | https://github.com/tokio-rs/bytes |
+| calcard | v0.3.14 | Apache-2.0 OR MIT | https://github.com/stalwartlabs/calcard |
 | calloop | v0.14.5 | MIT | https://github.com/Smithay/calloop |
 | calloop-wayland-source | v0.4.1 | MIT | https://github.com/smithay/calloop-wayland-source |
 | cfg-if | v1.0.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if |
+| chrono-tz | v0.10.4 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono-tz |
+| chrono | v0.4.45 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |
 | codespan-reporting | v0.13.1 | Apache-2.0 | https://github.com/brendanzab/codespan |
 | color | v0.3.3 | Apache-2.0 OR MIT | https://github.com/linebender/color |
 | concurrent-queue | v2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/concurrent-queue |
+| core_maths | v0.1.1 | MIT | https://github.com/robertbastian/core_maths |
 | crc32fast | v1.5.2 | MIT OR Apache-2.0 | https://github.com/srijs/rust-crc32fast |
 | crossbeam-utils | v0.8.23 | MIT OR Apache-2.0 | https://github.com/crossbeam-rs/crossbeam |
 | cursor-icon | v1.2.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/cursor-icon |
@@ -76,6 +82,7 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | dlib | v0.5.3 | MIT | https://github.com/elinorbgr/dlib |
 | document-features | v0.2.12 | MIT OR Apache-2.0 | https://github.com/slint-ui/document-features |
 | downcast-rs | v1.2.1 | MIT/Apache-2.0 | https://github.com/marcianx/downcast-rs |
+| emojis | v0.9.0 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/rossmacarthur/emojis |
 | endi | v1.1.1 | MIT | https://github.com/zeenix/endi |
 | enumflags2_derive | v0.7.12 | MIT OR Apache-2.0 | https://github.com/meithecatte/enumflags2 |
 | enumflags2 | v0.7.12 | MIT OR Apache-2.0 | https://github.com/meithecatte/enumflags2 |
@@ -96,6 +103,8 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | futures-intrusive | v0.5.0 | MIT OR Apache-2.0 | https://github.com/Matthias247/futures-intrusive |
 | futures-io | v0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
 | futures-lite | v2.6.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/futures-lite |
+| getrandom | v0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
+| getrandom | v0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | glow | v0.17.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/grovesNL/glow |
 | gpu-allocator | v0.28.0 | MIT OR Apache-2.0 | https://github.com/Traverse-Research/gpu-allocator |
 | gpu-descriptor-types | v0.2.0 | MIT OR Apache-2.0 | https://github.com/zakarumych/gpu-descriptor |
@@ -105,8 +114,12 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | hashbrown | v0.15.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | v0.16.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | v0.17.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
+| hashify | v0.2.9 | Apache-2.0 OR MIT | https://github.com/stalwartlabs/hashify |
 | hexf-parse | v0.2.1 | CC0-1.0 | https://github.com/lifthrasiir/hexf |
 | hex | v0.4.3 | MIT OR Apache-2.0 | https://github.com/KokaKiwi/rust-hex |
+| httparse | v1.10.1 | MIT OR Apache-2.0 | https://github.com/seanmonstar/httparse |
+| http | v1.5.0 | MIT OR Apache-2.0 | https://github.com/hyperium/http |
+| iana-time-zone | v0.1.65 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone |
 | imagesize | v0.15.0 | MIT | https://github.com/Roughsketch/imagesize |
 | indexmap | v2.14.2 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/indexmap |
 | inotify-sys | v0.1.8 | ISC | https://github.com/hannobraun/inotify-sys |
@@ -124,6 +137,8 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | litrs | v1.0.0 | MIT OR Apache-2.0 | https://github.com/LukasKalbertodt/litrs |
 | lock_api | v0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | log | v0.4.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/log |
+| mail-builder | v1.0.0 | Apache-2.0 OR MIT | https://github.com/stalwartlabs/mail-builder |
+| mail-parser | v0.11.9 | Apache-2.0 OR MIT | https://github.com/stalwartlabs/mail-parser |
 | memchr | v2.8.3 | Unlicense OR MIT | https://github.com/BurntSushi/memchr |
 | memmap2 | v0.9.11 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/memmap2-rs |
 | miniz_oxide | v0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
@@ -138,6 +153,11 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | parking_lot | v0.12.5 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
 | parking | v2.2.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/parking |
 | peniko | v0.6.1 | Apache-2.0 OR MIT | https://github.com/linebender/peniko |
+| percent-encoding | v2.3.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url/ |
+| phf_shared | v0.12.1 | MIT | https://github.com/rust-phf/rust-phf |
+| phf_shared | v0.13.1 | MIT | https://github.com/rust-phf/rust-phf |
+| phf | v0.12.1 | MIT | https://github.com/rust-phf/rust-phf |
+| phf | v0.13.1 | MIT | https://github.com/rust-phf/rust-phf |
 | pico-args | v0.5.0 | MIT | https://github.com/RazrFalcon/pico-args |
 | pin-project-lite | v0.2.17 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project-lite |
 | piper | v0.2.5 | MIT OR Apache-2.0 | https://github.com/smol-rs/piper |
@@ -156,9 +176,14 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | renderdoc-sys | v1.1.0 | MIT OR Apache-2.0 | https://github.com/ebkalderon/renderdoc-rs |
 | resvg | v0.48.1 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | rgb | v0.8.53 | MIT | https://github.com/kornelski/rust-rgb |
+| ring | v0.17.14 | Apache-2.0 AND ISC | https://github.com/briansmith/ring |
 | roxmltree | v0.21.1 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/roxmltree |
 | rustc-hash | v1.1.0 | Apache-2.0/MIT | https://github.com/rust-lang-nursery/rustc-hash |
 | rustix | v1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/rustix |
+| rustls-pki-types | v1.15.1 | MIT OR Apache-2.0 | https://github.com/rustls/pki-types |
+| rustls | v0.23.45 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |
+| rustls-webpki | v0.103.15 | ISC | https://github.com/rustls/webpki |
+| rustybuzz | v0.20.1 | MIT | https://github.com/harfbuzz/rustybuzz |
 | scoped-tls | v1.0.1 | MIT/Apache-2.0 | https://github.com/alexcrichton/scoped-tls |
 | scopeguard | v1.2.0 | MIT OR Apache-2.0 | https://github.com/bluss/scopeguard |
 | serde_core | v1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
@@ -178,6 +203,7 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | spirv | v0.4.0+sdk-1.4.341.0 | Apache-2.0 | https://github.com/gfx-rs/rspirv |
 | static_assertions | v1.1.0 | MIT OR Apache-2.0 | https://github.com/nvzqz/static-assertions-rs |
 | strict-num | v0.1.1 | MIT | https://github.com/RazrFalcon/strict-num |
+| subtle | v2.6.1 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | svg_fmt | v0.4.5 | MIT/Apache-2.0 | https://github.com/nical/rust_debug |
 | svgtypes | v0.16.1 | Apache-2.0 OR MIT | https://github.com/linebender/svgtypes |
 | syn | v2.0.119 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn |
@@ -196,10 +222,18 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | tracing-core | v0.1.36 | MIT | https://github.com/tokio-rs/tracing |
 | tracing | v0.1.44 | MIT | https://github.com/tokio-rs/tracing |
 | ttf-parser | v0.25.1 | MIT OR Apache-2.0 | https://github.com/harfbuzz/ttf-parser |
+| unicode-bidi-mirroring | v0.4.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-bidi-mirroring |
+| unicode-ccc | v0.4.0 | MIT/Apache-2.0 | https://github.com/RazrFalcon/unicode-ccc |
 | unicode-ident | v1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://github.com/dtolnay/unicode-ident |
+| unicode-properties | v0.1.4 | MIT/Apache-2.0 | https://github.com/unicode-rs/unicode-properties |
+| unicode-script | v0.5.8 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-script |
 | unicode-width | v0.2.2 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-width |
 | unicode-xid | v0.2.6 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-xid |
+| untrusted | v0.9.0 | ISC | https://github.com/briansmith/untrusted |
+| ureq-proto | v0.6.4 | MIT OR Apache-2.0 | https://github.com/algesten/ureq-proto |
+| ureq | v3.4.2 | MIT OR Apache-2.0 | https://github.com/algesten/ureq |
 | usvg | v0.48.1 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
+| utf8-zero | v0.8.1 | MIT OR Apache-2.0 | https://github.com/algesten/utf8-zero |
 | uuid | v1.27.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid |
 | vello_encoding | v0.10.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
 | vello_shaders | v0.10.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
@@ -214,6 +248,7 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | wayland-protocols-wlr | v0.3.12 | MIT | https://github.com/smithay/wayland-rs |
 | wayland-scanner | v0.31.11 | MIT | https://github.com/smithay/wayland-rs |
 | wayland-sys | v0.31.11 | MIT | https://github.com/smithay/wayland-rs |
+| webpki-roots | v1.0.9 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots |
 | wgpu-core-deps-windows-linux-android | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
 | wgpu-core | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
 | wgpu-hal | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
@@ -231,6 +266,7 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | zcheapstr | v1.1.0 | MIT | https://github.com/z-galaxy/zcheapstr/ |
 | zerocopy-derive | v0.8.59 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy |
 | zerocopy | v0.8.59 | BSD-2-Clause OR Apache-2.0 OR MIT | https://github.com/google/zerocopy |
+| zeroize | v1.9.1 | Apache-2.0 OR MIT | https://github.com/RustCrypto/utils |
 | zmij | v1.0.23 | MIT | https://github.com/dtolnay/zmij |
 | zune-core | v0.5.3 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image |
 | zune-jpeg | v0.5.15 | MIT OR Apache-2.0 OR Zlib | https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg |

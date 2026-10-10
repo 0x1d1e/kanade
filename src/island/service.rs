@@ -3,13 +3,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use amane::{Keyboard, Service};
+use kanade_runtime::Keyboard;
+use kanade_runtime::service::Service;
 
 use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Scope, Track};
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
-use super::geometry::{self, REST, Shape};
+use super::geometry::{self, Canvas, Hang, Shape, Sizes, TimePeek};
 use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
 use super::satellites::{Mark, Satellites};
@@ -25,10 +26,17 @@ const HOVER_DELAY: Duration = Duration::from_millis(120);
 // plan 5.2: pointer out collapses after 200-300 ms, back in before that keeps the island open
 const GRACE: Duration = Duration::from_millis(250);
 
+// a little past the target and back, like macOS's island
+const DAMPING: f32 = 0.72;
+
 // the island's motion and pointer timings (#39); the defaults are the constants above
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timings {
     pub motion: Mode,
+
+    // the body's spring's damping ratio, `motion::CRITICAL` never passing its target
+    pub damping: f32,
+
     pub expand: Duration,
     pub surface_change: Duration,
     pub collapse: Duration,
@@ -40,6 +48,7 @@ impl Default for Timings {
     fn default() -> Self {
         Self {
             motion: Mode::Spring,
+            damping: DAMPING,
             expand: EXPAND,
             surface_change: SURFACE_CHANGE,
             collapse: COLLAPSE,
@@ -73,7 +82,7 @@ static NUDGE: LazyLock<(SyncSender<()>, Mutex<Receiver<()>>)> = LazyLock::new(||
     (sender, Mutex::new(receiver))
 });
 
-// the one Amane-facing piece of island/: owns the Arbiter and per-monitor Presentation
+// the one runtime-facing piece of island/: owns the Arbiter and per-monitor Presentation
 pub struct IslandService {
     // by monitor name, from the first input or focus on it
     islands: HashMap<String, Island>,
@@ -93,6 +102,9 @@ pub struct IslandService {
 
     // from `retime`, else the defaults
     timings: Timings,
+
+    // from `resize` and `fit`, else the defaults: how large each body grows (ADR 0030)
+    sizes: Sizes,
 
     // an AutoExpand's Surface open, until it gives the islands back or the user takes them
     auto: Option<Auto>,
@@ -124,6 +136,13 @@ struct Island {
     // the pointer is in the input region
     inside: bool,
 
+    /*
+     * the small form a morph took from under the pointer, its area held in the input region until
+     * the pointer is over the body it heads for or leaves, so a body growing elsewhere along a side
+     * edge (Peek, Tray) never leaves a still pointer out
+     */
+    under: Option<Shape>,
+
     // none until the first morph; width, height and radius as one spring group
     shape: Option<Spring<3>>,
 
@@ -154,15 +173,16 @@ struct Due {
 }
 
 impl Due {
-    // still meaningful for the island in this Presentation; at Rest a hover only shows the tray items
-    fn applies(self, presentation: Presentation, tray: bool) -> bool {
-        match (self.input, presentation) {
-            (Input::Hover(_), Presentation::Rest) => tray,
-            (Input::Hover(_), Presentation::Compact | Presentation::Split)
-            | (Input::Unhover, Presentation::Peek | Presentation::Tray(_))
-            | (Input::Collapse, Presentation::Expanded(_)) => true,
-            _ => false,
-        }
+    // still meaningful for the island in this Presentation
+    fn applies(self, presentation: Presentation) -> bool {
+        matches!(
+            (self.input, presentation),
+            (
+                Input::Hover(_),
+                Presentation::Rest | Presentation::Compact | Presentation::Split
+            ) | (Input::Unhover, Presentation::Peek | Presentation::Tray(_))
+                | (Input::Collapse, Presentation::Expanded(_))
+        )
     }
 }
 
@@ -175,6 +195,7 @@ impl Service for IslandService {
             presentations: Presentations::default(),
             focused_output: None,
             timings: Timings::default(),
+            sizes: Sizes::default(),
             auto: None,
         }
     }
@@ -182,7 +203,7 @@ impl Service for IslandService {
     /*
      * sleeps until the next deadline or a nudge, so an idle island never wakes (#5);
      * a nudge sent between the read and the wait is still queued, so the wait never misses it.
-     * A panic here listens again after 5 s: Amane restarts every Service's listen (#95)
+     * A panic here listens again after 5 s: the runtime restarts every Service's listen (#95)
      */
     fn listen() {
         let receiver = NUDGE.1.lock().unwrap_or_else(PoisonError::into_inner);
@@ -223,6 +244,44 @@ impl IslandService {
     // the config's timings, at start and on each reload (#102); a motion under way keeps its own
     pub fn retime(&mut self, timings: Timings) {
         self.timings = timings;
+    }
+
+    /*
+     * the config's largest body, where the Island hangs and what the time's Peek holds, at start
+     * and on each reload (ADR 0030); a body headed for the old ones morphs to the new, a small form
+     * standing upright along a side edge
+     */
+    pub fn resize(&mut self, largest: Shape, hang: Hang, peek: TimePeek, now: Instant) {
+        if largest != self.sizes.largest || hang != self.sizes.hang || peek != self.sizes.peek {
+            self.sizes.largest = largest;
+            self.sizes.hang = hang;
+            self.sizes.peek = peek;
+            self.retarget(now);
+        }
+    }
+
+    /*
+     * how tall a list Surface's content asks its body to be, `fresh` as a new visit opens it and
+     * `visit` in the one open now, posted by its sources and key handlers as it changes (ADR 0030)
+     */
+    pub fn fit(&mut self, surface: Surface, fresh: f32, visit: Option<(u64, f32)>, now: Instant) {
+        if self.sizes.ask(surface, fresh, visit) {
+            self.retarget(now);
+        }
+    }
+
+    // a body headed for a size no longer asked for heads for the new one from where it stands
+    fn retarget(&mut self, now: Instant) {
+        let visit = self.visit();
+
+        for island in self.islands.values_mut().chain([&mut self.untouched]) {
+            reaim(island, (&self.sizes, visit), self.timings.expand, now);
+        }
+    }
+
+    // the canvas every island's body moves in, before an output clamps it
+    fn canvas(&self) -> Canvas {
+        Canvas::around(self.sizes.largest, self.sizes.hang)
     }
 
     // the Surfaces whose Module is off, once at start: none of them opens, by click, command or AutoExpand
@@ -281,6 +340,23 @@ impl IslandService {
         )
     }
 
+    // what a raised island keeps showing under the OSD (`Arbiter::beneath`)
+    fn beneath(&self, monitor: &str, now: Instant) -> Frame {
+        self.arbiter.beneath(
+            now,
+            arbiter::Island {
+                focused: self.focused(monitor),
+            },
+        )
+    }
+
+    // the primary this island last settled on, since when, and until when (`Arbiter::shown`)
+    pub fn shown(&self, monitor: &str) -> Option<(&Id, Instant, Option<Instant>)> {
+        self.arbiter.shown(arbiter::Island {
+            focused: self.focused(monitor),
+        })
+    }
+
     pub fn dnd(&self) -> bool {
         self.arbiter.dnd()
     }
@@ -299,10 +375,27 @@ impl IslandService {
         matches!(self.presentation(monitor), Presentation::Expanded(_))
     }
 
+    /*
+     * whether the OSD floats over a Peek or an open Surface rather than ends it; not over a Peek of
+     * the OSD itself
+     */
+    pub fn floats(&self, monitor: &str, frame: &Frame) -> bool {
+        let raised = matches!(
+            self.presentation(monitor),
+            Presentation::Peek | Presentation::Expanded(_)
+        );
+
+        frame.feedback()
+            && raised
+            && self.presentations.peeked(monitor) != frame.primary.as_ref().map(Activity::id)
+    }
+
     // read in the view at the frame's time
     pub fn shape(&self, monitor: &str, now: Instant) -> Shape {
         self.spring(monitor)
-            .map_or(REST, |spring| Shape::from(spring.at(now)))
+            .map_or(self.sizes.target(Presentation::Rest, 0), |spring| {
+                geometry::bounded(Shape::from(spring.at(now)), self.canvas())
+            })
     }
 
     // what shows at `now` and how strongly, at most one of them visible
@@ -362,6 +455,24 @@ impl IslandService {
         self.get(monitor).inside
     }
 
+    pub fn under(&self, monitor: &str) -> Option<Shape> {
+        self.get(monitor).under
+    }
+
+    // the pointer moved to `x`, `y` in the canvas; over the body the island heads for, it lets go of the small form it was under
+    pub fn moved(&mut self, monitor: &str, x: f32, y: f32, canvas: Canvas) {
+        let hang = self.sizes.hang;
+        let Some(spring) = self.spring(monitor) else {
+            return;
+        };
+        let target = geometry::bounded(Shape::from(spring.target()), canvas);
+        let area = geometry::input_area(geometry::body(target, hang, canvas), canvas);
+
+        if area.holds(x, y) {
+            self.island(monitor).under = None;
+        }
+    }
+
     // the earliest moment some island or the Arbiter changes on its own
     fn deadline(&self) -> Option<Instant> {
         self.islands
@@ -370,6 +481,13 @@ impl IslandService {
             .chain(self.arbiter.deadline())
             .chain(self.auto.as_ref().map(|auto| auto.until))
             .min()
+    }
+
+    // where the body is going while it moves, None once it rests
+    pub fn heading(&self, monitor: &str, now: Instant) -> Option<Shape> {
+        self.spring(monitor)
+            .filter(|spring| !spring.settled(now))
+            .map(|spring| geometry::bounded(Shape::from(spring.target()), self.canvas()))
     }
 
     fn spring(&self, monitor: &str) -> Option<&Spring<3>> {
@@ -802,7 +920,13 @@ impl IslandService {
             .islands
             .keys()
             .map(|monitor| {
-                let frame = self.frame(monitor, now);
+                let mut frame = self.frame(monitor, now);
+
+                // a Peek or a Surface stays open, the OSD floating over it (`view::hud`)
+                if self.floats(monitor, &frame) {
+                    frame = self.beneath(monitor, now);
+                }
+
                 let satellite = frame.satellites.first().cloned();
 
                 (monitor.clone(), frame, satellite)
@@ -823,7 +947,6 @@ impl IslandService {
         };
 
         let presentation = self.presentations.untouched();
-        let tray = self.presentations.tray() > 0;
         follow(
             &mut self.untouched,
             Content::new(
@@ -834,7 +957,7 @@ impl IslandService {
             ),
             marks(&untouched, presentation),
             self.timings,
-            tray,
+            (&self.sizes, self.presentations.visit()),
             now,
         );
 
@@ -849,7 +972,8 @@ impl IslandService {
             );
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                follow(island, content, marks, self.timings, tray, now);
+                let sizes = (&self.sizes, self.presentations.visit());
+                follow(island, content, marks, self.timings, sizes, now);
             }
         }
     }
@@ -877,11 +1001,12 @@ impl IslandService {
 
     /*
      * the pointer entered or left the input region, which arms or disarms the keyboard. In, a
-     * Compact island peeks after the hover delay, and one at Rest shows the tray items; out, a Peek
+     * Compact island peeks after the hover delay, and one at Rest shows the Tray strip; out, a Peek
      * or an open Surface collapses after the grace unless pinned, and the tray items go; either
-     * edge cancels the other
+     * edge cancels the other. With `peeks` off, coming in starts neither a Peek nor the Tray, as
+     * when it brings out the Dock folded into the Island (`dock.merge`) instead
      */
-    pub fn hover(&mut self, monitor: &str, inside: bool, now: Instant) {
+    pub fn hover(&mut self, monitor: &str, inside: bool, peeks: bool, now: Instant) {
         let presentation = self.presentation(monitor);
 
         // nobody opened an AutoExpand's Surface, so the pointer leaving it is not a pointer leaving
@@ -891,7 +1016,6 @@ impl IslandService {
                 .as_ref()
                 .is_some_and(|auto| auto.monitor == monitor);
         let Timings { hover, grace, .. } = self.timings;
-        let tray = self.presentations.tray();
         let island = self.island(monitor);
 
         if island.inside == inside {
@@ -901,12 +1025,12 @@ impl IslandService {
         // on before any press, since OnDemand focuses only on one (#2)
         island.inside = inside;
         island.armed = inside;
+        island.under = None;
 
         let due = match (inside, presentation) {
-            (true, Presentation::Compact | Presentation::Split) => {
+            (true, Presentation::Rest | Presentation::Compact | Presentation::Split) if peeks => {
                 Some((hover, Input::Hover(island.segment)))
             }
-            (true, Presentation::Rest) if tray > 0 => Some((hover, Input::Hover(island.segment))),
             (false, Presentation::Peek) if !pinned => Some((grace, Input::Unhover)),
             (false, Presentation::Tray(_)) => Some((grace, Input::Unhover)),
             (false, Presentation::Expanded(_)) if !pinned => Some((grace, Input::Collapse)),
@@ -921,6 +1045,11 @@ impl IslandService {
         if island.due.is_some() || due.is_some() {
             island.due = due;
             nudge();
+        }
+
+        // what an ask held off while the pointer was on the body
+        if !inside {
+            self.retarget(now);
         }
     }
 
@@ -970,7 +1099,7 @@ fn follow(
     content: Content,
     marks: Vec<Mark>,
     timings: Timings,
-    tray: bool,
+    (sizes, visit): (&Sizes, u64),
     now: Instant,
 ) {
     let presentation = content.presentation;
@@ -983,15 +1112,14 @@ fn follow(
 
     island.held &= expanded;
 
-    if island
-        .due
-        .is_some_and(|due| !due.applies(presentation, tray))
-    {
+    if island.due.is_some_and(|due| !due.applies(presentation)) {
         island.due = None;
         nudge();
     }
 
+    // the same content in a new visit may be sized otherwise
     if content == *island.content.target() {
+        reaim(island, (sizes, visit), timings.expand, now);
         return;
     }
 
@@ -1013,7 +1141,8 @@ fn follow(
      */
     let spring = island
         .shape
-        .get_or_insert_with(|| Spring::new(REST.into(), motion));
+        .get_or_insert_with(|| Spring::new(sizes.target(Presentation::Rest, visit).into(), motion));
+    spring.damp(timings.damping);
 
     let from = island.content.target().presentation;
     let track = match content.activity.as_ref().map(Activity::detail) {
@@ -1022,8 +1151,12 @@ fn follow(
     };
 
     if island.content.to(content, spring.progress(now)) {
+        if island.inside && island.under.is_none() && !matches!(from, Presentation::Expanded(_)) {
+            island.under = Some(Shape::from(spring.target()));
+        }
+
         spring.to(
-            geometry::shape(presentation).into(),
+            sizes.target(presentation, visit).into(),
             response(from, presentation, timings),
             now,
         );
@@ -1032,6 +1165,31 @@ fn follow(
         island.track = track.map(|track| Dissolve::new(track, motion));
     } else if let (Some(dissolve), Some(track)) = (&mut island.track, track) {
         dissolve.to(track, timings.track_change(), now);
+    }
+}
+
+/*
+ * a body headed for a size no longer asked for heads for the new one from where it stands, its
+ * content as it shows: re-aiming starts a new leg, which must not fade the content again. It never
+ * shrinks from under the pointer, which would leave the body and collapse it, only once it left
+ */
+fn reaim(island: &mut Island, (sizes, visit): (&Sizes, u64), duration: Duration, now: Instant) {
+    let mut target: [f32; 3] = sizes
+        .target(island.content.target().presentation, visit)
+        .into();
+
+    if let Some(spring) = &mut island.shape
+        && island.inside
+    {
+        let stands = spring.target();
+        target = std::array::from_fn(|index| target[index].max(stands[index]));
+    }
+
+    if let Some(spring) = &mut island.shape
+        && spring.target() != target
+    {
+        island.content.rebase(spring.progress(now));
+        spring.to(target, duration, now);
     }
 }
 
@@ -1087,6 +1245,7 @@ mod tests {
     use super::*;
     use crate::island::activity::fixture;
     use crate::island::activity::{Detail, Lifetime, Priority, Track, Workspace};
+    use crate::island::geometry::REST;
 
     const MONITOR: &str = "eDP-1";
 
@@ -1129,6 +1288,93 @@ mod tests {
         // a later pointer expand does not bring the hold back
         island.input(MONITOR, Input::Click(Segment::Primary), Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+    }
+
+    // a list Surface's new ask moves its body, never fading what it shows out and back in
+    #[test]
+    fn a_surface_keeps_showing_whole_as_its_body_follows_a_new_ask() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+        island.open(MONITOR, Surface::Launcher, now);
+
+        let settled = now + Duration::from_secs(2);
+        island.fit(
+            Surface::Launcher,
+            600.0,
+            Some((island.visit(), 150.0)),
+            settled,
+        );
+
+        for after in [1, 50, 100, 200] {
+            let shown: Vec<_> = island
+                .content(MONITOR, settled + Duration::from_millis(after))
+                .into_iter()
+                .flatten()
+                .collect();
+
+            assert_eq!(shown.len(), 1, "{after} ms: {shown:?}");
+            assert_eq!(
+                shown[0].0.presentation,
+                Presentation::Expanded(Surface::Launcher)
+            );
+            assert_eq!(shown[0].1, 1.0, "{after} ms");
+        }
+    }
+
+    // a body never shrinks from under the pointer, which would leave it and collapse the Surface
+    #[test]
+    fn a_body_shrinks_only_once_the_pointer_left() {
+        let now = Instant::now();
+        let second = Duration::from_secs(2);
+        let mut island = IslandService::new();
+        island.open(MONITOR, Surface::Launcher, now);
+        island.fit(Surface::Launcher, 600.0, None, now);
+        let fresh = island.shape(MONITOR, now + second).height;
+
+        island.hover(MONITOR, true, true, now + second);
+        island.fit(
+            Surface::Launcher,
+            600.0,
+            Some((island.visit(), 150.0)),
+            now + second,
+        );
+        assert_eq!(island.shape(MONITOR, now + 2 * second).height, fresh);
+
+        island.fit(
+            Surface::Launcher,
+            600.0,
+            Some((island.visit(), 900.0)),
+            now + 2 * second,
+        );
+        island.fit(
+            Surface::Launcher,
+            600.0,
+            Some((island.visit(), 150.0)),
+            now + 2 * second,
+        );
+        assert_eq!(island.shape(MONITOR, now + 3 * second).height, fresh);
+
+        island.hover(MONITOR, false, true, now + 3 * second);
+        assert!(island.shape(MONITOR, now + 4 * second).height < fresh);
+    }
+
+    // opening a Surface again starts a visit, which takes the fresh ask, not the last visit's
+    #[test]
+    fn opening_a_surface_again_takes_its_fresh_size() {
+        let now = Instant::now();
+        let second = Duration::from_secs(2);
+        let mut island = IslandService::new();
+        island.open(MONITOR, Surface::Launcher, now);
+        island.fit(Surface::Launcher, 600.0, None, now);
+        let fresh = island.shape(MONITOR, now + second).height;
+
+        let first = island.visit();
+        island.fit(Surface::Launcher, 600.0, Some((first, 150.0)), now + second);
+        assert!(island.shape(MONITOR, now + 2 * second).height < fresh);
+
+        island.open(MONITOR, Surface::Launcher, now + 2 * second);
+        assert_ne!(island.visit(), first);
+        assert_eq!(island.shape(MONITOR, now + 3 * second).height, fresh);
     }
 
     #[test]
@@ -1192,7 +1438,7 @@ mod tests {
         let now = Instant::now();
 
         island.open(MONITOR, Surface::Controls, now);
-        island.hover(MONITOR, true, now + ms(100));
+        island.hover(MONITOR, true, true, now + ms(100));
         assert_eq!(island.deadline(), None);
 
         // resting on it past the hold keeps it open
@@ -1200,7 +1446,7 @@ mod tests {
         assert!(island.expanded(MONITOR));
 
         let out = now + HOLD + ms(100);
-        island.hover(MONITOR, false, out);
+        island.hover(MONITOR, false, true, out);
         assert_eq!(island.deadline(), Some(out + GRACE));
     }
 
@@ -1209,7 +1455,7 @@ mod tests {
         let mut island = IslandService::new();
         let now = Instant::now();
 
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         island.open(MONITOR, Surface::Controls, now);
 
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
@@ -1252,7 +1498,7 @@ mod tests {
         assert_eq!(island.deadline(), None);
 
         island.open(MONITOR, Surface::Notifications, now);
-        island.hover(MONITOR, true, now + ms(100));
+        island.hover(MONITOR, true, true, now + ms(100));
         island.attend(MONITOR, now + ms(200));
         assert_eq!(island.deadline(), None);
 
@@ -1266,7 +1512,7 @@ mod tests {
     fn expanded(now: Instant) -> IslandService {
         let mut island = IslandService::new();
 
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         island.input(MONITOR, Input::Click(Segment::Primary), now);
 
         island
@@ -1281,7 +1527,7 @@ mod tests {
         let mut island = IslandService::new();
 
         island.post(media(), now);
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
 
         island
     }
@@ -1322,7 +1568,7 @@ mod tests {
         island.expire(now + HOVER_DELAY);
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
 
-        island.hover(MONITOR, false, now + ms(500));
+        island.hover(MONITOR, false, true, now + ms(500));
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
     }
 
@@ -1331,7 +1577,7 @@ mod tests {
         let now = Instant::now();
         let mut island = compact(now);
 
-        island.hover(MONITOR, false, now + ms(60));
+        island.hover(MONITOR, false, true, now + ms(60));
         assert_eq!(island.deadline(), None);
 
         island.expire(now + HOVER_DELAY);
@@ -1346,7 +1592,7 @@ mod tests {
         island.expire(now + HOVER_DELAY);
 
         let out = now + ms(500);
-        island.hover(MONITOR, false, out);
+        island.hover(MONITOR, false, true, out);
         assert_eq!(island.deadline(), Some(out + GRACE));
 
         island.expire(out + GRACE - ms(1));
@@ -1362,8 +1608,8 @@ mod tests {
         let mut island = compact(now);
 
         island.expire(now + HOVER_DELAY);
-        island.hover(MONITOR, false, now + ms(500));
-        island.hover(MONITOR, true, now + ms(600));
+        island.hover(MONITOR, false, true, now + ms(500));
+        island.hover(MONITOR, true, true, now + ms(600));
 
         // back on a Peek, there is nothing left to wait for
         assert_eq!(island.deadline(), None);
@@ -1372,29 +1618,29 @@ mod tests {
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
     }
 
-    #[test]
-    fn hover_does_nothing_without_a_primary() {
-        let mut island = IslandService::new();
-
-        island.hover(MONITOR, true, Instant::now());
-        assert_eq!(island.deadline(), None);
-    }
-
-    // #135: at Rest the hover delay shows the tray items, and leaving them waits out the grace
+    // #135: at Rest the hover delay shows the time's form with the tray items, and leaving it waits out the grace
     #[test]
     fn hover_at_rest_shows_the_tray_after_the_delay() {
         let now = Instant::now();
         let mut island = IslandService::new();
+
+        island.hover(MONITOR, true, true, now);
+        island.expire(now + HOVER_DELAY);
+        assert_eq!(island.presentation(MONITOR), Presentation::Tray(0));
+        island.hover(MONITOR, false, true, now + HOVER_DELAY);
+        island.expire(now + HOVER_DELAY + GRACE);
+
+        let now = now + ms(5_000);
         island.set_tray(2, now);
 
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         assert_eq!(island.deadline(), Some(now + HOVER_DELAY));
 
         island.expire(now + HOVER_DELAY);
         assert_eq!(island.presentation(MONITOR), Presentation::Tray(2));
 
         let out = now + ms(1_000);
-        island.hover(MONITOR, false, out);
+        island.hover(MONITOR, false, true, out);
         assert_eq!(island.deadline(), Some(out + GRACE));
 
         island.expire(out + GRACE);
@@ -1415,18 +1661,20 @@ mod tests {
     }
 
     #[test]
-    fn withdrawal_cancels_the_delay_and_the_grace() {
+    fn withdrawal_hands_the_delay_to_rest_and_cancels_the_grace() {
         let now = Instant::now();
         let mut island = compact(now);
 
+        // the pointer still on it, the delay goes on to Rest's own form
         island.withdraw(media().id(), now + ms(60));
-        assert_eq!(island.deadline(), None);
+        island.expire(now + HOVER_DELAY);
+        assert_eq!(island.presentation(MONITOR), Presentation::Tray(0));
 
         // a Peek the pointer left rests at once, its grace has nothing to return to
         let mut island = compact(now);
 
         island.expire(now + HOVER_DELAY);
-        island.hover(MONITOR, false, now + ms(500));
+        island.hover(MONITOR, false, true, now + ms(500));
         island.withdraw(media().id(), now + ms(600));
 
         assert_eq!(island.presentation(MONITOR), Presentation::Rest);
@@ -1438,7 +1686,7 @@ mod tests {
         let now = Instant::now();
         let mut island = expanded(now);
 
-        island.hover(MONITOR, false, now);
+        island.hover(MONITOR, false, true, now);
 
         assert!(!island.armed(MONITOR));
         assert_eq!(island.deadline(), Some(now + GRACE));
@@ -1456,8 +1704,8 @@ mod tests {
         let now = Instant::now();
         let mut island = expanded(now);
 
-        island.hover(MONITOR, false, now);
-        island.hover(MONITOR, true, now + ms(100));
+        island.hover(MONITOR, false, true, now);
+        island.hover(MONITOR, true, true, now + ms(100));
 
         assert_eq!(island.deadline(), None);
 
@@ -1470,8 +1718,8 @@ mod tests {
         let now = Instant::now();
         let mut island = expanded(now);
 
-        island.hover(MONITOR, false, now);
-        island.hover(MONITOR, false, now + ms(100));
+        island.hover(MONITOR, false, true, now);
+        island.hover(MONITOR, false, true, now + ms(100));
 
         assert_eq!(island.deadline(), Some(now + GRACE));
     }
@@ -1480,8 +1728,8 @@ mod tests {
     fn leaving_a_resting_island_sets_no_deadline() {
         let mut island = IslandService::new();
 
-        island.hover(MONITOR, true, Instant::now());
-        island.hover(MONITOR, false, Instant::now());
+        island.hover(MONITOR, true, true, Instant::now());
+        island.hover(MONITOR, false, true, Instant::now());
         assert_eq!(island.deadline(), None);
     }
 
@@ -1490,7 +1738,7 @@ mod tests {
         let now = Instant::now();
         let mut island = expanded(now);
 
-        island.hover(MONITOR, false, now);
+        island.hover(MONITOR, false, true, now);
         island.input(MONITOR, Input::Collapse, now);
 
         assert_eq!(island.deadline(), None);
@@ -1521,7 +1769,7 @@ mod tests {
 
         let mut island = expanded(now);
 
-        island.hover(MONITOR, false, later);
+        island.hover(MONITOR, false, true, later);
         island.input(MONITOR, Input::Wheel(3.0), later);
 
         assert_eq!(island.deadline(), Some(later + GRACE));
@@ -1534,7 +1782,7 @@ mod tests {
         let mut island = expanded(now);
 
         island.input(MONITOR, Input::RightClick(Segment::Primary), now);
-        island.hover(MONITOR, false, now + ms(10));
+        island.hover(MONITOR, false, true, now + ms(10));
 
         assert_eq!(island.deadline(), None);
         assert!(island.pinned(MONITOR));
@@ -1545,9 +1793,9 @@ mod tests {
 
         // unpinned, leaving collapses after the grace again
         let back = now + ms(20);
-        island.hover(MONITOR, true, back);
+        island.hover(MONITOR, true, true, back);
         island.input(MONITOR, Input::RightClick(Segment::Primary), back);
-        island.hover(MONITOR, false, back);
+        island.hover(MONITOR, false, true, back);
 
         assert_eq!(island.deadline(), Some(back + GRACE));
     }
@@ -1561,7 +1809,7 @@ mod tests {
         assert_eq!(island.deadline(), None);
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
 
-        island.hover(MONITOR, false, now + ms(80));
+        island.hover(MONITOR, false, true, now + ms(80));
         island.expire(now + Duration::from_secs(10));
 
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
@@ -1579,13 +1827,13 @@ mod tests {
         let mut island = IslandService::new();
 
         island.open(MONITOR, Surface::Launcher, now);
-        island.hover(MONITOR, true, now + ms(10));
+        island.hover(MONITOR, true, true, now + ms(10));
         island.input(MONITOR, Input::RightClick(Segment::Primary), now + ms(20));
 
         assert!(!island.held(MONITOR));
         assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
 
-        island.hover(MONITOR, false, now + ms(30));
+        island.hover(MONITOR, false, true, now + ms(30));
         island.expire(now + HOLD + GRACE);
 
         assert_eq!(island.deadline(), None);
@@ -1629,6 +1877,9 @@ mod tests {
         let now = Instant::now();
         let mut island = IslandService::new();
 
+        // a bouncy spring passes 95% sooner; the responses are measured without
+        island.timings.damping = crate::island::motion::CRITICAL;
+
         island.open(MONITOR, Surface::Controls, now);
         let expanded = island.shape(MONITOR, now + EXPAND);
 
@@ -1660,13 +1911,13 @@ mod tests {
         };
 
         island.post(media(), now);
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         assert_eq!(island.deadline(), Some(now + ms(300)));
 
         island.expire(now + ms(300));
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
 
-        island.hover(MONITOR, false, now + ms(300));
+        island.hover(MONITOR, false, true, now + ms(300));
         assert_eq!(island.deadline(), Some(now + ms(900)));
 
         island.open(MONITOR, Surface::Controls, now + ms(1_000));
@@ -1768,7 +2019,20 @@ mod tests {
         island.input(MONITOR, Input::Open(Surface::Launcher), switch);
 
         assert_eq!(island.presentation(MONITOR), launcher);
-        assert_eq!(geometry::shape(notifications), geometry::shape(launcher));
+        assert_eq!(
+            geometry::shape(
+                notifications,
+                geometry::DEFAULT_LARGEST,
+                Hang::default(),
+                TimePeek::ALL
+            ),
+            geometry::shape(
+                launcher,
+                geometry::DEFAULT_LARGEST,
+                Hang::default(),
+                TimePeek::ALL
+            )
+        );
         assert!(!island.settled(MONITOR, switch));
 
         let shown = |at| presentations(&island, at);
@@ -1850,7 +2114,7 @@ mod tests {
         let mut island = compact(now);
 
         island.open(MONITOR, Surface::Controls, now);
-        island.hover(MONITOR, false, now);
+        island.hover(MONITOR, false, true, now);
         assert_eq!(island.deadline(), Some(now + GRACE));
 
         island.set_niri(None, true, later);
@@ -1885,8 +2149,8 @@ mod tests {
         let now = Instant::now();
 
         island.open(MONITOR, Surface::Controls, now);
-        island.hover(MONITOR, true, now);
-        island.hover(MONITOR, false, now);
+        island.hover(MONITOR, true, true, now);
+        island.hover(MONITOR, false, true, now);
         let later = now + ms(100);
         island.input("HDMI-A-1", Input::Click(Segment::Primary), later);
 
@@ -1981,7 +2245,7 @@ mod tests {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         run(&mut island, Command::Open(Surface::Media), now);
 
         assert_eq!(island.resolve(Command::Open(Surface::Media)), Ok(None));
@@ -2136,7 +2400,7 @@ mod tests {
     }
 
     fn workspace() -> Activity {
-        fixture::shown(Id::new(Kind::Workspace, MONITOR), Priority::Osd, OSD)
+        fixture::shown(Id::new(Kind::Workspace, MONITOR), Priority::Glance, OSD)
     }
 
     fn battery() -> Activity {
@@ -2166,6 +2430,32 @@ mod tests {
 
     fn shown(island: &IslandService, monitor: &str, now: Instant) -> Option<Activity> {
         island.frame(monitor, now).primary
+    }
+
+    // the OSD floats over a pinned Peek, and leaves it as it was
+    #[test]
+    fn a_pinned_peek_stays_under_an_osd() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        let osd = fixture::shown(Id::new(Kind::Volume, "osd"), Priority::Feedback, OSD);
+
+        island.post(media(), now);
+        island.hover(MONITOR, true, true, now);
+        island.input(MONITOR, Input::RightClick(Segment::Primary), now + ms(10));
+        island.hover(MONITOR, false, true, now + ms(20));
+        island.post(osd.clone(), now + ms(100));
+
+        let frame = island.frame(MONITOR, now + ms(100));
+        assert_eq!(frame.primary, Some(osd));
+        assert!(island.floats(MONITOR, &frame));
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+
+        let gone = now + ms(100) + OSD;
+        island.expire(gone);
+
+        assert_eq!(shown(&island, MONITOR, gone), Some(media()));
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+        assert!(island.pinned(MONITOR));
     }
 
     // the accept case of #20 and #109: shows, expires, and the persistent one returns with no re-post
@@ -2330,6 +2620,86 @@ mod tests {
         assert_eq!(segments(&island), (Some(battery().id().clone()), None));
     }
 
+    /*
+     * along a side edge Peek and Tray are shorter than the pill they grow from, so a pointer still
+     * at its end would be left out of the region (niri reports that as a leave, #3) and the island
+     * would collapse; on every edge the region holds where the pointer was until it moves on
+     */
+    #[test]
+    fn a_small_form_growing_under_a_still_pointer_never_leaves_it_out() {
+        use geometry::{COMPACT, Canvas, DEFAULT_LARGEST, Edge, Hang, REST, Side, input_area};
+
+        let edges = [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right];
+        let sides = [Side::Start, Side::Middle, Side::End];
+
+        for (edge, side) in edges
+            .into_iter()
+            .flat_map(|edge| sides.map(|side| (edge, side)))
+        {
+            let hang = Hang { edge, side };
+            let canvas = Canvas::around(DEFAULT_LARGEST, hang);
+            let region = |island: &IslandService, at| {
+                let shape = island.shape(MONITOR, at);
+                let area = input_area(geometry::body(shape, hang, canvas), canvas);
+
+                geometry::holding(area, island.under(MONITOR), hang, canvas)
+            };
+            let corners = |area: geometry::Rect| {
+                let (right, bottom) = (area.right() - 1.0, area.y + area.height - 1.0);
+
+                [
+                    (area.x, area.y),
+                    (right, area.y),
+                    (area.x, bottom),
+                    (right, bottom),
+                ]
+            };
+
+            // Compact to Peek, Rest to Tray
+            for (small, tray) in [(COMPACT, 0), (REST, 1)] {
+                let now = Instant::now();
+                let mut island = IslandService::new();
+                island.resize(DEFAULT_LARGEST, hang, TimePeek::ALL, now);
+                island.set_tray(tray, now);
+                if small == COMPACT {
+                    island.post(media(), now);
+                }
+                let settled = now + Duration::from_secs(1);
+                let from = region(&island, settled);
+
+                island.hover(MONITOR, true, true, settled);
+                island.expire(settled + HOVER_DELAY);
+                assert_ne!(island.presentation(MONITOR), Presentation::Compact);
+
+                // every frame of the morph, the region still holds each corner the pointer may be at
+                for step in 0..=60 {
+                    let at = settled + HOVER_DELAY + ms(step * 16);
+                    let region = region(&island, at);
+                    for (x, y) in corners(from) {
+                        assert!(
+                            region.holds(x, y),
+                            "{hang:?} {small:?} left ({x}, {y}) out at {step}"
+                        );
+                    }
+                }
+
+                // moved onto the body it grew into, the region is the body's alone again
+                let later = settled + Duration::from_secs(2);
+                let body = input_area(
+                    geometry::body(island.shape(MONITOR, later), hang, canvas),
+                    canvas,
+                );
+                island.moved(
+                    MONITOR,
+                    body.x + body.width / 2.0,
+                    body.y + body.height / 2.0,
+                    canvas,
+                );
+                assert_eq!(island.under(MONITOR), None, "{hang:?} {small:?}");
+            }
+        }
+    }
+
     // the segment the pointer is on when the hover delay ends peeks, not the one it came in on
     #[test]
     fn hover_peeks_the_segment_under_the_pointer_when_the_delay_ends() {
@@ -2338,7 +2708,7 @@ mod tests {
         island.post(battery(), now);
         island.post(timer("a"), now);
 
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         island.set_segment(MONITOR, Segment::Satellite);
         island.expire(now + HOVER_DELAY);
 
@@ -2353,7 +2723,7 @@ mod tests {
                 .is_empty()
         );
 
-        island.hover(MONITOR, false, now + HOVER_DELAY);
+        island.hover(MONITOR, false, true, now + HOVER_DELAY);
         island.expire(now + HOVER_DELAY + GRACE);
         assert_eq!(island.presentation(MONITOR), Presentation::Split);
     }
@@ -2366,13 +2736,26 @@ mod tests {
     fn a_body_becoming_split_under_a_still_pointer_acts_on_the_segment_there() {
         use geometry::{COMPACT, input_area};
 
-        let right_end = |shape| geometry::segment(input_area(geometry::body(shape)).right() - 1.0);
+        let right_end = |shape| {
+            let hang = geometry::Hang::default();
+            let canvas =
+                geometry::Canvas::around(geometry::DEFAULT_LARGEST, geometry::Hang::default());
+            let body = geometry::body(shape, hang, canvas);
+
+            geometry::segment(
+                input_area(body, canvas).right() - 1.0,
+                body.y,
+                0.0,
+                hang,
+                canvas,
+            )
+        };
 
         // in Compact, a Satellite arriving before the hover delay ends is the one that peeks
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
         island.post(battery(), now);
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         island.set_segment(MONITOR, right_end(COMPACT));
 
         island.post(timer("a"), now + ms(50));
@@ -2384,7 +2767,7 @@ mod tests {
         // at Rest, which takes no hover, a right click on the settled Split pins the Satellite
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
-        island.hover(MONITOR, true, now);
+        island.hover(MONITOR, true, true, now);
         island.set_segment(MONITOR, right_end(REST));
 
         island.post(battery(), now);
@@ -2525,7 +2908,7 @@ mod tests {
         let mid = now + ms(60);
         let shape = island.shape(OTHER, mid);
 
-        island.hover(OTHER, true, mid);
+        island.hover(OTHER, true, true, mid);
         assert_eq!(island.shape(OTHER, mid), shape);
 
         island.withdraw(media().id(), later);
@@ -2923,7 +3306,7 @@ mod tests {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
-        island.hover(OTHER, true, now);
+        island.hover(OTHER, true, true, now);
         island.input(OTHER, Input::Click(Segment::Primary), now);
         island.input(OTHER, Input::RightClick(Segment::Primary), now);
         island.post(auto("7"), now);
@@ -2972,8 +3355,8 @@ mod tests {
 
         island.post(media(), now);
         island.post(auto("7"), now);
-        island.hover(MONITOR, true, now + ms(100));
-        island.hover(MONITOR, false, now + ms(200));
+        island.hover(MONITOR, true, true, now + ms(100));
+        island.hover(MONITOR, false, true, now + ms(200));
 
         assert_eq!(island.deadline(), Some(now + AUTO));
 
@@ -2989,7 +3372,7 @@ mod tests {
 
         island.post(media(), now);
         island.post(auto("7"), now);
-        island.hover(MONITOR, true, now + ms(100));
+        island.hover(MONITOR, true, true, now + ms(100));
 
         island.expire(now + AUTO);
         assert_eq!(
@@ -3000,7 +3383,7 @@ mod tests {
         assert_eq!(island.deadline(), None);
 
         let out = now + AUTO + ms(500);
-        island.hover(MONITOR, false, out);
+        island.hover(MONITOR, false, true, out);
         assert_eq!(island.deadline(), Some(out + GRACE));
 
         island.expire(out + GRACE);
@@ -3032,7 +3415,7 @@ mod tests {
         let now = Instant::now();
         let mut island = focused_on(MONITOR, now);
 
-        island.hover(OTHER, true, now);
+        island.hover(OTHER, true, true, now);
         island.input(OTHER, Input::Click(Segment::Primary), now);
         island.input(OTHER, Input::RightClick(Segment::Primary), now);
         island.post(auto("7"), now);
@@ -3137,7 +3520,7 @@ mod tests {
 
             island.post(media(), now);
             island.post(auto("7"), now);
-            island.hover(MONITOR, true, now);
+            island.hover(MONITOR, true, true, now);
             act(&mut island, later);
 
             let chosen = island.presentation(MONITOR);

@@ -4,7 +4,7 @@
 //! as a Critical Session Activity on every island with Cancel and Now; another asked meanwhile
 //! takes its place and counts from the start.
 //!
-//! logind is asked over a zbus connection of its own, not Amane's `Bus`, which answers a refusal
+//! logind is asked over a zbus connection of its own, not `src/bus.rs`'s `Bus`, which answers a refusal
 //! with nothing: a refusal, like polkit's or an inhibitor's, shows as a failed Session Activity.
 //! It is asked not to have polkit ask for a password, which could be typed long after a Cancel, so
 //! one that needs it is refused. One call at a time waits on a thread of its own for its answer,
@@ -23,7 +23,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::Service;
+use kanade_runtime::service::Service;
 use zbus::Message;
 use zbus::blocking::Connection;
 use zbus::zvariant::ObjectPath;
@@ -358,8 +358,8 @@ fn lock() -> Result<String, String> {
     };
 
     match started {
-        Ok(lock::Started::Requested(text)) => Ok(text),
-        Ok(lock::Started::Unknown(why)) | Err(why) => {
+        Ok(text) => Ok(text),
+        Err(why) => {
             failed(Leave::Lock, why.clone());
             Err(why)
         }

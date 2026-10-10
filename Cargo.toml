@@ -5,26 +5,34 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+[workspace]
+members = ["crates/lock", "crates/runtime"]
+
 [dependencies]
-amane = { git = "https://github.com/MystiaFin/amane", rev = "6ace43e5c69cd4b39bb06b28c20fc4b883422519" }
-# Amane already builds it; only `kanade doctor` lists the compositor's globals with it (#105),
-# Amane owns every other use of Wayland
+# the runtime already builds it; only `kanade doctor` lists the compositor's globals with it (#105),
+# the runtime owns every other use of Wayland but the lock screen's (ADR 0025)
 wayland-client = "0.31"
-# Amane already builds it; for the config watch (#102)
+# the lock screen, held and drawn over its own Wayland connection the moment niri asks (ADR 0025)
+kanade-lock = { path = "crates/lock" }
+# Kanade's runtime: Wayland, windows, input, drawing and Services (ADR 0028)
+kanade-runtime = { path = "crates/runtime" }
+# the default speaker's and microphone's levels (ADR 0027)
+libpulse-binding = "2.30"
+# for the config watch (#102)
 inotify = { version = "0.11", default-features = false }
 serde = "1"
-# Amane already builds it; the tray reads who called the watcher, and the session logind's refusals,
-# which Amane's `Bus` does not give (#134, #156, ADR 0011)
+# Kanade's D-Bus (src/bus.rs); the tray reads who called the watcher, and the session logind's
+# refusals (#134, #156, ADR 0011)
 zbus = "5"
 # zbus already builds it; the flags zbus takes a bus name with
 enumflags2 = "0.7"
 toml = { version = "1", default-features = false, features = ["display", "parse", "serde"] }
 # the emoji and their shortcodes the Launcher searches (#138)
 emojis = "0.9.0"
-# Amane draws only outlined letters, so the Launcher shows an emoji as the picture its color font
+# the runtime draws only outlined letters, so the Launcher shows an emoji as the picture its color font
 # holds; rustybuzz finds which glyph a sequence like a flag is (#138)
 rustybuzz = "0.20"
-# Amane already builds it; finds the emoji font
+# the runtime already builds it; finds the emoji font
 fontconfig = "0.11"
 # local calendars: iCalendar parsing, time zones and recurrence (#150, ADR 0015)
 calcard = { version = "0.3", default-features = false }
@@ -32,13 +40,26 @@ calcard = { version = "0.3", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 # Google Calendar sync (#151, ADR 0016): HTTPS to Google, through rustls with its web PKI roots
 ureq = "3"
-# Amane already builds it; Google's answers
+# Google's answers
 serde_json = "1"
 # ureq already builds them: the PKCE verifier's randomness and its SHA-256, its base64url, and the
 # sign-in address's escapes
 ring = "0.17"
 base64 = "0.23"
 percent-encoding = "2"
+# png already builds them; the checksums of the pictures Kanade writes, as fast as a rim
+# streaming behind a scrolling page needs
+crc32fast = "1"
+simd-adler32 = "0.3"
+# the runtime already builds them; how light the wallpaper behind the lock screen is (ADR 0024)
+png = "0.18"
+zune-jpeg = "0.5"
+# a webp, gif or svg wallpaper or face for the lock screen, first frame only; the runtime builds resvg
+image-webp = "0.2"
+gif = { version = "0.14", default-features = false, features = ["std"] }
+resvg = { version = "0.48.1", default-features = false }
+# RustCrypto already builds it; the password zeroed on every path it leaves the lock by
+zeroize = { version = "1", features = ["std"] }
 
 [dev-dependencies]
 syn = { version = "2", features = ["full", "visit"] }
@@ -52,5 +73,10 @@ zbus = { version = "5", features = ["p2p"] }
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+# paints the lock screen on the CPU and bends its glass's rim, too slow unoptimised for niri's second
+[profile.dev.package.kanade-lock]
 opt-level = 3
 debug = false

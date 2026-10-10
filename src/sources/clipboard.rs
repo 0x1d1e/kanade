@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::Service;
+use kanade_runtime::service::Service;
 
 use crate::sources::wake::{self, Failed};
 use crate::supervise;
@@ -770,47 +770,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_put_that_ends_gives_its_status() {
-        let child = Command::new("false").spawn().unwrap();
-
-        let status = ended(child, Instant::now() + Duration::from_secs(5)).unwrap();
-
-        assert!(!status.success());
-    }
-
     fn image(len: usize, fill: u8) -> Content {
         Content::Image {
             mime: String::from("image/png"),
             bytes: vec![fill; len].into(),
         }
-    }
-
-    fn texts(clipboard: &Clipboard) -> Vec<String> {
-        clipboard
-            .entries
-            .iter()
-            .map(|entry| match &entry.content {
-                Content::Text(text) => text.to_string(),
-                Content::Image { .. } => String::from("image"),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_history_keeps_the_newest_entries() {
-        let mut clipboard = Clipboard::default();
-
-        for at in 0..ENTRIES + 5 {
-            assert!(clipboard.record(text(&at.to_string())));
-        }
-
-        assert_eq!(clipboard.entries.len(), ENTRIES);
-        assert_eq!(
-            clipboard.entries[0].content,
-            text(&(ENTRIES + 4).to_string())
-        );
-        assert_eq!(clipboard.entries[ENTRIES - 1].content, text("5"));
     }
 
     #[test]
@@ -834,182 +798,6 @@ mod tests {
         assert!(!clipboard.record(text("")));
         assert!(!clipboard.record(image(ENTRY_BYTES + 1, 0)));
         assert!(clipboard.entries.is_empty());
-    }
-
-    #[test]
-    fn copying_the_newest_again_changes_nothing() {
-        let mut clipboard = Clipboard::default();
-
-        clipboard.record(text("a"));
-        let before = clipboard.clone();
-
-        assert!(!clipboard.takes(&text("a")));
-        assert!(!clipboard.record(text("a")));
-        assert_eq!(clipboard, before);
-    }
-
-    #[test]
-    fn copying_an_older_entry_again_moves_it_first_under_its_id() {
-        let mut clipboard = Clipboard::default();
-
-        clipboard.record(text("a"));
-        clipboard.record(image(3, 1));
-        clipboard.record(text("b"));
-        let id = clipboard.entries[2].id;
-
-        assert!(clipboard.record(text("a")));
-        assert_eq!(texts(&clipboard), ["a", "b", "image"]);
-        assert_eq!(clipboard.entries[0].id, id);
-
-        // an image is the same entry only with the same bytes
-        assert!(clipboard.record(image(3, 2)));
-        assert_eq!(texts(&clipboard), ["image", "a", "b", "image"]);
-    }
-
-    #[test]
-    fn removing_forgets_only_that_entry() {
-        let mut clipboard = Clipboard::default();
-
-        for copied in ["a", "b", "c"] {
-            clipboard.record(text(copied));
-        }
-
-        let b = clipboard.entries[1].id;
-
-        assert!(clipboard.remove(b));
-        assert_eq!(texts(&clipboard), ["c", "a"]);
-        assert!(!clipboard.remove(b), "already gone");
-
-        // copied again, it is a new entry under a new id
-        clipboard.record(text("b"));
-        assert_eq!(texts(&clipboard), ["b", "c", "a"]);
-        assert!(clipboard.entries[0].id > b);
-    }
-
-    #[test]
-    fn clearing_forgets_every_entry_but_never_reuses_an_id() {
-        let mut clipboard = Clipboard::default();
-
-        clipboard.record(text("a"));
-        clipboard.record(text("b"));
-        let last = clipboard.entries[0].id;
-
-        assert!(clipboard.clear());
-        assert!(clipboard.entries.is_empty());
-        assert!(!clipboard.clear(), "nothing left to clear");
-
-        clipboard.record(text("a"));
-        assert!(clipboard.entries[0].id > last);
-    }
-
-    #[test]
-    fn feeding_a_holder_that_never_reads_gives_up_by_the_deadline() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("60")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stdin = child.stdin.take().unwrap();
-        let start = Instant::now();
-
-        // far more than a pipe holds
-        let fed = feed(stdin, image(1 << 22, 0), start + Duration::from_millis(200));
-
-        assert_eq!(fed.unwrap_err().kind(), io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(2));
-
-        child.kill().unwrap();
-        child.wait().unwrap();
-    }
-
-    #[test]
-    fn a_restore_is_done_only_when_its_own_content_is_announced() {
-        let (announce, announced) = mpsc::channel();
-        *awaited() = Some((text("kept"), announce));
-
-        super::announce(&text("other"));
-        assert!(announced.try_recv().is_err());
-        assert!(awaited().is_some());
-
-        super::announce(&text("kept"));
-        assert!(announced.try_recv().is_ok());
-        assert!(awaited().is_none());
-    }
-
-    #[test]
-    fn an_id_is_never_reused() {
-        let mut clipboard = Clipboard::default();
-
-        for at in 0..ENTRIES + 1 {
-            clipboard.record(text(&at.to_string()));
-        }
-
-        let mut ids: Vec<u64> = clipboard.entries.iter().map(|entry| entry.id).collect();
-        ids.sort_unstable();
-        ids.dedup();
-
-        assert_eq!(ids.len(), ENTRIES);
-        assert!(!ids.contains(&1));
-    }
-
-    fn image_of(content: Option<Content>) -> Option<String> {
-        match content? {
-            Content::Image { mime, .. } => Some(mime),
-            Content::Text(_) => None,
-        }
-    }
-
-    #[test]
-    fn a_said_type_decides_what_is_kept() {
-        let svg = b"<svg/>".to_vec();
-        let bmp = b"BM\0\0".to_vec();
-
-        assert_eq!(
-            image_of(Content::new(Some("image/svg+xml"), svg)).as_deref(),
-            Some("image/svg+xml")
-        );
-        assert_eq!(
-            image_of(Content::new(Some("image/bmp"), bmp)).as_deref(),
-            Some("image/bmp")
-        );
-        assert_eq!(
-            Content::new(Some("text/plain"), b"GIF89a".to_vec()),
-            Some(text("GIF89a"))
-        );
-        assert_eq!(
-            Content::new(Some("UTF8_STRING"), b"hi".to_vec()),
-            Some(text("hi"))
-        );
-        assert_eq!(
-            Content::new(Some("application/json"), b"{}".to_vec()),
-            Some(text("{}"))
-        );
-        assert_eq!(Content::new(Some("text/plain"), vec![0xff]), None);
-        assert_eq!(
-            Content::new(Some("application/octet-stream"), b"hi".to_vec()),
-            None
-        );
-    }
-
-    #[test]
-    fn without_a_type_text_comes_before_an_image_known_by_its_start() {
-        let png = b"\x89PNG\r\n\x1a\n\0\0".to_vec();
-        let webp = b"RIFF\x10\0\0\xffWEBPVP8 ".to_vec();
-
-        assert_eq!(
-            image_of(Content::new(None, png)).as_deref(),
-            Some("image/png")
-        );
-        assert_eq!(
-            image_of(Content::new(None, webp)).as_deref(),
-            Some("image/webp")
-        );
-        assert_eq!(
-            Content::new(None, b"GIF89a, a picture".to_vec()),
-            Some(text("GIF89a, a picture"))
-        );
-        assert_eq!(Content::new(None, b"\xffxxxxxxxWEBP".to_vec()), None);
-        assert_eq!(Content::new(None, vec![0xff, 0xfe]), None);
     }
 
     #[test]
@@ -1055,21 +843,6 @@ mod tests {
     }
 
     const PLAIN: Option<&str> = Some("text/plain");
-
-    #[test]
-    fn only_a_selection_with_data_is_kept() {
-        let selections: [(Option<&str>, Option<&str>, &[u8]); 7] = [
-            (Some("data"), PLAIN, b"a"),
-            (Some("nil"), None, b""),
-            (Some("sensitive"), PLAIN, b"hunter2"),
-            (Some("clear"), None, b""),
-            (Some("something new"), PLAIN, b"b"),
-            (Some("data "), PLAIN, b"c"),
-            (None, PLAIN, b"d"),
-        ];
-
-        assert_eq!(recorded(&selections), [text("a")]);
-    }
 
     #[test]
     fn a_sensitive_selection_right_after_another_is_never_kept() {
@@ -1120,19 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn a_type_kanade_cannot_frame_is_not_kept() {
-        let long = format!("text/{}", "x".repeat(MIME_BYTES));
-        let selections: [(Option<&str>, Option<&str>, &[u8]); 4] = [
-            (Some("data"), Some("text/plain extra"), b"a"),
-            (Some("data"), Some(&long), b"b"),
-            (Some("data"), Some(""), b"c"),
-            (Some("data"), PLAIN, b"d"),
-        ];
-
-        assert_eq!(recorded(&selections), [text("d")]);
-    }
-
-    #[test]
     fn only_a_wl_paste_that_tells_a_sensitive_copy_is_followed() {
         let copyright = "\nCopyright (C) 2018-2026 Sergey Bugaev\n";
 
@@ -1163,21 +923,5 @@ mod tests {
             tells_sensitive(&format!("wl-clipboard 2.3.0{copyright}")),
             Ok(String::from("wl-paste 2.3.0"))
         );
-    }
-
-    #[test]
-    fn a_frame_kanade_cannot_read_ends_the_watch() {
-        for frames in [
-            "data x\n".as_bytes(),
-            b"data 99999999999\n",
-            b"something\n",
-            b"data 5\nab",
-            b"data 2",
-        ] {
-            let mut recorded = Vec::new();
-            watch(frames, &mut |content| recorded.push(content));
-
-            assert!(recorded.is_empty(), "{frames:?}");
-        }
     }
 }

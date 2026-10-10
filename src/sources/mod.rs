@@ -1,30 +1,37 @@
-// produce Activities from system state, or the Services the views read; may use Amane services
-// and Island::write()
+// produce Activities from system state, or the Services the views read; may read Services and
+// post through Island::write()
 
 pub mod apps;
 pub mod audio;
 pub mod battery;
 pub mod bluetooth;
+pub mod brightness;
 pub mod bus;
 pub mod caffeine;
 pub mod calendar;
 pub mod capture;
 pub mod clipboard;
 pub mod desktop;
+pub mod fullscreen;
 pub mod google;
 pub mod icons;
 pub mod json;
+pub mod keys;
 pub mod launch;
 pub mod media;
 pub mod network;
 pub mod niri;
 pub mod notifications;
 pub mod osd;
+pub mod palette;
 pub mod pipewire;
 pub mod playback;
 pub mod power;
 pub mod privacy;
+pub mod pulse;
+pub mod radios;
 pub mod recording;
+pub mod seat;
 pub mod session;
 pub mod sleep;
 pub mod system;

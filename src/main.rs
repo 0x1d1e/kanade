@@ -1,20 +1,25 @@
+mod autohide;
 mod banners;
 #[cfg(test)]
 mod boundary;
+mod bus;
 mod cli;
 mod clock;
 mod cluster;
 mod config;
 mod dock;
 mod doctor;
+mod glass;
 mod icon;
 mod ipc;
 mod island;
 mod lock;
+mod look;
+mod merge;
 mod modules;
-mod osd;
 mod raster;
 mod reload;
+mod scene;
 mod settings;
 mod shadow;
 mod sources;
@@ -26,7 +31,7 @@ mod view;
 use std::env;
 use std::process::ExitCode;
 
-use amane::App;
+use kanade_runtime::App;
 
 // with no verb, the shell, so its user unit (`lock::UNIT`) starts it; else a verb for it
 fn main() -> ExitCode {
@@ -41,6 +46,6 @@ fn main() -> ExitCode {
         return cli::run(&arguments);
     }
 
-    modules::start(App::new()).run();
+    modules::start(theme::font(App::new())).run();
     ExitCode::SUCCESS
 }

@@ -1,5 +1,6 @@
 //! The Launcher Surface (plan 7): a search over its providers (#138), the apps `sources::apps`
-//! lists, the calculator, emoji and, with the `wallpaper` Module on, wallpapers, best answer first.
+//! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, Settings and
+//! each setting) and, with the `wallpaper` Module on, wallpapers, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
 //! starts and the island closes; a value or an emoji is copied, or a wallpaper set, and the island
@@ -10,49 +11,66 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use amane::{
-    Center, Column, Cursor, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Service, Size,
-    Stack, Start, Text, Widget, children,
+use kanade_runtime::service::{self, Service};
+use kanade_runtime::{
+    Center, Column, Cursor, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Size, Stack,
+    Start, Text, Widget, children,
 };
 
 use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::settings;
 use crate::sources::apps::{App, Apps};
+use crate::sources::bluetooth::Adapter;
+use crate::sources::network::Connectivity;
+use crate::sources::system::Radio;
 use crate::sources::wallpaper::Unset;
 use crate::sources::{self, clipboard};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
 
-use super::Ring;
+use super::{Ring, controls};
 
 mod apps;
 mod calculator;
+mod destinations;
 mod emoji;
 mod provider;
 mod wallpaper;
 
 use apps::Apps as AppsProvider;
 use calculator::Calculator;
+use destinations::{Destination, Destinations};
 use emoji::Emoji;
 use provider::{Action, Answer, Mark};
 use wallpaper::Wallpapers;
 
-// the content's width, which every row fills
-const WIDTH: f32 = geometry::EXPANDED_MAX.width - 2.0 * INSET;
+// the content's width, which every row fills, as wide as the largest body (`island.width`)
+fn width() -> f32 {
+    view::largest().width - 2.0 * INSET
+}
 
 const FIELD: f32 = 44.0;
 const FIELD_INSET: f32 = 16.0;
 const GAP: f32 = 12.0;
 
-// what the rows scroll in, `ROWS` at a time
-const LIST: f32 = geometry::EXPANDED_MAX.height - 2.0 * INSET - FIELD - GAP;
+// what the rows scroll in, as tall as the largest body (`island.height`) leaves
+fn room() -> f32 {
+    view::largest().height - 2.0 * INSET - FIELD - GAP
+}
+
+// what a state, as no match, takes of the list
+const STATE: f32 = 120.0;
+
+// `ROWS` at a time in the least largest body, more in a taller one
+const LEAST_LIST: f32 = geometry::CALENDAR.height - 2.0 * INSET - FIELD - GAP;
 
 const ROWS: usize = 5;
 const ROW_GAP: f32 = 6.0;
-const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
+const ROW: f32 = (LEAST_LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 const ROW_INSET: f32 = 8.0;
 
 const ICON: f32 = 28.0;
@@ -119,6 +137,7 @@ impl Search {
         match action {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Wallpaper(_) => Some(format!("Not set: {why}")),
+            Action::Open(_) => Some(format!("Not opened: {why}")),
             Action::Launch(_) => None,
         }
     }
@@ -132,6 +151,13 @@ impl Search {
             && matches!(&self.pressing, Pressing::Waiting(waiting) if *waiting == action)
         {
             self.pressing = Pressing::Failed(action, why);
+        }
+    }
+
+    // an `action` that opens another Surface was refused, for `why`; nothing once the visit is over
+    fn open_refused(&mut self, visit: u64, action: Action, why: &str) {
+        if self.visit == visit {
+            self.pressing = Pressing::Failed(action, String::from(why));
         }
     }
 
@@ -210,11 +236,56 @@ impl Search {
 
 // how far `count` rows can scroll: none while they fit
 fn most(count: usize) -> f32 {
-    (content(count) - LIST).max(0.0)
+    (content(count) - room()).max(0.0)
 }
 
 fn content(count: usize) -> f32 {
     count as f32 * ROW + count.saturating_sub(1) as f32 * ROW_GAP
+}
+
+// how tall `count` answers ask the body to be, or a state for none; the island caps it (ADR 0030)
+fn asks(count: usize) -> f32 {
+    let list = if count == 0 { STATE } else { content(count) };
+
+    2.0 * INSET + FIELD + GAP + list
+}
+
+// the list as tall as its rows, scrolling once they reach past the room
+fn listed(count: usize) -> f32 {
+    content(count).min(room())
+}
+
+/*
+ * tells the island how tall the Launcher asks to be: a new visit lists every app, the one open what
+ * its query found. After each change of the apps or the search, never from a view
+ */
+pub fn fit() {
+    let _ordered = super::fitting();
+    let visit = IslandService::read().visit();
+
+    let (fresh, open) = {
+        let apps = Apps::read();
+        let query = Search::read().of(visit).query;
+
+        (
+            asks(found(apps.list(), "").len()),
+            asks(found(apps.list(), &query).len()),
+        )
+    };
+
+    IslandService::write().fit(
+        Surface::Launcher,
+        fresh,
+        Some((visit, open)),
+        Instant::now(),
+    );
+}
+
+// at start: the body follows the apps and the search from now on
+pub fn start() {
+    service::watch::<Apps>(fit);
+    service::watch::<Search>(fit);
+    fit();
 }
 
 fn top(row: usize) -> f32 {
@@ -225,7 +296,7 @@ fn top(row: usize) -> f32 {
 fn reveal(offset: f32, row: usize) -> f32 {
     let top = top(row);
 
-    offset.min(top).max(top + ROW - LIST)
+    offset.min(top).max(top + ROW - room())
 }
 
 /*
@@ -235,7 +306,7 @@ fn reveal(offset: f32, row: usize) -> f32 {
 fn shown(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
     let first = (offset / step).floor() as usize;
-    let end = ((offset + LIST) / step).ceil() as usize;
+    let end = ((offset + room()) / step).ceil() as usize;
 
     (first.min(count), end.min(count))
 }
@@ -244,7 +315,7 @@ fn shown(offset: f32, count: usize) -> (usize, usize) {
 fn whole(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
     let first = (offset / step).ceil() as usize;
-    let last = ((offset + LIST + ROW_GAP) / step).floor() as usize;
+    let last = ((offset + room() + ROW_GAP) / step).floor() as usize;
 
     (
         first.min(count.saturating_sub(1)),
@@ -255,6 +326,31 @@ fn whole(offset: f32, count: usize) -> (usize, usize) {
 // whether the query searches wallpapers, which it does only with their Module on
 fn wallpapers(query: &str) -> bool {
     query.trim().starts_with(wallpaper::PREFIX) && modules::on("wallpaper")
+}
+
+// where Kanade goes that exists now: its Module is on and, for a radio, the machine has one
+fn destinations() -> Destinations {
+    offered(
+        modules::on,
+        || Connectivity::read().wifi,
+        || Adapter::read().radio,
+    )
+}
+
+// the destinations `on` says have their Module running, a radio read only then
+fn offered(
+    on: impl Fn(&str) -> bool,
+    wifi: impl Fn() -> Radio,
+    bluetooth: impl Fn() -> Radio,
+) -> Destinations {
+    let controls = on("controls");
+
+    Destinations {
+        wifi: controls && on("network") && wifi() != Radio::Missing,
+        bluetooth: controls && on("bluetooth") && bluetooth() != Radio::Missing,
+        clipboard: on("clipboard-surface"),
+        settings: on("settings"),
+    }
 }
 
 // what the providers find for the query, best first
@@ -275,6 +371,7 @@ fn found(apps: &[App], query: &str) -> Vec<Answer> {
         &[
             &Calculator,
             &AppsProvider(apps, modules::on("wallpaper")),
+            &destinations(),
             &Emoji,
             &wallpapers,
         ],
@@ -316,7 +413,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         ))
     };
 
-    let shape = geometry::EXPANDED_MAX;
+    let shape = view::largest();
 
     Rectangle::new()
         .width(shape.width)
@@ -328,7 +425,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
                 Box::new(field(&search.query)) as Box<dyn Widget>,
                 list,
             ])
-            .width(WIDTH)
+            .width(width())
             .gap(GAP),
         )
 }
@@ -352,12 +449,12 @@ fn directory() -> String {
  * the field shows its end, where the typing is
  */
 fn field(query: &str) -> Rectangle {
-    let room = WIDTH - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
+    let room = width() - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
 
     let caret = Rectangle::new()
         .width(CARET)
         .height(QUERY + 4.0)
-        .fill(theme::ISLAND.on_surface);
+        .fill(theme::island().on_surface);
 
     let typed: Box<dyn Widget> = if query.is_empty() {
         Box::new(
@@ -365,7 +462,7 @@ fn field(query: &str) -> Rectangle {
                 caret,
                 Text::new(placeholder())
                     .size(QUERY)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM),
             ])
             .align(Center),
@@ -375,10 +472,10 @@ fn field(query: &str) -> Rectangle {
     };
 
     Rectangle::new()
-        .width(WIDTH)
+        .width(width())
         .height(FIELD)
         .radius(FIELD / 2.0)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right: FIELD_INSET,
@@ -388,7 +485,7 @@ fn field(query: &str) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::ISLAND.on_surface_variant))
+                Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
                     as Box<dyn Widget>,
                 typed,
             ])
@@ -400,9 +497,9 @@ fn field(query: &str) -> Rectangle {
 // what to type, wallpapers only with their Module on
 fn placeholder() -> &'static str {
     if modules::on("wallpaper") {
-        "Search apps, 2+2, :emoji or @wallpaper"
+        "Search apps, settings, 2+2, :emoji or @wallpaper"
     } else {
-        "Search apps, 2+2 or :emoji"
+        "Search apps, settings, 2+2 or :emoji"
     }
 }
 
@@ -411,7 +508,7 @@ fn tail(query: &str, width: f32) -> Text {
     let text = |shown: &str| {
         Text::new(shown)
             .size(QUERY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::MEDIUM)
     };
     let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
@@ -441,27 +538,27 @@ fn state(title: &str, detail: &str) -> Rectangle {
         Icon::Search.draw(28.0),
         Text::new(title)
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
     ];
 
     if !detail.is_empty() {
         let text = Text::new(detail)
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface_variant)
+            .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM);
 
         // centred while it fits, elided only when a long query does not, since elided text fills
         // its width
         lines.push(Box::new(match text.width() {
-            Size::Fixed(natural) if natural <= WIDTH => text,
+            Size::Fixed(natural) if natural <= width() => text,
             _ => text.elide(),
         }));
     }
 
     Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
+        .width(width())
+        .height(STATE.min(room()))
         .align_child(Center, Center)
         .child(Column::new(lines).gap(6.0).align(Center))
 }
@@ -491,18 +588,18 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
             })
             .collect(),
     )
-    .width(WIDTH)
+    .width(width())
     .gap(ROW_GAP);
 
     let viewport = Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
+        .width(width())
+        .height(listed(found.len()))
         .clip()
         .align_child(Start, Start)
         .on_scroll(|Scroll { y, .. }| wheel(y))
         .child(
             Rectangle::new()
-                .width(WIDTH)
+                .width(width())
                 .height(content(end - first))
                 .align_child(Start, Start)
                 .translate(0.0, top(first) - search.offset)
@@ -514,20 +611,22 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
     let most = most(found.len());
 
     if most > 0.0 {
-        let length = (LIST * LIST / content(found.len())).max(TARGET);
-        let at = (LIST - length) * search.offset / most;
+        let length = (room() * room() / content(found.len())).max(TARGET);
+        let at = (room() - length) * search.offset / most;
 
         layers.push(Box::new(
             Rectangle::new()
                 .width(3.0)
                 .height(length)
                 .radius(radius::HAIRLINE)
-                .fill(theme::ISLAND.surface_container_high)
-                .translate(WIDTH + 7.0, at),
+                .fill(theme::island().surface_container_high)
+                .translate(width() + 7.0, at),
         ));
     }
 
-    Stack::new(layers).width(WIDTH).height(LIST)
+    Stack::new(layers)
+        .width(width())
+        .height(listed(found.len()))
 }
 
 /*
@@ -544,7 +643,7 @@ fn row(
     let mut lines = children![
         Text::new(&answer.title)
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide()
     ];
@@ -555,14 +654,14 @@ fn row(
         lines.push(Box::new(
             Text::new(detail)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ));
     }
 
     let row = Rectangle::new()
-        .width(WIDTH)
+        .width(width())
         .height(ROW)
         .radius(radius::ROW)
         .padding(Padding {
@@ -584,7 +683,7 @@ fn row(
         );
 
     let row = if selected {
-        row.fill(theme::ISLAND.surface_container)
+        row.fill(theme::island().surface_container)
     } else {
         row
     };
@@ -620,7 +719,14 @@ fn mark(mark: &Mark) -> Box<dyn Widget> {
                 .radius(radius::ICON)
                 .fill(Image::cover(path).thumbnail(pixels, pixels)),
         ),
-        Mark::Tile(sign) => Box::new(view::tile(None, sign, ICON, radius::ICON, &theme::ISLAND)),
+        Mark::Tile(sign) => Box::new(view::tile(None, sign, ICON, radius::ICON, &theme::island())),
+        Mark::Icon(icon) => Box::new(
+            Rectangle::new()
+                .width(ICON)
+                .height(ICON)
+                .align_child(Center, Center)
+                .child(icon.draw(ICON * 0.8)),
+        ),
         Mark::Glyph(glyph) => Box::new(
             Rectangle::new()
                 .width(ICON)
@@ -692,6 +798,14 @@ fn press(monitor: &str, visit: u64, action: Action) {
         return;
     }
 
+    // the island changes Surface, so this is no copy to wait on
+    if let Action::Open(destination) = &action {
+        if let Err(why) = open(monitor, destination) {
+            Search::write().open_refused(visit, action, why);
+        }
+        return;
+    }
+
     let search = Search::read().of(visit);
 
     if matches!(search.pressing, Pressing::Waiting(_)) {
@@ -718,11 +832,33 @@ fn press(monitor: &str, visit: u64, action: Action) {
         )
         .map(drop)
         .map_err(|unset| String::from(unset.brief())),
-        Action::Launch(_) => Ok(()),
+        Action::Launch(_) | Action::Open(_) => Ok(()),
     };
 
     if let Err(why) = started {
         pressed(monitor, visit, action, Err(why));
+    }
+}
+
+// the island shows another Surface, or Settings opens and the island closes; why not, as when the
+// radio went since the tile was drawn
+fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
+    match destination {
+        Destination::Wifi => controls::open_wifi(monitor)
+            .then_some(())
+            .ok_or("Controls did not open"),
+        Destination::Bluetooth => controls::open_bluetooth(monitor)
+            .then_some(())
+            .ok_or("Controls did not open"),
+        Destination::Clipboard => {
+            IslandService::write().open(monitor, Surface::Clipboard, Instant::now());
+            Ok(())
+        }
+        Destination::Settings(page) => {
+            settings::open(Some(page));
+            view::collapse(monitor);
+            Ok(())
+        }
     }
 }
 
@@ -776,234 +912,5 @@ fn wheel(lines: f32) {
 fn set(search: Search) {
     if *Search::read() != search {
         *Search::write() = search;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::*;
-
-    #[test]
-    fn typing_edits_the_query_and_starts_at_the_top() {
-        let search = Search {
-            selected: 3,
-            offset: 50.0,
-            ..Search::default()
-        };
-
-        let (search, launches) = search.step(Key::Character('k'), 10).unwrap();
-        assert_eq!(
-            (search.query.as_str(), search.selected, search.offset),
-            ("k", 0, 0.0)
-        );
-        assert!(!launches);
-
-        let (search, _) = search.step(Key::Space, 10).unwrap();
-        let (search, _) = search.step(Key::Backspace, 10).unwrap();
-        let (search, _) = search.step(Key::Backspace, 10).unwrap();
-        assert_eq!(search.query, "");
-
-        // nothing left to erase is still the Launcher's key, not the window's
-        assert!(search.step(Key::Backspace, 10).is_some());
-    }
-
-    #[test]
-    fn arrows_move_the_selection_within_the_apps() {
-        let at = |search: &Search| search.selected;
-        let search = Search::default();
-
-        let (search, _) = search.step(Key::Up, 10).unwrap();
-        assert_eq!(at(&search), 0);
-
-        let (search, _) = search.step(Key::Down, 10).unwrap();
-        assert_eq!(at(&search), 1);
-
-        let (search, _) = search.step(Key::End, 10).unwrap();
-        assert_eq!(at(&search), 9);
-
-        let (search, _) = search.clone().step(Key::Down, 10).unwrap();
-        assert_eq!(at(&search), 9);
-
-        let (search, _) = search.step(Key::Home, 10).unwrap();
-        assert_eq!(at(&search), 0);
-
-        let (search, _) = Search::default().step(Key::Down, 0).unwrap();
-        assert_eq!(at(&search), 0);
-
-        for key in [Key::Left, Key::Right, Key::Tab, Key::Escape, Key::Other] {
-            assert_eq!(Search::default().step(key, 10), None, "{key:?}");
-        }
-    }
-
-    #[test]
-    fn enter_starts_the_selected_app_only_when_there_is_one() {
-        assert!(Search::default().step(Key::Enter, 3).unwrap().1);
-        assert!(!Search::default().step(Key::Enter, 0).unwrap().1);
-    }
-
-    #[test]
-    fn the_selection_scrolls_into_view_and_no_further() {
-        let (search, _) = Search::default().step(Key::Down, 20).unwrap();
-        assert_eq!(search.offset, 0.0);
-
-        // one past the last whole row: its bottom at the list's bottom
-        let mut search = Search::default();
-        for _ in 0..ROWS {
-            search = search.step(Key::Down, 20).unwrap().0;
-        }
-        assert_eq!(search.offset, top(ROWS) + ROW - LIST);
-
-        let (search, _) = search.step(Key::End, 20).unwrap();
-        assert_eq!(search.offset, most(20));
-
-        let (search, _) = search.step(Key::Home, 20).unwrap();
-        assert_eq!(search.offset, 0.0);
-    }
-
-    #[test]
-    fn only_the_rows_in_the_list_are_built() {
-        let step = ROW + ROW_GAP;
-
-        assert_eq!(shown(0.0, 200), (0, ROWS));
-        assert_eq!(shown(0.0, 3), (0, 3));
-        assert_eq!(shown(0.0, 0), (0, 0));
-
-        // a row cut at either edge still shows
-        assert_eq!(shown(step * 0.5, 200), (0, ROWS + 1));
-        assert_eq!(shown(step * 2.0, 200), (2, ROWS + 2));
-        assert_eq!(shown(most(7), 7), (2, 7));
-    }
-
-    #[test]
-    fn five_rows_fill_the_list() {
-        assert_eq!(content(ROWS), LIST);
-        assert_eq!(most(ROWS), 0.0);
-        const { assert!(ROW >= 40.0) };
-    }
-
-    #[test]
-    fn the_wheel_keeps_the_selection_on_a_whole_row() {
-        let search = Search::default().wheel(3.0, 20);
-        let (first, last) = whole(search.offset, 20);
-
-        assert_eq!(search.offset, 3.0 * WHEEL);
-        assert_eq!(search.selected, first);
-        assert!(top(first) >= search.offset);
-        assert!(top(last) + ROW <= search.offset + LIST);
-        assert!(top(last + 1) + ROW > search.offset + LIST);
-
-        // far past the end stops there, the selection dragged to the first whole row
-        let end = Search::default().wheel(100.0, 20);
-        assert_eq!((end.offset, end.selected), (most(20), 20 - ROWS));
-        assert_eq!(whole(end.offset, 20), (20 - ROWS, 19));
-
-        // a selection still in view stays
-        let kept = Search {
-            selected: 17,
-            ..end.clone()
-        }
-        .wheel(-0.5, 20);
-        assert_eq!(kept.selected, 17);
-
-        let fits = Search::default().wheel(3.0, 3);
-        assert_eq!((fits.offset, fits.selected), (0.0, 0));
-    }
-
-    #[test]
-    fn fewer_apps_found_leave_the_selection_on_the_last() {
-        let search = Search {
-            selected: 7,
-            offset: 200.0,
-            ..Search::default()
-        };
-
-        let bounded = search.bounded(2);
-        assert_eq!((bounded.selected, bounded.offset), (1, 0.0));
-        assert_eq!(Search::default().bounded(0).selected, 0);
-    }
-
-    #[test]
-    fn a_failed_press_marks_the_answer_pressed_not_the_selection() {
-        let copy = Action::Copy(String::from("4"));
-        let image = Action::Wallpaper(PathBuf::from("/w/sea.png"));
-
-        let search = Search {
-            selected: 0,
-            pressing: Pressing::Failed(copy.clone(), String::from("no wl-copy")),
-            ..Search::default()
-        };
-
-        assert_eq!(search.failed(&copy).as_deref(), Some("Not copied"));
-        assert_eq!(search.failed(&Action::Copy(String::from("5"))), None);
-        assert_eq!(search.failed(&image), None);
-
-        let search = Search {
-            pressing: Pressing::Failed(image.clone(), String::from("awww-daemon is not running")),
-            ..Search::default()
-        };
-        assert_eq!(
-            search.failed(&image).as_deref(),
-            Some("Not set: awww-daemon is not running")
-        );
-
-        let waiting = Search {
-            pressing: Pressing::Waiting(copy.clone()),
-            ..Search::default()
-        };
-        assert_eq!(waiting.failed(&copy), None);
-    }
-
-    #[test]
-    fn a_stale_failed_press_leaves_a_later_visit_alone() {
-        let (four, five) = (
-            Action::Copy(String::from("4")),
-            Action::Copy(String::from("5")),
-        );
-        let later = Search {
-            visit: 2,
-            query: String::from("fire"),
-            ..Search::default()
-        };
-
-        let mut search = later.clone();
-        search.press_failed(1, four.clone(), String::new());
-        assert_eq!(search, later);
-
-        let mut search = Search {
-            pressing: Pressing::Waiting(four.clone()),
-            ..later.clone()
-        };
-        search.press_failed(2, five, String::new());
-        assert_eq!(
-            search.pressing,
-            Pressing::Waiting(four.clone()),
-            "another press"
-        );
-
-        search.press_failed(2, four.clone(), String::from("why"));
-        assert_eq!(search.pressing, Pressing::Failed(four, String::from("why")));
-        assert_eq!(search.query, "fire");
-    }
-
-    #[test]
-    fn a_new_visit_starts_empty() {
-        let kept = Search {
-            visit: 1,
-            query: String::from("fire"),
-            selected: 2,
-            offset: 40.0,
-            pressing: Pressing::Failed(Action::Copy(String::from("4")), String::new()),
-        };
-
-        assert_eq!(kept.of(1), kept);
-        assert_eq!(
-            kept.of(2),
-            Search {
-                visit: 2,
-                ..Search::default()
-            }
-        );
     }
 }

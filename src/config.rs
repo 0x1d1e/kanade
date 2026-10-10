@@ -28,17 +28,24 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
+use kanade_runtime::service::Service;
 use serde::Deserialize;
 use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::island::geometry::{self, Shape};
 use crate::island::motion::Mode;
 use crate::island::service::Timings;
+use crate::look::{
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, Highlight, LockBackdrop, Magnify, Material,
+    Merge, Placement, Tone, Visualizer,
+};
 use crate::modules;
 use crate::sources::weather::Units;
 
@@ -87,13 +94,128 @@ pub struct Config {
     // `weather.units`: how the Weather Surface reads temperatures and speeds
     pub units: Units,
 
+    // `appearance.*`: what the bodies are made of, and how they move
+    pub appearance: Appearance,
+
+    // `island.*`: where the Island sits, and how large it grows
+    pub island_place: Placement,
+    pub largest: Largest,
+
+    // `dock.*`: where the Dock sits, and how its icons grow under the pointer
+    pub dock_place: Placement,
+    pub magnify: Magnify,
+    pub dock_size: DockSize,
+    pub merge: Merge,
+
+    // `rest.*`: what an idle Island shows
+    pub rest: Rest,
+
+    // `media.visualizer`
+    pub visualizer: Visualizer,
+
+    // `lock.backdrop`
+    pub lock_backdrop: LockBackdrop,
+
+    // `privacy.indicators`
+    pub privacy_indicators: bool,
+
+    // `banners.entrance`
+    pub entrance: Entrance,
+
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Appearance {
+    pub material: Material,
+    pub tone: Tone,
+    pub highlight: Highlight,
+
+    // the family every label is set in, else Inter, else the system's sans-serif
+    pub font: Option<String>,
+}
+
+// `island.width` and `island.height`: the largest body, which the Surfaces with a list grow to
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Largest {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Largest {
+    pub const WIDTH: Range = Range {
+        least: 520,
+        most: 800,
+    };
+    pub const HEIGHT: Range = Range {
+        least: 330,
+        most: 600,
+    };
+
+    pub fn shape(self) -> Shape {
+        geometry::largest(self.width as f32, self.height as f32)
+    }
+}
+
+impl Default for Largest {
+    fn default() -> Self {
+        Largest {
+            width: geometry::DEFAULT_LARGEST.width as u32,
+            height: geometry::DEFAULT_LARGEST.height as u32,
+        }
+    }
+}
+
+// whole logical pixels from `least` to `most`
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Range {
+    pub least: u32,
+    pub most: u32,
+}
+
+// what an idle Island shows, and what its Peek shows
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rest {
+    // the time
+    pub clock: bool,
+
+    // the battery's percent after the time
+    pub battery: bool,
+
+    // the Peek of the time: the date always, these if set
+    pub peek_battery: bool,
+    pub weather: bool,
+    pub agenda: bool,
+}
+
+impl Default for Rest {
+    fn default() -> Self {
+        Rest {
+            clock: true,
+            battery: false,
+            peek_battery: true,
+            weather: true,
+            agenda: true,
+        }
+    }
+}
+
+impl Rest {
+    // nothing to show at Rest: the Island then hides as `island.autohide` does
+    pub fn bare(self, battery: bool) -> bool {
+        !self.clock && !(self.battery && battery)
+    }
 }
 
 impl Config {
     pub fn off(&self, module: &str) -> bool {
         self.off.contains(&module)
+    }
+
+    // what Rest and its Peek show, on every output: the global setting, then each output's own
+    pub fn rests(&self) -> impl Iterator<Item = Rest> {
+        iter::once(self.rest).chain(self.outputs.keys().map(|output| self.on(output).rest))
     }
 
     // the config of one output: the global one with that output's overrides over it
@@ -133,6 +255,26 @@ impl Default for Config {
             location: None,
             place: None,
             units: Units::default(),
+            appearance: Appearance::default(),
+            island_place: Placement {
+                anchor: Anchor::default(),
+                autohide: false,
+                reserve: false,
+            },
+            largest: Largest::default(),
+            dock_place: Placement {
+                anchor: Anchor::BOTTOM,
+                autohide: false,
+                reserve: true,
+            },
+            magnify: Magnify::default(),
+            dock_size: DockSize::default(),
+            merge: Merge::default(),
+            rest: Rest::default(),
+            visualizer: Visualizer::default(),
+            lock_backdrop: LockBackdrop::default(),
+            privacy_indicators: true,
+            entrance: Entrance::default(),
             outputs: BTreeMap::new(),
         }
     }
@@ -208,6 +350,9 @@ pub struct Setting {
     // dotted: `timings.hover` is `hover` in `[timings]`
     pub key: &'static str,
 
+    // what Settings calls it
+    pub label: &'static str,
+
     // what it does, a line for the docs and Settings
     pub help: &'static str,
 
@@ -244,6 +389,9 @@ pub enum Kind {
     // whole milliseconds, SHORTEST to LONGEST
     Millis(Field<Duration>),
 
+    // whole logical pixels in a range
+    Pixels(Range, Field<u32>),
+
     // one of these strings
     Choice(&'static [&'static str], Field<&'static str>),
 
@@ -279,6 +427,7 @@ impl Kind {
                 (field.set)(config, value.as_bool().ok_or("expected true or false")?);
             }
             Kind::Millis(field) => (field.set)(config, millis(value)?),
+            Kind::Pixels(range, field) => (field.set)(config, pixels(value, *range)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -388,6 +537,7 @@ impl Kind {
             Kind::Millis(field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
             }
+            Kind::Pixels(_, field) => Value::Integer(i64::from((field.get)(config))),
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
@@ -420,6 +570,7 @@ impl Kind {
         match self {
             Kind::Switch(field) => field.copy(from, to),
             Kind::Millis(field) => field.copy(from, to),
+            Kind::Pixels(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
@@ -438,6 +589,7 @@ impl Kind {
 pub const ISLAND: &[Setting] = &[
     Setting {
         key: "reduced_motion",
+        label: "Reduce motion",
         help: "the island snaps to its new shape and only fades its content, over 80 ms; \
                KANADE_REDUCED_MOTION=1 or 0 overrides it",
         kind: Kind::Switch(Field {
@@ -452,6 +604,7 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "clock",
+        label: "Clock format",
         help: "the time an idle island shows: \"24h\" (14:05) or \"12h\" (2:05 PM)",
         kind: Kind::Choice(
             &["24h", "12h"],
@@ -474,6 +627,7 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "timings.hover",
+        label: "Peek delay",
         help: "pointer resting on a Compact island before it peeks",
         kind: Kind::Millis(Field {
             get: |config| config.island.hover,
@@ -485,6 +639,7 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "timings.expand",
+        label: "Expansion",
         help: "morph to a larger form",
         kind: Kind::Millis(Field {
             get: |config| config.island.expand,
@@ -496,6 +651,7 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "timings.surface_change",
+        label: "Content change",
         help: "one Surface replacing another, and a new track dissolving in",
         kind: Kind::Millis(Field {
             get: |config| config.island.surface_change,
@@ -507,6 +663,7 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "timings.collapse",
+        label: "Collapse",
         help: "morph to a smaller form",
         kind: Kind::Millis(Field {
             get: |config| config.island.collapse,
@@ -518,6 +675,7 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "timings.grace",
+        label: "Leave delay",
         help: "pointer out before a Peek or Surface collapses",
         kind: Kind::Millis(Field {
             get: |config| config.island.grace,
@@ -530,6 +688,7 @@ pub const ISLAND: &[Setting] = &[
     // the island's, since `workspace` reads it as well as `osd`
     Setting {
         key: "timings.osd",
+        label: "Feedback duration",
         help: "the OSD, and a workspace switch on the island",
         kind: Kind::Millis(Field {
             get: |config| config.osd,
@@ -541,7 +700,8 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "theme.palette",
-        help: "the image the theme roles beside the island take their tone from",
+        label: "Palette image",
+        help: "the image the Settings window takes its tone from",
         kind: Kind::Path(Field {
             get: |config| config.palette.clone(),
             set: |config, palette| config.palette = palette,
@@ -550,9 +710,255 @@ pub const ISLAND: &[Setting] = &[
         restart: false,
         per_output: false,
     },
+    Setting {
+        key: "appearance.material",
+        label: "Material",
+        help: "what the Island, Dock and Banners are made of, with the lock screen's field: \"liquid-glass\" bends what is under it into its rim, \"monochrome\" is one flat tone with nothing seen through it",
+        kind: Kind::Choice(
+            Material::NAMES,
+            Field {
+                get: |config| config.appearance.material.name(),
+                set: |config, name| config.appearance.material = Material::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.tone",
+        label: "Glass tone",
+        help: "dark glass under light text, or light glass under dark text",
+        kind: Kind::Choice(
+            Tone::NAMES,
+            Field {
+                get: |config| config.appearance.tone.name(),
+                set: |config, name| config.appearance.tone = Tone::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.highlight",
+        label: "Rim lighting",
+        help: "how bright the light on the Island's rim and under the pointer is, whatever it is made of: \"subtle\", \"standard\", \"bright\" or \"off\"",
+        kind: Kind::Choice(
+            Highlight::NAMES,
+            Field {
+                get: |config| config.appearance.highlight.name(),
+                set: |config, name| config.appearance.highlight = Highlight::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.motion",
+        label: "Spring character",
+        help: "how the Island and Dock settle: \"bouncy\" like macOS, \"smooth\" with no overshoot, \"snappy\", or \"playful\"",
+        kind: Kind::Choice(
+            Bounce::NAMES,
+            Field {
+                get: |config| Bounce::of(config.island.damping).name(),
+                set: |config, name| config.island.damping = Bounce::named(name).damping(),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.font",
+        label: "Font",
+        help: "the font family every label is set in, else Inter, else the system's sans-serif",
+        kind: Kind::Text(Field {
+            get: |config| config.appearance.font.clone(),
+            set: |config, font| config.appearance.font = font,
+        }),
+        example: Some("\"Inter\""),
+
+        // the runtime takes the font as the app starts
+        restart: true,
+        per_output: false,
+    },
+    Setting {
+        key: "island.edge",
+        label: "Edge",
+        help: "the edge of the screen the Island hangs from",
+        kind: Kind::Choice(
+            Edge::NAMES,
+            Field {
+                get: |config| config.island_place.anchor.edge.name(),
+                set: |config, name| config.island_place.anchor.edge = Edge::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.align",
+        label: "Side",
+        help: "where along its edge the Island sits",
+        kind: Kind::Choice(
+            Along::NAMES,
+            Field {
+                get: |config| config.island_place.anchor.along.name(),
+                set: |config, name| config.island_place.anchor.along = Along::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.width",
+        label: "Largest width",
+        help: "how wide the Surfaces with a list grow, as their content asks",
+        kind: Kind::Pixels(
+            Largest::WIDTH,
+            Field {
+                get: |config| config.largest.width,
+                set: |config, px| config.largest.width = px,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.height",
+        label: "Largest height",
+        help: "how tall the Surfaces with a list grow, as their content asks",
+        kind: Kind::Pixels(
+            Largest::HEIGHT,
+            Field {
+                get: |config| config.largest.height,
+                set: |config, px| config.largest.height = px,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.autohide",
+        label: "Hide at Rest",
+        help: "an idle Island slides past its edge, back as the pointer touches the edge under it or anything shows",
+        kind: Kind::Switch(Field {
+            get: |config| config.island_place.autohide,
+            set: |config, on| config.island_place.autohide = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.reserve",
+        label: "Keep windows clear",
+        help: "windows keep off the Island's strip of the screen, unless it autohides; off, it floats over them",
+        kind: Kind::Switch(Field {
+            get: |config| config.island_place.reserve,
+            set: |config, on| config.island_place.reserve = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "rest.clock",
+        label: "Clock at Rest",
+        help: "an idle Island shows the time; with it and the battery off, the Island hides as it does with autohide",
+        kind: Kind::Switch(Field {
+            get: |config| config.rest.clock,
+            set: |config, on| config.rest.clock = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: true,
+    },
+    Setting {
+        key: "rest.battery",
+        label: "Battery at Rest",
+        help: "an idle Island shows the battery's percent after the time",
+        kind: Kind::Switch(Field {
+            get: |config| config.rest.battery,
+            set: |config, on| config.rest.battery = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: true,
+    },
+    Setting {
+        key: "rest.peek.battery",
+        label: "Battery in the clock's Peek",
+        help: "the time's Peek shows the battery's percent beside the time, where an autohidden Island is seen",
+        kind: Kind::Switch(Field {
+            get: |config| config.rest.peek_battery,
+            set: |config, on| config.rest.peek_battery = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: true,
+    },
+    Setting {
+        key: "rest.peek.weather",
+        label: "Weather in the clock's Peek",
+        help: "the time's Peek shows the weather beside the date",
+        kind: Kind::Switch(Field {
+            get: |config| config.rest.weather,
+            set: |config, on| config.rest.weather = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: true,
+    },
+    Setting {
+        key: "rest.peek.agenda",
+        label: "Agenda in the clock's Peek",
+        help: "the time's Peek shows the next event beside the date",
+        kind: Kind::Switch(Field {
+            get: |config| config.rest.agenda,
+            set: |config, on| config.rest.agenda = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: true,
+    },
+    Setting {
+        key: "privacy.indicators",
+        label: "Capture indicators",
+        help: "dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls; not shown over a fullscreen window",
+        kind: Kind::Switch(Field {
+            get: |config| config.privacy_indicators,
+            set: |config, on| config.privacy_indicators = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "banners.entrance",
+        label: "Banner entrance",
+        help: "how a Banner comes in: \"morph\" out from under the Island, \"drop\" from the edge, or \"fade\"",
+        kind: Kind::Choice(
+            Entrance::NAMES,
+            Field {
+                get: |config| config.entrance.name(),
+                set: |config, name| config.entrance = Entrance::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
     // the island's, since it cannot be turned off
     Setting {
         key: "modules",
+        label: "Modules",
         help: "every Module is on unless set to false here",
         kind: Kind::Modules(Field {
             get: |config| config.off.clone(),
@@ -560,7 +966,7 @@ pub const ISLAND: &[Setting] = &[
         }),
         example: Some("{ media = false }"),
 
-        // Amane registers windows only at start
+        // the runtime registers windows only at start
         restart: true,
         per_output: false,
     },
@@ -568,6 +974,7 @@ pub const ISLAND: &[Setting] = &[
 
 pub const WINDOWS: &[Setting] = &[Setting {
     key: "windows.apps",
+    label: "App matching",
     help: "app id = the .desktop file it belongs to, where Kanade's guess is wrong",
     kind: Kind::AppIds(Field {
         get: |config| config.apps.clone(),
@@ -578,20 +985,123 @@ pub const WINDOWS: &[Setting] = &[Setting {
     per_output: false,
 }];
 
-pub const DOCK: &[Setting] = &[Setting {
-    key: "dock.pinned",
-    help: ".desktop file ids, in the Dock's order",
-    kind: Kind::DesktopIds(Field {
-        get: |config| config.pinned.clone(),
-        set: |config, pinned| config.pinned = pinned,
-    }),
-    example: Some("[\"firefox\", \"kitty\"]"),
-    restart: false,
-    per_output: false,
-}];
+pub const DOCK: &[Setting] = &[
+    Setting {
+        key: "dock.pinned",
+        label: "Pinned apps",
+        help: ".desktop file ids, in the Dock's order",
+        kind: Kind::DesktopIds(Field {
+            get: |config| config.pinned.clone(),
+            set: |config, pinned| config.pinned = pinned,
+        }),
+        example: Some("[\"firefox\", \"kitty\"]"),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.edge",
+        label: "Edge",
+        help: "the edge of the screen the Dock sits on; beside the Island, on its edge and side or either centered, it sits further in than the Island; wherever the Island grows over it, as an open Surface, it steps aside and fades back as the Island closes",
+        kind: Kind::Choice(
+            Edge::NAMES,
+            Field {
+                get: |config| config.dock_place.anchor.edge.name(),
+                set: |config, name| config.dock_place.anchor.edge = Edge::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.align",
+        label: "Side",
+        help: "where along its edge the Dock sits",
+        kind: Kind::Choice(
+            Along::NAMES,
+            Field {
+                get: |config| config.dock_place.anchor.along.name(),
+                set: |config, name| config.dock_place.anchor.along = Along::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.autohide",
+        label: "Hide until needed",
+        help: "the Dock hides until the pointer touches the edge under it; beside the Island it always shows, as the pointer could not reach past the Island; merged with it, it folds into the Island as `merge = \"fold\"` does",
+        kind: Kind::Switch(Field {
+            get: |config| config.dock_place.autohide,
+            set: |config, on| config.dock_place.autohide = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.reserve",
+        label: "Keep windows clear",
+        help: "windows keep off the Dock's strip of the screen, unless it autohides; off, it floats over them",
+        kind: Kind::Switch(Field {
+            get: |config| config.dock_place.reserve,
+            set: |config, on| config.dock_place.reserve = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.magnification",
+        label: "Magnification",
+        help: "how much an icon grows under the pointer, its neighbors less",
+        kind: Kind::Choice(
+            Magnify::NAMES,
+            Field {
+                get: |config| config.magnify.name(),
+                set: |config, name| config.magnify = Magnify::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.size",
+        label: "Icon size",
+        help: "how big the icons are at rest; the gaps between and how far the swell under the pointer reaches grow with them",
+        kind: Kind::Choice(
+            DockSize::NAMES,
+            Field {
+                get: |config| config.dock_size.name(),
+                set: |config, name| config.dock_size = DockSize::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dock.merge",
+        label: "Join the Island",
+        help: "how the Dock and the Island join where they share an edge and a side, along a top or bottom edge: crown, the Island rising from the Dock's middle; keystone, the Island the Dock's middle piece; fold, the Dock unfolding out of the Island under the pointer; off, the Dock beside the Island, further in",
+        kind: Kind::Choice(
+            Merge::NAMES,
+            Field {
+                get: |config| config.merge.name(),
+                set: |config, name| config.merge = Merge::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const WALLPAPER: &[Setting] = &[Setting {
     key: "wallpaper.directory",
+    label: "Wallpaper folder",
     help: "the images the Launcher offers after `@`, else ~/Pictures/Wallpapers",
     kind: Kind::Path(Field {
         get: |config| config.wallpapers.clone(),
@@ -604,6 +1114,7 @@ pub const WALLPAPER: &[Setting] = &[Setting {
 
 pub const CALENDAR: &[Setting] = &[Setting {
     key: "calendar.paths",
+    label: "Calendar files",
     help: "iCalendar (.ics) files and directories of them, read recursively, else \
            $XDG_DATA_HOME/calendars",
     kind: Kind::Paths(Field {
@@ -618,6 +1129,7 @@ pub const CALENDAR: &[Setting] = &[Setting {
 pub const WEATHER: &[Setting] = &[
     Setting {
         key: "weather.location",
+        label: "Location",
         help: "where the weather is for, as [latitude, longitude] in degrees, north and east \
                positive; unset fetches nothing",
         kind: Kind::Location(Field {
@@ -630,6 +1142,7 @@ pub const WEATHER: &[Setting] = &[
     },
     Setting {
         key: "weather.place",
+        label: "Place name",
         help: "the location's name, which the Weather Surface shows",
         kind: Kind::Text(Field {
             get: |config| config.place.clone(),
@@ -641,6 +1154,7 @@ pub const WEATHER: &[Setting] = &[
     },
     Setting {
         key: "weather.units",
+        label: "Units",
         help: "°C and km/h, or °F and mph",
         kind: Kind::Choice(
             &["metric", "imperial"],
@@ -663,6 +1177,38 @@ pub const WEATHER: &[Setting] = &[
     },
 ];
 
+pub const MEDIA: &[Setting] = &[Setting {
+    key: "media.visualizer",
+    label: "Media visualizer",
+    help: "what moves beside a playing track",
+    kind: Kind::Choice(
+        Visualizer::NAMES,
+        Field {
+            get: |config| config.visualizer.name(),
+            set: |config, name| config.visualizer = Visualizer::named(name),
+        },
+    ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
+pub const LOCK: &[Setting] = &[Setting {
+    key: "lock.backdrop",
+    label: "Backdrop",
+    help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
+    kind: Kind::Choice(
+        LockBackdrop::NAMES,
+        Field {
+            get: |config| config.lock_backdrop.name(),
+            set: |config, name| config.lock_backdrop = LockBackdrop::named(name),
+        },
+    ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
     match id.strip_suffix(".desktop") {
@@ -679,6 +1225,15 @@ fn millis(value: &Value) -> Result<Duration, String> {
         .filter(|ms| (SHORTEST..=LONGEST).contains(ms))
         .map(Duration::from_millis)
         .ok_or_else(|| format!("{ms} is outside {SHORTEST}-{LONGEST} ms"))
+}
+
+fn pixels(value: &Value, range: Range) -> Result<u32, String> {
+    let px = value.as_integer().ok_or("expected whole pixels")?;
+
+    u32::try_from(px)
+        .ok()
+        .filter(|px| (range.least..=range.most).contains(px))
+        .ok_or_else(|| format!("{px} is outside {}-{} px", range.least, range.most))
 }
 
 // one `[modules]` entry over the Modules off: a Module in the registry on or off by name
@@ -759,8 +1314,12 @@ pub fn defaults() -> String {
         let mut lines = Vec::new();
         let mut help = String::from(setting.help);
 
-        if let Kind::Millis(_) = setting.kind {
-            help.push_str(&format!(", ms {SHORTEST}-{LONGEST}"));
+        match setting.kind {
+            Kind::Millis(_) => help.push_str(&format!(", ms {SHORTEST}-{LONGEST}")),
+            Kind::Pixels(range, _) => {
+                help.push_str(&format!(", px {}-{}", range.least, range.most))
+            }
+            _ => {}
         }
         if setting.restart {
             help.push_str(", takes a restart");
@@ -876,8 +1435,27 @@ pub fn skipped() -> Vec<String> {
         .clone()
 }
 
+/*
+ * a reload, which every window that read the config draws again for: reading the config through
+ * `get` or `on` reads this too. Its guards are taken and dropped at once, never held while taking another lock
+ */
+#[derive(Default)]
+pub struct Reloads;
+
+impl Service for Reloads {
+    fn new() -> Self {
+        Self
+    }
+
+    // only `install` changes it
+    fn listen() {}
+}
+
 // the config in effect; a reload swaps it whole, so one read never mixes two
 pub fn get() -> Arc<Config> {
+    // subscribes the window being drawn, if any, to reloads
+    drop(Reloads::read());
+
     CURRENT
         .read()
         .unwrap_or_else(PoisonError::into_inner)
@@ -887,6 +1465,8 @@ pub fn get() -> Arc<Config> {
 
 // the config in effect on one output, its overrides over the global one, as `Config::on` gives it
 pub fn on(output: &str) -> Arc<Config> {
+    drop(Reloads::read());
+
     let effect = CURRENT.read().unwrap_or_else(PoisonError::into_inner);
 
     effect.outputs.get(output).unwrap_or(&effect.config).clone()
@@ -895,6 +1475,11 @@ pub fn on(output: &str) -> Arc<Config> {
 // a reload's config replaces the one in effect (`crate::reload`)
 pub fn install(config: Config) {
     *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Effect::new(config);
+}
+
+// draws again every window that read the config, once a reload has applied all of it
+pub fn announce() {
+    drop(Reloads::write());
 }
 
 /*
@@ -1122,6 +1707,12 @@ const MIGRATIONS: &[Migration] = &[
     |table| {
         if let Some(Node::Table(timings)) = table.get_mut("timings").map(|entry| &mut entry.node) {
             timings.remove("toast");
+        }
+    },
+    // 3: privacy dots have no `privacy.style` choice, only `privacy.indicators` (ADR 0033)
+    |table| {
+        if let Some(Node::Table(privacy)) = table.get_mut("privacy").map(|entry| &mut entry.node) {
+            privacy.remove("style");
         }
     },
 ];
@@ -1457,6 +2048,7 @@ mod tests {
                     surface_change: ms(260),
                     collapse: ms(160),
                     grace: ms(300),
+                    ..Timings::default()
                 },
                 osd: ms(1000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
@@ -1470,6 +2062,7 @@ mod tests {
                 place: None,
                 units: Units::Metric,
                 outputs: BTreeMap::new(),
+                ..Config::default()
             }
         );
         assert!(config.off("media"));
@@ -1509,14 +2102,41 @@ mod tests {
                 "timings.grace",
                 "timings.osd",
                 "theme.palette",
+                "appearance.material",
+                "appearance.tone",
+                "appearance.highlight",
+                "appearance.motion",
+                "appearance.font",
+                "island.edge",
+                "island.align",
+                "island.width",
+                "island.height",
+                "island.autohide",
+                "island.reserve",
+                "rest.clock",
+                "rest.battery",
+                "rest.peek.battery",
+                "rest.peek.weather",
+                "rest.peek.agenda",
+                "privacy.indicators",
+                "banners.entrance",
                 "modules",
                 "windows.apps",
                 "dock.pinned",
+                "dock.edge",
+                "dock.align",
+                "dock.autohide",
+                "dock.reserve",
+                "dock.magnification",
+                "dock.size",
+                "dock.merge",
+                "media.visualizer",
                 "wallpaper.directory",
                 "calendar.paths",
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "lock.backdrop",
             ]
         );
         assert_eq!(
@@ -1524,14 +2144,21 @@ mod tests {
                 .filter(|setting| setting.restart)
                 .map(|setting| setting.key)
                 .collect::<Vec<_>>(),
-            ["modules"]
+            ["appearance.font", "modules"]
         );
         assert_eq!(
             settings()
                 .filter(|setting| setting.per_output)
                 .map(|setting| setting.key)
                 .collect::<Vec<_>>(),
-            ["clock"]
+            [
+                "clock",
+                "rest.clock",
+                "rest.battery",
+                "rest.peek.battery",
+                "rest.peek.weather",
+                "rest.peek.agenda"
+            ]
         );
 
         // `Config::on` copies an output's value over whole, and `pending` reads only the global one
@@ -2059,6 +2686,23 @@ battery = false
 
         let (_, problems) = one("schema_version = 2\n[timings]\ntoast = 5000");
         assert_eq!(problems, said(&[(3, "unknown key timings.toast")]));
+    }
+
+    // `privacy.style` went with the dots (ADR 0033): an older file with it applies without a complaint
+    #[test]
+    fn an_older_privacy_style_migrates_away() {
+        for text in [
+            "privacy.style = \"dots\"\nprivacy.indicators = false",
+            "schema_version = 2\n[privacy]\nstyle = \"dots\"\nindicators = false",
+        ] {
+            let (config, problems) = one(text);
+
+            assert_eq!(problems, vec![], "{text}");
+            assert!(!config.privacy_indicators, "{text}");
+        }
+
+        let (_, problems) = one("schema_version = 3\nprivacy.style = \"dots\"");
+        assert_eq!(problems, said(&[(2, "unknown key privacy.style")]));
     }
 
     #[test]

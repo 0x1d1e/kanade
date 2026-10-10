@@ -1,6 +1,8 @@
 // view code for the full interactive Surfaces; read-only, never write() a Service
 
-use amane::{Button, Rectangle};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use kanade_runtime::{Button, Rectangle};
 
 use crate::theme;
 
@@ -15,6 +17,17 @@ pub mod session;
 mod slider;
 pub mod tray;
 pub mod weather;
+
+/*
+ * held through a Surface's `fit`, which reads what it asks for and then posts it. Besides the
+ * runtime's derive, `fit` is called by a handler or a start, so two at once would post out of
+ * order, leaving the body at the older ask until the next change
+ */
+fn fitting() -> MutexGuard<'static, ()> {
+    static FIT: Mutex<()> = Mutex::new(());
+
+    FIT.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /*
  * a Surface target pressed with the left button. Only the topmost target gets a click, so a right
@@ -42,7 +55,7 @@ trait Ring {
 impl Ring for Rectangle {
     fn border_if(self, ring: bool) -> Self {
         if ring {
-            self.border(RING, theme::ISLAND.on_surface)
+            self.border(RING, theme::island().on_surface)
         } else {
             self
         }

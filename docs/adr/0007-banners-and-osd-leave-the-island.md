@@ -1,6 +1,6 @@
 # 7. Banners and OSD leave the Island
 
-Status: accepted (design, roadmap 8). Supersedes the "one physical surface, no detached popovers" goal of `docs/archived/plan.md` §2 for notification toasts and level changes.
+Status: accepted (design, roadmap 8); its OSD part superseded by ADR 0021, which returns the OSD to the Island, and its top-right placement by ADR 0023, where Banners come out of the Island. Supersedes the "one physical surface, no detached popovers" goal of `docs/archived/plan.md` §2 for notification toasts and level changes.
 
 ## Context
 
@@ -11,7 +11,7 @@ The Island shows notification toasts and volume, brightness and mic changes as T
 - The `banners` module shows notification toasts as Banners: focused output, top-right, 4 s low, 6 s normal, Critical sticky, timer paused while hovered, at most 3.
 - The `osd` module shows volume, brightness and mic changes in its own Overlay window.
 - The Island keeps durable Activities and workspace switches. Its toast and OSD paths are deleted.
-- Workspace switches stay an Island Activity: they are navigation, a change of context, not level feedback. Policy: `Transient`, `Osd` Priority, `FocusedOutput`, `Interrupt::None`. It may win the primary while it lives, then the previous primary returns; no auto-expand, no OSD.
+- Workspace switches stay an Island Activity: they are navigation, a change of context, not level feedback. Policy: `Transient`, `Osd` Priority (renamed `Glance` once ADR 0021 gave the OSD its own), `FocusedOutput`, `Interrupt::None`. It may win the primary while it lives, then the previous primary returns; no auto-expand, no OSD.
 
 ## Alternatives
 

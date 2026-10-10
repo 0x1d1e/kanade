@@ -1,0 +1,19 @@
+[package]
+name = "kanade-lock"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# The lock screen from outside the runtime (ADR 0025): its own Wayland connection holding
+# ext-session-lock, so a lock surface is drawn as soon as niri asks for it, drawn on the CPU
+[dependencies]
+# The runtime already builds these: outputs, the keyboard with its repeat, shared memory
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# what the lock screen is drawn with, and its text shaped
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+rustybuzz = "0.20"
+# the password's bytes zeroed where nothing reads them again
+zeroize = { version = "1", features = ["std"] }

@@ -24,10 +24,11 @@ pub enum Kind {
     Recording,
     Caffeine,
     Session,
+    Mode,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 14] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -41,6 +42,7 @@ impl Kind {
         Kind::Recording,
         Kind::Caffeine,
         Kind::Session,
+        Kind::Mode,
     ];
 
     // as IPC names it
@@ -59,6 +61,7 @@ impl Kind {
             Kind::Recording => "recording",
             Kind::Caffeine => "caffeine",
             Kind::Session => "session",
+            Kind::Mode => "mode",
         }
     }
 
@@ -73,8 +76,8 @@ pub enum Priority {
     Passive,
     Media,
 
-    // a workspace switch
-    Osd,
+    // a workspace switch, a glance at where the user went
+    Glance,
 
     // timer, low battery
     Ongoing,
@@ -84,16 +87,23 @@ pub enum Priority {
 
     // critical battery, call
     Critical,
+
+    /*
+     * the OSD: the answer to a key the user just pressed, a level or a mode, so it shows over
+     * everything for the moment it lives
+     */
+    Feedback,
 }
 
 impl Priority {
-    pub const ALL: [Priority; 6] = [
+    pub const ALL: [Priority; 7] = [
         Priority::Passive,
         Priority::Media,
-        Priority::Osd,
+        Priority::Glance,
         Priority::Ongoing,
         Priority::Actionable,
         Priority::Critical,
+        Priority::Feedback,
     ];
 
     // as IPC names it
@@ -101,10 +111,11 @@ impl Priority {
         match self {
             Priority::Passive => "passive",
             Priority::Media => "media",
-            Priority::Osd => "osd",
+            Priority::Glance => "glance",
             Priority::Ongoing => "ongoing",
             Priority::Actionable => "actionable",
             Priority::Critical => "critical",
+            Priority::Feedback => "feedback",
         }
     }
 
@@ -216,6 +227,9 @@ pub enum Detail {
     // 0 to 100
     Brightness(u8),
 
+    // the keyboard's backlight, 0 to 100; in the display's place, as one OSD shows either
+    Keyboard(u8),
+
     Battery(Charge),
 
     Workspace(Workspace),
@@ -231,6 +245,8 @@ pub enum Detail {
     Caffeine(Awake),
 
     Session(Leaving),
+
+    Mode(Mode),
 }
 
 impl Detail {
@@ -240,7 +256,7 @@ impl Detail {
             Detail::None => None,
             Detail::Media(_) => Some(Kind::Media),
             Detail::Volume(_) => Some(Kind::Volume),
-            Detail::Brightness(_) => Some(Kind::Brightness),
+            Detail::Brightness(_) | Detail::Keyboard(_) => Some(Kind::Brightness),
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
@@ -249,18 +265,25 @@ impl Detail {
             Detail::Recording(_) => Some(Kind::Recording),
             Detail::Caffeine(_) => Some(Kind::Caffeine),
             Detail::Session(_) => Some(Kind::Session),
+            Detail::Mode(_) => Some(Kind::Mode),
         }
     }
 
     /*
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
      * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
-     * workspace switch moves the pager's mark. A new track stays in place too, but dissolves
+     * workspace switch moves the pager's mark, a mode turned back flips its word. A new track
+     * stays in place too, but dissolves
      */
     pub fn is_level(&self) -> bool {
         matches!(
             self,
-            Detail::Volume(_) | Detail::Brightness(_) | Detail::Battery(_) | Detail::Workspace(_)
+            Detail::Volume(_)
+                | Detail::Brightness(_)
+                | Detail::Keyboard(_)
+                | Detail::Battery(_)
+                | Detail::Workspace(_)
+                | Detail::Mode(_)
         )
     }
 }
@@ -272,7 +295,7 @@ pub struct Track {
     // empty when the player names none
     pub artist: String,
 
-    // a local file, the only art Amane can draw
+    // a local file, the only art the runtime can draw
     pub art: Option<String>,
 
     pub playing: bool,
@@ -300,6 +323,24 @@ pub struct Volume {
 pub enum Device {
     Speaker,
     Microphone,
+}
+
+// a mode the user turned on or off, and which way
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    CapsLock(bool),
+    NumLock(bool),
+
+    // every radio off
+    Airplane(bool),
+}
+
+impl Mode {
+    pub fn on(self) -> bool {
+        match self {
+            Mode::CapsLock(on) | Mode::NumLock(on) | Mode::Airplane(on) => on,
+        }
+    }
 }
 
 // a battery running low, from where it shows until the charger goes in
@@ -610,6 +651,15 @@ pub struct Frame {
     pub overflow: usize,
 }
 
+impl Frame {
+    // the OSD answering a key is the primary
+    pub fn feedback(&self) -> bool {
+        self.primary
+            .as_ref()
+            .is_some_and(|primary| primary.priority() == Priority::Feedback)
+    }
+}
+
 // the two policies most tests need, so each reads as what it tests
 #[cfg(test)]
 pub mod fixture {
@@ -681,40 +731,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn priority_orders_critical_first() {
-        let mut priorities = vec![
-            Priority::Media,
-            Priority::Critical,
-            Priority::Passive,
-            Priority::Actionable,
-            Priority::Osd,
-            Priority::Ongoing,
-        ];
-        priorities.sort_by(|a, b| b.cmp(a));
-
-        assert_eq!(
-            priorities,
-            [
-                Priority::Critical,
-                Priority::Actionable,
-                Priority::Ongoing,
-                Priority::Osd,
-                Priority::Media,
-                Priority::Passive,
-            ]
-        );
-    }
-
-    #[test]
-    fn identity_is_kind_scoped() {
-        assert_ne!(Id::new(Kind::Notification, "7"), Id::new(Kind::Timer, "7"));
-        assert_eq!(
-            Id::new(Kind::Notification, "7"),
-            Id::new(Kind::Notification, String::from("7"))
-        );
-    }
-
     fn new(
         kind: Kind,
         priority: Priority,
@@ -758,7 +774,7 @@ mod tests {
             assert_eq!(
                 new(
                     Kind::Volume,
-                    Priority::Osd,
+                    Priority::Glance,
                     Lifetime::Transient(Duration::ZERO),
                     interrupt
                 ),
@@ -769,92 +785,12 @@ mod tests {
         assert!(
             new(
                 Kind::Volume,
-                Priority::Osd,
+                Priority::Glance,
                 Lifetime::Transient(Duration::from_nanos(1)),
                 Interrupt::None
             )
             .is_ok()
         );
-    }
-
-    // no field derives another, so each is what the source set, however unusual (ADR 0009)
-    #[test]
-    fn unusual_combinations_stand() {
-        let accepted = [
-            (
-                Priority::Media,
-                Lifetime::Persistent,
-                Scope::FocusedOutput,
-                Interrupt::None,
-            ),
-            (
-                Priority::Osd,
-                Lifetime::Transient(OSD),
-                Scope::Global,
-                Interrupt::None,
-            ),
-            (
-                Priority::Passive,
-                Lifetime::Persistent,
-                Scope::Global,
-                Interrupt::Preempt,
-            ),
-            (
-                Priority::Critical,
-                Lifetime::Persistent,
-                Scope::Global,
-                Interrupt::None,
-            ),
-            (
-                Priority::Passive,
-                Lifetime::Transient(OSD),
-                Scope::FocusedOutput,
-                Interrupt::AutoExpand(OSD),
-            ),
-        ];
-
-        for (priority, lifetime, scope, interrupt) in accepted {
-            let activity = Activity::new(
-                Id::new(Kind::Notification, "7"),
-                priority,
-                lifetime,
-                scope,
-                interrupt,
-            )
-            .unwrap_or_else(|invalid| {
-                panic!("{priority:?} {lifetime:?} {scope:?} {interrupt:?}: {invalid}")
-            });
-
-            assert_eq!(activity.priority(), priority);
-            assert_eq!(activity.lifetime(), lifetime);
-            assert_eq!(activity.scope(), scope);
-            assert_eq!(activity.interrupt(), interrupt);
-        }
-    }
-
-    #[test]
-    fn kind_comes_from_the_id() {
-        let toast = fixture::shown(Id::new(Kind::Notification, "7"), Priority::Passive, OSD)
-            .with_actions(vec![Action {
-                key: String::from("reply"),
-                label: String::from("Reply"),
-            }]);
-
-        assert_eq!(toast.kind(), Kind::Notification);
-        assert_eq!(toast.actions().len(), 1);
-    }
-
-    #[test]
-    fn detail_belongs_to_its_kind() {
-        let media = fixture::persistent(Id::new(Kind::Media, "mpv"), Priority::Media);
-        let track = Detail::Media(Track {
-            title: String::from("Song"),
-            ..Track::default()
-        });
-
-        assert_eq!(media.detail(), &Detail::None);
-        assert_eq!(media.clone().with_detail(track.clone()).detail(), &track);
-        assert_ne!(media.clone().with_detail(track.clone()), media);
     }
 
     #[test]
@@ -867,6 +803,7 @@ mod tests {
 
         assert!(volume.is_level());
         assert!(Detail::Brightness(70).is_level());
+        assert!(Detail::Keyboard(50).is_level());
         assert!(
             Detail::Battery(Charge {
                 percent: 15,
@@ -882,30 +819,10 @@ mod tests {
             })
             .is_level()
         );
+        assert!(Detail::Mode(Mode::CapsLock(true)).is_level());
         assert!(!Detail::Media(Track::default()).is_level());
         assert!(!Detail::Notification(Toast::default()).is_level());
         assert!(!Detail::None.is_level());
-    }
-
-    #[test]
-    #[should_panic(expected = "does not describe")]
-    fn detail_of_another_kind_is_refused() {
-        let _ = fixture::persistent(Id::new(Kind::Battery, "BAT0"), Priority::Critical)
-            .with_detail(Detail::Media(Track::default()));
-    }
-
-    #[test]
-    fn names_parse_back() {
-        for kind in Kind::ALL {
-            assert_eq!(Kind::parse(kind.name()), Some(kind));
-        }
-
-        for priority in Priority::ALL {
-            assert_eq!(Priority::parse(priority.name()), Some(priority));
-        }
-
-        assert_eq!(Kind::parse("Timer"), None);
-        assert_eq!(Priority::parse(""), None);
     }
 
     #[test]

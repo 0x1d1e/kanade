@@ -42,7 +42,7 @@ sample() {
 
     {
         echo "$rollup" | sed 's/^/rollup /'
-        # memory.awk reads these prefixed lines, and tests/memory.rs feeds it the same format;
+        # memory.awk reads these prefixed lines;
         # a descriptor or helper that went away since is skipped
         for file in $dri; do
             sed "s|^|fdinfo $file |" "$file" 2> /dev/null || true

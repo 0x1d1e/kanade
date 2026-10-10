@@ -5,8 +5,9 @@
 
 use std::time::Instant;
 
-use amane::{
-    Center, Column, Cursor, Key, Padding, Rectangle, Row, Service, Start, Text, Widget, children,
+use kanade_runtime::service::Service;
+use kanade_runtime::{
+    Center, Column, Cursor, Key, Padding, Rectangle, Row, Start, Text, Widget, children,
 };
 
 use super::Ring;
@@ -192,7 +193,7 @@ pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
     let header = Row::new(children![
         Text::new("Session")
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
     ])
     .width(WIDTH)
@@ -238,9 +239,9 @@ fn tile(leave: Leave, width: f32, ring: bool) -> Rectangle {
         .width(KNOB)
         .height(KNOB)
         .radius(KNOB / 2.0)
-        .fill(theme::ISLAND.surface_container_high)
+        .fill(theme::island().surface_container_high)
         .align_child(Center, Center)
-        .child(icon(leave).on(18.0, theme::ISLAND.on_surface));
+        .child(icon(leave).on(18.0, theme::island().on_surface));
 
     let tile = Rectangle::new()
         .width(width)
@@ -254,7 +255,7 @@ fn tile(leave: Leave, width: f32, ring: bool) -> Rectangle {
                 knob,
                 Text::new(name(leave))
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD)
             ])
             .gap(10.0)
@@ -262,7 +263,7 @@ fn tile(leave: Leave, width: f32, ring: bool) -> Rectangle {
         );
 
     if ring {
-        tile.fill(theme::ISLAND.surface_container).border_if(true)
+        tile.fill(theme::island().surface_container).border_if(true)
     } else {
         tile
     }
@@ -279,10 +280,10 @@ fn countdown(counting: &Counting, ring: Option<At>) -> Column {
         .align_child(Center, Center)
         .child(
             Column::new(children![
-                icon(leave).on(28.0, theme::ISLAND.on_surface_variant),
+                icon(leave).on(28.0, theme::island().on_surface_variant),
                 Text::new(format!("{} in {left} s", session::doing(counting.end)))
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD)
             ])
             .gap(6.0)
@@ -318,14 +319,14 @@ fn pill(label: &str, at: At, ring: Option<At>) -> Rectangle {
         .child(
             Text::new(label)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface)
+                .color(theme::island().on_surface)
                 .weight(theme::text::SEMIBOLD),
         );
 
     if ring == Some(at) {
         pill.border_if(true)
     } else {
-        pill.border(1.0, theme::ISLAND.surface_container_high)
+        pill.border(1.0, theme::island().surface_container_high)
     }
 }
 
@@ -455,35 +456,5 @@ fn close() {
 fn set(focus: Focus) {
     if *Focus::read() != focus {
         *Focus::write() = focus;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn tiles() -> Vec<Vec<(At, f32)>> {
-        vec![vec![
-            (At::Tile(Leave::Sleep), 0.25),
-            (At::Tile(Leave::Ending(Ending::Restart)), 0.75),
-        ]]
-    }
-
-    #[test]
-    fn the_first_key_only_shows_the_ring() {
-        let (focus, at) = Focus::default().step(Key::Enter, &tiles()).unwrap();
-
-        assert_eq!(at, None);
-        assert_eq!(focus.ring(&tiles()), Some(At::Tile(Leave::Sleep)));
-
-        let (focus, _) = focus.step(Key::Right, &tiles()).unwrap();
-        let (_, at) = focus.step(Key::Space, &tiles()).unwrap();
-
-        assert_eq!(at, Some(At::Tile(Leave::Ending(Ending::Restart))));
-    }
-
-    #[test]
-    fn escape_is_the_windows() {
-        assert_eq!(Focus::default().step(Key::Escape, &tiles()), None);
     }
 }

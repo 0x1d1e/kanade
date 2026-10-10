@@ -16,13 +16,13 @@ use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::Service;
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
+use kanade_runtime::service::Service;
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
 use crate::sources::{calendar, weather, windows};
-use crate::{dock, modules, settings, supervise, theme};
+use crate::{dock, modules, settings, supervise, theme, view};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -90,7 +90,15 @@ pub fn reload() -> Outcome {
                     theme::follow(next.palette.as_deref());
                 }
 
-                IslandService::write().retime(next.island);
+                {
+                    // read under the write, so an output changing meanwhile cannot land first
+                    let mut island = IslandService::write();
+                    island.retime(next.island);
+                    island.resize(view::largest(), view::hang(), view::peek(), Instant::now());
+                }
+
+                // last, so every other window that reads the config draws all of it at once
+                config::announce();
             }
 
             // even unchanged, so a reload also finds the `.desktop` files installed since

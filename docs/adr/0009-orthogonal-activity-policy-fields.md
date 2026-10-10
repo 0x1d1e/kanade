@@ -15,7 +15,7 @@ An Activity has four policy fields that answer different questions:
 
 Today only Lifetime and Priority are set. `Activity::scope()` and `Activity::interrupt()` in `src/island/activity.rs` derive the other two: Transient means FocusedOutput and `Interrupt::Transient` (shown over the primary), Persistent means Global and `Never`, Critical means `Preempt`. So the rules are accidental. Being Transient should not by itself mean interrupting the primary, and being Critical should not by itself decide where an Activity shows. `docs/design.md` adds values the derivation cannot express: `until-dismissed` Lifetime and `auto-expand(ms)` Interrupt.
 
-`Interrupt::Transient` and the Frame's `transient` and `queued` slots exist for in-Island toasts and level changes. ADR 0007 moves those to Banners and the OSD, and ADR 0005 moves privacy to its own Overlay.
+`Interrupt::Transient` and the Frame's `transient` and `queued` slots exist for in-Island toasts and level changes. ADR 0007 moves those to Banners and the OSD, and ADR 0005 moves privacy to its own Overlay. (ADR 0021 later returns the OSD to the Island, as a Transient of its own Priority, not through `Interrupt::Transient`.)
 
 ## Decision
 
@@ -38,7 +38,7 @@ Validation stays minimal, so it does not bring the derivation back as rules. `Ac
 
 Unusual but explicit combinations are valid, and source policy decides whether to create them: `Persistent` + `FocusedOutput`, `Transient` + `Global`, a low Priority + `Preempt`, `Critical` + `None`.
 
-A workspace switch shows the fields at work: `Transient`, `Osd`, `FocusedOutput`, `None` (ADR 0007). It is short-lived and may outrank the primary, yet interrupts nothing; the previous primary returns when it expires.
+A workspace switch shows the fields at work: `Transient`, `Osd` (now `Glance`, ADR 0021), `FocusedOutput`, `None` (ADR 0007). It is short-lived and may outrank the primary, yet interrupts nothing; the previous primary returns when it expires.
 
 The Arbiter never panics on an Activity: anything it receives was valid at construction.
 

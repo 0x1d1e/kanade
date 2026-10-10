@@ -1,7 +1,8 @@
 //! Test-only structural checks. `island/` is pure: every file except `island/service.rs`
-//! must not name Amane, the service module, or anything in Kanade outside `island/`.
-//! Parsed with syn, so aliases (`use amane as ui`), nesting, and test code are all covered.
-//! And `wayland_client` stays in `doctor/`: Amane owns Kanade's Wayland, doctor only inspects it.
+//! must not name the runtime, the service module, or anything in Kanade outside `island/`.
+//! Parsed with syn, so aliases (`use kanade_runtime as ui`), nesting, and test code are all covered.
+//! And `wayland_client` stays in `doctor/`: the runtime owns Kanade's Wayland, doctor only inspects it;
+//! `crates/lock`, outside `src/`, has its own connection, for the lock screen (ADR 0025).
 //! And no color literal outside `theme.rs` (#106): components draw theme tokens. Test code may.
 
 use std::collections::HashSet;
@@ -19,6 +20,9 @@ use syn::{
 
 const SERVICE: &str = "service";
 
+// the runtime that draws, which island/ never names
+const RUNTIME: &str = "kanade_runtime";
+
 struct Checker {
     // how deep the current module sits below `island`, `super` may not climb above 0
     depth: usize,
@@ -32,9 +36,9 @@ impl Checker {
 
         let supers = segments.iter().take_while(|s| *s == "super").count();
 
-        if first == Some("amane") {
+        if first == Some(RUNTIME) {
             self.violations
-                .push(format!("uses amane: {}", segments.join("::")));
+                .push(format!("uses the runtime: {}", segments.join("::")));
         }
 
         if supers > self.depth {
@@ -58,7 +62,7 @@ impl Checker {
     }
 
     // macro bodies are opaque to syn, so rebuild the `a::b::c` paths from tokens and apply
-    // the same rules; a lone `amane` identifier is rejected anywhere
+    // the same rules; a lone `kanade_runtime` identifier is rejected anywhere
     fn check_tokens(&mut self, tokens: TokenStream) {
         let mut tokens = tokens.into_iter().peekable();
 
@@ -71,8 +75,8 @@ impl Checker {
                         segments.push(next);
                     }
 
-                    if segments.len() == 1 && segments[0] == "amane" {
-                        self.violations.push("macro mentions amane".into());
+                    if segments.len() == 1 && segments[0] == RUNTIME {
+                        self.violations.push("macro mentions the runtime".into());
                     }
 
                     self.check_segments(&segments);
@@ -309,7 +313,7 @@ fn wayland_stays_in_doctor() {
     assert!(mentions(doctor.parse().unwrap(), WAYLAND));
 }
 
-// Amane's color type, and what makes one from literals
+// the runtime's color type, and what makes one from literals
 const COLOR: &str = "Color";
 const CONSTRUCTORS: [&str; 3] = ["rgb", "rgba", "from"];
 
@@ -321,7 +325,7 @@ struct Literals {
 }
 
 impl Literals {
-    // `segments` name a constant of the color type, like `Color::WHITE` or `amane::Color::BLACK`
+    // `segments` name a constant of the color type, like `Color::WHITE` or `kanade_runtime::Color::BLACK`
     fn constant(&self, segments: &[String]) -> bool {
         let [.., ty, name] = segments else {
             return false;
@@ -379,7 +383,7 @@ impl Literals {
     }
 }
 
-// what Amane's `Color::from` reads: 3, 6 or 8 hex digits, any leading `#` optional
+// what the runtime's `Color::from` reads: 3, 6 or 8 hex digits, any leading `#` optional
 fn hex(text: &str) -> bool {
     let digits = text.trim_start_matches('#');
 
@@ -549,13 +553,13 @@ mod checker {
     }
 
     #[test]
-    fn catches_direct_and_aliased_amane() {
-        assert!(flagged("use amane::Color;", 1));
-        assert!(flagged("use amane as ui;", 1));
-        assert!(flagged("use ::amane::Color;", 1));
-        assert!(flagged("use {amane::Color, std::fmt};", 1));
-        assert!(flagged("fn f() -> amane::Color { todo!() }", 1));
-        assert!(flagged("extern crate amane as ui;", 1));
+    fn catches_direct_and_aliased_kanade_runtime() {
+        assert!(flagged("use kanade_runtime::Color;", 1));
+        assert!(flagged("use kanade_runtime as ui;", 1));
+        assert!(flagged("use ::kanade_runtime::Color;", 1));
+        assert!(flagged("use {kanade_runtime::Color, std::fmt};", 1));
+        assert!(flagged("fn f() -> kanade_runtime::Color { todo!() }", 1));
+        assert!(flagged("extern crate kanade_runtime as ui;", 1));
     }
 
     #[test]
@@ -568,10 +572,13 @@ mod checker {
 
     #[test]
     fn catches_nested_modules_tests_and_macros() {
-        assert!(flagged("mod inner { use amane::Color; }", 1));
-        assert!(flagged("#[cfg(test)] mod t { use amane::Color; }", 1));
+        assert!(flagged("mod inner { use kanade_runtime::Color; }", 1));
         assert!(flagged(
-            "fn f() { println!(\"{}\", amane::Color::BLUE); }",
+            "#[cfg(test)] mod t { use kanade_runtime::Color; }",
+            1
+        ));
+        assert!(flagged(
+            "fn f() { println!(\"{}\", kanade_runtime::Color::BLUE); }",
             1
         ));
         assert!(flagged("#[path = \"../view.rs\"] mod v;", 1));
@@ -613,7 +620,7 @@ mod checker {
             "macro_rules! m { () => { $crate::view::x() }; }",
             1
         ));
-        assert!(flagged("#[derive(amane::Thing)] struct S;", 1));
+        assert!(flagged("#[derive(kanade_runtime::Thing)] struct S;", 1));
     }
 
     #[test]
@@ -645,9 +652,9 @@ mod checker {
 
         assert!(caught("const C: Color = Color::rgb(1, 2, 3);"));
         assert!(caught("fn f() -> Color { Color::rgba(0, 0, 0, 89) }"));
-        assert!(caught("fn f() -> Color { amane::Color::WHITE }"));
+        assert!(caught("fn f() -> Color { kanade_runtime::Color::WHITE }"));
         assert!(caught(
-            "use amane::Color as Ink; fn f() -> Ink { Ink::BLACK }"
+            "use kanade_runtime::Color as Ink; fn f() -> Ink { Ink::BLACK }"
         ));
         assert!(caught(
             "fn f() -> Color { Color::rgb(c.red(), 0, c.blue()) }"
@@ -680,7 +687,7 @@ mod checker {
     fn allows_tokens_and_test_code() {
         let caught = |source: &str| !color_literals(source).is_empty();
 
-        assert!(!caught("fn f() -> Color { theme::ISLAND.surface }"));
+        assert!(!caught("fn f() -> Color { theme::island().surface }"));
         assert!(!caught(
             "fn f(r: u8, g: u8, b: u8) -> Color { Color::rgb(r, g, b) }"
         ));

@@ -25,11 +25,11 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::Service;
 use calcard::common::PartialDateTime;
 use calcard::common::timezone::Tz;
 use calcard::icalendar::dates::TimeOrDelta;
@@ -41,9 +41,11 @@ use calcard::icalendar::{
 };
 use calcard::{Entry, Parser};
 use chrono::{
-    DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Timelike, Weekday,
+    DateTime, Datelike, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, TimeZone, Timelike,
+    Weekday,
 };
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
+use kanade_runtime::service::Service;
 
 use super::google;
 use crate::{clock, config, modules, supervise};
@@ -78,7 +80,31 @@ pub struct Calendars {
     // the `.ics` files found, read or not
     pub files: usize,
 
+    // today's events, for the time's Peek
+    pub upcoming: Upcoming,
+
     calendars: Arc<[ICalendar]>,
+}
+
+/*
+ * the events of a day, expanded on the reading thread, and again on its own when the day turns,
+ * so the time's Peek never expands on its draw thread
+ */
+#[derive(Clone, Default)]
+pub struct Upcoming {
+    day: Option<NaiveDate>,
+    events: Arc<[Occurrence]>,
+}
+
+impl Upcoming {
+    fn of(calendars: &[ICalendar], day: NaiveDate) -> Self {
+        let events = occurrences(calendars, day, day + Days::new(1), clock::local_time);
+
+        Upcoming {
+            day: Some(day),
+            events: events.occurrences.into(),
+        }
+    }
 }
 
 impl Service for Calendars {
@@ -140,6 +166,42 @@ impl Occurrence {
     pub fn moment(&self) -> bool {
         self.span.0 == self.span.1
     }
+}
+
+// whether a thread is expanding a new day's events
+static TURNING: AtomicBool = AtomicBool::new(false);
+
+/*
+ * today's events, from a view; on a new day they are yesterday's until a thread has expanded
+ * today's, which then redraws it
+ */
+pub fn upcoming(today: NaiveDate) -> Arc<[Occurrence]> {
+    let upcoming = Calendars::read().upcoming.clone();
+
+    if upcoming.day != Some(today) && !TURNING.swap(true, Ordering::AcqRel) {
+        let spawned = thread::Builder::new()
+            .name("calendar-day".into())
+            .spawn(move || {
+                let calendars = Calendars::read().clone();
+                let turned = Upcoming::of(&calendars.calendars, today);
+
+                // a read since expanded its own day
+                let mut service = Calendars::write();
+                if service.generation == calendars.generation {
+                    service.upcoming = turned;
+                }
+                drop(service);
+
+                TURNING.store(false, Ordering::Release);
+            });
+
+        if let Err(error) = spawned {
+            eprintln!("kanade: cannot expand today's events ({error})");
+            TURNING.store(false, Ordering::Release);
+        }
+    }
+
+    upcoming.events
 }
 
 // the watch over the places, shared so a config reload re-arms it from its own thread
@@ -227,32 +289,16 @@ pub fn reread() {
 
 // the calendars read from `files` files, as a new generation
 fn store(files: usize, calendars: Vec<ICalendar>) {
+    let upcoming = Upcoming::of(&calendars, clock::today());
     let mut service = Calendars::write();
 
+    service.upcoming = upcoming;
     service.generation += 1;
     if (service.files == 0) != (files == 0) {
         service.found += 1;
     }
     service.files = files;
     service.calendars = calendars.into();
-}
-
-// the calendars, from `files`, each a name and its text, as a read of those files leaves them
-#[cfg(test)]
-pub fn read_as(files: &[(&str, &str)]) -> Calendars {
-    let calendars = files
-        .iter()
-        .flat_map(|(_, text)| parse(text).expect("a calendar"))
-        .flat_map(series)
-        .map(|mut calendar| {
-            assert!(counted(&mut calendar));
-            calendar
-        })
-        .collect();
-
-    store(files.len(), calendars);
-
-    Calendars::read().clone()
 }
 
 fn watch() -> io::Result<()> {
