@@ -1,5 +1,5 @@
 //! What every Surface's keyboard shares: its targets as rows, each with where its middle is across
-//! the Surface from 0 to 1, and how the arrows move a ring between them.
+//! the Surface from 0 to 1, and how the arrows and Tab move a ring between them.
 
 use kanade_runtime::Key;
 
@@ -20,8 +20,9 @@ pub fn find<A: PartialEq>(grid: &[Vec<(A, f32)>], at: &A) -> Option<Place> {
 }
 
 /*
- * the place a key moves to, none for a key that does not move or at an edge. Up and Down go to the
- * target in the next row nearest across, Home and End to the first and last
+ * the place a key moves to, none for a key that does not move or an arrow at an edge. Up and Down
+ * go to the target in the next row nearest across, Home and End to the first and last. Tab reads
+ * on, row by row, and wraps to the first after the last
  */
 pub fn moved<A>(place: Place, key: Key, grid: &[Vec<(A, f32)>]) -> Option<Place> {
     let across = grid[place.row][place.column].1;
@@ -47,7 +48,15 @@ pub fn moved<A>(place: Place, key: Key, grid: &[Vec<(A, f32)>]) -> Option<Place>
             column: place.column + 1,
             ..place
         },
-        Key::Home => Place { row: 0, column: 0 },
+        Key::Tab if place.column + 1 < grid[place.row].len() => Place {
+            column: place.column + 1,
+            ..place
+        },
+        Key::Tab if place.row + 1 < grid.len() => Place {
+            row: place.row + 1,
+            column: 0,
+        },
+        Key::Tab | Key::Home => Place { row: 0, column: 0 },
         Key::End => {
             let row = grid.len() - 1;
 

@@ -6,9 +6,9 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
 
 - [x] Keyboard ring shared by Session, Tray, Controls and Notifications (`surfaces/ring.rs`, `surfaces::store`, controls' reveal rule)
   - Notifications embeds `Ring` for its state and keeps a local, equivalent reveal because its ring re-seats by `At::place`.
-- [ ] Surface visit state is still copied by the visit-scoped Searches and Browse
-  - `Search` (clipboard, launcher) and `Browse` (calendar) still repeat the `of(visit)` reset; give them the visit helper.
-  - Tab navigates only in notifications and clipboard; decide whether `grid::moved` takes it for every Surface.
+- [x] Surface visit state shared by the visit-scoped Searches and Browse (`surfaces/visit.rs`)
+  - `grid::moved` takes Tab, so Session, Tray and Controls read on row by row and wrap. Notifications, Clipboard and Calendar keep their own Tab.
+  - `Focus::of` in the Ring-based Surfaces still repeats the reset; the trait does not fit its shape.
 - [x] Output presence: `Monitors` is the one authority; `autohide`, `banners` and `dock` prune from a watcher in their own start (#214)
   - Not run: the unplug and replug with the Dock, a Banner and autohide active (one output on the dev machine). Nothing stale should draw, a replugged output should come back as new, idle frames stay 0.
   - Watchers see only the latest list, so an output destroyed and created again between two derives keeps its state, a stale hover included.

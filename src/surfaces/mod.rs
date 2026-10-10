@@ -18,6 +18,7 @@ mod ring;
 pub mod session;
 mod slider;
 pub mod tray;
+mod visit;
 pub mod weather;
 
 /*
