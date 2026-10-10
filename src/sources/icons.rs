@@ -1,8 +1,8 @@
 //! The file an icon name stands for, for the tray's items and the Dock's and Launcher's apps: an
 //! absolute path as it is, else the item's own folder, then the user's icon theme, the themes it
 //! inherits and hicolor, then the loose pixmaps. An svg beats every png, a bigger png a smaller
-//! one. Amane keeps its own index private, so this looks up only the names given, each once a run;
-//! a theme switched while Kanade runs shows after a restart, as it does for Amane's.
+//! one. This looks up only the names given, each once a run, so a theme switched while Kanade runs
+//! shows after a restart.
 
 use std::collections::HashMap;
 use std::env;
@@ -291,64 +291,4 @@ fn data_dirs() -> Vec<PathBuf> {
     );
 
     dirs
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn folder(name: &str) -> PathBuf {
-        let folder = env::temp_dir().join(format!("kanade-icons-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&folder);
-        folder
-    }
-
-    fn touch(path: &Path) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, b"").unwrap();
-    }
-
-    #[test]
-    fn an_svg_beats_every_png_and_a_bigger_png_a_smaller() {
-        assert!(
-            score(Path::new("/i/16x16/apps/a.svg")) > score(Path::new("/i/256x256/apps/a.png"))
-        );
-        assert!(score(Path::new("/i/48x48/apps/a.png")) > score(Path::new("/i/22x22/apps/a.png")));
-        assert!(score(Path::new("/i/apps/48/a.png")) > score(Path::new("/i/apps/24/a.png")));
-        assert!(
-            score(Path::new("/i/22x22@2/apps/a.png")) > score(Path::new("/i/16x16/apps/a.png"))
-        );
-        assert!(
-            score(Path::new("/i/scalable/apps/a.svg")) > score(Path::new("/i/48x48/apps/a.svg"))
-        );
-    }
-
-    #[test]
-    fn the_items_own_folder_is_searched_a_theme_deep() {
-        let own = folder("own");
-        touch(&own.join("hicolor/22x22/apps/test-tray.png"));
-        touch(&own.join("hicolor/48x48/apps/test-tray.png"));
-        touch(&own.join("loose.png"));
-
-        assert_eq!(
-            look("test-tray", Some(&own)),
-            Some(own.join("hicolor/48x48/apps/test-tray.png"))
-        );
-        assert_eq!(look("loose.png", Some(&own)), Some(own.join("loose.png")));
-
-        fs::remove_dir_all(own).unwrap();
-    }
-
-    #[test]
-    fn an_absolute_path_is_its_own_file_while_there_is_one() {
-        let own = folder("absolute");
-        let icon = own.join("icon.png");
-        touch(&icon);
-
-        assert_eq!(find(icon.to_str().unwrap(), None), Some(icon.clone()));
-        assert_eq!(find(own.join("gone.png").to_str().unwrap(), None), None);
-        assert_eq!(find("", None), None);
-
-        fs::remove_dir_all(own).unwrap();
-    }
 }

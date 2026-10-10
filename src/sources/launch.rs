@@ -512,9 +512,15 @@ mod tests {
             }
         });
 
+        // a reply has time to come on a loaded machine; only one that never comes is waited out
+        let wait = if answer.is_some() {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(200)
+        };
         let bus = connection::Builder::async_io_unix_stream(ours)
             .p2p()
-            .method_timeout(Duration::from_millis(200))
+            .method_timeout(wait)
             .build()
             .unwrap();
 

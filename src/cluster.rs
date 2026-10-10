@@ -1,76 +1,120 @@
-//! The privacy cluster (ADR 0005): a microphone, camera or screen capture in use, on every monitor,
-//! on the Overlay layer, so no fullscreen window covers it. Never an Activity: it shows whatever the
-//! island shows, and takes no pointer, so it never blocks what lies beneath it.
+//! The privacy cluster (ADRs 0005, 0033): a microphone, camera or screen capture in use, as a dot
+//! of its color each at the trailing end of the Island's body, inside it. Never an Activity: it
+//! shows whatever the island shows, and takes no pointer. Over a fullscreen window it does not
+//! show. `privacy.indicators` turns it off.
 
-use amane::{
-    Center, End, Horizontal, Layer, LayerWindow, Margin, Monitor, Rectangle, Row, Service, Start,
-    Vertical, Widget, Zone,
-};
+use kanade_runtime::service::Service;
+use kanade_runtime::{Center, Color, Column, End, Padding, Rectangle, Row, Start, Widget};
 
+use crate::config;
 use crate::icon::Icon;
-use crate::island::geometry;
+use crate::island::geometry::{PEEK, Rect};
+use crate::island::presentation::Presentation;
 use crate::sources::privacy::Privacy;
 use crate::theme;
 
 const GLYPH: f32 = 16.0;
-const GAP: f32 = 8.0;
+
+const DOT: f32 = 8.0;
+const DOT_GAP: f32 = 5.0;
+
+// from the body's trailing end to the last dot, and from the first dot to what the form draws
 const INSET: f32 = 12.0;
+const CLEAR: f32 = 10.0;
 
-// as tall as the island at rest, which it lines up with
-const HEIGHT: f32 = geometry::REST.height;
+// what captures now: a dot each, in the colors `glyphs` uses and in the same order
+pub struct Cluster {
+    inks: Vec<Color>,
+}
 
-// from the monitor's top right corner
-const MARGIN: i32 = 8;
+// whether the settings ask for the indicators, which the Controls Surface follows too
+pub fn on() -> bool {
+    config::get().privacy_indicators
+}
 
-// room for all three glyphs; the pill takes what it needs at the right
-const WIDTH: f32 = INSET * 2.0 + GLYPH * 3.0 + GAP * 2.0;
+// the cluster for what captures now, none while nothing does or it is off; reading subscribes
+pub fn read() -> Option<Cluster> {
+    if !on() {
+        return None;
+    }
 
-// one window per monitor, hidden while nothing captures, so it draws nothing then
-pub fn window(_: &Monitor) -> LayerWindow {
-    // reading subscribes this window to capture changes
     let privacy = Privacy::read();
-    let glyphs = glyphs(&privacy);
 
-    let count = glyphs.len() as f32;
-    let width = INSET * 2.0 + GLYPH * count + GAP * (count - 1.0).max(0.0);
+    privacy.any().then(|| Cluster {
+        inks: captures(&privacy).map(|(_, ink)| ink).collect(),
+    })
+}
 
-    LayerWindow::new()
-        .width(WIDTH)
-        .height(HEIGHT)
-        .anchor_vertical(Vertical::Top)
-        .anchor_horizontal(Horizontal::Right)
-        .margin(Margin {
-            top: geometry::TOP as i32,
-            right: MARGIN,
-            ..Margin::default()
-        })
-        .layer(Layer::Overlay)
-        .space(Zone::Ignore)
-        .namespace("kanade-privacy")
-        .visible(privacy.any())
-        .click_through()
-        .child(
-            Rectangle::new()
-                .width(WIDTH)
-                .height(HEIGHT)
+// whether a body in this Presentation carries the cluster: the small forms, not a Tray or a Surface
+pub fn beside(presentation: Presentation) -> bool {
+    matches!(
+        presentation,
+        Presentation::Rest | Presentation::Compact | Presentation::Split | Presentation::Peek
+    )
+}
+
+impl Cluster {
+    fn length(&self) -> f32 {
+        let count = self.inks.len() as f32;
+
+        DOT * count + DOT_GAP * (count - 1.0).max(0.0)
+    }
+
+    // how much of its trailing end the cluster takes from a small form, which lays out in the rest
+    pub fn room(&self) -> f32 {
+        INSET + self.length() + CLEAR
+    }
+
+    /*
+     * the dots in a layer as large as the body, from its trailing end: across the top, centered on
+     * the small form there (as tall as the body, up to a Peek), or along a side edge down it from
+     * the end, centered across
+     */
+    pub fn draw(self, body: Rect, sideways: bool) -> Rectangle {
+        let dots = self.inks.into_iter().map(|ink| {
+            Box::new(
+                Rectangle::new()
+                    .width(DOT)
+                    .height(DOT)
+                    .radius(DOT / 2.0)
+                    .fill(ink),
+            ) as Box<dyn Widget>
+        });
+        let layer = Rectangle::new().width(body.width).height(body.height);
+
+        if sideways {
+            layer
+                .padding(Padding {
+                    bottom: INSET,
+                    ..Padding::default()
+                })
+                .align_child(Center, End)
+                .child(Column::new(dots.collect()).gap(DOT_GAP).align(Center))
+        } else {
+            layer
+                .padding(Padding {
+                    right: INSET,
+                    top: (body.height.min(PEEK.height) - DOT) / 2.0,
+                    ..Padding::default()
+                })
                 .align_child(End, Start)
-                .child(
-                    Rectangle::new()
-                        .width(width)
-                        .height(HEIGHT)
-                        .radius(HEIGHT / 2.0)
-                        .fill(theme::ISLAND.surface)
-                        .align_child(Center, Center)
-                        .child(Row::new(glyphs).gap(GAP).align(Center)),
-                ),
-        )
+                .child(Row::new(dots.collect()).gap(DOT_GAP).align(Center))
+        }
+    }
 }
 
 /*
- * what captures, as the cluster and the Controls Surface draw it: glyphs that differ by shape, not
+ * what captures, as the Controls Surface draws it beside the apps: glyphs that differ by shape, not
  * color alone (plan 7), green for a microphone or camera, amber for a screen cast
  */
 pub fn glyphs(privacy: &Privacy) -> Vec<Box<dyn Widget>> {
+    captures(privacy)
+        .map(|(icon, ink)| Box::new(icon.on(GLYPH, ink)) as Box<dyn Widget>)
+        .collect()
+}
+
+// what captures now, each with its glyph and color
+fn captures(privacy: &Privacy) -> impl Iterator<Item = (Icon, Color)> {
     let sensors = privacy.sensors.as_ref();
 
     [
@@ -88,6 +132,5 @@ pub fn glyphs(privacy: &Privacy) -> Vec<Box<dyn Widget>> {
     ]
     .into_iter()
     .filter(|(on, _, _)| *on)
-    .map(|(_, icon, ink)| Box::new(icon.on(GLYPH, ink)) as Box<dyn Widget>)
-    .collect()
+    .map(|(_, icon, ink)| (icon, ink))
 }

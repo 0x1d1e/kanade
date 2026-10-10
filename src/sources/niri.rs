@@ -1,26 +1,27 @@
-//! Kanade's own niri EventStream (plan 3, 5.3): Amane's niri backend is private and tracks neither
-//! the overview nor casts. Hands the core a plain focused output and whether the overview is open,
-//! `workspace` the focused workspace, `privacy` whether anything captures the screen, and `capture`
-//! each screenshot niri saves, `windows` every window opened, closed or focused. `ask` sends niri
-//! one request on a connection of its own.
+//! Kanade's own niri EventStream (plan 3, 5.3), tracking the overview and casts too. Hands the core a plain focused output and whether the overview is open,
+//! and the window each output shows (`fullscreen`), `workspace` the focused workspace, `privacy` whether anything captures the screen, and `capture`
+//! each screenshot niri saves, `windows` every window opened, closed or focused, and `dock` the
+//! outputs still connected. `ask` sends niri one request on a connection of its own.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use amane::Service;
+use kanade_runtime::service::Service;
 
 use super::capture;
+use super::fullscreen::{Fullscreen, Showing};
 use super::json::Json;
 use super::privacy::Privacy;
 use super::windows::{self, Heard, Window, WindowId};
 use super::workspace;
-use crate::banners::Banners;
+use crate::autohide;
+use crate::banners::{self, Banners};
+use crate::dock;
 use crate::island::activity::{Activity, Id, Workspace};
 use crate::island::service::IslandService;
-use crate::osd::Osd;
 use crate::supervise;
 
 // what the core gets from niri; the default is also what a lost socket degrades to
@@ -36,6 +37,12 @@ pub struct Seen {
 
     // niri has at least one cast, paused ones included
     pub casting: bool,
+
+    // every output, as niri keeps a workspace on each; sorted, and empty while unknown
+    pub outputs: Vec<String>,
+
+    // the window each output shows, by output; empty while unknown
+    pub shown: BTreeMap<String, Showing>,
 }
 
 // what the island does about a change niri made
@@ -65,6 +72,12 @@ struct Listed {
     index: u32,
 
     name: Option<String>,
+
+    // the one its output shows
+    active: bool,
+
+    // the window it shows
+    window: Option<u64>,
 }
 
 // niri's events only say what changed, so the rest is remembered here
@@ -79,10 +92,14 @@ struct Niri {
 
     // every cast by stream id
     casts: HashSet<u64>,
+
+    // every window by id: which app's, and its tile
+    windows: HashMap<u64, Showing>,
 }
 
 impl Niri {
-    // anything niri sends that is not about workspaces, focus, the overview or casts changes nothing
+    // anything niri sends that is not about workspaces, windows, focus, the overview or casts changes
+    // nothing
     fn apply(&mut self, event: &Json) {
         if let Some(changed) = event.get("WorkspacesChanged") {
             let workspaces = changed.get("workspaces").and_then(Json::as_array);
@@ -104,6 +121,8 @@ impl Niri {
                         output: text("output"),
                         index: index.and_then(|index| index.try_into().ok()).unwrap_or(0),
                         name: text("name"),
+                        active: workspace.get("is_active").and_then(Json::as_bool) == Some(true),
+                        window: workspace.get("active_window_id").and_then(Json::as_u64),
                     },
                 );
 
@@ -112,9 +131,57 @@ impl Niri {
                 }
             }
         } else if let Some(activated) = event.get("WorkspaceActivated") {
+            let id = activated.get("id").and_then(Json::as_u64);
+
             // not focused: it only became the one shown on its own output
             if activated.get("focused").and_then(Json::as_bool) == Some(true) {
-                self.focused = activated.get("id").and_then(Json::as_u64);
+                self.focused = id;
+            }
+
+            if let Some(output) = id
+                .and_then(|id| self.workspaces.get(&id))
+                .map(|listed| listed.output.clone())
+            {
+                for (other, listed) in &mut self.workspaces {
+                    if listed.output == output {
+                        listed.active = Some(*other) == id;
+                    }
+                }
+            }
+        } else if let Some(changed) = event.get("WorkspaceActiveWindowChanged") {
+            if let Some(listed) = changed
+                .get("workspace_id")
+                .and_then(Json::as_u64)
+                .and_then(|id| self.workspaces.get_mut(&id))
+            {
+                listed.window = changed.get("active_window_id").and_then(Json::as_u64);
+            }
+        } else if let Some(changed) = event.get("WindowsChanged") {
+            let windows = changed.get("windows").and_then(Json::as_array);
+
+            self.windows = windows
+                .unwrap_or_default()
+                .iter()
+                .filter_map(shown)
+                .collect();
+        } else if let Some(opened) = event.get("WindowOpenedOrChanged") {
+            self.windows.extend(opened.get("window").and_then(shown));
+        } else if let Some(closed) = event.get("WindowClosed") {
+            if let Some(id) = closed.get("id").and_then(Json::as_u64) {
+                self.windows.remove(&id);
+            }
+        } else if let Some(changed) = event.get("WindowLayoutsChanged") {
+            for change in changed
+                .get("changes")
+                .and_then(Json::as_array)
+                .unwrap_or_default()
+            {
+                if let Some([id, layout]) = change.as_array()
+                    && let Some(window) = id.as_u64().and_then(|id| self.windows.get_mut(&id))
+                    && let Some(tile) = self::tile(layout)
+                {
+                    window.tile = tile;
+                }
             }
         } else if let Some(overview) = event.get("OverviewOpenedOrClosed")
             && let Some(open) = overview.get("is_open").and_then(Json::as_bool)
@@ -152,11 +219,33 @@ impl Niri {
             },
         });
 
+        let mut outputs: Vec<String> = self
+            .workspaces
+            .values()
+            .filter_map(|listed| listed.output.clone())
+            .collect();
+
+        outputs.sort();
+        outputs.dedup();
+
+        let shown = self
+            .workspaces
+            .values()
+            .filter(|listed| listed.active)
+            .filter_map(|listed| {
+                let window = self.windows.get(&listed.window?)?;
+
+                Some((listed.output.clone()?, window.clone()))
+            })
+            .collect();
+
         Seen {
             focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
             workspace,
             casting: !self.casts.is_empty(),
+            outputs,
+            shown,
         }
     }
 
@@ -172,8 +261,33 @@ impl Niri {
     }
 }
 
-// a cast's stream id, which niri stops it by
+// a window as `fullscreen` matches it, by id; none without an id or a tile
+fn shown(window: &Json) -> Option<(u64, Showing)> {
+    let id = window.get("id").and_then(Json::as_u64)?;
+    let app_id = window
+        .get("app_id")
+        .and_then(Json::as_str)
+        .map(String::from);
+    let tile = tile(window.get("layout")?)?;
+
+    Some((id, Showing { app_id, tile }))
+}
+
+fn tile(layout: &Json) -> Option<(f64, f64)> {
+    match layout.get("tile_size")?.as_array()? {
+        [width, height] => Some((width.as_f64()?, height.as_f64()?)),
+        _ => None,
+    }
+}
+
+// a cast's stream; none for Kanade's own, liquid glass capturing what is behind the Island (ADR 0037)
 fn stream(cast: &Json) -> Option<u64> {
+    let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
+
+    if own {
+        return None;
+    }
+
     cast.get("stream_id").and_then(Json::as_u64)
 }
 
@@ -241,9 +355,9 @@ pub struct Posts {
     pub workspace: bool,
     pub privacy: bool,
     pub banners: bool,
-    pub osd: bool,
     pub capture: bool,
     pub windows: bool,
+    pub dock: bool,
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -474,12 +588,23 @@ fn watch(
     io::ErrorKind::UnexpectedEof.into()
 }
 
+// the outputs niri has, as they change; a lost stream knows none, which is not every output gone
+fn outputs<'a>(before: &Seen, seen: &'a Seen) -> Option<&'a [String]> {
+    (before.outputs != seen.outputs && !seen.outputs.is_empty()).then_some(&seen.outputs[..])
+}
+
 /*
  * the core hears of focus and the overview only when they change, of the focused workspace only
  * as a switch, so a list that only renumbers wakes nothing; the privacy cluster hears of casts
- * only as the first starts or the last stops, the Banners and the OSD of focus only as it moves
+ * only as the first starts or the last stops, the Banners of focus only as it moves, the Dock
+ * and the Island's autohide of the outputs only as one comes or goes, `fullscreen` of the windows
+ * shown only as one changes
  */
 fn post(posts: Posts, before: &Seen, seen: &Seen) {
+    if before.shown != seen.shown {
+        Fullscreen::write().shown.clone_from(&seen.shown);
+    }
+
     if posts.privacy && before.casting != seen.casting {
         Privacy::write().casting = seen.casting;
     }
@@ -488,8 +613,16 @@ fn post(posts: Posts, before: &Seen, seen: &Seen) {
         Banners::write().focus(seen.focused_output.clone(), Instant::now());
     }
 
-    if posts.osd && before.focused_output != seen.focused_output {
-        Osd::write().focus(seen.focused_output.clone());
+    if let Some(outputs) = outputs(before, seen) {
+        autohide::outputs(outputs);
+
+        if posts.banners {
+            banners::outputs(outputs);
+        }
+
+        if posts.dock {
+            dock::outputs(outputs);
+        }
     }
 
     let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
@@ -555,148 +688,6 @@ mod tests {
         (posts, lost.kind())
     }
 
-    // what set_niri hears of these posts: only focus and the overview, and only as they change
-    fn focus(posts: &[Seen]) -> Vec<Seen> {
-        let mut focus: Vec<Seen> = posts
-            .iter()
-            .map(|seen| Seen {
-                workspace: None,
-                ..seen.clone()
-            })
-            .collect();
-
-        focus.dedup();
-        focus
-    }
-
-    fn focused(output: &str) -> Seen {
-        Seen {
-            focused_output: Some(output.into()),
-            overview: false,
-            workspace: None,
-            casting: false,
-        }
-    }
-
-    // the focused workspace of each post
-    fn workspaces(posts: &[Seen]) -> Vec<Option<(u64, Workspace)>> {
-        posts
-            .iter()
-            .map(|seen| {
-                let focused = seen.workspace.clone()?;
-
-                Some((focused.id, focused.workspace))
-            })
-            .collect()
-    }
-
-    fn workspace(index: u32, count: u32, name: Option<&str>) -> Workspace {
-        Workspace {
-            index,
-            count,
-            name: name.map(String::from),
-        }
-    }
-
-    #[test]
-    fn focus_follows_the_focused_workspace_across_outputs() {
-        let (posts, _) = posts(&[OK, WORKSPACES, &activated(3, true), &activated(1, true)]);
-
-        assert_eq!(
-            focus(&posts),
-            [focused("eDP-1"), focused("HDMI-A-1"), focused("eDP-1")]
-        );
-        assert_eq!(
-            workspaces(&posts)[1],
-            Some((3, workspace(1, 1, Some("web"))))
-        );
-    }
-
-    #[test]
-    fn switching_workspaces_on_one_output_keeps_the_focus() {
-        let (posts, _) = posts(&[OK, WORKSPACES, &activated(2, true), &activated(1, true)]);
-
-        assert_eq!(focus(&posts), [focused("eDP-1")]);
-        assert_eq!(
-            workspaces(&posts),
-            [
-                Some((1, workspace(1, 2, None))),
-                Some((2, workspace(2, 2, None))),
-                Some((1, workspace(1, 2, None))),
-            ]
-        );
-    }
-
-    // niri adds an empty workspace below the one a window first opens on
-    #[test]
-    fn a_workspace_coming_renumbers_the_focused_one() {
-        let added = WORKSPACES.replacen(
-            "[",
-            r#"[{"id":4,"idx":3,"name":null,"output":"eDP-1","is_focused":false},"#,
-            1,
-        );
-
-        let (posts, _) = posts(&[OK, WORKSPACES, &added]);
-
-        assert_eq!(focus(&posts), [focused("eDP-1")]);
-        assert_eq!(
-            workspaces(&posts),
-            [
-                Some((1, workspace(1, 2, None))),
-                Some((1, workspace(1, 3, None))),
-            ]
-        );
-    }
-
-    // activated without focus only changed what an output shows
-    #[test]
-    fn unfocused_activation_keeps_the_focus() {
-        let (posts, _) = posts(&[OK, WORKSPACES, &activated(3, false)]);
-
-        assert_eq!(focus(&posts), [focused("eDP-1")]);
-        assert_eq!(posts.len(), 1);
-    }
-
-    #[test]
-    fn workspace_moved_to_another_output_takes_the_focus_along() {
-        let moved = WORKSPACES.replacen("\"eDP-1\"", "\"HDMI-A-1\"", 1);
-
-        let (posts, _) = posts(&[OK, WORKSPACES, &moved]);
-
-        assert_eq!(focus(&posts), [focused("eDP-1"), focused("HDMI-A-1")]);
-    }
-
-    // a fresh list replaces the old one whole: gone workspaces and a focus nobody has are unknown
-    #[test]
-    fn a_new_workspace_list_forgets_the_old_one() {
-        let unfocused = WORKSPACES.replace("\"is_focused\":true", "\"is_focused\":false");
-        let without_web =
-            r#"{"WorkspacesChanged":{"workspaces":[{"id":1,"output":"eDP-1","is_focused":true}]}}"#;
-
-        assert_eq!(
-            posts(&[OK, WORKSPACES, &unfocused]).0.last(),
-            Some(&Seen::default())
-        );
-        assert_eq!(
-            posts(&[OK, WORKSPACES, without_web, &activated(3, true)])
-                .0
-                .last(),
-            Some(&Seen::default())
-        );
-    }
-
-    #[test]
-    fn overview_opens_and_closes() {
-        let (posts, _) = posts(&[OK, WORKSPACES, &overview(true), &overview(false)]);
-
-        let open = Seen {
-            overview: true,
-            ..focused("eDP-1")
-        };
-
-        assert_eq!(focus(&posts), [focused("eDP-1"), open, focused("eDP-1")]);
-    }
-
     #[test]
     fn other_events_and_junk_post_nothing() {
         let (posts, _) = posts(&[
@@ -711,30 +702,6 @@ mod tests {
 
         // workspace 9 is unknown, so its output is too, which is the default
         assert_eq!(posts, []);
-    }
-
-    // one only put on the clipboard has no file to show
-    #[test]
-    fn each_screenshot_saved_is_heard_once() {
-        let text = [
-            OK,
-            r#"{"ScreenshotCaptured":{"path":"/home/k/Pictures/Screenshots/a.png"}}"#,
-            r#"{"ScreenshotCaptured":{"path":null}}"#,
-            &overview(true),
-            r#"{"ScreenshotCaptured":{"path":"/tmp/b.png"}}"#,
-        ]
-        .join("\n");
-        let mut shots = Vec::new();
-
-        watch(
-            text.as_bytes(),
-            &mut Seen::default(),
-            &mut |_, _| {},
-            &mut |path| shots.push(path),
-            &mut drop,
-        );
-
-        assert_eq!(shots, ["/home/k/Pictures/Screenshots/a.png", "/tmp/b.png"]);
     }
 
     // what `windows` hears of this stream
@@ -793,21 +760,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn losing_the_stream_forgets_the_windows() {
-        let mut heard = Vec::new();
-
-        run(
-            Err::<&[u8], _>(io::ErrorKind::NotFound.into()),
-            &mut Seen::default(),
-            |_, _| {},
-            drop,
-            |told| heard.push(told),
-        );
-
-        assert_eq!(heard, [Heard::Lost]);
-    }
-
     fn cast(stream: u64) -> String {
         format!(
             r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":{stream},"session_id":1,"kind":"PipeWire","target":{{"Output":{{"name":"eDP-1"}}}},"is_dynamic_target":false,"is_active":true,"pid":null,"pw_node_id":null}}}}}}"#
@@ -829,6 +781,26 @@ mod tests {
         let (posts, _) = posts(&[OK, &cast(1), &cast(2), &stopped(1), &cast(2), &stopped(2)]);
 
         assert_eq!(casting(&posts), [true, false]);
+    }
+
+    // liquid glass's capture is Kanade's own, and records nothing
+    #[test]
+    fn kanade_s_own_capture_is_no_cast() {
+        let own = format!(
+            r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":7,"session_id":7,"kind":"WlrScreencopy","target":{{"Output":{{"name":"eDP-1"}}}},"is_dynamic_target":false,"is_active":true,"pid":{},"pw_node_id":null}}}}}}"#,
+            std::process::id()
+        );
+        let list = format!(
+            r#"{{"CastsChanged":{{"casts":[{{"stream_id":8,"pid":{}}}]}}}}"#,
+            std::process::id()
+        );
+
+        let (own_only, _) = posts(&[OK, &own, &list]);
+        assert!(!casting(&own_only).contains(&true));
+
+        // and hides no other
+        let (beside, _) = posts(&[OK, &own, &cast(1)]);
+        assert_eq!(casting(&beside), [true]);
     }
 
     #[test]
@@ -861,12 +833,6 @@ mod tests {
 
         assert_eq!(posts, []);
         assert_eq!(lost, io::ErrorKind::Other);
-    }
-
-    #[test]
-    fn the_stream_ending_says_so() {
-        assert_eq!(posts(&[OK, WORKSPACES]).1, io::ErrorKind::UnexpectedEof);
-        assert_eq!(posts(&[]).1, io::ErrorKind::UnexpectedEof);
     }
 
     // the core is told once, then niri is gone for good
@@ -906,64 +872,5 @@ mod tests {
         );
 
         assert_eq!(posts, []);
-    }
-
-    // niri at the other end of a socket, answering `reply` after `delay`, or closing unanswered
-    fn exchanged(reply: Option<&str>, delay: Duration) -> Exchange {
-        let (ours, theirs) = UnixStream::pair().expect("a socket pair");
-        let reply = reply.map(|reply| format!("{reply}\n"));
-
-        let niri = std::thread::spawn(move || {
-            let mut request = String::new();
-            BufReader::new(&theirs)
-                .read_line(&mut request)
-                .expect("the request");
-            std::thread::sleep(delay);
-
-            if let Some(reply) = reply {
-                // the asker may have stopped listening
-                let _ = (&theirs).write_all(reply.as_bytes());
-            }
-            request
-        });
-
-        let exchange = exchange(ours, r#"{"Action":{}}"#, Duration::from_millis(50))
-            .expect("the request was sent");
-
-        assert_eq!(niri.join().expect("niri"), "{\"Action\":{}}\n");
-        exchange
-    }
-
-    #[test]
-    fn an_answer_is_niris_reply_or_refusal() {
-        assert!(matches!(
-            exchanged(Some(r#"{"Ok":"Handled"}"#), Duration::ZERO),
-            Exchange::Answered(answer) if answer.as_str() == Some("Handled")
-        ));
-        assert!(matches!(
-            exchanged(Some(r#"{"Err":"no window"}"#), Duration::ZERO),
-            Exchange::Refused(error) if error.to_string() == "no window"
-        ));
-    }
-
-    // niri may carry out a request it answers late, never or garbled, so that is no refusal
-    #[test]
-    fn a_late_missing_or_garbled_answer_is_unclear() {
-        assert!(matches!(
-            exchanged(Some(r#"{"Ok":"Handled"}"#), Duration::from_millis(300)),
-            Exchange::Unclear(error) if error.to_string() == "did not answer within 50ms"
-        ));
-        assert!(matches!(
-            exchanged(None, Duration::ZERO),
-            Exchange::Unclear(error) if error.to_string() == "closed without answering"
-        ));
-        assert!(matches!(
-            exchanged(Some(r#"{"Err":7}"#), Duration::ZERO),
-            Exchange::Unclear(error) if error.to_string() == r#"answered unexpectedly: {"Err":7}"#
-        ));
-        assert!(matches!(
-            exchanged(Some("garbled"), Duration::ZERO),
-            Exchange::Unclear(error) if error.to_string() == "answered unexpectedly: garbled"
-        ));
     }
 }

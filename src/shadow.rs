@@ -1,8 +1,11 @@
 /*
  * the body's drop shadow, blurred once per corner radius and drawn as eight images around the
- * body: four corners at their own size and four edges stretched along it. Amane's own shadow
+ * body: four corners at their own size and four edges stretched along it. A corner reaches a blur
+ * along the body's long sides, so a body standing upright, as on a side edge, takes corners turned
+ * to reach down it rather than across, which on a narrow pill would overlap. The runtime's own shadow
  * goes through Vello, which on every morphing frame cost enough gpu time to drop frames (#45);
- * images only move textures. The body covers the middle, so it has no piece there. Each piece is
+ * images only move textures. The body is see-through glass, so every piece is cut out where the
+ * body covers it, and there is no piece for its middle. Each piece is
  * a draw of its own, which on an integrated gpu costs more than the pixels it fills, so the
  * corners stay whole rather than cut down to what the body leaves showing
  */
@@ -12,13 +15,13 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
-use amane::{Color, Image, Rectangle, Widget};
+use kanade_runtime::{Color, Image, Rectangle, Widget};
 
 use crate::island::geometry::{self, Rect};
 use crate::raster;
 use crate::theme;
 
-// texels per logical pixel, like the icons; the smaller copies Amane prepares fit scale 1
+// texels per logical pixel, like the icons; the smaller copies the runtime prepares fit scale 1
 const SCALE: u32 = 2;
 
 // the body's coverage at a corner's curve is the share of these points per texel inside it
@@ -41,14 +44,26 @@ pub(crate) struct ShadowStyle {
 }
 
 impl ShadowStyle {
-    // subtle (plan 7)
-    pub(crate) const fn island() -> Self {
-        Self {
-            blur: 6,
-            drop: 4,
-            color: theme::SHADOW,
-        }
-    }
+    /*
+     * soft and wide, like CSS's `0 4px 24px`: a 24 pixel blur is a spread of 12. The drop stays
+     * under 4.8, past which a side edge's piece, a drop lower than the see-through body, would
+     * reach into the curve of a corner of radius 12
+     */
+    pub(crate) const AMBIENT: Self = Self {
+        blur: 12,
+        drop: 4,
+        color: theme::SHADOW_AMBIENT,
+    };
+
+    // close to the edge, like CSS's `0 2px 6px`
+    pub(crate) const CONTACT: Self = Self {
+        blur: 3,
+        drop: 2,
+        color: theme::SHADOW_CONTACT,
+    };
+
+    // both, the ambient one under; the ambient one reaches furthest
+    pub(crate) const ALL: [Self; 2] = [Self::AMBIENT, Self::CONTACT];
 
     // how far past the body's edge the blur reaches, in logical pixels
     pub(crate) fn reach(self) -> u32 {
@@ -61,39 +76,50 @@ impl ShadowStyle {
     }
 }
 
-// a radius and style blurred into the same pieces every time: radius, blur, drop and color
-type Key = (u32, u32, u32, [u8; 4]);
+// a radius, turn and style blurred into the same pieces every time: radius, upright, blur, drop
+// and color
+type Key = (u32, bool, u32, u32, [u8; 4]);
 
 // the corners top left, top right, bottom left, bottom right, then the top, bottom, left, right edges
-type Pieces = [PathBuf; 8];
+type Pieces = [PathBuf; PIECES];
+
+const PIECES: usize = 8;
 
 static DRAWN: LazyLock<Mutex<HashMap<Key, Pieces>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /*
  * blurs and starts decoding the pieces for every radius a body rests at, the only place that
  * blurs: the resting body's right away, so the first frames have a shadow to draw, the rest on
- * their own thread. Amane lets go of an image no window draws anymore, so later morphs decode
+ * their own thread. The runtime lets go of an image no window draws anymore, so later morphs decode
  * them again, the nearest ready radius standing in for the frame or two
  */
-pub(crate) fn prepare(style: ShadowStyle) {
-    prepare_radius(geometry::REST.radius as u32, style);
+pub(crate) fn prepare() {
+    for style in ShadowStyle::ALL {
+        for upright in [false, true] {
+            prepare_radius(geometry::REST.radius as u32, upright, style);
+        }
+    }
 
     thread::spawn(move || {
         for radius in radii() {
-            prepare_radius(radius, style);
+            for style in ShadowStyle::ALL {
+                for upright in [false, true] {
+                    prepare_radius(radius, upright, style);
+                }
+            }
         }
     });
 }
 
-fn prepare_radius(radius: u32, style: ShadowStyle) {
-    let key = key(radius, style);
+fn prepare_radius(radius: u32, upright: bool, style: ShadowStyle) {
+    let key = key(radius, upright, style);
 
     if lock().contains_key(&key) {
         return;
     }
 
     // blurred outside the lock, so drawing a frame never waits on this
-    let pieces = pieces(radius, style);
+    let pieces = pieces(radius, upright, style);
 
     for piece in &pieces {
         Image::loaded(piece);
@@ -109,21 +135,45 @@ fn lock() -> MutexGuard<'static, HashMap<Key, Pieces>> {
 /*
  * the shadow of a body with this corner radius, to go under it. Mid-morph the nearest resting
  * radius stands in, a few pixels off under a blur in motion: every radius drawn is a set of
- * textures Amane decodes and uploads again, which mid-morph costs more than the pixels (#45).
+ * textures the runtime decodes and uploads again, which mid-morph costs more than the pixels (#45).
  * Pieces still decoding are stood in for by the nearest radius that is ready, so the shadow
  * never blinks out
  */
-pub(crate) fn draw(layers: &mut Vec<Box<dyn Widget>>, body: Rect, radius: f32, style: ShadowStyle) {
-    let fits = (body.width.min(body.height) / 2.0).floor().max(0.0) as u32;
+pub(crate) fn draw(layers: &mut Vec<Box<dyn Widget>>, body: Rect, radius: f32) {
+    for style in ShadowStyle::ALL {
+        draw_style(layers, body, radius, style);
+    }
+}
 
-    let Some((radius, pieces)) = ready(radius, fits, style) else {
+/*
+ * as many layers as a shadow, drawing nothing: the runtime knows what the pointer pressed or drags by
+ * its place among a window's targets, so what comes after a shadow keeps its place whether one
+ * is cast or not, all of it or some
+ */
+pub(crate) fn none(layers: &mut Vec<Box<dyn Widget>>) {
+    for _ in 0..ShadowStyle::ALL.len() * PIECES {
+        layers.push(Box::new(nothing()));
+    }
+}
+
+fn nothing() -> Rectangle {
+    Rectangle::new().width(0.0).height(0.0)
+}
+
+fn draw_style(layers: &mut Vec<Box<dyn Widget>>, body: Rect, radius: f32, style: ShadowStyle) {
+    let fits = (body.width.min(body.height) / 2.0).floor().max(0.0) as u32;
+    let upright = body.height > body.width;
+
+    let Some((radius, pieces)) = ready(radius, fits, upright, style) else {
+        layers.extend((0..PIECES).map(|_| Box::new(nothing()) as Box<dyn Widget>));
         return;
     };
 
-    let placed = place(body, radius, style);
+    let placed = place(body, radius, upright, style);
 
     for (piece, at) in pieces.into_iter().zip(placed) {
         if at.width <= 0.0 || at.height <= 0.0 {
+            layers.push(Box::new(nothing()));
             continue;
         }
 
@@ -148,11 +198,12 @@ fn radii() -> Vec<u32> {
     radii
 }
 
-fn key(radius: u32, style: ShadowStyle) -> Key {
+fn key(radius: u32, upright: bool, style: ShadowStyle) -> Key {
     let color = style.color;
 
     (
         radius,
+        upright,
         style.blur,
         style.drop,
         [color.red(), color.green(), color.blue(), color.alpha()],
@@ -161,17 +212,17 @@ fn key(radius: u32, style: ShadowStyle) -> Key {
 
 /*
  * the pieces of the prepared radius nearest the wanted one that are all decoded and still fit
- * the body, else none. Only looks: asking starts a prepared radius decoding, and Amane draws
+ * the body, else none. Only looks: asking starts a prepared radius decoding, and the runtime draws
  * the window again when it is done
  */
-fn ready(wanted: f32, fits: u32, style: ShadowStyle) -> Option<(u32, Pieces)> {
+fn ready(wanted: f32, fits: u32, upright: bool, style: ShadowStyle) -> Option<(u32, Pieces)> {
     let drawn = lock();
 
     let mut prepared: Vec<(u32, &Pieces)> = radii()
         .into_iter()
         // a larger one would overlap its corners on a pill
         .filter(|radius| *radius <= fits)
-        .filter_map(|radius| Some((radius, drawn.get(&key(radius, style))?)))
+        .filter_map(|radius| Some((radius, drawn.get(&key(radius, upright, style))?)))
         .collect();
 
     // the nearest the wanted radius first
@@ -190,11 +241,11 @@ fn ready(wanted: f32, fits: u32, style: ShadowStyle) -> Option<(u32, Pieces)> {
 
 /*
  * where each piece goes, in the order of Pieces, around the body moved down by the drop. A
- * corner reaches a blur past where the curve ends, so it meets its edge where the shadow no
+ * corner reaches a blur past where the curve ends along the long sides, so it meets its edge where the shadow no
  * longer changes along it. The edges only cover what shows past the body: every pixel drawn
  * costs gpu time mid-morph, and the body hides the rest
  */
-fn place(body: Rect, radius: u32, style: ShadowStyle) -> [Rect; 8] {
+fn place(body: Rect, radius: u32, upright: bool, style: ShadowStyle) -> [Rect; PIECES] {
     let radius = radius as f32;
     let reach = style.reach() as f32;
 
@@ -206,8 +257,15 @@ fn place(body: Rect, radius: u32, style: ShadowStyle) -> [Rect; 8] {
     let right = left + body.width;
     let bottom = top + body.height;
 
-    let corner_width = radius + 2.0 * reach;
-    let corner_height = radius + reach;
+    let (long, short) = (radius + 2.0 * reach, radius + reach);
+    let (corner_width, corner_height) = if upright {
+        (short, long)
+    } else {
+        (long, short)
+    };
+
+    // how far into the body a corner reaches across and down
+    let (inner_width, inner_height) = (corner_width - reach, corner_height - reach);
 
     let corner = |x, y| Rect {
         x,
@@ -217,24 +275,24 @@ fn place(body: Rect, radius: u32, style: ShadowStyle) -> [Rect; 8] {
     };
 
     let across = Rect {
-        x: left + radius + reach,
+        x: left + inner_width,
         y: top - reach,
-        width: body.width - 2.0 * (radius + reach),
+        width: body.width - 2.0 * inner_width,
         height: reach - drop + overlap,
     };
 
     let down = Rect {
         x: left - reach,
-        y: top + radius,
+        y: top + inner_height,
         width: reach + overlap,
-        height: body.height - 2.0 * radius,
+        height: body.height - 2.0 * inner_height,
     };
 
     [
         corner(left - reach, top - reach),
-        corner(right - radius - reach, top - reach),
-        corner(left - reach, bottom - radius),
-        corner(right - radius - reach, bottom - radius),
+        corner(right - inner_width, top - reach),
+        corner(left - reach, bottom - inner_height),
+        corner(right - inner_width, bottom - inner_height),
         across,
         Rect {
             y: bottom - drop - overlap,
@@ -250,14 +308,14 @@ fn place(body: Rect, radius: u32, style: ShadowStyle) -> [Rect; 8] {
 }
 
 // blurs a corner of this radius and cuts it into the eight pieces, written as pngs
-fn pieces(radius: u32, style: ShadowStyle) -> Pieces {
-    cut(radius, style).map(|(width, height, pixels)| {
+fn pieces(radius: u32, upright: bool, style: ShadowStyle) -> Pieces {
+    cut(radius, upright, style).map(|(width, height, pixels)| {
         raster::write("shadows", "png", &raster::png(width, height, &pixels))
     })
 }
 
 // the eight pieces' width, height and rgba pixels, in the order of Pieces
-fn cut(radius: u32, style: ShadowStyle) -> [(u32, u32, Vec<u8>); 8] {
+fn cut(radius: u32, upright: bool, style: ShadowStyle) -> [(u32, u32, Vec<u8>); PIECES] {
     let field = Field::blurred(radius, style);
 
     let alpha = f32::from(style.color.alpha());
@@ -266,17 +324,38 @@ fn cut(radius: u32, style: ShadowStyle) -> [(u32, u32, Vec<u8>); 8] {
     let reach = style.reach() * SCALE;
     let curve = radius * SCALE;
 
-    // a corner, as far as Field holds it bar the last column and row the edges take
-    let (width, height) = (field.width - 1, field.height - 1);
+    // a corner, a blur past the curve along the long sides; the edges take the column and row past it
+    let (long, short) = (2 * reach + curve, reach + curve);
+    let (width, height) = if upright {
+        (short, long)
+    } else {
+        (long, short)
+    };
 
-    let write = |width: u32, height: u32, at: &dyn Fn(u32, u32) -> (u32, u32)| {
+    /*
+     * the body itself is see-through glass, so the shadow is cut out where the body covers it:
+     * the body sits `drop` above the shadow's body, which in a bottom piece's flipped field is
+     * further in rather than further out
+     */
+    let drop = i64::from(style.drop * SCALE);
+    let outside = |x: u32, y: u32, shift: i64| {
+        let reach = i64::from(reach);
+
+        1.0 - coverage(
+            i64::from(x) - reach,
+            i64::from(y) - reach + shift,
+            i64::from(curve),
+        )
+    };
+
+    let write = |width: u32, height: u32, shift: i64, at: &dyn Fn(u32, u32) -> (u32, u32)| {
         let mut pixels = Vec::with_capacity((width * height * 4) as usize);
 
         for y in 0..height {
             for x in 0..width {
                 let (x, y) = at(x, y);
 
-                let shade = (field.at(x, y) * alpha).round() as u8;
+                let shade = (field.at(x, y) * outside(x, y, shift) * alpha).round() as u8;
 
                 pixels.extend(tint);
                 pixels.push(shade);
@@ -286,9 +365,9 @@ fn cut(radius: u32, style: ShadowStyle) -> [(u32, u32, Vec<u8>); 8] {
         (width, height, pixels)
     };
 
-    // the top edge is the column just past the corner, the left edge the row just below the curve
+    // the top edge is the column just past the corner, the left edge the row just below it
     let column = width;
-    let row = reach + curve;
+    let row = height;
 
     // as far as each edge reaches, from the shadow's outside in
     let above = reach - style.drop * SCALE + OVERLAP * SCALE;
@@ -296,25 +375,26 @@ fn cut(radius: u32, style: ShadowStyle) -> [(u32, u32, Vec<u8>); 8] {
     let beside = reach + OVERLAP * SCALE;
 
     [
-        write(width, height, &|x, y| (x, y)),
-        write(width, height, &|x, y| (width - 1 - x, y)),
-        write(width, height, &|x, y| (x, height - 1 - y)),
-        write(width, height, &|x, y| (width - 1 - x, height - 1 - y)),
-        write(1, above, &|_, y| (column, y)),
-        write(1, below, &|_, y| (column, below - 1 - y)),
-        write(beside, 1, &|x, _| (x, row)),
-        write(beside, 1, &|x, _| (beside - 1 - x, row)),
+        write(width, height, drop, &|x, y| (x, y)),
+        write(width, height, drop, &|x, y| (width - 1 - x, y)),
+        write(width, height, -drop, &|x, y| (x, height - 1 - y)),
+        write(width, height, -drop, &|x, y| {
+            (width - 1 - x, height - 1 - y)
+        }),
+        write(1, above, drop, &|_, y| (column, y)),
+        write(1, below, -drop, &|_, y| (column, below - 1 - y)),
+        write(beside, 1, 0, &|x, _| (x, row)),
+        write(beside, 1, 0, &|x, _| (beside - 1 - x, row)),
     ]
 }
 
 /*
  * the top left of a body with straight sides running on forever, blurred, in texels from a
- * reach above and left of its corner: across to a reach past the curve and one column more,
- * down to the curve's end and one row more
+ * reach above and left of its corner: across and down to a reach past the curve and one texel
+ * more. The corner is the same turned on its diagonal, so its blur is too
  */
 struct Field {
     width: u32,
-    height: u32,
     values: Vec<f32>,
 }
 
@@ -324,8 +404,9 @@ impl Field {
         let curve = (radius * SCALE) as i64;
         let kernel = style.kernel() as i64;
 
+        // square, so a corner turned upright reads it as well as one lying wide
         let width = (2 * reach + curve + 1) as u32;
-        let height = (reach + curve + 1) as u32;
+        let height = width;
 
         let weights = gaussian(style.blur * SCALE, style.kernel());
 
@@ -367,11 +448,7 @@ impl Field {
             }
         }
 
-        Self {
-            width,
-            height,
-            values,
-        }
+        Self { width, values }
     }
 
     fn at(&self, x: u32, y: u32) -> f32 {
@@ -416,287 +493,4 @@ fn gaussian(spread: u32, kernel: u32) -> Vec<f32> {
     let total: f32 = weights.iter().sum();
 
     weights.into_iter().map(|weight| weight / total).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const STYLE: ShadowStyle = ShadowStyle::island();
-
-    // where (x, y), in texels from the top left of the body moved down by the drop, reads from the
-    // corner's Field
-    fn folded(x: i64, y: i64, width: i64, height: i64, radius: i64) -> Option<(u32, u32)> {
-        let reach = i64::from(STYLE.reach() * SCALE);
-
-        let x = if x < width / 2 { x } else { width - 1 - x };
-        let y = if y < height / 2 { y } else { height - 1 - y };
-
-        // past the corner along the top and bottom, the edge's column
-        let x = x.min(radius + reach);
-
-        // down the sides, the edge's row; the middle is the body's
-        let y = match (x < radius, y < radius) {
-            (_, true) => y,
-            (true, false) => radius,
-            (false, false) => return None,
-        };
-
-        Some(((x + reach) as u32, (y + reach) as u32))
-    }
-
-    // the whole body's coverage blurred at once, the shadow the pieces stand in for
-    fn exact(width: i64, height: i64, radius: i64) -> (Vec<f32>, i64) {
-        let pad = i64::from(STYLE.reach() * SCALE + STYLE.kernel());
-        let size = (width + 2 * pad, height + 2 * pad);
-
-        let covered = |x: i64, y: i64| {
-            let (x, y) = (x - pad, y - pad);
-
-            if x < 0 || y < 0 || x >= width || y >= height {
-                return 0.0;
-            }
-
-            // each corner seen as the top left one
-            let x = x.min(width - 1 - x);
-            let y = y.min(height - 1 - y);
-
-            coverage(x, y, radius)
-        };
-
-        let weights = gaussian(STYLE.blur * SCALE, STYLE.kernel());
-        let kernel = i64::from(STYLE.kernel());
-
-        let blur = |value: &dyn Fn(i64, i64) -> f32, x: i64, y: i64, across: bool| -> f32 {
-            weights
-                .iter()
-                .zip(-kernel..)
-                .map(|(weight, tap)| {
-                    let (x, y) = if across { (x + tap, y) } else { (x, y + tap) };
-
-                    if x < 0 || y < 0 || x >= size.0 || y >= size.1 {
-                        0.0
-                    } else {
-                        weight * value(x, y)
-                    }
-                })
-                .sum()
-        };
-
-        let across: Vec<f32> = (0..size.1)
-            .flat_map(|y| (0..size.0).map(move |x| (x, y)))
-            .map(|(x, y)| blur(&covered, x, y, true))
-            .collect();
-
-        let read = |x: i64, y: i64| across[(y * size.0 + x) as usize];
-
-        let values = (0..size.1)
-            .flat_map(|y| (0..size.0).map(move |x| (x, y)))
-            .map(|(x, y)| blur(&read, x, y, false))
-            .collect();
-
-        (values, pad)
-    }
-
-    #[test]
-    fn pieces_match_a_blur_of_the_whole_body_wherever_it_shows() {
-        // a pill, a short rounded body, and a Surface's
-        for (width, height, radius) in [(150, 32, 16), (220, 60, 24), (300, 120, 32)] {
-            let field = Field::blurred(radius, STYLE);
-
-            let (width, height, curve) = (
-                i64::from(width * SCALE),
-                i64::from(height * SCALE),
-                i64::from(radius * SCALE),
-            );
-
-            let (exact, pad) = exact(width, height, curve);
-            let reach = i64::from(STYLE.reach() * SCALE);
-            let drop = i64::from(STYLE.drop * SCALE);
-
-            let mut worst = 0.0f32;
-
-            for y in -reach..height + reach {
-                for x in -reach..width + reach {
-                    let truth = exact[((y + pad) * (width + 2 * pad) + x + pad) as usize];
-
-                    let drawn = match folded(x, y, width, height, curve) {
-                        Some((x, y)) => field.at(x, y),
-                        None => {
-                            // the middle has no piece, the body moved up by the drop covers it
-                            let under =
-                                (0..width).contains(&x) && (-drop..height - drop).contains(&(y));
-                            assert!(under, "uncovered middle at ({x}, {y})");
-
-                            continue;
-                        }
-                    };
-
-                    // the body hides the shadow under it
-                    let hidden = (0..width).contains(&x)
-                        && (-drop..height - drop).contains(&y)
-                        && coverage(
-                            x.min(width - 1 - x),
-                            (y + drop).min(height - 1 - y - drop),
-                            curve,
-                        ) == 1.0;
-
-                    if !hidden {
-                        worst = worst.max((truth - drawn).abs());
-                    }
-                }
-            }
-
-            // in alpha, about a percent at a pill's ends, whose curve the corners take as straight
-            // below them; a smooth difference, never a seam
-            let alpha = worst * f32::from(STYLE.color.alpha()) / 255.0;
-
-            assert!(alpha < 0.015, "{width}x{height} r{radius}: off by {alpha}");
-        }
-    }
-
-    #[test]
-    fn pieces_cover_what_the_body_leaves_showing_once() {
-        for shape in geometry::SHAPES {
-            let body = geometry::body(shape);
-            let radius = shape.radius as u32;
-            let placed = place(body, radius, STYLE);
-
-            let reach = STYLE.reach() as f32;
-            let drop = STYLE.drop as f32;
-            let overlap = OVERLAP as f32;
-
-            // the body pulled in by the overlap, which the pieces may leave bare
-            let (left, top) = (body.x + overlap, body.y + overlap);
-            let (right, bottom) = (
-                body.x + body.width - overlap,
-                body.y + body.height - overlap,
-            );
-            let curve = shape.radius - overlap;
-
-            let bare = |x: f32, y: f32| {
-                let dx = (left + curve - x).max(x - right + curve).max(0.0);
-                let dy = (top + curve - y).max(y - bottom + curve).max(0.0);
-
-                (left..right).contains(&x)
-                    && (top..bottom).contains(&y)
-                    && dx * dx + dy * dy <= curve * curve
-            };
-
-            // the middle of each half pixel
-            let steps = |from: f32, to: f32| {
-                let count = ((to - from) * 2.0) as u32;
-                (0..count).map(move |step| from + (step as f32 + 0.5) / 2.0)
-            };
-
-            for y in steps(body.y + drop - reach, body.y + drop + body.height + reach) {
-                for x in steps(body.x - reach, body.x + body.width + reach) {
-                    let covering = placed
-                        .iter()
-                        .filter(|at| {
-                            (at.x..at.x + at.width).contains(&x)
-                                && (at.y..at.y + at.height).contains(&y)
-                        })
-                        .count();
-
-                    assert!(covering <= 1, "{shape:?} overlaps at ({x}, {y})");
-                    assert!(covering == 1 || bare(x, y), "{shape:?} gap at ({x}, {y})");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn each_texel_reads_the_field_where_its_piece_lies() {
-        // a pill and a Surface's body, on whole pixels so texels line up with the field's
-        for (body, radius) in [
-            (
-                Rect {
-                    x: 40.0,
-                    y: 30.0,
-                    width: 150.0,
-                    height: 32.0,
-                },
-                16,
-            ),
-            (
-                Rect {
-                    x: 40.0,
-                    y: 30.0,
-                    width: 300.0,
-                    height: 120.0,
-                },
-                32,
-            ),
-        ] {
-            let field = Field::blurred(radius, STYLE);
-            let alpha = f32::from(STYLE.color.alpha());
-
-            let top = body.y + STYLE.drop as f32;
-            let texels = |length: f32| (length * SCALE as f32) as i64;
-
-            let (width, height) = (texels(body.width), texels(body.height));
-            let curve = i64::from(radius * SCALE);
-
-            for (at, (columns, rows, pixels)) in place(body, radius, STYLE)
-                .into_iter()
-                .zip(cut(radius, STYLE))
-                // a pill has no side edges to draw
-                .filter(|(at, _)| at.width > 0.0 && at.height > 0.0)
-            {
-                for row in 0..rows {
-                    for column in 0..columns {
-                        let x = texels(at.x - body.x) + i64::from(column);
-                        let y = texels(at.y - top) + i64::from(row);
-
-                        let (x, y) = folded(x, y, width, height, curve)
-                            .unwrap_or_else(|| panic!("a piece over the middle at ({x}, {y})"));
-
-                        let shade = (field.at(x, y) * alpha).round() as u8;
-
-                        assert_eq!(pixels[((row * columns + column) * 4 + 3) as usize], shade);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_largest_shadow_fits_the_canvas_below_and_beside_the_body() {
-        let body = geometry::body(geometry::EXPANDED_MAX);
-        let reach = STYLE.reach() as f32;
-
-        assert!(body.x - reach >= 0.0);
-        assert!(body.x + body.width + reach <= geometry::CANVAS_WIDTH);
-        assert!(body.y + body.height + STYLE.drop as f32 + reach <= geometry::CANVAS_HEIGHT);
-    }
-
-    #[test]
-    fn the_body_hides_the_middle_at_every_radius() {
-        assert!(radii().iter().all(|radius| *radius >= STYLE.drop));
-        assert_eq!(radii(), [16, 19, 26, 32]);
-    }
-
-    #[test]
-    fn every_radius_is_written_once_as_eight_pngs() {
-        for radius in radii() {
-            prepare_radius(radius, STYLE);
-        }
-
-        let drawn = lock();
-
-        for radius in radii() {
-            let pieces = &drawn[&key(radius, STYLE)];
-
-            for piece in pieces {
-                assert!(std::fs::read(piece).unwrap().starts_with(b"\x89PNG"));
-            }
-        }
-
-        // each piece is turned its own way, so no two share a file
-        let pill = &drawn[&key(16, STYLE)];
-        let files: std::collections::HashSet<_> = pill.iter().collect();
-
-        assert_eq!(files.len(), 8);
-    }
 }

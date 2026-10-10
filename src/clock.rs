@@ -10,19 +10,22 @@
 //!
 //! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI. It also
 //! holds `interrupt`, which std lacks, for a child that must end cleanly, the one place a UTC
-//! moment becomes local time, which the calendar's events need too, and `authenticate`, Linux-PAM's
-//! password check, which the lock screen runs itself so it can drop a result sleep made stale.
+//! moment becomes local time, which the calendar's events need too, `authenticate`, Linux-PAM's
+//! password check, which the lock screen runs itself so it can drop a result sleep made stale, and
+//! the kernel's input and rfkill ABI the OSD reads keys, lock lights and radios through (ADR 0021).
 
-use std::ffi::{CString, c_char, c_int, c_long, c_void};
+use std::ffi::{CString, c_char, c_int, c_long, c_ulong, c_void};
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::process::Child;
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use amane::Service;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use kanade_runtime::service::Service;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::supervise;
 
@@ -48,6 +51,7 @@ const ECANCELED: i32 = 125;
 
 // <signal.h>
 pub const SIGINT: c_int = 2;
+const SIG_DFL: usize = 0;
 
 #[repr(C)]
 struct Tm {
@@ -87,6 +91,8 @@ unsafe extern "C" {
         old: *mut Itimerspec,
     ) -> c_int;
     fn kill(pid: c_int, signal: c_int) -> c_int;
+    fn signal(signal: c_int, handler: usize) -> usize;
+    fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
 
     // PAM frees a conversation's answers with free(), so they come from the C allocator
     fn calloc(count: usize, size: usize) -> *mut c_void;
@@ -120,7 +126,7 @@ struct PamConv {
     data: *mut c_void,
 }
 
-// libpam, which Amane links for its own check anyway
+// libpam, for the lock screen's password check
 #[link(name = "pam")]
 unsafe extern "C" {
     fn pam_start(
@@ -134,6 +140,155 @@ unsafe extern "C" {
     // refuses an expired or locked account too, which the password alone does not
     fn pam_acct_mgmt(handle: *mut c_void, flags: c_int) -> c_int;
     fn pam_end(handle: *mut c_void, status: c_int) -> c_int;
+}
+
+// <linux/input.h> and <linux/input-event-codes.h>, as on every 64-bit target
+pub const EV_KEY: u16 = 0x01;
+pub const EV_LED: u16 = 0x11;
+pub const KEY_VOLUMEDOWN: u16 = 114;
+pub const KEY_VOLUMEUP: u16 = 115;
+pub const KEY_BRIGHTNESSDOWN: u16 = 224;
+pub const KEY_BRIGHTNESSUP: u16 = 225;
+pub const LED_NUML: u16 = 0;
+pub const LED_CAPSL: u16 = 1;
+
+// EVIOCSMASK, _IOW('E', 0x93, struct input_mask)
+const EVIOCSMASK: c_ulong = 0x4010_4593;
+
+// EVIOCSCLOCKID, _IOW('E', 0xa0, int)
+const EVIOCSCLOCKID: c_ulong = 0x4004_45a0;
+
+// <time.h>
+const CLOCK_MONOTONIC: c_int = 1;
+
+// the mask of event types is the one EV_SYN's slot holds; EV_SYN itself is never masked
+const EV_TYPES: u32 = 0;
+
+// a struct input_event: a timeval of two longs, then type, code, value
+pub const INPUT_EVENT: usize = 24;
+
+#[repr(C)]
+struct InputMask {
+    kind: u32,
+
+    // in bytes
+    codes_size: u32,
+    codes_ptr: u64,
+}
+
+/*
+ * the layouts here are 64-bit Linux's: a 32-bit target's timeval, and so its input_event, is
+ * smaller
+ */
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("clock.rs keeps the evdev ABI of 64-bit Linux");
+
+const _: () = assert!(size_of::<InputMask>() == 16);
+
+// an event read off an evdev device, what follows its time
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputEvent {
+    pub kind: u16,
+    pub code: u16,
+    pub value: i32,
+}
+
+impl InputEvent {
+    pub fn of(bytes: &[u8; INPUT_EVENT]) -> InputEvent {
+        let [.., k0, k1, c0, c1, v0, v1, v2, v3] = *bytes;
+
+        InputEvent {
+            kind: u16::from_ne_bytes([k0, k1]),
+            code: u16::from_ne_bytes([c0, c1]),
+            value: i32::from_ne_bytes([v0, v1, v2, v3]),
+        }
+    }
+}
+
+/*
+ * has the kernel give `device` only these events: of `codes`' types, each only its codes, every
+ * other type none. What the device queued before, unmasked, is thrown away unread: the kernel
+ * flushes a reader's queue as its events' clock changes, from the realtime one it opens with to the
+ * monotonic one
+ */
+pub fn mask_input(device: &File, codes: &[(u16, &[u16])]) -> io::Result<()> {
+    let bitmap = |set: &mut dyn Iterator<Item = u16>| {
+        let mut words = Vec::new();
+
+        for code in set {
+            let word = usize::from(code / 64);
+
+            if words.len() <= word {
+                words.resize(word + 1, 0_u64);
+            }
+
+            words[word] |= 1 << (code % 64);
+        }
+
+        words
+    };
+
+    let set = |kind: u32, words: &[u64]| {
+        let mask = InputMask {
+            kind,
+            codes_size: u32::try_from(words.len() * 8).map_err(io::Error::other)?,
+            codes_ptr: words.as_ptr() as u64,
+        };
+
+        // SAFETY: `mask` and the words it points at outlive the call, which only reads them
+        match unsafe { ioctl(device.as_raw_fd(), EVIOCSMASK, &raw const mask) } {
+            0 => Ok(()),
+            _ => Err(io::Error::last_os_error()),
+        }
+    };
+
+    // the codes first: until the types are masked, every other type still comes through
+    for &(kind, kind_codes) in codes {
+        set(u32::from(kind), &bitmap(&mut kind_codes.iter().copied()))?;
+    }
+
+    set(EV_TYPES, &bitmap(&mut codes.iter().map(|&(kind, _)| kind)))?;
+
+    let clock = CLOCK_MONOTONIC;
+
+    // SAFETY: `clock` outlives the call, which only reads it
+    match unsafe { ioctl(device.as_raw_fd(), EVIOCSCLOCKID, &raw const clock) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+// <linux/rfkill.h>, a struct rfkill_event as read in its first, fixed size
+pub const RFKILL_EVENT: usize = 8;
+pub const RFKILL_OP_ADD: u8 = 0;
+pub const RFKILL_OP_DEL: u8 = 1;
+pub const RFKILL_OP_CHANGE: u8 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RfkillEvent {
+    pub index: u32,
+
+    // the radio's type
+    pub kind: u8,
+    pub op: u8,
+
+    // blocked by software, like airplane mode, or by a hardware switch
+    pub soft: bool,
+    pub hard: bool,
+}
+
+impl RfkillEvent {
+    pub fn of(bytes: &[u8; RFKILL_EVENT]) -> RfkillEvent {
+        let [i0, i1, i2, i3, kind, op, soft, hard] = *bytes;
+
+        RfkillEvent {
+            index: u32::from_ne_bytes([i0, i1, i2, i3]),
+            kind,
+            op,
+            soft: soft != 0,
+            hard: hard != 0,
+        }
+    }
 }
 
 // the timer the thread waits on, made before any window draws
@@ -324,18 +479,41 @@ pub fn interrupt(child: &Child) -> io::Result<()> {
 }
 
 /*
- * whether PAM's `service` accepts `password` for `user`, as Amane's `Lock::unlock` checks it;
- * blocks for as long as PAM takes, seconds for a wrong one
+ * `command` starts with SIGINT at its default, so `interrupt` ends it even when Kanade was started
+ * with SIGINT ignored, as a job run in the background of a script is, which children inherit
+ */
+pub fn default_sigint(command: &mut Command) -> &mut Command {
+    // SAFETY: `signal` is async-signal-safe, and the only call between fork and exec
+    unsafe {
+        command.pre_exec(|| {
+            signal(SIGINT, SIG_DFL);
+            Ok(())
+        })
+    }
+}
+
+/*
+ * whether PAM's `service` accepts `password` for `user`; blocks for as long as PAM takes, seconds
+ * for a wrong one. The copy it makes is zeroed before it returns; the caller zeroes its own
  */
 pub fn authenticate(service: &str, user: &str, password: &str) -> bool {
-    let (Ok(service), Ok(user), Ok(password)) = (
-        CString::new(service),
-        CString::new(user),
-        CString::new(password),
-    ) else {
+    let (Ok(service), Ok(user)) = (CString::new(service), CString::new(user)) else {
         return false;
     };
+    // zeroed as it drops, a panic in PAM too
+    let password = match CString::new(password) {
+        Ok(password) => Zeroizing::new(password),
+        Err(error) => {
+            error.into_vec().zeroize();
+            return false;
+        }
+    };
 
+    pam(&service, &user, &password)
+}
+
+// one PAM transaction answering with `password`, as `authenticate` says
+fn pam(service: &CString, user: &CString, password: &CString) -> bool {
     let conversation = PamConv {
         converse,
         data: password.as_ptr().cast_mut().cast(),
@@ -473,12 +651,48 @@ fn read(hour: c_int, minute: c_int, hours: Hours) -> String {
 mod tests {
     use super::*;
 
+    // a Caps Lock press as a 64-bit kernel writes it: a timeval of two longs, type, code, value
+    #[test]
+    fn an_input_event_reads_past_its_time() {
+        let mut bytes = [0xaa; INPUT_EVENT];
+        bytes[16..18].copy_from_slice(&EV_KEY.to_ne_bytes());
+        bytes[18..20].copy_from_slice(&58_u16.to_ne_bytes());
+        bytes[20..].copy_from_slice(&1_i32.to_ne_bytes());
+
+        assert_eq!(
+            InputEvent::of(&bytes),
+            InputEvent {
+                kind: EV_KEY,
+                code: 58,
+                value: 1
+            }
+        );
+    }
+
+    // radio 3, Bluetooth, soft-blocked
+    #[test]
+    fn an_rfkill_event_reads_as_the_kernel_writes_it() {
+        let mut bytes = [0; RFKILL_EVENT];
+        bytes[..4].copy_from_slice(&3_u32.to_ne_bytes());
+        bytes[4..].copy_from_slice(&[2, RFKILL_OP_CHANGE, 1, 0]);
+
+        assert_eq!(
+            RfkillEvent::of(&bytes),
+            RfkillEvent {
+                index: 3,
+                kind: 2,
+                op: RFKILL_OP_CHANGE,
+                soft: true,
+                hard: false
+            }
+        );
+    }
+
     #[test]
     fn an_interrupted_child_ends_by_sigint() {
         use std::os::unix::process::ExitStatusExt;
 
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
+        let mut child = default_sigint(Command::new("sleep").arg("30"))
             .spawn()
             .expect("sleep runs");
 

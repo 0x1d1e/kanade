@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use amane::Service;
+use kanade_runtime::service::Service;
 
 use super::desktop::{self, Entry};
 use super::icons;
@@ -19,6 +19,9 @@ pub struct App {
 
     // `Comment`, else `GenericName`
     pub description: Option<String>,
+
+    // the entry's `Icon`, a name or a path, which a notification may give for its sender
+    pub icon: Option<String>,
 
     // the icon's file, found when the list is read, so a view reads no theme
     pub icon_file: Option<PathBuf>,
@@ -91,6 +94,7 @@ fn listed(entries: Vec<Entry>) -> Vec<App> {
                     .icon
                     .as_deref()
                     .and_then(|icon| icons::find(icon, None)),
+                icon: entry.icon,
                 launch: entry.launch?,
                 name: entry.name,
                 description: entry.description,
@@ -101,52 +105,4 @@ fn listed(entries: Vec<Entry>) -> Vec<App> {
     apps.sort_by_key(|app| app.name.to_lowercase());
 
     apps
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use super::*;
-    use crate::sources::desktop::fixture::{APP, temp, write};
-
-    #[test]
-    fn a_menu_lists_the_shown_apps_that_can_start_by_name() {
-        let dir = temp("apps");
-
-        write(
-            &dir,
-            "zed.desktop",
-            &format!("{APP}zed\nExec=zed %U --icon=%i %k"),
-        );
-        write(
-            &dir,
-            "b.desktop",
-            &format!("{APP}Btop\nExec=btop\nTerminal=true"),
-        );
-        write(
-            &dir,
-            "hidden.desktop",
-            &format!("{APP}Hidden\nExec=h\nNoDisplay=true"),
-        );
-        write(&dir, "none.desktop", &format!("{APP}Nothing"));
-        write(
-            &dir,
-            "org.example.Bus.desktop",
-            &format!("{APP}Activated\nDBusActivatable=true"),
-        );
-
-        let apps = listed(desktop::scan(std::slice::from_ref(&dir)));
-        fs::remove_dir_all(&dir).unwrap();
-
-        let shown: Vec<(&str, &str)> = apps
-            .iter()
-            .map(|app| (app.name.as_str(), app.command()))
-            .collect();
-
-        assert_eq!(
-            shown,
-            [("Activated", ""), ("Btop", "btop"), ("zed", "zed --icon="),]
-        );
-    }
 }

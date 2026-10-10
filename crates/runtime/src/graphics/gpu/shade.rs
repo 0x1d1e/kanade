@@ -1,0 +1,187 @@
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::Instant;
+
+use vello::wgpu::util::{BufferInitDescriptor, DeviceExt};
+use vello::wgpu::{
+    BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer, BufferUsages, LoadOp, Operations,
+    RenderPassColorAttachment, RenderPassDescriptor, StoreOp, Texture,
+};
+
+use crate::backdrop::Spot;
+use crate::graphics::{self, Area, Transform, VALUE_ROWS};
+
+use super::shader::Shader;
+use super::{Gpu, texture};
+
+// every shader's time counts from when the first one was drawn
+static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+// what a shader is drawn with
+pub(super) struct Material<'a> {
+    pub shader: &'a Path,
+    pub values: &'a [[f32; 4]],
+    pub backdrop: Option<&'a Spot>,
+}
+
+impl Gpu {
+    /*
+     * with rounded corners the shader draws on a canvas of its own, which is
+     * trimmed to the outline and laid over what the commands before it drew;
+     * with square ones it blends straight onto the canvas, saving three full
+     * size passes and a texture every frame
+     */
+    pub(super) fn shade(
+        &mut self,
+        canvas: &Texture,
+        material: Material,
+        area: Area,
+        outline: Option<&graphics::BezierPath>,
+        transform: Transform,
+    ) {
+        let Some(outline) = outline else {
+            self.draw_shader(canvas, material, area, transform);
+
+            return;
+        };
+
+        let layer = self.take_canvas(canvas.width(), canvas.height());
+
+        self.draw_shader(&layer, material, area, transform);
+
+        self.trim(&layer, outline, transform);
+
+        self.lay(&layer, canvas, 1.0, false);
+
+        self.give_back(layer);
+    }
+
+    fn draw_shader(
+        &mut self,
+        layer: &Texture,
+        material: Material,
+        area: Area,
+        transform: Transform,
+    ) {
+        let Material {
+            shader,
+            values,
+            backdrop,
+        } = material;
+
+        // compiled the first time a path is drawn, then kept
+        if !self.shaders.contains_key(shader) {
+            let compiled = Shader::load(&self.device, shader);
+
+            self.shaders.insert(PathBuf::from(shader), compiled);
+        }
+
+        let shader = &self.shaders[shader];
+
+        let time = START.elapsed().as_secs_f32();
+
+        let size = self.uniform([area.width, area.height, 0.0, 0.0]);
+        let time = self.uniform([time, 0.0, 0.0, 0.0]);
+
+        let placement = self.uniform_rows([
+            [area.x, area.y, area.width, area.height],
+            [transform.sx, transform.kx, transform.tx, 0.0],
+            [transform.ky, transform.sy, transform.ty, 0.0],
+            [layer.width() as f32, layer.height() as f32, 0.0, 0.0],
+        ]);
+
+        // the shader always reads every row, so the ones left out are 0
+        let mut rows = [[0.0; 4]; VALUE_ROWS];
+
+        for (row, value) in rows.iter_mut().zip(values) {
+            *row = *value;
+        }
+
+        let values = self.uniform_rows(rows);
+
+        let backdrops = self.backdrops.clone();
+        let mut backdrops = backdrops.borrow_mut();
+        let behind = backdrops.view(&self.device, &self.queue, backdrop);
+
+        let inputs = self.device.create_bind_group(&BindGroupDescriptor {
+            label: None,
+            layout: &shader.inputs,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: size.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: time.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: placement.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: values.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: BindingResource::TextureView(&behind),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: BindingResource::Sampler(backdrops.sampler()),
+                },
+            ],
+        });
+
+        let target = texture::view(layer);
+
+        let attachment = RenderPassColorAttachment {
+            view: &target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            },
+        };
+
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                color_attachments: &[Some(attachment)],
+                ..Default::default()
+            });
+
+            pass.set_pipeline(&shader.pipeline);
+
+            pass.set_bind_group(0, &inputs, &[]);
+
+            // the six corners of the rectangle's two triangles
+            pass.draw(0..6, 0..1);
+        }
+
+        self.queue.submit([encoder.finish()]);
+    }
+
+    fn uniform(&self, values: [f32; 4]) -> Buffer {
+        self.uniform_rows([values])
+    }
+
+    fn uniform_rows<const ROWS: usize>(&self, rows: [[f32; 4]; ROWS]) -> Buffer {
+        let mut bytes = Vec::new();
+
+        for row in rows {
+            for value in row {
+                bytes.extend(value.to_ne_bytes());
+            }
+        }
+
+        self.device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: &bytes,
+            usage: BufferUsages::UNIFORM,
+        })
+    }
+}

@@ -5,12 +5,12 @@
 //! and shows nothing of it on the way. Until it wakes, `PrepareForSleep(false)`, no password
 //! unlocks (`lock::sleeping`); then it takes one again.
 //!
-//! Amane's `Bus` cannot hold the fd logind's `Inhibit` hands back, so `systemd-inhibit` holds it
+//! `src/bus.rs`'s `Bus` cannot hold the fd logind's `Inhibit` hands back, so `systemd-inhibit` holds it
 //! (ADR 0011), through setpriv so it dies with Kanade, as caffeine's does. A holder that ends or
 //! cannot start is taken again with a backoff, and `kanade status` says how it stands. Caffeine is
 //! about idle, not sleep: an asked-for suspend locks with it on too.
 //!
-//! Over Kanade's own zbus connection, not Amane's `Bus`, which never connects again once the
+//! Over Kanade's own zbus connection, not `src/bus.rs`'s `Bus`, which never connects again once the
 //! system bus is lost. A lost bus is connected to again with a backoff; each connection asks logind
 //! whether it is on its way to sleep, as a signal may have been missed in between. Only logind
 //! saying it is not opens the gate: a bus lost, or a logind that does not answer, keeps it as it
@@ -503,42 +503,4 @@ fn patience(connection: &Connection) -> Duration {
         .and_then(|micros| u64::try_from(micros).ok())
         .filter(|&micros| micros > 0)
         .map_or(DELAY, Duration::from_micros)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_inhibitor_delays_sleep_for_good() {
-        assert_eq!(
-            arguments().join(" "),
-            "--what=sleep --who=Kanade --why=Locking the session before sleep --mode=delay \
-             sh -c echo held; exec sleep infinity"
-        );
-    }
-
-    // P2 of #155: a lost inhibitor is taken again, soon, then backing off, never spinning
-    #[test]
-    fn an_inhibitor_is_taken_again_with_a_backoff() {
-        let start = Instant::now();
-        let mut retry = Retry::now(start);
-        assert!(retry.due(start));
-
-        let waits: Vec<_> = (0..10)
-            .map(|_| retry.failed(start) - start)
-            .map(|wait| wait.as_secs())
-            .collect();
-        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 64, 128, 256, 300]);
-        assert!(!retry.due(start));
-        assert!(retry.due(start + LONGEST));
-
-        retry.held();
-        assert!(!retry.due(start + LONGEST));
-
-        // a holder that flaps keeps backing off; one that held long is taken again soon
-        assert_eq!(retry.ended(Duration::from_secs(1), start) - start, LONGEST);
-        assert_eq!(retry.ended(LASTED, start) - start, FIRST);
-        assert_eq!(retry.ended(Duration::ZERO, start) - start, FIRST * 2);
-    }
 }

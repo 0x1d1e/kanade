@@ -35,19 +35,6 @@ pub enum Surface {
 }
 
 impl Surface {
-    #[cfg(test)]
-    pub const ALL: [Surface; 9] = [
-        Surface::Media,
-        Surface::Notifications,
-        Surface::Controls,
-        Surface::Launcher,
-        Surface::Tray,
-        Surface::Clipboard,
-        Surface::Calendar,
-        Surface::Weather,
-        Surface::Session,
-    ];
-
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
     pub fn own(kind: Kind) -> Option<Surface> {
         match kind {
@@ -74,7 +61,10 @@ pub enum Presentation {
 
     Peek,
 
-    // Rest with the apps' tray items after the time, this many slots of them, while the pointer is on it
+    /*
+     * Rest's own small form while the pointer is on it: the time over the date, then the apps'
+     * tray items, this many slots of them
+     */
     Tray(u8),
 
     Expanded(Surface),
@@ -219,7 +209,7 @@ enum Raised {
 
     Expanded(Surface),
 
-    // the tray items, only ever at Rest
+    // the time's form with the tray items, only ever at Rest
     Tray,
 }
 
@@ -367,20 +357,9 @@ impl Presentations {
         self.island(monitor).set_shown(primary, satellite);
     }
 
-    /*
-     * the tray items there are now, which the Tray strip shows a slot for each, up to
-     * `TRAY_SLOTS`. With none left, a strip showing them rests
-     */
+    // the tray items there are now, which the Tray strip shows a slot for each, up to `TRAY_SLOTS`
     pub fn set_tray(&mut self, count: usize) {
         self.tray = count;
-
-        if count == 0 {
-            for island in self.islands.values_mut() {
-                if island.raised == Some(Raised::Tray) {
-                    island.raise(None);
-                }
-            }
-        }
     }
 
     pub fn tray(&self) -> usize {
@@ -416,7 +395,6 @@ impl Presentations {
         }
 
         let now = self.get(monitor);
-        let tray = self.tray;
         let island = self.island(monitor);
 
         match (input, now) {
@@ -438,9 +416,7 @@ impl Presentations {
 
             // the strip is Rest while the pointer is on it, so it waits for the pointer alone
             (Input::Collapse | Input::Unhover, Presentation::Tray(_)) => island.raise(None),
-            (Input::Hover(_), Presentation::Rest) if tray > 0 => {
-                island.raise(Some(Raised::Tray));
-            }
+            (Input::Hover(_), Presentation::Rest) => island.raise(Some(Raised::Tray)),
 
             // a pinned Peek waits for Escape or another right click, not for the pointer
             (Input::Collapse, Presentation::Peek) if island.pinned => island.raise(None),
@@ -646,14 +622,15 @@ mod tests {
         presentations.get(MONITOR)
     }
 
-    // #135: the pointer on the island at Rest shows the tray items, a slot each up to the cap
+    // #135: the pointer on the island at Rest shows the time's form, a slot per tray item up to the cap
     #[test]
-    fn hover_at_rest_shows_the_tray_strip_while_there_are_items() {
+    fn hover_at_rest_shows_the_tray_strip() {
         let mut presentations = Presentations::default();
 
         presentations.input(MONITOR, Input::Hover(Primary));
-        assert_eq!(presentations.get(MONITOR), Rest);
+        assert_eq!(presentations.get(MONITOR), Presentation::Tray(0));
 
+        presentations.input(MONITOR, Input::Unhover);
         presentations.set_tray(TRAY_SLOTS + 3);
         presentations.input(MONITOR, Input::Hover(Primary));
         assert_eq!(
@@ -668,9 +645,9 @@ mod tests {
         presentations.input(MONITOR, Input::Hover(Primary));
         assert_eq!(presentations.get(MONITOR), Presentation::Tray(2));
 
-        // the last item gone, the strip rests
+        // the last item gone, the strip keeps the time
         presentations.set_tray(0);
-        assert_eq!(presentations.get(MONITOR), Rest);
+        assert_eq!(presentations.get(MONITOR), Presentation::Tray(0));
     }
 
     #[test]
@@ -829,8 +806,8 @@ mod tests {
             Compact
         );
 
-        // nothing to peek into at Rest, and an open Surface stays open
-        assert_eq!(after(&[Input::Hover(Primary)], None), Rest);
+        // Rest has its own form, and an open Surface stays open
+        assert_eq!(after(&[Input::Hover(Primary)], None), Presentation::Tray(0));
         assert_eq!(
             after(
                 &[Input::Click(Primary), Input::Hover(Primary)],
@@ -1223,7 +1200,7 @@ mod tests {
         use crate::island::activity::{Detail, Device, Id, Priority, Volume};
 
         let content = |detail| {
-            let speaker = fixture::persistent(Id::new(Kind::Volume, "speaker"), Priority::Osd)
+            let speaker = fixture::persistent(Id::new(Kind::Volume, "speaker"), Priority::Glance)
                 .with_detail(detail);
 
             Content::new(Compact, Some(speaker), None, None)

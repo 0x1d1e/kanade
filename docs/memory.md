@@ -71,5 +71,6 @@ What dominates:
 - Anonymous memory, 51 MiB at Rest. Media adds 21 MiB and the Calendar 33 MiB, with no calendar to show, and neither is freed when the island collapses.
 - Mapped files, 73 MiB of PSS, stay flat. NVIDIA's driver libraries (`libnvidia-gpucomp`, `-glcore`, `-eglcore` and others) cost 35 MiB of PSS, 29 MiB of it mapped files and the rest anonymous, plus 3 MiB for `/dev/nvidiactl`. Mesa's `libLLVM` and `libgallium` cost 17 MiB, 15 MiB of it mapped files. The shell draws on the Intel GPU, whose i915 client holds its buffers and render time, while `nvidia-smi` shows it holding 1 MiB on the NVIDIA one. So the NVIDIA libraries are loaded but barely used. Why either set loads was not traced; one guess, untested, is wgpu probing every Vulkan and EGL driver.
 - The peak is above every sample twice. It is 46 MiB over Rest from startup, and 18 MiB over the lock screen during the password check and unlock.
+- The lock screen's numbers predate ADR 0025: `kanade-lock` now draws it on the CPU, keeping each output's backdrop and the last decoded wallpaper in anonymous memory, locked or not, frames in shared memory while locked, and no GPU buffers (ADR 0025). Take the baseline again.
 
 `docs/design.md` targets an RSS under 80 MB. The shell's RSS is 150 MiB at Rest and 214 MiB after every Surface, and RSS leaves out the 225 MiB of GPU buffers.

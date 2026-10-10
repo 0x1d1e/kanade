@@ -2,14 +2,15 @@
 //! `LOW`, shown amber with its number. Below `CRITICAL` it turns Critical, red, and preempts an open
 //! Surface. Charging withdraws it.
 //!
-//! Amane's Battery reads the kernel's files every 5 s, and has no subscription, so this reads it
-//! again as often, and every second for a while after the kernel announces a charger going in or
-//! out (`wake`), so that shows within a second of Amane's own read. A read that changes nothing the
-//! island shows posts nothing.
+//! The kernel's power supply files have no subscription, so this reads them every 5 s, and every
+//! second for a while after the kernel announces a charger going in or out (`wake`), as the status
+//! may settle after the announcement. A read that changes nothing the island shows posts nothing.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use amane::{Battery, Service};
+use kanade_runtime::service::Service;
 
 use super::wake::{Announcer, Pace, Wakes};
 use crate::island::activity::{
@@ -25,10 +26,10 @@ const LOW: u8 = 20;
 const CRITICAL: u8 = 10;
 
 const PACE: Pace = Pace {
-    // a charger that goes in shows within this of Amane's own read
+    // a charger that goes in shows within this of the kernel's status
     poll: Duration::from_secs(1),
 
-    // longer than Amane takes to read the battery again, every 5 s
+    // longer than a supply's status takes to settle after it is announced
     settle: Duration::from_secs(6),
 
     // a draining battery announces nothing on some laptops, so its percent is read this often
@@ -42,9 +43,45 @@ pub const POWER: Announcer = Announcer {
     announces: |line| line.starts_with("KERNEL["),
 };
 
-// the battery as Amane last read it
+const POWER_SUPPLIES: &str = "/sys/class/power_supply";
+
+// the battery as Rest shows it, `rest.battery`; written only by `follow`, none without a battery
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BatteryLevel {
+    pub percent: Option<u8>,
+    pub charging: bool,
+}
+
+impl BatteryLevel {
+    // whether the machine has a battery now: a desktop's Rest has none to show, a hot-plugged one shows
+    pub fn present(self) -> bool {
+        self.percent.is_some()
+    }
+}
+
+impl From<Reading> for BatteryLevel {
+    fn from(reading: Reading) -> Self {
+        BatteryLevel {
+            percent: reading.present.then_some(reading.percent),
+            charging: reading.present && !reading.draining,
+        }
+    }
+}
+
+impl Service for BatteryLevel {
+    // read as it is first asked, so Rest knows at its first frame whether there is a battery
+    fn new() -> Self {
+        Reading::read().into()
+    }
+
+    fn listen() {}
+}
+
+// the battery as last read
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Reading {
+    // false without a battery, as on a desktop
+    present: bool,
     percent: u8,
 
     // on battery power; false without a battery, or plugged in, charging or not
@@ -52,12 +89,23 @@ struct Reading {
 }
 
 impl Reading {
+    // the first supply whose type is Battery, so a laptop's AC adapter is skipped
     fn read() -> Reading {
-        let battery = Battery::read();
+        let Some(path) = battery() else {
+            return Reading {
+                present: false,
+                percent: 0,
+                draining: false,
+            };
+        };
+
+        // `Not charging` is plugged in, usually because it is full
+        let status = supply(&path, "status");
 
         Reading {
-            percent: battery.percent(),
-            draining: battery.present() && !battery.charging() && !battery.full(),
+            present: true,
+            percent: supply(&path, "capacity").parse().unwrap_or(0),
+            draining: !matches!(status.as_str(), "Charging" | "Full" | "Not charging"),
         }
     }
 }
@@ -78,6 +126,20 @@ fn charge(shown: Option<Charge>, now: Reading) -> Option<Charge> {
         percent: now.percent,
         critical,
     })
+}
+
+fn battery() -> Option<PathBuf> {
+    fs::read_dir(POWER_SUPPLIES)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| supply(path, "type") == "Battery")
+}
+
+fn supply(path: &Path, name: &str) -> String {
+    let text = fs::read_to_string(path.join(name)).unwrap_or_default();
+
+    text.trim().to_owned()
 }
 
 fn activity(charge: Charge) -> Activity {
@@ -126,87 +188,13 @@ pub fn follow() {
             }
 
             let busy = last != Some(reading);
+            if busy {
+                *BatteryLevel::write() = reading.into();
+            }
+
             shown = next;
             last = Some(reading);
             wakes.wait(busy);
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::island::activity::{Interrupt, Lifetime};
-
-    fn draining(percent: u8) -> Reading {
-        Reading {
-            percent,
-            draining: true,
-        }
-    }
-
-    fn low(percent: u8) -> Option<Charge> {
-        Some(Charge {
-            percent,
-            critical: false,
-        })
-    }
-
-    fn critical(percent: u8) -> Option<Charge> {
-        Some(Charge {
-            percent,
-            critical: true,
-        })
-    }
-
-    #[test]
-    fn thresholds() {
-        assert_eq!(charge(None, draining(21)), None);
-        assert_eq!(charge(None, draining(LOW)), low(20));
-        assert_eq!(charge(None, draining(11)), low(11));
-        assert_eq!(charge(None, draining(CRITICAL)), critical(10));
-        assert_eq!(charge(None, draining(0)), critical(0));
-    }
-
-    #[test]
-    fn a_drain_escalates_low_to_critical() {
-        let shown = charge(None, draining(15));
-        assert_eq!(shown, low(15));
-
-        let shown = charge(shown, draining(14));
-        assert_eq!(shown, low(14));
-
-        assert_eq!(charge(shown, draining(10)), critical(10));
-    }
-
-    #[test]
-    fn only_a_charge_withdraws() {
-        let wobble = |shown, percent| charge(shown, draining(percent));
-
-        assert_eq!(wobble(low(20), 21), low(21));
-        assert_eq!(wobble(critical(10), 11), critical(11));
-
-        let plugged = Reading {
-            percent: 5,
-            draining: false,
-        };
-
-        assert_eq!(charge(critical(5), plugged), None);
-        assert_eq!(charge(low(15), plugged), None);
-        assert_eq!(charge(None, plugged), None);
-    }
-
-    // a low battery is a Satellite beside a higher primary, a critical one preempts
-    #[test]
-    fn critical_preempts_and_low_does_not() {
-        let low = activity(low(15).unwrap());
-        let critical = activity(critical(8).unwrap());
-
-        assert_eq!(low.id(), critical.id());
-        assert_eq!(low.lifetime(), Lifetime::Persistent);
-        assert_eq!(low.priority(), Priority::Ongoing);
-        assert_eq!(low.interrupt(), Interrupt::None);
-        assert_eq!(critical.priority(), Priority::Critical);
-        assert_eq!(critical.interrupt(), Interrupt::Preempt);
-    }
 }

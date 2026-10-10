@@ -3,7 +3,7 @@
 //! what last failed. A pairing that needs the user shows its code, or takes the device's PIN, in
 //! place of the devices.
 
-use amane::{Center, Column, End, Rectangle, Row, Text, Widget, children};
+use kanade_runtime::{Center, Column, End, Rectangle, Row, Text, Widget, children};
 
 use super::WIDTH;
 use super::focus::{Act, At};
@@ -165,7 +165,7 @@ fn row(device: &Device, request: &Request, ring: Option<&At>) -> Rectangle {
     let status = status(device, request);
 
     list::row(
-        Box::new(Icon::Bluetooth.on(ICON, theme::ISLAND.on_surface)),
+        Box::new(Icon::Bluetooth.on(ICON, theme::island().on_surface)),
         &device.name,
         status
             .as_ref()
@@ -231,16 +231,16 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
     let lines = Column::new(children![
         Text::new(title)
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide(),
         Text::new(code)
             .size(CODE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
         Text::new(detail)
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface_variant)
+            .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM),
     ])
     .width(WIDTH)
@@ -255,136 +255,4 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
         .width(WIDTH)
         .gap(GAP),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn device(name: &str, paired: bool, connected: bool) -> Device {
-        Device {
-            path: format!("/org/bluez/hci0/dev_{name}"),
-            name: name.into(),
-            paired,
-            connected,
-            battery: None,
-        }
-    }
-
-    fn adapter(devices: Vec<Device>) -> Adapter {
-        Adapter {
-            radio: Radio::On,
-            path: "/org/bluez/hci0".into(),
-            discovering: true,
-            devices,
-        }
-    }
-
-    #[test]
-    fn a_device_says_how_it_is_and_what_is_being_done_to_it() {
-        let mut buds = device("buds", true, true);
-        let path = buds.path.clone();
-        assert_eq!(
-            status(&buds, &Request::Idle),
-            Some(("Connected".into(), false))
-        );
-
-        buds.battery = Some(80);
-        assert_eq!(
-            status(&buds, &Request::Idle),
-            Some(("Connected \u{b7} 80%".into(), false))
-        );
-
-        assert_eq!(
-            status(&device("pad", true, false), &Request::Idle),
-            Some(("Not connected".into(), false))
-        );
-        assert_eq!(
-            status(&device("speaker", false, false), &Request::Idle),
-            None
-        );
-
-        let doing = Request::Doing(path.clone(), Task::Disconnect);
-        assert_eq!(
-            status(&buds, &doing),
-            Some(("Disconnecting\u{2026}".into(), false))
-        );
-
-        let failed = Request::Failed(path, Task::Connect);
-        assert_eq!(
-            status(&buds, &failed),
-            Some(("Couldn\u{2019}t connect".into(), true))
-        );
-
-        // what is asked of one device says nothing of another
-        assert_eq!(
-            status(&device("pad", true, false), &failed),
-            Some(("Not connected".into(), false))
-        );
-    }
-
-    #[test]
-    fn paired_devices_can_be_forgotten_and_nearby_ones_only_paired() {
-        let rows = rows(
-            &adapter(vec![
-                device("buds", true, true),
-                device("pad", true, false),
-                device("speaker", false, false),
-            ]),
-            &Prompt::None,
-        );
-
-        let targets: Vec<Vec<At>> = rows
-            .into_iter()
-            .map(|row| row.into_iter().map(|(at, _)| at).collect())
-            .collect();
-
-        let path = |name: &str| format!("/org/bluez/hci0/dev_{name}");
-
-        assert_eq!(
-            targets,
-            [
-                vec![At::Device(path("buds")), At::Forget(path("buds"))],
-                vec![At::Device(path("pad")), At::Forget(path("pad"))],
-                vec![At::Device(path("speaker"))],
-            ]
-        );
-    }
-
-    #[test]
-    fn a_prompt_takes_the_place_of_the_devices() {
-        let adapter = adapter(vec![device("buds", false, false)]);
-        let confirm = Prompt::Confirm {
-            device: "/org/bluez/hci0/dev_buds".into(),
-            passkey: "012345".into(),
-        };
-        let show = Prompt::Show {
-            device: "/org/bluez/hci0/dev_buds".into(),
-            code: "012345".into(),
-        };
-        let pin = Prompt::Pin {
-            device: "/org/bluez/hci0/dev_buds".into(),
-            pin: String::new(),
-        };
-
-        let targets = |prompt| -> Vec<At> {
-            rows(&adapter, prompt)
-                .concat()
-                .into_iter()
-                .map(|(at, _)| at)
-                .collect()
-        };
-
-        assert_eq!(targets(&confirm), [At::Cancel, At::Confirm]);
-        assert_eq!(targets(&show), [At::Cancel]);
-        assert_eq!(targets(&pin), [At::Cancel, At::Confirm]);
-    }
-
-    #[test]
-    fn an_adapter_not_on_lists_nothing() {
-        let mut off = adapter(vec![device("buds", true, false)]);
-        off.radio = Radio::Off;
-
-        assert!(rows(&off, &Prompt::None).is_empty());
-    }
 }

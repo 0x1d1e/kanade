@@ -1,0 +1,24 @@
+[package]
+name = "kanade-runtime"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# The versions the runtime was ported with, so the lock file stays as it was (ADR 0028)
+[dependencies]
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
+vello = "0.10.0"
+# only for glsl shaders, vello already brings wgpu and this turns on its glsl reader
+wgpu = { version = "29.0.4", default-features = false, features = ["glsl"] }
+wayland-client = "0.31.15"
+# the compositor's list of windows, for which are fullscreen
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# only for client_system, which hands the gpu libwayland's own display pointer
+wayland-backend = { version = "0.3.17", features = ["client_system"] }
+fontconfig = "0.11"
+ttf-parser = "0.25.1"
+zune-jpeg = "0.5.15"
+png = "0.18.1"
+# turns svg icons into pixels once, so they draw like any other image
+resvg = { version = "0.48.1", default-features = false }

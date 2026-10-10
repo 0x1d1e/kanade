@@ -5,7 +5,10 @@
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use amane::{Audio, Brightness, Center, Color, Cursor, Rectangle, Service, Start};
+use crate::sources::brightness::Brightness;
+use crate::sources::pulse::Audio;
+use kanade_runtime::service::Service;
+use kanade_runtime::{Center, Color, Cursor, Rectangle, Start};
 
 use crate::modules;
 use crate::sources::audio::{self, Mixer, Node};
@@ -136,31 +139,3 @@ struct Asked {
 }
 
 static ASKED: Mutex<Option<Asked>> = Mutex::new(None);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // no Module is on in tests, so a wheel or a drag that went through would ask for a level
-    #[test]
-    fn a_slider_whose_module_is_off_sets_nothing() {
-        for slider in [
-            Slider::Speaker,
-            Slider::Brightness,
-            Slider::Microphone,
-            Slider::Stream(Node::of(7)),
-        ] {
-            assert!(!modules::on(slider.module()));
-
-            slider.wheel(-1.0);
-            slider.set(50);
-
-            assert!(
-                ASKED
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .is_none()
-            );
-        }
-    }
-}

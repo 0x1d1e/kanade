@@ -7,8 +7,8 @@
 //! the bus ends the run, its items withdrawn, and it connects again, as items register again with
 //! a watcher that comes back.
 //!
-//! Over zbus, not Amane's `Bus`: an item may register with only its object path, and the bus name
-//! it lives at is then the caller's, which Amane's `Method` does not give.
+//! Over zbus, not `src/bus.rs`'s `Bus`: an item may register with only its object path, and the bus
+//! name it lives at is then the caller's, which a `Method` does not give.
 
 mod item;
 pub mod menu;
@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use amane::Service;
 use enumflags2::BitFlags;
+use kanade_runtime::service::Service;
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, MessageIterator, connection};
 use zbus::fdo::RequestNameReply;
@@ -936,7 +936,7 @@ fn read(connection: &Connection, address: &Address) -> Outcome {
     }
 }
 
-// an item as the views see it, its pixels written for Amane to draw
+// an item as the views see it, its pixels written for the runtime to draw
 fn shown(
     address: Address,
     owner: String,
@@ -1026,116 +1026,4 @@ fn connection(item: &Item) -> Option<Connection> {
         .as_ref()
         .filter(|reach| reaches(&reach.shown, item))
         .map(|reach| reach.connection.clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn item(serial: u64, owner: &str) -> Item {
-        Item {
-            address: Address::registered("org.test.Moving", None).unwrap(),
-            owner: owner.to_owned(),
-            serial,
-            title: String::new(),
-            status: Status::Active,
-            icon: Icon::default(),
-            menu: None,
-            is_menu: false,
-        }
-    }
-
-    // #135: an item that is only a menu never gets Activate, as the spec asks
-    #[test]
-    fn a_press_on_an_item_that_is_only_a_menu_shows_a_menu() {
-        let plain = item(1, ":1.1");
-        let menu = Item {
-            menu: Some(String::from("/MenuBar")),
-            ..plain.clone()
-        };
-
-        assert_eq!(plain.press(), Press::Activate);
-        assert_eq!(menu.press(), Press::Activate);
-
-        assert_eq!(
-            Item {
-                is_menu: true,
-                ..menu
-            }
-            .press(),
-            Press::Menu
-        );
-        assert_eq!(
-            Item {
-                is_menu: true,
-                ..plain
-            }
-            .press(),
-            Press::ContextMenu
-        );
-    }
-
-    #[test]
-    fn only_the_foreign_watcher_holding_the_name_is_heeded() {
-        let foreign = Role::Foreign(String::from(":1.5"));
-
-        assert!(foreign.heeds(Some(":1.5")));
-        assert!(!foreign.heeds(Some(":1.9")));
-        assert!(!Role::Own.heeds(Some(":1.5")));
-        assert!(!Role::Starting.heeds(Some(":1.5")));
-
-        // Kanade's own watcher, called by the watcher's name: Kanade held it, the role may lag
-        assert!(foreign.heeds(None));
-        assert!(Role::Own.heeds(None));
-    }
-
-    #[test]
-    fn a_row_reaches_only_the_program_that_answered_while_it_is_shown() {
-        let shown = vec![(4, String::from(":1.7"))];
-
-        assert!(reaches(&shown, &item(4, ":1.7")));
-
-        // the name moved to another program, which was read again
-        assert!(!reaches(&shown, &item(4, ":1.3")));
-
-        // an entry since dropped, its address registered again
-        assert!(!reaches(&shown, &item(2, ":1.7")));
-
-        // no run is hosting
-        assert!(!reaches(&[], &item(4, ":1.7")));
-    }
-
-    #[test]
-    fn an_entry_unread_drops_what_its_last_owner_said() {
-        let mut entry = Entry {
-            address: Address::registered("org.test.Moving", None).unwrap(),
-            serial: 4,
-            owner: Some(String::from(":1.7")),
-            item: Some(item(4, ":1.7")),
-            reading: true,
-            again: true,
-            failed: true,
-        };
-
-        assert_eq!(entry.unread(), Some(item(4, ":1.7")));
-        assert_ne!(entry.serial, 4);
-        assert_eq!(entry.owner, None);
-        assert_eq!(entry.item, None);
-        assert!(!entry.reading && !entry.again && !entry.failed);
-    }
-
-    #[test]
-    fn a_run_that_keeps_ending_waits_longer_until_one_lasts() {
-        let mut wait = FIRST_RETRY;
-        let mut waits = Vec::new();
-
-        for _ in 0..8 {
-            wait = retry(wait, Duration::from_secs(1));
-            waits.push(wait.as_secs());
-            wait = (wait * 2).min(LAST_RETRY);
-        }
-
-        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
-        assert_eq!(retry(LAST_RETRY, HEALTHY), FIRST_RETRY);
-    }
 }

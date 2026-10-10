@@ -1,6 +1,6 @@
 # 5. Privacy indicator outside the Arbiter
 
-Status: accepted (design, roadmap 7A-8). Supersedes the Activity half of ADR 0003; its PipeWire detection stays.
+Status: accepted (design, roadmap 7A-8); the window is amended by ADRs 0032 and 0033 (no Overlay guarantee over a fullscreen window). Supersedes the Activity half of ADR 0003; its PipeWire detection stays.
 
 ## Context
 

@@ -2,7 +2,7 @@
 """Build Kanade with cargo and restart it on every save.
 
 A failed build keeps the running shell on screen while the error is fixed. Ctrl-C stops the
-shell too. The environment passes through, so `AMANE_FRAMES=1 scripts/dev` prints frames.
+shell too. The environment passes through, so `KANADE_FRAMES=1 scripts/dev` prints frames.
 """
 
 import json
@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-watched = [root / "src", root / "Cargo.toml", root / "Cargo.lock"]
+watched = [root / "src", root / "crates", root / "Cargo.toml", root / "Cargo.lock"]
 
 # a rebuild takes seconds, so checking twice a second is quick enough
 INTERVAL = 0.5

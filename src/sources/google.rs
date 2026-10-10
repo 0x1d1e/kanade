@@ -41,7 +41,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use amane::Service;
+use kanade_runtime::service::Service;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use ring::digest;
 use serde_json::Value;

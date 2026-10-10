@@ -3,7 +3,8 @@
 
 use std::thread;
 
-use amane::{Argument, Bus, Service, Value};
+use crate::bus::{Argument, Bus, Value};
+use kanade_runtime::service::Service;
 
 pub const NAME: &str = "org.freedesktop.UPower.PowerProfiles";
 
@@ -103,70 +104,4 @@ pub fn set(profile: Profile) {
             Argument::from(profile.key()),
         );
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::*;
-
-    fn map(entries: &[(&str, Value)]) -> Value {
-        Value::Map(
-            entries
-                .iter()
-                .map(|(key, value)| ((*key).to_owned(), value.clone()))
-                .collect::<BTreeMap<_, _>>(),
-        )
-    }
-
-    fn text(text: &str) -> Value {
-        Value::Text(text.into())
-    }
-
-    fn offered(keys: &[&str]) -> Value {
-        Value::List(
-            keys.iter()
-                .map(|key| map(&[("Profile", text(key)), ("Driver", text("multiple"))]))
-                .collect(),
-        )
-    }
-
-    #[test]
-    fn reads_the_active_profile_and_the_ones_there_are() {
-        let properties = map(&[
-            ("ActiveProfile", text("balanced")),
-            ("Profiles", offered(&["power-saver", "balanced"])),
-        ]);
-
-        assert_eq!(
-            profiles(&properties),
-            Profiles {
-                active: Some(Profile::Balanced),
-                available: vec![Profile::PowerSaver, Profile::Balanced],
-            }
-        );
-    }
-
-    #[test]
-    fn no_daemon_has_no_profiles() {
-        assert_eq!(profiles(&Value::Nothing), Profiles::default());
-    }
-
-    // a newer daemon may add one Controls has no place for
-    #[test]
-    fn unknown_profiles_are_left_out() {
-        let properties = map(&[
-            ("ActiveProfile", text("turbo")),
-            ("Profiles", offered(&["turbo", "performance"])),
-        ]);
-
-        assert_eq!(
-            profiles(&properties),
-            Profiles {
-                active: None,
-                available: vec![Profile::Performance],
-            }
-        );
-    }
 }

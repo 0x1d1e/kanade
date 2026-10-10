@@ -11,7 +11,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead};
 
-use amane::Service;
+use kanade_runtime::service::Service;
 
 use super::json::Json;
 use super::pipewire::{self, DUMP, LINK, NODE, Object};
@@ -24,8 +24,8 @@ pub struct Privacy {
     // none while no app captures from a microphone or a camera
     pub sensors: Option<Sensors>,
 
-    // niri has at least one screen cast, paused ones included; niri cannot say why, so it is
-    // never a "Recording" or "Sharing"
+    // niri has at least one screen cast besides liquid glass's own capture, paused ones included;
+    // niri cannot say why, so it is never a "Recording" or "Sharing"
     pub casting: bool,
 }
 

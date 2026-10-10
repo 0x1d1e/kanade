@@ -3,7 +3,8 @@
 
 use std::time::Instant;
 
-use amane::{Notifications, Service};
+use crate::sources::notifications::Notifications;
+use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
 use crate::dock;
@@ -22,7 +23,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{apps, caffeine, google, session, sleep, wallpaper, weather};
+use crate::sources::{apps, caffeine, fullscreen, google, session, sleep, wallpaper, weather};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -30,7 +31,9 @@ pub fn answer(arguments: &[String]) -> String {
 
     let reply = match cli::parse(&words) {
         // a client from another Kanade build may send what this one does not know
-        Err(Unparsed::Usage) => Reply::Refused(cli::usage()),
+        Err(Unparsed::Usage) => Reply::Refused(String::from(
+            "not a command of this shell; run `kanade help` for what it takes",
+        )),
         Err(Unparsed::Invalid(invalid)) => Reply::Refused(invalid.to_string()),
         Ok((module, _)) if !modules::on(module.name) => {
             Reply::Refused(format!("module {} is off", module.name))
@@ -80,15 +83,10 @@ fn run(call: Call) -> Reply {
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
-        // on the draw thread, which the password field and the lock screen live on; returns before
-        // niri locks, which the client waits for (`lock status`)
-        Call::Lock => match lock::start() {
-            Ok(lock::Started::Requested(text)) => Reply::Done(text),
-            Ok(lock::Started::Unknown(why)) => Reply::Unknown(why),
-            Err(error) => Reply::Refused(error),
-        },
+        // returns before niri locks, which the client waits for (`lock status`)
+        Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::LockStatus => Reply::Done(lock::status()),
-        // on the draw thread, which the lock screen lives on; logind is asked on a thread of its own
+        // logind is asked on a thread of its own
         Call::Session(leave) => session::request(leave).map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
             .map_or_else(Reply::Refused, |()| Reply::Done(String::new())),
@@ -163,6 +161,7 @@ fn status() -> Vec<String> {
         lines.push(weather::status());
     }
 
+    lines.extend(fullscreen::status());
     lines.extend(supervise::status());
     lines
 }

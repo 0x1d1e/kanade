@@ -1,24 +1,37 @@
-//! Volume, brightness and microphone changes (plan 3, 5.1, ADR 0007): a level that changes shows in
-//! the OSD on the focused output, and a held key keeps showing it again, so it extends one OSD.
-//! None of it shows on the island.
+//! The OSD (plan 3, 5.1, ADR 0021): a volume, brightness or microphone mute change, a press of a
+//! level's key, or a mode turned on or off shows as a Transient on the focused output's Island, and
+//! a held key keeps posting it again, so it extends one OSD.
 //!
-//! Amane has no subscription between services, so this reads them again when PulseAudio or the
+//! `Audio` and `Brightness` have no subscription for another Service, so this reads them again when PulseAudio or the
 //! kernel announces a change (`wake`), and polls while a change settles or an announcer is down; a
-//! read that finds the levels unchanged shows nothing, so an idle OSD never redraws. It reads only
+//! read that finds the levels unchanged posts nothing, so an idle OSD never redraws. It reads only
 //! what the `audio` and `brightness` Modules that are on allow.
+//!
+//! A level's key shows the level at once, before the keybind that changes it ran, and at its limit,
+//! where nothing changes (`keys`); a lock key's light and airplane mode show as a Mode (`keys`,
+//! `radios`). The keyboard's backlight shows as UPower announces it, the firmware's own key
+//! included (`follow_keyboard`).
 //!
 //! `kanade osd volume|brightness` shows a level as it is, for a keybind that changes it outside
 //! Kanade.
 
-use std::sync::OnceLock;
+use std::fs;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use amane::{Audio, Brightness, Service};
+use crate::sources::brightness::{self, Brightness};
+use crate::sources::pulse::Audio;
+use kanade_runtime::service::Service;
 
+use super::seat;
 use super::wake::{Announcer, Pace, Wakes};
-use crate::island::activity::{Device, Volume};
-use crate::osd::{Level, Osd};
+use crate::bus::{Bus, Value};
+use crate::config;
+use crate::island::activity::{
+    Activity, Detail, Device, Id, Interrupt, Kind, Lifetime, Mode, Priority, Scope, Volume,
+};
+use crate::island::service::IslandService;
 use crate::supervise;
 
 const PACE: Pace = Pace {
@@ -26,7 +39,7 @@ const PACE: Pace = Pace {
     // step
     poll: Duration::from_millis(80),
 
-    // longer than Amane's Brightness takes to read the backlight again, every 500 ms
+    // a beat for PulseAudio to settle; the backlight is read fresh
     settle: Duration::from_secs(1),
 
     idle: None,
@@ -49,6 +62,201 @@ pub const BACKLIGHT: Announcer = Announcer {
     args: &["monitor", "--kernel", "--subsystem-match=backlight"],
     announces: |line| line.starts_with("KERNEL["),
 };
+
+// what the OSD shows
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Osd {
+    Volume(Volume),
+    Brightness(u8),
+    Keyboard(u8),
+    Mode(Mode),
+}
+
+impl Osd {
+    /*
+     * a Transient on the focused output's Island, above everything as the answer to the user's own
+     * key, that interrupts nothing, so an open Surface stays. One id per Kind, so a change while it
+     * shows takes its place and starts its time again
+     */
+    fn activity(self) -> Activity {
+        let detail = match self {
+            Osd::Volume(volume) => Detail::Volume(volume),
+            Osd::Brightness(percent) => Detail::Brightness(percent),
+            Osd::Keyboard(percent) => Detail::Keyboard(percent),
+            Osd::Mode(mode) => Detail::Mode(mode),
+        };
+
+        Activity::new(
+            self.id(),
+            Priority::Feedback,
+            Lifetime::Transient(config::get().osd),
+            Scope::FocusedOutput,
+            Interrupt::None,
+        )
+        .expect("the config bounds osd above zero")
+        .with_detail(detail)
+    }
+
+    fn kind(self) -> Kind {
+        match self {
+            Osd::Volume(_) => Kind::Volume,
+            Osd::Brightness(_) | Osd::Keyboard(_) => Kind::Brightness,
+            Osd::Mode(_) => Kind::Mode,
+        }
+    }
+
+    fn id(self) -> Id {
+        Id::new(self.kind(), KEY)
+    }
+
+    // the other Kinds' OSDs, which this one takes the place of
+    fn others(self) -> impl Iterator<Item = Id> {
+        KINDS
+            .into_iter()
+            .filter(move |&kind| kind != self.kind())
+            .map(|kind| Id::new(kind, KEY))
+    }
+}
+
+// every Kind the OSD shows
+const KINDS: [Kind; 3] = [Kind::Volume, Kind::Brightness, Kind::Mode];
+
+const KEY: &str = "osd";
+
+// when a level last showed, so a volume read for an older ask gives way to it
+static SHOWN: Mutex<Shown> = Mutex::new(Shown { last: None });
+
+struct Shown {
+    last: Option<Instant>,
+}
+
+impl Shown {
+    // a change shows at once
+    fn show(&mut self, now: Instant) -> bool {
+        self.last = Some(now);
+        true
+    }
+
+    /*
+     * a level read for an ask made at `asked` shows, unless a level showed since: that one is newer
+     * than the ask, so the latest change shows, not the slowest read
+     */
+    fn answer(&mut self, asked: Instant, now: Instant) -> bool {
+        if self.last.is_some_and(|last| last > asked) {
+            return false;
+        }
+
+        self.show(now)
+    }
+}
+
+/*
+ * posts the OSD to the Island, in place of the other Kinds', under the lock, so an answer checked
+ * against it cannot slip between. Nothing shows, or counts as shown, while another session has the
+ * seat, whose keys and radios are heard too
+ */
+fn post(osd: Osd, shows: impl FnOnce(&mut Shown, Instant) -> bool) {
+    let mut shown = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+    let now = Instant::now();
+
+    if seat::seated() && shows(&mut shown, now) {
+        place(&mut IslandService::write(), osd, now);
+    }
+}
+
+/*
+ * reads a level and posts it under the same lock, so two threads reading it cannot post out of
+ * order and leave the older level showing
+ */
+fn read_and_post(read: impl FnOnce() -> Option<Osd>) {
+    let mut shown = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+
+    if let Some(osd) = read().filter(|_| seat::seated()) {
+        let now = Instant::now();
+
+        shown.show(now);
+        place(&mut IslandService::write(), osd, now);
+    }
+}
+
+// posted first, so the Island never goes without a primary between
+fn place(island: &mut IslandService, osd: Osd, now: Instant) {
+    island.post(osd.activity(), now);
+
+    for other in osd.others() {
+        island.withdraw(&other, now);
+    }
+}
+
+// UPower, which drives the keyboard's backlight and announces each change to it
+pub const UPOWER: &str = "org.freedesktop.UPower";
+const KBD_BACKLIGHT: &str = "/org/freedesktop/UPower/KbdBacklight";
+const KBD_INTERFACE: &str = "org.freedesktop.UPower.KbdBacklight";
+
+// a level of the keyboard's backlight out of the highest, as a percent
+fn keyboard_percent(level: f64, highest: f64) -> Option<u8> {
+    (highest > 0.0).then(|| (level.clamp(0.0, highest) * 100.0 / highest).round() as u8)
+}
+
+/*
+ * runs on its own thread for good, or until the system bus or the backlight is gone; waits on
+ * UPower, so it never wakes on its own. Each change shows, from its key, which only the firmware
+ * hears on many laptops, or from any program
+ */
+pub fn follow_keyboard() {
+    let bus = Bus::system();
+
+    // subscribed before the read, so no change falls between them
+    let signals = bus.signals(KBD_INTERFACE, "BrightnessChanged");
+    let highest = bus
+        .call(
+            UPOWER,
+            KBD_BACKLIGHT,
+            KBD_INTERFACE,
+            "GetMaxBrightness",
+            &[],
+        )
+        .number();
+
+    if highest <= 0.0 {
+        return;
+    }
+
+    for signal in signals.filter(|signal| signal.path() == KBD_BACKLIGHT) {
+        let level = signal.arguments().first().map_or(-1.0, Value::number);
+
+        if let Some(percent) = keyboard_percent(level, highest) {
+            post(Osd::Keyboard(percent), Shown::show);
+        }
+    }
+
+    supervise::stopped("kbd-backlight", String::from("the system bus closed"));
+}
+
+// a mode turned on or off, as `keys` and `radios` hear it
+pub fn mode(mode: Mode) {
+    post(Osd::Mode(mode), Shown::show);
+}
+
+// which level a key changes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Speaker,
+    Brightness,
+}
+
+/*
+ * a level's key was pressed or repeats: the level as it is shows at once, the change the keybind
+ * makes follows as it lands, and at a limit, where nothing changes, it still shows. Nothing for a
+ * level not read
+ */
+pub fn pressed(key: Key, reads: Reads) {
+    read_and_post(|| match key {
+        Key::Speaker if reads.audio => Some(Osd::Volume(speaker(&Audio::read()))),
+        Key::Brightness if reads.brightness => brightness().map(Osd::Brightness),
+        _ => None,
+    });
+}
 
 // which Services this reads: those of the `audio` and `brightness` Modules that are on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,26 +294,12 @@ impl Levels {
         let (speaker, microphone) = if reads.audio {
             let audio = Audio::read();
 
-            (
-                Some(speaker(&audio)),
-                Some(Volume {
-                    device: Device::Microphone,
-                    percent: audio.microphone_volume(),
-                    muted: audio.microphone_muted(),
-                }),
-            )
+            (Some(speaker(&audio)), Some(microphone(&audio)))
         } else {
             (None, None)
         };
 
-        let brightness = reads
-            .brightness
-            .then(|| {
-                let brightness = Brightness::read();
-
-                brightness.present().then(|| brightness.percent())
-            })
-            .flatten();
+        let brightness = reads.brightness.then(brightness).flatten();
 
         Levels {
             speaker,
@@ -121,6 +315,59 @@ fn speaker(audio: &Audio) -> Volume {
         percent: audio.volume(),
         muted: audio.muted(),
     }
+}
+
+fn microphone(audio: &Audio) -> Volume {
+    Volume {
+        device: Device::Microphone,
+        percent: audio.microphone_volume(),
+        muted: audio.microphone_muted(),
+    }
+}
+
+// where `Brightness` finds the backlight
+const BACKLIGHTS: &str = "/sys/class/backlight";
+
+/*
+ * the backlight as it is now, none without one. `Brightness` reads it again only every
+ * 500 ms, which a change would wait on, so this reads the file it does, the first backlight the
+ * kernel lists, as it reckons it, and brings that one up to date only when it lags, so a read that
+ * finds nothing new redraws nothing
+ */
+fn brightness() -> Option<u8> {
+    let (present, shared) = {
+        let brightness = Brightness::read();
+
+        (brightness.present(), brightness.percent())
+    };
+
+    if !present {
+        return None;
+    }
+
+    let percent = backlight().unwrap_or(shared);
+
+    if percent != shared {
+        Brightness::write().update();
+    }
+
+    Some(percent)
+}
+
+// a sysfs read, cheap enough for the draw thread
+fn backlight() -> Option<u8> {
+    let first = fs::read_dir(BACKLIGHTS).ok()?.flatten().next()?.path();
+    let read = |name| {
+        fs::read_to_string(first.join(name))
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+
+    let highest = read("max_brightness").filter(|&highest| highest > 0)?;
+
+    Some(brightness::percent_of(read("brightness")?, highest))
 }
 
 // which level `kanade osd` shows
@@ -157,28 +404,19 @@ pub fn show(asked: Asked, reads: Reads) -> Result<(), String> {
                 .ok_or_else(|| String::from("the volume thread is not running"))
                 .and_then(|volume| ask(volume, Instant::now()));
         }
-        Asked::Brightness => {
-            /*
-             * Amane reads the backlight again only every 500 ms, and a keybind asks right after
-             * it set it, so this reads it now; a sysfs read, cheap on the draw thread
-             */
-            let mut brightness = Brightness::write();
-            brightness.update();
-
-            if !brightness.present() {
-                return Err(String::from("there is no backlight"));
-            }
-
-            Level::Brightness(brightness.percent())
-        }
+        // a keybind asks right after it set it, so read now
+        Asked::Brightness => match brightness() {
+            Some(percent) => Osd::Brightness(percent),
+            None => return Err(String::from("there is no backlight")),
+        },
     };
 
-    Osd::write().show(level, Instant::now());
+    post(level, Shown::show);
     Ok(())
 }
 
 /*
- * `osd volume` asks the volume thread to read it: Amane's Audio hears of a change from PulseAudio
+ * `osd volume` asks the volume thread to read it: `Audio` hears of a change from PulseAudio
  * a beat after it is made, and a keybind asks right after it made it. Reading waits on
  * PulseAudio, so not on the draw thread. Each ask carries when it was made
  */
@@ -204,10 +442,7 @@ pub fn volume_asks() -> Receiver<Instant> {
 // runs on its own thread for good; waits on asks, so it never wakes on its own
 pub fn answer_volume(asks: &Receiver<Instant>) {
     serve(asks, fresh_speaker, |level, asked| {
-        // checked first under the read lock, as a write wakes every OSD window
-        if !Osd::read().shown_since(asked) {
-            Osd::write().answer(level, asked, Instant::now());
-        }
+        post(level, |shown, now| shown.answer(asked, now));
     });
 }
 
@@ -218,7 +453,7 @@ pub fn answer_volume(asks: &Receiver<Instant>) {
 fn serve(
     asks: &Receiver<Instant>,
     mut read: impl FnMut() -> Volume,
-    mut show: impl FnMut(Level, Instant),
+    mut show: impl FnMut(Osd, Instant),
 ) {
     while let Ok(first) = asks.recv() {
         let mut asked = asks.try_iter().last().unwrap_or(first);
@@ -229,12 +464,12 @@ fn serve(
             volume = read();
         }
 
-        show(Level::Volume(volume), asked);
+        show(Osd::Volume(volume), asked);
     }
 }
 
 /*
- * a fresh Audio of its own, not Amane's shared one: updating that one holds its write lock while
+ * a fresh Audio of its own, not the shared one: updating that one holds its write lock while
  * PulseAudio answers, which would stall every view that reads it. Its PulseAudio connection is
  * this thread's, kept for the next ask
  */
@@ -247,7 +482,7 @@ fn fresh_speaker() -> Volume {
  * starting the shell shows nothing. The microphone shows only for a mute: apps tune its volume on
  * their own, like a call's gain control, which no one asked to see
  */
-fn changes(before: Option<Levels>, now: Levels) -> Vec<Level> {
+fn changes(before: Option<Levels>, now: Levels) -> Vec<Osd> {
     let Some(before) = before else {
         return Vec::new();
     };
@@ -257,19 +492,19 @@ fn changes(before: Option<Levels>, now: Levels) -> Vec<Level> {
     if let Some(speaker) = now.speaker
         && now.speaker != before.speaker
     {
-        changes.push(Level::Volume(speaker));
+        changes.push(Osd::Volume(speaker));
     }
 
     if let Some(microphone) = now.microphone
         && Some(microphone.muted) != before.microphone.map(|before| before.muted)
     {
-        changes.push(Level::Volume(microphone));
+        changes.push(Osd::Volume(microphone));
     }
 
     if let Some(percent) = now.brightness
         && now.brightness != before.brightness
     {
-        changes.push(Level::Brightness(percent));
+        changes.push(Osd::Brightness(percent));
     }
 
     changes
@@ -282,285 +517,20 @@ pub fn follow(reads: Reads) {
 
     supervise::run("osd", || {
         loop {
-            let levels = Levels::read(reads);
-            let changes = changes(last, levels);
+            let mut busy = false;
 
-            // one OSD: what changed last takes its place
-            if let Some(&shown) = changes.last() {
-                Osd::write().show(shown, Instant::now());
-            }
+            read_and_post(|| {
+                let levels = Levels::read(reads);
 
-            let busy = last != Some(levels);
-            last = Some(levels);
+                // one OSD: what changed last takes its place
+                let shown = changes(last, levels).last().copied();
+
+                busy = last != Some(levels);
+                last = Some(levels);
+                shown
+            });
+
             wakes.wait(busy);
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::RefCell;
-
-    // as `pactl subscribe` and `udevadm monitor` print them
-    #[test]
-    fn only_level_changes_announce() {
-        assert!((PULSE.announces)("Event 'change' on sink #55"));
-        assert!((PULSE.announces)("Event 'change' on source #56"));
-        assert!((PULSE.announces)("Event 'change' on server #-1"));
-        assert!(!(PULSE.announces)("Event 'change' on client #223"));
-        assert!(!(PULSE.announces)("Event 'new' on sink-input #12"));
-        assert!(!(PULSE.announces)("Event 'change' on card #49"));
-
-        let backlight =
-            "KERNEL[2909.593314] change   /devices/backlight/nvidia_wmi_ec_backlight (backlight)";
-        assert!((BACKLIGHT.announces)(backlight));
-        assert!(!(BACKLIGHT.announces)(
-            "monitor will print the received events for:"
-        ));
-        assert!(!(BACKLIGHT.announces)("KERNEL - the kernel uevent"));
-    }
-
-    fn levels(speaker: u8, muted: bool) -> Levels {
-        Levels {
-            speaker: Some(Volume {
-                device: Device::Speaker,
-                percent: speaker,
-                muted,
-            }),
-            microphone: Some(Volume {
-                device: Device::Microphone,
-                percent: 80,
-                muted: false,
-            }),
-            brightness: Some(60),
-        }
-    }
-
-    fn microphone(levels: &mut Levels) -> &mut Volume {
-        levels.microphone.as_mut().unwrap()
-    }
-
-    #[test]
-    fn the_first_read_shows_nothing() {
-        assert_eq!(changes(None, levels(40, false)), []);
-    }
-
-    #[test]
-    fn unchanged_levels_show_nothing() {
-        let idle = levels(40, false);
-
-        assert_eq!(changes(Some(idle), idle), []);
-    }
-
-    #[test]
-    fn volume_and_mute_show_the_speaker() {
-        let before = levels(40, false);
-
-        for now in [levels(45, false), levels(40, true)] {
-            assert_eq!(
-                changes(Some(before), now),
-                [Level::Volume(now.speaker.unwrap())]
-            );
-        }
-    }
-
-    #[test]
-    fn microphone_shows_for_a_mute_only() {
-        let before = levels(40, false);
-
-        let mut gain = before;
-        microphone(&mut gain).percent = 30;
-        assert_eq!(changes(Some(before), gain), []);
-
-        let mut muted = before;
-        microphone(&mut muted).muted = true;
-        assert_eq!(
-            changes(Some(before), muted),
-            [Level::Volume(muted.microphone.unwrap())]
-        );
-    }
-
-    #[test]
-    fn brightness_shows_while_there_is_a_backlight() {
-        let before = levels(40, false);
-
-        let mut brighter = before;
-        brighter.brightness = Some(70);
-        assert_eq!(changes(Some(before), brighter), [Level::Brightness(70)]);
-
-        let mut gone = before;
-        gone.brightness = None;
-        assert_eq!(changes(Some(before), gone), []);
-    }
-
-    // with `audio` or `brightness` off, its levels are never read, so never change
-    #[test]
-    fn what_is_not_read_never_shows() {
-        let unread = Levels {
-            speaker: None,
-            microphone: None,
-            brightness: None,
-        };
-
-        let mut brightness_only = unread;
-        brightness_only.brightness = Some(50);
-
-        assert_eq!(changes(Some(unread), unread), []);
-        assert_eq!(
-            changes(Some(unread), brightness_only),
-            [Level::Brightness(50)]
-        );
-    }
-
-    #[test]
-    fn osd_asks_for_volume_or_brightness() {
-        assert_eq!(Asked::parse(&["volume"]), Some(Asked::Volume));
-        assert_eq!(Asked::parse(&["brightness"]), Some(Asked::Brightness));
-
-        for words in [&[][..], &["microphone"], &["volume", "50"], &["Volume"]] {
-            assert_eq!(Asked::parse(words), None, "{words:?}");
-        }
-    }
-
-    // refused before any Service is read, so an off Module's stays cold
-    #[test]
-    fn osd_is_refused_for_a_module_that_is_off() {
-        let off = Reads {
-            audio: false,
-            brightness: false,
-        };
-
-        assert_eq!(
-            show(Asked::Volume, off),
-            Err(String::from("module audio is off"))
-        );
-        assert_eq!(
-            show(Asked::Brightness, off),
-            Err(String::from("module brightness is off"))
-        );
-    }
-
-    fn speaker_at(percent: u8) -> Volume {
-        Volume {
-            device: Device::Speaker,
-            percent,
-            muted: false,
-        }
-    }
-
-    /*
-     * a keybind sets the volume, then asks at once, when Amane's Audio may still say the old one:
-     * what shows is read after the ask, and asks while one waits fold into it
-     */
-    #[test]
-    fn osd_volume_shows_the_volume_read_after_the_ask() {
-        let (volume, asks) = mpsc::channel();
-        let first = Instant::now();
-        let second = first + Duration::from_millis(100);
-        let mut server = 40;
-
-        server += 5;
-        assert_eq!(ask(&volume, first), Ok(()));
-        server += 5;
-        assert_eq!(ask(&volume, second), Ok(()));
-        drop(volume);
-
-        let mut shown = Vec::new();
-        serve(
-            &asks,
-            || speaker_at(server),
-            |level, asked| shown.push((level, asked)),
-        );
-
-        assert_eq!(shown, [(Level::Volume(speaker_at(50)), second)]);
-    }
-
-    // the volume changes and asks again while the first ask is read: only the second read shows
-    #[test]
-    fn an_ask_during_a_read_reads_again_and_the_first_read_never_shows() {
-        let (volume, asks) = mpsc::channel();
-        let first = Instant::now();
-        let second = first + Duration::from_millis(100);
-        let mut volume = Some(volume);
-        let mut server = 40;
-
-        assert_eq!(ask(volume.as_ref().unwrap(), first), Ok(()));
-
-        let mut shown = Vec::new();
-        serve(
-            &asks,
-            || {
-                let read = speaker_at(server);
-
-                // the change and its ask land while this read waits on PulseAudio
-                if let Some(volume) = volume.take() {
-                    server += 5;
-                    assert_eq!(ask(&volume, second), Ok(()));
-                }
-
-                read
-            },
-            |level, asked| shown.push((level, asked)),
-        );
-
-        assert_eq!(shown, [(Level::Volume(speaker_at(45)), second)]);
-    }
-
-    // brightness shows while the volume is still being read: the volume, read late, gives way
-    #[test]
-    fn a_slow_volume_read_does_not_cover_a_newer_level() {
-        let (volume, asks) = mpsc::channel();
-        let asked = Instant::now();
-        let delay = Duration::from_millis(300);
-        let osd = RefCell::new(Osd::new());
-
-        assert_eq!(ask(&volume, asked), Ok(()));
-        drop(volume);
-
-        serve(
-            &asks,
-            || {
-                osd.borrow_mut()
-                    .show(Level::Brightness(80), asked + delay / 2);
-                speaker_at(45)
-            },
-            |level, asked| osd.borrow_mut().answer(level, asked, asked + delay),
-        );
-
-        assert_eq!(osd.borrow().shown_on("eDP-1"), Some(Level::Brightness(80)));
-    }
-
-    #[test]
-    fn osd_volume_without_its_thread_is_refused() {
-        let (volume, asks) = mpsc::channel();
-        drop(asks);
-
-        assert_eq!(
-            ask(&volume, Instant::now()),
-            Err(String::from("the volume thread stopped"))
-        );
-    }
-
-    #[test]
-    fn only_the_announcers_of_what_is_read_start() {
-        let programs = |audio, brightness| {
-            Reads { audio, brightness }
-                .announcers()
-                .iter()
-                .map(|announcer| announcer.program)
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(programs(true, true), ["pactl", "udevadm"]);
-        assert_eq!(programs(true, false), ["pactl"]);
-        assert_eq!(programs(false, true), ["udevadm"]);
-        assert!(
-            !Reads {
-                audio: false,
-                brightness: false
-            }
-            .any()
-        );
-    }
 }

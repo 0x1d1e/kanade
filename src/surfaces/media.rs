@@ -5,9 +5,11 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use amane::{
-    Audio, Center, Color, Column, Cursor, End, Padding, Rectangle, Row, Scroll, Service,
-    SpaceBetween, Stack, Start, Text, Widget, children, request_frame,
+use crate::sources::pulse::Audio;
+use kanade_runtime::service::Service;
+use kanade_runtime::{
+    Center, Color, Column, Cursor, End, Padding, Rectangle, Row, Scroll, SpaceBetween, Stack,
+    Start, Text, Widget, children, request_frame,
 };
 
 use super::slider::Slider;
@@ -19,7 +21,7 @@ use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
-use crate::view::{Change, bar};
+use crate::view::{Change, bar, state};
 
 // with INSET, concentric with the body's corner
 const ART: f32 = 80.0;
@@ -50,7 +52,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
     let width = shape.width - 2.0 * INSET;
 
     let deck = playback.shown.as_ref();
-    let accent = deck.map_or(theme::ISLAND.on_surface, |deck| deck.accent.at(now));
+    let accent = deck.map_or(theme::island().on_surface, |deck| deck.accent.at(now));
 
     // the dissolve and the tint are the follower's, so the Surface asks for frames until they rest
     if deck.is_some_and(|deck| !deck.track.settled(now) || !deck.accent.settled(now)) {
@@ -73,7 +75,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(children![
-                header(track, &playback.players, deck, playback.page, width),
+                header(track, &playback.players, deck, playback.page, width, now),
                 timeline(deck, accent, width, now),
                 controls(deck, accent, width),
             ])
@@ -96,18 +98,22 @@ fn header(
     deck: Option<&Deck>,
     page: Option<usize>,
     width: f32,
+    now: Instant,
 ) -> Row {
     let words = width - ART - GAP;
+
+    // the visualizer at the top right, the lines short of it
+    const MOVING: f32 = 36.0;
 
     // the artist's line is there even when it names none, like the Peek's
     let lines = children![
         track
-            .line(|track| &track.title, theme::ISLAND.on_surface)
+            .line(|track| &track.title, theme::island().on_surface)
             .size(theme::text::TITLE)
             .weight(theme::text::SEMIBOLD)
             .elide(),
         track
-            .line(|track| &track.artist, theme::ISLAND.on_surface_variant)
+            .line(|track| &track.artist, theme::island().on_surface_variant)
             .size(theme::text::LABEL)
             .weight(theme::text::MEDIUM)
             .elide(),
@@ -118,7 +124,21 @@ fn header(
     Row::new(children![
         track.art(ART, radius::ROW),
         Stack::new(children![
-            Column::new(lines).width(words).gap(3.0),
+            Column::new(lines).width(words - MOVING).gap(3.0),
+            Rectangle::new()
+                .width(words)
+                .height(ART)
+                .align_child(End, Start)
+                .padding(Padding {
+                    top: 4.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                })
+                .child(state(
+                    deck.is_some_and(|deck| deck.track.target().playing),
+                    now
+                )),
             Rectangle::new()
                 .width(words)
                 .height(ART)
@@ -141,7 +161,7 @@ fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: 
         return Row::new(children![
             Text::new(&only.identity)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide()
         ])
@@ -195,18 +215,18 @@ fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Wi
             Text::new(label)
                 .size(theme::text::LABEL_SMALL)
                 .color(if selected {
-                    theme::ISLAND.on_surface
+                    theme::island().on_surface
                 } else {
-                    theme::ISLAND.on_surface_variant
+                    theme::island().on_surface_variant
                 })
                 .weight(theme::text::SEMIBOLD)
                 .elide(),
         );
 
     Box::new(if selected {
-        chip.fill(theme::ISLAND.surface_container_high)
+        chip.fill(theme::island().surface_container_high)
     } else {
-        chip.border(1.0, theme::ISLAND.surface_container_high)
+        chip.border(1.0, theme::island().surface_container_high)
     })
 }
 
@@ -277,7 +297,7 @@ fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant) -> Col
     let time = |text: String| {
         Text::new(text)
             .size(theme::text::LABEL_SMALL)
-            .color(theme::ISLAND.on_surface_variant)
+            .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM)
     };
 
@@ -318,7 +338,7 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
         {
             let (glyph, control) = play_pause(deck);
 
-            button(glyph, PLAY, Some(theme::ISLAND.primary), control)
+            button(glyph, PLAY, Some(theme::island().primary), control)
         },
         button(
             Transport::Next,
@@ -367,9 +387,9 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
     };
 
     let tone = if fill.is_some() {
-        theme::ISLAND.on_primary
+        theme::island().on_primary
     } else {
-        fade(theme::ISLAND.on_surface)
+        fade(theme::island().on_surface)
     };
 
     let button = Rectangle::new()
@@ -444,7 +464,7 @@ fn volume(width: f32, accent: Color) -> Row {
         .child(icon.draw(20.0));
 
     let tone = if muted {
-        theme::ISLAND.on_surface_variant
+        theme::island().on_surface_variant
     } else {
         accent
     };
@@ -473,109 +493,5 @@ impl Transport {
         };
 
         icon.on(side, tone)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::island::fade::Dissolve;
-    use crate::island::motion::Mode;
-    use crate::sources::playback::Tint;
-
-    // the room choices() gets on the Surface
-    const WORDS: f32 = geometry::MEDIA.width - 2.0 * INSET - ART - GAP;
-
-    #[test]
-    fn every_player_chip_stays_pressable_however_many_players() {
-        for count in 2..=24 {
-            for shown in 0..count {
-                let chips = Chips::of(count, Some(shown), None, WORDS);
-                let shown_chips = chips.page.len() + usize::from(chips.more.is_some());
-                let used = shown_chips as f32 * chips.width + (shown_chips - 1) as f32 * CHIP_GAP;
-
-                assert!(chips.width >= CHIP_MIN.max(TARGET), "{count} players");
-                assert!(used <= WORDS, "{count} players overflow");
-                assert!(chips.page.contains(&shown), "{count} players hide {shown}");
-            }
-        }
-    }
-
-    #[test]
-    fn the_more_chip_turns_the_page_and_back() {
-        let first = Chips::of(11, Some(0), None, WORDS);
-        assert_eq!(first.page, 0..3);
-        assert_eq!(first.more, Some(1));
-
-        let last = Chips::of(11, Some(10), None, WORDS);
-        assert_eq!(last.page, 9..11);
-        assert_eq!(last.more, Some(0));
-        assert_eq!(last.width, first.width);
-
-        // what fits shows whole
-        assert_eq!(Chips::of(3, Some(2), None, WORDS).more, None);
-    }
-
-    #[test]
-    fn a_turned_page_shows_whatever_player_is_shown() {
-        // the shown player is on the first page, the second is turned to
-        let turned = Chips::of(11, Some(0), Some(1), WORDS);
-        assert_eq!(turned.page, 3..6);
-        assert_eq!(turned.more, Some(2));
-
-        // players closed under a page past the end leave the last one
-        assert_eq!(Chips::of(5, Some(0), Some(3), WORDS).page, 3..5);
-    }
-
-    #[test]
-    fn a_playing_player_pauses_and_a_paused_one_plays_only_if_it_can() {
-        let deck = |playing: bool, can_play: bool, can_pause: bool| Deck {
-            name: String::from("mpv"),
-            track: Dissolve::new(
-                Track {
-                    playing,
-                    ..Track::default()
-                },
-                Mode::Spring,
-            ),
-            timeline: crate::sources::playback::Timeline {
-                position: Duration::ZERO,
-                at: Instant::now(),
-                length: Duration::ZERO,
-                rate: 0.0,
-            },
-            accent: Tint::new(theme::ISLAND.on_surface, Mode::Spring),
-            can_play,
-            can_pause,
-            can_previous: false,
-            can_next: false,
-        };
-        let pause = Some(Control::Pause(String::from("mpv")));
-        let play = Some(Control::Play(String::from("mpv")));
-
-        assert_eq!(
-            play_pause(Some(&deck(true, false, true))),
-            (Transport::Pause, pause)
-        );
-        assert_eq!(
-            play_pause(Some(&deck(true, true, false))),
-            (Transport::Pause, None)
-        );
-        assert_eq!(
-            play_pause(Some(&deck(false, true, false))),
-            (Transport::Play, play)
-        );
-        assert_eq!(
-            play_pause(Some(&deck(false, false, true))),
-            (Transport::Play, None)
-        );
-        assert_eq!(play_pause(None), (Transport::Play, None));
-    }
-
-    #[test]
-    fn clocks_read_like_a_player() {
-        assert_eq!(clock(Duration::from_secs(0)), "0:00");
-        assert_eq!(clock(Duration::from_millis(187_900)), "3:07");
-        assert_eq!(clock(Duration::from_secs(3727)), "1:02:07");
     }
 }

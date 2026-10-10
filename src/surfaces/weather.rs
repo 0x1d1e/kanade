@@ -4,10 +4,11 @@
 //! after a failed fetch or a suspend, stays shown with the time it is from; without one it says
 //! why: no location set, the first fetch on its way, or the failure.
 
-use amane::{
-    Center, Column, Padding, Rectangle, Row, Service, SpaceBetween, Start, Text, Widget, children,
-};
 use chrono::{Datelike, NaiveDate};
+use kanade_runtime::service::Service;
+use kanade_runtime::{
+    Center, Column, Padding, Rectangle, Row, SpaceBetween, Start, Text, Widget, children,
+};
 
 use crate::clock;
 use crate::config::{self, Config};
@@ -79,14 +80,14 @@ fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate
 
     let place = Text::new(config.place.as_deref().unwrap_or("Weather"))
         .size(theme::text::TITLE)
-        .color(theme::ISLAND.on_surface)
+        .color(theme::island().on_surface)
         .weight(theme::text::SEMIBOLD)
         .elide();
 
     let temperature = Row::new(children![
         Text::new(units.temperature(current.temperature))
             .size(theme::text::DISPLAY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::MEDIUM),
         icon(current.condition, current.day).draw(36.0),
     ])
@@ -96,7 +97,7 @@ fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate
     let mut lines: Vec<Box<dyn Widget>> = vec![Box::new(
         Text::new(current.condition.name())
             .size(theme::text::BODY)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide(),
     )];
@@ -115,7 +116,7 @@ fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate
         Box::new(
             Text::new(detail)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ) as Box<dyn Widget>
@@ -132,7 +133,7 @@ fn now(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveDate
             Box::new(
                 Text::new(line)
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM)
                     .elide(),
             ) as Box<dyn Widget>
@@ -188,7 +189,7 @@ fn days(forecast: &Forecast, units: Units, today: NaiveDate) -> Column {
                 .child(
                     Text::new("No forecast")
                         .size(theme::text::BODY)
-                        .color(theme::ISLAND.on_surface_variant)
+                        .color(theme::island().on_surface_variant)
                         .weight(theme::text::MEDIUM),
                 ),
         ]);
@@ -219,7 +220,7 @@ fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
             .child(
                 Text::new(name)
                     .size(theme::text::LABEL)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
             ),
         icon(day.condition, true).draw(20.0),
@@ -230,7 +231,7 @@ fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
             .child(
                 Text::new(chance)
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM),
             ),
     ])
@@ -240,11 +241,11 @@ fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
     let range = Row::new(children![
         Text::new(units.temperature(day.high))
             .size(theme::text::LABEL)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD),
         Text::new(units.temperature(day.low))
             .size(theme::text::LABEL)
-            .color(theme::ISLAND.on_surface_variant)
+            .color(theme::island().on_surface_variant)
             .weight(theme::text::MEDIUM),
     ])
     .gap(8.0)
@@ -254,7 +255,7 @@ fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
         .width(DAYS)
         .height(ROW)
         .radius(radius::ROW)
-        .fill(theme::ISLAND.surface_container)
+        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right: ROW_INSET,
@@ -271,7 +272,7 @@ fn row(day: &Day, units: Units, today: NaiveDate) -> Rectangle {
 }
 
 // what stands for the sky; a clear or partly cloudy night shows no sun
-fn icon(condition: Condition, day: bool) -> Icon {
+pub fn icon(condition: Condition, day: bool) -> Icon {
     match condition {
         Condition::Clear if day => Icon::Sun,
         Condition::Clear => Icon::Moon,
@@ -316,11 +317,11 @@ fn missing(state: &State) -> Rectangle {
                 Icon::Cloud.draw(28.0),
                 Text::new(title)
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
                 Text::new(detail)
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::ISLAND.on_surface_variant)
+                    .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM),
             ])
             .gap(6.0)

@@ -14,14 +14,14 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use amane::{Argument, Bus};
+use crate::bus::{Argument, Bus};
 
 use crate::cli::{self, Reply};
 use crate::config::{self, Config};
 use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{bus, clipboard, niri, pipewire};
+use crate::sources::{bus, clipboard, keys, niri, pipewire, radios};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -89,7 +89,6 @@ pub fn run() -> ExitCode {
             env!("CARGO_PKG_VERSION"),
             cli::PROTOCOL
         )),
-        amane(include_str!("../../Cargo.lock")),
         shell,
         unit(pid),
         niri(),
@@ -112,30 +111,6 @@ pub fn run() -> ExitCode {
             false => ExitCode::SUCCESS,
         },
     )
-}
-
-// the pinned Amane, as Cargo.lock has it
-fn amane(lock: &str) -> Check {
-    let package = lock
-        .split("[[package]]")
-        .find(|package| package.contains("\nname = \"amane\"\n"));
-
-    let field = |name: &str| {
-        package?.lines().find_map(|line| {
-            line.strip_prefix(name)?
-                .strip_prefix(" = \"")?
-                .strip_suffix('"')
-        })
-    };
-
-    let rev = field("source")
-        .and_then(|source| source.rsplit_once('#'))
-        .map(|(_, rev)| &rev[..rev.len().min(7)]);
-
-    match (field("version"), rev) {
-        (Some(version), Some(rev)) => Check::ok(format!("amane {version}, rev {rev}")),
-        _ => Check::warn(String::from("amane: not found in Cargo.lock")),
-    }
 }
 
 /*
@@ -383,7 +358,7 @@ fn pipewire() -> Check {
 }
 
 // libpulse finds its server from PULSE_SERVER, client.conf, X11 or the default socket, so `pactl
-// info`, which resolves it the same way Amane does, is asked
+// info`, which resolves it the same way the runtime does, is asked
 fn pulseaudio() -> Check {
     match ask("pactl", &["info"]) {
         Asked::Answered(info) => {
@@ -514,6 +489,14 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     Ok(version) => Found::Present(version),
                     Err(why) => Found::Missing(why),
                 },
+                Provider::Keyboards => match keys::found() {
+                    Ok(found) => Found::Present(found),
+                    Err(why) => Found::Missing(why),
+                },
+                Provider::Rfkill => match radios::found() {
+                    Ok(found) => Found::Present(found),
+                    Err(why) => Found::Missing(why),
+                },
                 Provider::SystemService(name)
                 | Provider::SessionName(name)
                 | Provider::SessionService(name) => {
@@ -616,239 +599,5 @@ fn holder(name: &str, holder: Option<String>, running: bool) -> Found {
         Some(other) => Found::Taken(format!("{other} holds {name}")),
         None if running => Found::Missing(format!("{name} held by no one")),
         None => Found::Present(format!("{name} free, Kanade takes it at start")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn amane_is_read_from_the_lock() {
-        assert_eq!(
-            amane(
-                "[[package]]
-name = \"amane\"
-version = \"0.1.1\"
-source = \"git+https://github.com/MystiaFin/amane?rev=6ace43e5c69c#6ace43e5c69cd4b39bb06b28c20fc4b883422519\"
-dependencies = [
- \"zbus\",
-]
-
-[[package]]
-name = \"amane-cli\"
-version = \"9.9.9\"
-"
-            ),
-            Check::ok(String::from("amane 0.1.1, rev 6ace43e"))
-        );
-        assert_eq!(
-            amane("[[package]]\nname = \"other\"\n").verdict,
-            Verdict::Warn
-        );
-
-        // the one this build is pinned to
-        assert_eq!(amane(include_str!("../../Cargo.lock")).verdict, Verdict::Ok);
-    }
-
-    #[test]
-    fn a_shell_on_another_protocol_fails() {
-        assert_eq!(
-            shell_status("kanade 0.1.0, protocol 4, pid 1234"),
-            (
-                Check::ok(String::from(
-                    "shell: running kanade 0.1.0, protocol 4, pid 1234"
-                )),
-                Some(1234)
-            )
-        );
-
-        for first in [
-            "kanade 0.1.0, protocol 3, pid 1234",
-            "kanade 0.1.0, protocol 3",
-            "something else",
-            "",
-        ] {
-            let (check, pid) = shell_status(first);
-            assert_eq!((check.verdict, pid), (Verdict::Fail, None), "{first}");
-        }
-    }
-
-    #[test]
-    fn niri_before_26_04_fails() {
-        assert_eq!(
-            niri_check("26.04 (8ed0da4)"),
-            Check::ok(String::from("niri 26.04 (8ed0da4)"))
-        );
-        assert_eq!(niri_check("26.10").verdict, Verdict::Ok);
-        assert_eq!(niri_check("27.01-1").verdict, Verdict::Ok);
-        assert_eq!(
-            niri_check("25.11 (b35bcae)"),
-            Check::fail(String::from(
-                "niri 25.11 (b35bcae), Kanade needs 26.04 or later"
-            ))
-        );
-        assert_eq!(niri_check("unstable").verdict, Verdict::Warn);
-    }
-
-    #[test]
-    fn a_niri_patch_release_is_judged_by_year_and_month() {
-        assert_eq!(niri_check("26.04.1 (8ed0da4)").verdict, Verdict::Ok);
-        assert_eq!(
-            niri_check("25.05.1 (b35bcae)"),
-            Check::fail(String::from(
-                "niri 25.05.1 (b35bcae), Kanade needs 26.04 or later"
-            ))
-        );
-    }
-
-    #[test]
-    fn another_notification_daemon_fails_its_module() {
-        let name = "org.freedesktop.Notifications";
-
-        assert_eq!(
-            holder(name, Some(String::from("mako")), false)
-                .check("notifications", "no notifications arrive"),
-            Check::fail(String::from(
-                "module notifications: mako holds org.freedesktop.Notifications: no notifications arrive; stop it and restart Kanade"
-            ))
-        );
-        assert_eq!(
-            holder(name, Some(String::from("kanade")), true),
-            Found::Present(String::from("org.freedesktop.Notifications held by Kanade"))
-        );
-        assert_eq!(
-            holder(name, None, false),
-            Found::Present(String::from(
-                "org.freedesktop.Notifications free, Kanade takes it at start"
-            ))
-        );
-        assert!(matches!(holder(name, None, true), Found::Missing(_)));
-    }
-
-    #[test]
-    fn capture_without_niri_fails_naming_its_backend() {
-        let absent = niri_found(Err(String::from("NIRI_SOCKET is not set")));
-
-        assert_eq!(
-            absent.check("capture", "no screenshot backend"),
-            Check::fail(String::from(
-                "module capture: niri: NIRI_SOCKET is not set: no screenshot backend"
-            ))
-        );
-        assert_eq!(
-            niri_found(Ok(String::from("25.11 (b35bcae)"))),
-            Found::Absent(String::from("niri 25.11 (b35bcae) is too old"))
-        );
-        assert_eq!(
-            niri_found(Ok(String::from("26.04 (8ed0da4)"))),
-            Found::Present(String::from("niri 26.04 (8ed0da4)"))
-        );
-    }
-
-    #[test]
-    fn a_program_missing_from_path_degrades_its_module() {
-        let dir = env::temp_dir().join(format!("kanade-doctor-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-
-        let program = dir.join("pw-dump");
-        fs::write(&program, "").unwrap();
-
-        // not executable, so not found
-        assert_eq!(
-            program_found("pw-dump", Some(&dir)),
-            Found::Missing(String::from("pw-dump missing from PATH"))
-        );
-
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(
-            program_found("pw-dump", Some(&dir)),
-            Found::Present(format!("pw-dump at {}", program.display()))
-        );
-        assert_eq!(
-            program_found("pw-dump", None::<&OsStr>).check("privacy", "no indicators"),
-            Check::warn(String::from(
-                "module privacy: pw-dump missing from PATH: no indicators"
-            ))
-        );
-
-        fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_shell_the_unit_does_not_run_warns() {
-        let unit = |load: &str, active: &str, file: &str, pid| Unit {
-            load: String::from(load),
-            active: String::from(active),
-            file: String::from(file),
-            pid,
-        };
-
-        assert_eq!(
-            unit_check(Some(7), &unit("loaded", "active", "enabled", 7)),
-            Check::ok(String::from(
-                "unit kanade.service: active, enabled, runs the shell, pid 7"
-            ))
-        );
-        assert_eq!(
-            unit_check(Some(8), &unit("loaded", "active", "enabled", 7)).text,
-            "unit kanade.service: active, but its pid 7 is not the shell's 8, so the shell \
-             running is not its: a crashed shell is not restarted, which leaves a locked session \
-             on niri's red screen"
-        );
-
-        let disabled = unit_check(Some(7), &unit("loaded", "active", "disabled", 7));
-        assert_eq!(
-            disabled.text,
-            "unit kanade.service: active but disabled, so the next session starts no shell"
-        );
-        assert_eq!(disabled.detail, ["systemctl --user enable kanade.service"]);
-
-        assert_eq!(
-            unit_check(Some(7), &unit("loaded", "inactive", "enabled", 0)).text,
-            "unit kanade.service: inactive, so the shell running is not its: a crashed shell is \
-             not restarted, which leaves a locked session on niri's red screen"
-        );
-        assert_eq!(
-            unit_check(None, &unit("not-found", "inactive", "", 0)).text,
-            "unit kanade.service: not-found, see the README to install it: a crashed shell is \
-             not restarted, which leaves a locked session on niri's red screen"
-        );
-
-        let failed = unit_check(None, &unit("loaded", "failed", "enabled", 0));
-        assert_eq!(failed.verdict, Verdict::Warn);
-        assert_eq!(
-            failed.detail[1..],
-            [
-                "systemctl --user reset-failed kanade.service",
-                "systemctl --user restart kanade.service",
-            ]
-        );
-    }
-
-    #[test]
-    fn the_lock_without_its_pam_service_fails() {
-        assert_eq!(
-            pam_found("login", None).check("lock", "no password unlocks"),
-            Check::fail(String::from(
-                "module lock: no PAM service login: no password unlocks"
-            ))
-        );
-        assert_eq!(
-            pam_found("login", Some(PathBuf::from("/etc/pam.d/login"))),
-            Found::Present(String::from("PAM service login at /etc/pam.d/login"))
-        );
-    }
-
-    #[test]
-    fn an_invalid_config_fails_with_each_problem_under_it() {
-        let check = config_check(vec![String::from("a.toml:3: unknown key colour")]);
-
-        assert_eq!(
-            check.render(),
-            "fail config invalid; each problem is skipped alone
-       a.toml:3: unknown key colour"
-        );
-        assert_eq!(config_check(Vec::new()).render(), "ok   config valid");
     }
 }

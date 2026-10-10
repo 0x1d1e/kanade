@@ -1,6 +1,6 @@
 # 1. Fixed canvas with an input region instead of resizing the layer window
 
-Status: accepted (Phase 0, #2-#5). Layer superseded by ADR 0006.
+Status: accepted (Phase 0, #2-#5). Layer superseded by ADR 0006. Amended by ADR 0030: the canvas follows the largest body, the output and the edge.
 
 ## Context
 
@@ -20,7 +20,7 @@ Each monitor gets one layer window with a fixed canvas: top-center, `Layer::Over
 
 ## Consequences
 
-- One large window per monitor stays mapped at all times, and most of it is invisible. It reserves no space (`Zone::Ignore`), and because of the input region, clicks outside the body reach the window below (verified in #2).
+- One large window per monitor stays mapped at all times, and most of it is invisible. It reserves no space (`Zone::Ignore`); `island.reserve` keeps windows off the Island's strip with a window of its own. Because of the input region, clicks outside the body reach the window below (verified in #2).
 - The input region is a rectangle, so a click in the rounded corners or in the padding counts as on the body.
 - The region updates on every frame of a morph. In #2 this cost nothing measurable: niri 27.5% vs 27.9% CPU, 126.6 vs 127.0 fps, against a fixed region during continuous morphing at 144 Hz.
 - Leaving the island means leaving the input region. In #3, niri sent the pointer leave when the region shrank away from a still pointer, so collapse and hover grace (#5) need no fallback region.

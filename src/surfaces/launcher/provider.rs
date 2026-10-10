@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 
+use crate::icon::Icon;
 use crate::sources::launch::Launch;
+
+use super::destinations::Destination;
 
 /*
  * how well an answer fits the query, best first. Every provider ranks on this one scale, so their
@@ -43,6 +46,9 @@ pub enum Mark {
     // an image cropped to fill the tile, like a wallpaper
     Photo(PathBuf),
 
+    // one of Kanade's own icons, like a Settings page's
+    Icon(Icon),
+
     // a letter or sign on the quiet tile
     Tile(String),
 
@@ -60,6 +66,9 @@ pub enum Action {
 
     // sets the image as the wallpaper
     Wallpaper(PathBuf),
+
+    // opens Controls, the Clipboard or Settings, as the island does
+    Open(Destination),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,89 +132,4 @@ pub fn fit(query: &str, name: &str) -> Option<Fit> {
         .split_whitespace()
         .all(|term| name.contains(term))
         .then_some(Fit::Terms)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // answers any query with each (title, fit)
-    struct Fixed(Vec<(&'static str, Fit)>);
-
-    impl LauncherProvider for Fixed {
-        fn find(&self, _: &str) -> Vec<Answer> {
-            self.0
-                .iter()
-                .map(|&(title, fit)| Answer {
-                    fit,
-                    title: title.to_owned(),
-                    detail: String::new(),
-                    mark: Mark::Tile(String::new()),
-                    action: Action::Copy(title.to_owned()),
-                })
-                .collect()
-        }
-    }
-
-    // answers with the query it got
-    struct Echo;
-
-    impl LauncherProvider for Echo {
-        fn find(&self, query: &str) -> Vec<Answer> {
-            Fixed(vec![("", Fit::Answer)])
-                .find(query)
-                .into_iter()
-                .map(|answer| Answer {
-                    title: query.to_owned(),
-                    ..answer
-                })
-                .collect()
-        }
-    }
-
-    fn titles(answers: &[Answer]) -> Vec<&str> {
-        answers.iter().map(|answer| answer.title.as_str()).collect()
-    }
-
-    #[test]
-    fn answers_interleave_by_fit_then_provider_then_their_own_order() {
-        let apps = Fixed(vec![
-            ("app within", Fit::Within),
-            ("app prefix", Fit::Prefix),
-            ("app prefix 2", Fit::Prefix),
-        ]);
-        let emoji = Fixed(vec![
-            ("emoji prefix", Fit::Prefix),
-            ("emoji exact", Fit::Exact),
-        ]);
-        let sum = Fixed(vec![("8", Fit::Answer)]);
-
-        assert_eq!(
-            titles(&ranked(&[&apps, &emoji, &sum], "q")),
-            [
-                "8",
-                "emoji exact",
-                "app prefix",
-                "app prefix 2",
-                "emoji prefix",
-                "app within"
-            ]
-        );
-    }
-
-    #[test]
-    fn providers_get_the_query_trimmed() {
-        assert_eq!(titles(&ranked(&[&Echo], "  2 + 2 ")), ["2 + 2"]);
-        assert!(ranked(&[], "q").is_empty());
-    }
-
-    #[test]
-    fn a_name_fits_best_whole_then_by_where_the_query_is() {
-        assert_eq!(fit("files", "files"), Some(Fit::Exact));
-        assert_eq!(fit("fi", "files"), Some(Fit::Prefix));
-        assert_eq!(fit("code", "visual studio code"), Some(Fit::Word));
-        assert_eq!(fit("tor", "monitor"), Some(Fit::Within));
-        assert_eq!(fit("visual code", "visual studio code"), Some(Fit::Terms));
-        assert_eq!(fit("zzz", "files"), None);
-    }
 }

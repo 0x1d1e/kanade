@@ -1,6 +1,8 @@
 //! NetworkManager for `system.rs`: what the machine is online through, for the Controls Surface.
 
-use amane::{Argument, Bus, Service, Value};
+use crate::bus::{Argument, Bus, Value};
+use kanade_runtime::service::Service;
+use kanade_runtime::worker;
 
 use super::system::Radio;
 use crate::island::activity::Uplink;
@@ -51,6 +53,13 @@ pub fn read() -> Connectivity {
         uplink: uplink(primary.text()),
         wifi: Radio::of(has_wifi(), enabled),
     }
+}
+
+// turns the Wi-Fi radio on or off off the view thread; `read` shows it once NetworkManager says so
+pub fn set_wifi(enabled: bool) {
+    worker::run(move || {
+        Bus::system().set_property(NAME, ROOT, NAME, "WirelessEnabled", Argument::from(enabled));
+    });
 }
 
 // the connection that carries the default route, "/" while there is none

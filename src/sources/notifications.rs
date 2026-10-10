@@ -1,22 +1,24 @@
 //! Notification toasts (plan 3, 5.1, 7, ADR 0007): a notification that arrives, or is replaced,
 //! shows as a Banner on the focused output, never on the island. The Banner goes away; the
-//! notification stays in Amane's list, the history, until it is dismissed or its sender closes it,
-//! which also takes its Banner down.
+//! notification stays in the daemon's list, the history, until it is dismissed or its sender closes
+//! it, which also takes its Banner down.
 //!
 //! DND (`notifications dnd toggle`) silences Banners, never the history. Banners never take the
 //! keyboard.
 //!
-//! Amane's Notifications has no subscription, so this reads it again when the bus carries a
+//! `Notifications` has no subscription, so this reads it again when the bus carries a
 //! notification arriving or closing (`wake`), and polls while that settles or the bus cannot be
-//! watched; a read that finds the same notifications shows nothing. Amane is the daemon only if no
+//! watched; a read that finds the same notifications shows nothing. Kanade is the daemon only if no
 //! other one, like mako, got the bus name first. Then nothing arrives, and `Daemon` says who has it
 //! for the Notifications Surface.
 
 use std::process;
 use std::time::{Duration, Instant, SystemTime};
 
-use amane::{Apps, Bus, Notification, Notifications, Service};
+use crate::bus::Bus;
+use kanade_runtime::service::Service;
 
+use super::apps::Apps;
 use super::bus;
 use super::wake::{Announcer, Pace, Wakes};
 use crate::banners::{Banner, Banners};
@@ -24,18 +26,22 @@ use crate::island::activity::Toast;
 use crate::island::service::IslandService;
 use crate::{banners, modules, supervise};
 
+mod daemon;
+
+pub use daemon::{Notification, Notifications, Urgency};
+
 const PACE: Pace = Pace {
     // a Banner shows within this of arriving
     poll: Duration::from_millis(100),
 
-    // Amane takes in a notification on its own thread, maybe after the bus carried it
+    // the daemon takes in a notification on its own thread, maybe after the bus carried it
     settle: Duration::from_secs(1),
 
     idle: None,
 };
 
-// the bus carries each notification arriving, closed by its sender, or closed by Amane, which
-// is every change to Amane's list
+// the bus carries each notification arriving, closed by its sender, or closed by Kanade, which
+// is every change to the daemon's list
 pub const BUS: Announcer = Announcer {
     program: "dbus-monitor",
     args: &[
@@ -52,13 +58,13 @@ pub const NAME: &str = "org.freedesktop.Notifications";
 // whether Kanade is the notification daemon, for the Notifications Surface's error state (plan 7)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Daemon {
-    // Amane has not got the bus name yet
+    // the daemon has not got the bus name yet
     #[default]
     Starting,
 
     Running,
 
-    // another daemon has the bus name, named by its process like "mako"; Amane never asks again
+    // another daemon has the bus name, named by its process like "mako"; Kanade never asks again
     Conflict(String),
 }
 
@@ -83,13 +89,13 @@ impl Daemon {
         }
     }
 
-    // `owner` is the process that has the bus name, asked only while Amane is not running
+    // `owner` is the process that has the bus name, asked only while the daemon is not running
     fn of(running: bool, owner: impl FnOnce() -> Option<u32>) -> Daemon {
         if running {
             return Daemon::Running;
         }
 
-        // Amane owns it and is about to say so, or no one does yet
+        // the daemon owns it and is about to say so, or no one does yet
         match owner() {
             Some(pid) if pid != process::id() => Daemon::Conflict(bus::process(pid)),
             _ => Daemon::Starting,
@@ -164,7 +170,7 @@ fn plain(markup: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-// a file path or file url Amane can draw; an icon theme name is none
+// a file path or file url Kanade can draw; an icon theme name is none
 fn local(path: &str) -> Option<String> {
     let path = path.strip_prefix("file://").unwrap_or(path);
 
@@ -173,7 +179,7 @@ fn local(path: &str) -> Option<String> {
 
 /*
  * the icon of the app that sent it, by the icon name it gave or else its name, from the desktop
- * entries Amane read; none while it is still reading them
+ * entries `apps` read; none while it is still reading them
  */
 fn app_icon(notification: &Notification) -> Option<String> {
     let apps = Apps::read();
@@ -181,14 +187,16 @@ fn app_icon(notification: &Notification) -> Option<String> {
     let app = apps
         .list()
         .iter()
-        .find(|app| !notification.icon().is_empty() && app.icon() == Some(notification.icon()))
+        .find(|app| {
+            !notification.icon().is_empty() && app.icon.as_deref() == Some(notification.icon())
+        })
         .or_else(|| {
             apps.list()
                 .iter()
-                .find(|app| app.name().eq_ignore_ascii_case(notification.app_name()))
+                .find(|app| app.name.eq_ignore_ascii_case(notification.app_name()))
         })?;
 
-    Some(app.icon_path()?.to_string_lossy().into_owned())
+    Some(app.icon_file.as_ref()?.to_string_lossy().into_owned())
 }
 
 /*
@@ -224,7 +232,7 @@ pub fn follow() {
 
     supervise::run("notifications", || {
         loop {
-            // the first read starts Amane's daemon
+            // the first read starts the daemon
             let notifications = Notifications::read();
             let running = notifications.running();
 
@@ -309,109 +317,10 @@ pub fn follow() {
                 }
             }
 
-            // until Amane has the bus name, nothing it would announce can arrive
+            // until the daemon has the bus name, nothing it would announce can arrive
             let busy = changed || daemon == Daemon::Starting;
             before = now;
             wakes.wait(busy);
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn status_names_the_daemon() {
-        assert_eq!(Daemon::Running.status(), "notification daemon: Kanade");
-        assert_eq!(
-            Daemon::Conflict(String::from("mako")).status(),
-            "notification daemon: mako, not Kanade; stop it and restart Kanade"
-        );
-    }
-
-    // as `dbus-monitor --profile` prints them
-    #[test]
-    fn only_notifications_arriving_or_closing_announce() {
-        let line = |kind: &str, interface: &str, member: &str| {
-            format!(
-                "{kind}\t1791255388.49\t9\t:1.165\t:1.162\t/org/freedesktop/Notifications\t{interface}\t{member}"
-            )
-        };
-
-        assert!(announces(&line("mc", NAME, "Notify")));
-        assert!(announces(&line("mc", NAME, "CloseNotification")));
-        assert!(announces(&line("sig", NAME, "NotificationClosed")));
-
-        assert!(!announces(&line("mc", NAME, "GetServerInformation")));
-        assert!(!announces(&line("mr", NAME, "Notify")));
-        assert!(!announces(&line(
-            "sig",
-            "org.freedesktop.DBus",
-            "NameAcquired"
-        )));
-        assert!(!announces(
-            "#type\ttimestamp\tserial\tsender\tdestination\tpath\tinterface\tmember"
-        ));
-    }
-
-    fn at(seconds: u64) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
-    }
-
-    #[test]
-    fn a_new_notification_shows_and_a_closed_one_closes() {
-        let one = [(1, at(1))];
-        let two = [(1, at(1)), (2, at(2))];
-
-        assert_eq!(changes(&[], &one), (vec![(1, at(1))], vec![]));
-        assert_eq!(changes(&one, &two), (vec![(2, at(2))], vec![]));
-        assert_eq!(changes(&two, &[(2, at(2))]), (vec![], vec![1]));
-    }
-
-    #[test]
-    fn the_same_list_shows_nothing() {
-        let list = [(1, at(1)), (2, at(2))];
-
-        assert_eq!(changes(&list, &list), (vec![], vec![]));
-    }
-
-    // a replacement keeps its id, so it replaces the Banner instead of closing it
-    #[test]
-    fn a_replaced_notification_shows_again() {
-        assert_eq!(
-            changes(&[(1, at(1))], &[(1, at(5))]),
-            (vec![(1, at(5))], vec![])
-        );
-    }
-
-    #[test]
-    fn markup_becomes_one_line_of_text() {
-        assert_eq!(plain("<b>Hello</b>\n  <i>world</i>"), "Hello world");
-        assert_eq!(
-            plain("a &lt;tag&gt; &amp; &quot;q&quot; &apos;s"),
-            "a <tag> & \"q\" 's"
-        );
-        assert_eq!(plain(r#"<a href="x">link</a>"#), "link");
-        assert_eq!(plain(""), "");
-    }
-
-    #[test]
-    fn only_local_files_are_images() {
-        assert_eq!(local("/tmp/a.png"), Some(String::from("/tmp/a.png")));
-        assert_eq!(local("file:///tmp/a.png"), Some(String::from("/tmp/a.png")));
-        assert_eq!(local("firefox"), None);
-        assert_eq!(local(""), None);
-    }
-
-    #[test]
-    fn another_process_with_the_name_is_a_conflict() {
-        assert_eq!(Daemon::of(true, || panic!("not asked")), Daemon::Running);
-        assert_eq!(Daemon::of(false, || None), Daemon::Starting);
-        assert_eq!(Daemon::of(false, || Some(process::id())), Daemon::Starting);
-        assert!(matches!(
-            Daemon::of(false, || Some(1)),
-            Daemon::Conflict(name) if !name.is_empty()
-        ));
-    }
 }

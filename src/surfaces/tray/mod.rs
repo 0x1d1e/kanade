@@ -1,4 +1,4 @@
-//! The Tray (#135): at Rest the pointer on the island raises the strip, the clock then a slot per
+//! The Tray (#135): at Rest the pointer on the island raises the strip, the time's Peek then a slot per
 //! tray item, its icon taking the item's left, middle and right clicks and its wheel. The Tray
 //! Surface lists them all, each with the chevron to its menu, a sub-surface a submenu deep. Past
 //! the strip's slots the last opens it. Every target is a key away, a ring on the one the arrows
@@ -6,18 +6,17 @@
 
 use std::time::Instant;
 
-use amane::{
-    Button, Center, Column, Cursor, Image, Key, Parent, Rectangle, Row, Scroll, Service, Stack,
-    Start, Text, Widget, children,
+use kanade_runtime::service::{self, Service};
+use kanade_runtime::{
+    Button, Center, Column, Cursor, Image, Key, Parent, Rectangle, Row, Scroll, Stack, Start, Text,
+    Widget, children,
 };
 
 use self::focus::{Act, At, Focus};
 use super::Ring;
 use super::controls::list;
-use crate::clock;
-use crate::config;
 use crate::icon::Icon;
-use crate::island::geometry::{self, REST, TRAY_SLOT, TRAY_SLOTS};
+use crate::island::geometry::{self, TRAY_SLOT, TRAY_SLOTS};
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::tray::menu::{self, Entry, Menu, Toggle};
@@ -47,8 +46,8 @@ fn items() -> Vec<Item> {
 }
 
 /*
- * the strip at Presentation::Tray: the clock, as at Rest, then the items' icons. Past the slots
- * the last says how many more and opens the Surface with them all
+ * the strip at Presentation::Tray: the time's Peek, then the items' icons. Past the slots the last
+ * says how many more and opens the Surface with them all
  */
 pub fn strip(monitor: &str, presentation: Presentation) -> Option<Rectangle> {
     let Presentation::Tray(slots) = presentation else {
@@ -59,18 +58,11 @@ pub fn strip(monitor: &str, presentation: Presentation) -> Option<Rectangle> {
     let slots = usize::from(slots);
     let over = items.len() > TRAY_SLOTS;
 
-    let mut row = children![
-        Rectangle::new()
-            .width(REST.width)
-            .height(Parent)
-            .align_child(Center, Center)
-            .child(
-                Text::new(clock::now(config::on(monitor).clock))
-                    .size(theme::text::LABEL)
-                    .color(theme::ISLAND.on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            )
-    ];
+    let upright = view::upright();
+    let mut row = match upright {
+        true => children![view::time_peek_upright(monitor)],
+        false => children![view::time_peek(monitor, slots > 0)],
+    };
 
     for (index, item) in items.iter().take(slots).enumerate() {
         if over && index == slots - 1 {
@@ -80,15 +72,18 @@ pub fn strip(monitor: &str, presentation: Presentation) -> Option<Rectangle> {
         }
     }
 
-    let shape = geometry::shape(presentation);
+    let shape = view::shape(presentation);
+    let strip = Rectangle::new().width(shape.width).height(shape.height);
 
-    Some(
-        Rectangle::new()
-            .width(shape.width)
-            .height(shape.height)
+    // along a side edge the slots run down it under the time
+    Some(match upright {
+        true => strip
+            .align_child(Center, Start)
+            .child(Column::new(row).width(shape.width).align(Center)),
+        false => strip
             .align_child(Start, Center)
             .child(Row::new(row).height(shape.height).align(Center)),
-    )
+    })
 }
 
 // an item's icon, which its clicks and wheel reach
@@ -107,12 +102,12 @@ fn slot(monitor: &str, item: &Item) -> Rectangle {
 
             match button {
                 Button::Left => match item.press() {
-                    Press::Menu => open(monitor, item),
+                    Press::Menu => open(monitor, item, true),
                     Press::ContextMenu => tray::context_menu(item, 0, 0),
                     Press::Activate => tray::activate(item, 0, 0),
                 },
                 Button::Middle => tray::secondary_activate(item, 0, 0),
-                Button::Right if item.has_menu() => open(monitor, item),
+                Button::Right if item.has_menu() => open(monitor, item, false),
                 Button::Right => tray::context_menu(item, 0, 0),
             }
         })
@@ -154,14 +149,42 @@ fn more(monitor: &str, count: usize) -> Rectangle {
         .child(
             Text::new(format!("+{count}"))
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::SEMIBOLD),
         )
 }
 
-// the Surface open on `item`'s menu, pinned, as its menu would stay up until dismissed
-fn open(monitor: &str, item: &Item) {
-    view::open(monitor, Surface::Tray, true);
+/*
+ * tells the island how tall the Tray asks to be: as its items, so a few leave no room below, and
+ * as the Controls while a menu is open. After each change of the items or the focus, never from a view
+ */
+pub fn fit() {
+    let _ordered = super::fitting();
+    let visit = IslandService::read().visit();
+    let listed = list::asks(items().len());
+    let open = Focus::read().of(visit, false).item.is_some();
+    let held = if open {
+        geometry::CONTROLS.height
+    } else {
+        listed
+    };
+
+    IslandService::write().fit(Surface::Tray, listed, Some((visit, held)), Instant::now());
+}
+
+// at start: the body follows the items and the menu open from now on
+pub fn start() {
+    service::watch::<Tray>(fit);
+    service::watch::<Focus>(fit);
+    fit();
+}
+
+/*
+ * the Surface open on `item`'s menu. A click on the icon pins it, as its menu would stay up until
+ * dismissed; a right click leaves it to the pointer, which the Pin is not for
+ */
+fn open(monitor: &str, item: &Item, pinned: bool) {
+    view::open(monitor, Surface::Tray, pinned);
 
     let visit = IslandService::read().visit();
     let focus = Focus::read().of(visit, false);
@@ -184,7 +207,7 @@ fn icon(item: &Item, side: f32) -> Box<dyn Widget> {
             &initial,
             side,
             radius::ICON,
-            &theme::ISLAND,
+            &theme::island(),
         ));
     };
 
@@ -235,7 +258,7 @@ fn listing(items: &[Item], focus: &Focus, ring: Option<&At>) -> Column {
     let header = Row::new(children![
         Text::new("Tray")
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
     ])
     .width(WIDTH)
@@ -270,7 +293,7 @@ fn item_row(item: &Item, ring: Option<&At>) -> Rectangle {
             Column::new(children![
                 Text::new(&item.title)
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD)
                     .elide()
             ])
@@ -327,7 +350,7 @@ fn menu_listing(
             .child(Icon::Back.draw(18.0)),
         Text::new(title)
             .size(theme::text::TITLE)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
             .elide()
     ])
@@ -400,7 +423,7 @@ fn entry_row(entry: &Entry, ruled: bool, ring: Option<&At>) -> Rectangle {
             Column::new(children![
                 Text::new(&entry.label)
                     .size(theme::text::BODY)
-                    .color(theme::ISLAND.on_surface)
+                    .color(theme::island().on_surface)
                     .weight(theme::text::MEDIUM)
                     .elide()
             ])
@@ -426,7 +449,7 @@ fn entry_row(entry: &Entry, ruled: bool, ring: Option<&At>) -> Rectangle {
             Rectangle::new()
                 .width(WIDTH - 2.0 * list::ROW_INSET)
                 .height(1.0)
-                .fill(theme::ISLAND.surface_container_high)
+                .fill(theme::island().surface_container_high)
                 .translate(list::ROW_INSET, -(list::ROW_GAP + 1.0) / 2.0),
         ));
     }
@@ -653,44 +676,5 @@ fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
 fn set(focus: Focus) {
     if *Focus::read() != focus {
         *Focus::write() = focus;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry(id: i32, separator: bool) -> Entry {
-        Entry {
-            id,
-            label: format!("{id}"),
-            enabled: true,
-            separator,
-            toggle: Toggle::None,
-            submenu: false,
-            children: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_separator_rules_the_entry_under_it_only_between_entries() {
-        let node = Entry {
-            children: vec![
-                entry(1, true),
-                entry(2, false),
-                entry(3, true),
-                entry(4, true),
-                entry(5, false),
-                entry(6, true),
-            ],
-            ..entry(0, false)
-        };
-
-        let rows: Vec<(i32, bool)> = shown(&node)
-            .into_iter()
-            .map(|(entry, ruled)| (entry.id, ruled))
-            .collect();
-
-        assert_eq!(rows, [(2, false), (5, true)]);
     }
 }

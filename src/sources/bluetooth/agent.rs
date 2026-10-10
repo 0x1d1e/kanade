@@ -8,7 +8,8 @@ use std::hash::{BuildHasher, RandomState};
 use std::mem;
 use std::sync::{Mutex, Once, PoisonError};
 
-use amane::{Argument, Bus, Method, Service, Value};
+use crate::bus::{Argument, Bus, Method, Value};
+use kanade_runtime::service::Service;
 
 use super::BLUEZ;
 use crate::supervise;

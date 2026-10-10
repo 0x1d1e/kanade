@@ -1,4 +1,4 @@
-//! The settings file's writes (docs/design.md Config): one key changed at a time, over the file as
+//! The settings file's writes (docs/design.md Config): a few keys changed at once, over the file as
 //! it stands, so what the window does not show, like an output's keys, stays. A value the layers
 //! below already give removes the key instead, so the file holds only real overrides. The file is
 //! written whole to a temporary file beside it and renamed over it, so a reader never sees half of
@@ -20,65 +20,145 @@ const HEADER: &str = "# written by Kanade's Settings window and `kanade module`;
 // one write at a time, so two never read the same file and lose one's change
 static WRITING: Mutex<()> = Mutex::new(());
 
+// a key's path of tables and what the file holds there, none for nothing
+pub type Entry = (Vec<String>, Option<Value>);
+
+// what a write did to one key: what the file held there before, then after
+#[derive(Debug)]
+pub struct Replaced {
+    pub path: Vec<String>,
+    pub was: Option<Value>,
+    pub now: Option<Value>,
+}
+
 /*
  * sets the key at `path` to `value`, none removing it, and writes the file; says why it will not:
  * a value the key does not take, or a file it cannot read whole
  */
 pub fn set(path: &[String], value: Option<Value>) -> Result<(), String> {
-    let file = config::settings_file().ok_or("no home directory to keep settings in")?;
-    let (below, _) = config::layers(false);
-
-    set_in(&file, &below, path, value)
+    set_all(vec![(path.to_vec(), value)], &[])
+        .map(drop)
+        .map_err(|refusal| refusal.why)
 }
 
-// `set` on the file at `file`, over `below`, the layers under it
+// why a write was refused; `stale` if the file holds other than the write expected, which no retry mends
+pub struct Refusal {
+    pub why: String,
+    pub stale: bool,
+}
+
+impl Refusal {
+    fn failed(why: impl Into<String>) -> Self {
+        Self {
+            why: why.into(),
+            stale: false,
+        }
+    }
+}
+
+/*
+ * sets each key, in one write or none, if the file still holds each of `expected`; says what each
+ * held before and holds now
+ */
+pub fn set_all(edits: Vec<Entry>, expected: &[Entry]) -> Result<Vec<Replaced>, Refusal> {
+    let file = config::settings_file()
+        .ok_or_else(|| Refusal::failed("no home directory to keep settings in"))?;
+    let (below, _) = config::layers(false);
+
+    set_in(&file, &below, edits, expected)
+}
+
+// `set_all` on the file at `file`, over `below`, the layers under it
 fn set_in(
     file: &Path,
     below: &Config,
-    path: &[String],
-    value: Option<Value>,
-) -> Result<(), String> {
+    edits: Vec<Entry>,
+    expected: &[Entry],
+) -> Result<Vec<Replaced>, Refusal> {
     let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
 
     let text = match fs::read_to_string(file) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("{} unreadable: {error}", file.display())),
-    };
-
-    let text = change(&text, below, path, value)
-        .map_err(|problem| format!("{} not written: {problem}", file.display()))?;
-
-    write(file, &text).map_err(|error| format!("{} not written: {error}", file.display()))
-}
-
-// the file's new text, with the key at `path` set over `below`, the layers under it, or removed
-fn change(
-    text: &str,
-    below: &Config,
-    path: &[String],
-    value: Option<Value>,
-) -> Result<String, String> {
-    let mut table = config::settings_table(text)?;
-
-    // checked alone over the layers below, so a problem elsewhere in the file is not this one's
-    let value = match value {
-        None => None,
-        Some(value) => {
-            let mut config = below.clone();
-
-            if let Some(problem) = config::apply_table(&mut config, &nest(path, value.clone()))
-                .into_iter()
-                .next()
-            {
-                return Err(problem);
-            }
-
-            (config != *below).then_some(value)
+        Err(error) => {
+            return Err(Refusal::failed(format!(
+                "{} unreadable: {error}",
+                file.display()
+            )));
         }
     };
 
-    edit(&mut table, path, value)?;
+    holds(&text, expected).map_err(|why| Refusal { why, stale: true })?;
+
+    let (new, replaced) = change(&text, below, edits)
+        .map_err(|problem| Refusal::failed(format!("{} not written: {problem}", file.display())))?;
+
+    if replaced.iter().any(|each| each.was != each.now) {
+        write(file, &new)
+            .map_err(|error| Refusal::failed(format!("{} not written: {error}", file.display())))?;
+    }
+
+    Ok(replaced)
+}
+
+// what `table` holds at `path`
+fn at<'a>(table: &'a toml::Table, path: &[String]) -> Option<&'a Value> {
+    let [first, rest @ ..] = path else {
+        return None;
+    };
+
+    rest.iter()
+        .try_fold(table.get(first)?, |value, key| value.get(key))
+}
+
+// refused if the file holds other than `expected`; a file that does not read is `change`'s to refuse
+fn holds(text: &str, expected: &[Entry]) -> Result<(), String> {
+    let Ok(table) = config::settings_table(text) else {
+        return Ok(());
+    };
+
+    match expected
+        .iter()
+        .find(|(path, value)| at(&table, path) != value.as_ref())
+    {
+        Some((path, _)) => Err(format!("{} changed since; left as it is", path.join("."))),
+        None => Ok(()),
+    }
+}
+
+// the file's new text, with each key set over `below`, the layers under it, or removed, and what each held before and after
+fn change(
+    text: &str,
+    below: &Config,
+    edits: Vec<Entry>,
+) -> Result<(String, Vec<Replaced>), String> {
+    let mut table = config::settings_table(text)?;
+
+    let mut replaced = Vec::new();
+    for (path, value) in edits {
+        // checked alone over the layers below, so a problem elsewhere in the file is not this one's
+        let value = match value {
+            None => None,
+            Some(value) => {
+                let mut config = below.clone();
+
+                if let Some(problem) = config::apply_table(&mut config, &nest(&path, value.clone()))
+                    .into_iter()
+                    .next()
+                {
+                    return Err(problem);
+                }
+
+                (config != *below).then_some(value)
+            }
+        };
+
+        let was = at(&table, &path).cloned();
+        edit(&mut table, &path, value)?;
+        let now = at(&table, &path).cloned();
+
+        replaced.push(Replaced { path, was, now });
+    }
 
     // the file as a whole must still apply, so a write never keeps or adds a key that does not
     if let Some(problem) = config::apply_table(&mut below.clone(), &table)
@@ -95,7 +175,7 @@ fn change(
 
     let body = toml::to_string(&table).map_err(|error| error.to_string())?;
 
-    Ok(format!("{HEADER}{body}"))
+    Ok((format!("{HEADER}{body}"), replaced))
 }
 
 // `value` alone at `path`, in the tables its key names
@@ -185,9 +265,27 @@ mod tests {
         change(
             text,
             below,
-            &path(key),
-            Some(value.parse::<Value>().unwrap()),
+            vec![(path(key), Some(value.parse::<Value>().unwrap()))],
         )
+        .map(|(text, _)| text)
+    }
+
+    fn change_one(
+        text: &str,
+        below: &Config,
+        path: &[String],
+        value: Option<Value>,
+    ) -> Result<String, String> {
+        change(text, below, vec![(path.to_vec(), value)]).map(|(text, _)| text)
+    }
+
+    fn set_one(
+        file: &Path,
+        below: &Config,
+        path: &[String],
+        value: Option<Value>,
+    ) -> Result<Vec<Replaced>, String> {
+        set_in(file, below, vec![(path.to_vec(), value)], &[]).map_err(|refusal| refusal.why)
     }
 
     fn body(text: &str) -> toml::Table {
@@ -262,7 +360,7 @@ mod tests {
         assert_eq!(body(&text)["modules"], "{ timer = false }".parse().unwrap());
 
         let app = path("windows.apps");
-        let text = change(
+        let text = change_one(
             "",
             &Config::default(),
             &[
@@ -283,7 +381,7 @@ mod tests {
 
     #[test]
     fn removing_keeps_the_rest() {
-        let text = change(
+        let text = change_one(
             "clock = \"12h\"\nreduced_motion = true\n[output.\"eDP-1\"]\nclock = \"24h\"\n",
             &Config::default(),
             &path("clock"),
@@ -361,7 +459,7 @@ mod tests {
         for text in ["windows = \"invalid\"\n", "clock = \"13h\"\n"] {
             write(&file, text).unwrap();
 
-            let refused = set_in(
+            let refused = set_one(
                 &file,
                 &Config::default(),
                 &apps,
@@ -373,8 +471,81 @@ mod tests {
         }
 
         // resetting the key that does not apply is what fixes it
-        set_in(&file, &Config::default(), &path("clock"), None).unwrap();
+        set_one(&file, &Config::default(), &path("clock"), None).unwrap();
         assert!(!fs::read_to_string(&file).unwrap().contains("13h"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // keys set together are written together or not at all, each saying what it replaced
+    #[test]
+    fn several_keys_are_one_write() {
+        let text = "clock = \"12h\"\n";
+        let value = |text: &str| Some(text.parse::<Value>().unwrap());
+
+        let (new, replaced) = change(
+            text,
+            &Config::default(),
+            vec![
+                (path("clock"), None),
+                (path("island.align"), value("\"right\"")),
+            ],
+        )
+        .unwrap();
+
+        assert!(!new.contains("12h") && new.contains("right"));
+        assert_eq!(replaced[0].was, value("\"12h\""));
+        assert_eq!(replaced[0].now, None);
+        assert_eq!(replaced[1].was, None);
+        assert_eq!(replaced[1].now, value("\"right\""));
+
+        let refused = change(
+            text,
+            &Config::default(),
+            vec![
+                (path("clock"), None),
+                (path("island.align"), value("\"up\"")),
+            ],
+        );
+        assert!(refused.is_err());
+    }
+
+    // a write that expects what the file no longer holds, as an Undo after another edit, is refused
+    #[test]
+    fn a_write_expecting_another_value_is_refused() {
+        let text = "clock = \"24h\"\n";
+        let expected = [(path("clock"), Some(Value::String(String::from("12h"))))];
+
+        assert!(
+            holds(text, &expected)
+                .unwrap_err()
+                .contains("changed since")
+        );
+
+        let expected = [(path("clock"), Some(Value::String(String::from("24h"))))];
+        assert!(holds(text, &expected).is_ok());
+    }
+
+    // only a file edited since is stale; one that cannot be written is a failure a retry may mend
+    #[test]
+    fn only_a_changed_file_is_a_stale_refusal() {
+        let dir = std::env::temp_dir().join(format!("kanade-refusal-{}", std::process::id()));
+        let file = dir.join("settings.toml");
+        let edits = || vec![(path("clock"), Some(Value::String(String::from("12h"))))];
+        let expected = [(path("clock"), Some(Value::String(String::from("24h"))))];
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&file, "clock = \"24h\"\n").unwrap();
+        assert!(set_in(&file, &Config::default(), edits(), &expected).is_ok());
+
+        let stale = set_in(&file, &Config::default(), edits(), &expected).err();
+        assert!(stale.is_some_and(|refusal| refusal.stale));
+
+        // a directory where the file should be
+        fs::remove_file(&file).unwrap();
+        fs::create_dir(&file).unwrap();
+        let failed = set_in(&file, &Config::default(), edits(), &[]).err();
+        assert!(failed.is_some_and(|refusal| !refusal.stale));
 
         fs::remove_dir_all(dir).unwrap();
     }

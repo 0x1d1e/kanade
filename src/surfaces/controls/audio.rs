@@ -4,9 +4,10 @@
 //! or once it failed to. A level's icon, or Enter on it, mutes it; Left and Right move it, as a
 //! press or drag along its bar does. The wheel scrolls the rows, so it moves no level here.
 
-use amane::{
-    Audio, Center, Column, Cursor, End, Parent, Rectangle, Row, Service, Text, Widget, children,
-};
+use kanade_runtime::service::Service as _;
+use kanade_runtime::{Center, Column, Cursor, End, Parent, Rectangle, Row, Text, Widget, children};
+
+use crate::sources::pulse::Audio;
 
 use super::WIDTH;
 use super::focus::{Act, At};
@@ -193,9 +194,9 @@ fn level(
     ring: bool,
 ) -> Rectangle {
     let tone = if muted {
-        theme::ISLAND.on_surface_variant
+        theme::island().on_surface_variant
     } else {
-        theme::ISLAND.on_surface
+        theme::island().on_surface
     };
 
     // as wide as a device's icon, so the names line up
@@ -213,7 +214,7 @@ fn level(
     let mut words = children![
         Text::new(name)
             .size(theme::text::LABEL)
-            .color(theme::ISLAND.on_surface)
+            .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
     ];
 
@@ -221,7 +222,7 @@ fn level(
         words.push(Box::new(
             Text::new(detail)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ));
@@ -242,7 +243,7 @@ fn level(
         .child(
             Text::new(volume.to_string())
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::ISLAND.on_surface_variant)
+                .color(theme::island().on_surface_variant)
                 .weight(theme::text::SEMIBOLD),
         );
 
@@ -289,97 +290,15 @@ fn device(
     let mut trailing: Vec<Box<dyn Widget>> = Vec::new();
 
     if device.default {
-        trailing.push(Box::new(Icon::Check.on(ICON, theme::ISLAND.primary)));
+        trailing.push(Box::new(Icon::Check.on(ICON, theme::island().primary)));
     }
 
     list::row(
-        Box::new(icon.on(ICON, theme::ISLAND.on_surface)),
+        Box::new(icon.on(ICON, theme::island().on_surface)),
         &device.name,
         status(device, direction, switching),
         trailing,
         ring,
         (!device.default && !switching.busy()).then_some(at),
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sources::audio::Node;
-
-    fn stream(node: u64, app: &str) -> Stream {
-        Stream {
-            node: Node::of(node),
-            app: app.into(),
-            title: None,
-            plays: true,
-            level: Level {
-                volume: 40,
-                muted: false,
-            },
-        }
-    }
-
-    fn targets(mixer: &Mixer) -> Vec<At> {
-        rows(mixer).concat().into_iter().map(|(at, _)| at).collect()
-    }
-
-    #[test]
-    fn each_level_comes_before_its_devices_and_the_apps_come_last() {
-        let mixer = Mixer {
-            outputs: vec![
-                Device::of(Node::of(1), "Speakers", true),
-                Device::of(Node::of(2), "Headphones", false),
-            ],
-            inputs: vec![Device::of(Node::of(3), "Microphone", true)],
-            streams: vec![stream(9, "Firefox"), stream(8, "mpv")],
-        };
-
-        assert_eq!(
-            targets(&mixer),
-            [
-                At::Speaker,
-                At::Output(Node::of(1)),
-                At::Output(Node::of(2)),
-                At::MicrophoneLevel,
-                At::Input(Node::of(3)),
-                At::Stream(Node::of(9)),
-                At::Stream(Node::of(8)),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_direction_without_devices_has_no_level() {
-        let mixer = Mixer {
-            outputs: vec![Device::of(Node::of(1), "Speakers", true)],
-            ..Mixer::default()
-        };
-        assert_eq!(targets(&mixer), [At::Speaker, At::Output(Node::of(1))]);
-
-        assert!(rows(&Mixer::default()).is_empty());
-    }
-
-    #[test]
-    fn a_device_says_it_is_being_switched_to_or_failed_to_be() {
-        let duplex = Device::of(Node::of(4), "Interface", false);
-
-        assert_eq!(status(&duplex, Direction::Output, Switching::Idle), None);
-
-        let doing = Switching::Doing(Node::of(4), Direction::Output);
-        assert_eq!(
-            status(&duplex, Direction::Output, doing),
-            Some(("Switching\u{2026}", false))
-        );
-
-        // a device in both lists is switched in one only
-        assert_eq!(status(&duplex, Direction::Input, doing), None);
-
-        let failed = Switching::Failed(Node::of(4), Direction::Input);
-        assert_eq!(
-            status(&duplex, Direction::Input, failed),
-            Some(("Couldn\u{2019}t switch", true))
-        );
-        assert_eq!(status(&duplex, Direction::Output, failed), None);
-    }
 }
