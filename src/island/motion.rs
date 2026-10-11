@@ -242,3 +242,36 @@ impl<const N: usize> Spring<N> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ms(ms: u64) -> Duration {
+        Duration::from_millis(ms)
+    }
+
+    // a leg turned around, or aimed elsewhere, at any point of its way starts from where it is, as fast as it moves
+    #[test]
+    fn a_new_leg_keeps_position_and_velocity() {
+        for damping in [CRITICAL, 0.72] {
+            for share in [25, 50, 75] {
+                let start = Instant::now();
+                let mut spring = Spring::new([0.0, 0.0], Mode::Spring);
+
+                spring.damp(damping);
+                spring.to([200.0, 100.0], ms(180), start);
+
+                let now = start + ms(180 * share / 100);
+                let (position, velocity) = (spring.at(now), spring.velocity(now));
+
+                spring.to([0.0, 0.0], ms(180), now);
+
+                for i in 0..2 {
+                    assert!((spring.at(now)[i] - position[i]).abs() < 1e-3);
+                    assert!((spring.velocity(now)[i] - velocity[i]).abs() < 1e-2);
+                }
+            }
+        }
+    }
+}

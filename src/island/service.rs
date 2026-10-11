@@ -16,10 +16,10 @@ use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
 use super::satellites::{Mark, Satellites};
 
-// plan 5.2: how long a morph takes, by what it changes, see `response`
-const EXPAND: Duration = Duration::from_millis(180);
-const SURFACE_CHANGE: Duration = Duration::from_millis(220);
-const COLLAPSE: Duration = Duration::from_millis(180);
+// how long a morph takes, by what it changes, see `response`: 0.8 of plan 5.2's 180, 220 and 180 ms (#210)
+const EXPAND: Duration = Duration::from_millis(144);
+const SURFACE_CHANGE: Duration = Duration::from_millis(176);
+const COLLAPSE: Duration = Duration::from_millis(144);
 
 // plan 5.2: a pointer resting on a Compact island for 100-140 ms peeks
 const HOVER_DELAY: Duration = Duration::from_millis(120);

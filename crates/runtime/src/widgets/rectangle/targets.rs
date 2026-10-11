@@ -1,12 +1,23 @@
 use std::rc::Rc;
 
 use crate::graphics::Area;
-use crate::input::{Cursor, Target, clip};
+use crate::input::{Cursor, Handlers, Target, clip};
 use crate::{Button, Point, Rectangle, Scroll};
 
 use super::{child, transform};
 
 impl Rectangle {
+    /*
+     * an inert rectangle still draws but its children react to nothing, and a click on it is taken
+     * and ignored, so it never reaches what is beneath. Its targets stay in the list, since the
+     * pointer holds a press, a drag and the hovered ones by position
+     */
+    pub fn inert(mut self, inert: bool) -> Self {
+        self.inert = inert;
+
+        self
+    }
+
     pub fn on_click(mut self, handler: impl Fn(Button) + 'static) -> Self {
         self.handlers.click = Some(Rc::new(handler));
 
@@ -75,10 +86,18 @@ pub fn collect_targets(rectangle: &Rectangle, area: Area, targets: &mut Vec<Targ
 
 // the hit areas as if the rectangle were not rotated, scaled or moved
 fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>) {
-    let target = Target::new(area, rectangle.handlers.clone());
+    let mut handlers = rectangle.handlers.clone();
+
+    if rectangle.inert {
+        handlers = Handlers {
+            click: Some(Rc::new(|_| {})),
+            ..Handlers::default()
+        };
+    }
 
     // added before the child, so the child wins where both react to the same thing
-    targets.push(target);
+    targets.push(Target::new(area, handlers));
+    let own = targets.len();
 
     let Some(child) = &rectangle.child else {
         return;
@@ -93,5 +112,132 @@ fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>
     // the rounded corners are left out, they are too small to miss a click by
     if rectangle.clip {
         clip(&mut targets[first..], area);
+    }
+
+    if rectangle.inert {
+        for target in &mut targets[own..] {
+            target.handlers = Handlers::default();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use crate::Stack;
+    use crate::input::Pointer;
+    use crate::widgets::Widget;
+
+    use super::*;
+
+    // a button and a slider side by side, in a rectangle that may turn inert between two frames
+    fn frame(inert: bool, pressed: &Rc<Cell<u32>>, dragged: &Rc<Cell<u32>>) -> Vec<Target> {
+        let (pressed, dragged) = (pressed.clone(), dragged.clone());
+        let button = Rectangle::new()
+            .width(50.0)
+            .height(50.0)
+            .on_click(move |_| pressed.set(pressed.get() + 1));
+        let slider = Rectangle::new()
+            .width(50.0)
+            .height(50.0)
+            .on_drag(move |_| dragged.set(dragged.get() + 1));
+        let row = crate::Row::new(crate::children![button, slider]);
+        let outer = Rectangle::new()
+            .width(100.0)
+            .height(50.0)
+            .inert(inert)
+            .child(row);
+        let mut targets = Vec::new();
+
+        outer.collect_targets(Area::new(0.0, 0.0, 100.0, 50.0), &mut targets);
+
+        targets
+    }
+
+    // turning inert between a press and its release, or in a drag, reaches no handler, and shifts no other
+    #[test]
+    fn a_rectangle_turning_inert_mid_press_or_drag_reaches_nothing() {
+        let (pressed, dragged) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let mut pointer = Pointer::default();
+
+        pointer.set_targets(frame(false, &pressed, &dragged));
+        let count = frame(false, &pressed, &dragged).len();
+
+        pointer.move_to(25.0, 25.0);
+        pointer.press();
+        pointer.move_to(75.0, 25.0);
+        pointer.start_drag();
+
+        assert_eq!(dragged.get(), 1);
+
+        let inert = frame(true, &pressed, &dragged);
+
+        assert_eq!(inert.len(), count);
+
+        pointer.set_targets(inert);
+        pointer.move_to(25.0, 25.0);
+        pointer.release(Button::Left);
+        pointer.move_to(75.0, 25.0);
+        pointer.drag();
+
+        assert_eq!((pressed.get(), dragged.get()), (0, 1));
+
+        // a press taken while inert is no one's either
+        pointer.press();
+        pointer.release(Button::Left);
+
+        assert_eq!(pressed.get(), 0);
+    }
+
+    // the Island's own target lies beneath its content: a click on inert content stops there, while hover, motion and the wheel still reach it
+    #[test]
+    fn a_click_on_inert_content_stops_but_hover_motion_and_wheel_pass() {
+        let seen: Rc<Cell<[u32; 5]>> = Rc::default();
+        let bump = |at: usize| {
+            let seen = seen.clone();
+
+            move || {
+                let mut counts = seen.get();
+
+                counts[at] += 1;
+                seen.set(counts);
+            }
+        };
+        let (click, hover, motion, wheel) = (bump(0), bump(1), bump(2), bump(3));
+        let inner = bump(4);
+        let beneath = Rectangle::new()
+            .width(100.0)
+            .height(50.0)
+            .on_click(move |_| click())
+            .on_hover(move |_| hover())
+            .on_move(move |_| motion())
+            .on_scroll(move |_| wheel());
+        let content = Rectangle::new()
+            .width(100.0)
+            .height(50.0)
+            .inert(true)
+            .child(
+                Rectangle::new()
+                    .width(100.0)
+                    .height(50.0)
+                    .on_scroll(move |_| inner()),
+            );
+        let mut targets = Vec::new();
+
+        Stack::new(crate::children![beneath, content])
+            .collect_targets(Area::new(0.0, 0.0, 100.0, 50.0), &mut targets);
+
+        let mut pointer = Pointer::default();
+
+        pointer.set_targets(targets);
+        pointer.move_to(10.0, 10.0);
+        pointer.report_motion();
+        pointer.scroll(Scroll { x: 0.0, y: 1.0 });
+        pointer.press();
+        pointer.release(Button::Left);
+
+        // hover entered, one move, the wheel on the target beneath rather than the inert child, no click
+        assert_eq!(seen.get(), [0, 1, 1, 1, 0]);
     }
 }

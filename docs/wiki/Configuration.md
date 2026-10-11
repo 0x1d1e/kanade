@@ -19,11 +19,11 @@ clock = "24h"
 # pointer resting on a Compact island before it peeks, ms 1-60000
 hover = 120
 # morph to a larger form, ms 1-60000
-expand = 180
+expand = 144
 # one Surface replacing another, and a new track dissolving in, ms 1-60000
-surface_change = 220
+surface_change = 176
 # morph to a smaller form, ms 1-60000
-collapse = 180
+collapse = 144
 # pointer out before a Peek or Surface collapses, ms 1-60000
 grace = 250
 # the OSD, and a workspace switch on the island, ms 1-60000

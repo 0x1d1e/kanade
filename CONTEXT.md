@@ -67,6 +67,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request, the Surfaces withheld). No remembered last-used Surface: a click at Rest opens Controls.
 - **Invariant:** at most one island is Expanded at a time.
 - **Rule:** a Presentation change is geometry plus content crossfade in one motion, never collapse-then-grow. A Split whose segments trade places slides each to its new place.
+- **Rule:** content takes pointer input only once it fades in at half strength or more; what fades out takes none, so a click never lands on a control the eye has lost, and the click is taken and ignored, so it neither expands, pins nor claims an AutoExpand Surface. A press that spans the fade is dropped too. Keys go to the open Surface, whatever shows.
 - **Avoid:** state (state is what Services hold)
 
 ## Surface
