@@ -6,12 +6,12 @@
 //! and shares how long it takes.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::Monitors;
 use kanade_runtime::service::Service;
+use kanade_runtime::{Monitors, MutexExt};
 
 use crate::config;
 use crate::island::geometry::{self, Canvas, Edge, Hang, Rect};
@@ -125,7 +125,7 @@ pub fn out(monitor: &str, idle: bool, forced: bool, now: Instant) -> (f32, bool)
 
     let config = config::get();
 
-    let mut outs = OUT.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut outs = OUT.locked();
 
     if !(config.island_place.autohide || forced) {
         // forgets this output, not the others, which may be hiding for lack of a Rest to show
@@ -162,8 +162,7 @@ pub fn out(monitor: &str, idle: bool, forced: bool, now: Instant) -> (f32, bool)
 
 // how far out the Island on `monitor` will be `at` a time to come, as far as it is heading now
 pub fn at(monitor: &str, at: Instant) -> f32 {
-    OUT.lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    OUT.locked()
         .as_ref()
         .and_then(|outs| outs.by.get(monitor))
         .map_or(1.0, |out| (out.spring.at(at)[0] / 100.0).max(0.0))
@@ -171,8 +170,7 @@ pub fn at(monitor: &str, at: Instant) -> f32 {
 
 // whether the Island on `monitor` still slides, so what hangs from it follows it frame by frame
 pub fn moving(monitor: &str, now: Instant) -> bool {
-    OUT.lock()
-        .unwrap_or_else(PoisonError::into_inner)
+    OUT.locked()
         .as_ref()
         .and_then(|outs| outs.by.get(monitor))
         .is_some_and(|out| out.spring.mode() == Mode::Spring && !out.spring.settled(now))
@@ -182,7 +180,7 @@ pub fn moving(monitor: &str, now: Instant) -> bool {
 pub fn forget_gone() {
     let monitors = Monitors::read();
 
-    if let Some(outs) = OUT.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+    if let Some(outs) = OUT.locked().as_mut() {
         outs.by.retain(|monitor, _| monitors.has(monitor));
     }
 }

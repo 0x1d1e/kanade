@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bus::{Argument, Bus, Value};
 use kanade_lock::{Locker, News};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::glass;
 use crate::sources::sleep;
@@ -705,7 +705,7 @@ fn instance() -> &'static str {
 }
 
 fn requests() -> MutexGuard<'static, Requests> {
-    REQUESTS.lock().unwrap_or_else(PoisonError::into_inner)
+    REQUESTS.locked()
 }
 
 /*

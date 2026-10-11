@@ -35,13 +35,13 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{LazyLock, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{queue::Queue, service::Service};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use ring::digest;
 use serde_json::Value;
@@ -238,11 +238,7 @@ enum Message {
 }
 
 // the sync thread's queue, which outlives a restart of it
-static QUEUE: LazyLock<(Sender<Message>, Mutex<Receiver<Message>>)> = LazyLock::new(|| {
-    let (send, receive) = mpsc::channel();
-
-    (send, Mutex::new(receive))
-});
+static QUEUE: LazyLock<Queue<Message>> = LazyLock::new(Queue::new);
 
 // the sign-in going on; a newer one, or a sign-out, ends the one before
 static SIGN_IN: AtomicU64 = AtomicU64::new(0);
@@ -250,18 +246,13 @@ static SIGN_IN: AtomicU64 = AtomicU64::new(0);
 // whether the sync thread found the events on disk the kept sign-in's since start (`Worker::vet`)
 static VOUCHED: AtomicBool = AtomicBool::new(false);
 
-fn send(message: Message) {
-    // the receiver lives in a static, so it is never gone
-    let _ = QUEUE.0.send(message);
-}
-
 // what `kanade google-calendar` gets, asked on the draw thread, so nothing here waits on Google
 pub fn request(request: Request) -> Result<String, String> {
     match request {
         Request::SignIn(path) => sign_in(&path),
         Request::SignOut => {
             SIGN_IN.fetch_add(1, Ordering::Relaxed);
-            send(Message::SignOut);
+            QUEUE.send(Message::SignOut);
 
             Ok(String::from("signing out"))
         }
@@ -270,7 +261,7 @@ pub fn request(request: Request) -> Result<String, String> {
                 "not signed in; sign in with `kanade google-calendar sign-in <client.json>`",
             )),
             _ => {
-                send(Message::Sync);
+                QUEUE.send(Message::Sync);
                 Ok(String::from("syncing"))
             }
         },
@@ -318,14 +309,14 @@ fn sign_in(path: &Path) -> Result<String, String> {
     let sign_in = SIGN_IN.fetch_add(1, Ordering::Relaxed) + 1;
 
     // before the thread, so how the sign-in went always comes after
-    send(Message::Signing);
+    QUEUE.send(Message::Signing);
     if let Err(error) = thread::Builder::new()
         .name(String::from("google-sign-in"))
         .spawn(move || signing_in(&pending, sign_in))
     {
         let why = format!("cannot start a thread: {error}");
 
-        send(Message::Unsigned(sign_in, why.clone()));
+        QUEUE.send(Message::Unsigned(sign_in, why.clone()));
         return Err(why);
     }
 
@@ -351,7 +342,7 @@ fn signing_in(pending: &Pending, sign_in: u64) {
                 .and_then(|credentials| {
                     let (told, heard) = mpsc::channel();
 
-                    send(Message::Exchanged {
+                    QUEUE.send(Message::Exchanged {
                         sign_in,
                         credentials,
                         kept: told,
@@ -369,7 +360,7 @@ fn signing_in(pending: &Pending, sign_in: u64) {
         && !cancelled()
     {
         eprintln!("kanade: google-calendar: not signed in: {why}");
-        send(Message::Unsigned(sign_in, why));
+        QUEUE.send(Message::Unsigned(sign_in, why));
     }
 }
 
@@ -432,7 +423,7 @@ fn unreached(error: ureq::Error) -> Problem {
  * asked, until signed out
  */
 pub fn follow() {
-    let queue = QUEUE.1.lock().unwrap_or_else(PoisonError::into_inner);
+    let queue = QUEUE.receiver();
 
     Worker::new(
         Google { agent: agent() },
@@ -1128,6 +1119,9 @@ fn write(dir: &Path, account: &str, files: &[(String, String)]) -> io::Result<bo
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::sync::Mutex;
+
+    use kanade_runtime::MutexExt;
 
     use super::*;
 
@@ -1311,7 +1305,7 @@ mod tests {
 
     impl Shared {
         fn fake(&self) -> std::sync::MutexGuard<'_, Fake> {
-            self.fake.lock().unwrap_or_else(PoisonError::into_inner)
+            self.fake.locked()
         }
     }
 

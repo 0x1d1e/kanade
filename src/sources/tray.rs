@@ -21,12 +21,12 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use enumflags2::BitFlags;
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::{Connection, MessageIterator, connection};
 use zbus::fdo::RequestNameReply;
@@ -415,7 +415,7 @@ fn run() -> zbus::Result<Infallible> {
 }
 
 fn reach() -> MutexGuard<'static, Option<Reach>> {
-    REACH.lock().unwrap_or_else(PoisonError::into_inner)
+    REACH.locked()
 }
 
 // a host's name, as the spec has hosts take one
@@ -781,10 +781,7 @@ impl Hosting {
 
     // what Kanade's watcher lists
     fn list(&self) {
-        *self
-            .registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = self
+        *self.registered.locked() = self
             .entries
             .iter()
             .map(|entry| entry.address.listed())

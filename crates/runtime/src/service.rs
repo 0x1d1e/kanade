@@ -13,10 +13,11 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::panic;
-use std::sync::{LazyLock, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{LazyLock, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::Duration;
 
+use crate::unpoisoned::{MutexExt, RwLockExt};
 use crate::{changes, timing};
 
 pub trait Service: Send + Sync + Sized + 'static {
@@ -50,9 +51,7 @@ pub trait Service: Send + Sync + Sized + 'static {
     fn read() -> RwLockReadGuard<'static, Self> {
         changes::note_read(TypeId::of::<Self>());
 
-        find::<Self>()
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+        find::<Self>().reading()
     }
 
     /// Reads one part of the Service that `key` names. A write of that part
@@ -61,17 +60,13 @@ pub trait Service: Send + Sync + Sized + 'static {
     fn read_part(key: &impl Hash) -> RwLockReadGuard<'static, Self> {
         changes::note_read_scope(changes::scope::<Self>(key));
 
-        find::<Self>()
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
+        find::<Self>().reading()
     }
 
     /// For Sources and input handlers. Inside a view a read of the same
     /// Service is still held, so this would wait forever.
     fn write() -> Write<Self> {
-        let guard = find::<Self>()
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
+        let guard = find::<Self>().writing();
 
         Write {
             guard: Some(guard),
@@ -137,7 +132,7 @@ impl<S: 'static> Drop for Write<S> {
 
         // a write that panicked halfway leaves the rest to the restart
         if !thread::panicking() {
-            let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut pending = PENDING.locked();
 
             if !pending.contains(&TypeId::of::<S>()) {
                 pending.push(TypeId::of::<S>());
@@ -171,10 +166,7 @@ const PASSES: usize = 16;
 /// so one that reads what another derives asks to come after it. `then` may
 /// write Services, which derives again, and must not block.
 pub fn watch<S: Service>(then: fn()) {
-    WATCHERS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push((TypeId::of::<S>(), then));
+    WATCHERS.locked().push((TypeId::of::<S>(), then));
 }
 
 /// Runs what `watch`es each Service written since it last ran, until the
@@ -183,15 +175,14 @@ pub fn watch<S: Service>(then: fn()) {
 /// value. A derived update that panics is reported and the shell goes on.
 pub fn derive() {
     for _ in 0..PASSES {
-        let written = std::mem::take(&mut *PENDING.lock().unwrap_or_else(PoisonError::into_inner));
+        let written = std::mem::take(&mut *PENDING.locked());
 
         if written.is_empty() {
             return;
         }
 
         let then: Vec<fn()> = WATCHERS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .iter()
             .filter(|(service, _)| written.contains(service))
             .map(|&(_, then)| then)
@@ -218,18 +209,14 @@ const RESTART_DELAY: Duration = Duration::from_secs(5);
 fn find<S: Service>() -> &'static RwLock<S> {
     let id = TypeId::of::<S>();
 
-    if let Some(service) = SERVICES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&id)
-    {
+    if let Some(service) = SERVICES.locked().get(&id) {
         return service.downcast_ref().expect("failed to find service");
     }
 
     // made outside the lock, as a Service's new may read another Service
     let made = RwLock::new(S::new());
 
-    let mut services = SERVICES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut services = SERVICES.locked();
 
     // another thread made it meanwhile: theirs is the one, listening already
     if let Some(service) = services.get(&id) {
@@ -297,32 +284,26 @@ mod tests {
 
     // reads what was written, once the write let go of it
     fn seen() {
-        SEEN.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Watched::read().0);
+        SEEN.locked().push(Watched::read().0);
     }
 
     #[test]
     fn a_watcher_runs_on_derive_after_a_write_but_not_a_quiet_one() {
-        let _turn = DERIVING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _turn = DERIVING.locked();
 
         watch::<Watched>(seen);
 
         Watched::write().0 = 1;
 
         // nothing runs in the writer
-        assert!(
-            SEEN.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .is_empty()
-        );
+        assert!(SEEN.locked().is_empty());
 
         // the writes since the last derive run it once, seeing the latest
         Watched::write().0 = 2;
         derive();
         derive();
 
-        assert_eq!(*SEEN.lock().unwrap_or_else(PoisonError::into_inner), [2]);
+        assert_eq!(*SEEN.locked(), [2]);
 
         let mut quiet = Watched::write();
         quiet.0 = 3;
@@ -330,7 +311,7 @@ mod tests {
         drop(quiet);
         derive();
 
-        assert_eq!(*SEEN.lock().unwrap_or_else(PoisonError::into_inner), [2]);
+        assert_eq!(*SEEN.locked(), [2]);
     }
 
     #[derive(Default)]
@@ -369,7 +350,7 @@ mod tests {
     // each derived value comes from the one before it, in the order watched, however it is written
     #[test]
     fn derived_writes_settle_in_order() {
-        let _turn = DERIVING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _turn = DERIVING.locked();
 
         watch::<Source>(|| Middle::write().0 = Source::read().0 * 2);
         watch::<Middle>(|| Last::write().0 = Middle::read().0 + 1);
@@ -406,7 +387,7 @@ mod tests {
     // a derived update that panics must not take the runtime's thread down with it
     #[test]
     fn a_derived_update_that_panics_leaves_the_rest() {
-        let _turn = DERIVING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _turn = DERIVING.locked();
 
         watch::<Broken>(|| panic!("a derived update that fails"));
         watch::<Broken>(|| After::write().0 = 7);
@@ -440,7 +421,7 @@ mod tests {
         }
 
         fn listen() {
-            let mut listens = LISTENS.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut listens = LISTENS.locked();
             *listens += 1;
 
             if *listens == 1 {
@@ -462,6 +443,6 @@ mod tests {
         wait.recv_timeout(RESTART_DELAY * 2)
             .expect("listen did not start again");
 
-        assert_eq!(*LISTENS.lock().unwrap_or_else(PoisonError::into_inner), 2);
+        assert_eq!(*LISTENS.locked(), 2);
     }
 }

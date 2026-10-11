@@ -15,15 +15,15 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::rc::Rc;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
 use kanade_runtime::{
     Button, Center, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor, Monitors,
     Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone, request_frame,
 };
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::autohide::{DELAY, HIDE, SHOW, TRIGGER};
 use crate::config;
@@ -458,7 +458,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     };
 
     let drawn = {
-        let mut drawn = DRAWN.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut drawn = DRAWN.locked();
         let last = drawn.get(&monitor.name).copied();
         let next = Drawn::next(last, autohide, config.island.motion, shown, covered, now);
 
@@ -2253,10 +2253,7 @@ pub fn forget_gone() {
         Pointers::write().by.retain(|monitor, _| here(monitor));
     }
 
-    DRAWN
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .retain(|monitor, _| here(monitor));
+    DRAWN.locked().retain(|monitor, _| here(monitor));
 }
 
 fn pointed(monitor: &str, x: f32) {

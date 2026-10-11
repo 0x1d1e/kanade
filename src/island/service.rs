@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::LazyLock;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::Keyboard;
+use kanade_runtime::queue::Nudge;
 use kanade_runtime::service::Service;
 
 use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Scope, Track};
@@ -76,11 +77,7 @@ const HOLD: Duration = Duration::from_secs(5);
  * a deadline change nudges listen(), which otherwise sleeps until the next deadline (#5);
  * one pending nudge is enough, since listen() reads every deadline again when it wakes
  */
-static NUDGE: LazyLock<(SyncSender<()>, Mutex<Receiver<()>>)> = LazyLock::new(|| {
-    let (sender, receiver) = mpsc::sync_channel(1);
-
-    (sender, Mutex::new(receiver))
-});
+static NUDGE: LazyLock<Nudge> = LazyLock::new(Nudge::new);
 
 // the one runtime-facing piece of island/: owns the Arbiter and per-monitor Presentation
 pub struct IslandService {
@@ -206,7 +203,7 @@ impl Service for IslandService {
      * A panic here listens again after 5 s: the runtime restarts every Service's listen (#95)
      */
     fn listen() {
-        let receiver = NUDGE.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let receiver = NUDGE.receiver();
 
         loop {
             // no deadline waits forever, recv_timeout falls back to recv on overflow
@@ -1249,7 +1246,7 @@ impl std::fmt::Display for NoFocus {
 
 // never blocks: a nudge already queued wakes listen() just the same
 fn nudge() {
-    let _ = NUDGE.0.try_send(());
+    NUDGE.nudge();
 }
 
 #[cfg(test)]

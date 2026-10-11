@@ -26,7 +26,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,7 @@ use chrono::{
     Weekday,
 };
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::google;
 use crate::{clock, config, modules, supervise};
@@ -245,7 +245,7 @@ const WATCHED_FILE: WatchMask = WatchMask::CLOSE_WRITE
  */
 pub fn follow() {
     if let Err(error) = watch() {
-        *WATCH.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *WATCH.locked() = None;
 
         let why = format!("calendar changes are not followed, reload by hand: {error}");
 
@@ -260,7 +260,7 @@ pub fn follow() {
  * are now; on the watch's thread after a change, on the reload's after a config reload
  */
 pub fn reread() {
-    let mut watch = WATCH.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut watch = WATCH.locked();
     let mut places = places(&config::get().calendars, data_home().as_deref());
 
     // Google's, once the sync thread vouched for it and a sync made it, either then telling this
@@ -305,7 +305,7 @@ fn watch() -> io::Result<()> {
     let mut inotify = Inotify::init()?;
     let mut buffer = [0; 4096];
 
-    *WATCH.lock().unwrap_or_else(PoisonError::into_inner) = Some(Watch {
+    *WATCH.locked() = Some(Watch {
         watches: inotify.watches(),
         wants: HashMap::new(),
     });
@@ -495,7 +495,7 @@ fn relevant(event: &inotify::Event<&OsStr>) -> bool {
         return true;
     }
 
-    let watch = WATCH.lock().unwrap_or_else(PoisonError::into_inner);
+    let watch = WATCH.locked();
     let Some(wants) = watch.as_ref().and_then(|watch| watch.wants.get(&event.wd)) else {
         return false;
     };

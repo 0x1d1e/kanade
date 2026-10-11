@@ -3,7 +3,9 @@
 //! an item that is gone, is not listed. Kanade is its own host, so a host is always registered.
 
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+
+use kanade_runtime::MutexExt;
 
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
@@ -67,10 +69,7 @@ impl Watcher {
 
     #[zbus(property)]
     fn registered_status_notifier_items(&self) -> Vec<String> {
-        self.registered
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.registered.locked().clone()
     }
 
     #[zbus(property)]

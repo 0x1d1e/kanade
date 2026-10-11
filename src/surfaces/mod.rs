@@ -1,9 +1,9 @@
 // view code for the full interactive Surfaces; read-only, never write() a Service
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
-use kanade_runtime::service::Service;
 use kanade_runtime::{Button, Rectangle};
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::theme;
 
@@ -29,7 +29,7 @@ pub mod weather;
 fn fitting() -> MutexGuard<'static, ()> {
     static FIT: Mutex<()> = Mutex::new(());
 
-    FIT.lock().unwrap_or_else(PoisonError::into_inner)
+    FIT.locked()
 }
 
 /*

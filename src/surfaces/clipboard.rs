@@ -6,13 +6,16 @@
 //! kind and size, since the runtime draws images from files and the history never leaves memory.
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
-use kanade_runtime::service::{self, Service};
 use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, Size, SpaceBetween,
     Stack, Start, Text, Widget, children,
+};
+use kanade_runtime::{
+    MutexExt,
+    service::{self, Service},
 };
 
 use crate::icon::Icon;
@@ -380,7 +383,7 @@ static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
 
 // the entries the query finds, newest first
 fn found(entries: &[Entry], query: &str) -> Vec<Entry> {
-    let mut memo = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut memo = MEMO.locked();
 
     let same = memo.query == query
         && memo.ids.len() == entries.len()
@@ -416,7 +419,7 @@ struct Summary {
 }
 
 fn summary(entry: &Entry) -> Summary {
-    let mut memo = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut memo = MEMO.locked();
 
     memo.rows
         .entry(entry.id)

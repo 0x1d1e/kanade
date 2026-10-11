@@ -18,11 +18,11 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::capture::SHOWN;
 use super::timer;
@@ -218,16 +218,12 @@ pub fn starting(reply: &str) -> Option<u64> {
     reply.strip_prefix("starting #")?.parse().ok()
 }
 
-fn lock(caffeine: &Mutex<Caffeine>) -> MutexGuard<'_, Caffeine> {
-    caffeine.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /*
  * does what `request` asks and says how caffeine is left, an `on` as starting. Call it from the
  * draw thread, which lives as long as Kanade: systemd-inhibit dies with the thread that started it
  */
 pub fn request(request: Request) -> Result<String, String> {
-    let mut caffeine = lock(&CAFFEINE);
+    let mut caffeine = CAFFEINE.locked();
 
     match request {
         Request::Status => Ok(caffeine.status().to_string()),
@@ -247,7 +243,7 @@ pub fn request(request: Request) -> Result<String, String> {
 
 // turns off the caffeine that `serial` names, as its Activity's Turn off does
 pub fn act(key: &str, serial: &str) {
-    let mut caffeine = lock(&CAFFEINE);
+    let mut caffeine = CAFFEINE.locked();
 
     if key == OFF
         && let Ok(serial) = serial.parse::<u64>()
@@ -329,7 +325,7 @@ impl Caffeine {
                     .name(String::from("caffeine wait"))
                     .spawn(move || {
                         thread::sleep(patience);
-                        lock(home).give_up(serial, patience);
+                        home.locked().give_up(serial, patience);
                     })
             });
 
@@ -448,14 +444,14 @@ fn follow(
 ) {
     if !holds(held) {
         let said = last_lines(said);
-        lock(home).ended_starting(serial, said);
+        home.locked().ended_starting(serial, said);
         return;
     }
 
-    lock(home).held(serial);
+    home.locked().held(serial);
 
     let said = last_lines(said);
-    let mut caffeine = lock(home);
+    let mut caffeine = home.locked();
 
     // under the lock, so a newer holder's start posts after
     match caffeine.end(serial, said) {

@@ -10,11 +10,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::json::Json;
 use crate::island::activity::Workspace;
@@ -411,10 +411,7 @@ pub fn on_windows(then: fn(Heard)) {
         "niri is already followed"
     );
 
-    WINDOWS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(then);
+    WINDOWS.locked().push(then);
 }
 
 // `then` hears the path of each screenshot niri saves, on the niri thread, so it must not block
@@ -424,10 +421,7 @@ pub fn on_screenshot(then: fn(String)) {
         "niri is already followed"
     );
 
-    SCREENSHOTS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(then);
+    SCREENSHOTS.locked().push(then);
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -443,20 +437,14 @@ pub fn follow() {
             &mut posted,
             |_, seen| Niri::write().seen = seen.clone(),
             |path| {
-                let heard = SCREENSHOTS
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
+                let heard = SCREENSHOTS.locked().clone();
 
                 for then in heard {
                     then(path.clone());
                 }
             },
             |heard| {
-                let hearing = WINDOWS
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
+                let hearing = WINDOWS.locked().clone();
 
                 for then in hearing {
                     then(heard.clone());

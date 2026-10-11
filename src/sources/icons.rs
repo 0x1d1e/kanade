@@ -9,7 +9,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
+use std::sync::{LazyLock, Mutex, OnceLock};
+
+use kanade_runtime::MutexExt;
 
 // how deep an item's own folder is searched: a theme in it, like hicolor/22x22/apps
 const DEPTH: usize = 3;
@@ -36,20 +38,13 @@ pub fn find(name: &str, own: Option<&Path>) -> Option<PathBuf> {
 
     let key = (name.to_owned(), own.map(Path::to_path_buf));
 
-    if let Some(found) = FOUND
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-    {
+    if let Some(found) = FOUND.locked().get(&key) {
         return found.clone();
     }
 
     let found = look(name, own);
 
-    FOUND
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(key, found.clone());
+    FOUND.locked().insert(key, found.clone());
 
     found
 }
@@ -63,8 +58,7 @@ fn look(name: &str, own: Option<&Path>) -> Option<PathBuf> {
 
     if let Some(own) = own {
         let folders = OWN
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .entry(own.to_path_buf())
             .or_insert_with(|| {
                 let mut folders = Vec::new();

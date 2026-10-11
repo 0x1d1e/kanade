@@ -59,11 +59,12 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | atomic-waker | v1.1.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/atomic-waker |
 | base64 | v0.23.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | bitflags | v2.13.2 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags |
-| bit-set | v0.9.1 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-set |
+| bit-set | v0.10.0 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-set |
 | bit-vec | v0.9.1 | Apache-2.0 OR MIT | https://github.com/contain-rs/bit-vec |
 | blocking | v1.7.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/blocking |
 | bytemuck_derive | v1.12.1 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck |
 | bytemuck | v1.25.2 | Zlib OR Apache-2.0 OR MIT | https://github.com/Lokathor/bytemuck |
+| byteorder-lite | v0.1.0 | Unlicense OR MIT | https://github.com/image-rs/byteorder-lite |
 | bytes | v1.12.1 | MIT | https://github.com/tokio-rs/bytes |
 | calcard | v0.3.14 | Apache-2.0 OR MIT | https://github.com/stalwartlabs/calcard |
 | calloop | v0.14.5 | MIT | https://github.com/Smithay/calloop |
@@ -95,7 +96,6 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | fdeflate | v0.3.7 | MIT OR Apache-2.0 | https://github.com/image-rs/fdeflate |
 | flate2 | v1.1.10 | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | float-cmp | v0.9.0 | MIT | https://github.com/mikedilger/float-cmp |
-| foldhash | v0.1.5 | Zlib | https://github.com/orlp/foldhash |
 | foldhash | v0.2.0 | Zlib | https://github.com/orlp/foldhash |
 | fontconfig | v0.11.0 | MIT | https://github.com/yeslogic/fontconfig-rs |
 | font-types | v0.12.6 | MIT OR Apache-2.0 | https://github.com/googlefonts/fontations |
@@ -105,21 +105,19 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | futures-lite | v2.6.1 | Apache-2.0 OR MIT | https://github.com/smol-rs/futures-lite |
 | getrandom | v0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
 | getrandom | v0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
+| gif | v0.14.2 | MIT OR Apache-2.0 | https://github.com/image-rs/image-gif |
 | glow | v0.17.0 | MIT OR Apache-2.0 OR Zlib | https://github.com/grovesNL/glow |
 | gpu-allocator | v0.28.0 | MIT OR Apache-2.0 | https://github.com/Traverse-Research/gpu-allocator |
-| gpu-descriptor-types | v0.2.0 | MIT OR Apache-2.0 | https://github.com/zakarumych/gpu-descriptor |
-| gpu-descriptor | v0.3.2 | MIT OR Apache-2.0 | https://github.com/zakarumych/gpu-descriptor |
 | guillotiere | v0.7.0 | MIT/Apache-2.0 | https://github.com/nical/guillotiere |
 | half | v2.7.1 | MIT OR Apache-2.0 | https://github.com/VoidStarKat/half-rs |
-| hashbrown | v0.15.5 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | v0.16.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashbrown | v0.17.1 | MIT OR Apache-2.0 | https://github.com/rust-lang/hashbrown |
 | hashify | v0.2.9 | Apache-2.0 OR MIT | https://github.com/stalwartlabs/hashify |
-| hexf-parse | v0.2.1 | CC0-1.0 | https://github.com/lifthrasiir/hexf |
 | hex | v0.4.3 | MIT OR Apache-2.0 | https://github.com/KokaKiwi/rust-hex |
 | httparse | v1.10.1 | MIT OR Apache-2.0 | https://github.com/seanmonstar/httparse |
 | http | v1.5.0 | MIT OR Apache-2.0 | https://github.com/hyperium/http |
 | iana-time-zone | v0.1.65 | MIT OR Apache-2.0 | https://github.com/strawlab/iana-time-zone |
+| image-webp | v0.2.4 | MIT OR Apache-2.0 | https://github.com/image-rs/image-webp |
 | imagesize | v0.15.0 | MIT | https://github.com/Roughsketch/imagesize |
 | indexmap | v2.14.2 | Apache-2.0 OR MIT | https://github.com/indexmap-rs/indexmap |
 | inotify-sys | v0.1.8 | ISC | https://github.com/hannobraun/inotify-sys |
@@ -143,7 +141,8 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | memmap2 | v0.9.11 | MIT OR Apache-2.0 | https://github.com/RazrFalcon/memmap2-rs |
 | miniz_oxide | v0.8.9 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | miniz_oxide | v0.9.1 | MIT OR Zlib OR Apache-2.0 | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
-| naga | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| naga-types | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| naga | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
 | num-derive | v0.4.2 | MIT OR Apache-2.0 | https://github.com/rust-num/num-derive |
 | num-traits | v0.2.19 | MIT OR Apache-2.0 | https://github.com/rust-num/num-traits |
 | once_cell | v1.21.4 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
@@ -169,6 +168,7 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | proc-macro2 | v1.0.107 | MIT OR Apache-2.0 | https://github.com/dtolnay/proc-macro2 |
 | proc-macro-crate | v3.5.0 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate |
 | profiling | v1.0.18 | MIT OR Apache-2.0 | https://github.com/aclysma/profiling |
+| quick-error | v2.0.1 | MIT OR Apache-2.0 | https://github.com/tailhook/quick-error |
 | quick-xml | v0.41.0 | MIT | https://github.com/tafia/quick-xml |
 | quote | v1.0.47 | MIT OR Apache-2.0 | https://github.com/dtolnay/quote |
 | raw-window-handle | v0.6.2 | MIT OR Apache-2.0 OR Zlib | https://github.com/rust-windowing/raw-window-handle |
@@ -235,9 +235,9 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | usvg | v0.48.1 | Apache-2.0 OR MIT | https://github.com/linebender/resvg |
 | utf8-zero | v0.8.1 | MIT OR Apache-2.0 | https://github.com/algesten/utf8-zero |
 | uuid | v1.27.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid |
-| vello_encoding | v0.10.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
-| vello_shaders | v0.10.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
-| vello | v0.10.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
+| vello_encoding | v0.11.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
+| vello_shaders | v0.11.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
+| vello | v0.11.0 | Apache-2.0 OR MIT | https://github.com/linebender/vello |
 | wayland-backend | v0.3.17 | MIT | https://github.com/smithay/wayland-rs |
 | wayland-client | v0.31.15 | MIT | https://github.com/smithay/wayland-rs |
 | wayland-csd-frame | v0.3.0 | MIT | https://github.com/rust-windowing/wayland-csd-frame |
@@ -249,12 +249,13 @@ cargo tree -e normal --target x86_64-unknown-linux-gnu --prefix none -f '{p}|{l}
 | wayland-scanner | v0.31.11 | MIT | https://github.com/smithay/wayland-rs |
 | wayland-sys | v0.31.11 | MIT | https://github.com/smithay/wayland-rs |
 | webpki-roots | v1.0.9 | CDLA-Permissive-2.0 | https://github.com/rustls/webpki-roots |
-| wgpu-core-deps-windows-linux-android | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
-| wgpu-core | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
-| wgpu-hal | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
-| wgpu-naga-bridge | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
-| wgpu-types | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
-| wgpu | v29.0.4 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| weezl | v0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl |
+| wgpu-core-deps-windows-linux-android | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| wgpu-core | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| wgpu-hal | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| wgpu-naga-bridge | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| wgpu-types | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
+| wgpu | v30.0.1 | MIT OR Apache-2.0 | https://github.com/gfx-rs/wgpu |
 | winnow | v1.0.4 | MIT | https://github.com/winnow-rs/winnow |
 | xcursor | v0.3.11 | MIT | https://github.com/esposm03/xcursor-rs |
 | xkbcommon | v0.8.0 | MIT | https://github.com/rust-x-bindings/xkbcommon-rs |

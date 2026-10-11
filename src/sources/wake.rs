@@ -15,6 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use std::{env, fs};
 
+use kanade_runtime::MutexExt;
+
 use crate::{clock, supervise};
 
 // how long until a command runs again after it ended, doubling up to `LAST_RETRY` while it keeps
@@ -429,7 +431,7 @@ impl Stop {
     }
 
     fn lock(&self) -> MutexGuard<'_, Running> {
-        self.0.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.0.locked()
     }
 }
 

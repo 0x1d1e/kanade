@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 
-use kanade_runtime::{Color, Image, Rectangle};
+use kanade_runtime::{Color, Image, MutexExt, Rectangle};
 
 use crate::{raster, theme};
 
@@ -232,7 +232,7 @@ impl Icon {
         let ink = [ink.red(), ink.green(), ink.blue(), ink.alpha()];
         let key = (self.drawn_as(), crossed, ink);
 
-        let mut drawn = DRAWN.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut drawn = DRAWN.locked();
 
         let path = drawn
             .entry(key)

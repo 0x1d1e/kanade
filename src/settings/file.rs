@@ -7,7 +7,9 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
+
+use kanade_runtime::MutexExt;
 
 use toml::Value;
 
@@ -75,7 +77,7 @@ fn set_in(
     edits: Vec<Entry>,
     expected: &[Entry],
 ) -> Result<Vec<Replaced>, Refusal> {
-    let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+    let _writing = WRITING.locked();
 
     let text = match fs::read_to_string(file) {
         Ok(text) => text,

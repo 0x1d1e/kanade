@@ -10,18 +10,19 @@ mod stack;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::iter;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
-use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::sources::niri::Niri;
 use crate::sources::notifications::{Notification, Notifications, Urgency};
-use kanade_runtime::service::Service;
+use kanade_runtime::queue::Nudge;
 use kanade_runtime::{
     Button, Center, Column, Cursor, Horizontal, InputArea, Layer, LayerWindow, Monitor, Monitors,
     Padding, Rectangle, Row, Size, Stack as Layers, Start, Text, Vertical, Widget, Zone, children,
     request_frame,
 };
+use kanade_runtime::{MutexExt, service::Service};
 
 use motion::Motion;
 pub use stack::Banner;
@@ -77,11 +78,7 @@ static TALLEST: OnceLock<f32> = OnceLock::new();
  * a deadline change nudges listen(), which otherwise sleeps until the next deadline; one pending
  * nudge is enough, since listen() reads the deadline again when it wakes
  */
-static NUDGE: LazyLock<(SyncSender<()>, Mutex<Receiver<()>>)> = LazyLock::new(|| {
-    let (sender, receiver) = mpsc::sync_channel(1);
-
-    (sender, Mutex::new(receiver))
-});
+static NUDGE: LazyLock<Nudge> = LazyLock::new(Nudge::new);
 
 /*
  * written by the notifications and niri sources, and by a Banner's own pointer input; a write
@@ -104,7 +101,7 @@ impl Service for Banners {
 
     // sleeps until a Banner's time runs out or a nudge, so no Banner showing never wakes
     fn listen() {
-        let receiver = NUDGE.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let receiver = NUDGE.receiver();
 
         loop {
             // no deadline waits forever, recv_timeout falls back to recv on overflow
@@ -193,19 +190,12 @@ pub fn follow_focus() {
 pub fn forget_gone() {
     let monitors = Monitors::read();
 
-    MOTIONS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .retain(|monitor, _| monitors.has(monitor));
-    PANES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .retain(|monitor, _| monitors.has(monitor));
+    MOTIONS.locked().retain(|monitor, _| monitors.has(monitor));
+    PANES.locked().retain(|monitor, _| monitors.has(monitor));
 }
 
 fn nudge() {
-    // full means a nudge is already pending, which is all listen() needs
-    let _ = NUDGE.0.try_send(());
+    NUDGE.nudge();
 }
 
 impl Banner {
@@ -252,11 +242,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let tallest = *TALLEST.get_or_init(tallest);
     let reach = ShadowStyle::AMBIENT.reach() as f32;
 
-    let drawing = !shown.is_empty()
-        || MOTIONS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains_key(&monitor.name);
+    let drawing = !shown.is_empty() || MOTIONS.locked().contains_key(&monitor.name);
 
     // merged with the Dock, the Island's body stands further from its edge, past the Dock's plate;
     // reading subscribes this window to the apps, so only while it draws
@@ -345,7 +331,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let shown = fitting(shown, &heights, from, lane.end, hang);
 
     let (placed, later, moving) = {
-        let mut motions = MOTIONS.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut motions = MOTIONS.locked();
         let motion = motions.entry(monitor.name.clone()).or_default();
 
         motion.follow(
@@ -378,7 +364,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     // each Banner's pane of liquid glass, and those let go, which the next Banner takes afresh
     let (panes, freed) = {
-        let mut all = PANES.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut all = PANES.locked();
         let panes = all.entry(monitor.name.clone()).or_default();
         let ids: Vec<u32> = placed.iter().map(|placed| placed.banner.id).collect();
         let freed = panes.follow(&ids);

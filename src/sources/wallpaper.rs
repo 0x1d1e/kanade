@@ -19,11 +19,10 @@ use std::io::{self, BufRead, Read};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, queue::Queue, service::Service};
 
 use super::wake;
 use crate::{config, modules, supervise};
@@ -125,14 +124,7 @@ static WALLPAPER: Mutex<Wallpaper> = Mutex::new(Wallpaper {
 });
 
 // the sets waiting for `serve`, which outlive a restart of it
-static QUEUE: LazyLock<(Sender<Job>, Mutex<Receiver<Job>>)> = LazyLock::new(|| {
-    let (send, receive) = mpsc::channel();
-    (send, Mutex::new(receive))
-});
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
+static QUEUE: LazyLock<Queue<Job>> = LazyLock::new(Queue::new);
 
 // what `kanade wallpaper` asks
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,7 +157,7 @@ pub fn set(path: PathBuf, done: Option<Done>) -> Result<u64, Unset> {
     }
 
     let serial = {
-        let mut wallpaper = lock(&WALLPAPER);
+        let mut wallpaper = WALLPAPER.locked();
 
         wallpaper.issued += 1;
         let serial = wallpaper.issued;
@@ -175,7 +167,7 @@ pub fn set(path: PathBuf, done: Option<Done>) -> Result<u64, Unset> {
     };
 
     // the receiver lives in the static, so sending never fails
-    drop(QUEUE.0.send(Job { serial, path, done }));
+    QUEUE.send(Job { serial, path, done });
 
     Ok(serial)
 }
@@ -190,7 +182,7 @@ pub fn request(request: Request) -> Result<String, String> {
         Request::Set(path) => set(path, None)
             .map(|serial| format!("setting #{serial}"))
             .map_err(|unset| unset.to_string()),
-        Request::Status => Ok(lock(&WALLPAPER).status().to_string()),
+        Request::Status => Ok(WALLPAPER.locked().status().to_string()),
     }
 }
 
@@ -201,7 +193,7 @@ pub fn setting(reply: &str) -> Option<u64> {
 
 // the image Kanade last set, none until it sets one
 pub fn current() -> Option<PathBuf> {
-    lock(&WALLPAPER).current.clone()
+    WALLPAPER.locked().current.clone()
 }
 
 // for `kanade status`
@@ -325,7 +317,7 @@ pub enum Settled {
  */
 pub fn serve() {
     loop {
-        let job = lock(&QUEUE.1).recv();
+        let job = QUEUE.receiver().recv();
 
         // the sender lives in the static, so the queue never closes
         let Ok(Job { serial, path, done }) = job else {
@@ -342,7 +334,7 @@ pub fn serve() {
         }
 
         {
-            let mut wallpaper = lock(&WALLPAPER);
+            let mut wallpaper = WALLPAPER.locked();
 
             wallpaper.pending.retain(|pending| *pending != serial);
 
@@ -485,7 +477,7 @@ pub fn images() -> Arc<Vec<PathBuf>> {
         return Arc::default();
     };
 
-    let mut listed = lock(&LISTED);
+    let mut listed = LISTED.locked();
 
     if let Some((at, when, images)) = &*listed
         && *at == directory
@@ -611,7 +603,7 @@ pub fn look() {
                 .collect();
 
             // held while written, so looks write in turn
-            let mut wrote = WROTE.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut wrote = WROTE.locked();
 
             // a look older than one written is dropped, so a later one is never undone
             if *wrote >= this {
@@ -652,10 +644,10 @@ fn lightness(path: &Path) -> Option<f32> {
     };
 
     // KNOWN is left unlocked while decoding, so reading it waits on nothing; a look waits for one
-    let decoding = DECODING.lock().unwrap_or_else(PoisonError::into_inner);
+    let decoding = DECODING.locked();
 
     // under DECODING, so two looks at once decode it once
-    if let Some(light) = known(&KNOWN.lock().unwrap_or_else(PoisonError::into_inner)) {
+    if let Some(light) = known(&KNOWN.locked()) {
         return light;
     }
 
@@ -663,7 +655,7 @@ fn lightness(path: &Path) -> Option<f32> {
     let light = panic::catch_unwind(|| decoded_light(path)).ok().flatten();
     drop(decoding);
 
-    let mut known = KNOWN.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut known = KNOWN.locked();
 
     // a few wallpapers are enough to know; a slideshow through hundreds keeps none of them for long
     if known.len() >= KNOWN_MOST {

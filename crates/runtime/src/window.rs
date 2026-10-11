@@ -1,9 +1,10 @@
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use crate::changes;
 use crate::input::KeyHandler;
+use crate::unpoisoned::MutexExt;
 use crate::{Key, Widget};
 
 // a regular desktop window with a title bar, like a settings app, next to the layer windows
@@ -99,10 +100,7 @@ pub static REQUESTED: Mutex<Vec<Named>> = Mutex::new(Vec::new());
  * the name tells windows apart, so asking for a name already open does nothing
  */
 pub fn open_window(name: &'static str, view: fn() -> Window) {
-    REQUESTED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push((name, view));
+    REQUESTED.locked().push((name, view));
 
     changes::mark_all();
 }
@@ -112,9 +110,7 @@ pub static OPEN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 // whether a normal window of this name is open; one asked for but not yet opened is not
 pub fn window_open(name: &str) -> bool {
-    OPEN.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .contains(&name)
+    OPEN.locked().contains(&name)
 }
 
 // windows asked to close from handlers, closed by the event loop when it wakes
@@ -122,10 +118,7 @@ pub static CLOSING: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
 // closes the window open with this name, like a close button inside it; a closed one is left alone
 pub fn close_window(name: &'static str) {
-    CLOSING
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(name);
+    CLOSING.locked().push(name);
 
     changes::mark_all();
 }

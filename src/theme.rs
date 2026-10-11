@@ -8,11 +8,11 @@
 
 use std::ffi::CString;
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
 
-use kanade_runtime::service::Service as _;
 use kanade_runtime::{App, Color};
+use kanade_runtime::{MutexExt, service::Service as _};
 
 use crate::sources::palette::Palette;
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
@@ -340,7 +340,7 @@ pub fn roles() -> ThemeRoles {
         [background, foreground, accent]
     };
 
-    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut last = LAST.locked();
 
     match *last {
         Some((seen, roles)) if seen == colors => roles,

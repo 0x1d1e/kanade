@@ -1,5 +1,3 @@
-use std::sync::PoisonError;
-
 use wayland_client::{
     Proxy,
     protocol::{wl_output::WlOutput, wl_surface::WlSurface},
@@ -8,6 +6,7 @@ use wayland_client::{
 use crate::changes::{self, Reads};
 use crate::graphics::Gpu;
 use crate::input::Pointer;
+use crate::unpoisoned::MutexExt;
 use crate::window::OPEN;
 use crate::{frame, service};
 
@@ -140,7 +139,7 @@ impl WaylandState {
     }
 
     pub fn close(&mut self, surface: &WlSurface) {
-        let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut open = OPEN.locked();
         for window in &self.windows {
             if window.role.wl_surface() == surface {
                 open.retain(|&name| !window.view.shows(name));

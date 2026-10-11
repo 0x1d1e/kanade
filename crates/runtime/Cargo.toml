@@ -8,9 +8,9 @@ publish = false
 # The versions the runtime was ported with, so the lock file stays as it was (ADR 0028)
 [dependencies]
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
-vello = "0.10.0"
+vello = "0.11.0"
 # only for glsl shaders, vello already brings wgpu and this turns on its glsl reader
-wgpu = { version = "29.0.4", default-features = false, features = ["glsl"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["glsl"] }
 wayland-client = "0.31.15"
 # the compositor's list of windows, for which are fullscreen
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

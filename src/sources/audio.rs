@@ -10,11 +10,11 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::json::{self, Json};
 use super::pipewire::{self, DUMP, METADATA, NODE, Object};
@@ -652,7 +652,7 @@ static ASKS: Mutex<Asks> = Mutex::new(Asks {
  * thread never waits for wpctl and two never race
  */
 fn ask(ask: Ask) {
-    let mut asks = ASKS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut asks = ASKS.locked();
 
     asks.push(ask);
 
@@ -666,7 +666,7 @@ fn ask(ask: Ask) {
 fn run() {
     loop {
         let ask = {
-            let mut asks = ASKS.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut asks = ASKS.locked();
 
             if asks.waiting.is_empty() {
                 asks.running = false;

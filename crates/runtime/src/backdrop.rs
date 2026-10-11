@@ -8,11 +8,12 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use smithay_client_toolkit::reexports::calloop::ping::Ping;
 
 use crate::service::Service;
+use crate::unpoisoned::MutexExt;
 
 // how far apart the light is read along the ring, in logical pixels
 const STEP: f32 = 3.0;
@@ -124,11 +125,11 @@ static PIXELS: Mutex<Option<HashMap<Spot, Arc<Pixels>>>> = Mutex::new(None);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn asked() -> MutexGuard<'static, Option<Asked>> {
-    ASKED.lock().unwrap_or_else(PoisonError::into_inner)
+    ASKED.locked()
 }
 
 fn copies() -> MutexGuard<'static, Option<HashMap<Spot, Arc<Pixels>>>> {
-    PIXELS.lock().unwrap_or_else(PoisonError::into_inner)
+    PIXELS.locked()
 }
 
 fn call(call: Call) {

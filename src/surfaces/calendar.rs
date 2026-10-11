@@ -7,16 +7,16 @@
 //! the month's events are expanded, which is off the draw thread.
 
 use std::mem;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
 use chrono::{Datelike, Days, Months, NaiveDate, NaiveTime};
-use kanade_runtime::service::Service;
 use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Start,
     Text, Widget, children,
 };
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::clock;
 use crate::config;
@@ -347,7 +347,7 @@ struct Shown {
  */
 fn month_of(calendars: &Calendars, start: NaiveDate) -> Shown {
     let wanted = Wanted::of(calendars, start);
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut asked = ASKED.locked();
 
     let held = {
         let expansion = Expansion::read();
@@ -428,7 +428,7 @@ fn expand() {
 
     impl Drop for Running {
         fn drop(&mut self) {
-            let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut asked = ASKED.locked();
 
             asked.running = false;
             if let Some(failed) = self.0 {
@@ -445,7 +445,7 @@ fn expand() {
 
     loop {
         let start = {
-            let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut asked = ASKED.locked();
 
             // one already expanded, as a view turning back to it finds, is not expanded again
             let expanded = Expansion::read().of;
@@ -480,7 +480,7 @@ fn expand() {
 
 // shows `month`, expanded as `expanding`, if it is still asked for, and gives back the one replaced
 fn publish(expanding: Wanted, month: Arc<Month>) -> Option<Arc<Month>> {
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut asked = ASKED.locked();
 
     if !asked.wanted.is_some_and(|wanted| wanted.met_by(expanding)) {
         return None;

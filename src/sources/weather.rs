@@ -14,12 +14,12 @@
 //! at once (`opened`). Forecasts are kept in memory only: a restart fetches again.
 
 use std::fmt;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::LazyLock;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, NaiveDate};
-use kanade_runtime::service::Service;
+use kanade_runtime::{queue::Queue, service::Service};
 use serde_json::Value;
 use ureq::Agent;
 
@@ -321,16 +321,7 @@ enum Message {
 }
 
 // the fetch thread's queue, which outlives a restart of it
-static QUEUE: LazyLock<(Sender<Message>, Mutex<Receiver<Message>>)> = LazyLock::new(|| {
-    let (send, receive) = mpsc::channel();
-
-    (send, Mutex::new(receive))
-});
-
-fn send(message: Message) {
-    // the receiver lives in a static, so it is never gone
-    let _ = QUEUE.0.send(message);
-}
+static QUEUE: LazyLock<Queue<Message>> = LazyLock::new(Queue::new);
 
 // what `kanade weather` gets, on the draw thread, so nothing here waits on Open-Meteo
 pub fn request(request: Request) -> Result<String, String> {
@@ -340,7 +331,7 @@ pub fn request(request: Request) -> Result<String, String> {
                 "no location; set weather.location to [latitude, longitude]",
             )),
             _ => {
-                send(Message::Refresh);
+                QUEUE.send(Message::Refresh);
                 Ok(String::from("refreshing"))
             }
         },
@@ -350,12 +341,12 @@ pub fn request(request: Request) -> Result<String, String> {
 
 // the config was read again; a new location is fetched at once
 pub fn reread() {
-    send(Message::Reread);
+    QUEUE.send(Message::Reread);
 }
 
 // the Weather Surface was asked to open; an old forecast is fetched again
 pub fn opened() {
-    send(Message::Opened);
+    QUEUE.send(Message::Opened);
 }
 
 // the weather's line for `status`
@@ -379,7 +370,7 @@ pub fn now() -> i64 {
 
 // fetches the forecast on its own thread for as long as Kanade runs
 pub fn follow() {
-    let queue = QUEUE.1.lock().unwrap_or_else(PoisonError::into_inner);
+    let queue = QUEUE.receiver();
     let agent: Agent = Agent::config_builder()
         .timeout_global(Some(PATIENCE))
         .http_status_as_error(false)

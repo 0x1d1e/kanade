@@ -3,12 +3,12 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::sources::{wake, wallpaper};
 
@@ -62,7 +62,7 @@ pub(super) fn look_up() {
             let who = who();
 
             // held while written, so look-ups write in turn
-            let mut wrote = WROTE.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut wrote = WROTE.locked();
 
             // one older than one written is dropped, so a later one is never undone
             if *wrote >= this {
