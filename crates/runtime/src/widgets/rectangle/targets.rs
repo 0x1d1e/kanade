@@ -7,6 +7,13 @@ use crate::{Button, Point, Rectangle, Scroll};
 use super::{child, transform};
 
 impl Rectangle {
+    // an inert rectangle and everything in it have no handlers, though they still draw; a click goes to what is beneath
+    pub fn inert(mut self, inert: bool) -> Self {
+        self.inert = inert;
+
+        self
+    }
+
     pub fn on_click(mut self, handler: impl Fn(Button) + 'static) -> Self {
         self.handlers.click = Some(Rc::new(handler));
 
@@ -52,6 +59,10 @@ impl Rectangle {
 }
 
 pub fn collect_targets(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>) {
+    if rectangle.inert {
+        return;
+    }
+
     let first = targets.len();
 
     collect_in_place(rectangle, area, targets);

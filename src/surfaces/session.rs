@@ -348,7 +348,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     true
 }
 
-// only while open, so a second click as it fades out never asks again
+// only while open: two clicks queued before the next frame both reach the targets that frame drew
 fn click(at: At) {
     let visit = {
         let island = IslandService::read();

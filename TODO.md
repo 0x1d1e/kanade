@@ -18,6 +18,7 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
   - Not run: losing the stream (restart niri). It should clear the dots and the shown windows, and they stay cleared: the stream is not reconnected.
 - [x] Restart-surviving queues and poisoned locks: `kanade_runtime::queue::{Queue, Nudge}` and `MutexExt::locked`, `RwLockExt::{reading, writing}` (`unpoisoned.rs`)
   - Not folded in: `media.rs`'s `Feed`, which hands a clone of its sender to the bus watches while it is made; the two `Condvar` waits; `crates/lock`, which depends on no Kanade crate and has its own CPU renderer.
+- [ ] Content is inert while it fades (#210), so the targets after the Island's form (a merged Dock's icons) shift by its count mid-leg; a press or drag begun across the shift loses its target. A still pointer also keeps its cursor until it moves.
 - [ ] `dock.rs` (2363 lines) holds the Island-aware geometry (about lines 1084-1480: `covered`, `island_room`, `reaches`, ...); move it to `merge.rs` only if churn there shows the cost.
 
 Not worth changing, by this review:

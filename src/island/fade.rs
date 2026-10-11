@@ -176,3 +176,52 @@ pub fn swap<T>(from: Option<T>, to: T, rise: f32) -> (T, f32) {
         None => (to, 1.0),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl InPlace for u8 {}
+
+    fn showing(fade: &Crossfade<u8>, progress: f32) -> f32 {
+        fade.shown(progress)
+            .into_iter()
+            .flatten()
+            .next()
+            .map_or(0.0, |(_, opacity)| opacity)
+    }
+
+    // however it got there, a settled Crossfade shows its content whole and nothing leaving
+    #[test]
+    fn a_settled_crossfade_shows_one_whole() {
+        let mut fade = Crossfade::new(1);
+
+        fade.to(2, 0.0);
+        fade.to(3, 0.3);
+        fade.rebase(0.6);
+        fade.to(1, 0.2);
+
+        assert_eq!(fade.shown(1.0), [None, Some((1, 1.0))]);
+    }
+
+    // a change of mind, back to what fades out or on to a third, shows what it was showing
+    #[test]
+    fn a_change_of_mind_never_jumps_what_shows() {
+        for progress in [0.25, 0.5, 0.75] {
+            for next in [1, 3] {
+                let mut fade = Crossfade::new(1);
+
+                fade.to(2, 0.0);
+
+                let before = showing(&fade, progress);
+
+                fade.to(next, progress);
+
+                assert!(
+                    (showing(&fade, 0.0) - before).abs() < 1e-6,
+                    "{next} at {progress}"
+                );
+            }
+        }
+    }
+}

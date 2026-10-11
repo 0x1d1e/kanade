@@ -58,6 +58,9 @@ pub(crate) use self::toast::toast_tile;
 // the Island's body, as liquid glass names its pane
 const ISLAND: &str = "island";
 
+// the opacity the incoming content reaches before it takes input; the outgoing never does
+const LIVE: f32 = 0.5;
+
 /*
  * whether the Island hides when idle on every output, as `island.autohide` has it, or as a Rest with
  * nothing to show does: it then leaves its edge to the windows and stands in no merge with the Dock
@@ -454,6 +457,8 @@ fn form_holder(
     // at most one shows at a time, the crossfade hands over through nothing
     {
         let _room = Room::take(room);
+        // `Crossfade::shown` never shows both, so the first is the one leaving
+        let leaving = content[0].is_some();
 
         if let Some((content, opacity)) = content.into_iter().flatten().next()
             && let Some(form) = split(
@@ -468,7 +473,7 @@ fn form_holder(
             .or_else(|| rest(&monitor.name, &content))
             .or_else(|| placeholder(&content))
         {
-            holder = holder.child(form.opacity(opacity));
+            holder = holder.child(form.opacity(opacity).inert(leaving || opacity < LIVE));
         }
     }
 
