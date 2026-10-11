@@ -99,19 +99,19 @@ pub fn window() -> Window {
         .title("Kanade Settings")
         .size(WIDTH, HEIGHT)
         .min_size(MIN_WIDTH, MIN_HEIGHT)
+        .blur(glass::blurred())
         .child(
-            Rectangle::new()
-                .width(Parent)
-                .height(Parent)
-                .fill(roles.surface)
-                .child(
-                    Row::new(children![
-                        sidebar(&settings, &roles),
-                        main(&settings, &roles)
-                    ])
+            Row::new(children![
+                sidebar(&settings, &roles),
+                // each fill is flat, so the sidebar and the page show the same one layer of glass over the blur
+                Rectangle::new()
                     .width(Parent)
-                    .height(Parent),
-                ),
+                    .height(Parent)
+                    .fill(glass::see_through(roles.surface))
+                    .child(main(&settings, &roles)),
+            ])
+            .width(Parent)
+            .height(Parent),
         )
 }
 
@@ -149,7 +149,10 @@ fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     Rectangle::new()
         .width(SIDEBAR)
         .height(Parent)
-        .fill(roles.surface_container)
+        .fill(glass::see_through(theme::over(
+            roles.surface_container,
+            roles.surface,
+        )))
         .padding(SIDE_INSET)
         .align_child(Start, Start)
         .child(

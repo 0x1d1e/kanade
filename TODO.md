@@ -50,11 +50,11 @@ Not worth changing, by this review:
 
 ## Glass
 
-- [ ] Settings windows are not glass yet.
+- [x] Settings windows are glass as niri's blur allows (ADR 0024): niri blurs only the wallpaper behind it, with no rim or frost.
 - [x] Regular glass is frosted from the capture around the body (ADR 0024); faint wedge seams show in the fill where the nearest side changes, and a thing wholly inside the card is not seen.
-- [ ] The magnified Dock can reach a Banner.
-- [ ] Satellites shift; the first ~80 ms of the liquid reveal are plain.
-- [ ] A write of any Service but `Backdrops` and `Pointers` redraws every window that read it, not only those showing the changed part.
+- [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
+- [ ] Satellites shift; the first ~80 ms of the liquid reveal are plain (ADR 0037: a copy is asked for after the first draw and lands about 3 frames on; the shift is their pixels bent by the rim still lagging).
+- [ ] A write of any Service but `Backdrops` and `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
 
 ## Island sizes (ADR 0030)
 
@@ -70,7 +70,7 @@ Not worth changing, by this review:
 - [ ] Many apps with a wide Surface open overflow a Keystone's window.
 - [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
-- [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear.
+- [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons).
 - [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; with `dock.reserve` it now reserves as a merged Fold.
 - [ ] A non-liquid union has no border.
 - [ ] Fold has no dots for running apps at rest and no keyboard focus hold; its Tray and hover Peek need a right click.

@@ -20,6 +20,9 @@ pub struct Window {
     // the smallest a resizable window may be made, if any
     pub(crate) min_size: Option<(f32, f32)>,
 
+    // blur behind the whole window, for a root drawn translucent; none where the compositor has none
+    pub(crate) blur: bool,
+
     pub(crate) root: Option<Box<dyn Widget>>,
 
     pub(crate) on_key: Option<KeyHandler>,
@@ -36,6 +39,8 @@ impl Window {
             resizable: true,
             min_size: None,
 
+            blur: false,
+
             root: None,
 
             on_key: None,
@@ -45,6 +50,13 @@ impl Window {
     // read once, when the window opens
     pub fn title(mut self, title: &str) -> Self {
         self.title = String::from(title);
+
+        self
+    }
+
+    // read on every frame, see `blur_available`
+    pub fn blur(mut self, blur: bool) -> Self {
+        self.blur = blur;
 
         self
     }

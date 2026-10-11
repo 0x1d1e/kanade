@@ -19,7 +19,7 @@ ADR 0020 made liquid glass for the Island alone; the Dock kept a flat card, Bann
 
 **One capture per window, cut per pane.** Fewer captures, but a window's canvas is mostly empty and a Banners window is tall; panes keep each capture to its body.
 
-**Compositor blur (`ext-background-effect-v1`) behind the Dock and Banners.** Rejected in ADR 0020 for the Island for the same reasons: a surface of its own under each pane and niri's xray blurring only the wallpaper.
+**Compositor blur (`ext-background-effect-v1`) behind the Dock and Banners.** Rejected in ADR 0020 for the Island for the same reasons: a surface of its own under each pane and niri's xray blurring only the wallpaper. It is taken only for the Settings window, which is a window of its own already and sits over the wallpaper.
 
 **Refract the wallpaper into the lock screen's pill and disc.** No capture is needed, as the wallpaper is known, but Kanade would decode and blur it itself, so the rim matches what is drawn, and pin where the pill and disc lie. Over the default blurred backdrop a bent blur looks as the blur does, and macOS's own lock field is frosted.
 
@@ -28,7 +28,7 @@ ADR 0020 made liquid glass for the Island alone; the Dock kept a flat card, Bann
 ## Consequences
 
 - Each pane shown on liquid glass is one more capture and rim stream; three Banners, the Dock and the Island are five per output. Visual effects first; their cost is for later.
-- The Settings window, a window of its own, keeps its flat look.
+- The Settings window is glass differently, as a window of its own with no capture: on liquid glass, where niri has `ext-background-effect-v1` (`kanade_runtime::blur_available`), it asks for blur behind its whole surface (`Window::blur`, `wayland/effect.rs`) and its fills are 74% opaque (`glass::see_through`), so it shows niri's blur of the wallpaper. niri blurs only the wallpaper and no window under it (xray), and shows the blur only through the window's own transparency. Monochrome, or a compositor without the protocol, keeps the flat opaque look. It has no rim, tint by backdrop or frost.
 - The lock screen reads png, jpeg, webp, gif and svg (ADR 0025). An image over an 8K screen's pixels, or one that fails to decode, is not read for its lightness, so its shade takes it as fairly light. The mean luma is the whole wallpaper's, not where the text sits.
 - The Island's, Dock's and Banners' panes keep the placement they last drew while locked, as their windows stop drawing under the lock screen, so a change on the lock screen beside them may still be captured.
 - Every pane's rims come over one `Backdrops` subscription per window, so a window redraws for any of its panes.

@@ -126,6 +126,30 @@ pub fn lock_tint(dark: bool) -> Option<Color> {
     (material != Material::LiquidGlass).then(|| tint(material, tone, Variant::Clear, None))
 }
 
+/*
+ * whether a normal window, as Settings, is glass: the compositor blurs what is behind it and its
+ * fills let that through, for liquid glass where the compositor can blur (ADR 0024)
+ */
+pub fn blurred() -> bool {
+    config::get().appearance.material == Material::LiquidGlass && kanade_runtime::blur_available()
+}
+
+// a window's fill when it is glass (`blurred`): mostly opaque, for the text on it to read
+pub fn see_through(color: Color) -> Color {
+    const OPACITY: f32 = 0.74;
+
+    if !blurred() {
+        return color;
+    }
+
+    Color::rgba(
+        color.red(),
+        color.green(),
+        color.blue(),
+        (f32::from(color.alpha()) * OPACITY).round() as u8,
+    )
+}
+
 // how much a body's rim catches the light, by `appearance.material`
 pub fn highlight() -> f32 {
     match config::get().appearance.material {

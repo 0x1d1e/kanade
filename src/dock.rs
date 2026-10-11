@@ -1128,9 +1128,10 @@ fn island_reserved(anchor: Anchor) -> f32 {
 }
 
 /*
- * the Dock's strip at rest on `monitor`, and the edge it sits on, which what hangs from the Island,
- * as the Banners, keeps clear of; none while off, hiding under autohide, or with no app to show.
- * Its icons grown under the pointer may still reach past it. Reading subscribes to the apps
+ * the Dock's strip on `monitor`, and the edge it sits on, which what hangs from the Island, as the
+ * Banners, keeps clear of: as far out, along the edge and off it, as its icons grow under the
+ * pointer, so nothing steps aside as they do; none while off, hiding under autohide, or with no app to show. Reading
+ * subscribes to the apps
  */
 pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
     let items = items(&Windows::read());
@@ -1150,18 +1151,32 @@ pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
     let size = Size::of(config.dock_size);
     let pieces = pieces(&items);
     let canvas = Canvas::of(&pieces, size, config.magnify.most());
-    let rest = spans(&pieces, size, &vec![1.0; pieces.len()]);
-    let left = canvas.left(place.anchor.sits(), rest.width, None);
     let strip = dock_strip(
         (monitor.width as f32, monitor.height as f32),
         place.anchor,
         canvas.width,
-        (left, left + rest.width),
+        reach(
+            place.anchor.sits(),
+            canvas.width,
+            widest(&pieces, size, config.magnify.most()),
+        ),
         island_room(place.anchor),
-        depth(size),
+        depth(size) + size.icon * (config.magnify.most() - 1.0),
     );
 
     Some((place.anchor.hang().edge, strip))
+}
+
+/*
+ * where in its window the row can be, grown to `widest`: against a side it only reaches as far as
+ * it grows from there, centered it may stand anywhere the window allows
+ */
+fn reach(along: Along, window: f32, widest: f32) -> (f32, f32) {
+    match along {
+        Along::Left => (0.0, widest.min(window)),
+        Along::Right => ((window - widest).max(0.0), window),
+        Along::Center => (0.0, window),
+    }
 }
 
 // how far off its edge, past the Island beside it, the Dock's strip reaches at rest
@@ -2300,5 +2315,36 @@ fn pointed(monitor: &str, x: f32) {
         pointer.growing = true;
         pointer.retime(now);
         pointer.grow.to([100.0], GROW, now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the strip a Banner keeps clear of holds every place the grown row can be, and no more
+    #[test]
+    fn the_reach_is_where_the_row_can_stand() {
+        let (rest, widest) = (300.0_f32, 380.0_f32);
+        let canvas = Canvas {
+            width: rest + 2.0 * (widest - rest),
+            height: 0.0,
+        };
+
+        for along in [Along::Left, Along::Right] {
+            let start = canvas.left(along, widest, None);
+
+            assert_eq!(
+                reach(along, canvas.width, widest),
+                (start, start + widest),
+                "{along:?}"
+            );
+        }
+
+        // centered, the row slides within the window as the pointer holds it
+        assert_eq!(
+            reach(Along::Center, canvas.width, widest),
+            (0.0, canvas.width)
+        );
     }
 }

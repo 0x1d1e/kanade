@@ -58,4 +58,5 @@ pub use widgets::{
 pub use placement::Justify::{SpaceAround, SpaceBetween, SpaceEvenly};
 pub use placement::Size::Parent;
 pub use toplevels::{FullscreenWindow, Toplevels};
+pub use wayland::blur_available;
 pub use window::{Window, close_window, open_window, window_open, window_size};

@@ -15,6 +15,7 @@ use crate::{InputArea, LayerWindow, Monitor, Widget, Window};
 
 use super::{
     WaylandState,
+    effect::Blur,
     layer::{self, Settings},
     scale::Fractional,
 };
@@ -51,6 +52,9 @@ pub struct OpenWindow {
 
     // none at whole scales; dropped before the role, since it belongs to its surface
     pub fractional: Option<Fractional>,
+
+    // blur behind the window, asked of the compositor as the view says
+    pub blur: Blur,
 
     pub role: Role,
 
