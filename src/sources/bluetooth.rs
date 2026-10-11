@@ -10,13 +10,13 @@
 //! A pairing asked from here that needs the user, a code to compare or to type, asks this shell's
 //! own agent (`agent`), which shows it in the sub-surface as the `Prompt`.
 
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
 use crate::bus::{Argument, Bus, Value};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::system::{Radio, Watched};
 use crate::supervise;
@@ -155,7 +155,7 @@ struct Working {
 impl Working {
     // how it goes on, still under way; a cancelled one says nothing more
     fn update(&self, request: Request) {
-        let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _asking = ASKING.locked();
 
         if !self.finished && matches!(*Request::read(), Request::Doing(..)) {
             write(request);
@@ -164,7 +164,7 @@ impl Working {
 
     // its outcome, no longer under way; a cancelled one's says nothing
     fn finish(&mut self, outcome: Request) {
-        let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _asking = ASKING.locked();
 
         if self.finished {
             return;
@@ -186,7 +186,7 @@ impl Working {
 
 impl Drop for Working {
     fn drop(&mut self) {
-        let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _asking = ASKING.locked();
 
         if self.finished {
             return;
@@ -469,7 +469,7 @@ pub fn cancel() {
  * user about one device
  */
 fn ask(request: Request) -> Option<Working> {
-    let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+    let _asking = ASKING.locked();
 
     if Request::read().busy() {
         return None;
@@ -482,7 +482,7 @@ fn ask(request: Request) -> Option<Working> {
 
 // what is under way says nothing more of itself, though it runs until it ends
 fn abandon() {
-    let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+    let _asking = ASKING.locked();
 
     if matches!(*Request::read(), Request::Doing(..)) {
         write(Request::Cancelling);
@@ -497,7 +497,7 @@ fn write(request: Request) {
 
 // has the scanner look again at whether to discover, starting it the first time
 pub fn nudge() {
-    let mut scanner = SCANNER.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut scanner = SCANNER.locked();
 
     let scanner = scanner.get_or_insert_with(|| {
         let (sender, nudged) = mpsc::channel();

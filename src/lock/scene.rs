@@ -2,12 +2,12 @@
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 
 use fontconfig::{CharSet, FC_FAMILY, FC_WEIGHT, Fontconfig, Pattern};
 use kanade_lock::{Backdrop, FontFile, Fonts, Image, Palette, Picture, Scene};
-use kanade_runtime::service::Service;
 use kanade_runtime::{Color, LayerWindow, Monitor, Rectangle};
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::look::{LockBackdrop, Tone};
 use crate::sources::wallpaper;
@@ -166,7 +166,7 @@ fn fonts_for(text: &str) -> Fonts {
         return fonts;
     }
 
-    let mut last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut last = LAST.locked();
     if let Some((kept, fallback)) = last.as_ref()
         && kept == text
     {

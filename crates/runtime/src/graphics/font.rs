@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex};
 
 use fontconfig::{CharSet, Fontconfig, Pattern, UnicodeCoverage};
 use ttf_parser::{Face, GlyphId};
 
 use crate::Weight;
+use crate::unpoisoned::MutexExt;
 
 // asked in this order for letters the text's own font lacks, like japanese
 const FALLBACK_FAMILIES: [&str; 2] = ["Noto Sans", "Noto Sans CJK JP"];
@@ -20,9 +21,7 @@ static FALLBACKS: LazyLock<Mutex<HashMap<char, Option<&'static Face<'static>>>>>
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn set_default(family: &str) {
-    let mut default_family = DEFAULT_FAMILY
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
+    let mut default_family = DEFAULT_FAMILY.locked();
 
     *default_family = String::from(family);
 }
@@ -30,16 +29,13 @@ pub fn set_default(family: &str) {
 pub fn load_weighted(family: Option<&str>, weight: Weight) -> &'static Face<'static> {
     let family = match family {
         Some(family) => String::from(family),
-        None => DEFAULT_FAMILY
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone(),
+        None => DEFAULT_FAMILY.locked().clone(),
     };
 
     // bold and regular are different files, so each weight is kept apart
     let key = format!("{family} {}", weight.style());
 
-    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut loaded = LOADED.locked();
 
     if let Some(font) = loaded.get(&key) {
         return font;
@@ -131,7 +127,7 @@ pub fn measure_letter<'a>(font: &'a Face<'a>, letter: char, size: f32) -> Measur
 }
 
 fn fallback(letter: char) -> Option<&'static Face<'static>> {
-    let mut fallbacks = FALLBACKS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut fallbacks = FALLBACKS.locked();
 
     if let Some(found) = fallbacks.get(&letter) {
         return *found;
@@ -208,7 +204,7 @@ fn find_covering(letter: char) -> Option<&'static Face<'static>> {
 fn load_file(path: &str, index: u32) -> &'static Face<'static> {
     let key = format!("{path} {index}");
 
-    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut loaded = LOADED.locked();
 
     if let Some(face) = loaded.get(&key) {
         return face;

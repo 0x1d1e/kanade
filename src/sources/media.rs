@@ -12,13 +12,13 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::palette::Palette;
 use crate::bus::{Argument, Bus, Signal, Value};
-use kanade_runtime::Color;
 use kanade_runtime::service::Service;
+use kanade_runtime::{Color, MutexExt};
 
 use super::playback::{self, Deck, Playback, Timeline, Tint};
 use crate::island::activity::{
@@ -80,7 +80,7 @@ static FEED: OnceLock<Feed> = OnceLock::new();
 impl Feed {
     // the follower's end; one follower runs at a time, and one that panicked left it whole
     fn events(&self) -> MutexGuard<'_, Receiver<Event>> {
-        self.events.lock().unwrap_or_else(PoisonError::into_inner)
+        self.events.locked()
     }
 }
 

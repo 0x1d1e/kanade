@@ -16,11 +16,11 @@ use std::fmt;
 use std::io::{self, BufRead, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::sources::wake::{self, Failed};
 use crate::supervise;
@@ -345,14 +345,14 @@ const PUT_LOOK: Duration = Duration::from_millis(5);
 static AWAITED: Mutex<Option<(Content, Sender<()>)>> = Mutex::new(None);
 
 fn awaited() -> MutexGuard<'static, Option<(Content, Sender<()>)>> {
-    AWAITED.lock().unwrap_or_else(PoisonError::into_inner)
+    AWAITED.locked()
 }
 
 // the wl-copy serving the last restored entry, until another took the selection and it was reaped
 static HELD: Mutex<Option<Child>> = Mutex::new(None);
 
 fn held() -> MutexGuard<'static, Option<Child>> {
-    HELD.lock().unwrap_or_else(PoisonError::into_inner)
+    HELD.locked()
 }
 
 // starts its threads, each for good; without wl-paste there is no history

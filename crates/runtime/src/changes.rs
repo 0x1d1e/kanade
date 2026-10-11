@@ -3,9 +3,10 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 
 use crate::timing;
+use crate::unpoisoned::MutexExt;
 
 // the backend sets this once, so services never name the event loop's types
 static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -99,17 +100,14 @@ pub fn mark_all() {
         eprintln!("change everything");
     }
 
-    CHANGED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .everything = true;
+    CHANGED.locked().everything = true;
 
     ping();
 }
 
 // only the windows that read this service are drawn again
 pub fn mark(service: TypeId) {
-    let mut changes = CHANGED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut changes = CHANGED.locked();
 
     changes
         .changed
@@ -124,7 +122,7 @@ pub fn mark(service: TypeId) {
 
 // only the windows that read these parts, or the whole service, are drawn again
 pub fn mark_scopes(scopes: impl IntoIterator<Item = Scope>) {
-    let mut changes = CHANGED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut changes = CHANGED.locked();
 
     changes
         .changed
@@ -139,7 +137,7 @@ pub fn mark_scopes(scopes: impl IntoIterator<Item = Scope>) {
 
 // none means every window should draw
 pub fn take() -> Option<Changed> {
-    let mut changes = CHANGED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut changes = CHANGED.locked();
 
     let changed = changes.changed.take().unwrap_or_default();
 

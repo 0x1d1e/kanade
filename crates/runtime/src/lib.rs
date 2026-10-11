@@ -21,11 +21,13 @@ mod placement;
 mod style;
 mod timing;
 mod toplevels;
+mod unpoisoned;
 mod wayland;
 mod widgets;
 mod window;
 
 pub mod backdrop;
+pub mod queue;
 pub mod service;
 pub mod worker;
 
@@ -46,6 +48,7 @@ pub use layer_window::{
 pub use monitor::{Monitor, Monitors};
 pub use placement::{Align, Center, End, Justify, Padding, Size, Start};
 pub use style::{Fill, Image, Mask, Radius, Shadow};
+pub use unpoisoned::{MutexExt, RwLockExt};
 pub use widgets::{
     Arc, Canvas, Circle, Column, Line, Path, Rectangle, Row, ScrollArea, Shape, Stack, Text,
     TextInput, Widget,

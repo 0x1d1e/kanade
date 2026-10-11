@@ -20,11 +20,11 @@ use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::supervise;
@@ -368,7 +368,7 @@ fn follow(timer: &mut File) {
                 }
             }
 
-            *ARMED.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            *ARMED.locked() = None;
             drop(WallClock::write());
         }
     });
@@ -414,7 +414,7 @@ fn minute() -> Option<Tm> {
 
     let seconds = seconds();
 
-    let mut armed = ARMED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut armed = ARMED.locked();
 
     // a new minute reads the time zone again, so a change to it shows by the next one
     if armed.is_none_or(|minute| minute <= seconds) {

@@ -8,9 +8,11 @@
 use std::any::Any;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+use kanade_runtime::MutexExt;
 
 // how long a source that panicked waits before it runs again, as the runtime waits for a Service
 pub const RESTART: Duration = Duration::from_secs(5);
@@ -93,7 +95,7 @@ impl Trouble {
 static TROUBLES: Mutex<Vec<(String, Trouble)>> = Mutex::new(Vec::new());
 
 fn trouble(name: &str, change: impl FnOnce(&mut Trouble)) {
-    let mut troubles = TROUBLES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut troubles = TROUBLES.locked();
 
     let at = match troubles.iter().position(|(each, _)| each == name) {
         Some(at) => at,
@@ -128,8 +130,7 @@ pub fn stopped(name: &str, why: String) {
 // a line for each panic count and each stop, the sources in the order they first went wrong
 pub fn status() -> Vec<String> {
     TROUBLES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
+        .locked()
         .iter()
         .flat_map(|(name, trouble)| trouble.lines(name))
         .collect()

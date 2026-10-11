@@ -1,6 +1,5 @@
 use std::mem;
 use std::num::NonZeroU32;
-use std::sync::PoisonError;
 
 use smithay_client_toolkit::shell::{
     WaylandSurface,
@@ -9,6 +8,7 @@ use smithay_client_toolkit::shell::{
 use wayland_client::{Connection, QueueHandle};
 
 use crate::Window;
+use crate::unpoisoned::MutexExt;
 use crate::window::{CLOSING, OPEN, REQUESTED};
 
 use super::{
@@ -50,14 +50,12 @@ impl WaylandState {
 
         self.add(View::Normal(name, view), None, role);
 
-        OPEN.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(name);
+        OPEN.locked().push(name);
     }
 
     // the windows open_window asked for, skipping any already open
     pub fn open_requested(&mut self) {
-        let mut queue = REQUESTED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut queue = REQUESTED.locked();
 
         let requested = mem::take(&mut *queue);
 
@@ -80,7 +78,7 @@ impl WaylandState {
 
     // the windows close_window asked to close
     pub fn close_requested(&mut self) {
-        let mut queue = CLOSING.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut queue = CLOSING.locked();
 
         let closing = mem::take(&mut *queue);
 

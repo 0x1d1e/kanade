@@ -13,13 +13,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::bus::{Argument, Bus, Value};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::network::{NAME, ROOT};
 use super::system::Watched;
@@ -724,7 +724,7 @@ struct Listening(u64);
 
 impl Drop for Listening {
     fn drop(&mut self) {
-        let mut listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut listening = LISTENING.locked();
 
         listening.retain(|(asked, _)| *asked != self.0);
     }
@@ -733,7 +733,7 @@ impl Drop for Listening {
 // the join `asked` listening, and what it hears
 fn listen(asked: u64) -> (Listening, Receiver<Heard>) {
     let (sender, heard) = mpsc::channel();
-    let mut listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut listening = LISTENING.locked();
 
     listening.push((asked, sender));
 
@@ -745,7 +745,7 @@ fn listen(asked: u64) -> (Listening, Receiver<Heard>) {
  * connection come from different watches, so a join may hear them in either order
  */
 pub fn hear(heard: Heard) {
-    let listening = LISTENING.lock().unwrap_or_else(PoisonError::into_inner);
+    let listening = LISTENING.locked();
 
     for (_, sender) in listening.iter() {
         // one that stops listening is removed by its `Listening`
@@ -869,14 +869,14 @@ pub fn disconnect(networks: &Networks) {
 
 // a join or disconnect asked, newer than any before
 fn ask() -> u64 {
-    let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut asked = ASKED.locked();
     *asked += 1;
     *asked
 }
 
 // the outcome of the last thing asked, dropped when something newer was asked since
 fn set(asked: u64, join: Join) {
-    let last = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let last = ASKED.locked();
 
     if *last == asked && *Join::read() != join {
         *Join::write() = join;

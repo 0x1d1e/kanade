@@ -17,12 +17,12 @@
 
 use std::fs;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::sources::brightness::{self, Brightness};
 use crate::sources::pulse::Audio;
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::seat;
 use super::wake::{Announcer, Pace, Wakes};
@@ -156,7 +156,7 @@ impl Shown {
  * seat, whose keys and radios are heard too
  */
 fn post(osd: Osd, shows: impl FnOnce(&mut Shown, Instant) -> bool) {
-    let mut shown = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut shown = SHOWN.locked();
     let now = Instant::now();
 
     if seat::seated() && shows(&mut shown, now) {
@@ -169,7 +169,7 @@ fn post(osd: Osd, shows: impl FnOnce(&mut Shown, Instant) -> bool) {
  * order and leave the older level showing
  */
 fn read_and_post(read: impl FnOnce() -> Option<Osd>) {
-    let mut shown = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut shown = SHOWN.locked();
 
     if let Some(osd) = read().filter(|_| seat::seated()) {
         let now = Instant::now();

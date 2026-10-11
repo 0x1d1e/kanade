@@ -5,10 +5,10 @@
 //! niri.rs follows niri's EventStream and says which workspace is focused; this watches that and
 //! decides what the island makes of it.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::Instant;
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::niri::{Niri, Seen};
 use crate::config;
@@ -28,11 +28,7 @@ static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
 // a watcher of `Niri`: posts or withdraws the switch niri made since it last ran
 pub fn follow() {
     let seen = Niri::read().seen.clone();
-    let before = SEEN
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .replace(seen.clone())
-        .unwrap_or_default();
+    let before = SEEN.locked().replace(seen.clone()).unwrap_or_default();
 
     let now = Instant::now();
 

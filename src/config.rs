@@ -30,10 +30,10 @@ use std::fs;
 use std::io;
 use std::iter;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, RwLockExt, service::Service};
 use serde::Deserialize;
 use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
@@ -1416,7 +1416,7 @@ static CURRENT: LazyLock<RwLock<Effect>> = LazyLock::new(|| {
             eprintln!("kanade: {problem}");
         }
 
-        *SKIPPED.lock().unwrap_or_else(PoisonError::into_inner) = problems;
+        *SKIPPED.locked() = problems;
         config
     };
 
@@ -1429,10 +1429,7 @@ static SKIPPED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub fn skipped() -> Vec<String> {
     LazyLock::force(&CURRENT);
 
-    SKIPPED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    SKIPPED.locked().clone()
 }
 
 /*
@@ -1456,25 +1453,21 @@ pub fn get() -> Arc<Config> {
     // subscribes the window being drawn, if any, to reloads
     drop(Reloads::read());
 
-    CURRENT
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .config
-        .clone()
+    CURRENT.reading().config.clone()
 }
 
 // the config in effect on one output, its overrides over the global one, as `Config::on` gives it
 pub fn on(output: &str) -> Arc<Config> {
     drop(Reloads::read());
 
-    let effect = CURRENT.read().unwrap_or_else(PoisonError::into_inner);
+    let effect = CURRENT.reading();
 
     effect.outputs.get(output).unwrap_or(&effect.config).clone()
 }
 
 // a reload's config replaces the one in effect (`crate::reload`)
 pub fn install(config: Config) {
-    *CURRENT.write().unwrap_or_else(PoisonError::into_inner) = Effect::new(config);
+    *CURRENT.writing() = Effect::new(config);
 }
 
 // draws again every window that read the config, once a reload has applied all of it

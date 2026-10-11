@@ -10,6 +10,7 @@ patch, issue or PR.
 `crates/runtime` is Kanade's runtime:
 
 - `service.rs`, `worker.rs`: the Service store and the control-call thread (ADR 0027 step 1).
+- `queue.rs`, `unpoisoned.rs`: mailboxes a restarted thread reads again (#95), and the poisoned-lock take.
 - Since ADR 0028: the SCTK event loop
   and windows (`wayland/`, `layer_window.rs`, `window.rs`), drawing
   (`graphics/`: vello plus a quad pipeline, text, images, SVG, shaders),

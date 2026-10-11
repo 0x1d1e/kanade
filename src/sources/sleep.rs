@@ -23,10 +23,12 @@ use std::convert::Infallible;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use kanade_runtime::MutexExt;
 
 use zbus::MatchRule;
 use zbus::blocking::fdo::DBusProxy;
@@ -145,7 +147,7 @@ pub fn spawn() {
 
 // for `kanade status`
 pub fn status() -> String {
-    let line = match &*HEALTH.lock().unwrap_or_else(PoisonError::into_inner) {
+    let line = match &*HEALTH.locked() {
         Health::Starting => String::from("taking a delay inhibitor"),
         Health::Held => String::from("delay inhibitor held"),
         Health::Sleeping => String::from("delay inhibitor let go of, for sleep"),
@@ -163,7 +165,7 @@ pub fn status() -> String {
 }
 
 fn health(health: Health) {
-    *HEALTH.lock().unwrap_or_else(PoisonError::into_inner) = health;
+    *HEALTH.locked() = health;
 }
 
 /*

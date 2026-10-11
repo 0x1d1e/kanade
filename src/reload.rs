@@ -12,12 +12,12 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
@@ -72,7 +72,7 @@ pub fn spawn() {
 
 // reads every layer again and applies them if they hold no problem; says on stderr what came of it
 pub fn reload() -> Outcome {
-    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = STATE.locked();
     let (read, problems) = config::read();
     let running = config::get();
 
@@ -148,11 +148,7 @@ pub fn reload() -> Outcome {
 
 // the last reload's problems, none once one applies
 pub fn error() -> Option<String> {
-    STATE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .error
-        .clone()
+    STATE.locked().error.clone()
 }
 
 // what a reload would come to, changing nothing
@@ -165,7 +161,7 @@ pub fn validate() -> Outcome {
 // the layout and generation, what the config in effect skipped at start, the last reload error
 // and the keys pending restart
 pub fn status() -> Vec<String> {
-    let state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let state = STATE.locked();
 
     lines(&state, &config::skipped())
 }

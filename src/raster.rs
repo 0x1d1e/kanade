@@ -9,8 +9,10 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
+
+use kanade_runtime::MutexExt;
 
 // numbers each write, so two threads writing the same file never share its partial one
 static WRITES: AtomicU64 = AtomicU64::new(0);
@@ -59,7 +61,7 @@ fn store(path: &Path, contents: &[u8]) -> bool {
      */
     static FAILING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
-    let mut failing = FAILING.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut failing = FAILING.locked();
     let folder = path.parent().unwrap_or(path).to_owned();
 
     match &written {

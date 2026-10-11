@@ -16,9 +16,8 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
   - Fullscreen, Privacy, Banners, the core and the workspace switch watch `Niri` in their own start; windows and screenshots take niri's events by `niri::on_windows` and `niri::on_screenshot`. `Posts` is gone.
   - `niri.rs` still imports `island::activity::Workspace` (the DTO a `Focused` holds), the one upward import left; move it into the source if full independence is the goal.
   - Not run: losing the stream (restart niri). It should clear the dots and the shown windows, and they stay cleared: the stream is not reconnected.
-- [ ] Restart-surviving worker queue is declared four times (low-level)
-  - `google.rs`, `weather.rs` and `wallpaper.rs` declare an identical `static QUEUE: LazyLock<(Sender<T>, Mutex<Receiver<T>>)>`; `island/service.rs` and `banners/mod.rs` have the `SyncSender` NUDGE variant. A small `supervise::Queue<T>` would absorb them.
-- [ ] `PoisonError::into_inner` is spelled out at 147 sites; a small lock helper would replace them (low-level).
+- [x] Restart-surviving queues and poisoned locks: `kanade_runtime::queue::{Queue, Nudge}` and `MutexExt::locked`, `RwLockExt::{reading, writing}` (`unpoisoned.rs`)
+  - Not folded in: `media.rs`'s `Feed`, which hands a clone of its sender to the bus watches while it is made; the two `Condvar` waits; `crates/lock`, which depends on no Kanade crate and has its own CPU renderer.
 - [ ] `dock.rs` (2363 lines) holds the Island-aware geometry (about lines 1084-1480: `covered`, `island_room`, `reaches`, ...); move it to `merge.rs` only if churn there shows the cost.
 
 Not worth changing, by this review:

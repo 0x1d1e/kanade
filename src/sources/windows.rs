@@ -9,9 +9,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::desktop::{self, Entry};
 use super::icons;
@@ -140,7 +140,7 @@ fn name(app: &App) -> &str {
 
 // what niri said, applied; the Service is written only when the running apps change
 pub fn hear(heard: Heard) {
-    let mut tracked = TRACKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut tracked = TRACKED.locked();
 
     if tracked.apply(heard) {
         tracked.publish(&desktop::dirs());
@@ -149,7 +149,7 @@ pub fn hear(heard: Heard) {
 
 // the desktop file ids the Dock pins, published with their entries whether they run or not
 pub fn pin(ids: Vec<String>) {
-    let mut tracked = TRACKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut tracked = TRACKED.locked();
 
     tracked.pins = ids;
     tracked.publish(&desktop::dirs());
@@ -157,7 +157,7 @@ pub fn pin(ids: Vec<String>) {
 
 // matches every window again, with the overrides of a reloaded config and the entries as they are now
 pub fn rematch() {
-    let mut tracked = TRACKED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut tracked = TRACKED.locked();
 
     tracked.entries = None;
     tracked.missed.clear();

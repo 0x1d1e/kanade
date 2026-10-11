@@ -18,11 +18,11 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, ChildStderr};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::capture::{self, COPY, SHOW, SHOWN};
 use super::json::Json;
@@ -237,19 +237,13 @@ impl Request {
     }
 }
 
-fn lock() -> MutexGuard<'static, Recorder> {
-    RECORDER_STATE
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-}
-
 /*
  * starts recording the focused output, to the path returned; `status` says once the first frame
  * is written. Call it from the draw thread, which lives as long as Kanade: the recorder is told to
  * finish when the thread that started it ends
  */
 pub fn start() -> Result<String, String> {
-    let mut recorder = lock();
+    let mut recorder = RECORDER_STATE.locked();
 
     if let Some(running) = &recorder.running {
         return Err(format!("already recording to {}", running.path));
@@ -317,7 +311,7 @@ pub fn start() -> Result<String, String> {
 
 // asks the recorder to finish the file, at the path returned; `status` says once it is saved
 pub fn stop() -> Result<String, String> {
-    let mut recorder = lock();
+    let mut recorder = RECORDER_STATE.locked();
     let running = recorder.running.as_mut().ok_or("not recording")?;
 
     interrupt(running)?;
@@ -338,7 +332,7 @@ fn interrupt(running: &mut Running) -> Result<(), String> {
 }
 
 pub fn status() -> Status {
-    let recorder = lock();
+    let recorder = RECORDER_STATE.locked();
 
     match (&recorder.running, &recorder.ended) {
         (Some(running), _) if running.stopping => Status::Finishing {
@@ -369,7 +363,7 @@ pub fn status() -> Status {
 
 // ends the recording at `path`, as its Activity's Stop does
 pub fn stop_at(path: &str) {
-    if let Err(error) = stop_recording(&mut lock(), path) {
+    if let Err(error) = stop_recording(&mut RECORDER_STATE.locked(), path) {
         eprintln!("capture: stopping the recording: {error}");
     }
 }
@@ -388,7 +382,7 @@ fn stop_recording(recorder: &mut Recorder, path: &str) -> Result<(), String> {
  */
 fn follow(said: Option<ChildStderr>, path: String) {
     let said = last_lines(said);
-    let mut recorder = lock();
+    let mut recorder = RECORDER_STATE.locked();
 
     // under the lock, so a newer recording's start posts after
     if let Some(clip) = end(&mut recorder, &path, said) {
@@ -471,7 +465,7 @@ fn end(recorder: &mut Recorder, path: &str, said: VecDeque<String>) -> Option<Cl
 
 // the recording at `path` copied, shown so unless a newer recording took its place
 pub fn copied(path: &str) {
-    let recorder = lock();
+    let recorder = RECORDER_STATE.locked();
 
     let last = matches!(
         &recorder.ended,

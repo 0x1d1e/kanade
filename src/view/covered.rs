@@ -1,9 +1,9 @@
 //! Whether a fullscreen window covers the Island, and when it shows over one.
 
 use std::collections::BTreeSet;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
-use kanade_runtime::Monitor;
+use kanade_runtime::{Monitor, MutexExt};
 
 use crate::sources::fullscreen;
 
@@ -24,7 +24,7 @@ pub fn covered(monitor: &Monitor, overview: impl FnOnce() -> bool) -> bool {
  * comes to rest, so it hides there whole rather than cut off mid-morph
  */
 pub(super) fn raise(monitor: &str, wanted: bool, settled: bool) -> bool {
-    let mut raised = RAISED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut raised = RAISED.locked();
 
     if wanted {
         raised.insert(monitor.to_owned());

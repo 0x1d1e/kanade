@@ -9,11 +9,11 @@ use std::env;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::clipboard;
 use super::json::{self, Json};
@@ -108,7 +108,7 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
 
 // a free path this second, kept from the next screenshot this second
 fn name(dir: &Path, stamp: String) -> PathBuf {
-    let mut named = NAMED.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut named = NAMED.locked();
     let (named_stamp, named) = &mut *named;
 
     if *named_stamp != stamp {
@@ -189,7 +189,7 @@ fn action(mode: Mode, path: &str, window: Option<u64>) -> String {
 
 // niri saved a screenshot at `path`
 pub fn captured(path: String) {
-    *LAST.lock().unwrap_or_else(PoisonError::into_inner) = Some(path.clone());
+    *LAST.locked() = Some(path.clone());
 
     show(Shot {
         path,
@@ -255,7 +255,7 @@ fn copy(path: String) {
         return;
     }
 
-    let last = LAST.lock().unwrap_or_else(PoisonError::into_inner);
+    let last = LAST.locked();
 
     if last.as_deref() == Some(path.as_str()) {
         drop(last);

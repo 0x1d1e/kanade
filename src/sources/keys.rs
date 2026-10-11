@@ -15,8 +15,10 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, PoisonError};
+
+use kanade_runtime::MutexExt;
 
 use inotify::{EventMask, Inotify, WatchMask};
 
@@ -155,7 +157,7 @@ static REFUSED: AtomicBool = AtomicBool::new(false);
 pub fn follow(reads: Reads) {
     let wanted = Wanted::of(reads);
 
-    *LIT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Lights::now());
+    *LIT.locked() = Some(Lights::now());
 
     // watched before the first look, so a device that comes between is seen by one or the other
     let watch = Inotify::init().and_then(|inotify| {
@@ -231,19 +233,14 @@ fn read(device: &Path, seen: Seen, reads: Reads, wanted: &Wanted) {
     }
 
     {
-        let mut failed = FAILED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut failed = FAILED.locked();
 
         // a new device under the old name is tried again
         if seen == Seen::Created {
             failed.remove(device);
         }
 
-        if failed.contains(device)
-            || READ
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(device)
-        {
+        if failed.contains(device) || READ.locked().contains(device) {
             return;
         }
     }
@@ -256,9 +253,7 @@ fn read(device: &Path, seen: Seen, reads: Reads, wanted: &Wanted) {
         }
     };
 
-    READ.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(device.to_owned());
+    READ.locked().insert(device.to_owned());
 
     let device = device.to_owned();
     let wanted = wanted.clone();
@@ -271,9 +266,7 @@ fn read(device: &Path, seen: Seen, reads: Reads, wanted: &Wanted) {
             Err(error) => error,
         };
 
-        READ.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&device);
+        READ.locked().remove(&device);
 
         // unplugged
         if ended.kind() != io::ErrorKind::NotFound && ended.raw_os_error() != Some(ENODEV) {
@@ -307,10 +300,7 @@ fn refused(device: &Path, seen: Seen, error: &io::Error) {
         // gone before it was read
         io::ErrorKind::NotFound => {}
         _ => {
-            FAILED
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(device.to_owned());
+            FAILED.locked().insert(device.to_owned());
 
             eprintln!("kanade: cannot read {} ({error})", device.display());
         }
@@ -416,8 +406,5 @@ fn listen(mut file: File, reads: Reads) -> io::Error {
 }
 
 fn turned(mode: Mode) -> bool {
-    LIT.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(Lights::default)
-        .turn(mode)
+    LIT.locked().get_or_insert_with(Lights::default).turn(mode)
 }

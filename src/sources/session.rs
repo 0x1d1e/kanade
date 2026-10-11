@@ -19,11 +19,11 @@
 use std::io::{self, Write as _};
 use std::panic;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 use zbus::Message;
 use zbus::blocking::Connection;
 use zbus::zvariant::ObjectPath;
@@ -461,7 +461,7 @@ fn follow(woken: &Receiver<()>) {
 }
 
 fn pending() -> std::sync::MutexGuard<'static, Pending> {
-    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+    PENDING.locked()
 }
 
 // the moment what is left next reads a second less

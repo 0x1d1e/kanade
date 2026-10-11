@@ -10,11 +10,11 @@
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::bus::{Argument, Bus};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::island::activity::{
     Activity, Countdown, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
@@ -60,7 +60,7 @@ struct Form {
 
 impl Form {
     fn lock(&self) -> MutexGuard<'_, Option<Instant>> {
-        self.redraw.lock().unwrap_or_else(PoisonError::into_inner)
+        self.redraw.locked()
     }
 }
 

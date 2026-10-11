@@ -12,10 +12,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 
-use kanade_runtime::{Color, Image, Rectangle, Widget};
+use kanade_runtime::{Color, Image, MutexExt, Rectangle, Widget};
 
 use crate::island::geometry::{self, Rect};
 use crate::raster;
@@ -114,7 +114,7 @@ pub(crate) fn prepare() {
 fn prepare_radius(radius: u32, upright: bool, style: ShadowStyle) {
     let key = key(radius, upright, style);
 
-    if lock().contains_key(&key) {
+    if DRAWN.locked().contains_key(&key) {
         return;
     }
 
@@ -125,11 +125,7 @@ fn prepare_radius(radius: u32, upright: bool, style: ShadowStyle) {
         Image::loaded(piece);
     }
 
-    lock().entry(key).or_insert(pieces);
-}
-
-fn lock() -> MutexGuard<'static, HashMap<Key, Pieces>> {
-    DRAWN.lock().unwrap_or_else(PoisonError::into_inner)
+    DRAWN.locked().entry(key).or_insert(pieces);
 }
 
 /*
@@ -216,7 +212,7 @@ fn key(radius: u32, upright: bool, style: ShadowStyle) -> Key {
  * the window again when it is done
  */
 fn ready(wanted: f32, fits: u32, upright: bool, style: ShadowStyle) -> Option<(u32, Pieces)> {
-    let drawn = lock();
+    let drawn = DRAWN.locked();
 
     let mut prepared: Vec<(u32, &Pieces)> = radii()
         .into_iter()

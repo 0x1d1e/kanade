@@ -2,13 +2,13 @@
 //! Media and Controls, and the screen's brightness, the microphone's volume and an app's on
 //! Controls.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::sources::brightness::Brightness;
 use crate::sources::pulse::Audio;
-use kanade_runtime::service::Service;
 use kanade_runtime::{Center, Color, Cursor, Rectangle, Start};
+use kanade_runtime::{MutexExt, service::Service};
 
 use crate::modules;
 use crate::sources::audio::{self, Mixer, Node};
@@ -74,7 +74,7 @@ impl Slider {
             return;
         }
 
-        let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut asked = ASKED.locked();
         let now = Instant::now();
 
         let (from, carry) = match asked.as_ref() {
@@ -106,7 +106,7 @@ impl Slider {
             return;
         }
 
-        *ASKED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Asked {
+        *ASKED.locked() = Some(Asked {
             slider: self,
             percent,
             at: Instant::now(),

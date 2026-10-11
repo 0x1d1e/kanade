@@ -6,10 +6,10 @@
 
 use std::hash::{BuildHasher, RandomState};
 use std::mem;
-use std::sync::{Mutex, Once, PoisonError};
+use std::sync::{Mutex, Once};
 
 use crate::bus::{Argument, Bus, Method, Value};
-use kanade_runtime::service::Service;
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::BLUEZ;
 use crate::supervise;
@@ -106,7 +106,7 @@ fn answer(method: Method) {
         "RequestConfirmation" => {
             let passkey = format!("{:06}", number(1));
 
-            *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(method);
+            *PENDING.locked() = Some(method);
             show(Prompt::Confirm { device, passkey });
         }
 
@@ -133,7 +133,7 @@ fn answer(method: Method) {
                 method.reply(&[Argument::from(code.as_str())]);
                 show(Prompt::Show { device, code });
             } else {
-                *PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(method);
+                *PENDING.locked() = Some(method);
                 show(Prompt::Pin {
                     device,
                     pin: String::new(),
@@ -172,10 +172,7 @@ pub fn confirm() {
         _ => return,
     };
 
-    let pending = PENDING
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
+    let pending = PENDING.locked().take();
 
     if let Some(method) = pending {
         match &pin {
@@ -220,10 +217,7 @@ pub fn over(device: &str) {
 
 // unanswered, BlueZ's question fails once it gives up waiting
 fn clear() {
-    PENDING
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
+    PENDING.locked().take();
     show(Prompt::None);
 }
 
