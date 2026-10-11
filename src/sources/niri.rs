@@ -1,25 +1,23 @@
-//! Kanade's own niri EventStream (plan 3, 5.3), tracking the overview and casts too. Hands the core a plain focused output and whether the overview is open,
-//! and the window each output shows (`fullscreen`), `workspace` the focused workspace, `privacy` whether anything captures the screen, and `capture`
-//! each screenshot niri saves, and `windows` every window opened, closed or focused. `ask` sends
-//! niri one request on a connection of its own.
+//! Kanade's own niri EventStream (plan 3, 5.3), tracking the overview and casts too. It writes what
+//! niri says as the `Niri` Service: a plain focused output, whether the overview is open and how
+//! many times it opened, the focused workspace, whether anything casts and the window each output
+//! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. A screenshot
+//! niri saves and each window it opens, closes or focuses are events, not state, so a Module takes
+//! those by `on_screenshot` and `on_windows`. `ask` sends niri one request on a connection of its
+//! own.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use kanade_runtime::service::Service;
 
-use super::capture;
-use super::fullscreen::{Fullscreen, Showing};
 use super::json::Json;
-use super::privacy::Privacy;
-use super::windows::{self, Heard, Window, WindowId};
-use super::workspace;
-use crate::banners::Banners;
-use crate::island::activity::{Activity, Id, Workspace};
-use crate::island::service::IslandService;
+use crate::island::activity::Workspace;
 use crate::supervise;
 
 // what the core gets from niri; the default is also what a lost socket degrades to
@@ -29,6 +27,9 @@ pub struct Seen {
     pub focused_output: Option<String>,
 
     pub overview: bool,
+
+    // how many times the overview has opened, so one opened and closed between two looks still shows
+    pub overviews: u32,
 
     // none while unknown, like focus
     pub workspace: Option<Focused>,
@@ -40,11 +41,65 @@ pub struct Seen {
     pub shown: BTreeMap<String, Showing>,
 }
 
-// what the island does about a change niri made
+// what niri last said, written only when it changes; a lost stream writes the default again
+#[derive(Debug, Default)]
+pub struct Niri {
+    pub seen: Seen,
+}
+
+impl Service for Niri {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    // written only by `follow`
+    fn listen() {}
+}
+
+// the window an output shows, as niri says: its active workspace's active window
+#[derive(Debug, Clone, PartialEq)]
+pub struct Showing {
+    pub app_id: Option<String>,
+
+    // logical, as an output's size is
+    pub tile: (f64, f64),
+}
+
+// niri's window id, which stays with the window for as long as it is open
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowId(pub u64);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Change {
-    Post(Activity),
-    Withdraw(Id),
+pub struct Window {
+    pub id: WindowId,
+
+    // the Wayland app id; none until the app sets one, and some never do
+    pub app_id: Option<String>,
+
+    pub focused: bool,
+
+    // asks for attention
+    pub urgent: bool,
+}
+
+// what niri said of its windows
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heard {
+    // every window, replacing those known
+    All(Vec<Window>),
+
+    // one window, new or changed; one that is focused takes the focus from every other
+    Opened(Window),
+
+    Closed(WindowId),
+
+    // none: no window has the focus
+    Focused(Option<WindowId>),
+
+    Urgent(WindowId, bool),
+
+    // the stream ended, so no window is known
+    Lost,
 }
 
 // the focused workspace, as niri last said
@@ -77,13 +132,15 @@ struct Listed {
 
 // niri's events only say what changed, so the rest is remembered here
 #[derive(Debug, Default)]
-struct Niri {
+struct Known {
     // every workspace by id
     workspaces: HashMap<u64, Listed>,
 
     focused: Option<u64>,
 
     overview: bool,
+
+    overviews: u32,
 
     // every cast by stream id
     casts: HashSet<u64>,
@@ -92,7 +149,7 @@ struct Niri {
     windows: HashMap<u64, Showing>,
 }
 
-impl Niri {
+impl Known {
     // anything niri sends that is not about workspaces, windows, focus, the overview or casts changes
     // nothing
     fn apply(&mut self, event: &Json) {
@@ -181,6 +238,10 @@ impl Niri {
         } else if let Some(overview) = event.get("OverviewOpenedOrClosed")
             && let Some(open) = overview.get("is_open").and_then(Json::as_bool)
         {
+            if open && !self.overview {
+                self.overviews = self.overviews.wrapping_add(1);
+            }
+
             self.overview = open;
         } else if let Some(changed) = event.get("CastsChanged") {
             let casts = changed.get("casts").and_then(Json::as_array);
@@ -228,6 +289,7 @@ impl Niri {
         Seen {
             focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
+            overviews: self.overviews,
             workspace,
             casting: !self.casts.is_empty(),
             shown,
@@ -334,18 +396,44 @@ fn window(window: &Json) -> Option<Window> {
     })
 }
 
-// which Modules beside the core hear from niri; one that is off hears nothing
-#[derive(Debug, Clone, Copy)]
-pub struct Posts {
-    pub workspace: bool,
-    pub privacy: bool,
-    pub banners: bool,
-    pub capture: bool,
-    pub windows: bool,
+// what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
+static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
+static SCREENSHOTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
+
+// set once `follow` runs, after which a Module can no longer ask to hear
+static FOLLOWING: AtomicBool = AtomicBool::new(false);
+
+// `then` hears every window event, on the niri thread, so it must not block. Taken before `follow`
+// runs, or the windows niri lists first are missed
+pub fn on_windows(then: fn(Heard)) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    WINDOWS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(then);
+}
+
+// `then` hears the path of each screenshot niri saves, on the niri thread, so it must not block
+pub fn on_screenshot(then: fn(String)) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    SCREENSHOTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(then);
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
-pub fn follow(posts: Posts) {
+pub fn follow() {
+    FOLLOWING.store(true, Ordering::Relaxed);
+
     // kept across a restart, so the new stream's first events post only what changed meanwhile
     let mut posted = Seen::default();
 
@@ -353,17 +441,25 @@ pub fn follow(posts: Posts) {
         run(
             connect().map(BufReader::new),
             &mut posted,
-            |before, seen| {
-                post(posts, before, seen);
-            },
+            |_, seen| Niri::write().seen = seen.clone(),
             |path| {
-                if posts.capture {
-                    capture::captured(path);
+                let heard = SCREENSHOTS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+
+                for then in heard {
+                    then(path.clone());
                 }
             },
             |heard| {
-                if posts.windows {
-                    windows::hear(heard);
+                let hearing = WINDOWS
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+
+                for then in hearing {
+                    then(heard.clone());
                 }
             },
         );
@@ -529,7 +625,7 @@ fn watch(
     hear: &mut impl FnMut(Heard),
 ) -> io::Error {
     let mut lines = lines.lines();
-    let mut niri = Niri::default();
+    let mut niri = Known::default();
 
     // niri answers the request first, events follow on the same connection
     match lines.next() {
@@ -572,49 +668,6 @@ fn watch(
     io::ErrorKind::UnexpectedEof.into()
 }
 
-/*
- * the core hears of focus and the overview only when they change, of the focused workspace only
- * as a switch, so a list that only renumbers wakes nothing; the privacy cluster hears of casts
- * only as the first starts or the last stops, the Banners of focus only as it moves, `fullscreen`
- * of the windows shown only as one changes
- */
-fn post(posts: Posts, before: &Seen, seen: &Seen) {
-    if before.shown != seen.shown {
-        Fullscreen::write().shown.clone_from(&seen.shown);
-    }
-
-    if posts.privacy && before.casting != seen.casting {
-        Privacy::write().casting = seen.casting;
-    }
-
-    if posts.banners && before.focused_output != seen.focused_output {
-        Banners::write().focus(seen.focused_output.clone(), Instant::now());
-    }
-
-    let focus = (&before.focused_output, before.overview) != (&seen.focused_output, seen.overview);
-    let change = posts
-        .workspace
-        .then(|| workspace::change(before, seen))
-        .flatten();
-
-    if !focus && change.is_none() {
-        return;
-    }
-
-    let now = Instant::now();
-    let mut island = IslandService::write();
-
-    if focus {
-        island.set_niri(seen.focused_output.clone(), seen.overview, now);
-    }
-
-    match change {
-        Some(Change::Post(activity)) => island.post(activity, now),
-        Some(Change::Withdraw(id)) => island.withdraw(&id, now),
-        None => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +705,23 @@ mod tests {
         assert_eq!(posts.last().cloned().unwrap_or_default(), posted);
 
         (posts, lost.kind())
+    }
+
+    // a watcher that looks once sees only the last post
+    #[test]
+    fn an_overview_opened_and_closed_is_counted() {
+        let (posts, _) = posts(&[
+            OK,
+            WORKSPACES,
+            &overview(true),
+            &activated(2, true),
+            &overview(false),
+        ]);
+        let last = posts.last().expect("the stream changed things");
+
+        assert!(!last.overview);
+        assert_eq!(last.overviews, 1);
+        assert_eq!(last.workspace.as_ref().map(|focused| focused.id), Some(2));
     }
 
     #[test]

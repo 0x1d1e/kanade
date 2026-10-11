@@ -1,7 +1,7 @@
 //! Running windows and apps (#143, docs/design.md Modules, ADR 0014): niri's windows, grouped by
-//! the app each belongs to, for the Dock. niri.rs reads them off the island's niri stream and hands
-//! them here as `Heard`; this keeps them, matches each `app_id` to a `.desktop` entry and publishes
-//! the result as the `Windows` Service, which holds nothing of niri's but its window ids.
+//! the app each belongs to, for the Dock. niri.rs reads them off its stream and hands them here as
+//! `Heard`, which it defines; this keeps them, matches each `app_id` to a `.desktop` entry and
+//! publishes the result as the `Windows` Service, which holds nothing of niri's but its window ids.
 //!
 //! The `.desktop` entries are read once, when the first window comes or the Dock pins an app, and
 //! read again only when an `app_id` or pinned id comes that none of them matches, or the config is
@@ -16,44 +16,8 @@ use kanade_runtime::service::Service;
 use super::desktop::{self, Entry};
 use super::icons;
 use super::launch::Launch;
+use super::niri::{Heard, Window, WindowId};
 use crate::config;
-
-// niri's window id, which stays with the window for as long as it is open
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WindowId(pub u64);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Window {
-    pub id: WindowId,
-
-    // the Wayland app id; none until the app sets one, and some never do
-    pub app_id: Option<String>,
-
-    pub focused: bool,
-
-    // asks for attention
-    pub urgent: bool,
-}
-
-// what niri said of its windows, as niri.rs reads it
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Heard {
-    // every window, replacing those known
-    All(Vec<Window>),
-
-    // one window, new or changed; one that is focused takes the focus from every other
-    Opened(Window),
-
-    Closed(WindowId),
-
-    // none: no window has the focus
-    Focused(Option<WindowId>),
-
-    Urgent(WindowId, bool),
-
-    // the stream ended, so no window is known
-    Lost,
-}
 
 // the `.desktop` entry an app matched, as the Dock shows and launches it
 #[derive(Debug, Clone, PartialEq, Eq)]

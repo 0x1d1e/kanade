@@ -312,10 +312,20 @@ impl IslandService {
     }
 
     /*
-     * everything niri tells the core, in one update reconciled once. Focus moves the
-     * FocusedOutput Activities; the focused island is touched, so every untouched one is unfocused
+     * everything niri tells the core, in one update reconciled once, and whether it changed
+     * anything. Focus moves the FocusedOutput Activities; the focused island is touched, so every
+     * untouched one is unfocused
      */
-    pub fn set_niri(&mut self, focused_output: Option<String>, overview: bool, now: Instant) {
+    pub fn set_niri(
+        &mut self,
+        focused_output: Option<String>,
+        overview: bool,
+        now: Instant,
+    ) -> bool {
+        if focused_output == self.focused_output && overview == self.presentations.overview() {
+            return false;
+        }
+
         if let Some(monitor) = &focused_output {
             self.island(monitor);
         }
@@ -328,6 +338,8 @@ impl IslandService {
         self.focused_output = focused_output;
         self.presentations.set_overview(overview);
         self.sync(now);
+
+        true
     }
 
     // what the Arbiter shows on this island at `now`

@@ -14,6 +14,7 @@ use std::io::{self, BufRead};
 use kanade_runtime::service::Service;
 
 use super::json::Json;
+use super::niri::Niri;
 use super::pipewire::{self, DUMP, LINK, NODE, Object};
 use super::wake;
 use crate::supervise;
@@ -41,6 +42,18 @@ impl Service for Privacy {
     }
 
     fn listen() {}
+}
+
+// a watcher of `Niri`: whether a screen cast runs; the same again changes nothing
+pub fn follow_casts() {
+    let casting = Niri::read().seen.casting;
+    let mut privacy = Privacy::write();
+
+    if privacy.casting == casting {
+        privacy.quiet();
+    } else {
+        privacy.casting = casting;
+    }
 }
 
 // the microphone or camera an app captures from, at least one of them

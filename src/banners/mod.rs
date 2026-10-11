@@ -14,6 +14,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{LazyLock, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::sources::niri::Niri;
 use crate::sources::notifications::{Notification, Notifications, Urgency};
 use kanade_runtime::service::Service;
 use kanade_runtime::{
@@ -174,6 +175,18 @@ impl Banners {
  */
 pub fn showing(monitor: &str) -> bool {
     modules::on("banners") && !Banners::read().shown_on(monitor).is_empty()
+}
+
+// a watcher of `Niri`: the Banners follow the focus to its output; the same again changes nothing
+pub fn follow_focus() {
+    let focused = Niri::read().seen.focused_output.clone();
+    let mut banners = Banners::write();
+
+    if banners.focused_output == focused {
+        banners.quiet();
+    } else {
+        banners.focus(focused, Instant::now());
+    }
 }
 
 // forgets the outputs that left, with their Banners' places

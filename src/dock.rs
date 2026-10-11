@@ -37,8 +37,8 @@ use crate::merge;
 use crate::modules;
 use crate::scene;
 use crate::sources::launch::Launch;
-use crate::sources::niri::{self, Acted};
-use crate::sources::windows::{self, App, DesktopEntry, Window, WindowId, Windows};
+use crate::sources::niri::{self, Acted, Window, WindowId};
+use crate::sources::windows::{self, App, DesktopEntry, Windows};
 use crate::theme::{self, SEMANTIC, ThemeRoles, radius};
 use crate::view;
 
