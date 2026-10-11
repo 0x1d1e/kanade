@@ -337,7 +337,7 @@ Need design before commitment:
 ## Open
 
 - Track/test the privacy dots at each small form and beside a side edge.
-- Blur waits for a viable niri background-effect path.
+- Blur is taken only for the Settings window, through `ext-background-effect-v1` (ADR 0024); the Island, Dock and Banners stay on their own capture.
 - Native polkit waits for safe helper stdin integration.
 - Plugins/hooks/ASR remain deferred design decisions.
 
