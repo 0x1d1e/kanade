@@ -19,14 +19,14 @@ Sources of truth: tracker = work/status; `CONTEXT.md` = domain; ADRs = durable r
 
 ## Domain
 
-- **Island**: shell surface/output, on the edge and side `island.edge`/`island.align` give it (top-center by default; also the middle of the left or right edge, where its small forms stand upright). The canvas follows the largest body (`island.width`/`island.height`) and the output; list Surfaces fit their content up to it (ADR 0030). Idle, it may slide past its edge until the pointer touches it or an Activity shows (`island.autohide`), or keep windows off its strip (`island.reserve`).
+- **Island**: shell surface/output, on the edge and side `island.edge`/`island.align` give it (top-center by default; also the middle of the left or right edge, where its small forms stand upright). The canvas follows the largest body (`island.width`/`island.height`), made smaller on an output with no room for it; list Surfaces fit their content up to it (ADR 0030). Idle, it may slide past its edge until the pointer touches it or an Activity shows (`island.autohide`), or keep windows off its strip (`island.reserve`).
 - **Rest**: idle Island; shows the clock.
 - **Split**: Compact showing the primary and the top Satellite in one split body; each segment peeks and opens its own Activity ([ADR 0010](adr/0010-split-and-rest-right-click.md)).
 - **Activity**: live item eligible for Island slots.
 - **Satellite**: Persistent Ongoing/Critical Activity that is not the primary; cap `SATELLITES`, rest a count.
 - **Arbiter**: Island selection policy.
 - **Surface**: interactive content of an Expanded Island.
-- **Privacy cluster**: dots at the Island body's trailing end; never Activity.
+- **Privacy cluster**: dots at the Island body's trailing end, or its top corner in a Surface, fading in and out; never Activity.
 - **Module**: user-disableable feature/interface.
 - **Service**: `kanade_runtime::service::Service`; lazy shared state/integration source.
 - **LauncherProvider**: query → ranked launcher results/actions.

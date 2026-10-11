@@ -34,6 +34,9 @@ pub struct Destinations {
 // Enter on it would open one rather than the app typed
 const FROM: usize = 2;
 
+// the fewest letters of each word that may match anywhere in a setting's help: fewer match nearly all
+const ANYWHERE: usize = 3;
+
 impl LauncherProvider for Destinations {
     // by name within a fit; nothing for a query of one letter or none, which lists the apps
     fn find(&self, query: &str) -> Vec<Answer> {
@@ -137,7 +140,7 @@ fn placed(query: &str) -> impl Iterator<Item = Answer> {
 
                 query
                     .split_whitespace()
-                    .all(|term| anywhere.contains(term))
+                    .all(|term| term.chars().count() >= ANYWHERE && anywhere.contains(term))
                     .then_some(Fit::Anywhere)
             })?;
 
@@ -149,4 +152,27 @@ fn placed(query: &str) -> impl Iterator<Item = Answer> {
             action: Action::Open(Destination::Settings(placed.page)),
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // two letters find a setting by its name, never by a word somewhere in its help
+    #[test]
+    fn a_short_query_matches_no_help_text() {
+        let destinations = Destinations {
+            settings: true,
+            ..Destinations::default()
+        };
+
+        for query in ["on", "to", "an", "se"] {
+            let answers = destinations.find(query);
+
+            assert!(
+                answers.iter().all(|answer| answer.fit != Fit::Anywhere),
+                "{query}"
+            );
+        }
+    }
 }

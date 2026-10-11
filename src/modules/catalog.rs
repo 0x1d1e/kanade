@@ -6,10 +6,12 @@ use kanade_runtime::Monitors;
 use kanade_runtime::service::{self, Service};
 
 use crate::cli::{Call, Verb};
+use crate::clock::WallClock;
 use crate::island::activity::{Ending, Leave};
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
+use crate::sources::calendar::Calendars;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, fullscreen, google,
     keys, launch, media, network,
@@ -18,8 +20,8 @@ use crate::sources::{
     timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    autohide, banners, cli, clock, config, dock, ipc, lock, reload, settings, shadow, supervise,
-    surfaces, theme, view,
+    autohide, banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings, shadow,
+    supervise, surfaces, theme, view,
 };
 
 use super::{CORE, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -108,21 +110,12 @@ pub const ALL: &[Module] = &[
              * watched before the first read, so none comes between, and read under the write, so a
              * reload meanwhile cannot land first
              */
-            service::watch::<Monitors>(|| {
-                IslandService::write().resize(
-                    view::largest(),
-                    view::hang(),
-                    view::peek(),
-                    Instant::now(),
-                );
-            });
-            IslandService::write().resize(
-                view::largest(),
-                view::hang(),
-                view::peek(),
-                Instant::now(),
-            );
+            service::watch::<Monitors>(|| view::resize(&mut IslandService::write()));
+            service::watch::<Calendars>(|| view::resize(&mut IslandService::write()));
+            service::watch::<WallClock>(|| view::resize(&mut IslandService::write()));
+            view::resize(&mut IslandService::write());
             service::watch::<Monitors>(autohide::forget_gone);
+            service::watch::<Monitors>(cluster::forget_gone);
             IslandService::write().withhold(&withheld());
             theme::follow(config.palette.as_deref());
             reload::spawn();

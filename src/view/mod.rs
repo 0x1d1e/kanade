@@ -5,7 +5,7 @@ use std::iter;
 use std::rc::Rc;
 use std::time::Instant;
 
-use kanade_runtime::service::Service;
+use kanade_runtime::service::{Service, Write};
 use kanade_runtime::{
     Button, Center, Horizontal, Layer, LayerWindow, Monitor, Parent, Rectangle, Scroll, Stack,
     Start, Vertical, Widget, Zone, request_frame,
@@ -51,9 +51,26 @@ use self::rest::{bare, has_battery, placeholder, rest};
 pub(crate) use self::rest::{time_peek, time_peek_upright};
 use self::satellites::satellites;
 use self::shape::Room;
-pub(crate) use self::shape::{canvas, hang, largest, peek, shape, upright};
+pub(crate) use self::shape::{canvas, hang, largest, largest_of_each, peek, shape, upright};
 pub(crate) use self::status::bar;
 pub(crate) use self::toast::toast_tile;
+
+/*
+ * sizes the Island to the outputs, the settings and today's next event (ADR 0030), redrawing
+ * nothing when they ask for what it already has
+ */
+pub(crate) fn resize(island: &mut Write<IslandService>) {
+    let (wanted, fits) = largest_of_each();
+    let narrowest = fits
+        .values()
+        .fold(wanted.width, |least, fit| least.min(fit.width));
+
+    rest::measure_agenda(narrowest);
+
+    if !island.resize((wanted, fits), hang(), peek(), Instant::now()) {
+        island.quiet();
+    }
+}
 
 // the Island's body, as liquid glass names its pane
 const ISLAND: &str = "island";
@@ -68,13 +85,15 @@ const LIVE: f32 = 0.5;
 pub fn hides() -> bool {
     let config = config::get();
 
-    config.island_place.autohide || config.rests().all(|rest| rest.bare(has_battery()))
+    config.island_place.autohide || shape::rests().iter().all(|rest| rest.bare(has_battery()))
 }
 
 /*
  * how much of its edge the Island keeps windows off, `island.reserve`: its small forms, with their
  * Satellites, and the gap on both sides, as a menu bar does; across a side edge, its width. A Peek
- * or a Surface grows over the windows. None while it autohides, as it then leaves the edge to them
+ * or a Surface grows over the windows. None while it autohides, as it then leaves the edge to them.
+ * A capture does not hold a hidden Island's strip (`hides` ignores privacy), so the reserve and the
+ * Dock's merge never flicker as one starts and stops
  */
 pub fn reserved() -> f32 {
     let config = config::get();
@@ -126,6 +145,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let island = IslandService::read();
 
     let now = Instant::now();
+    let _on = shape::On::take(monitor);
 
     let keyboard = island.keyboard(&monitor.name);
     let canvas = canvas(monitor);
@@ -167,8 +187,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     }
 
     // what captures stays shown, wherever the Island goes, but not over a fullscreen window (ADR 0033)
-    let cluster = if covered { None } else { cluster::read() };
+    let cluster = cluster::read(&monitor.name, covered, now);
     let capturing = cluster.is_some();
+
+    if cluster.as_ref().is_some_and(|cluster| cluster.moving) {
+        request_frame();
+    }
 
     // `island.autohide`: idle, it slides past its edge, leaving a strip there that brings it back
     let idle = island.presentation(&monitor.name) == Presentation::Rest
@@ -246,9 +270,11 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     layers.push(Box::new(holder));
 
-    let tray = matches!(island.presentation(&monitor.name), Presentation::Tray(_));
+    let presentation = island.presentation(&monitor.name);
+    let sideways = hang.sideways() && cluster::beside(presentation);
+    let strip = matches!(presentation, Presentation::Tray(_));
 
-    layers.extend(marks(cluster.filter(|_| !tray), body_rect, shape, hang));
+    layers.extend(marks(cluster.filter(|_| !strip), body_rect, sideways));
     layers.extend(hud(&island, monitor, body_rect, hang, now).map(|hud| Box::new(hud) as _));
 
     let mut body = Rectangle::new()
@@ -480,21 +506,9 @@ fn form_holder(
     (holder, room)
 }
 
-/*
- * the cluster over the form, going with the body's trailing end, whole up to a Peek and gone by
- * the smallest Surface as the Satellites are; a Tray's slots fill the body, so it has none
- */
-fn marks(
-    cluster: Option<Cluster>,
-    body: Rect,
-    shape: geometry::Shape,
-    hang: geometry::Hang,
-) -> Option<Box<dyn Widget>> {
-    let cluster = cluster?;
-    let opacity = geometry::satellite_opacity(shape, hang);
-
-    (opacity > 0.0)
-        .then(|| Box::new(cluster.draw(body, hang.sideways()).opacity(opacity)) as Box<dyn Widget>)
+// the cluster over the form, at the body's trailing end, or its top corner once a Surface is open; the Tray strip's slots fill its end, so it has none
+fn marks(cluster: Option<Cluster>, body: Rect, sideways: bool) -> Option<Box<dyn Widget>> {
+    Some(Box::new(cluster?.draw(body, sideways)))
 }
 
 /*

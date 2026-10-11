@@ -244,17 +244,31 @@ impl IslandService {
     }
 
     /*
-     * the config's largest body, where the Island hangs and what the time's Peek holds, at start
-     * and on each reload (ADR 0030); a body headed for the old ones morphs to the new, a small form
-     * standing upright along a side edge
+     * the config's largest body and what each output holds of it, where the Island hangs and what
+     * the time's Peek holds, at start, on each reload and as outputs change (ADR 0030); a body
+     * headed for the old ones morphs to the new, a small form standing upright along a side edge
      */
-    pub fn resize(&mut self, largest: Shape, hang: Hang, peek: TimePeek, now: Instant) {
-        if largest != self.sizes.largest || hang != self.sizes.hang || peek != self.sizes.peek {
+    pub fn resize(
+        &mut self,
+        (largest, fits): (Shape, HashMap<String, Shape>),
+        hang: Hang,
+        peek: TimePeek,
+        now: Instant,
+    ) -> bool {
+        let changed = largest != self.sizes.largest
+            || fits != self.sizes.fits
+            || hang != self.sizes.hang
+            || peek != self.sizes.peek;
+
+        if changed {
             self.sizes.largest = largest;
+            self.sizes.fits = fits;
             self.sizes.hang = hang;
             self.sizes.peek = peek;
             self.retarget(now);
         }
+
+        changed
     }
 
     /*
@@ -271,14 +285,18 @@ impl IslandService {
     fn retarget(&mut self, now: Instant) {
         let visit = self.visit();
 
-        for island in self.islands.values_mut().chain([&mut self.untouched]) {
-            reaim(island, (&self.sizes, visit), self.timings.expand, now);
+        for (monitor, island) in &mut self.islands {
+            let sizes = (&self.sizes, visit, self.sizes.largest_on(monitor));
+            reaim(island, sizes, self.timings.expand, now);
         }
+
+        let sizes = (&self.sizes, visit, self.sizes.largest);
+        reaim(&mut self.untouched, sizes, self.timings.expand, now);
     }
 
-    // the canvas every island's body moves in, before an output clamps it
-    fn canvas(&self) -> Canvas {
-        Canvas::around(self.sizes.largest, self.sizes.hang)
+    // the canvas this output's island moves its body in, before the output clamps it
+    fn canvas(&self, monitor: &str) -> Canvas {
+        Canvas::around(self.sizes.largest_on(monitor), self.sizes.hang)
     }
 
     // the Surfaces whose Module is off, once at start: none of them opens, by click, command or AutoExpand
@@ -401,10 +419,11 @@ impl IslandService {
 
     // read in the view at the frame's time
     pub fn shape(&self, monitor: &str, now: Instant) -> Shape {
-        self.spring(monitor)
-            .map_or(self.sizes.target(Presentation::Rest, 0), |spring| {
-                geometry::bounded(Shape::from(spring.at(now)), self.canvas())
-            })
+        self.spring(monitor).map_or(
+            self.sizes
+                .target(Presentation::Rest, 0, self.sizes.largest_on(monitor)),
+            |spring| geometry::bounded(Shape::from(spring.at(now)), self.canvas(monitor)),
+        )
     }
 
     // what shows at `now` and how strongly, at most one of them visible
@@ -496,7 +515,7 @@ impl IslandService {
     pub fn heading(&self, monitor: &str, now: Instant) -> Option<Shape> {
         self.spring(monitor)
             .filter(|spring| !spring.settled(now))
-            .map(|spring| geometry::bounded(Shape::from(spring.target()), self.canvas()))
+            .map(|spring| geometry::bounded(Shape::from(spring.target()), self.canvas(monitor)))
     }
 
     fn spring(&self, monitor: &str) -> Option<&Spring<3>> {
@@ -966,7 +985,7 @@ impl IslandService {
             ),
             marks(&untouched, presentation),
             self.timings,
-            (&self.sizes, self.presentations.visit()),
+            (&self.sizes, self.presentations.visit(), self.sizes.largest),
             now,
         );
 
@@ -981,7 +1000,8 @@ impl IslandService {
             );
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                let sizes = (&self.sizes, self.presentations.visit());
+                let largest = self.sizes.largest_on(&monitor);
+                let sizes = (&self.sizes, self.presentations.visit(), largest);
                 follow(island, content, marks, self.timings, sizes, now);
             }
         }
@@ -1108,7 +1128,7 @@ fn follow(
     content: Content,
     marks: Vec<Mark>,
     timings: Timings,
-    (sizes, visit): (&Sizes, u64),
+    (sizes, visit, largest): (&Sizes, u64, Shape),
     now: Instant,
 ) {
     let presentation = content.presentation;
@@ -1128,7 +1148,7 @@ fn follow(
 
     // the same content in a new visit may be sized otherwise
     if content == *island.content.target() {
-        reaim(island, (sizes, visit), timings.expand, now);
+        reaim(island, (sizes, visit, largest), timings.expand, now);
         return;
     }
 
@@ -1148,9 +1168,12 @@ fn follow(
      * form still crossfades; a level that moved starts none. An island that never changed has no
      * spring
      */
-    let spring = island
-        .shape
-        .get_or_insert_with(|| Spring::new(sizes.target(Presentation::Rest, visit).into(), motion));
+    let spring = island.shape.get_or_insert_with(|| {
+        Spring::new(
+            sizes.target(Presentation::Rest, visit, largest).into(),
+            motion,
+        )
+    });
     spring.damp(timings.damping);
 
     let from = island.content.target().presentation;
@@ -1165,7 +1188,7 @@ fn follow(
         }
 
         spring.to(
-            sizes.target(presentation, visit).into(),
+            sizes.target(presentation, visit, largest).into(),
             response(from, presentation, timings),
             now,
         );
@@ -1182,9 +1205,14 @@ fn follow(
  * content as it shows: re-aiming starts a new leg, which must not fade the content again. It never
  * shrinks from under the pointer, which would leave the body and collapse it, only once it left
  */
-fn reaim(island: &mut Island, (sizes, visit): (&Sizes, u64), duration: Duration, now: Instant) {
+fn reaim(
+    island: &mut Island,
+    (sizes, visit, largest): (&Sizes, u64, Shape),
+    duration: Duration,
+    now: Instant,
+) {
     let mut target: [f32; 3] = sizes
-        .target(island.content.target().presentation, visit)
+        .target(island.content.target().presentation, visit, largest)
         .into();
 
     if let Some(spring) = &mut island.shape
@@ -1254,7 +1282,7 @@ mod tests {
     use super::*;
     use crate::island::activity::fixture;
     use crate::island::activity::{Detail, Lifetime, Priority, Track, Workspace};
-    use crate::island::geometry::REST;
+    use crate::island::geometry::{DEFAULT_LARGEST, REST};
 
     const MONITOR: &str = "eDP-1";
 
@@ -1365,6 +1393,42 @@ mod tests {
 
         island.hover(MONITOR, false, true, now + 3 * second);
         assert!(island.shape(MONITOR, now + 4 * second).height < fresh);
+    }
+
+    // a small output shrinks only its own body (#212)
+    #[test]
+    fn a_small_output_shrinks_only_its_own_body() {
+        let now = Instant::now();
+        let second = Duration::from_secs(2);
+        let mut island = IslandService::new();
+        let small = Shape {
+            height: DEFAULT_LARGEST.height - 100.0,
+            ..DEFAULT_LARGEST
+        };
+
+        island.resize(
+            (
+                DEFAULT_LARGEST,
+                HashMap::from([
+                    (OTHER.to_owned(), small),
+                    (MONITOR.to_owned(), DEFAULT_LARGEST),
+                ]),
+            ),
+            Hang::default(),
+            TimePeek::ALL,
+            now,
+        );
+        island.fit(Surface::Launcher, 5000.0, None, now);
+
+        island.open(MONITOR, Surface::Launcher, now);
+        assert_eq!(
+            island.shape(MONITOR, now + second).height,
+            DEFAULT_LARGEST.height
+        );
+
+        let later = now + 2 * second;
+        island.open(OTHER, Surface::Launcher, later);
+        assert_eq!(island.shape(OTHER, later + second).height, small.height);
     }
 
     // opening a Surface again starts a visit, which takes the fresh ask, not the last visit's
@@ -2668,7 +2732,7 @@ mod tests {
             for (small, tray) in [(COMPACT, 0), (REST, 1)] {
                 let now = Instant::now();
                 let mut island = IslandService::new();
-                island.resize(DEFAULT_LARGEST, hang, TimePeek::ALL, now);
+                island.resize((DEFAULT_LARGEST, HashMap::new()), hang, TimePeek::ALL, now);
                 island.set_tray(tray, now);
                 if small == COMPACT {
                     island.post(media(), now);
