@@ -9,7 +9,6 @@ use kanade_runtime::{
 };
 
 use crate::clock::{self, Hours};
-use crate::cluster;
 use crate::config;
 use crate::icon::Icon;
 use crate::island::activity::Activity;
@@ -24,7 +23,7 @@ use crate::theme;
 
 use super::forms::sized;
 use super::satellites::abbreviation;
-use super::shape::{peek, upright};
+use super::shape::{peek, shape, upright};
 use super::status::battery_icon;
 
 /*
@@ -47,44 +46,44 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
         return Some(rest_upright(monitor, level));
     }
 
-    let mut items: Vec<Box<dyn Widget>> = Vec::new();
+    let row = |level: Option<Charge>| {
+        let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
-    if config.rest.clock {
-        items.push(Box::new(
-            Text::new(clock::now(config.clock))
-                .size(theme::text::LABEL)
-                .color(theme::island().on_surface)
-                .weight(theme::text::SEMIBOLD),
-        ));
-    }
+        if config.rest.clock {
+            items.push(Box::new(
+                Text::new(clock::now(config.clock))
+                    .size(theme::text::LABEL)
+                    .color(theme::island().on_surface)
+                    .weight(theme::text::SEMIBOLD),
+            ));
+        }
 
-    // the dots can leave a 12-hour clock no room for the percent beside it, past the clear they keep
-    let crowded = |charge: Charge| {
-        let readout = geometry::READOUT
-            + if charge.charging {
-                geometry::BOLT + 4.0
-            } else {
-                0.0
-            };
-        let clock = if config.rest.clock {
-            geometry::CLOCK + 8.0
-        } else {
-            0.0
-        };
-        let content = clock + readout + geometry::dots_room(cluster::count());
+        if let Some(charge) = level {
+            items.push(Box::new(battery_readout(charge)));
+        }
 
-        config.clock == Hours::Twelve && content > geometry::REST.width + 2.0 * geometry::DOT_CLEAR
+        Row::new(items).gap(8.0).align(Center)
     };
 
-    if let Some(charge) = level.filter(|&charge| !crowded(charge)) {
-        items.push(Box::new(battery_readout(charge)));
-    }
+    // the dots take room from the form: the battery is the first to go where the rest no longer fits
+    let full = row(level);
+    let room = shape(Presentation::Rest).width - 2.0 * geometry::REST_MARGIN;
+    let row = if level.is_some() && overflows(Widget::width(&full), room) {
+        row(None)
+    } else {
+        full
+    };
 
     Some(
         sized(Presentation::Rest)
             .align_child(Center, Center)
-            .child(Row::new(items).gap(8.0).align(Center)),
+            .child(row),
     )
+}
+
+// whether a laid-out length, as the widgets know it, is longer than the `room` it goes in
+fn overflows(length: Size, room: f32) -> bool {
+    matches!(length, Size::Fixed(length) if length > room)
 }
 
 // the battery as Rest and its Peek show it
@@ -140,19 +139,32 @@ pub(super) fn has_battery() -> bool {
 
 // Rest standing along a side edge: the hours over the minutes, then the battery under them
 fn rest_upright(monitor: &str, level: Option<Charge>) -> Rectangle {
-    let mut items: Vec<Box<dyn Widget>> = Vec::new();
+    let column = |level: Option<Charge>| {
+        let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
-    if config::on(monitor).rest.clock {
-        items.push(Box::new(stacked_time(monitor, theme::text::LABEL)));
-    }
+        if config::on(monitor).rest.clock {
+            items.push(Box::new(stacked_time(monitor, theme::text::LABEL)));
+        }
 
-    if let Some(charge) = level {
-        items.push(Box::new(battery_stacked(charge)));
-    }
+        if let Some(charge) = level {
+            items.push(Box::new(battery_stacked(charge)));
+        }
+
+        Column::new(items).gap(10.0).align(Center)
+    };
+
+    // as along the top: the battery goes first where the dots leave the rest no room
+    let full = column(level);
+    let room = shape(Presentation::Rest).height - 2.0 * geometry::REST_MARGIN;
+    let column = if level.is_some() && overflows(Widget::height(&full), room) {
+        column(None)
+    } else {
+        full
+    };
 
     sized(Presentation::Rest)
         .align_child(Center, Center)
-        .child(Column::new(items).gap(10.0).align(Center))
+        .child(column)
 }
 
 // the battery's icon over its percent, under a bolt while it charges
