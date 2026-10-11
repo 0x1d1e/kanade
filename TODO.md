@@ -38,7 +38,10 @@ Not worth changing, by this review:
   - `Backdrops` is scoped by pane and `Pointers` by output; no other Service is, so a write of any other draws every window that read it (see Glass).
   - `IslandService` is the one that matters, but scoping it is a resource saving (not a gate before 1.0) and not a safe one: 62 `Island::write()` sites would each have to prove they change only one output's state, as `Sizes`, the Arbiter and the overview are read by every window.
   - A write naming no part stays safe (it draws everyone), so sites can be moved over one at a time.
-- [ ] Baselines: `scripts/memory`, `scripts/frames` and ADR 0004's idle wakeups were not retaken after GPU glass, which removed the glass threads and the PNG files; they stop the user's shell, so run them when it can be spared. Measurements inform, not gate.
+- [x] Baselines retaken 2026-10-11 (`docs/memory.md`, #198; idle wakeups 7.1/s against ADR 0004's 7.5/s, 0 idle frames, island morph gap 7.7 ms against a 6.94 ms refresh interval)
+  - Memory grew with GPU glass: 495 MiB of GPU buffers and 312 MiB of RSS at Rest, against 225 and 150 before. The vello and wgpu upgrade adds about 26 MiB of PSS (heap, and `libnvidia-rtcore`).
+  - 8% of the island window's frames came later than 1.5 refresh intervals while morphing, and the slowest took 48 ms of view, draw and gpu.
+  - Not taken: more than one monitor. Not run (they unplug the output or restart niri): #214's unplug and replug with the Dock, a Banner and autohide active, and #216's lost niri stream.
 
 ## Lock screen (ADR 0025)
 
