@@ -129,14 +129,14 @@ pub fn shown(spot: &Spot, body: Body) -> Option<Seen> {
 
     let seen = backdrop::seen(spot)?;
 
-    let rim = Body::of_rows(&seen.values)
-        .filter(|rim| near(*rim, body))
-        .and_then(|_| <[[f32; 4]; RIM_ROWS]>::try_from(seen.values.as_slice()).ok());
+    let place = <[[f32; 4]; RIM_ROWS]>::try_from(seen.values.as_slice()).ok();
+    let near = Body::of_rows(&seen.values).is_some_and(|rim| near(rim, body));
 
     Some(Seen {
         spot: spot.clone(),
         light: seen.light,
-        rim,
+        place,
+        near,
     })
 }
 
