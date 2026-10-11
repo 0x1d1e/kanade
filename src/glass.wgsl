@@ -15,11 +15,12 @@
 //   is worked out for and then stretched to this one (captured ahead of a morphing body):
 //     values[6], [7], [8]: its rects and radii, as values[2], [3], [4] have them
 //     values[9]: its corner in the copy and the copy's size, in logical pixels
-//   values[10]: x is 1 where the rim shows
+//   values[10]: x is 1 where the rim shows, y how frosted the middle is (0 clear, 1 regular); rows 6 to 9 hold the copy's place for both
 // It never reads the clock, so a body at rest draws no frames of its own.
 //
 // The terms follow liquid-glass-studio's glare and Fresnel, kwin-glass's concave bevel and
-// damascene's inner shadow.
+// damascene's inner shadow; the frost is hyprglass's frosted center, with its saturation lift,
+// worked out from what lies around the body, as what is under the body is the body itself.
 
 // signed distance to a rounded rectangle centered on 0, negative inside
 fn rounded(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
@@ -146,10 +147,101 @@ fn rim(uv: vec2<f32>) -> vec4<f32> {
     let beyond = max(max(-deepest.x, deepest.x - place.z), max(-deepest.y, deepest.y - place.w));
     let kept = 1.0 - smoothstep(0.0, 3.0, max(beyond, 0.0));
 
-    // full at the edge, gone well before the band ends, into the backdrop seen through the middle
+    // full at the edge, gone well before the band ends, into the frost or the backdrop seen through the middle
     let fade = 1.0 - smoothstep(0.35, 1.0, inside / band);
 
     return vec4<f32>(color, fade * kept);
+}
+
+// the frost: what lies under the body is the body in the copy, so the middle takes the colors
+// around the body instead, blurred and blended by how near each side is. From each pixel a ray goes
+// out along each of the four axes to the outline; there the copy is read just outside it, at a few
+// points along the edge, and the four reads are weighed by 1 over the squared distance, as a
+// smooth fill of the body from its edge
+const FROST_GAP = 3.0;
+const FROST_STEP = 3.0;
+const FROST_WIDEN = 0.45;
+const FROST_SATURATION = 1.18;
+
+// the frost at `uv`: plain rgba, nothing where the copy holds none of what lies around
+fn frost(uv: vec2<f32>) -> vec4<f32> {
+    let first = values[6];
+    let second = values[7];
+    let shape = values[8];
+    let place = values[9];
+    let joined = shape.w > 0.5;
+
+    let low = select(first.xy, min(first.xy, second.xy), joined);
+    let high = select(first.xy + first.zw, max(first.xy + first.zw, second.xy + second.zw), joined);
+    let p = uv * (high - low);
+
+    var sum = vec3<f32>(0.0);
+    var weight = 0.0;
+
+    for (var side = 0; side < 4; side++) {
+        let angle = f32(side) * 1.5707963;
+        let direction = vec2<f32>(cos(angle), sin(angle));
+        let along = vec2<f32>(-direction.y, direction.x);
+
+        // sphere-traced out to the outline
+        var reach = 0.0;
+
+        for (var step = 0; step < 12; step++) {
+            let gap = rim_outline(p + direction * reach, first, second, low);
+
+            if gap > -0.25 {
+                break;
+            }
+
+            reach += max(-gap, 0.5);
+        }
+
+        // a ray that ran out of steps along a wall never reached the outline
+        if rim_outline(p + direction * reach, first, second, low) < -0.5 {
+            continue;
+        }
+
+        var got = vec3<f32>(0.0);
+        var kept = 0.0;
+
+        let step_along = FROST_STEP + reach * FROST_WIDEN;
+
+        for (var tap = -3; tap <= 3; tap++) {
+            let spot = p + direction * (reach + FROST_GAP) + along * (f32(tap) * step_along);
+            let at = place.xy + spot;
+            let coord = at / place.zw;
+
+            // only outside the body, whose own pixels the copy holds inside it
+            if rim_outline(spot, first, second, low) < 0.5 {
+                continue;
+            }
+
+            if coord.x >= 0.0 && coord.x <= 1.0 && coord.y >= 0.0 && coord.y <= 1.0 {
+                let texel = textureSampleLevel(backdrop, backdrop_sampler, coord, 0.0);
+
+                got += texel.rgb * texel.a;
+                kept += texel.a;
+            }
+        }
+
+        if kept > 0.0 {
+            let near = 1.0 / ((reach + 4.0) * (reach + 4.0));
+            let share = kept / 7.0;
+
+            sum += got / kept * near * share;
+            weight += near * share;
+        }
+    }
+
+    if weight <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+
+    // a little more color through the frosting, as hyprglass lifts it
+    let color = sum / weight;
+    let gray = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+
+    return vec4<f32>(clamp(mix(vec3<f32>(gray), color, FROST_SATURATION), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
 
 @fragment
@@ -234,7 +326,24 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     // what is behind, bent, under the tint, under the highlights, all of it cut to the outline,
     // antialiased
-    let bent = select(vec4<f32>(0.0), rim(uv), values[10].x > 0.5);
+    let placed = values[10].x > 0.5;
+    var rimmed = vec4<f32>(0.0);
+    if placed {
+        rimmed = rim(uv);
+    }
+
+    // select() runs both sides, and the frost costs a lot
+    var frosted = vec4<f32>(0.0);
+    if values[10].y > 0.0 {
+        frosted = frost(uv);
+    }
+
+    // the rim over the frost
+    let bent_alpha = rimmed.a + frosted.a * (1.0 - rimmed.a);
+    let bent = vec4<f32>(
+        (rimmed.rgb * rimmed.a + frosted.rgb * frosted.a * (1.0 - rimmed.a)) / max(bent_alpha, 1e-4),
+        bent_alpha,
+    );
     let tint = values[5];
 
     let under = tint.a + bent.a * (1.0 - tint.a);

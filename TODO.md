@@ -51,7 +51,7 @@ Not worth changing, by this review:
 ## Glass
 
 - [ ] Settings windows are not glass yet.
-- [ ] Regular glass is not frosted.
+- [x] Regular glass is frosted from the capture around the body (ADR 0024); faint wedge seams show in the fill where the nearest side changes, and a thing wholly inside the card is not seen.
 - [ ] The magnified Dock can reach a Banner.
 - [ ] Satellites shift; the first ~80 ms of the liquid reveal are plain.
 - [ ] A write of any Service but `Backdrops` and `Pointers` redraws every window that read it, not only those showing the changed part.

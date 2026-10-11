@@ -55,8 +55,11 @@ pub struct Seen {
     // how bright the backdrop is, 0 to 1
     pub(super) light: f32,
 
-    // the copy's place, as it was asked for, where it fits the body; none where it is too far off
-    pub(super) rim: Option<[[f32; 4]; RIM_ROWS]>,
+    // the copy's place, as it was asked for, where a copy is there at all
+    pub(super) place: Option<[[f32; 4]; RIM_ROWS]>,
+
+    // whether the copy's body fits this one, close enough for the rim; if not, it is a way off
+    pub(super) near: bool,
 }
 
 // the rows of values a copy's place takes: its body's three and where it lies in the copy
@@ -204,9 +207,16 @@ pub fn layer(pane: Pane) -> Rectangle {
 
     // only where `place` said liquid glass is there, whatever the config says by now
     if let Some(seen) = pane.backdrop {
-        if let Some(rim) = seen.rim {
-            values[RIM_ROW..OPACITY_ROW].copy_from_slice(&rim);
-            values[OPACITY_ROW][0] = 1.0;
+        if let Some(place) = seen.place {
+            values[RIM_ROW..OPACITY_ROW].copy_from_slice(&place);
+
+            // the rim bends the copy only where its body fits this one; the frost is a blur, so it
+            // stays up while the body moves off its copy, not to switch to the plain tint
+            values[OPACITY_ROW][0] = if seen.near { 1.0 } else { 0.0 };
+            values[OPACITY_ROW][1] = match pane.variant {
+                Variant::Clear => 0.0,
+                Variant::Regular => 1.0,
+            };
         }
 
         layer = layer.backdrop(seen.spot);
