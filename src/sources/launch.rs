@@ -31,7 +31,7 @@ const UNDELIVERED: [&str; 2] = [
 ];
 const SPAWN: &str = "org.freedesktop.DBus.Error.Spawn.";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Launch {
     // the bus name to activate, the file id without `.desktop`, for `DBusActivatable=true`
     activate: Option<String>,
@@ -40,7 +40,7 @@ pub struct Launch {
     command: Option<Command>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Command {
     argv: Vec<String>,
 

@@ -96,6 +96,7 @@ fn slot(monitor: &str, item: &Item) -> Rectangle {
         .height(TRAY_SLOT)
         .radius(radius::ICON)
         .align_child(Center, Center)
+        .identity(item.key())
         .cursor(Cursor::Pointer)
         .on_click(move |button| {
             let (monitor, item) = &clicked;
@@ -322,6 +323,7 @@ fn item_row(item: &Item, ring: Option<&At>) -> Rectangle {
             .align(Center),
         ring == Some(&At::Item(key)),
     )
+    .identity(key)
     .cursor(Cursor::Pointer)
     .on_click(super::on_left(move || click(Act::Press(At::Item(key)))))
 }
@@ -457,6 +459,7 @@ fn entry_row(entry: &Entry, ruled: bool, ring: Option<&At>) -> Rectangle {
     let row = Rectangle::new()
         .width(WIDTH)
         .height(list::ROW)
+        .identity(id)
         .align_child(Start, Start)
         .child(Stack::new(layers).width(WIDTH).height(list::ROW));
 

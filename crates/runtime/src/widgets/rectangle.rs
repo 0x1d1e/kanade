@@ -36,6 +36,7 @@ pub struct Rectangle {
     pub(crate) child_vertical: Align,
     pub(crate) handlers: Handlers,
     pub(crate) inert: bool,
+    pub(crate) identity: Option<u64>,
 }
 
 pub struct RectangleNeedsWidth;
@@ -185,6 +186,7 @@ impl RectangleNeedsHeight {
             child_vertical: Align::Start,
             handlers: Handlers::default(),
             inert: false,
+            identity: None,
         }
     }
 }

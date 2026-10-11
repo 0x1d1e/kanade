@@ -1,7 +1,7 @@
 pub mod measure;
 
 use crate::graphics::{Area, Renderer};
-use crate::input::Target;
+use crate::input::{Target, nest};
 use crate::{Align, Justify, Size};
 
 use super::Widget;
@@ -166,8 +166,12 @@ impl Widget for Layout {
     fn collect_targets(&self, area: Area, targets: &mut Vec<Target>) {
         let child_areas = self.place(area);
 
-        for (child, child_area) in self.children.iter().zip(child_areas) {
+        for (place, (child, child_area)) in self.children.iter().zip(child_areas).enumerate() {
+            let first = targets.len();
+
             child.collect_targets(child_area, targets);
+
+            nest(&mut targets[first..], place);
         }
     }
 }

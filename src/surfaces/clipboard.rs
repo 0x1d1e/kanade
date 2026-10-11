@@ -765,7 +765,7 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
     let monitor = monitor.to_owned();
     let entry = entry.clone();
 
-    row.on_click(super::on_left(move || {
+    row.identity(entry.id).on_click(super::on_left(move || {
         run(&monitor, visit, Press::Copy(entry.clone()));
     }))
 }

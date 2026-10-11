@@ -651,6 +651,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         .fill(theme::island().surface_container)
         .padding(CARD_INSET)
         .align_child(Start, Start)
+        .identity(card.id)
         .cursor(Cursor::Pointer)
         .on_click(super::on_left(move || {
             click(&monitor, press.clone());

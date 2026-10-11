@@ -70,6 +70,7 @@ impl LayerShellHandler for WaylandState {
         let (width, height) = configure.new_size;
 
         window.resize(width, height);
+        self.refresh_cursor(layer_surface.wl_surface());
     }
 
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer_surface: &LayerSurface) {

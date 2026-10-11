@@ -57,7 +57,7 @@ pub enum Mark {
 }
 
 // what pressing an answer does; each closes the island once done
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     Launch(Launch),
 

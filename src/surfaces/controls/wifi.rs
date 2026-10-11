@@ -137,7 +137,8 @@ fn row(network: &wifi::Network, join: &Join, ring: bool) -> Rectangle {
         trailing,
         ring && !joined,
         press,
-    );
+    )
+    .identity(&network.ssid);
 
     if unsupported {
         row.opacity(DISABLED)

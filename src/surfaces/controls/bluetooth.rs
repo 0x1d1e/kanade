@@ -174,6 +174,7 @@ fn row(device: &Device, request: &Request, ring: Option<&At>) -> Rectangle {
         ring == Some(&at) && !device.connected,
         (!device.connected && !busy).then_some(at),
     )
+    .identity(&device.path)
 }
 
 /*

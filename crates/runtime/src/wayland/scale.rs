@@ -63,7 +63,7 @@ impl Dispatch<WpFractionalScaleV1, WlSurface> for WaylandState {
 
         window.scale = scale as f32 / DENOMINATOR;
 
-        window.redraw();
+        state.redraw_on(surface);
     }
 }
 
