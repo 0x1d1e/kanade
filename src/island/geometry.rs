@@ -169,6 +169,9 @@ pub const DOT_GAP: f32 = 5.0;
 pub const DOT_INSET: f32 = 12.0;
 pub const DOT_CLEAR: f32 = 10.0;
 
+// what Rest keeps clear of its content at each end, before its battery is dropped to fit
+pub const REST_MARGIN: f32 = 6.0;
+
 // the most dots at once: a microphone, a camera and a screen cast
 pub const DOTS: u8 = 3;
 

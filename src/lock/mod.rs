@@ -14,6 +14,7 @@
 //! this one.
 
 use std::env;
+use std::panic::{self, AssertUnwindSafe};
 use std::process;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
@@ -511,11 +512,11 @@ fn request(requests: &mut Requests, locker: &Locker) -> u64 {
     // nothing is captured from now: niri may lock before `kanade-lock` hears of it; a refusal or an end lifts this
     glass::locked(true);
 
-    // the scenes read the clock only while locked: say so, and hand them over behind the ask, which
-    // niri answers after they are in, so the first frame has them and a failure in them cannot keep the lock
+    // the scenes read the clock only while locked, so say so and hand them over first: the lock's
+    // first frame has them. One that fails to build must not keep the lock
     say(requests);
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| scene::hand(locker)));
     locker.lock(newest);
-    scene::hand(locker);
     HEARD.notify_all();
     newest
 }
