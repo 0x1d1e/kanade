@@ -48,11 +48,6 @@ Not worth changing, by this review:
 - [ ] A PAM check that never returns blocks the next one (documented).
 - [ ] An svg wallpaper or face is drawn by `wallpaper::decoded` at 3840 px on its longest side, a near copy of the runtime's `svg::rasterize` (256 px); share one with a size argument, and draw a face smaller.
 
-## Settings
-
-- [ ] `control()` keeps a `Kind::Modules` arm the Modules page never reaches.
-- [ ] `humanize` repeats the schema's units and clock choices; let the schema label its options.
-
 ## Glass
 
 - [ ] Settings windows are not glass yet.

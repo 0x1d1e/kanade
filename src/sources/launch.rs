@@ -489,6 +489,7 @@ mod tests {
     fn app(answer: Option<&'static str>) -> (Connection, std::sync::mpsc::Receiver<String>) {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
         let (got, activated) = std::sync::mpsc::channel();
+        let (subscribed, listening) = std::sync::mpsc::channel();
 
         std::thread::spawn(move || {
             let app = connection::Builder::async_io_unix_stream(theirs)
@@ -498,8 +499,11 @@ mod tests {
                 .build()
                 .unwrap();
 
+            let messages = zbus::blocking::MessageIterator::from(&app);
+            subscribed.send(()).unwrap();
+
             // until the client hangs up
-            for message in zbus::blocking::MessageIterator::from(&app).map_while(Result::ok) {
+            for message in messages.map_while(Result::ok) {
                 let header = message.header();
 
                 if header.member().is_some_and(|member| member == "Activate") {
@@ -523,6 +527,9 @@ mod tests {
             .method_timeout(wait)
             .build()
             .unwrap();
+
+        // a message sent before the app listens is dropped, and no reply would ever come
+        listening.recv().unwrap();
 
         (bus, activated)
     }
@@ -548,7 +555,10 @@ mod tests {
             },
         );
 
-        assert_eq!(activated.try_recv().as_deref(), Ok("/org/example/App"));
+        assert_eq!(
+            activated.recv_timeout(Duration::from_secs(5)).as_deref(),
+            Ok("/org/example/App")
+        );
         assert!(started.is_err_and(|error| error.contains("Exec does not run")));
         assert!(!spawned);
     }
