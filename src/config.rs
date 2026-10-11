@@ -381,6 +381,31 @@ impl<T> Field<T> {
     }
 }
 
+// the strings a Choice takes, and the label the settings window shows for those that need one
+pub struct Choices {
+    pub names: &'static [&'static str],
+    labels: &'static [(&'static str, &'static str)],
+}
+
+impl Choices {
+    pub const fn named(names: &'static [&'static str]) -> Self {
+        Self { names, labels: &[] }
+    }
+
+    pub const fn labeled(
+        names: &'static [&'static str],
+        labels: &'static [(&'static str, &'static str)],
+    ) -> Self {
+        Self { names, labels }
+    }
+
+    pub fn label(&self, name: &str) -> Option<&'static str> {
+        self.labels
+            .iter()
+            .find_map(|&(named, label)| (named == name).then_some(label))
+    }
+}
+
 // what a key takes; each checks a value the one way, with one wording
 pub enum Kind {
     // true or false
@@ -393,7 +418,7 @@ pub enum Kind {
     Pixels(Range, Field<u32>),
 
     // one of these strings
-    Choice(&'static [&'static str], Field<&'static str>),
+    Choice(Choices, Field<&'static str>),
 
     // a file or directory, a leading `~/` the home directory; unset is none
     Path(Field<Option<String>>),
@@ -432,6 +457,7 @@ impl Kind {
                 let expected = format!(
                     "expected {}",
                     options
+                        .names
                         .iter()
                         .map(|option| format!("\"{option}\""))
                         .collect::<Vec<_>>()
@@ -439,6 +465,7 @@ impl Kind {
                 );
                 let found = value.as_str().ok_or_else(|| expected.clone())?;
                 let option = options
+                    .names
                     .iter()
                     .find(|&&option| option == found)
                     .ok_or_else(|| format!("{expected}, found \"{found}\""))?;
@@ -607,7 +634,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Clock format",
         help: "the time an idle island shows: \"24h\" (14:05) or \"12h\" (2:05 PM)",
         kind: Kind::Choice(
-            &["24h", "12h"],
+            Choices::labeled(&["24h", "12h"], &[("24h", "14:05"), ("12h", "2:05 PM")]),
             Field {
                 get: |config| match config.clock {
                     Hours::TwentyFour => "24h",
@@ -715,7 +742,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Material",
         help: "what the Island, Dock and Banners are made of, with the lock screen's field: \"liquid-glass\" bends what is under it into its rim, \"monochrome\" is one flat tone with nothing seen through it",
         kind: Kind::Choice(
-            Material::NAMES,
+            Choices::named(Material::NAMES),
             Field {
                 get: |config| config.appearance.material.name(),
                 set: |config, name| config.appearance.material = Material::named(name),
@@ -730,7 +757,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Glass tone",
         help: "dark glass under light text, or light glass under dark text",
         kind: Kind::Choice(
-            Tone::NAMES,
+            Choices::named(Tone::NAMES),
             Field {
                 get: |config| config.appearance.tone.name(),
                 set: |config, name| config.appearance.tone = Tone::named(name),
@@ -745,7 +772,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Rim lighting",
         help: "how bright the light on the Island's rim and under the pointer is, whatever it is made of: \"subtle\", \"standard\", \"bright\" or \"off\"",
         kind: Kind::Choice(
-            Highlight::NAMES,
+            Choices::named(Highlight::NAMES),
             Field {
                 get: |config| config.appearance.highlight.name(),
                 set: |config, name| config.appearance.highlight = Highlight::named(name),
@@ -760,7 +787,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Spring character",
         help: "how the Island and Dock settle: \"bouncy\" like macOS, \"smooth\" with no overshoot, \"snappy\", or \"playful\"",
         kind: Kind::Choice(
-            Bounce::NAMES,
+            Choices::named(Bounce::NAMES),
             Field {
                 get: |config| Bounce::of(config.island.damping).name(),
                 set: |config, name| config.island.damping = Bounce::named(name).damping(),
@@ -789,7 +816,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Edge",
         help: "the edge of the screen the Island hangs from",
         kind: Kind::Choice(
-            Edge::NAMES,
+            Choices::named(Edge::NAMES),
             Field {
                 get: |config| config.island_place.anchor.edge.name(),
                 set: |config, name| config.island_place.anchor.edge = Edge::named(name),
@@ -804,7 +831,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Side",
         help: "where along its edge the Island sits",
         kind: Kind::Choice(
-            Along::NAMES,
+            Choices::named(Along::NAMES),
             Field {
                 get: |config| config.island_place.anchor.along.name(),
                 set: |config, name| config.island_place.anchor.along = Along::named(name),
@@ -945,7 +972,7 @@ pub const ISLAND: &[Setting] = &[
         label: "Banner entrance",
         help: "how a Banner comes in: \"morph\" out from under the Island, \"drop\" from the edge, or \"fade\"",
         kind: Kind::Choice(
-            Entrance::NAMES,
+            Choices::named(Entrance::NAMES),
             Field {
                 get: |config| config.entrance.name(),
                 set: |config, name| config.entrance = Entrance::named(name),
@@ -1003,7 +1030,7 @@ pub const DOCK: &[Setting] = &[
         label: "Edge",
         help: "the edge of the screen the Dock sits on; beside the Island, on its edge and side or either centered, it sits further in than the Island; wherever the Island grows over it, as an open Surface, it steps aside and fades back as the Island closes",
         kind: Kind::Choice(
-            Edge::NAMES,
+            Choices::named(Edge::NAMES),
             Field {
                 get: |config| config.dock_place.anchor.edge.name(),
                 set: |config, name| config.dock_place.anchor.edge = Edge::named(name),
@@ -1018,7 +1045,7 @@ pub const DOCK: &[Setting] = &[
         label: "Side",
         help: "where along its edge the Dock sits",
         kind: Kind::Choice(
-            Along::NAMES,
+            Choices::named(Along::NAMES),
             Field {
                 get: |config| config.dock_place.anchor.along.name(),
                 set: |config, name| config.dock_place.anchor.along = Along::named(name),
@@ -1057,7 +1084,7 @@ pub const DOCK: &[Setting] = &[
         label: "Magnification",
         help: "how much an icon grows under the pointer, its neighbors less",
         kind: Kind::Choice(
-            Magnify::NAMES,
+            Choices::named(Magnify::NAMES),
             Field {
                 get: |config| config.magnify.name(),
                 set: |config, name| config.magnify = Magnify::named(name),
@@ -1072,7 +1099,7 @@ pub const DOCK: &[Setting] = &[
         label: "Icon size",
         help: "how big the icons are at rest; the gaps between and how far the swell under the pointer reaches grow with them",
         kind: Kind::Choice(
-            DockSize::NAMES,
+            Choices::named(DockSize::NAMES),
             Field {
                 get: |config| config.dock_size.name(),
                 set: |config, name| config.dock_size = DockSize::named(name),
@@ -1087,7 +1114,7 @@ pub const DOCK: &[Setting] = &[
         label: "Join the Island",
         help: "how the Dock and the Island join where they share an edge and a side, along a top or bottom edge: crown, the Island rising from the Dock's middle; keystone, the Island the Dock's middle piece; fold, the Dock unfolding out of the Island under the pointer; off, the Dock beside the Island, further in",
         kind: Kind::Choice(
-            Merge::NAMES,
+            Choices::named(Merge::NAMES),
             Field {
                 get: |config| config.merge.name(),
                 set: |config, name| config.merge = Merge::named(name),
@@ -1157,7 +1184,13 @@ pub const WEATHER: &[Setting] = &[
         label: "Units",
         help: "°C and km/h, or °F and mph",
         kind: Kind::Choice(
-            &["metric", "imperial"],
+            Choices::labeled(
+                &["metric", "imperial"],
+                &[
+                    ("metric", "\u{00b0}C \u{00b7} km/h"),
+                    ("imperial", "\u{00b0}F \u{00b7} mph"),
+                ],
+            ),
             Field {
                 get: |config| match config.units {
                     Units::Metric => "metric",
@@ -1182,7 +1215,7 @@ pub const MEDIA: &[Setting] = &[Setting {
     label: "Media visualizer",
     help: "what moves beside a playing track",
     kind: Kind::Choice(
-        Visualizer::NAMES,
+        Choices::named(Visualizer::NAMES),
         Field {
             get: |config| config.visualizer.name(),
             set: |config, name| config.visualizer = Visualizer::named(name),
@@ -1198,7 +1231,7 @@ pub const LOCK: &[Setting] = &[Setting {
     label: "Backdrop",
     help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
     kind: Kind::Choice(
-        LockBackdrop::NAMES,
+        Choices::named(LockBackdrop::NAMES),
         Field {
             get: |config| config.lock_backdrop.name(),
             set: |config, name| config.lock_backdrop = LockBackdrop::named(name),

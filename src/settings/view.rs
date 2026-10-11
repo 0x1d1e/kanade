@@ -13,7 +13,7 @@ use kanade_runtime::{
 };
 use toml::Value;
 
-use crate::config::{self, Kind, Location, Setting};
+use crate::config::{self, Choices, Kind, Location, Setting};
 use crate::glass;
 use crate::icon::Icon;
 use crate::look::{Along, Edge, Material};
@@ -865,7 +865,7 @@ fn control(
             let chosen = (field.get)(read);
 
             (
-                Box::new(segmented(key, options, chosen, roles, move |option| {
+                Box::new(segmented(options, chosen, roles, move |option| {
                     change(path(key, None), Some(Value::String(option.to_owned())));
                 })),
                 true,
@@ -985,7 +985,7 @@ fn control(
 
             (Box::new(Column::new(rows).width(inner()).gap(6.0)), false)
         }
-        Kind::Modules(_) => (Box::new(modules_view(settings, None, roles)), false),
+        Kind::Modules(_) => unreachable!("section_view draws the Modules row itself"),
     }
 }
 
@@ -1141,6 +1141,7 @@ fn materials(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles)
     let key = setting.key;
 
     let tiles = options
+        .names
         .iter()
         .map(|&option| {
             let here = option == chosen;
@@ -1187,7 +1188,7 @@ fn materials(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles)
                                 .height(20.0)
                                 .align_child(Center, Center)
                                 .child(
-                                    Text::new(humanize(key, option))
+                                    Text::new(humanize(options, option))
                                         .size(theme::text::LABEL)
                                         .color(ink)
                                         .weight(weight),
@@ -1414,8 +1415,7 @@ fn switch(on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Rectangle
 
 // a Choice's options side by side in a trough, the chosen one filled
 fn segmented(
-    key: &'static str,
-    options: &'static [&'static str],
+    options: &'static Choices,
     chosen: &str,
     roles: &ThemeRoles,
     choose: impl Fn(&'static str) + Clone + 'static,
@@ -1424,10 +1424,11 @@ fn segmented(
     const HEIGHT: f32 = 28.0;
 
     let segments: Vec<Box<dyn Widget>> = options
+        .names
         .iter()
         .map(|&option| {
             let here = option == chosen;
-            let text = Text::new(humanize(key, option))
+            let text = Text::new(humanize(options, option))
                 .size(theme::text::LABEL)
                 .color(if here {
                     roles.on_primary
@@ -1614,15 +1615,11 @@ fn help(setting: &Setting) -> String {
     help
 }
 
-// an option as the window names it
-fn humanize(key: &str, option: &str) -> String {
-    match (key, option) {
-        ("clock", "24h") => String::from("14:05"),
-        ("clock", "12h") => String::from("2:05 PM"),
-        ("weather.units", "metric") => String::from("\u{00b0}C \u{00b7} km/h"),
-        ("weather.units", "imperial") => String::from("\u{00b0}F \u{00b7} mph"),
-        _ => capitalized(&option.replace('-', " ")),
-    }
+// an option as the window names it: the schema's label, else its name with dashes as spaces
+fn humanize(options: &Choices, option: &str) -> String {
+    options
+        .label(option)
+        .map_or_else(|| capitalized(&option.replace('-', " ")), str::to_owned)
 }
 
 fn capitalized(text: &str) -> String {
