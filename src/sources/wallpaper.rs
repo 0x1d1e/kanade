@@ -751,7 +751,7 @@ fn decoded_light(path: &Path) -> Option<f32> {
         }
         // whole, as there is no cheaper way to a mean; a still, a first frame or a drawing is small
         Format::Webp | Format::Gif | Format::Svg => {
-            let (_, _, rgba) = decoded(path)?;
+            let (_, _, rgba) = decoded(path, MEAN_SIDE)?;
             return light(&rgba, 4);
         }
     };
@@ -759,17 +759,18 @@ fn decoded_light(path: &Path) -> Option<f32> {
     light(&pixels, components)
 }
 
-// the longest side an svg is drawn at: sharp enough to cover a 4K output, whatever size it asks
-const VECTOR_SIDE: f32 = 3840.0;
+// the longest side an svg is drawn at to take its mean: all its pixels are read
+const MEAN_SIDE: f32 = 256.0;
 
 // the most bytes an svg is read from
 const MOST_SVG: u64 = 8 << 20;
 
 /*
  * an image whole, as 8-bit RGBA with plain alpha, for the lock screen to draw: the first frame of
- * a webp or gif, an svg drawn at `VECTOR_SIDE`; none past `MOST_PIXELS`, told by its header
+ * a webp or gif, an svg drawn with its longest side `vector_side` pixels across; none past
+ * `MOST_PIXELS`, told by its header
  */
-pub fn decoded(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
+pub fn decoded(path: &Path, vector_side: f32) -> Option<(u32, u32, Vec<u8>)> {
     match format(path)? {
         Format::Png => {
             let file = io::BufReader::new(fs::File::open(path).ok()?);
@@ -889,34 +890,7 @@ pub fn decoded(path: &Path) -> Option<(u32, u32, Vec<u8>)> {
                 return None;
             }
 
-            let tree =
-                resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default()).ok()?;
-            let size = tree.size();
-            let scale = VECTOR_SIDE / size.width().max(size.height());
-            let (width, height) = (
-                (size.width() * scale).ceil() as u32,
-                (size.height() * scale).ceil() as u32,
-            );
-
-            // none for an svg with no size to draw at
-            let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
-            resvg::render(
-                &tree,
-                resvg::tiny_skia::Transform::from_scale(scale, scale),
-                &mut pixmap.as_mut(),
-            );
-
-            // tiny-skia keeps premultiplied alpha, the lock screen takes plain
-            let rgba = pixmap
-                .pixels()
-                .iter()
-                .flat_map(|pixel| {
-                    let plain = pixel.demultiply();
-                    [plain.red(), plain.green(), plain.blue(), plain.alpha()]
-                })
-                .collect();
-
-            Some((width, height, rgba))
+            kanade_runtime::draw_svg(&bytes, vector_side)
         }
     }
 }

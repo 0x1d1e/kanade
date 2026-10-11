@@ -26,6 +26,10 @@ Not worth changing, by this review:
 - `crates/lock/src/refract.rs` duplicates the glass math on the CPU by design (ADR 0025); folding it in is on `docs/runtime-migration.md`.
 - A flat `Config` with per-module `Setting` consts: the registry already defines each key once.
 - `island/service.rs` size: most of it is tests.
+- On a side edge the Satellites travel with the body's height as a Compact peeks: they hang from the body's end.
+- On a side edge, while a Peek holds the pill it grew from in the input region, a click beside the Peek on the pill's old place expands: the pill is still where the pointer rested.
+- The lock thread's backdrop, wallpaper and faces kept while unlocked (ADR 0025): the first lock frame needs them.
+- A PAM check that never returns blocks the next: PAM cannot be cancelled, and checks run one at a time by design (ADR 0025).
 
 ## Architecture (#208 review)
 
@@ -44,14 +48,6 @@ Not worth changing, by this review:
   - 8% of the island window's frames came later than 1.5 refresh intervals while morphing, and the slowest took 48 ms of view, draw and gpu.
   - Not taken: more than one monitor. Not run (they unplug the output or restart niri): #214's unplug and replug with the Dock, a Banner and autohide active, and #216's lost niri stream.
 
-## Lock screen (ADR 0025)
-
-- [ ] The lock thread wakes once a minute while unlocked, for the clock.
-- [ ] Each caret blink repaints the whole surface, about 6 ms of CPU.
-- [ ] About 8 MB of backdrop memory per 1080p output, plus the decoded wallpaper and faces, kept while unlocked too.
-- [ ] A PAM check that never returns blocks the next one (documented).
-- [ ] An svg wallpaper or face is drawn by `wallpaper::decoded` at 3840 px on its longest side, a near copy of the runtime's `svg::rasterize` (256 px); share one with a size argument, and draw a face smaller.
-
 ## Glass
 
 - [ ] Settings windows are not glass yet.
@@ -62,16 +58,9 @@ Not worth changing, by this review:
 
 ## Island sizes (ADR 0030)
 
-- [ ] The Launcher's `fit` runs `found()` twice on each Search write, wheel scrolls included.
 - [ ] A side-edge Banner's window is full height.
-- [ ] On a side edge shared with the Island, the Dock sits past the Island's reach and a Banner's width, far off the edge.
 - [ ] An upright Compact drops titles to the app's tile; a rotated, book-spine title could keep them.
 - [ ] A body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two.
-- [ ] On a side edge the Satellites travel about 124 px along the edge as a Compact peeks.
-- [ ] The upright Rest's Peek (`time_peek_upright`, 88 px) may overflow with a 12-hour clock and the weather; an upright timer's `h:mm:ss` may pass 38 px.
-- [ ] On a side edge, while a Peek holds the pill it grew from in the input region, a click beside the Peek but on the pill's old place still expands.
-- [ ] `Card::shape` (the Notifications `fit`) reads `view::largest()` from a watcher, where no output is being drawn: the ask can use another output's width until the next Notifications write.
-- [ ] `fit` writes `IslandService` on every Search write even when the ask is unchanged, redrawing its readers.
 
 ## Island and Dock merge (ADR 0031)
 
@@ -81,7 +70,6 @@ Not worth changing, by this review:
 - [ ] Many apps with a wide Surface open overflow a Keystone's window.
 - [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
-- [ ] `dock::extent` runs `widest` for every `merge::apart`, `form` and `shell` call each frame.
 - [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear.
 - [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; with `dock.reserve` it now reserves as a merged Fold.
 - [ ] A non-liquid union has no border.
@@ -90,18 +78,11 @@ Not worth changing, by this review:
 
 ## Idle Island
 
-- [ ] Tray strip width is the union of every output's Peek settings (`view::peek`); an output with fewer extras keeps the widest strip. Per-output shapes would need the geometry per monitor.
-- [ ] On an output under about 390 logical px wide, a full Tray strip (six slots and the clock, about 366 px) is wider than the body it fits, with the agenda already at 0; `Presentation::Tray` would need fewer slots by the body's width.
-- [ ] The strip's agenda width (`view::resize`, `rest::Agenda`) follows the minute timer and the calendars, which a window drawing the time arms; while the Island shows something else, an event that ended stays in the width until the next Rest.
-- [ ] No charge indication at Rest since the bolt went; `CONTEXT.md` does not say a machine with no battery counts `rest.battery` as off for a bare Rest.
+- [ ] The strip's agenda width (`view::resize`, `rest::Agenda`) follows the minute timer and the calendars, which a window drawing the time arms; with no window drawing the time, an event that ended stays in the width until one does (at most a minute while the Island is up).
 - [ ] The Tray Surface shrinks to its list as a menu goes back to it, under the pointer; Clipboard does the same on a query.
 
 ## Privacy dots (ADR 0033)
 
-- [ ] The Tray strip shows no dots: its slots end 16 px from its end. Widening the strip by the captures would pass a count through `TimePeek` and resize on each capture.
 - [ ] A fullscreen window hides the dots by choice, and one `Fullscreen::covers` misses (no app id) hides them on the Top layer too; consider a niri-side hint if a capture under fullscreen proves a real gap.
-- [ ] Three captures at a bare Rest with a 12-hour clock and battery may overflow `shape`.
 
-## Launcher destinations
 
-- [ ] The Launcher view reads `Connectivity` and `Adapter`, so every Wi-Fi or Bluetooth state write redraws it while open.

@@ -51,7 +51,7 @@ use self::rest::{bare, has_battery, placeholder, rest};
 pub(crate) use self::rest::{time_peek, time_peek_upright};
 use self::satellites::satellites;
 use self::shape::Room;
-pub(crate) use self::shape::{canvas, hang, largest, largest_of_each, peek, shape, upright};
+pub(crate) use self::shape::{canvas, hang, largest, shape, tray_slots, upright};
 pub(crate) use self::status::bar;
 pub(crate) use self::toast::toast_tile;
 
@@ -60,14 +60,9 @@ pub(crate) use self::toast::toast_tile;
  * nothing when they ask for what it already has
  */
 pub(crate) fn resize(island: &mut Write<IslandService>) {
-    let (wanted, fits) = largest_of_each();
-    let narrowest = fits
-        .values()
-        .fold(wanted.width, |least, fit| least.min(fit.width));
+    let (wanted, holds) = shape::holds();
 
-    rest::measure_agenda(narrowest);
-
-    if !island.resize((wanted, fits), hang(), peek(), Instant::now()) {
+    if !island.resize(wanted, holds, hang(), Instant::now()) {
         island.quiet();
     }
 }
@@ -271,10 +266,9 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     layers.push(Box::new(holder));
 
     let presentation = island.presentation(&monitor.name);
-    let sideways = hang.sideways() && cluster::beside(presentation);
-    let strip = matches!(presentation, Presentation::Tray(_));
+    let sideways = hang.sideways() && cluster::at_end(presentation);
 
-    layers.extend(marks(cluster.filter(|_| !strip), body_rect, sideways));
+    layers.extend(marks(cluster, body_rect, sideways));
     layers.extend(hud(&island, monitor, body_rect, hang, now).map(|hud| Box::new(hud) as _));
 
     let mut body = Rectangle::new()
@@ -506,7 +500,7 @@ fn form_holder(
     (holder, room)
 }
 
-// the cluster over the form, at the body's trailing end, or its top corner once a Surface is open; the Tray strip's slots fill its end, so it has none
+// the cluster over the form, at the body's trailing end, or its top corner once a Surface is open
 fn marks(cluster: Option<Cluster>, body: Rect, sideways: bool) -> Option<Box<dyn Widget>> {
     Some(Box::new(cluster?.draw(body, sideways)))
 }

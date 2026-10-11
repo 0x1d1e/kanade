@@ -16,7 +16,7 @@ use self::focus::{Act, At, Focus};
 use super::controls::list;
 use super::{Outline, store};
 use crate::icon::Icon;
-use crate::island::geometry::{self, TRAY_SLOT, TRAY_SLOTS};
+use crate::island::geometry::{self, TRAY_SLOT};
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::sources::tray::menu::{self, Entry, Menu, Toggle};
@@ -55,8 +55,8 @@ pub fn strip(monitor: &str, presentation: Presentation) -> Option<Rectangle> {
     };
 
     let items = items();
-    let slots = usize::from(slots);
-    let over = items.len() > TRAY_SLOTS;
+    let slots = view::tray_slots(slots);
+    let over = items.len() > slots;
 
     let upright = view::upright();
     let mut row = match upright {
@@ -169,7 +169,7 @@ pub fn fit() {
         listed
     };
 
-    IslandService::write().fit(Surface::Tray, listed, Some((visit, held)), Instant::now());
+    super::ask(Surface::Tray, listed, Some((visit, held)));
 }
 
 // at start: the body follows the items and the menu open from now on

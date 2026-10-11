@@ -308,7 +308,7 @@ pub fn fit() {
         Daemon::Starting | Daemon::Conflict(_) => Vec::new(),
     };
 
-    IslandService::write().fit(Surface::Notifications, asks(&shapes), None, Instant::now());
+    super::ask(Surface::Notifications, asks(&shapes), None);
 }
 
 // at start: the body follows the notifications from now on

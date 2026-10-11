@@ -1,10 +1,13 @@
-// view code for the full interactive Surfaces; read-only, never write() a Service
+// view code for the full interactive Surfaces; read-only, never write() a Service (only a watcher posts a size ask)
 
 use std::sync::{Mutex, MutexGuard};
+use std::time::Instant;
 
 use kanade_runtime::{Button, Rectangle};
 use kanade_runtime::{MutexExt, service::Service};
 
+use crate::island::presentation::Surface;
+use crate::island::service::IslandService;
 use crate::theme;
 
 pub mod calendar;
@@ -30,6 +33,15 @@ fn fitting() -> MutexGuard<'static, ()> {
     static FIT: Mutex<()> = Mutex::new(());
 
     FIT.locked()
+}
+
+// posts what a Surface asks for, drawing nothing again if it asks what it did
+fn ask(surface: Surface, fresh: f32, visit: Option<(u64, f32)>) {
+    let mut island = IslandService::write();
+
+    if !island.fit(surface, fresh, visit, Instant::now()) {
+        island.quiet();
+    }
 }
 
 /*

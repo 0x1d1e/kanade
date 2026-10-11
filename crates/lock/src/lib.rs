@@ -163,8 +163,8 @@ pub enum News {
     Gone,
 }
 
-// a decoder of the pictures shown: the wallpaper and the face
-pub type Decode = fn(&Path) -> Option<Picture>;
+// a decoder of the pictures shown, the wallpaper and the face: an svg drawn with its longest side as many pixels across
+pub type Decode = fn(&Path, u32) -> Option<Picture>;
 
 // a password typed, when Enter is pressed; whether the shell took it, which empties the field
 pub type Submit = Box<dyn FnMut(String) -> bool + Send>;

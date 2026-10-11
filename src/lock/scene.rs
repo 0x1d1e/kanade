@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use fontconfig::{CharSet, FC_FAMILY, FC_WEIGHT, Fontconfig, Pattern};
-use kanade_lock::{Backdrop, FontFile, Fonts, Image, Palette, Picture, Scene};
-use kanade_runtime::{Color, LayerWindow, Monitor, Rectangle};
+use kanade_lock::{Backdrop, FontFile, Fonts, Image, Locker, Palette, Picture, Scene};
+use kanade_runtime::{Color, LayerWindow, Monitor, Monitors, Rectangle};
 use kanade_runtime::{MutexExt, service::Service};
 
 use crate::look::{LockBackdrop, Tone};
@@ -21,6 +21,7 @@ use super::{Said, Status, locker};
  * type the password in near the bottom, over the output's wallpaper as `lock.backdrop` says. A
  * hidden window that only hands `kanade-lock` the scene of its monitor, unlocked too, so a lock
  * shows it from its first frame; it runs again as anything it reads changes, as the minute turns
+ * while locked
  */
 pub fn scene(monitor: &Monitor) -> LayerWindow {
     if let Ok(locker) = locker() {
@@ -33,6 +34,13 @@ pub fn scene(monitor: &Monitor) -> LayerWindow {
         .visible(false)
         .namespace("kanade-lock")
         .child(Rectangle::new().width(0.0).height(0.0))
+}
+
+// the scene of every output as it stands, for a lock about to be asked for
+pub(super) fn hand(locker: &Locker) {
+    for monitor in Monitors::read().all() {
+        locker.scene(&monitor.name, scened(monitor));
+    }
 }
 
 fn scened(monitor: &Monitor) -> Scene {
@@ -77,10 +85,20 @@ fn scened(monitor: &Monitor) -> Scene {
     // the date and status are English, in the face
     let fonts = fonts_for(&who.name);
 
+    // the clock is read, and with it the minute timer armed, only while a lock shows it
+    let (date, time) = if said.locked {
+        (
+            clock::today().format("%A, %-d %B").to_string(),
+            clock::now(config::on(&monitor.name).clock),
+        )
+    } else {
+        Default::default()
+    };
+
     Scene {
         backdrop,
-        date: clock::today().format("%A, %-d %B").to_string(),
-        time: clock::now(config::on(&monitor.name).clock),
+        date,
+        time,
         name: who.name,
         face: who.face.map(Image::new),
         status: String::from(status),
@@ -229,8 +247,8 @@ fn font(fontconfig: &Fontconfig, family: &str, (weight, css): (i32, f32)) -> Opt
 }
 
 // a wallpaper or face, as `kanade-lock` draws it
-pub(super) fn decode(path: &Path) -> Option<Picture> {
-    let (width, height, rgba) = wallpaper::decoded(path)?;
+pub(super) fn decode(path: &Path, vector_side: u32) -> Option<Picture> {
+    let (width, height, rgba) = wallpaper::decoded(path, vector_side as f32)?;
 
     Some(Picture {
         width,

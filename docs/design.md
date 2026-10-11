@@ -26,7 +26,7 @@ Sources of truth: tracker = work/status; `CONTEXT.md` = domain; ADRs = durable r
 - **Satellite**: Persistent Ongoing/Critical Activity that is not the primary; cap `SATELLITES`, rest a count.
 - **Arbiter**: Island selection policy.
 - **Surface**: interactive content of an Expanded Island.
-- **Privacy cluster**: dots at the Island body's trailing end, or its top corner in a Surface, fading in and out; never Activity.
+- **Privacy cluster**: dots at the Island body's trailing end (a Tray strip's too), or its top corner in a Surface, fading in and out; never Activity.
 - **Module**: user-disableable feature/interface.
 - **Service**: `kanade_runtime::service::Service`; lazy shared state/integration source.
 - **LauncherProvider**: query → ranked launcher results/actions.

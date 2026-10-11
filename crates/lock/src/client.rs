@@ -31,7 +31,7 @@ use smithay_client_toolkit::session_lock::{
 use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
-use tiny_skia::Pixmap;
+use tiny_skia::{BlendMode, Pixmap, PixmapPaint, Transform as TinyTransform};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::wl_keyboard::WlKeyboard;
 use wayland_client::protocol::wl_output::{Transform, WlOutput};
@@ -62,6 +62,9 @@ const LONGEST: usize = 1024;
 // how large a face is kept, decoded, before it is cut round at each output's size
 const FACE: u32 = 256;
 
+// the longest side an svg wallpaper is drawn at: sharp enough to cover a 4K output
+const VECTOR: u32 = 3840;
+
 // a lock surface, on one output
 struct Screen {
     output: WlOutput,
@@ -74,6 +77,16 @@ struct Screen {
     // a frame was committed that niri has not shown yet, and another is wanted after it
     shown: bool,
     owed: bool,
+
+    // the last frame without its caret, which a blink draws again with the caret toggled
+    base: Option<Base>,
+}
+
+struct Base {
+    pixmap: Pixmap,
+
+    // nothing but the caret changed since it was painted
+    fresh: bool,
 }
 
 // what a backdrop is worked out for: the backdrop, at a size in physical pixels and a scale
@@ -329,7 +342,7 @@ fn prepare(jobs: &mpsc::Receiver<Job>, done: &channel::Sender<Done>, decode: Dec
                                 // the last one let go of first, so two are never held at once
                                 drop(decoded.take());
                                 let pixmap = guarded(|| {
-                                    decode(&image.path).and_then(|picture| picture.pixmap())
+                                    decode(&image.path, VECTOR).and_then(|picture| picture.pixmap())
                                 });
                                 decoded = Some((image.clone(), pixmap));
                             }
@@ -348,7 +361,7 @@ fn prepare(jobs: &mpsc::Receiver<Job>, done: &channel::Sender<Done>, decode: Dec
                 }
                 Job::Face(image) => {
                     let face = guarded(|| {
-                        decode(&image.path)
+                        decode(&image.path, FACE)
                             .and_then(|picture| picture.pixmap())
                             .and_then(|pixmap| picture::cover(&pixmap, FACE, FACE))
                     });
@@ -486,6 +499,7 @@ impl State {
             size: None,
             shown: false,
             owed: false,
+            base: None,
         });
     }
 
@@ -515,7 +529,7 @@ impl State {
             self.events
                 .insert_source(Timer::from_duration(BLINK), |_, _, state: &mut State| {
                     state.caret = !state.caret;
-                    state.redraw();
+                    state.repaint();
                     TimeoutAction::ToDuration(BLINK)
                 });
         self.blink = blinking.ok();
@@ -714,6 +728,19 @@ impl State {
 
     // every lock surface drawn again, each as soon as niri showed its last frame
     fn redraw(&mut self) {
+        for base in self
+            .screens
+            .iter_mut()
+            .filter_map(|screen| screen.base.as_mut())
+        {
+            base.fresh = false;
+        }
+
+        self.repaint();
+    }
+
+    // the same, for a change of the caret alone, which keeps the last frame
+    fn repaint(&mut self) {
         for index in 0..self.screens.len() {
             if self.screens[index].shown {
                 self.screens[index].owed = true;
@@ -756,6 +783,7 @@ impl State {
             self.rounds.insert((face, side), round);
         }
 
+        let mut under = None;
         let pixmap = match self.scenes.get(&name) {
             Some(scene) => {
                 let look = Look {
@@ -770,24 +798,71 @@ impl State {
                         typed: std::str::from_utf8(&self.password)
                             .map_or(0, |typed| typed.chars().count()),
                         caps_lock: self.caps_lock,
-                        caret: self.caret,
                     },
                     shaken: shaken.unwrap_or(0.0),
                     size: (width as f32, height as f32),
                     scale,
                 };
-                guarded(|| paint::paint(&look, size)).or_else(|| black(size))
+
+                // a blink keeps the last frame, which a shake or a change since has outdated
+                let kept = self.screens[index]
+                    .base
+                    .take()
+                    .filter(|base| {
+                        base.fresh
+                            && shaken.is_none()
+                            && (base.pixmap.width(), base.pixmap.height()) == size
+                    })
+                    .map(|base| base.pixmap);
+                let painted = kept.or_else(|| guarded(|| paint::paint(&look, size)));
+
+                painted.map(|mut pixmap| {
+                    // the caret over it, the pixels it covers kept to put back
+                    if self.caret
+                        && let Some(rect) = paint::caret(&look)
+                        && let Some(bounds) = rect.round_out()
+                        && let Some(behind) = pixmap.clone_rect(bounds)
+                    {
+                        under = Some((bounds, behind));
+                        paint::draw_caret(&mut pixmap, &look, rect);
+                    }
+
+                    (pixmap, shaken.is_none())
+                })
             }
 
             // no scene yet: black, as niri's own lock screen
-            None => black(size),
+            None => black(size).map(|pixmap| (pixmap, false)),
         };
-        let Some(pixmap) = pixmap else {
+        let Some((mut pixmap, keep)) = pixmap.or_else(|| black(size).map(|black| (black, false)))
+        else {
             eprintln!("kanade: the lock screen of {name} is too large to draw");
             return;
         };
 
         self.commit(index, &pixmap, (width, height), scale);
+
+        // the frame back without its caret, kept for the next blink
+        if keep {
+            if let Some((bounds, behind)) = under {
+                let source = PixmapPaint {
+                    blend_mode: BlendMode::Source,
+                    ..PixmapPaint::default()
+                };
+                pixmap.draw_pixmap(
+                    bounds.x(),
+                    bounds.y(),
+                    behind.as_ref(),
+                    &source,
+                    TinyTransform::identity(),
+                    None,
+                );
+            }
+            self.screens[index].base = Some(Base {
+                pixmap,
+                fresh: true,
+            });
+        }
     }
 
     // `pixmap` shown on the lock surface `index`, `size` logical pixels big

@@ -72,9 +72,6 @@ pub(crate) struct Field {
     // how many characters are typed, shown as dots
     pub typed: usize,
     pub caps_lock: bool,
-
-    // the caret is shown, as it blinks
-    pub caret: bool,
 }
 
 // all a lock surface is drawn from
@@ -193,9 +190,8 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
     );
 
     // the column at the bottom, from the status up
-    let status_bottom = logical_height * (1.0 - BELOW);
-    let status_top = status_bottom - STATUS;
-    let field_top = status_top - GAP - HEIGHT;
+    let status_top = logical_height * (1.0 - BELOW) - STATUS;
+    let field_top = field_top(look);
     let name_height = look.faces.map_or(NAME * 1.25, |faces| {
         let name = faces.covering(&faces.semibold, &look.scene.name).shape(
             &look.scene.name,
@@ -257,13 +253,7 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
     );
 
     // the field, shaken aside after a password is refused
-    let field = Body {
-        x: middle - WIDTH / 2.0 + look.shaken,
-        y: field_top,
-        width: WIDTH,
-        height: HEIGHT,
-        radius: HEIGHT / 2.0,
-    };
+    let field = field(look);
     glass.draw(&mut pixmap, field);
     typed(&mut pixmap, look, field);
 
@@ -288,15 +278,25 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
     Some(pixmap)
 }
 
-// what is typed in the field: a dot a character, else the placeholder; the caret, and caps lock
-fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
-    let scale = look.scale;
-    let palette = look.scene.palette;
-    let inset = HEIGHT / 2.0;
-    let middle = field.y + field.height / 2.0;
-    let caps = 16.0;
+// the field, shaken aside after a password is refused
+fn field(look: &Look) -> Body {
+    Body {
+        x: look.size.0 / 2.0 - WIDTH / 2.0 + look.shaken,
+        y: field_top(look),
+        width: WIDTH,
+        height: HEIGHT,
+        radius: HEIGHT / 2.0,
+    }
+}
 
-    // as many dots as fit, the newest kept, as the field scrolls
+fn field_top(look: &Look) -> f32 {
+    look.size.1 * (1.0 - BELOW) - STATUS - GAP - HEIGHT
+}
+
+// how many dots the field shows: a character each, as many as fit, the newest kept as it scrolls
+fn dots(look: &Look, field: Body) -> usize {
+    let inset = HEIGHT / 2.0;
+    let caps = 16.0;
     let room = field.width
         - inset * 2.0
         - if look.field.caps_lock {
@@ -305,7 +305,49 @@ fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
             0.0
         };
     let fit = ((room - DOT * 2.0) / PITCH).floor().max(0.0) as usize + 1;
-    let dots = look.field.typed.min(fit);
+
+    look.field.typed.min(fit)
+}
+
+/*
+ * the caret's rectangle in physical pixels, drawn over a `paint` by `draw_caret` and apart from it,
+ * so a blink changes only this
+ */
+pub(crate) fn caret(look: &Look) -> Option<Rect> {
+    let field = field(look);
+    let dots = dots(look, field);
+    let inset = HEIGHT / 2.0;
+    let x = if dots == 0 {
+        field.x + inset
+    } else {
+        field.x + inset + (dots - 1) as f32 * PITCH + DOT * 2.0 + 3.0
+    };
+    let scale = look.scale;
+
+    Rect::from_xywh(
+        x * scale,
+        (field.y + field.height / 2.0 - 9.0) * scale,
+        1.5 * scale,
+        18.0 * scale,
+    )
+}
+
+pub(crate) fn draw_caret(pixmap: &mut Pixmap, look: &Look, rect: Rect) {
+    let mut paint = Paint::default();
+    paint.set_color(look.scene.palette.text.skia());
+    paint.anti_alias = true;
+    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+}
+
+// what is typed in the field: a dot a character, else the placeholder, and caps lock
+fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
+    let scale = look.scale;
+    let palette = look.scene.palette;
+    let inset = HEIGHT / 2.0;
+    let middle = field.y + field.height / 2.0;
+    let caps = 16.0;
+
+    let dots = dots(look, field);
 
     let mut path = PathBuilder::new();
     for dot in 0..dots {
@@ -315,12 +357,6 @@ fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
     if let Some(path) = path.finish() {
         fill(pixmap, &path, palette.text);
     }
-
-    let caret_x = if dots == 0 {
-        field.x + inset
-    } else {
-        field.x + inset + (dots - 1) as f32 * PITCH + DOT * 2.0 + 3.0
-    };
 
     if look.field.typed == 0
         && let Some(faces) = look.faces
@@ -336,20 +372,6 @@ fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
             palette.muted,
             1.0,
         );
-    }
-
-    if look.field.caret
-        && let Some(rect) = Rect::from_xywh(
-            caret_x * scale,
-            (middle - 9.0) * scale,
-            1.5 * scale,
-            18.0 * scale,
-        )
-    {
-        let mut paint = Paint::default();
-        paint.set_color(palette.text.skia());
-        paint.anti_alias = true;
-        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
     }
 
     // caps lock on, as macOS's arrow at the field's end

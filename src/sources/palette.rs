@@ -11,6 +11,9 @@ use kanade_runtime::service::Service;
 
 use super::wallpaper;
 
+// the longest side an svg is drawn at to be sampled: its pixels are read, not shown
+const SAMPLE_SIDE: f32 = 256.0;
+
 mod median_cut;
 mod pick;
 mod sample;
@@ -123,7 +126,7 @@ fn quantize(path: &Path, count: usize) -> Vec<Color> {
      * a wallpaper can be read while it's still being written,
      * and a half written file must not take the shell down with it
      */
-    let Some((width, height, rgba)) = wallpaper::decoded(path) else {
+    let Some((width, height, rgba)) = wallpaper::decoded(path, SAMPLE_SIDE) else {
         return Vec::new();
     };
 

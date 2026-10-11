@@ -289,12 +289,7 @@ pub fn fit() {
         )
     };
 
-    IslandService::write().fit(
-        Surface::Clipboard,
-        fresh,
-        Some((visit, open)),
-        Instant::now(),
-    );
+    super::ask(Surface::Clipboard, fresh, Some((visit, open)));
 }
 
 // at start: the body follows the history and the search from now on

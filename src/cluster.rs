@@ -14,7 +14,9 @@ use kanade_runtime::{
 
 use crate::config;
 use crate::icon::Icon;
-use crate::island::geometry::{MEDIA, PEEK, Rect};
+use crate::island::geometry::{
+    DOT, DOT_CLEAR as CLEAR, DOT_GAP, DOT_INSET as INSET, DOTS, MEDIA, PEEK, Rect,
+};
 use crate::island::motion::{Mode, Spring};
 use crate::island::presentation::Presentation;
 use crate::sources::privacy::Privacy;
@@ -22,18 +24,11 @@ use crate::theme;
 
 const GLYPH: f32 = 16.0;
 
-const DOT: f32 = 8.0;
-const DOT_GAP: f32 = 5.0;
-
 // a microphone, a camera and a screen cast
-const SENSORS: usize = 3;
+const SENSORS: usize = DOTS as usize;
 
 // the room the dots of every sensor take, which each slides within
 const FULL: f32 = DOT * SENSORS as f32 + DOT_GAP * (SENSORS - 1) as f32;
-
-// from the body's trailing end to the last dot, and from the first dot to what the form draws
-const INSET: f32 = 12.0;
-const CLEAR: f32 = 10.0;
 
 // from the top of a body as large as Media, above its header and its controls
 const CORNER: f32 = 12.0;
@@ -134,6 +129,15 @@ pub fn read(monitor: &str, covered: bool, now: Instant) -> Option<Cluster> {
     })
 }
 
+// how many sensors capture now, which sizes the Tray strip's end for their dots
+pub fn count() -> u8 {
+    if on() {
+        active(&Privacy::read()).into_iter().map(u8::from).sum()
+    } else {
+        0
+    }
+}
+
 // an output that left keeps no dots, so one replugged under its name starts out with none showing
 pub fn forget_gone() {
     let monitors = Monitors::read();
@@ -149,6 +153,11 @@ pub fn beside(presentation: Presentation) -> bool {
         presentation,
         Presentation::Rest | Presentation::Compact | Presentation::Split | Presentation::Peek
     )
+}
+
+// whether the cluster stands at the body's end rather than over a Surface's top corner: a small form or a Tray strip
+pub fn at_end(presentation: Presentation) -> bool {
+    beside(presentation) || matches!(presentation, Presentation::Tray(_))
 }
 
 impl Cluster {

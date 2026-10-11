@@ -113,6 +113,7 @@ pub const ALL: &[Module] = &[
             service::watch::<Monitors>(|| view::resize(&mut IslandService::write()));
             service::watch::<Calendars>(|| view::resize(&mut IslandService::write()));
             service::watch::<WallClock>(|| view::resize(&mut IslandService::write()));
+            service::watch::<privacy::Privacy>(|| view::resize(&mut IslandService::write()));
             view::resize(&mut IslandService::write());
             service::watch::<Monitors>(autohide::forget_gone);
             service::watch::<Monitors>(cluster::forget_gone);

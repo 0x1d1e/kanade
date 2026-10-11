@@ -160,12 +160,42 @@ pub const TRAY_SLOT: f32 = 32.0;
 pub const TIME_INSET: f32 = 24.0;
 pub const TRAY_END: f32 = 16.0;
 
+/*
+ * the privacy cluster's dots (ADR 0033): each one's size and the gap between, and from the body's
+ * trailing end to the last dot and from the first dot to what the form draws
+ */
+pub const DOT: f32 = 8.0;
+pub const DOT_GAP: f32 = 5.0;
+pub const DOT_INSET: f32 = 12.0;
+pub const DOT_CLEAR: f32 = 10.0;
+
+// the most dots at once: a microphone, a camera and a screen cast
+pub const DOTS: u8 = 3;
+
+// what `dots` dots take from a body's trailing end, none for none
+pub const fn dots_room(dots: u8) -> f32 {
+    if dots == 0 {
+        0.0
+    } else {
+        DOT_INSET + DOT_CLEAR + dots as f32 * DOT + (dots - 1) as f32 * DOT_GAP
+    }
+}
+
+// from the last slot to a strip's end: the slots' trailing space, or the dots' room if that is more
+const fn tray_end(slots: usize, dots: u8) -> f32 {
+    let end = if slots == 0 { TIME_INSET } else { TRAY_END };
+    let room = dots_room(dots);
+
+    if room > end { room } else { end }
+}
+
 // between the time's Peek and the first slot
 pub const TIME_GAP: f32 = 12.0;
 
 /*
  * what the time's Peek holds beside the clock and the date, as the settings ask and the day has: it
- * sizes the Tray strip's lead to its content, so no room is left between it and the slots
+ * sizes the Tray strip's lead to its content, so no room is left between it and the slots. The
+ * strip's end holds the privacy cluster's dots, as many as capture
  */
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TimePeek {
@@ -174,6 +204,9 @@ pub struct TimePeek {
 
     // the width in pixels of today's next event, 0 for none or for the setting off
     pub agenda: u16,
+
+    // the dots at the strip's end
+    pub dots: u8,
 }
 
 impl TimePeek {
@@ -181,6 +214,7 @@ impl TimePeek {
         battery: true,
         weather: true,
         agenda: AGENDA_MOST,
+        dots: DOTS,
     };
 
     // across the top: the widest of its two lines
@@ -211,9 +245,13 @@ impl TimePeek {
  * before it
  */
 pub const HEAD_GAP: f32 = 10.0;
+
+// the bolt before the battery's percent while it charges, and the gap after it
+pub const BOLT: f32 = 12.0;
 pub const LINE_GAP: f32 = 8.0;
 pub const CLOCK: f32 = 57.0;
-pub const BATTERY: f32 = HEAD_GAP + 55.0;
+pub const READOUT: f32 = 55.0;
+pub const BATTERY: f32 = HEAD_GAP + BOLT + 4.0 + READOUT;
 pub const DATE: f32 = 70.0;
 pub const WEATHER: f32 = LINE_GAP + 41.0;
 
@@ -226,7 +264,7 @@ pub const fn agenda_most(body: f32) -> u16 {
         - TIME_INSET
         - TIME_GAP
         - TRAY_SLOTS as f32 * TRAY_SLOT
-        - TRAY_END
+        - tray_end(TRAY_SLOTS, DOTS)
         - DATE
         - WEATHER
         - LINE_GAP;
@@ -239,14 +277,14 @@ pub const AGENDA_MOST: u16 = agenda_most(CALENDAR.width);
 
 pub const UPRIGHT_CLOCK: f32 = 64.0;
 pub const UPRIGHT_WEATHER: f32 = 34.0;
-pub const UPRIGHT_BATTERY: f32 = 44.0;
+pub const UPRIGHT_BATTERY: f32 = 44.0 + BOLT + 3.0;
 
 const fn tray(slots: usize, peek: TimePeek) -> Shape {
     // with no item the strip ends as it began, round
     let after = if slots == 0 {
-        TIME_INSET
+        tray_end(0, peek.dots)
     } else {
-        TIME_GAP + slots as f32 * TRAY_SLOT + TRAY_END
+        TIME_GAP + slots as f32 * TRAY_SLOT + tray_end(slots, peek.dots)
     };
 
     Shape {
@@ -270,7 +308,7 @@ pub const UPRIGHT_TRAY_WIDTH: f32 = 44.0;
 const fn upright_tray(slots: usize, peek: TimePeek) -> Shape {
     Shape {
         width: UPRIGHT_TRAY_WIDTH,
-        height: peek.height() + slots as f32 * TRAY_SLOT + TRAY_END,
+        height: peek.height() + slots as f32 * TRAY_SLOT + tray_end(slots, peek.dots),
         radius: UPRIGHT_TRAY_WIDTH / 2.0,
     }
 }
@@ -318,13 +356,14 @@ pub struct Sizes {
     // the largest body asked for, which an output not in `fits` holds whole
     pub largest: Shape,
 
-    // the largest body each output holds, by name, smaller where it has no room for `largest`
-    pub fits: HashMap<String, Shape>,
+    // what each output holds, by name: the largest body, smaller where it has no room for `largest`,
+    // and what its own time's Peek has
+    pub fits: HashMap<String, Holds>,
 
     // where the Island hangs, which stands its small forms upright along a side edge
     pub hang: Hang,
 
-    // what the time's Peek holds, which sizes the Tray strip
+    // what the time's Peek holds on an output not in `fits`, which sizes its Tray strip
     pub peek: TimePeek,
     asks: Vec<(Surface, Asks)>,
 }
@@ -348,10 +387,28 @@ impl Default for Sizes {
     }
 }
 
+// what one output's Island is sized by
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Holds {
+    // the largest body, which its canvas is around
+    pub largest: Shape,
+
+    // what its time's Peek holds, which sizes its Tray strip
+    pub peek: TimePeek,
+}
+
 impl Sizes {
+    // what this output's Island is sized by
+    pub fn holds(&self, monitor: &str) -> Holds {
+        self.fits.get(monitor).copied().unwrap_or(Holds {
+            largest: self.largest,
+            peek: self.peek,
+        })
+    }
+
     // the largest body on this output, which its Island's canvas is around
     pub fn largest_on(&self, monitor: &str) -> Shape {
-        self.fits.get(monitor).copied().unwrap_or(self.largest)
+        self.holds(monitor).largest
     }
 
     // what `surface`'s content asks now; false if it asked that already
@@ -371,10 +428,10 @@ impl Sizes {
         }
     }
 
-    // where a body in this Presentation morphs to in `visit`, within `largest`; a list Surface's
-    // as its content asks
-    pub fn target(&self, presentation: Presentation, visit: u64, largest: Shape) -> Shape {
-        let shape = shape(presentation, largest, self.hang, self.peek);
+    // where a body in this Presentation morphs to in `visit`, within the room of its output; a list
+    // Surface's as its content asks
+    pub fn target(&self, presentation: Presentation, visit: u64, holds: Holds) -> Shape {
+        let shape = shape(presentation, holds.largest, self.hang, holds.peek);
         let Presentation::Expanded(surface) = presentation else {
             return shape;
         };
@@ -416,6 +473,26 @@ pub const SATELLITE_GAP: f32 = 6.0;
 const SATELLITES_REACH: f32 = (SATELLITES + 1) as f32 * (SATELLITE + SATELLITE_GAP);
 
 /*
+ * how many of `slots` a Tray strip shows in a body no larger than `largest`: all, fewer on an
+ * output too small for them, one at the least; the last then says how many more
+ */
+pub fn tray_slots(slots: u8, largest: Shape, hang: Hang, peek: TimePeek) -> usize {
+    let fits = |count: usize| {
+        if hang.sideways() {
+            upright_tray(count, peek).height <= largest.height
+        } else {
+            tray(count, peek).width <= largest.width
+        }
+    };
+    let slots = usize::from(slots);
+
+    (1..=slots)
+        .rev()
+        .find(|&count| fits(count))
+        .unwrap_or(slots.min(1))
+}
+
+/*
  * where the body of an island in this Presentation morphs to, hanging so, the lists' as large as
  * `largest`
  */
@@ -425,8 +502,15 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
         Presentation::Compact => upright(COMPACT, hang),
         Presentation::Split => upright(SPLIT, hang),
         Presentation::Peek => PEEK,
-        Presentation::Tray(slots) if hang.sideways() => upright_tray(usize::from(slots), peek),
-        Presentation::Tray(slots) => tray(usize::from(slots), peek),
+        Presentation::Tray(slots) => {
+            let slots = tray_slots(slots, largest, hang, peek);
+
+            if hang.sideways() {
+                upright_tray(slots, peek)
+            } else {
+                tray(slots, peek)
+            }
+        }
         Presentation::Expanded(
             Surface::Controls | Surface::Tray | Surface::Weather | Surface::Session,
         ) => CONTROLS,
@@ -772,6 +856,27 @@ mod tests {
         assert!(agenda_most(narrow.width) < AGENDA_MOST);
     }
 
+    // fewer slots where even the least of the time's Peek leaves too little room for all
+    #[test]
+    fn the_tray_strip_takes_fewer_slots_on_a_very_narrow_body() {
+        let narrow = fitted(DEFAULT_LARGEST, [(390.0, 800.0)].into_iter());
+        let peek = TimePeek {
+            agenda: agenda_most(narrow.width),
+            ..TimePeek::ALL
+        };
+
+        assert!(tray(TRAY_SLOTS, peek).width > narrow.width);
+
+        let strip = shape(
+            Presentation::Tray(TRAY_SLOTS as u8),
+            narrow,
+            Hang::default(),
+            peek,
+        );
+        assert!(strip.width <= narrow.width);
+        assert!(tray_slots(TRAY_SLOTS as u8, narrow, Hang::default(), peek) > 0);
+    }
+
     // a list Surface grows to the largest body of the output it opens on, not another's
     #[test]
     fn a_list_surface_grows_to_its_outputs_largest_body() {
@@ -779,7 +884,13 @@ mod tests {
         let small = fitted(asked, [(800.0, 600.0)].into_iter());
         let mut sizes = Sizes {
             largest: asked,
-            fits: HashMap::from([("small".to_owned(), small)]),
+            fits: HashMap::from([(
+                "small".to_owned(),
+                Holds {
+                    largest: small,
+                    peek: TimePeek::ALL,
+                },
+            )]),
             ..Sizes::default()
         };
         let launcher = Presentation::Expanded(Surface::Launcher);
@@ -788,9 +899,29 @@ mod tests {
         assert_eq!(sizes.largest_on("large"), asked);
 
         sizes.ask(Surface::Launcher, 5000.0, None);
-        let on = |monitor| sizes.target(launcher, 0, sizes.largest_on(monitor));
+        let on = |monitor| sizes.target(launcher, 0, sizes.holds(monitor));
 
         assert_eq!(on("small").height, small.height);
         assert_eq!(on("large").height, asked.height);
+    }
+
+    // the Tray strip is as wide as the Peek its own output holds
+    #[test]
+    fn a_tray_strip_follows_its_outputs_peek() {
+        let bare = TimePeek::default();
+        let sizes = Sizes {
+            fits: HashMap::from([(
+                "bare".to_owned(),
+                Holds {
+                    largest: DEFAULT_LARGEST,
+                    peek: bare,
+                },
+            )]),
+            ..Sizes::default()
+        };
+        let tray = Presentation::Tray(2);
+        let width = |monitor| sizes.target(tray, 0, sizes.holds(monitor)).width;
+
+        assert!(width("bare") < width("other"));
     }
 }
