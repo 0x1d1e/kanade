@@ -316,6 +316,8 @@ impl Requests {
         Said {
             status,
             wrong: self.wrong,
+            // until niri unlocks: the surface shows the time while it waits for that
+            locked: self.locked || matches!(self.holding(), Holding::Held | Holding::Checking),
         }
     }
 }
@@ -509,8 +511,11 @@ fn request(requests: &mut Requests, locker: &Locker) -> u64 {
     // nothing is captured from now: niri may lock before `kanade-lock` hears of it; a refusal or an end lifts this
     glass::locked(true);
 
-    locker.lock(newest);
+    // the scenes read the clock only while locked: say so, and hand them over behind the ask, which
+    // niri answers after they are in, so the first frame has them and a failure in them cannot keep the lock
     say(requests);
+    locker.lock(newest);
+    scene::hand(locker);
     HEARD.notify_all();
     newest
 }
@@ -716,6 +721,9 @@ fn requests() -> MutexGuard<'static, Requests> {
 pub struct Said {
     status: Status,
     wrong: u64,
+
+    // whether a lock holds or is on its way: the scenes read the clock only then
+    locked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

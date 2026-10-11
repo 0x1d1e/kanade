@@ -22,6 +22,14 @@ const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 const JPEG_SIGNATURE: [u8; 3] = [0xFF, 0xD8, 0xFF];
 
+// one size for every svg; keying the cache by the shown size would sharpen a big svg that looks soft
+const ICON_SIDE: f32 = 256.0;
+
+// an svg's bytes drawn with the longest side `longest` pixels across: width, height, plain RGBA
+pub fn draw_svg(bytes: &[u8], longest: f32) -> Option<(u32, u32, Vec<u8>)> {
+    svg::rasterize(bytes, longest)
+}
+
 // rgba pixels with plain, not premultiplied, alpha
 pub struct Bitmap {
     width: u32,
@@ -143,7 +151,13 @@ pub fn read(path: &Path) -> Option<Bitmap> {
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
     {
-        return svg::rasterize(&bytes);
+        let (width, height, pixels) = svg::rasterize(&bytes, ICON_SIDE)?;
+
+        return Some(Bitmap {
+            width,
+            height,
+            pixels: Arc::new(pixels),
+        });
     }
 
     // only png, jpeg and svg are supported

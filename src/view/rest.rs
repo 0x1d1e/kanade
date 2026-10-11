@@ -1,5 +1,7 @@
 //! The Island at Rest, its time Peek and the Tray strip's lead.
 
+use std::collections::HashMap;
+
 use chrono::NaiveDate;
 use kanade_runtime::service::Service;
 use kanade_runtime::{
@@ -7,9 +9,11 @@ use kanade_runtime::{
 };
 
 use crate::clock::{self, Hours};
+use crate::cluster;
 use crate::config;
+use crate::icon::Icon;
 use crate::island::activity::Activity;
-use crate::island::geometry;
+use crate::island::geometry::{self, Shape};
 use crate::island::presentation::{Content, Presentation};
 use crate::modules;
 use crate::sources::battery::BatteryLevel;
@@ -37,9 +41,7 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
     let config = config::on(monitor);
 
     // reading the level only when shown keeps the Rest of one without it from waking on a change
-    let level = (config.rest.battery && modules::on("battery"))
-        .then(|| *BatteryLevel::read())
-        .and_then(|level| level.percent);
+    let level = shown(config.rest.battery);
 
     if upright() {
         return Some(rest_upright(monitor, level));
@@ -56,8 +58,26 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
         ));
     }
 
-    if let Some(percent) = level {
-        items.push(Box::new(battery_readout(percent)));
+    // the dots can leave a 12-hour clock no room for the percent beside it, past the clear they keep
+    let crowded = |charge: Charge| {
+        let readout = geometry::READOUT
+            + if charge.charging {
+                geometry::BOLT + 4.0
+            } else {
+                0.0
+            };
+        let clock = if config.rest.clock {
+            geometry::CLOCK + 8.0
+        } else {
+            0.0
+        };
+        let content = clock + readout + geometry::dots_room(cluster::count());
+
+        config.clock == Hours::Twelve && content > geometry::REST.width + 2.0 * geometry::DOT_CLEAR
+    };
+
+    if let Some(charge) = level.filter(|&charge| !crowded(charge)) {
+        items.push(Box::new(battery_readout(charge)));
     }
 
     Some(
@@ -67,19 +87,43 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
     )
 }
 
-// the battery's percent and its icon, in the Island's quiet tone
-fn battery_readout(percent: u8) -> Row {
-    let tone = theme::island().on_surface_variant;
+// the battery as Rest and its Peek show it
+#[derive(Clone, Copy)]
+struct Charge {
+    percent: u8,
 
-    Row::new(children![
-        Text::new(format!("{percent}%"))
+    // on the mains, so a bolt comes before the percent
+    charging: bool,
+}
+
+// the battery as `enabled` asks and the machine has; reading it only then keeps a Rest without it from waking on a change
+fn shown(enabled: bool) -> Option<Charge> {
+    let level = (enabled && modules::on("battery")).then(|| *BatteryLevel::read())?;
+
+    Some(Charge {
+        percent: level.percent?,
+        charging: level.charging,
+    })
+}
+
+// the battery's percent and its icon, in the Island's quiet tone, after a bolt while it charges
+fn battery_readout(charge: Charge) -> Row {
+    let tone = theme::island().on_surface_variant;
+    let mut parts: Vec<Box<dyn Widget>> = Vec::new();
+
+    if charge.charging {
+        parts.push(Box::new(Icon::Bolt.on(geometry::BOLT, tone)));
+    }
+
+    parts.push(Box::new(
+        Text::new(format!("{}%", charge.percent))
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
-        battery_icon(20.0, percent, tone),
-    ])
-    .gap(4.0)
-    .align(Center)
+    ));
+    parts.push(Box::new(battery_icon(20.0, charge.percent, tone)));
+
+    Row::new(parts).gap(4.0).align(Center)
 }
 
 /*
@@ -95,15 +139,15 @@ pub(super) fn has_battery() -> bool {
 }
 
 // Rest standing along a side edge: the hours over the minutes, then the battery under them
-fn rest_upright(monitor: &str, level: Option<u8>) -> Rectangle {
+fn rest_upright(monitor: &str, level: Option<Charge>) -> Rectangle {
     let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
     if config::on(monitor).rest.clock {
         items.push(Box::new(stacked_time(monitor, theme::text::LABEL)));
     }
 
-    if let Some(percent) = level {
-        items.push(Box::new(battery_stacked(percent)));
+    if let Some(charge) = level {
+        items.push(Box::new(battery_stacked(charge)));
     }
 
     sized(Presentation::Rest)
@@ -111,19 +155,24 @@ fn rest_upright(monitor: &str, level: Option<u8>) -> Rectangle {
         .child(Column::new(items).gap(10.0).align(Center))
 }
 
-// the battery's icon over its percent
-fn battery_stacked(percent: u8) -> Column {
+// the battery's icon over its percent, under a bolt while it charges
+fn battery_stacked(charge: Charge) -> Column {
     let tone = theme::island().on_surface_variant;
+    let mut parts: Vec<Box<dyn Widget>> = Vec::new();
 
-    Column::new(children![
-        battery_icon(20.0, percent, tone),
-        Text::new(percent.to_string())
+    if charge.charging {
+        parts.push(Box::new(Icon::Bolt.on(geometry::BOLT, tone)));
+    }
+
+    parts.push(Box::new(battery_icon(20.0, charge.percent, tone)));
+    parts.push(Box::new(
+        Text::new(charge.percent.to_string())
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
-    ])
-    .gap(3.0)
-    .align(Center)
+    ));
+
+    Column::new(parts).gap(3.0).align(Center)
 }
 
 // the local time a part a line, the hours over the minutes and any AM or PM
@@ -196,12 +245,10 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
             .weight(theme::text::SEMIBOLD),
     ];
 
-    let level = (config.rest.peek_battery && modules::on("battery"))
-        .then(|| *BatteryLevel::read())
-        .and_then(|level| level.percent);
+    let level = shown(config.rest.peek_battery);
 
-    if let Some(percent) = level {
-        head.push(Box::new(battery_readout(percent)));
+    if let Some(charge) = level {
+        head.push(Box::new(battery_readout(charge)));
     }
 
     // the room after it holds the slots, or ends the strip as round as it began
@@ -246,12 +293,19 @@ fn agenda_line(label: String) -> Text {
 }
 
 /*
- * the width the time's Peek gives today's next event, as the widest of the outputs showing it asks:
- * the Tray strip is as wide as its lead needs. Written by `measure`, which the Island's sizes
- * follow, never by a view
+ * the width the time's Peek gives today's next event on each output showing it: its Tray strip is
+ * as wide as its lead needs. Written by `measure_agenda`, which the Island's sizes follow, never
+ * by a view
  */
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Agenda(pub u16);
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Agenda(HashMap<String, u16>);
+
+impl Agenda {
+    // the width on this output, none for no event or the setting off
+    pub fn on(&self, monitor: &str) -> u16 {
+        self.0.get(monitor).copied().unwrap_or(0)
+    }
+}
 
 impl Service for Agenda {
     fn new() -> Self {
@@ -263,40 +317,36 @@ impl Service for Agenda {
 
 /*
  * measures the next event's line on each output that shows it, to the most the strip gives it in
- * a body `body` wide. It keeps off the clock's timer, which only a window drawing the time may arm
+ * the largest body that output holds (`fits`). It keeps off the clock's timer, which only a window
+ * drawing the time may arm
  */
-pub(crate) fn measure_agenda(body: f32) {
+pub(crate) fn measure_agenda(fits: &HashMap<String, Shape>) {
     let now = weather::now();
     let config = config::get();
-    let monitors = Monitors::read();
-    let mut hours: Vec<Hours> = monitors
-        .all()
-        .iter()
-        .filter(|monitor| config.on(&monitor.name).rest.agenda)
-        .map(|monitor| config.on(&monitor.name).clock)
-        .collect();
+    let today = clock::local_time(now)
+        .map(|time| time.date())
+        .filter(|_| modules::on("calendar"));
 
-    if monitors.all().is_empty() && config.rest.agenda {
-        hours.push(config.clock);
-    }
+    let widths = today.map_or_else(HashMap::new, |today| {
+        Monitors::read()
+            .all()
+            .iter()
+            .filter_map(|monitor| {
+                let on = config.on(&monitor.name);
+                let label = next_event(today, now, on.clock).filter(|_| on.rest.agenda)?;
+                let most = geometry::agenda_most(fits.get(&monitor.name)?.width);
 
-    let today = clock::local_time(now).map(|time| time.date());
-    let widest = today
-        .filter(|_| modules::on("calendar"))
-        .map_or(0, |today| {
-            hours
-                .into_iter()
-                .filter_map(|hours| next_event(today, now, hours))
-                .filter_map(|label| match agenda_line(label).width() {
-                    Size::Fixed(width) => Some(width.ceil() as u16),
+                match agenda_line(label).width() {
+                    Size::Fixed(width) => {
+                        Some((monitor.name.clone(), (width.ceil() as u16).min(most)))
+                    }
                     _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-                .min(geometry::agenda_most(body))
-        });
+                }
+            })
+            .collect()
+    });
 
-    let next = Agenda(widest);
+    let next = Agenda(widths);
 
     if *Agenda::read() != next {
         *Agenda::write() = next;
@@ -333,12 +383,10 @@ pub(crate) fn time_peek_upright(monitor: &str) -> Rectangle {
         ));
     }
 
-    let level = (config.rest.peek_battery && modules::on("battery"))
-        .then(|| *BatteryLevel::read())
-        .and_then(|level| level.percent);
+    let level = shown(config.rest.peek_battery);
 
-    if let Some(percent) = level {
-        parts.push(Box::new(battery_stacked(percent)));
+    if let Some(charge) = level {
+        parts.push(Box::new(battery_stacked(charge)));
     }
 
     Rectangle::new()

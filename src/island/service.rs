@@ -11,7 +11,7 @@ use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Scope, Track
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
-use super::geometry::{self, Canvas, Hang, Shape, Sizes, TimePeek};
+use super::geometry::{self, Canvas, Hang, Holds, Shape, Sizes, TimePeek};
 use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
 use super::satellites::{Mark, Satellites};
@@ -250,21 +250,21 @@ impl IslandService {
      */
     pub fn resize(
         &mut self,
-        (largest, fits): (Shape, HashMap<String, Shape>),
+        (largest, peek): (Shape, TimePeek),
+        fits: HashMap<String, Holds>,
         hang: Hang,
-        peek: TimePeek,
         now: Instant,
     ) -> bool {
         let changed = largest != self.sizes.largest
+            || peek != self.sizes.peek
             || fits != self.sizes.fits
-            || hang != self.sizes.hang
-            || peek != self.sizes.peek;
+            || hang != self.sizes.hang;
 
         if changed {
             self.sizes.largest = largest;
+            self.sizes.peek = peek;
             self.sizes.fits = fits;
             self.sizes.hang = hang;
-            self.sizes.peek = peek;
             self.retarget(now);
         }
 
@@ -275,10 +275,20 @@ impl IslandService {
      * how tall a list Surface's content asks its body to be, `fresh` as a new visit opens it and
      * `visit` in the one open now, posted by its sources and key handlers as it changes (ADR 0030)
      */
-    pub fn fit(&mut self, surface: Surface, fresh: f32, visit: Option<(u64, f32)>, now: Instant) {
-        if self.sizes.ask(surface, fresh, visit) {
+    pub fn fit(
+        &mut self,
+        surface: Surface,
+        fresh: f32,
+        visit: Option<(u64, f32)>,
+        now: Instant,
+    ) -> bool {
+        let changed = self.sizes.ask(surface, fresh, visit);
+
+        if changed {
             self.retarget(now);
         }
+
+        changed
     }
 
     // a body headed for a size no longer asked for heads for the new one from where it stands
@@ -286,11 +296,11 @@ impl IslandService {
         let visit = self.visit();
 
         for (monitor, island) in &mut self.islands {
-            let sizes = (&self.sizes, visit, self.sizes.largest_on(monitor));
+            let sizes = (&self.sizes, visit, self.sizes.holds(monitor));
             reaim(island, sizes, self.timings.expand, now);
         }
 
-        let sizes = (&self.sizes, visit, self.sizes.largest);
+        let sizes = (&self.sizes, visit, self.sizes.holds(""));
         reaim(&mut self.untouched, sizes, self.timings.expand, now);
     }
 
@@ -393,6 +403,11 @@ impl IslandService {
         self.presentations.expanded().map(|(_, surface)| surface)
     }
 
+    // what the time's Peek holds on any output, for one not named
+    pub fn peek(&self) -> TimePeek {
+        self.sizes.peek
+    }
+
     // the monitor of the one Expanded island, if any
     pub fn expanded_on(&self) -> Option<&str> {
         self.presentations.expanded().map(|(monitor, _)| monitor)
@@ -421,7 +436,7 @@ impl IslandService {
     pub fn shape(&self, monitor: &str, now: Instant) -> Shape {
         self.spring(monitor).map_or(
             self.sizes
-                .target(Presentation::Rest, 0, self.sizes.largest_on(monitor)),
+                .target(Presentation::Rest, 0, self.sizes.holds(monitor)),
             |spring| geometry::bounded(Shape::from(spring.at(now)), self.canvas(monitor)),
         )
     }
@@ -985,7 +1000,11 @@ impl IslandService {
             ),
             marks(&untouched, presentation),
             self.timings,
-            (&self.sizes, self.presentations.visit(), self.sizes.largest),
+            (
+                &self.sizes,
+                self.presentations.visit(),
+                self.sizes.holds(""),
+            ),
             now,
         );
 
@@ -1000,8 +1019,8 @@ impl IslandService {
             );
 
             if let Some(island) = self.islands.get_mut(&monitor) {
-                let largest = self.sizes.largest_on(&monitor);
-                let sizes = (&self.sizes, self.presentations.visit(), largest);
+                let holds = self.sizes.holds(&monitor);
+                let sizes = (&self.sizes, self.presentations.visit(), holds);
                 follow(island, content, marks, self.timings, sizes, now);
             }
         }
@@ -1128,7 +1147,7 @@ fn follow(
     content: Content,
     marks: Vec<Mark>,
     timings: Timings,
-    (sizes, visit, largest): (&Sizes, u64, Shape),
+    (sizes, visit, holds): (&Sizes, u64, Holds),
     now: Instant,
 ) {
     let presentation = content.presentation;
@@ -1148,7 +1167,7 @@ fn follow(
 
     // the same content in a new visit may be sized otherwise
     if content == *island.content.target() {
-        reaim(island, (sizes, visit, largest), timings.expand, now);
+        reaim(island, (sizes, visit, holds), timings.expand, now);
         return;
     }
 
@@ -1170,7 +1189,7 @@ fn follow(
      */
     let spring = island.shape.get_or_insert_with(|| {
         Spring::new(
-            sizes.target(Presentation::Rest, visit, largest).into(),
+            sizes.target(Presentation::Rest, visit, holds).into(),
             motion,
         )
     });
@@ -1188,7 +1207,7 @@ fn follow(
         }
 
         spring.to(
-            sizes.target(presentation, visit, largest).into(),
+            sizes.target(presentation, visit, holds).into(),
             response(from, presentation, timings),
             now,
         );
@@ -1207,12 +1226,12 @@ fn follow(
  */
 fn reaim(
     island: &mut Island,
-    (sizes, visit, largest): (&Sizes, u64, Shape),
+    (sizes, visit, holds): (&Sizes, u64, Holds),
     duration: Duration,
     now: Instant,
 ) {
     let mut target: [f32; 3] = sizes
-        .target(island.content.target().presentation, visit, largest)
+        .target(island.content.target().presentation, visit, holds)
         .into();
 
     if let Some(spring) = &mut island.shape
@@ -1406,16 +1425,18 @@ mod tests {
             ..DEFAULT_LARGEST
         };
 
+        let holds = |largest| Holds {
+            largest,
+            peek: TimePeek::ALL,
+        };
+
         island.resize(
-            (
-                DEFAULT_LARGEST,
-                HashMap::from([
-                    (OTHER.to_owned(), small),
-                    (MONITOR.to_owned(), DEFAULT_LARGEST),
-                ]),
-            ),
+            (DEFAULT_LARGEST, TimePeek::ALL),
+            HashMap::from([
+                (OTHER.to_owned(), holds(small)),
+                (MONITOR.to_owned(), holds(DEFAULT_LARGEST)),
+            ]),
             Hang::default(),
-            TimePeek::ALL,
             now,
         );
         island.fit(Surface::Launcher, 5000.0, None, now);
@@ -2732,7 +2753,7 @@ mod tests {
             for (small, tray) in [(COMPACT, 0), (REST, 1)] {
                 let now = Instant::now();
                 let mut island = IslandService::new();
-                island.resize((DEFAULT_LARGEST, HashMap::new()), hang, TimePeek::ALL, now);
+                island.resize((DEFAULT_LARGEST, TimePeek::ALL), HashMap::new(), hang, now);
                 island.set_tray(tray, now);
                 if small == COMPACT {
                     island.post(media(), now);

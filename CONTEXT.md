@@ -18,7 +18,7 @@ Something happening that may deserve attention. Has identity, Kind, Priority, Li
 
 ## Privacy cluster
 The microphone, camera and screen capture in use, a dot of its color each at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
-- **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show, and a Tray strip has none.
+- **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show. A Tray strip shows them past its last slot.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
 ## Banner
@@ -58,7 +58,7 @@ How an Activity interrupts: `None | Preempt | AutoExpand(duration)`.
 
 ## Presentation
 An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surface)`.
-- Rest has no primary Activity and shows the local time (`rest.clock`), and the battery's percent as set. With neither, nothing shows and the island hides as autohide does.
+- Rest has no primary Activity and shows the local time (`rest.clock`), and the battery's percent as set (a bolt before it while charging; a bare Rest crowded by dots drops it). A machine with no battery counts `rest.battery` as off. With neither, nothing shows and the island hides as autohide does.
 - Tray is Rest's own small form: the time's Peek (the time, with the battery as set, over the date, and the weather and next event as set), then the apps' tray items, raised by the hover delay and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it (an item that is only a menu shows its menu instead), middle is its secondary activation, the wheel scrolls it, right opens its menu.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.

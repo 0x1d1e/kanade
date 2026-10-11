@@ -981,7 +981,6 @@ dependencies = [
  "percent-encoding",
  "png",
  "proc-macro2",
- "resvg",
  "ring",
  "rustybuzz",
  "serde",

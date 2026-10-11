@@ -269,22 +269,22 @@ pub fn fit() {
         let apps = Apps::read();
         let query = Search::read().of(visit).query;
 
+        // a new visit lists every app
         (
-            asks(found(apps.list(), "").len()),
+            asks(apps.list().len()),
             asks(found(apps.list(), &query).len()),
         )
     };
 
-    IslandService::write().fit(
-        Surface::Launcher,
-        fresh,
-        Some((visit, open)),
-        Instant::now(),
-    );
+    super::ask(Surface::Launcher, fresh, Some((visit, open)));
 }
 
 // at start: the body follows the apps and the search from now on
 pub fn start() {
+    service::watch::<Connectivity>(follow_radios);
+    service::watch::<Adapter>(follow_radios);
+    follow_radios();
+    service::watch::<Radios>(fit);
     service::watch::<Apps>(fit);
     service::watch::<Search>(fit);
     fit();
@@ -330,28 +330,50 @@ fn wallpapers(query: &str) -> bool {
     query.trim().starts_with(wallpaper::PREFIX) && modules::on("wallpaper")
 }
 
-// where Kanade goes that exists now: its Module is on and, for a radio, the machine has one
-fn destinations() -> Destinations {
-    offered(
-        modules::on,
-        || Connectivity::read().wifi,
-        || Adapter::read().radio,
-    )
+/*
+ * whether the machine has each radio, as far as Wi-Fi and Bluetooth are on. A Service of its own,
+ * so the Launcher draws again when a radio comes or goes and not on each state it takes
+ */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Radios {
+    wifi: bool,
+    bluetooth: bool,
 }
 
-// the destinations `on` says have their Module running, a radio read only then
-fn offered(
-    on: impl Fn(&str) -> bool,
-    wifi: impl Fn() -> Radio,
-    bluetooth: impl Fn() -> Radio,
-) -> Destinations {
-    let controls = on("controls");
+impl Service for Radios {
+    fn new() -> Self {
+        Radios::default()
+    }
+
+    fn listen() {}
+}
+
+// a radio is read only with its Module on
+fn follow_radios() {
+    let radios = Radios {
+        wifi: modules::on("network") && Connectivity::read().wifi != Radio::Missing,
+        bluetooth: modules::on("bluetooth") && Adapter::read().radio != Radio::Missing,
+    };
+
+    let mut write = Radios::write();
+
+    if *write == radios {
+        write.quiet();
+    } else {
+        *write = radios;
+    }
+}
+
+// where Kanade goes that exists now: its Module is on and, for a radio, the machine has one
+fn destinations() -> Destinations {
+    let controls = modules::on("controls");
+    let radios = Radios::read();
 
     Destinations {
-        wifi: controls && on("network") && wifi() != Radio::Missing,
-        bluetooth: controls && on("bluetooth") && bluetooth() != Radio::Missing,
-        clipboard: on("clipboard-surface"),
-        settings: on("settings"),
+        wifi: controls && radios.wifi,
+        bluetooth: controls && radios.bluetooth,
+        clipboard: modules::on("clipboard-surface"),
+        settings: modules::on("settings"),
     }
 }
 

@@ -313,6 +313,11 @@ pub struct Extent {
     pub rise: f32,
 }
 
+// what `extent` was last worked out from, and the result: it runs every frame the Island morphs
+type Worked = (Vec<Piece>, Size, u32, Along, Extent);
+
+static WORKED: Mutex<Option<Worked>> = Mutex::new(None);
+
 pub fn extent() -> Option<Extent> {
     let items = items(&Windows::read());
 
@@ -324,11 +329,30 @@ pub fn extent() -> Option<Extent> {
     let size = Size::of(config.dock_size);
     let pieces = pieces(&items);
     let most = config.magnify.most();
-    let canvas = Canvas::of(&pieces, size, most);
-    let wings = wings(&pieces, size, config.dock_place.anchor.along);
+    let along = config.dock_place.anchor.along;
+
+    if let Some((had, kept, magnified, placed, extent)) = WORKED.locked().as_ref()
+        && *had == pieces
+        && *kept == size
+        && *magnified == most.to_bits()
+        && *placed == along
+    {
+        return Some(*extent);
+    }
+
+    let extent = worked(&pieces, size, most, along);
+
+    *WORKED.locked() = Some((pieces, size, most.to_bits(), along, extent));
+
+    Some(extent)
+}
+
+fn worked(pieces: &[Piece], size: Size, most: f32, along: Along) -> Extent {
+    let canvas = Canvas::of(pieces, size, most);
+    let wings = wings(pieces, size, along);
     let swell = |side: &[Piece], rest: &Row| (widest(side, size, most) - rest.width).max(0.0);
 
-    Some(Extent {
+    Extent {
         width: canvas.width,
         height: canvas.height,
         depth: depth(size),
@@ -339,7 +363,7 @@ pub fn extent() -> Option<Extent> {
         swell: swell(&pieces[..wings.cut], &wings.left)
             .max(swell(&pieces[wings.cut..], &wings.right)),
         rise: size.icon * (most - 1.0),
-    })
+    }
 }
 
 /*
@@ -1165,20 +1189,7 @@ fn room_for(island: Anchor, dock: Anchor) -> f32 {
     if beside(island, dock) {
         let peek = geometry::TOP + island.thickness(geometry::PEEK);
 
-        // on a side edge the Banners line up beside the Island at rest
-        let banners = match island.sideways() {
-            true => {
-                geometry::TOP
-                    + island.thickness(geometry::upright(geometry::REST, island.hang()))
-                    + crate::banners::GAP
-                    + crate::banners::WIDTH
-            }
-            false => 0.0,
-        };
-
-        peek.max(geometry::rest_reach(island.hang(), SATELLITES))
-            .max(banners)
-            + geometry::HOVER_PADDING
+        peek.max(geometry::rest_reach(island.hang(), SATELLITES)) + geometry::HOVER_PADDING
     } else {
         0.0
     }
