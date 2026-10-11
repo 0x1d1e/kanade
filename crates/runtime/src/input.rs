@@ -3,7 +3,7 @@ mod pointer;
 mod target;
 
 pub use pointer::Pointer;
-pub use target::{Handlers, KeyHandler, Target, clip};
+pub use target::{Handlers, KeyHandler, Target, anchor, clip, nest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Button {

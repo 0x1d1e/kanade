@@ -1,5 +1,5 @@
 use crate::graphics::{Area, Renderer};
-use crate::input::Target;
+use crate::input::{Target, nest};
 use crate::{Size, Widget};
 
 use super::Direction;
@@ -69,8 +69,12 @@ impl Widget for Stack {
 
     // later children add their targets later, so the one on top wins
     fn collect_targets(&self, area: Area, targets: &mut Vec<Target>) {
-        for child in &self.children {
+        for (place, child) in self.children.iter().enumerate() {
+            let first = targets.len();
+
             child.collect_targets(Self::child_area(child.as_ref(), area), targets);
+
+            nest(&mut targets[first..], place);
         }
     }
 }

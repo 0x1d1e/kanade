@@ -1034,6 +1034,7 @@ fn card(banner: &Banner, height: f32, roles: &ThemeRoles) -> Rectangle {
         .height(height)
         .padding(INSET)
         .align_child(Start, Start)
+        .identity(id)
         .cursor(Cursor::Pointer)
         .on_click(on_left(move || {
             // the daemon runs the default action; without one the click only puts the Banner away

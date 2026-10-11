@@ -1,25 +1,74 @@
+use std::collections::HashMap;
+
 use crate::{Button, Cursor, Scroll};
 
 use super::Target;
+use super::target::HoverHandler;
+
+/*
+ * a target across frames: its key and, among the targets of the frame that share it, its order.
+ * A position in the list would point at another target once widgets before it come or go
+ */
+type Id = (u64, u32);
 
 #[derive(Default)]
 pub struct Pointer {
-    // the hit areas of the last drawn frame
+    // the hit areas of the last drawn frame, and the id of each
     targets: Vec<Target>,
+    ids: Vec<Id>,
 
     x: f32,
     y: f32,
 
-    // positions in targets, which stay the same across redraws of an unchanged layout
-    hovered: Vec<usize>,
-    pressed: Option<usize>,
-    dragged: Option<usize>,
+    // whether the pointer is over the window, and not left it since
+    inside: bool,
+
+    // the handler is the one the target had when last seen, so a target that turned inert or
+    // went away still hears the pointer leave
+    hovered: Vec<(Id, HoverHandler)>,
+    pressed: Option<Id>,
+    dragged: Option<Id>,
 }
 
 impl Pointer {
     // the hit areas of a new frame replace the last frame's
     pub fn set_targets(&mut self, targets: Vec<Target>) {
+        let mut seen: HashMap<u64, u32> = HashMap::new();
+
+        self.ids = targets
+            .iter()
+            .map(|target| {
+                let order = seen.entry(target.key).or_default();
+                let id = (target.key, *order);
+
+                *order += 1;
+
+                id
+            })
+            .collect();
         self.targets = targets;
+
+        // the new frame's handler for each hovered target still there that has one
+        for (id, handler) in &mut self.hovered {
+            if let Some(new) = self
+                .ids
+                .iter()
+                .position(|other| other == id)
+                .and_then(|index| self.targets[index].handlers.hover.clone())
+            {
+                *handler = new;
+            }
+        }
+    }
+
+    // where in the last frame an id is, if it still is
+    fn index(&self, id: Id) -> Option<usize> {
+        self.ids.iter().position(|other| *other == id)
+    }
+
+    // the look under a pointer that is over the window, for after a redraw changed what is there
+    pub fn cursor_inside(&self) -> Option<Cursor> {
+        self.inside.then(|| self.cursor())
     }
 
     // the innermost target under the pointer that has the handler asked for
@@ -41,12 +90,15 @@ impl Pointer {
     pub fn move_to(&mut self, x: f32, y: f32) -> bool {
         self.x = x;
         self.y = y;
+        self.inside = true;
 
         let mut inside = Vec::new();
 
         for (index, target) in self.targets.iter().enumerate() {
-            if target.handlers.hover.is_some() && target.contains(x, y) {
-                inside.push(index);
+            if let Some(hover) = &target.handlers.hover
+                && target.contains(x, y)
+            {
+                inside.push((self.ids[index], hover.clone()));
             }
         }
 
@@ -56,6 +108,7 @@ impl Pointer {
     pub fn leave(&mut self) -> bool {
         // a button let go outside the window is not a click
         self.pressed = None;
+        self.inside = false;
 
         // the release will not reach this window, so the drag ends here
         self.dragged = None;
@@ -64,39 +117,28 @@ impl Pointer {
     }
 
     // tells the targets the pointer entered or left, and returns whether any were told
-    fn update_hovered(&mut self, inside: Vec<usize>) -> bool {
+    fn update_hovered(&mut self, inside: Vec<(Id, HoverHandler)>) -> bool {
         let mut changed = false;
 
-        for &index in &self.hovered {
-            if !inside.contains(&index) {
-                changed |= self.notify(index, false);
+        for (id, hover) in &self.hovered {
+            if !inside.iter().any(|(other, _)| other == id) {
+                hover(false);
+
+                changed = true;
             }
         }
 
-        for &index in &inside {
-            if !self.hovered.contains(&index) {
-                changed |= self.notify(index, true);
+        for (id, hover) in &inside {
+            if !self.hovered.iter().any(|(other, _)| other == id) {
+                hover(true);
+
+                changed = true;
             }
         }
 
         self.hovered = inside;
 
         changed
-    }
-
-    fn notify(&self, index: usize, inside: bool) -> bool {
-        // a redraw since the pointer entered may have removed this target
-        let Some(target) = self.targets.get(index) else {
-            return false;
-        };
-
-        let Some(hover) = &target.handlers.hover else {
-            return false;
-        };
-
-        hover(inside);
-
-        true
     }
 
     // motion
@@ -135,7 +177,9 @@ impl Pointer {
     // click
 
     pub fn press(&mut self) {
-        self.pressed = self.find_topmost(|target| target.handlers.click.is_some());
+        self.pressed = self
+            .find_topmost(|target| target.handlers.click.is_some())
+            .map(|index| self.ids[index]);
     }
 
     // a click only counts when the button is let go over the widget it was pressed on
@@ -146,11 +190,16 @@ impl Pointer {
 
         let released = self.find_topmost(|target| target.handlers.click.is_some());
 
-        if released != Some(pressed) {
+        // a redraw since the press may have removed this target
+        let Some(index) = self.index(pressed) else {
+            return false;
+        };
+
+        if released != Some(index) {
             return false;
         }
 
-        let Some(click) = &self.targets[pressed].handlers.click else {
+        let Some(click) = &self.targets[index].handlers.click else {
             return false;
         };
 
@@ -162,7 +211,9 @@ impl Pointer {
     // drag
 
     pub fn start_drag(&mut self) -> bool {
-        self.dragged = self.find_topmost(|target| target.handlers.drag.is_some());
+        self.dragged = self
+            .find_topmost(|target| target.handlers.drag.is_some())
+            .map(|index| self.ids[index]);
 
         self.drag()
     }
@@ -173,12 +224,12 @@ impl Pointer {
 
     // keeps reporting to the target pressed on, even after the pointer leaves it
     pub fn drag(&self) -> bool {
-        let Some(index) = self.dragged else {
+        let Some(id) = self.dragged else {
             return false;
         };
 
         // a redraw since the press may have removed this target
-        let Some(target) = self.targets.get(index) else {
+        let Some(target) = self.index(id).map(|index| &self.targets[index]) else {
             return false;
         };
 

@@ -716,9 +716,10 @@ fn row(
     let monitor = monitor.to_owned();
     let action = answer.action.clone();
 
-    row.on_click(super::on_left(move || {
-        press(&monitor, visit, action.clone());
-    }))
+    row.identity(&answer.action)
+        .on_click(super::on_left(move || {
+            press(&monitor, visit, action.clone());
+        }))
 }
 
 /*

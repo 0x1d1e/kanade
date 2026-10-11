@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::Scroll;
 use crate::graphics::Area;
-use crate::input::{Handlers, PIXELS_PER_LINE, Target, clip};
+use crate::input::{Handlers, PIXELS_PER_LINE, Target, clip, nest};
 
 use super::{ScrollArea, offsets};
 
@@ -32,6 +32,8 @@ pub fn collect_targets(scroll_area: &ScrollArea, area: Area, targets: &mut Vec<T
     scroll_area
         .child
         .collect_targets(scroll_area.child_area(area), targets);
+
+    nest(&mut targets[first..], 0);
 
     // the parts scrolled out of view don't react to the pointer
     clip(&mut targets[first..], area);

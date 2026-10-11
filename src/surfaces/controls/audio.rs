@@ -34,6 +34,17 @@ enum Line<'a> {
 }
 
 impl Line<'_> {
+    // what the row is, for the pointer to follow as the rows reorder
+    fn identity(self) -> (u8, Option<crate::sources::audio::Node>) {
+        match self {
+            Line::Speaker => (0, None),
+            Line::Microphone => (1, None),
+            Line::Device(device, Direction::Output) => (2, Some(device.node)),
+            Line::Device(device, Direction::Input) => (3, Some(device.node)),
+            Line::Stream(stream) => (4, Some(stream.node)),
+        }
+    }
+
     fn at(self) -> At {
         match self {
             Line::Speaker => At::Speaker,
@@ -90,7 +101,9 @@ pub fn sound(mixer: &Mixer, switching: Switching, offset: f32, ring: Option<&At>
         Box::new(list::list(lines.len(), offset, |index| {
             let line = lines[index];
 
-            Box::new(row(line, &defaults, switching, ring == Some(&line.at())))
+            Box::new(
+                row(line, &defaults, switching, ring == Some(&line.at())).identity(line.identity()),
+            )
         }))
     };
 

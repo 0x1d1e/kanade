@@ -124,5 +124,6 @@ impl WindowHandler for WaylandState {
         let height = height.map_or(0, NonZeroU32::get);
 
         window.resize(width, height);
+        self.refresh_cursor(xdg_window.wl_surface());
     }
 }

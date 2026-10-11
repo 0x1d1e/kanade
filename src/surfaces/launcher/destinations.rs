@@ -11,7 +11,7 @@ use crate::settings;
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
 use super::{emoji, wallpaper};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Destination {
     Wifi,
     Bluetooth,

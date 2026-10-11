@@ -1,7 +1,9 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::graphics::Area;
-use crate::input::{Cursor, Handlers, Target, clip};
+use crate::input::{Cursor, Handlers, Target, anchor, clip, nest};
 use crate::{Button, Point, Rectangle, Scroll};
 
 use super::{child, transform};
@@ -10,10 +12,23 @@ impl Rectangle {
     /*
      * an inert rectangle still draws but its children react to nothing, and a click on it is taken
      * and ignored, so it never reaches what is beneath. Its targets stay in the list, since the
-     * pointer holds a press, a drag and the hovered ones by position
+     * pointer holds a press, a drag and the hovered ones by key
      */
     pub fn inert(mut self, inert: bool) -> Self {
         self.inert = inert;
+
+        self
+    }
+
+    /*
+     * what the rectangle and what is in it stand for, as a list item's id: the pointer follows a
+     * press and a hover by it, not by the item's place, which moves as items come and go
+     */
+    pub fn identity(mut self, identity: impl Hash) -> Self {
+        let mut hasher = DefaultHasher::new();
+
+        identity.hash(&mut hasher);
+        self.identity = Some(hasher.finish());
 
         self
     }
@@ -67,6 +82,10 @@ pub fn collect_targets(rectangle: &Rectangle, area: Area, targets: &mut Vec<Targ
 
     collect_in_place(rectangle, area, targets);
 
+    if let Some(identity) = rectangle.identity {
+        anchor(&mut targets[first..], identity);
+    }
+
     let local = transform::local(rectangle, area);
 
     // a rectangle scaled to nothing takes no input
@@ -109,6 +128,8 @@ fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>
 
     child.collect_targets(child_area, targets);
 
+    nest(&mut targets[first..], 0);
+
     // the rounded corners are left out, they are too small to miss a click by
     if rectangle.clip {
         clip(&mut targets[first..], area);
@@ -125,9 +146,9 @@ fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>
 mod tests {
     use std::cell::Cell;
 
-    use crate::Stack;
     use crate::input::Pointer;
     use crate::widgets::Widget;
+    use crate::{Row, Stack};
 
     use super::*;
 
@@ -239,5 +260,178 @@ mod tests {
 
         // hover entered, one move, the wheel on the target beneath rather than the inert child, no click
         assert_eq!(seen.get(), [0, 1, 1, 1, 0]);
+    }
+
+    // a form of more or fewer targets swapped in beside it moves none of the targets after it
+    // out from under a press, a drag or a hover begun before
+    #[test]
+    fn targets_after_a_swapped_form_keep_their_press_hover_and_drag() {
+        let seen: Rc<Cell<[u32; 4]>> = Rc::default();
+        let bump = |at: usize| {
+            let seen = seen.clone();
+
+            move || {
+                let mut counts = seen.get();
+
+                counts[at] += 1;
+                seen.set(counts);
+            }
+        };
+        let (click, hover, drag, other) = (bump(0), bump(1), bump(2), bump(3));
+
+        // the form has `buttons` targets, then comes one with a click, a hover and a drag
+        let frame = |buttons: usize| {
+            let form: Vec<Box<dyn Widget>> = (0..buttons)
+                .map(|_| {
+                    let other = other.clone();
+
+                    Box::new(
+                        Rectangle::new()
+                            .width(10.0)
+                            .height(50.0)
+                            .on_click(move |_| other()),
+                    ) as Box<dyn Widget>
+                })
+                .collect();
+            let (click, hover, drag) = (click.clone(), hover.clone(), drag.clone());
+            let after = Rectangle::new()
+                .width(50.0)
+                .height(50.0)
+                .on_click(move |_| click())
+                .on_hover(move |_| hover())
+                .on_drag(move |_| drag());
+            let mut targets = Vec::new();
+
+            Row::new(crate::children![Row::new(form).width(50.0), after])
+                .collect_targets(Area::new(0.0, 0.0, 100.0, 50.0), &mut targets);
+
+            targets
+        };
+        let mut pointer = Pointer::default();
+
+        pointer.set_targets(frame(1));
+        pointer.move_to(75.0, 25.0);
+        pointer.press();
+        pointer.start_drag();
+
+        pointer.set_targets(frame(3));
+        pointer.move_to(80.0, 25.0);
+        pointer.drag();
+        pointer.release(Button::Left);
+
+        // one hover in, no stray hover out, one drag report on the press and one on the move, one click
+        assert_eq!(seen.get(), [1, 1, 2, 0]);
+    }
+
+    // a hovered target that turned inert or went away still hears the pointer leave, once
+    #[test]
+    fn a_hovered_target_turning_inert_or_going_away_hears_the_pointer_leave() {
+        let events: Rc<std::cell::RefCell<Vec<bool>>> = Rc::default();
+        let frame = |inert: bool, present: bool| {
+            let events = events.clone();
+            let mut form: Vec<Box<dyn Widget>> = Vec::new();
+
+            if present {
+                form.push(Box::new(
+                    Rectangle::new()
+                        .width(50.0)
+                        .height(50.0)
+                        .inert(inert)
+                        .on_hover(move |inside| events.borrow_mut().push(inside))
+                        .on_click(|_| {}),
+                ));
+            }
+
+            let mut targets = Vec::new();
+
+            Row::new(form).collect_targets(Area::new(0.0, 0.0, 50.0, 50.0), &mut targets);
+
+            targets
+        };
+
+        for (inert, present) in [(true, true), (false, false)] {
+            events.borrow_mut().clear();
+
+            let mut pointer = Pointer::default();
+
+            pointer.set_targets(frame(false, true));
+            pointer.move_to(25.0, 25.0);
+            pointer.set_targets(frame(inert, present));
+            pointer.move_to(26.0, 25.0);
+            pointer.move_to(27.0, 25.0);
+
+            // the inert one keeps no hover handler of its own: it hears the exit from the old one
+            assert_eq!(
+                *events.borrow(),
+                [true, false],
+                "inert {inert}, present {present}"
+            );
+        }
+    }
+
+    // a list item named by what it is keeps its press and hover as items come above it, and one
+    // that takes its place is another target, not the same one
+    #[test]
+    fn items_named_by_identity_follow_the_item_and_not_its_place() {
+        let log: Rc<std::cell::RefCell<Vec<String>>> = Rc::default();
+        let frame = |ids: &[u32]| {
+            let items: Vec<Box<dyn Widget>> = ids
+                .iter()
+                .map(|&id| {
+                    let (click, hover) = (log.clone(), log.clone());
+
+                    Box::new(
+                        Rectangle::new()
+                            .width(50.0)
+                            .height(20.0)
+                            .identity(id)
+                            .on_click(move |_| click.borrow_mut().push(format!("click {id}")))
+                            .on_hover(move |inside| {
+                                hover.borrow_mut().push(format!("hover {id} {inside}"))
+                            }),
+                    ) as Box<dyn Widget>
+                })
+                .collect();
+            let mut targets = Vec::new();
+
+            crate::Column::new(items)
+                .collect_targets(Area::new(0.0, 0.0, 50.0, 100.0), &mut targets);
+
+            targets
+        };
+        let mut pointer = Pointer::default();
+
+        // item 1 is on top; the pointer rests on it and presses
+        pointer.set_targets(frame(&[1, 2]));
+        pointer.move_to(25.0, 10.0);
+        pointer.press();
+
+        // item 3 comes above, and item 1 is pushed down, out from under the pointer
+        pointer.set_targets(frame(&[3, 1, 2]));
+        pointer.release(Button::Left);
+
+        // the pointer is over item 3 now: the release is not item 1's click, nor item 3's
+        assert_eq!(*log.borrow(), ["hover 1 true"]);
+
+        pointer.move_to(25.0, 11.0);
+
+        assert_eq!(
+            *log.borrow(),
+            ["hover 1 true", "hover 1 false", "hover 3 true"]
+        );
+
+        // a press that stays on its item still clicks it, wherever the item went
+        pointer.press();
+        pointer.set_targets(frame(&[1, 3, 2]));
+        pointer.move_to(25.0, 10.0);
+        pointer.release(Button::Left);
+
+        assert_eq!(log.borrow().last().unwrap(), "hover 1 true");
+        assert!(!log.borrow().iter().any(|line| line.starts_with("click")));
+
+        pointer.press();
+        pointer.release(Button::Left);
+
+        assert_eq!(log.borrow().last().unwrap(), "click 1");
     }
 }

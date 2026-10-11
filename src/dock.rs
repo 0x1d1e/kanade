@@ -1702,7 +1702,18 @@ fn slot(
     let press = press(item);
 
     let (width, height) = axes.size(side, side + DOT_ROOM);
-    let slot = Rectangle::new().width(width).height(height);
+    // by the app, as the icons before it come and go with the apps that open and close
+    let identity = match (&item.app, item.windows.first()) {
+        (App::Desktop(entry), _) => (0, Some(entry.id.as_str()), None),
+        (App::Unmatched(app_id), _) if app_id.is_some() => (1, app_id.as_deref(), None),
+        // a window with no app id is an item of its own
+        (App::Unmatched(_), window) => (2, None, window.map(|window| window.id)),
+    };
+
+    let slot = Rectangle::new()
+        .width(width)
+        .height(height)
+        .identity(identity);
 
     // the dot `BELOW` off the edge, the icon past it
     let (near, away) = if far { (BELOW, 0.0) } else { (0.0, BELOW) };

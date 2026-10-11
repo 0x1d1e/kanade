@@ -107,6 +107,26 @@ impl WaylandState {
             .find(|window| window.role.wl_surface() == surface)
     }
 
+    // draws the window, then sets the cursor again: a pointer that did not move may now be over
+    // something else
+    pub fn redraw_on(&mut self, surface: &WlSurface) {
+        if let Some(window) = self.window(surface) {
+            window.redraw();
+        }
+
+        self.refresh_cursor(surface);
+    }
+
+    pub fn refresh_cursor(&mut self, surface: &WlSurface) {
+        let cursor = self
+            .window(surface)
+            .and_then(|window| window.pointer.cursor_inside());
+
+        if let Some(cursor) = cursor {
+            self.show_cursor(cursor);
+        }
+    }
+
     // a service or handler may have changed what any of the windows shows
     pub fn request_frames(&mut self) {
         for window in &mut self.windows {

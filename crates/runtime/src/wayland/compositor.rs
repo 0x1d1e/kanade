@@ -24,7 +24,7 @@ impl CompositorHandler for WaylandState {
         }
 
         window.scale = new_factor as f32;
-        window.redraw();
+        self.redraw_on(surface);
     }
 
     fn transform_changed(
@@ -43,7 +43,7 @@ impl CompositorHandler for WaylandState {
 
         window.frame_requested = false;
 
-        window.redraw();
+        self.redraw_on(surface);
     }
 
     fn surface_enter(

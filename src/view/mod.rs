@@ -252,6 +252,9 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
 
+    // a layer that is not there takes its place all the same, so the targets after keep theirs
+    let nothing = || Box::new(Rectangle::new().width(0.0).height(0.0)) as Box<dyn Widget>;
+
     match glass_pane(
         glass_body,
         body_rect,
@@ -259,7 +262,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         backdrop,
         plate.is_some(),
     ) {
-        Glass::United(united) => pane = Some(united),
+        Glass::United(united) => {
+            pane = Some(united);
+            layers.push(nothing());
+        }
         Glass::Under(under) => layers.push(under),
     }
 
@@ -268,8 +274,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let presentation = island.presentation(&monitor.name);
     let sideways = hang.sideways() && cluster::at_end(presentation);
 
-    layers.extend(marks(cluster, body_rect, sideways));
-    layers.extend(hud(&island, monitor, body_rect, hang, now).map(|hud| Box::new(hud) as _));
+    layers.push(marks(cluster, body_rect, sideways).unwrap_or_else(nothing));
+    layers.push(
+        hud(&island, monitor, body_rect, hang, now).map_or_else(nothing, |hud| Box::new(hud) as _),
+    );
 
     let mut body = Rectangle::new()
         .width(body_rect.width)
@@ -321,7 +329,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         Box::new(Stack::new(under)),
     ])];
 
-    layers.extend(pane);
+    layers.push(pane.unwrap_or_else(nothing));
     layers.push(canvas_at(vec![Box::new(body)]));
 
     /*
