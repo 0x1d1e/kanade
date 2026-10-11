@@ -32,6 +32,33 @@ What the Surfaces show changes the numbers, so record it with each baseline: the
 
 ## Baseline
 
+2026-10-11, `main` at 39313b7, release build, files cached. The same machine and setup as the 2026-10-09 baseline below (one monitor, no config, calendars, weather location, media player or tray items), with NVIDIA 615.78.08. One run, after GPU glass (ADR 0037), ADR 0025's CPU lock screen, and vello 0.11 with wgpu 30:
+
+```
+                   rss     pss    anon    file     gpu gpu-res |  cgroup    peak    anon   cache   shmem  slab-r  others
+rest             312.1   302.5   194.6   107.9   495.0   493.0 |   764.8   892.0   200.0    52.9   499.9     0.4    13.8
+controls         338.5   328.9   220.9   108.0   501.0   499.0 |   797.8   892.0   226.3    52.9   505.9     0.4    13.8
+media            352.1   342.5   234.5   108.0   501.0   499.0 |   811.0   892.0   239.9    52.9   505.9     0.4    13.8
+notifications    357.1   347.5   239.5   108.0   501.0   499.0 |   815.8   892.0   244.9    52.9   505.9     0.4    13.8
+launcher         362.8   353.3   245.3   108.0   503.0   501.0 |   824.2   892.0   250.7    53.0   507.9     0.4    13.8
+tray             357.1   347.5   239.5   108.0   511.0   509.0 |   826.0   892.0   244.9    53.0   515.9     0.4    13.8
+clipboard        380.4   370.8   262.8   108.0   511.0   509.0 |   868.2   892.0   268.2    71.2   515.9     0.4    13.8
+calendar         406.3   396.8   288.8   108.0   509.0   507.0 |   891.9   892.2   294.2    71.2   513.9     0.4    13.8
+weather          409.2   399.7   291.6   108.0   509.0   507.0 |   894.9   895.1   297.1    71.2   513.9     0.4    13.8
+collapse         408.5   398.9   290.9   108.0   509.0   507.0 |   894.2   895.1   296.3    71.2   513.9     0.4    13.8
+settings         430.1   420.5   312.5   108.0   555.5   553.5 |   962.3   970.2   317.9    71.2   560.3     0.4    13.8
+closed           431.2   421.6   313.6   108.0   531.0   529.0 |   939.3   970.2   319.0    71.2   535.9     0.4    13.8
+locked           450.5   433.0   316.8   108.2   531.0   529.0 |   957.5   970.2   322.2    71.2   551.7     0.4    13.8
+unlocked         437.8   427.8   319.0   108.7   531.0   529.0 |   947.6   980.1   324.4    74.5   535.9     0.4    13.7
+```
+
+- GPU buffers more than doubled from 225 to 495 MiB at Rest, and RSS from 150 to 312 MiB. Both come from GPU glass: the build before the vello and wgpu upgrade (`03245ec`) measured 487 MiB of GPU buffers and 275 MiB of RSS at Rest.
+- The upgrade itself costs about 26 MiB of PSS at Rest: 15 MiB of heap and 10 MiB for `libnvidia-rtcore`, which the new build loads and the old did not. Compare Rest: the later samples depend on what each Surface allocated, and this baseline is one run.
+- The lock screen costs about 15-20 MiB of RSS and no GPU buffers now (ADR 0025); the Settings window 47 MiB of GPU buffers, 22 of them kept once it closes.
+- `docs/design.md` targets an RSS under 80 MB; Rest RSS is 312 MiB and leaves out the GPU buffers.
+
+## Baseline before GPU glass
+
 2026-10-09, `main` at 8d69207, release build, files cached. Lenovo laptop, Intel UHD Graphics (Alder Lake-S, i915) driving one monitor, eDP-1 1920x1080 at 144 Hz, scale 1. niri 26.04, Mesa 26.2.4, NVIDIA 615.71.09, Linux 7.2.9. No config file, no calendars, Google Calendar signed out, no weather location, no media player, no tray items.
 
 Only one monitor was available, so locked means one lock screen. Take the baseline again with more monitors connected.
@@ -71,6 +98,5 @@ What dominates:
 - Anonymous memory, 51 MiB at Rest. Media adds 21 MiB and the Calendar 33 MiB, with no calendar to show, and neither is freed when the island collapses.
 - Mapped files, 73 MiB of PSS, stay flat. NVIDIA's driver libraries (`libnvidia-gpucomp`, `-glcore`, `-eglcore` and others) cost 35 MiB of PSS, 29 MiB of it mapped files and the rest anonymous, plus 3 MiB for `/dev/nvidiactl`. Mesa's `libLLVM` and `libgallium` cost 17 MiB, 15 MiB of it mapped files. The shell draws on the Intel GPU, whose i915 client holds its buffers and render time, while `nvidia-smi` shows it holding 1 MiB on the NVIDIA one. So the NVIDIA libraries are loaded but barely used. Why either set loads was not traced; one guess, untested, is wgpu probing every Vulkan and EGL driver.
 - The peak is above every sample twice. It is 46 MiB over Rest from startup, and 18 MiB over the lock screen during the password check and unlock.
-- The lock screen's numbers predate ADR 0025: `kanade-lock` now draws it on the CPU, keeping each output's backdrop and the last decoded wallpaper in anonymous memory, locked or not, frames in shared memory while locked, and no GPU buffers (ADR 0025). Take the baseline again.
 
 `docs/design.md` targets an RSS under 80 MB. The shell's RSS is 150 MiB at Rest and 214 MiB after every Surface, and RSS leaves out the 225 MiB of GPU buffers.
