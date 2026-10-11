@@ -17,8 +17,8 @@ Something happening that may deserve attention. Has identity, Kind, Priority, Li
 - **Avoid:** event, notification (a Notification is one Kind of Activity)
 
 ## Privacy cluster
-The microphone, camera and screen capture in use, a dot of its color each at the trailing end of the Island's body, inside it, in the small forms (Rest, Compact, Split, Peek; ADRs 0005, 0033). What is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
-- **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show, and a Tray or Surface has none.
+The microphone, camera and screen capture in use, a dot of its color each at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
+- **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show, and a Tray strip has none.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
 ## Banner
@@ -62,7 +62,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - Tray is Rest's own small form: the time's Peek (the time, with the battery as set, over the date, and the weather and next event as set), then the apps' tray items, raised by the hover delay and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it (an item that is only a menu shows its menu instead), middle is its secondary activation, the wheel scrolls it, right opens its menu.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
-- **Invariant:** a body is never larger than the largest (`island.width` by `island.height`). A list Surface is as tall as its content asks, down to the Peek, never shrinking from under the pointer; the canvas never resizes during a morph (ADR 0030).
+- **Invariant:** a body is never larger than the largest (`island.width` by `island.height`), made smaller on an output with no room for it. A list Surface is as tall as its content asks, down to the Peek, never shrinking from under the pointer; the canvas never resizes during a morph (ADR 0030).
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
 - **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request, the Surfaces withheld). No remembered last-used Surface: a click at Rest opens Controls.
 - **Invariant:** at most one island is Expanded at a time.

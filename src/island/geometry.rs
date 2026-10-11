@@ -4,6 +4,8 @@
 //! middle or right, or from its left or right edge, in the middle (`Hang`), and the body sits
 //! against that edge and side of it.
 
+use std::collections::HashMap;
+
 use super::arbiter::SATELLITES;
 use super::presentation::{Presentation, Segment, Surface};
 
@@ -162,21 +164,23 @@ pub const TRAY_END: f32 = 16.0;
 pub const TIME_GAP: f32 = 12.0;
 
 /*
- * what the time's Peek holds beside the clock and the date, as the settings ask: it sizes the
- * Tray strip's lead to its content, so no room is left between it and the slots
+ * what the time's Peek holds beside the clock and the date, as the settings ask and the day has: it
+ * sizes the Tray strip's lead to its content, so no room is left between it and the slots
  */
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TimePeek {
     pub battery: bool,
     pub weather: bool,
-    pub agenda: bool,
+
+    // the width in pixels of today's next event, 0 for none or for the setting off
+    pub agenda: u16,
 }
 
 impl TimePeek {
     pub const ALL: TimePeek = TimePeek {
         battery: true,
         weather: true,
-        agenda: true,
+        agenda: AGENDA_MOST,
     };
 
     // across the top: the widest of its two lines
@@ -184,7 +188,11 @@ impl TimePeek {
         let clock = CLOCK + if self.battery { BATTERY } else { 0.0 };
         let date = DATE
             + if self.weather { WEATHER } else { 0.0 }
-            + if self.agenda { AGENDA } else { 0.0 };
+            + if self.agenda > 0 {
+                LINE_GAP + self.agenda as f32
+            } else {
+                0.0
+            };
 
         if clock > date { clock } else { date }
     }
@@ -199,8 +207,8 @@ impl TimePeek {
 
 /*
  * the lines of the time's Peek, the widest they lay out, as a view test holds: the clock, and the
- * battery after it; the date, the weather after it and the room the next event's title is given,
- * each with the gap before it
+ * battery after it; the date, the weather after it and the next event's line, each with the gap
+ * before it
  */
 pub const HEAD_GAP: f32 = 10.0;
 pub const LINE_GAP: f32 = 8.0;
@@ -208,7 +216,26 @@ pub const CLOCK: f32 = 57.0;
 pub const BATTERY: f32 = HEAD_GAP + 55.0;
 pub const DATE: f32 = 70.0;
 pub const WEATHER: f32 = LINE_GAP + 41.0;
-pub const AGENDA: f32 = LINE_GAP + 90.0;
+
+/*
+ * the most room the next event's line takes in a Tray strip no wider than a body `body` wide, with
+ * every slot and the rest of the time's Peek: none where even those do not fit
+ */
+pub const fn agenda_most(body: f32) -> u16 {
+    let room = body
+        - TIME_INSET
+        - TIME_GAP
+        - TRAY_SLOTS as f32 * TRAY_SLOT
+        - TRAY_END
+        - DATE
+        - WEATHER
+        - LINE_GAP;
+
+    if room > 0.0 { room as u16 } else { 0 }
+}
+
+// at the least the largest body may be, so the widest strip fits any
+pub const AGENDA_MOST: u16 = agenda_most(CALENDAR.width);
 
 pub const UPRIGHT_CLOCK: f32 = 64.0;
 pub const UPRIGHT_WEATHER: f32 = 34.0;
@@ -231,6 +258,8 @@ const fn tray(slots: usize, peek: TimePeek) -> Shape {
 
 // the widest, with everything the time's Peek can hold and every slot
 pub const TRAY: Shape = tray(TRAY_SLOTS, TimePeek::ALL);
+
+const _: () = assert!(TRAY.width <= CALENDAR.width);
 
 /*
  * the Tray strip along a side edge: the hours over the minutes, the weather and the battery, then
@@ -286,7 +315,11 @@ pub const DEFAULT_LARGEST: Shape = largest(520.0, 400.0);
  */
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sizes {
+    // the largest body asked for, which an output not in `fits` holds whole
     pub largest: Shape,
+
+    // the largest body each output holds, by name, smaller where it has no room for `largest`
+    pub fits: HashMap<String, Shape>,
 
     // where the Island hangs, which stands its small forms upright along a side edge
     pub hang: Hang,
@@ -307,6 +340,7 @@ impl Default for Sizes {
     fn default() -> Self {
         Sizes {
             largest: DEFAULT_LARGEST,
+            fits: HashMap::new(),
             hang: Hang::default(),
             peek: TimePeek::ALL,
             asks: Vec::new(),
@@ -315,6 +349,11 @@ impl Default for Sizes {
 }
 
 impl Sizes {
+    // the largest body on this output, which its Island's canvas is around
+    pub fn largest_on(&self, monitor: &str) -> Shape {
+        self.fits.get(monitor).copied().unwrap_or(self.largest)
+    }
+
     // what `surface`'s content asks now; false if it asked that already
     pub fn ask(&mut self, surface: Surface, fresh: f32, visit: Option<(u64, f32)>) -> bool {
         let asks = Asks { fresh, visit };
@@ -332,9 +371,10 @@ impl Sizes {
         }
     }
 
-    // where a body in this Presentation morphs to in `visit`; a list Surface's as its content asks
-    pub fn target(&self, presentation: Presentation, visit: u64) -> Shape {
-        let shape = shape(presentation, self.largest, self.hang, self.peek);
+    // where a body in this Presentation morphs to in `visit`, within `largest`; a list Surface's
+    // as its content asks
+    pub fn target(&self, presentation: Presentation, visit: u64, largest: Shape) -> Shape {
+        let shape = shape(presentation, largest, self.hang, self.peek);
         let Presentation::Expanded(surface) = presentation else {
             return shape;
         };
@@ -694,4 +734,63 @@ pub fn satellite_opacity(shape: Shape, hang: Hang) -> f32 {
     };
 
     1.0 - ((reach - peek) / (media - peek)).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // an output holds the largest body down to the room it leaves, and the least of several holds it for all
+    #[test]
+    fn the_largest_body_fits_each_output() {
+        let asked = largest(900.0, 700.0);
+        let small = fitted(asked, [(800.0, 600.0)].into_iter());
+        let large = fitted(asked, [(1920.0, 1080.0)].into_iter());
+
+        assert_eq!(large, asked);
+        assert!(small.width < asked.width && small.height < asked.height);
+        assert_eq!(
+            fitted(asked, [(800.0, 600.0), (1920.0, 1080.0)].into_iter()),
+            small
+        );
+
+        // an output with no size yet holds any
+        assert_eq!(fitted(asked, [(0.0, 0.0)].into_iter()), asked);
+    }
+
+    // the widest strip fits a body as narrow as the output leaves it, down to what the rest of the Peek needs
+    #[test]
+    fn the_tray_strip_fits_a_narrow_body() {
+        let narrow = fitted(DEFAULT_LARGEST, [(500.0, 800.0)].into_iter());
+        let peek = TimePeek {
+            agenda: agenda_most(narrow.width),
+            ..TimePeek::ALL
+        };
+
+        assert!(narrow.width < CALENDAR.width);
+        assert!(tray(TRAY_SLOTS, peek).width <= narrow.width);
+        assert!(agenda_most(narrow.width) < AGENDA_MOST);
+    }
+
+    // a list Surface grows to the largest body of the output it opens on, not another's
+    #[test]
+    fn a_list_surface_grows_to_its_outputs_largest_body() {
+        let asked = largest(900.0, 700.0);
+        let small = fitted(asked, [(800.0, 600.0)].into_iter());
+        let mut sizes = Sizes {
+            largest: asked,
+            fits: HashMap::from([("small".to_owned(), small)]),
+            ..Sizes::default()
+        };
+        let launcher = Presentation::Expanded(Surface::Launcher);
+
+        assert_eq!(sizes.largest_on("small"), small);
+        assert_eq!(sizes.largest_on("large"), asked);
+
+        sizes.ask(Surface::Launcher, 5000.0, None);
+        let on = |monitor| sizes.target(launcher, 0, sizes.largest_on(monitor));
+
+        assert_eq!(on("small").height, small.height);
+        assert_eq!(on("large").height, asked.height);
+    }
 }

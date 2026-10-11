@@ -34,7 +34,7 @@ Not worth changing, by this review:
 - [x] GPU glass (ADR 0037)
 - [x] The layers in `docs/design.md`
 - [x] `view.rs`, `modules.rs`, `lock.rs` and `glass.rs` split by responsibility, `view::island` into its layers
-- [ ] Scene: the largest body is still one for every output (#212)
+- [x] Scene: the largest body is per output (#212)
 - [ ] Invalidation: `service.rs` and `changes.rs` still use process-global state.
   - `Backdrops` is scoped by pane and `Pointers` by output; no other Service is, so a write of any other draws every window that read it (see Glass).
   - `IslandService` is the one that matters, but scoping it is a resource saving (not a gate before 1.0) and not a safe one: 62 `Island::write()` sites would each have to prove they change only one output's state, as `Sizes`, the Arbiter and the overview are read by every window.
@@ -70,7 +70,7 @@ Not worth changing, by this review:
 - [ ] On a side edge the Satellites travel about 124 px along the edge as a Compact peeks.
 - [ ] The upright Rest's Peek (`time_peek_upright`, 88 px) may overflow with a 12-hour clock and the weather; an upright timer's `h:mm:ss` may pass 38 px.
 - [ ] On a side edge, while a Peek holds the pill it grew from in the input region, a click beside the Peek but on the pill's old place still expands.
-- [ ] The largest body is one for every output: a small output shrinks it on a large one too (#212).
+- [ ] `Card::shape` (the Notifications `fit`) reads `view::largest()` from a watcher, where no output is being drawn: the ask can use another output's width until the next Notifications write.
 - [ ] `fit` writes `IslandService` on every Search write even when the ask is unchanged, redrawing its readers.
 
 ## Island and Dock merge (ADR 0031)
@@ -91,23 +91,17 @@ Not worth changing, by this review:
 ## Idle Island
 
 - [ ] Tray strip width is the union of every output's Peek settings (`view::peek`); an output with fewer extras keeps the widest strip. Per-output shapes would need the geometry per monitor.
-- [ ] The Tray strip's agenda title gets a fixed 90 px budget (`geometry::AGENDA`), so it leaves room even with no event today.
-- [ ] `view::reserved` and `hides` read `Config::rests()`, which includes the global Rest even when every connected output overrides it; the strip then stays reserved while the Island hides.
-- [ ] A long event title elides hard in the Tray strip's 90 px.
+- [ ] On an output under about 390 logical px wide, a full Tray strip (six slots and the clock, about 366 px) is wider than the body it fits, with the agenda already at 0; `Presentation::Tray` would need fewer slots by the body's width.
+- [ ] The strip's agenda width (`view::resize`, `rest::Agenda`) follows the minute timer and the calendars, which a window drawing the time arms; while the Island shows something else, an event that ended stays in the width until the next Rest.
 - [ ] No charge indication at Rest since the bolt went; `CONTEXT.md` does not say a machine with no battery counts `rest.battery` as off for a bare Rest.
 - [ ] The Tray Surface shrinks to its list as a menu goes back to it, under the pointer; Clipboard does the same on a query.
 
 ## Privacy dots (ADR 0033)
 
-- [ ] The Tray strip and Surfaces show no dots; a capture there is named only in Controls. Find room in the strip's header or a Surface's corner.
+- [ ] The Tray strip shows no dots: its slots end 16 px from its end. Widening the strip by the captures would pass a count through `TimePeek` and resize on each capture.
 - [ ] A fullscreen window hides the dots by choice, and one `Fullscreen::covers` misses (no app id) hides them on the Top layer too; consider a niri-side hint if a capture under fullscreen proves a real gap.
 - [ ] Three captures at a bare Rest with a 12-hour clock and battery may overflow `shape`.
-- [ ] Dots pop in and out; fade them with the Satellite opacity curve.
-- [ ] `cluster::read()` rebuilds its marks on every Island redraw while capturing, morph frames included.
-- [ ] `view::hides()` ignores privacy on purpose (merge and reserve must not flicker); document it in `reserved()`.
 
 ## Launcher destinations
 
 - [ ] The Launcher view reads `Connectivity` and `Adapter`, so every Wi-Fi or Bluetooth state write redraws it while open.
-- [ ] A 2-letter query shows a long tail of settings matched on help text after the apps.
-- [ ] `Mark::Icon` has no tile behind it, unlike `Mark::Tile`; check it visually.

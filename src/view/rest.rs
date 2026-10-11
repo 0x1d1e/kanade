@@ -1,11 +1,12 @@
 //! The Island at Rest, its time Peek and the Tray strip's lead.
 
+use chrono::NaiveDate;
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Center, Column, Padding, Parent, Rectangle, Row, Start, Text, Widget, children,
+    Center, Column, Monitors, Padding, Parent, Rectangle, Row, Size, Start, Text, Widget, children,
 };
 
-use crate::clock;
+use crate::clock::{self, Hours};
 use crate::config;
 use crate::island::activity::Activity;
 use crate::island::geometry;
@@ -181,27 +182,11 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
         }
     }
 
-    // the next of today's timed events not over yet, the one under way included
-    if config.rest.agenda && modules::on("calendar") {
-        let now = weather::now();
-        let events = calendar::upcoming(today);
-
-        if let Some(next) = events
-            .iter()
-            .find(|event| !event.all_day && event.span.1.max(event.span.0 + 1) > now)
-        {
-            line.push(Box::new(
-                Text::new(format!(
-                    "{} {}",
-                    clock::time(next.start.time(), config.clock),
-                    next.title
-                ))
-                .size(theme::text::LABEL_SMALL)
-                .color(island.on_surface)
-                .weight(theme::text::MEDIUM)
-                .elide(),
-            ));
-        }
+    if config.rest.agenda
+        && modules::on("calendar")
+        && let Some(next) = next_event(today, weather::now(), config.clock)
+    {
+        line.push(Box::new(agenda_line(next).color(island.on_surface).elide()));
     }
 
     let mut head = children![
@@ -242,6 +227,80 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
             ])
             .gap(2.0),
         )
+}
+
+// the next of today's timed events not over yet, the one under way included: its start, then its title
+fn next_event(today: NaiveDate, now: i64, hours: Hours) -> Option<String> {
+    let events = calendar::upcoming(today);
+
+    events
+        .iter()
+        .find(|event| !event.all_day && event.span.1.max(event.span.0 + 1) > now)
+        .map(|next| format!("{} {}", clock::time(next.start.time(), hours), next.title))
+}
+
+fn agenda_line(label: String) -> Text {
+    Text::new(label)
+        .size(theme::text::LABEL_SMALL)
+        .weight(theme::text::MEDIUM)
+}
+
+/*
+ * the width the time's Peek gives today's next event, as the widest of the outputs showing it asks:
+ * the Tray strip is as wide as its lead needs. Written by `measure`, which the Island's sizes
+ * follow, never by a view
+ */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Agenda(pub u16);
+
+impl Service for Agenda {
+    fn new() -> Self {
+        Agenda::default()
+    }
+
+    fn listen() {}
+}
+
+/*
+ * measures the next event's line on each output that shows it, to the most the strip gives it in
+ * a body `body` wide. It keeps off the clock's timer, which only a window drawing the time may arm
+ */
+pub(crate) fn measure_agenda(body: f32) {
+    let now = weather::now();
+    let config = config::get();
+    let monitors = Monitors::read();
+    let mut hours: Vec<Hours> = monitors
+        .all()
+        .iter()
+        .filter(|monitor| config.on(&monitor.name).rest.agenda)
+        .map(|monitor| config.on(&monitor.name).clock)
+        .collect();
+
+    if monitors.all().is_empty() && config.rest.agenda {
+        hours.push(config.clock);
+    }
+
+    let today = clock::local_time(now).map(|time| time.date());
+    let widest = today
+        .filter(|_| modules::on("calendar"))
+        .map_or(0, |today| {
+            hours
+                .into_iter()
+                .filter_map(|hours| next_event(today, now, hours))
+                .filter_map(|label| match agenda_line(label).width() {
+                    Size::Fixed(width) => Some(width.ceil() as u16),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                .min(geometry::agenda_most(body))
+        });
+
+    let next = Agenda(widest);
+
+    if *Agenda::read() != next {
+        *Agenda::write() = next;
+    }
 }
 
 /*

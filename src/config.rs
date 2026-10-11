@@ -28,7 +28,6 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::iter;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
@@ -213,9 +212,18 @@ impl Config {
         self.off.contains(&module)
     }
 
-    // what Rest and its Peek show, on every output: the global setting, then each output's own
-    pub fn rests(&self) -> impl Iterator<Item = Rest> {
-        iter::once(self.rest).chain(self.outputs.keys().map(|output| self.on(output).rest))
+    // what Rest and its Peek show on each of these outputs, the global setting while none is known
+    pub fn rests<'a>(&self, outputs: impl IntoIterator<Item = &'a str>) -> Vec<Rest> {
+        let mut rests: Vec<Rest> = outputs
+            .into_iter()
+            .map(|output| self.on(output).rest)
+            .collect();
+
+        if rests.is_empty() {
+            rests.push(self.rest);
+        }
+
+        rests
     }
 
     // the config of one output: the global one with that output's overrides over it
@@ -2287,6 +2295,24 @@ mod tests {
                 ..edp.clone()
             }
         );
+    }
+
+    // an override on every connected output hides the global Rest, and one on an absent output shows nowhere
+    #[test]
+    fn rests_follow_the_outputs_there_are() {
+        let (config, _) = one(
+            "rest.clock = false\noutput.eDP-1.rest.clock = true\noutput.DP-9.rest.clock = true",
+        );
+
+        assert!(config.rests(["eDP-1"]).iter().all(|rest| rest.clock));
+        assert!(
+            config
+                .rests(["eDP-1", "HDMI-A-1"])
+                .iter()
+                .any(|rest| !rest.clock)
+        );
+        assert!(config.rests(["HDMI-A-1"]).iter().all(|rest| !rest.clock));
+        assert_eq!(config.rests([]), [config.rest]);
     }
 
     // a key no output may set, or a bad value, keeps what the layers below gave that output

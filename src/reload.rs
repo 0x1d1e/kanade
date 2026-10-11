@@ -94,7 +94,7 @@ pub fn reload() -> Outcome {
                     // read under the write, so an output changing meanwhile cannot land first
                     let mut island = IslandService::write();
                     island.retime(next.island);
-                    island.resize(view::largest(), view::hang(), view::peek(), Instant::now());
+                    view::resize(&mut island);
                 }
 
                 // last, so every other window that reads the config draws all of it at once
