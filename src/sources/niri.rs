@@ -2,9 +2,9 @@
 //! niri says as the `Niri` Service: a plain focused output, whether the overview is open and how
 //! many times it opened, the focused workspace, whether anything casts and the window each output
 //! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. A screenshot
-//! niri saves and each window it opens, closes or focuses are events, not state, so a Module takes
-//! those by `on_screenshot` and `on_windows`. `ask` sends niri one request on a connection of its
-//! own.
+//! niri saves, each window it opens, closes or focuses and each keyboard layout switch are events,
+//! not state, so a Module takes those by `on_screenshot`, `on_windows` and `on_layout`. `ask` sends
+//! niri one request on a connection of its own.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -396,9 +396,62 @@ fn window(window: &Json) -> Option<Window> {
     })
 }
 
+// the keyboard layouts niri has, as it last listed them, and which is in use
+#[derive(Debug, Default)]
+struct Layouts {
+    names: Vec<String>,
+    current: u64,
+}
+
+impl Layouts {
+    /*
+     * the name of the layout a switch went to; none for another event, for the list niri gives
+     * (first on connecting, and on a change of config), for a switch to the one in use, and with
+     * fewer than two layouts, where there is nothing to switch between
+     */
+    fn switch(&mut self, event: &Json) -> Option<String> {
+        if let Some(changed) = event.get("KeyboardLayoutsChanged") {
+            let layouts = changed.get("keyboard_layouts");
+            let names = layouts
+                .and_then(|layouts| layouts.get("names"))
+                .and_then(Json::as_array)
+                .unwrap_or_default();
+
+            self.names = names
+                .iter()
+                .filter_map(|name| name.as_str().map(String::from))
+                .collect();
+            self.current = layouts
+                .and_then(|layouts| layouts.get("current_idx"))
+                .and_then(Json::as_u64)
+                .unwrap_or(0);
+
+            return None;
+        }
+
+        let index = event
+            .get("KeyboardLayoutSwitched")?
+            .get("idx")
+            .and_then(Json::as_u64)?;
+
+        if index == self.current {
+            return None;
+        }
+
+        self.current = index;
+
+        if self.names.len() < 2 {
+            return None;
+        }
+
+        self.names.get(usize::try_from(index).ok()?).cloned()
+    }
+}
+
 // what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
 static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
 static SCREENSHOTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
+static LAYOUTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
 
 // set once `follow` runs, after which a Module can no longer ask to hear
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
@@ -422,6 +475,19 @@ pub fn on_screenshot(then: fn(String)) {
     );
 
     SCREENSHOTS.locked().push(then);
+}
+
+/*
+ * `then` hears the name XKB gives each keyboard layout niri switches to, like "English (US)", only
+ * on a switch and with two or more layouts, on the niri thread, so it must not block
+ */
+pub fn on_layout(then: fn(String)) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    LAYOUTS.locked().push(then);
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -450,6 +516,13 @@ pub fn follow() {
                     then(heard.clone());
                 }
             },
+            |name| {
+                let hearing = LAYOUTS.locked().clone();
+
+                for then in hearing {
+                    then(name.clone());
+                }
+            },
         );
     });
 }
@@ -460,9 +533,17 @@ fn run(
     mut post: impl FnMut(&Seen, &Seen),
     mut shot: impl FnMut(String),
     mut hear: impl FnMut(Heard),
+    mut switched: impl FnMut(String),
 ) {
     let lost = match stream {
-        Ok(stream) => watch(stream, posted, &mut post, &mut shot, &mut hear),
+        Ok(stream) => watch(
+            stream,
+            posted,
+            &mut post,
+            &mut shot,
+            &mut hear,
+            &mut switched,
+        ),
         Err(error) => error,
     };
 
@@ -611,9 +692,13 @@ fn watch(
     post: &mut impl FnMut(&Seen, &Seen),
     shot: &mut impl FnMut(String),
     hear: &mut impl FnMut(Heard),
+    switched: &mut impl FnMut(String),
 ) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Known::default();
+
+    // per stream: a new one lists the layouts first, which shows nothing
+    let mut layouts = Layouts::default();
 
     // niri answers the request first, events follow on the same connection
     match lines.next() {
@@ -641,6 +726,10 @@ fn watch(
 
         if let Some(heard) = windowed(&event) {
             hear(heard);
+        }
+
+        if let Some(name) = layouts.switch(&event) {
+            switched(name);
         }
 
         niri.apply(&event);
@@ -687,6 +776,7 @@ mod tests {
                 posts.push(seen.clone())
             },
             &mut |path| panic!("no screenshot was taken, yet {path}"),
+            &mut drop,
             &mut drop,
         );
 
@@ -739,6 +829,7 @@ mod tests {
             &mut |_, _| {},
             &mut drop,
             &mut |told| heard.push(told),
+            &mut drop,
         );
 
         heard
@@ -851,6 +942,72 @@ mod tests {
         assert_eq!(casting(&forgotten), [true]);
     }
 
+    // the layouts each switch of this stream goes to
+    fn switches(lines: &[&str]) -> Vec<String> {
+        let text = [&[OK], lines].concat().join("\n");
+        let mut switches = Vec::new();
+
+        watch(
+            text.as_bytes(),
+            &mut Seen::default(),
+            &mut |_, _| {},
+            &mut drop,
+            &mut drop,
+            &mut |name| switches.push(name),
+        );
+
+        switches
+    }
+
+    fn layouts(names: &[&str], current: u8) -> String {
+        let names: Vec<String> = names.iter().map(|name| format!("{name:?}")).collect();
+
+        format!(
+            r#"{{"KeyboardLayoutsChanged":{{"keyboard_layouts":{{"names":[{}],"current_idx":{current}}}}}}}"#,
+            names.join(",")
+        )
+    }
+
+    fn switched(index: u8) -> String {
+        format!(r#"{{"KeyboardLayoutSwitched":{{"idx":{index}}}}}"#)
+    }
+
+    // the list niri gives on connecting or on a change of config is no switch, nor is one to the
+    // layout in use
+    #[test]
+    fn only_a_switch_between_layouts_is_heard() {
+        let two = layouts(&["English (US)", "Russian"], 0);
+
+        assert_eq!(
+            switches(&[&two, &switched(1), &switched(1), &switched(0)]),
+            ["Russian", "English (US)"]
+        );
+        assert_eq!(
+            switches(&[&two, &layouts(&["German", "Russian"], 1)]),
+            Vec::<String>::new()
+        );
+
+        // the list again, as on a change of config, starts from the layout it says is in use
+        assert_eq!(
+            switches(&[&two, &layouts(&["English (US)", "German"], 1), &switched(0)]),
+            ["English (US)"]
+        );
+    }
+
+    // with one layout there is nothing to switch between; a switch to one not listed says nothing
+    #[test]
+    fn a_switch_with_one_layout_or_none_listed_is_not_heard() {
+        assert_eq!(
+            switches(&[&layouts(&["English (US)"], 0), &switched(1)]),
+            Vec::<String>::new()
+        );
+        assert_eq!(switches(&[&switched(1)]), Vec::<String>::new());
+        assert_eq!(
+            switches(&[&layouts(&["English (US)", "German"], 0), &switched(5)]),
+            Vec::<String>::new()
+        );
+    }
+
     #[test]
     fn a_refused_request_ends_the_stream() {
         let (posts, lost) = posts(&[r#"{"Err":"nope"}"#, WORKSPACES]);
@@ -871,6 +1028,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            drop,
         );
 
         // nobody can say a cast still runs, so its capture goes too
@@ -886,11 +1044,13 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            drop,
         );
         run(
             Ok(OK.as_bytes()),
             &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
+            drop,
             drop,
             drop,
         );

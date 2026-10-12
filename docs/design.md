@@ -171,7 +171,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 [ADR 0007](adr/0007-banners-and-osd-leave-the-island.md), its OSD part superseded by [ADR 0021](adr/0021-the-osd-returns-to-the-island.md).
 
 - notification toast → **Banner**: focused output, hanging from the Island and coming out of it ([ADR 0023](adr/0023-banners-come-out-of-the-island.md)); 4 s low, 6 s normal, critical sticky; hover pause; max 3; per-app rules (`notifications.rules`, first match wins) choose Banner, history, DND bypass, time and urgency, applied as a notification arrives.
-- volume/brightness/mic and Caps Lock/Num Lock/airplane mode → **OSD**, a `Feedback` Transient on the Island, from changes and from the level keys, masked evdev (ADR 0021).
+- volume/brightness/mic, Caps Lock/Num Lock/airplane mode and a keyboard layout switch niri announces (`osd.layout`) → **OSD**, a `Feedback` Transient on the Island, from changes and from the level keys, masked evdev (ADR 0021).
 - Island keeps durable Activities.
 
 ### Later

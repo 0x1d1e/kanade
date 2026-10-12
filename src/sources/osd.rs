@@ -10,7 +10,8 @@
 //! A level's key shows the level at once, before the keybind that changes it ran, and at its limit,
 //! where nothing changes (`keys`); a lock key's light and airplane mode show as a Mode (`keys`,
 //! `radios`). The keyboard's backlight shows as UPower announces it, the firmware's own key
-//! included (`follow_keyboard`).
+//! included (`follow_keyboard`). A keyboard layout switch niri announces shows in a Mode's place,
+//! while `osd.layout` is on (`layout`).
 //!
 //! `kanade osd volume|brightness` shows a level as it is, for a keybind that changes it outside
 //! Kanade.
@@ -29,9 +30,10 @@ use super::wake::{Announcer, Pace, Wakes};
 use crate::bus::{Bus, Value};
 use crate::config;
 use crate::island::activity::{
-    Activity, Detail, Device, Id, Interrupt, Kind, Lifetime, Mode, Priority, Scope, Volume,
+    Activity, Detail, Device, Id, Interrupt, Kind, Layout, Lifetime, Mode, Priority, Scope, Volume,
 };
 use crate::island::service::IslandService;
+use crate::sources::xkb;
 use crate::supervise;
 
 const PACE: Pace = Pace {
@@ -64,12 +66,13 @@ pub const BACKLIGHT: Announcer = Announcer {
 };
 
 // what the OSD shows
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Osd {
     Volume(Volume),
     Brightness(u8),
     Keyboard(u8),
     Mode(Mode),
+    Layout(Layout),
 }
 
 impl Osd {
@@ -78,12 +81,13 @@ impl Osd {
      * key, that interrupts nothing, so an open Surface stays. One id per Kind, so a change while it
      * shows takes its place and starts its time again
      */
-    fn activity(self) -> Activity {
+    fn activity(&self) -> Activity {
         let detail = match self {
-            Osd::Volume(volume) => Detail::Volume(volume),
-            Osd::Brightness(percent) => Detail::Brightness(percent),
-            Osd::Keyboard(percent) => Detail::Keyboard(percent),
-            Osd::Mode(mode) => Detail::Mode(mode),
+            &Osd::Volume(volume) => Detail::Volume(volume),
+            &Osd::Brightness(percent) => Detail::Brightness(percent),
+            &Osd::Keyboard(percent) => Detail::Keyboard(percent),
+            &Osd::Mode(mode) => Detail::Mode(mode),
+            Osd::Layout(layout) => Detail::Layout(layout.clone()),
         };
 
         Activity::new(
@@ -97,23 +101,25 @@ impl Osd {
         .with_detail(detail)
     }
 
-    fn kind(self) -> Kind {
+    fn kind(&self) -> Kind {
         match self {
             Osd::Volume(_) => Kind::Volume,
             Osd::Brightness(_) | Osd::Keyboard(_) => Kind::Brightness,
-            Osd::Mode(_) => Kind::Mode,
+            Osd::Mode(_) | Osd::Layout(_) => Kind::Mode,
         }
     }
 
-    fn id(self) -> Id {
+    fn id(&self) -> Id {
         Id::new(self.kind(), KEY)
     }
 
     // the other Kinds' OSDs, which this one takes the place of
-    fn others(self) -> impl Iterator<Item = Id> {
+    fn others(&self) -> impl Iterator<Item = Id> + use<> {
+        let own = self.kind();
+
         KINDS
             .into_iter()
-            .filter(move |&kind| kind != self.kind())
+            .filter(move |&kind| kind != own)
             .map(|kind| Id::new(kind, KEY))
     }
 }
@@ -160,7 +166,7 @@ fn post(osd: Osd, shows: impl FnOnce(&mut Shown, Instant) -> bool) {
     let now = Instant::now();
 
     if seat::seated() && shows(&mut shown, now) {
-        place(&mut IslandService::write(), osd, now);
+        place(&mut IslandService::write(), &osd, now);
     }
 }
 
@@ -175,12 +181,12 @@ fn read_and_post(read: impl FnOnce() -> Option<Osd>) {
         let now = Instant::now();
 
         shown.show(now);
-        place(&mut IslandService::write(), osd, now);
+        place(&mut IslandService::write(), &osd, now);
     }
 }
 
 // posted first, so the Island never goes without a primary between
-fn place(island: &mut IslandService, osd: Osd, now: Instant) {
+fn place(island: &mut IslandService, osd: &Osd, now: Instant) {
     island.post(osd.activity(), now);
 
     for other in osd.others() {
@@ -236,6 +242,18 @@ pub fn follow_keyboard() {
 // a mode turned on or off, as `keys` and `radios` hear it
 pub fn mode(mode: Mode) {
     post(Osd::Mode(mode), Shown::show);
+}
+
+/*
+ * a keyboard layout switch, as niri names the layout switched to (`niri::on_layout`); read off the
+ * config as it comes, so turning `osd.layout` off holds from the next switch
+ */
+pub fn layout(name: String) {
+    if config::get().osd_layout {
+        let short = xkb::short(&name);
+
+        post(Osd::Layout(Layout { short, name }), Shown::show);
+    }
 }
 
 // which level a key changes
@@ -523,7 +541,7 @@ pub fn follow(reads: Reads) {
                 let levels = Levels::read(reads);
 
                 // one OSD: what changed last takes its place
-                let shown = changes(last, levels).last().copied();
+                let shown = changes(last, levels).pop();
 
                 busy = last != Some(levels);
                 last = Some(levels);

@@ -50,7 +50,7 @@ use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 
 // plan 5.2: a level change shows for 1000-1400 ms
-const OSD: Duration = Duration::from_millis(1200);
+const OSD_TIME: Duration = Duration::from_millis(1200);
 
 // a timing outside this keeps its default: a spring needs some time, and a minute is no glance
 pub const SHORTEST: u64 = 1;
@@ -134,6 +134,9 @@ pub struct Config {
 
     // `notifications.rules`: what a notification does, by the first rule matching it
     pub notification_rules: Vec<Rule>,
+
+    // `osd.layout`: a keyboard layout switch shows as an OSD
+    pub osd_layout: bool,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -314,7 +317,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             island: Timings::default(),
-            osd: OSD,
+            osd: OSD_TIME,
             palette: None,
             clock: Hours::default(),
             off: Vec::new(),
@@ -348,6 +351,7 @@ impl Default for Config {
             privacy_indicators: true,
             entrance: Entrance::default(),
             notification_rules: Vec::new(),
+            osd_layout: true,
             outputs: BTreeMap::new(),
         }
     }
@@ -1168,6 +1172,19 @@ pub const NOTIFICATIONS: &[Setting] = &[Setting {
     example: Some(
         "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
     ),
+    restart: false,
+    per_output: false,
+}];
+
+pub const OSD: &[Setting] = &[Setting {
+    key: "osd.layout",
+    label: "Keyboard layout switch",
+    help: "a keyboard layout switch shows as an OSD, with two or more layouts",
+    kind: Kind::Switch(Field {
+        get: |config| config.osd_layout,
+        set: |config, on| config.osd_layout = on,
+    }),
+    example: None,
     restart: false,
     per_output: false,
 }];
@@ -2378,6 +2395,7 @@ mod tests {
                 "dock.size",
                 "dock.merge",
                 "media.visualizer",
+                "osd.layout",
                 "notifications.rules",
                 "wallpaper.directory",
                 "calendar.paths",

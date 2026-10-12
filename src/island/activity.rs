@@ -247,6 +247,9 @@ pub enum Detail {
     Session(Leaving),
 
     Mode(Mode),
+
+    // a keyboard layout switched to; in a mode's place, as one OSD shows either
+    Layout(Layout),
 }
 
 impl Detail {
@@ -265,7 +268,7 @@ impl Detail {
             Detail::Recording(_) => Some(Kind::Recording),
             Detail::Caffeine(_) => Some(Kind::Caffeine),
             Detail::Session(_) => Some(Kind::Session),
-            Detail::Mode(_) => Some(Kind::Mode),
+            Detail::Mode(_) | Detail::Layout(_) => Some(Kind::Mode),
         }
     }
 
@@ -284,6 +287,7 @@ impl Detail {
                 | Detail::Battery(_)
                 | Detail::Workspace(_)
                 | Detail::Mode(_)
+                | Detail::Layout(_)
         )
     }
 }
@@ -341,6 +345,16 @@ impl Mode {
             Mode::CapsLock(on) | Mode::NumLock(on) | Mode::Airplane(on) => on,
         }
     }
+}
+
+// the keyboard layout switched to
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    // a few capitals for the lamp, like "US"
+    pub short: String,
+
+    // as XKB names it, like "English (US)"
+    pub name: String,
 }
 
 // a battery running low, from where it shows until the charger goes in

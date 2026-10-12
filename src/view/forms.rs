@@ -23,7 +23,9 @@ use super::media::{Change, media_compact, media_peek, tile};
 use super::rest::placeholder;
 use super::satellites::satellite_mark;
 use super::shape::{Room, hang, shape, upright};
-use super::status::{Level, battery, battery_icon, charge_tone, level, mode, timer, workspace};
+use super::status::{
+    Level, battery, battery_icon, charge_tone, layout, level, mode, timer, workspace,
+};
 use super::toast::{critical, toast_compact, toast_peek};
 
 /*
@@ -231,6 +233,7 @@ pub(super) fn small_form(
             level(presentation, Level::keyboard(percent))
         }
         (presentation, Some(&Detail::Mode(shown))) => self::mode(presentation, shown),
+        (presentation, Some(Detail::Layout(layout))) => self::layout(presentation, layout),
         (presentation, Some(Detail::Battery(charge))) => battery(presentation, charge),
         (presentation, Some(Detail::Workspace(workspace))) => {
             self::workspace(presentation, workspace)

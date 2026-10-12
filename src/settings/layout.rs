@@ -189,6 +189,10 @@ pub const PAGES: &[Page] = &[
                 title: "Playing media",
                 rows: &[Row::Key("media.visualizer")],
             },
+            Section {
+                title: "Feedback",
+                rows: &[Row::Key("osd.layout")],
+            },
         ],
     },
     Page {

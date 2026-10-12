@@ -8,7 +8,7 @@ use kanade_runtime::{
 };
 
 use crate::icon::Icon;
-use crate::island::activity::{Charge, Countdown, Device, Mode, Volume, Workspace};
+use crate::island::activity::{Charge, Countdown, Device, Layout, Mode, Volume, Workspace};
 use crate::island::presentation::Presentation;
 use crate::sources::timer;
 use crate::theme::{self, ThemeRoles};
@@ -566,6 +566,88 @@ pub(super) fn mode(presentation: Presentation, mode: Mode) -> Option<Rectangle> 
                 Row::new(vec![Box::new(lit) as Box<dyn Widget>, words])
                     .gap(gap)
                     .align(Center),
+            ),
+    )
+}
+
+/*
+ * a lit lamp with the layout's short label, then its full name; Peek says what it is under the
+ * name. Standing along a side edge, only the lamp. A switch back and forth relabels the lamp and
+ * renames, nothing moves
+ */
+pub(super) fn layout(presentation: Presentation, layout: &Layout) -> Option<Rectangle> {
+    let (lamp, size, label, inset, right) = match presentation {
+        Presentation::Compact => (
+            26.0,
+            theme::text::LABEL,
+            theme::text::LABEL_SMALL,
+            8.0,
+            15.0,
+        ),
+        Presentation::Peek => (
+            34.0,
+            theme::text::BODY_LARGE,
+            theme::text::LABEL,
+            12.0,
+            20.0,
+        ),
+        _ => return None,
+    };
+
+    let roles = theme::island();
+
+    let lit = Rectangle::new()
+        .width(lamp)
+        .height(lamp)
+        .radius(lamp / 2.0)
+        .fill(roles.primary)
+        .align_child(Center, Center)
+        .child(
+            Text::new(layout.short.as_str())
+                .size(label)
+                .color(roles.on_primary)
+                .weight(theme::text::SEMIBOLD)
+                .tight(),
+        );
+
+    if presentation == Presentation::Compact && upright() {
+        return Some(stacked(children![lit]));
+    }
+
+    let mut words = children![
+        Text::new(layout.name.as_str())
+            .size(size)
+            .color(roles.on_surface)
+            .weight(theme::text::SEMIBOLD)
+            .elide()
+    ];
+
+    if presentation == Presentation::Peek {
+        words.push(Box::new(
+            Text::new("Keyboard layout")
+                .size(theme::text::LABEL_SMALL)
+                .color(roles.on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        ));
+    }
+
+    Some(
+        sized(presentation)
+            .padding(Padding {
+                top: 0.0,
+                right,
+                bottom: 0.0,
+                left: inset,
+            })
+            .align_child(Start, Center)
+            .child(
+                Row::new(vec![
+                    Box::new(lit) as Box<dyn Widget>,
+                    Box::new(Column::new(words).width(Parent).gap(3.0)),
+                ])
+                .width(Parent)
+                .gap(10.0)
+                .align(Center),
             ),
     )
 }

@@ -341,10 +341,10 @@ pub const ALL: &[Module] = &[
         verbs: &[],
         start: |app| app,
     },
-    // with both of those off it shows only the lock lights and airplane mode
+    // with both of those off it shows only the lock lights, airplane mode and keyboard layouts
     Module {
         name: "osd",
-        about: "Volume, brightness, keyboard backlight and mode feedback",
+        about: "Volume, brightness, keyboard backlight, mode and keyboard layout feedback",
         requires: &[CORE],
         optional: &["audio", "brightness"],
         warns: None,
@@ -370,7 +370,7 @@ pub const ALL: &[Module] = &[
                 without: "the keyboard backlight shows nothing",
             },
         ],
-        settings: &[],
+        settings: config::OSD,
         verbs: &[Verb {
             name: "osd",
             about: "Show the volume or brightness OSD",
@@ -397,6 +397,9 @@ pub const ALL: &[Module] = &[
 
             // a VT switch hands the keyboards and radios to another session, which shows nothing
             supervise::spawn("seat", seat::follow);
+
+            // a keyboard layout switch shows whatever else is on, heard from niri
+            niri::on_layout(osd::layout);
 
             // reads the volume fresh for `kanade osd volume`
             if reads.audio {
