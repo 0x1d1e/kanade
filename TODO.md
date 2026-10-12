@@ -105,3 +105,4 @@ Not worth changing, by this review:
 - The critical battery countdown names no battery reason line.
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
+- CalDAV: a keyring that answers with no item counts as logged out and drops the account's synced events, as does `forget` after a config read that fell back to defaults; they are a cache, synced again on login.
