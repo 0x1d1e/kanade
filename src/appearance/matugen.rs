@@ -344,6 +344,8 @@ fn safe_config() -> Result<SafeConfig, String> {
         false
     };
 
+    terminal_colors(&mut document);
+
     let contents = toml::to_string(&document)
         .map_err(|error| format!("cannot serialize safe Matugen config: {error}"))?;
     let file = temporary_config(&contents)
@@ -433,6 +435,36 @@ fn sanitize(document: &mut Toml, base: &Path) -> Result<bool, String> {
     );
 
     Ok(has_targets)
+}
+
+// the ANSI hues, as Matugen custom colors harmonized toward the wallpaper, each with a tone for
+// dark and light (`kanade_red`, `on_kanade_red_container`, ...), for the terminal targets; a
+// custom_colors that is not a table is left alone and the terminals keep their colors
+fn terminal_colors(document: &mut Toml) {
+    let Some(colors) = document
+        .as_table_mut()
+        .and_then(|root| root.get_mut("config"))
+        .and_then(Toml::as_table_mut)
+        .map(|config| {
+            config
+                .entry(String::from("custom_colors"))
+                .or_insert_with(|| Toml::Table(Default::default()))
+        })
+        .and_then(Toml::as_table_mut)
+    else {
+        return;
+    };
+
+    for (name, color) in theme::TERMINAL_HUES {
+        let custom = [
+            (String::from("color"), Toml::String(color.to_owned())),
+            (String::from("blend"), Toml::Boolean(true)),
+        ];
+        colors.insert(
+            format!("kanade_{name}"),
+            Toml::Table(custom.into_iter().collect()),
+        );
+    }
 }
 
 fn rebase_paths(value: &mut Toml, base: &Path) -> Result<(), String> {

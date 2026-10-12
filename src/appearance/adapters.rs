@@ -376,6 +376,15 @@ fn apply(tone: Tone, scheme: Option<&Scheme>, requests: &Receiver<Request>) -> H
         }
     }
 
+    if let Some(scheme) = &scheme {
+        if let Err(error) = colors::apply_niri(scheme, tone) {
+            eprintln!("kanade: could not write niri colors: {error}");
+        }
+        if let Err(error) = colors::apply_kitty(scheme, tone) {
+            eprintln!("kanade: could not write kitty colors: {error}");
+        }
+    }
+
     if let Some(newer) = take_pending(requests) {
         return Helper::Superseded(newer);
     }
@@ -458,6 +467,13 @@ fn disable(requests: &Receiver<Request>) -> Helper<()> {
         eprintln!("kanade: could not restore the KDE color scheme: {error}");
     } else if let Err(error) = colors::restore_kde() {
         eprintln!("kanade: could not remove KDE colors: {error}");
+    }
+
+    if let Err(error) = colors::restore_niri() {
+        eprintln!("kanade: could not remove niri colors: {error}");
+    }
+    if let Err(error) = colors::restore_kitty() {
+        eprintln!("kanade: could not remove kitty colors: {error}");
     }
 
     if let Err(error) = update_zen_profiles(false, &mut state) {

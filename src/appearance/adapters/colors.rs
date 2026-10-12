@@ -1,6 +1,6 @@
 //! Kanade's own application color targets from the wallpaper scheme (ADR 0041): GTK3 and GTK4
-//! CSS, qt5ct and qt6ct color schemes, a KDE color scheme, and Pywalfox's colors for Firefox and
-//! Zen.
+//! CSS, qt5ct and qt6ct color schemes, a KDE color scheme, niri's window colors, kitty's colors,
+//! and Pywalfox's colors for Firefox and Zen.
 //!
 //! Each generated file starts with `HEADER`, so a file of the user's at the same path is left
 //! alone, never overwritten nor removed.
@@ -16,12 +16,21 @@ use serde_json::json;
 
 use super::{SyncState, atomic_write, config_home, data_home, save_state};
 use crate::appearance::pywalfox;
+use crate::clock;
 use crate::look::Tone;
 
 const HEADER: &str = "Kanade appearance sync: wallpaper colors";
 const GTK: &str = include_str!("templates/gtk.css");
 const QT: &str = include_str!("templates/qtct.conf");
 const KDE: &str = include_str!("templates/kde.colors");
+const NIRI: &str = include_str!("templates/niri.kdl");
+const KITTY: &str = include_str!("templates/kitty.conf");
+// the lines that include Kanade's files, last in the user's config so their colors win
+const NIRI_INCLUDE: &str = "include optional=true \"kanade.kdl\" // Kanade appearance sync";
+const KITTY_INCLUDE: &str = "include kanade.conf";
+// a kitty younger than this may not yet handle SIGUSR1, which would end it; it reads the new
+// colors as it starts anyway
+const KITTY_STARTING: u64 = 2;
 // the KDE color scheme id, its file name without `.colors`
 pub(super) const KDE_SCHEME: &str = "Kanade";
 const GTK_DIRS: [&str; 2] = ["gtk-3.0", "gtk-4.0"];
@@ -150,7 +159,7 @@ pub(super) fn apply_qt(major: u8, scheme: &Scheme, tone: Tone) -> io::Result<Pat
 }
 
 pub(super) fn restore_qt(major: u8) -> io::Result<()> {
-    remove_generated(&qt_path(major))
+    remove_generated(&qt_path(major)).map(drop)
 }
 
 fn qt_path(major: u8) -> PathBuf {
@@ -160,15 +169,172 @@ fn qt_path(major: u8) -> PathBuf {
 // the KDE color scheme for this tone; KDE apps outside Plasma use Breeze over qt*ct's palette
 // unless a scheme is chosen
 pub(super) fn apply_kde(scheme: &Scheme, tone: Tone) -> io::Result<()> {
-    write_generated(&kde_path(), &render(KDE, scheme.roles(tone))?)
+    write_generated(&kde_path(), &render(KDE, scheme.roles(tone))?).map(drop)
 }
 
 pub(super) fn restore_kde() -> io::Result<()> {
-    remove_generated(&kde_path())
+    remove_generated(&kde_path()).map(drop)
 }
 
 fn kde_path() -> PathBuf {
     data_home().join(format!("color-schemes/{KDE_SCHEME}.colors"))
+}
+
+// niri's focus ring, border and tab colors, through a file config.kdl includes; niri reloads both
+// live. No config.kdl means niri runs its defaults, which one with only an include would replace
+pub(super) fn apply_niri(scheme: &Scheme, tone: Tone) -> io::Result<()> {
+    let root = config_home().join("niri");
+    let config = root.join("config.kdl");
+    let Some(text) = read_regular(&config)? else {
+        return Ok(());
+    };
+    write_generated(&root.join("kanade.kdl"), &render(NIRI, scheme.roles(tone))?)?;
+    let updated = last_line(&text, NIRI_INCLUDE, true);
+    if updated != text {
+        atomic_write(&config, updated.as_bytes())?;
+    }
+    Ok(())
+}
+
+pub(super) fn restore_niri() -> io::Result<()> {
+    let root = config_home().join("niri");
+    let config = root.join("config.kdl");
+    if let Some(text) = read_regular(&config)? {
+        let updated = last_line(&text, NIRI_INCLUDE, false);
+        if updated != text {
+            atomic_write(&config, updated.as_bytes())?;
+        }
+    }
+    remove_generated(&root.join("kanade.kdl")).map(drop)
+}
+
+// kitty's colors through a file kitty.conf includes, then each running kitty told to reload
+pub(super) fn apply_kitty(scheme: &Scheme, tone: Tone) -> io::Result<()> {
+    let root = config_home().join("kitty");
+    let config = root.join("kitty.conf");
+    let Some(text) = read_regular(&config)? else {
+        return Ok(());
+    };
+    let colors = render(KITTY, &terminal_roles(scheme, tone)?)?;
+    let mut changed = write_generated(&root.join("kanade.conf"), &colors)?;
+    let updated = last_line(&text, KITTY_INCLUDE, true);
+    if updated != text {
+        atomic_write(&config, updated.as_bytes())?;
+        changed = true;
+    }
+    if changed {
+        reload_kittys();
+    }
+    Ok(())
+}
+
+pub(super) fn restore_kitty() -> io::Result<()> {
+    let root = config_home().join("kitty");
+    let config = root.join("kitty.conf");
+    let mut changed = false;
+    if let Some(text) = read_regular(&config)? {
+        let updated = last_line(&text, KITTY_INCLUDE, false);
+        if updated != text {
+            atomic_write(&config, updated.as_bytes())?;
+            changed = true;
+        }
+    }
+    changed |= remove_generated(&root.join("kanade.conf"))?;
+    if changed {
+        reload_kittys();
+    }
+    Ok(())
+}
+
+// the scheme's roles and the ANSI colors' names for kitty's template. The six hues are Matugen's
+// custom colors, with a lighter tone as their bright ones on dark; black stays the darker gray and
+// white the lighter one in both modes, as terminal programs expect
+fn terminal_roles(scheme: &Scheme, tone: Tone) -> io::Result<BTreeMap<String, String>> {
+    let mut roles = scheme.roles(tone).clone();
+    let grays = match tone {
+        Tone::Dark => [
+            ("black", "surface_container_highest"),
+            ("bright_black", "outline"),
+            ("white", "on_surface_variant"),
+            ("bright_white", "on_surface"),
+        ],
+        Tone::Light => [
+            ("black", "on_surface_variant"),
+            ("bright_black", "outline"),
+            ("white", "outline_variant"),
+            ("bright_white", "surface_container_highest"),
+        ],
+    };
+    let mut aliases: Vec<(String, String)> = grays
+        .iter()
+        .map(|(name, role)| (format!("ansi_{name}"), role.to_string()))
+        .collect();
+    for hue in ["red", "green", "yellow", "blue", "magenta", "cyan"] {
+        let bright = match tone {
+            Tone::Dark => format!("on_kanade_{hue}_container"),
+            Tone::Light => format!("kanade_{hue}"),
+        };
+        aliases.push((format!("ansi_bright_{hue}"), bright));
+    }
+    for (alias, role) in aliases {
+        let color = role_color(&roles, &role)?;
+        roles.insert(alias, color);
+    }
+    Ok(roles)
+}
+
+// SIGUSR1 to each of the user's kittys old enough to handle it
+fn reload_kittys() {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return;
+    };
+    let uptime = fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok());
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        if fs::read_to_string(path.join("comm")).ok().as_deref() != Some("kitty\n") {
+            continue;
+        }
+        // the start time, in ticks since boot, is the 22nd field, the 20th after the
+        // parenthesized name, which may hold spaces
+        let started = fs::read_to_string(path.join("stat")).ok().and_then(|stat| {
+            let (_, fields) = stat.rsplit_once(')')?;
+            fields.split_whitespace().nth(19)?.parse::<u64>().ok()
+        });
+        let old = match (uptime, started) {
+            (Some(uptime), Some(started)) => {
+                uptime - (started / clock::USER_HZ) as f64 >= KITTY_STARTING as f64
+            }
+            _ => false,
+        };
+        if old && let Err(error) = clock::user_signal(pid) {
+            eprintln!("kanade: could not tell kitty {pid} to reload: {error}");
+        }
+    }
+}
+
+// `text` with `line` as its last line, or without it; the rest kept byte for byte
+fn last_line(text: &str, line: &str, present: bool) -> String {
+    let mut kept: String = text
+        .split_inclusive('\n')
+        .filter(|kept| kept.trim() != line)
+        .collect();
+    if present {
+        if !kept.is_empty() && !kept.ends_with('\n') {
+            kept.push('\n');
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    kept
 }
 
 // a style that draws the qt*ct palette, for one that ignores it (Kvantum draws its own theme)
@@ -329,21 +495,23 @@ fn gtk_import(text: &str, present: bool) -> String {
     lines.concat()
 }
 
-fn write_generated(path: &Path, text: &str) -> io::Result<()> {
+// whether it wrote
+fn write_generated(path: &Path, text: &str) -> io::Result<bool> {
     match read_regular(path)? {
-        Some(current) if current == text => Ok(()),
+        Some(current) if current == text => Ok(false),
         Some(current) if !generated(&current) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("left {} alone because it is not Kanade's", path.display()),
         )),
-        _ => atomic_write(path, text.as_bytes()),
+        _ => atomic_write(path, text.as_bytes()).map(|()| true),
     }
 }
 
-fn remove_generated(path: &Path) -> io::Result<()> {
+// whether it removed
+fn remove_generated(path: &Path) -> io::Result<bool> {
     match read_regular(path)? {
-        Some(current) if generated(&current) => fs::remove_file(path),
-        _ => Ok(()),
+        Some(current) if generated(&current) => fs::remove_file(path).map(|()| true),
+        _ => Ok(false),
     }
 }
 
@@ -396,6 +564,28 @@ mod tests {
     }
 
     #[test]
+    fn include_line_goes_last_once_and_leaves_the_users_config_intact() {
+        let original = "layout {\n    gaps 4\n}\n\n// end";
+        let added = last_line(original, NIRI_INCLUDE, true);
+        assert_eq!(added, format!("{original}\n{NIRI_INCLUDE}\n"));
+        assert_eq!(last_line(&added, NIRI_INCLUDE, true), added);
+        assert_eq!(
+            last_line(&added, NIRI_INCLUDE, false),
+            format!("{original}\n")
+        );
+
+        let earlier = format!("{KITTY_INCLUDE}\nfont_size 14\n");
+        assert_eq!(
+            last_line(&earlier, KITTY_INCLUDE, true),
+            format!("font_size 14\n{KITTY_INCLUDE}\n")
+        );
+        assert_eq!(
+            last_line("", KITTY_INCLUDE, true),
+            format!("{KITTY_INCLUDE}\n")
+        );
+    }
+
+    #[test]
     fn shipped_templates_render_from_matugen_roles() {
         let roles: BTreeMap<String, String> = [
             "background",
@@ -437,9 +627,31 @@ mod tests {
             "tertiary_container",
         ]
         .map(|role| (role.to_owned(), String::from("#123456")))
-        .into();
-        for template in [GTK, QT, KDE] {
+        .into_iter()
+        .chain(
+            ["red", "green", "yellow", "blue", "magenta", "cyan"]
+                .into_iter()
+                .flat_map(|hue| {
+                    [
+                        format!("kanade_{hue}"),
+                        format!("on_kanade_{hue}_container"),
+                    ]
+                })
+                .map(|role| (role, String::from("#654321"))),
+        )
+        .collect();
+        for template in [GTK, QT, KDE, NIRI] {
             let rendered = render(template, &roles).unwrap();
+            assert!(generated(&rendered));
+            assert!(!rendered.contains("{{"));
+        }
+        let scheme = Scheme {
+            wallpaper: PathBuf::new(),
+            dark: roles.clone(),
+            light: roles.clone(),
+        };
+        for tone in [Tone::Dark, Tone::Light] {
+            let rendered = render(KITTY, &terminal_roles(&scheme, tone).unwrap()).unwrap();
             assert!(generated(&rendered));
             assert!(!rendered.contains("{{"));
         }

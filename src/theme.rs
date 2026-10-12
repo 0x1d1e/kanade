@@ -112,6 +112,19 @@ pub const SCENE: [Color; 3] = [
     Color::rgb(86, 72, 178),
 ];
 
+/*
+ * the ANSI hues apps' terminal colors are toned from, as Matugen custom colors harmonized toward
+ * the wallpaper; a little warm or cool, so each keeps its hue once Matugen tones it
+ */
+pub const TERMINAL_HUES: [(&str, &str); 6] = [
+    ("red", "#f04040"),
+    ("green", "#40c040"),
+    ("yellow", "#f0c020"),
+    ("blue", "#3080f0"),
+    ("magenta", "#d040d0"),
+    ("cyan", "#20c0c0"),
+];
+
 // a glyph or a rim over the scene
 pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
 

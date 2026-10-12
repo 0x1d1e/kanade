@@ -194,7 +194,7 @@ No literal theme colors in components.
 - At startup, Kanade reads the wallpaper awww shows. Matugen derives both palettes from it and renders only configured targets; a wallpaper Kanade sets, or one set with `awww img` outside Kanade (followed through awww's cache), replaces that palette. The active tone selects the shell palette, and changing tone rerenders configured targets ([ADR 0039](adr/0039-wallpaper-palettes-through-matugen.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)).
 - `theme.palette` remains accepted for old config files but is ignored; cover art may still supply the Media track accent.
 - Matugen is optional. Without it, or when generation fails, Kanade uses its built-in roles. No app outside the configured Matugen targets is themed by this path.
-- `appearance.sync` is opt-in: it sets the desktop color preference, pairs GTK3 themes, and writes the wallpaper scheme as Kanade's own GTK3/GTK4 CSS, qt5ct/qt6ct palette and KDE color scheme; it is Pywalfox's native host, so Firefox and Zen follow live ([ADR 0040](adr/0040-targeted-desktop-appearance-adapters.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)). GTK, Qt and KDE apps take new colors at start; unsupported apps are unchanged.
+- `appearance.sync` is opt-in: it sets the desktop color preference, pairs GTK3 themes, and writes the wallpaper scheme as Kanade's own GTK3/GTK4 CSS, qt5ct/qt6ct palette and KDE color scheme, niri's window colors and kitty's colors; it is Pywalfox's native host, so Firefox and Zen follow live ([ADR 0040](adr/0040-targeted-desktop-appearance-adapters.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)). niri and kitty change live, GTK, Qt and KDE apps at start; unsupported apps are unchanged.
 
 ## Config
 

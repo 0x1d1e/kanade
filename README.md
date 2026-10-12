@@ -28,7 +28,7 @@ It is also the session's notification daemon, a Dock, and a lock screen.
 - **Notifications**: Kanade is the notification daemon. Banners come out of the Island, with Do Not Disturb.
 - **Privacy indicators**: dots at the Island's trailing end, or its top corner in a Surface, show a microphone, camera or screen capture in use, and the Controls Surface names the apps. A fullscreen window covers them, and `privacy.indicators` turns them off.
 - **Dock**: on each monitor, at the edge and side set in `dock.edge` and `dock.align`, it launches and focuses apps.
-- **Appearance**: with Matugen installed, Kanade derives light and dark shell colors from the wallpaper awww shows, however it was set, then renders configured app targets for the selected tone; `appearance.sync` carries them to GTK, Qt, and Firefox or Zen live through Pywalfox.
+- **Appearance**: with Matugen installed, Kanade derives light and dark shell colors from the wallpaper awww shows, however it was set, then renders configured app targets for the selected tone; `appearance.sync` carries them to GTK, Qt, KDE apps, niri's window borders, kitty, and Firefox or Zen live through Pywalfox.
 - **Lock screen**: `kanade lock` shows the date, the time, who is signed in and a password field over the wallpaper, and no notification. The session also locks before the machine sleeps.
 - **Capture**: screenshots through niri and screen recording through `wf-recorder`, each saved one shown on the Island.
 - **Calendar and weather**: local iCalendar files and Google Calendar, and the forecast from Open-Meteo.
