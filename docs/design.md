@@ -250,7 +250,7 @@ notifications dnd on|off|toggle
 clipboard open|close|toggle|clear
 calendar open|close|toggle
 weather open|close|toggle|refresh|status
-timer start <dur>|pause|resume|cancel
+timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
 activity start <id> <title>|progress <id> <amount>|detail <id> [text]
 activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 capture screenshot area|window|output

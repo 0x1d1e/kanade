@@ -3,17 +3,19 @@
 use std::time::Instant;
 
 use kanade_runtime::{
-    Center, Color, Column, End, Padding, Parent, Rectangle, Row, Stack, Start, Text, Widget,
+    Center, Color, Column, End, Padding, Parent, Rectangle, Row, Size, Stack, Start, Text, Widget,
     children,
 };
 
 use crate::icon::Icon;
-use crate::island::activity::{Charge, Countdown, Device, Layout, Mode, Volume, Workspace};
+use crate::island::activity::{
+    Action, Charge, Countdown, Device, Layout, Mode, Round, Volume, Workspace,
+};
 use crate::island::presentation::Presentation;
 use crate::sources::timer;
 use crate::theme::{self, ThemeRoles};
 
-use super::forms::{sized, stacked};
+use super::forms::{Pills, action_pill, sized, stacked};
 use super::shape::{shape, upright};
 
 // what is left, muted while it stands still
@@ -25,12 +27,15 @@ pub(super) fn timer_tone(countdown: &Countdown) -> Color {
 }
 
 /*
- * the stopwatch, what it is, then what is left; Peek also says how long it was started for. The
- * clock has a fixed width, so a second ticking by redraws it in place
+ * the stopwatch, what it is, then what is left; Peek also says how long it was started for, or a
+ * pomodoro's round, and has its Skip pill. The clock has a fixed width, so a second ticking by
+ * redraws it in place
  */
 pub(super) fn timer(
     presentation: Presentation,
     countdown: &Countdown,
+    round: Option<&Round>,
+    actions: &[Action],
     now: Instant,
 ) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
@@ -55,27 +60,79 @@ pub(super) fn timer(
     };
 
     let gap = 11.0;
-    let width = shape(presentation).width - 2.0 * inset - icon - clock - 2.0 * gap;
+    let pills: Vec<Rectangle> = match presentation {
+        Presentation::Peek => actions
+            .iter()
+            .map(|action| {
+                action_pill(
+                    action,
+                    &Pills {
+                        actions,
+                        subject: "",
+                        act: timer::act,
+                    },
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let taken: f32 = pills
+        .iter()
+        .map(|pill| match Widget::width(pill) {
+            Size::Fixed(width) => width + gap,
+            _ => 0.0,
+        })
+        .sum();
+    let width = shape(presentation).width - 2.0 * inset - icon - clock - 2.0 * gap - taken;
 
-    let title = match countdown.paused {
-        Some(_) => "Paused",
-        None => "Timer",
+    let title = match (countdown.paused, round) {
+        (Some(_), Some(round)) => format!("{} paused", timer::phase(round.phase)),
+        (Some(_), None) => String::from("Paused"),
+        (None, Some(round)) => String::from(timer::phase(round.phase)),
+        (None, None) => String::from("Timer"),
     };
     let mut words = children![
         Text::new(title)
             .size(theme::text::LABEL)
             .color(theme::island().on_surface)
             .weight(theme::text::SEMIBOLD)
+            .elide()
     ];
 
     if presentation == Presentation::Peek {
+        let line = match round {
+            Some(round) => format!("Round {} of {}", round.round, round.rounds),
+            None => format!("{} timer", timer::length(countdown)),
+        };
+
         words.push(Box::new(
-            Text::new(format!("{} timer", timer::length(countdown)))
+            Text::new(line)
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::island().on_surface_variant)
-                .weight(theme::text::MEDIUM),
+                .weight(theme::text::MEDIUM)
+                .elide(),
         ));
     }
+
+    let mut row = children![
+        Icon::Stopwatch.draw(icon),
+        Column::new(words).width(width).gap(3.0),
+        Rectangle::new()
+            .width(clock)
+            .height(size)
+            .align_child(End, Center)
+            .child(
+                Text::new(timer::clock(countdown, now))
+                    .size(size)
+                    .color(timer_tone(countdown))
+                    .weight(theme::text::SEMIBOLD),
+            ),
+    ];
+    row.extend(
+        pills
+            .into_iter()
+            .map(|pill| Box::new(pill) as Box<dyn Widget>),
+    );
 
     Some(
         sized(presentation)
@@ -86,24 +143,7 @@ pub(super) fn timer(
                 left: inset,
             })
             .align_child(Start, Center)
-            .child(
-                Row::new(children![
-                    Icon::Stopwatch.draw(icon),
-                    Column::new(words).width(width).gap(3.0),
-                    Rectangle::new()
-                        .width(clock)
-                        .height(size)
-                        .align_child(End, Center)
-                        .child(
-                            Text::new(timer::clock(countdown, now))
-                                .size(size)
-                                .color(timer_tone(countdown))
-                                .weight(theme::text::SEMIBOLD),
-                        ),
-                ])
-                .gap(gap)
-                .align(Center),
-            ),
+            .child(Row::new(row).gap(gap).align(Center)),
     )
 }
 

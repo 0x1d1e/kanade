@@ -170,7 +170,7 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
     let mut row = Vec::<Box<dyn Widget>>::new();
 
     match activity.detail() {
-        Detail::Timer(_) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Timer(..) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
         Detail::Live(job) if job.progress.is_some() => {
             let (icon, ink) = super::live::mark(job);
             row.push(Box::new(icon.on(14.0, ink)));
@@ -242,7 +242,11 @@ pub(super) fn small_form(
         (presentation, Some(Detail::Workspace(workspace))) => {
             self::workspace(presentation, workspace)
         }
-        (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
+        (presentation, Some(Detail::Timer(countdown, round))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            self::timer(presentation, countdown, round.as_ref(), actions, now)
+        }
         (presentation, Some(Detail::Live(job))) => super::live::live(presentation, job),
         (presentation, Some(Detail::Screenshot(shot))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
@@ -440,10 +444,10 @@ enum Lead<'a> {
 }
 
 // an Activity's actions, each run by its source's `act` with the key and what it acts on
-struct Pills<'a> {
-    actions: &'a [Action],
-    subject: &'a str,
-    act: fn(&str, &str),
+pub(super) struct Pills<'a> {
+    pub(super) actions: &'a [Action],
+    pub(super) subject: &'a str,
+    pub(super) act: fn(&str, &str),
 }
 
 /*
@@ -540,7 +544,7 @@ fn lead_tile(lead: Lead, side: f32, radius: f32) -> Box<dyn Widget> {
 }
 
 // an action, run on a left click before the click reaches the island
-fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
+pub(super) fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
     let label = Text::new(&action.label)
         .size(theme::text::LABEL_SMALL)
         .color(theme::island().on_surface)

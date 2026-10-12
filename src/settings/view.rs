@@ -984,6 +984,18 @@ fn control(
             })),
             true,
         ),
+        Kind::Count(count, field) => {
+            let number = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(count.range.least),
+                most: u64::from(count.range.most),
+                step: 1,
+                unit: count.unit,
+                expected: count.expected,
+            };
+
+            (Box::new(stepper(setting, number, steps, roles)), true)
+        }
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
         }

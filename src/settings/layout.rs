@@ -282,6 +282,22 @@ pub const PAGES: &[Page] = &[
         ],
     },
     Page {
+        name: "timer",
+        title: "Timer",
+        summary: "How long a pomodoro's focus and breaks last",
+        group: "Experience",
+        icon: Icon::Stopwatch,
+        sections: &[Section {
+            title: "Pomodoro",
+            rows: &[
+                Row::Key("timer.pomodoro.work"),
+                Row::Key("timer.pomodoro.break"),
+                Row::Key("timer.pomodoro.long_break"),
+                Row::Key("timer.pomodoro.rounds"),
+            ],
+        }],
+    },
+    Page {
         name: "modules",
         title: "Modules",
         summary: "What runs in the shell; the Island's core always does",

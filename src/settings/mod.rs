@@ -425,7 +425,8 @@ fn reset_inputs() {
             Kind::Pixels(_, field)
             | Kind::Percent(_, field)
             | Kind::Seconds(_, field)
-            | Kind::Kelvin(_, field) => (field.get)(&read).to_string(),
+            | Kind::Kelvin(_, field)
+            | Kind::Count(_, field) => (field.get)(&read).to_string(),
             Kind::Minutes(_, field) => ((field.get)(&read).as_secs() / 60).to_string(),
             Kind::DayTime(field) => (field.get)(&read)
                 .map(|time| time.to_string())

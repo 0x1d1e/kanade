@@ -245,7 +245,8 @@ pub enum Detail {
 
     Notification(Toast),
 
-    Timer(Countdown),
+    // a pomodoro's when it is one
+    Timer(Countdown, Option<Round>),
 
     Screenshot(Shot),
 
@@ -275,7 +276,7 @@ impl Detail {
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
-            Detail::Timer(_) => Some(Kind::Timer),
+            Detail::Timer(..) => Some(Kind::Timer),
             Detail::Screenshot(_) => Some(Kind::Screenshot),
             Detail::Recording(_) => Some(Kind::Recording),
             Detail::Caffeine(_) => Some(Kind::Caffeine),
@@ -603,6 +604,22 @@ impl Countdown {
     pub fn running_out(&self) -> Option<Instant> {
         self.paused.is_none().then_some(self.ends)
     }
+}
+
+// what a pomodoro's countdown is for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Focus,
+    Break,
+    LongBreak,
+}
+
+// a pomodoro's phase, in round `round` of `rounds`, from 1
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Round {
+    pub phase: Phase,
+    pub round: u32,
+    pub rounds: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

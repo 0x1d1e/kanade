@@ -289,19 +289,27 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::TIMER,
         verbs: &[Verb {
             name: "timer",
-            about: "Start, pause, resume or cancel the timer",
+            about: "Start a timer or a pomodoro; pause, resume, skip or cancel it",
             usage: || {
-                String::from(
-                    "timer start <duration>|pause|resume|cancel
-  <duration>: like 90s, 25m or 1h30m, up to 24h",
+                format!(
+                    "timer start <duration>|pomodoro [<focus> <break> <long-break> <rounds>]|pause|resume|skip|cancel
+  <duration>, <focus>, <break>, <long-break>: like 90s, 25m or 1h30m, up to 24h
+  <rounds>: focus rounds before the long break, 1-{}
+  pomodoro: takes the lengths in order; those left off come from timer.pomodoro.*
+  skip: moves the pomodoro to its next phase at once",
+                    timer::ROUNDS
                 )
             },
             parse: |arguments| {
                 let request = match arguments {
                     ["start", length] => timer::duration(length).map(timer::Request::Start),
+                    ["pomodoro", lengths @ ..] => {
+                        timer::lengths(lengths).map(timer::Request::Pomodoro)
+                    }
+                    ["skip"] => Some(timer::Request::Skip(None)),
                     ["pause"] => Some(timer::Request::Pause),
                     ["resume"] => Some(timer::Request::Resume),
                     ["cancel"] => Some(timer::Request::Cancel),

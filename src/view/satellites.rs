@@ -55,7 +55,7 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
         Detail::Live(job) => super::live::satellite(job),
         Detail::NightLight(_) => Box::new(Icon::Sunset.draw(14.0)),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
-        Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
+        Detail::Timer(countdown, _) => label(timer::short(countdown, now), timer_tone(countdown)),
         Detail::Session(Leaving::Counting { countdown, .. }) => label(
             format!("{}s", session::left(countdown, now)),
             theme::island().on_surface,

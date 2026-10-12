@@ -148,6 +148,8 @@ pub struct Config {
 
     // `night-light.*`: when and how warm the screen turns (ADR 0046)
     pub night_light: NightLight,
+    // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
+    pub pomodoro: Pomodoro,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -317,6 +319,52 @@ impl Config {
     }
 }
 
+// a whole number in a range, in a unit the docs and Settings name
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Count {
+    pub range: Range,
+
+    // after the number, like `min`, and what a value must be, like `whole minutes`
+    pub unit: &'static str,
+    pub expected: &'static str,
+}
+
+// a pomodoro's focus, break and long break in minutes, and the focus rounds before a long break
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pomodoro {
+    pub work: u32,
+    pub short: u32,
+    pub long: u32,
+    pub rounds: u32,
+}
+
+impl Pomodoro {
+    const MINUTES: Count = Count {
+        range: Range {
+            least: 1,
+            most: 180,
+        },
+        unit: "min",
+        expected: "whole minutes",
+    };
+    pub const ROUNDS: Count = Count {
+        range: Range { least: 1, most: 12 },
+        unit: "rounds",
+        expected: "whole rounds",
+    };
+}
+
+impl Default for Pomodoro {
+    fn default() -> Self {
+        Pomodoro {
+            work: 25,
+            short: 5,
+            long: 15,
+            rounds: 4,
+        }
+    }
+}
+
 // one output's overrides: the keys it sets, and their values in a config of their own
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Output {
@@ -373,6 +421,7 @@ impl Default for Config {
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
+            pomodoro: Pomodoro::default(),
             outputs: BTreeMap::new(),
         }
     }
@@ -683,6 +732,8 @@ pub enum Kind {
     Minutes(Range, Field<Duration>),
     // a color temperature, whole kelvin in a range
     Kelvin(Range, Field<u32>),
+    // a whole number of something else in a range
+    Count(Count, Field<u32>),
 
     // one of these strings
     Choice(Choices, Field<&'static str>),
@@ -730,6 +781,7 @@ impl Kind {
             Kind::Seconds(range, field) => (field.set)(config, seconds(value, *range)?),
             Kind::Minutes(range, field) => (field.set)(config, minutes(value, *range)?),
             Kind::Kelvin(range, field) => (field.set)(config, kelvin(value, *range)?),
+            Kind::Count(count, field) => (field.set)(config, counted(value, *count)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -849,7 +901,8 @@ impl Kind {
             Kind::Pixels(_, field)
             | Kind::Percent(_, field)
             | Kind::Seconds(_, field)
-            | Kind::Kelvin(_, field) => Value::Integer(i64::from((field.get)(config))),
+            | Kind::Kelvin(_, field)
+            | Kind::Count(_, field) => Value::Integer(i64::from((field.get)(config))),
             Kind::Minutes(_, field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_secs() / 60).ok()?)
             }
@@ -892,7 +945,8 @@ impl Kind {
             Kind::Pixels(_, field)
             | Kind::Percent(_, field)
             | Kind::Seconds(_, field)
-            | Kind::Kelvin(_, field) => field.copy(from, to),
+            | Kind::Kelvin(_, field)
+            | Kind::Count(_, field) => field.copy(from, to),
             Kind::Minutes(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
@@ -1536,6 +1590,69 @@ pub const WALLPAPER: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+pub const TIMER: &[Setting] = &[
+    Setting {
+        key: "timer.pomodoro.work",
+        label: "Focus",
+        help: "how long a pomodoro's focus lasts, unless `kanade timer pomodoro` says",
+        kind: Kind::Count(
+            Pomodoro::MINUTES,
+            Field {
+                get: |config| config.pomodoro.work,
+                set: |config, minutes| config.pomodoro.work = minutes,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "timer.pomodoro.break",
+        label: "Break",
+        help: "how long the break after a focus lasts",
+        kind: Kind::Count(
+            Pomodoro::MINUTES,
+            Field {
+                get: |config| config.pomodoro.short,
+                set: |config, minutes| config.pomodoro.short = minutes,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "timer.pomodoro.long_break",
+        label: "Long break",
+        help: "how long the break after the last round's focus lasts",
+        kind: Kind::Count(
+            Pomodoro::MINUTES,
+            Field {
+                get: |config| config.pomodoro.long,
+                set: |config, minutes| config.pomodoro.long = minutes,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "timer.pomodoro.rounds",
+        label: "Rounds",
+        help: "how many focus rounds come before a long break",
+        kind: Kind::Count(
+            Pomodoro::ROUNDS,
+            Field {
+                get: |config| config.pomodoro.rounds,
+                set: |config, rounds| config.pomodoro.rounds = rounds,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 pub const CALENDAR: &[Setting] = &[Setting {
     key: "calendar.paths",
     label: "Calendar files",
@@ -1924,6 +2041,18 @@ fn percent(value: &Value, range: Range) -> Result<u32, String> {
         .ok_or_else(|| format!("{percent} is outside {}-{} %", range.least, range.most))
 }
 
+fn counted(value: &Value, count: Count) -> Result<u32, String> {
+    let number = value
+        .as_integer()
+        .ok_or_else(|| format!("expected {}", count.expected))?;
+    let Range { least, most } = count.range;
+
+    u32::try_from(number)
+        .ok()
+        .filter(|number| (least..=most).contains(number))
+        .ok_or_else(|| format!("{number} is outside {least}-{most} {}", count.unit))
+}
+
 // one `[modules]` entry over the Modules off: a Module in the registry on or off by name
 fn turn(off: &mut Vec<&'static str>, name: &str, value: &Value) -> Result<(), String> {
     let module = modules::ALL
@@ -2017,6 +2146,10 @@ pub fn defaults() -> String {
                 help.push_str(&format!(", min {}-{}", range.least, range.most))
             }
             Kind::Kelvin(range, _) => help.push_str(&format!(", K {}-{}", range.least, range.most)),
+            Kind::Count(count, _) => help.push_str(&format!(
+                ", {} {}-{}",
+                count.unit, count.range.least, count.range.most
+            )),
             _ => {}
         }
         if setting.restart {
@@ -2857,6 +2990,10 @@ mod tests {
                 "battery.critical",
                 "battery.critical_action",
                 "media.visualizer",
+                "timer.pomodoro.work",
+                "timer.pomodoro.break",
+                "timer.pomodoro.long_break",
+                "timer.pomodoro.rounds",
                 "live.stale",
                 "osd.layout",
                 "notifications.rules",
