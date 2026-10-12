@@ -60,8 +60,8 @@ impl BatteryLevel {
 impl From<Reading> for BatteryLevel {
     fn from(reading: Reading) -> Self {
         BatteryLevel {
-            percent: reading.present.then_some(reading.percent),
-            charging: reading.present && !reading.draining,
+            percent: reading.present.then_some(reading.percent).flatten(),
+            charging: reading.charging,
         }
     }
 }
@@ -80,30 +80,92 @@ impl Service for BatteryLevel {
 struct Reading {
     // false without a battery, as on a desktop
     present: bool,
-    percent: u8,
+
+    // none while the kernel gives no number, which is never low nor critical
+    percent: Option<u8>,
 
     // on battery power; false without a battery, or plugged in, charging or not
     draining: bool,
+
+    // plugged in, as Rest shows it; `Not charging` is plugged in, usually because it is full
+    charging: bool,
 }
 
 impl Reading {
-    // the first supply whose type is Battery, so a laptop's AC adapter is skipped
+    // the machine's batteries, as one
     fn read() -> Reading {
-        let Some(path) = battery() else {
-            return Reading {
-                present: false,
-                percent: 0,
-                draining: false,
-            };
+        let cells: Vec<Cell> = batteries().iter().map(|path| Cell::read(path)).collect();
+
+        Reading::of(&cells)
+    }
+
+    /*
+     * several batteries, as some laptops have, weigh by their energy, as UPower does, else average.
+     * Only `Discharging` drains: `Unknown` or nothing is what a battery says when it cannot tell,
+     * and a guess must not power the machine off
+     */
+    fn of(cells: &[Cell]) -> Reading {
+        let draining = cells.iter().any(|cell| cell.status == "Discharging");
+        let charging = !draining
+            && cells
+                .iter()
+                .any(|cell| matches!(cell.status.as_str(), "Charging" | "Full" | "Not charging"));
+
+        let energy = cells
+            .iter()
+            .map(|cell| cell.energy)
+            .collect::<Option<Vec<_>>>();
+        let percent = match energy {
+            Some(energy) if !energy.is_empty() => {
+                let (now, full) = energy
+                    .iter()
+                    .fold((0, 0), |(now, full), cell| (now + cell.0, full + cell.1));
+
+                (full > 0).then(|| (now * 100 / full).min(100) as u8)
+            }
+            _ => {
+                let capacity = cells
+                    .iter()
+                    .map(|cell| cell.capacity)
+                    .collect::<Option<Vec<_>>>();
+
+                capacity
+                    .filter(|capacity| !capacity.is_empty())
+                    .map(|capacity| {
+                        let sum: u32 = capacity.iter().map(|&percent| u32::from(percent)).sum();
+                        (sum / capacity.len() as u32).min(100) as u8
+                    })
+            }
         };
 
-        // `Not charging` is plugged in, usually because it is full
-        let status = supply(&path, "status");
-
         Reading {
-            present: true,
-            percent: supply(&path, "capacity").parse().unwrap_or(0),
-            draining: !matches!(status.as_str(), "Charging" | "Full" | "Not charging"),
+            present: !cells.is_empty(),
+            percent,
+            draining,
+            charging,
+        }
+    }
+}
+
+// one battery as the kernel gives it
+#[derive(Debug, Clone, PartialEq)]
+struct Cell {
+    status: String,
+    capacity: Option<u8>,
+
+    // now and full, in µWh or µAh as the battery counts
+    energy: Option<(u64, u64)>,
+}
+
+impl Cell {
+    fn read(path: &Path) -> Cell {
+        let number = |name: &str| supply(path, name).parse::<u64>().ok();
+        let pair = |now: &str, full: &str| number(now).zip(number(full));
+
+        Cell {
+            status: supply(path, "status"),
+            capacity: supply(path, "capacity").parse().ok(),
+            energy: pair("energy_now", "energy_full").or_else(|| pair("charge_now", "charge_full")),
         }
     }
 }
@@ -137,12 +199,14 @@ fn charge(shown: Option<Charge>, now: Reading, at: Thresholds) -> Option<Charge>
         return None;
     }
 
-    let critical = now.percent <= at.critical || shown.is_some_and(|charge| charge.critical);
+    // a battery that gives no number keeps what shows
+    let Some(percent) = now.percent else {
+        return shown;
+    };
 
-    (critical || now.percent <= at.low || shown.is_some()).then_some(Charge {
-        percent: now.percent,
-        critical,
-    })
+    let critical = percent <= at.critical || shown.is_some_and(|charge| charge.critical);
+
+    (critical || percent <= at.low || shown.is_some()).then_some(Charge { percent, critical })
 }
 
 // what the critical battery asks of the session Module
@@ -223,12 +287,17 @@ fn ask(guard: &mut Guard, ask: Ask) {
     }
 }
 
-fn battery() -> Option<PathBuf> {
-    fs::read_dir(POWER_SUPPLIES)
-        .ok()?
+// the supplies that power the machine: not its AC adapter, nor a mouse's or headset's battery
+fn batteries() -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(POWER_SUPPLIES) else {
+        return Vec::new();
+    };
+
+    entries
         .flatten()
         .map(|entry| entry.path())
-        .find(|path| supply(path, "type") == "Battery")
+        .filter(|path| supply(path, "type") == "Battery" && supply(path, "scope") != "Device")
+        .collect()
 }
 
 fn supply(path: &Path, name: &str) -> String {
@@ -314,8 +383,9 @@ mod tests {
     fn draining(percent: u8) -> Reading {
         Reading {
             present: true,
-            percent,
+            percent: Some(percent),
             draining: true,
+            charging: false,
         }
     }
 
@@ -339,6 +409,42 @@ mod tests {
             ..draining(5)
         };
         assert_eq!(charge(shown(5, true), plugged, AT), None);
+    }
+
+    fn cell(status: &str, capacity: Option<u8>, energy: Option<(u64, u64)>) -> Cell {
+        Cell {
+            status: status.to_owned(),
+            capacity,
+            energy,
+        }
+    }
+
+    // an unreadable or unsure battery must never power the machine off
+    #[test]
+    fn a_battery_that_cannot_tell_is_never_critical() {
+        let unread = Reading::of(&[cell("Discharging", None, None)]);
+        assert_eq!(unread.percent, None);
+        assert_eq!(charge(None, unread, AT), None);
+        assert_eq!(charge(shown(15, false), unread, AT), shown(15, false));
+
+        let unsure = Reading::of(&[cell("Unknown", Some(3), None)]);
+        assert!(!unsure.draining);
+        assert_eq!(charge(None, unsure, AT), None);
+    }
+
+    #[test]
+    fn several_batteries_weigh_by_energy() {
+        let both = Reading::of(&[
+            cell("Discharging", Some(5), Some((1, 20))),
+            cell("Unknown", Some(90), Some((72, 80))),
+        ]);
+
+        assert_eq!(both.percent, Some(73));
+        assert!(both.draining);
+        assert_eq!(charge(None, both, AT), None);
+
+        let none = Reading::of(&[]);
+        assert!(!none.present && none.percent.is_none() && !none.draining);
     }
 
     #[test]

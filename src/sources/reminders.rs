@@ -571,10 +571,16 @@ impl Monitor {
             });
         }
 
+        // the ones already showing count toward AT_ONCE, so a later due joins MORE past it
+        let mut more: Vec<&Due> = plan.more.iter().collect();
         for due in &plan.show {
             let until = (due.to + LATE).min(now + HELD).max(now + LATE);
 
             self.shown.retain(|shown| shown.key != due.occurrence);
+            if self.shown.iter().filter(|shown| shown.key != MORE).count() >= AT_ONCE {
+                more.push(due);
+                continue;
+            }
             self.shown.push(Shown {
                 key: due.occurrence.clone(),
                 title: due.title.clone(),
@@ -585,9 +591,8 @@ impl Monitor {
                 said: None,
             });
         }
-        if !plan.more.is_empty() {
-            let until = plan
-                .more
+        if !more.is_empty() {
+            let until = more
                 .iter()
                 .map(|due| (due.to + LATE).min(now + HELD).max(now + LATE))
                 .max()
@@ -598,13 +603,13 @@ impl Monitor {
                 .find(|shown| shown.key == MORE)
                 .map(|shown| shown.of.clone())
                 .unwrap_or_default();
-            of.extend(plan.more.iter().map(|due| due.title.clone()));
+            of.extend(more.iter().map(|due| due.title.clone()));
 
             self.shown.retain(|shown| shown.key != MORE);
             self.shown.push(Shown {
                 key: String::from(MORE),
                 title: String::new(),
-                to: plan.more.iter().map(|due| due.to).min().unwrap_or(now),
+                to: more.iter().map(|due| due.to).min().unwrap_or(now),
                 ends: false,
                 until,
                 of,

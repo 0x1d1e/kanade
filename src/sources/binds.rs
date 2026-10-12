@@ -58,7 +58,7 @@ pub struct Unread {
     pub why: String,
 }
 
-// the deepest include followed; niri refuses a loop, which this stops too
+// the deepest include followed, past the loops refused on their own
 const DEEPEST: usize = 8;
 
 // the config niri reads, as it looks for it
@@ -134,7 +134,14 @@ pub fn load(
     let mut binds: Vec<(String, Option<Bind>)> = Vec::new();
     let mut modifier = None;
 
-    walk(path, false, 0, read, &mut binds, &mut modifier)?;
+    walk(
+        path,
+        false,
+        &mut Vec::new(),
+        read,
+        &mut binds,
+        &mut modifier,
+    )?;
 
     // `Mod` is Super unless `input { mod-key }` says otherwise, as niri runs on a TTY
     let modifier = modifier.unwrap_or_else(|| String::from("Super"));
@@ -152,7 +159,7 @@ pub fn load(
 fn walk(
     path: &Path,
     optional: bool,
-    depth: usize,
+    walking: &mut Vec<PathBuf>,
     read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
     binds: &mut Vec<(String, Option<Bind>)>,
     modifier: &mut Option<String>,
@@ -162,8 +169,13 @@ fn walk(
         why,
     };
 
-    if depth > DEEPEST {
-        return Err(unread(String::from("includes itself, or too deeply")));
+    // the files being read, outermost first, so a loop is refused where it closes
+    let here: PathBuf = path.components().collect();
+    if walking.contains(&here) {
+        return Err(unread(String::from("includes itself")));
+    }
+    if walking.len() > DEEPEST {
+        return Err(unread(String::from("includes too deeply")));
     }
 
     let text = match read(path) {
@@ -199,14 +211,17 @@ fn walk(
                     .and_then(KdlValue::as_bool)
                     .unwrap_or(false);
 
-                walk(
+                walking.push(here.clone());
+                let walked = walk(
                     &beside(path, file),
                     optional,
-                    depth + 1,
+                    walking,
                     read,
                     binds,
                     modifier,
-                )?;
+                );
+                walking.pop();
+                walked?;
             }
             "input" => {
                 let set = node
@@ -672,6 +687,21 @@ mod tests {
         assert_eq!(
             read(&looped, "/c/config.kdl").unwrap_err().file,
             PathBuf::from("/c/config.kdl")
+        );
+
+        // a loop through other files is refused where it closes, not after reading it over and over
+        let looped = files(&[
+            ("/c/config.kdl", r#"include "a.kdl""#),
+            ("/c/a.kdl", r#"include "b.kdl"; include "b.kdl""#),
+            ("/c/b.kdl", r#"include "./config.kdl""#),
+        ]);
+
+        assert_eq!(
+            read(&looped, "/c/config.kdl"),
+            Err(Unread {
+                file: PathBuf::from("/c/./config.kdl"),
+                why: String::from("includes itself"),
+            })
         );
     }
 

@@ -143,16 +143,18 @@ pub fn decode(path: &Path, vector_side: f32) -> Option<(u32, u32, Vec<u8>)> {
             let (left, top) = (usize::from(frame.left), usize::from(frame.top));
             let across = usize::from(frame.width);
 
-            // what lies past the screen's edge is clipped
+            // what lies past the screen's edge is clipped; a frame wholly past it draws nothing
             let visible = across.min(width.saturating_sub(left)) * 4;
 
-            for (row, pixels) in frame.buffer.chunks_exact(across * 4).enumerate() {
-                let start = ((top + row) * width + left) * 4;
+            if visible > 0 {
+                for (row, pixels) in frame.buffer.chunks_exact(across * 4).enumerate() {
+                    if top + row >= height {
+                        break;
+                    }
 
-                if top + row >= height {
-                    break;
+                    let start = ((top + row) * width + left) * 4;
+                    canvas[start..start + visible].copy_from_slice(&pixels[..visible]);
                 }
-                canvas[start..start + visible].copy_from_slice(&pixels[..visible]);
             }
 
             Some((
@@ -181,4 +183,29 @@ pub fn decode(path: &Path, vector_side: f32) -> Option<(u32, u32, Vec<u8>)> {
 // pixels of `components` each, made RGBA one by one
 fn rgba(pixels: &[u8], components: usize, each: impl Fn(&[u8]) -> [u8; 4]) -> Vec<u8> {
     pixels.chunks_exact(components).flat_map(each).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a GIF is outside input: a first frame placed past the screen's edge must not panic
+    #[test]
+    fn a_frame_past_the_screen_draws_nothing() {
+        let path = std::env::temp_dir().join(format!("kanade-past-{}.gif", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[0, 0, 0, 255, 255, 255]).unwrap();
+
+        let mut frame = gif::Frame::from_indexed_pixels(2, 2, vec![1; 4], None);
+        frame.left = 100;
+        encoder.write_frame(&frame).unwrap();
+        drop(encoder);
+
+        let decoded = decode(&path, 0.0);
+        std::fs::remove_file(&path).unwrap();
+
+        let (width, height, pixels) = decoded.unwrap();
+        assert_eq!((width, height), (4, 4));
+        assert!(pixels.iter().all(|&byte| byte == 0));
+    }
 }

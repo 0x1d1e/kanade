@@ -151,6 +151,11 @@ pub struct Pick {
     offset: f32,
 
     setting: Setting,
+
+    // the sets asked from this visit, and the last one that settled: awww may settle one before
+    // its press writes Waiting, and an older one after a newer press
+    asked: u64,
+    settled: u64,
 }
 
 // the last set asked from this visit, from its press until awww showed it or failed
@@ -701,20 +706,28 @@ pub fn key(monitor: &str, key: Key) -> bool {
  * Surface stays open on the grid, to try another
  */
 fn run(monitor: &str, visit: u64, press: Press) {
-    let (from, done) = {
+    let (from, done, set) = {
         let monitor = monitor.to_owned();
-        let pick = Pick::read().of(visit);
+        let mut pick = Pick::write();
+
+        // a click before any key finds the last visit's state
+        if pick.visit != visit {
+            *pick = Pick::begin(visit);
+        }
+
+        pick.asked += 1;
+        let set = pick.asked;
 
         let from = match &press {
             Press::Set(_, index) => at_tile(&monitor, &pick, *index),
             Press::Shuffle => at_shuffle(&monitor),
         };
 
-        let done: wallpaper::Done = Box::new(move |set: Result<(), Unset>| {
-            settled(visit, set.map_err(|unset| unset.brief()))
+        let done: wallpaper::Done = Box::new(move |result: Result<(), Unset>| {
+            settled(visit, set, result.map_err(|unset| unset.brief()))
         });
 
-        (from, done)
+        (from, done, set)
     };
 
     let started = match press {
@@ -726,7 +739,7 @@ fn run(monitor: &str, visit: u64, press: Press) {
 
     let mut pick = Pick::write();
 
-    if pick.visit == visit {
+    if pick.visit == visit && pick.asked == set && pick.settled != set {
         pick.setting = match started {
             Ok(path) => Setting::Waiting(path),
             Err(why) => Setting::Failed(why),
@@ -735,12 +748,14 @@ fn run(monitor: &str, visit: u64, press: Press) {
 }
 
 // how the set asked in `visit` went, on the wallpaper's thread; nothing once that visit is over
-fn settled(visit: u64, set: Result<(), &str>) {
+fn settled(visit: u64, asked: u64, set: Result<(), &str>) {
     let mut pick: Write<Pick> = Pick::write();
 
-    if pick.visit != visit {
+    if pick.visit != visit || pick.asked != asked {
         return;
     }
+
+    pick.settled = asked;
 
     pick.setting = match set {
         Ok(()) => Setting::Idle,

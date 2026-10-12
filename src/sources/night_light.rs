@@ -323,6 +323,12 @@ impl Holder {
         self.missing = !wake::found(WLSUNSET);
 
         if self.wanted.as_ref() == Some(&wanted) {
+            // one that should run but could not, with no retry coming, is tried again: a program
+            // installed since, then `kanade night-light on`, starts it
+            if matches!(wanted, Ok(Some(_))) && self.running.is_none() && self.retry.is_none() {
+                return self.start();
+            }
+
             return self.publish(self.running.is_some(), Shade::read().failed.clone());
         }
 
