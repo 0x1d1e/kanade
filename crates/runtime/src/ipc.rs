@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub struct IpcCall {
     pub(crate) name: String,
@@ -9,7 +11,31 @@ pub struct IpcCall {
     pub(crate) arguments: Vec<String>,
 }
 
-type Handler = fn(&[String]) -> String;
+/*
+ * a handler answers through the `IpcReply` it is given, at once or later from anywhere, as a
+ * call that waits on the user does; dropped unanswered, the caller reads an empty reply
+ */
+type Handler = fn(&[String], IpcReply);
+
+// where one call's answer goes; the caller waits on it until it is sent or dropped
+pub struct IpcReply {
+    stream: UnixStream,
+}
+
+impl IpcReply {
+    pub(crate) fn new(stream: UnixStream) -> Self {
+        Self { stream }
+    }
+
+    // a caller that stopped reading must not freeze the thread answering it
+    pub fn send(mut self, reply: &str) {
+        let timeout = Some(Duration::from_secs(1));
+
+        if self.stream.set_write_timeout(timeout).is_ok() {
+            let _ = self.stream.write_all(reply.as_bytes());
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct IpcHandlers {
@@ -56,13 +82,14 @@ impl IpcHandlers {
         self.by_name.insert(String::from(name), handler);
     }
 
-    // the reply is whatever the handler returns, so an unknown name answers in words too
-    pub fn run(&self, call: &IpcCall) -> String {
+    // the reply is whatever the handler sends, so an unknown name answers in words too
+    pub fn run(&self, call: &IpcCall, reply: IpcReply) {
         let Some(handler) = self.by_name.get(&call.name) else {
-            return format!("no handler named {}", call.name);
+            reply.send(&format!("no handler named {}", call.name));
+            return;
         };
 
-        handler(&call.arguments)
+        handler(&call.arguments, reply);
     }
 }
 

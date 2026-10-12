@@ -43,7 +43,7 @@ pub use input::cursor_names::{
     ResizeTopRight, ResizeVertical, Text, Wait,
 };
 pub use input::{Button, Cursor, Key, Point, Scroll};
-pub use ipc::{IpcCall, ipc_socket};
+pub use ipc::{IpcCall, IpcReply, ipc_socket};
 pub use layer_window::{
     Horizontal, InputArea, Keyboard, Layer, LayerWindow, Margin, Vertical, WindowSize, Zone,
 };

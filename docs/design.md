@@ -127,7 +127,7 @@ Rules:
 
 ### Core Surfaces
 
-- **Launcher**: providers = apps, calculator, emoji, wallpaper, destinations (Wi-Fi and Bluetooth open Controls on their sub-surface, Clipboard its history, each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet.
+- **Launcher**: providers = apps, calculator, emoji, wallpaper, destinations (Wi-Fi and Bluetooth open Controls on their sub-surface, Clipboard its history, each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface; a newer one replaces the one waiting.
 - **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio (done, #133).
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
@@ -229,10 +229,11 @@ Schema registry (`config::Setting`, per Module) defines each setting once: key/k
 
 ## CLI
 
-Public: `kanade <verb> [args]`; the runtime's IPC socket (`$XDG_RUNTIME_DIR/kanade.sock`) internal.
+Public: `kanade <verb> [args]`; the runtime's IPC socket (`$XDG_RUNTIME_DIR/kanade.sock`) internal. A handler answers through an `IpcReply` it may keep, so a call can wait on the user: `dmenu` waits with no deadline, every other verb answers at once, within the client's 5 s.
 
 ```text
 launcher open|close|toggle
+dmenu [--prompt <text>]
 controls open|close|toggle
 media open|close|toggle
 island collapse

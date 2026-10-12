@@ -685,16 +685,28 @@ pub const ALL: &[Module] = &[
             without: "no copying a calculator value or an emoji",
         }],
         settings: &[],
-        verbs: &[Verb {
-            name: "launcher",
-            about: "Open or close the launcher",
-            usage: || String::from("launcher open|close|toggle"),
-            parse: |arguments| {
-                Command::surface(Surface::Launcher, arguments)
-                    .map(Call::Island)
-                    .ok_or(Unparsed::Usage)
+        verbs: &[
+            Verb {
+                name: "launcher",
+                about: "Open or close the launcher",
+                usage: || String::from("launcher open|close|toggle"),
+                parse: |arguments| {
+                    Command::surface(Surface::Launcher, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
             },
-        }],
+            Verb {
+                name: "dmenu",
+                about: "Choose one of the lines on stdin in the launcher",
+                usage: surfaces::launcher::choose::usage,
+                parse: |arguments| {
+                    surfaces::launcher::choose::Asked::parse(arguments)
+                        .map(Call::Dmenu)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+        ],
         start: |app| {
             // read now, so the Launcher opens on a list
             apps::refresh();

@@ -20,6 +20,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
 use crate::sources::{caffeine, capture, google, live, osd, recording, timer, wallpaper, weather};
+use crate::surfaces::launcher::choose;
 use crate::{config, doctor, lock};
 
 // the one IPC handler the shell registers, which every verb goes through
@@ -52,6 +53,7 @@ pub enum Call {
     Island(Command),
     Timer(timer::Request),
     Live(live::Request),
+    Dmenu(choose::Asked),
     ClearNotifications,
     ClearClipboard,
     Screenshot(capture::Mode),
@@ -403,6 +405,16 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return live::run(id, title, command);
     }
 
+    // the lines come from stdin, never the arguments
+    if let Call::Dmenu(asked) = asked {
+        if !asked.choices.is_empty() {
+            complain(&mistake(&words, Style::of(&io::stderr())));
+            return ExitCode::from(2);
+        }
+
+        return dmenu(asked.prompt);
+    }
+
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {
         Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
@@ -489,7 +501,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
  * reader, like `head`, wanted no more (#197); any other error is said on stderr and fails
  */
 pub fn print(text: &str, code: ExitCode) -> ExitCode {
-    match written(io::stdout().lock(), text) {
+    match written(io::stdout().lock(), text.as_bytes()) {
         Ok(()) => code,
         Err(error) => {
             complain(&format!("kanade: stdout: {error}"));
@@ -499,11 +511,8 @@ pub fn print(text: &str, code: ExitCode) -> ExitCode {
 }
 
 // writes all of `text` to `output`, a pipe its reader closed taking it as written
-fn written(mut output: impl Write, text: &str) -> io::Result<()> {
-    match output
-        .write_all(text.as_bytes())
-        .and_then(|()| output.flush())
-    {
+fn written(mut output: impl Write, text: &[u8]) -> io::Result<()> {
+    match output.write_all(text).and_then(|()| output.flush()) {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         written => written,
     }
@@ -729,6 +738,21 @@ pub fn call(arguments: &[String]) -> Result<Reply, String> {
 
 // as `call`, answered by `deadline`
 fn call_until(arguments: &[String], deadline: Instant) -> Result<Reply, String> {
+    let stream = connect(arguments)?;
+    let patience = deadline.saturating_duration_since(Instant::now());
+
+    send(stream, &IpcCall::new(HANDLER, arguments), Some(patience))
+}
+
+// as `call`, waiting as long as the shell takes, as on the user
+fn call_waiting(arguments: &[String]) -> Result<Reply, String> {
+    let stream = connect(arguments)?;
+
+    send(stream, &IpcCall::new(HANDLER, arguments), None)
+}
+
+// the running shell to send `arguments` to
+fn connect(arguments: &[String]) -> Result<UnixStream, String> {
     // a newline would split one argument into two on the shell's side
     if arguments.iter().any(|argument| argument.contains('\n')) {
         return Err(String::from("an argument cannot hold a newline"));
@@ -741,20 +765,109 @@ fn call_until(arguments: &[String], deadline: Instant) -> Result<Reply, String> 
         ));
     }
 
-    let stream = UnixStream::connect(ipc_socket())
-        .map_err(|_| String::from("no shell is running; start one with `kanade`"))?;
+    UnixStream::connect(ipc_socket())
+        .map_err(|_| String::from("no shell is running; start one with `kanade`"))
+}
 
-    let patience = deadline.saturating_duration_since(Instant::now());
+/*
+ * `kanade dmenu`: the lines on stdin, chosen from in the Launcher; prints the one chosen exactly as
+ * read and exits 0, or exits 1 with nothing printed when the user dismisses it. The shell answers
+ * with the line's place, so a line the Launcher shows cleaned is still printed whole
+ */
+fn dmenu(prompt: Option<String>) -> ExitCode {
+    let mut input = Vec::new();
 
-    send(stream, &IpcCall::new(HANDLER, arguments), patience)
+    if let Err(error) = io::stdin().lock().read_to_end(&mut input) {
+        complain(&format!("kanade: stdin: {error}"));
+        return ExitCode::FAILURE;
+    }
+
+    // the lines as read, then as sent; empty ones are no choice
+    let lines: Vec<&[u8]> = input
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    let sent: Vec<String> = lines
+        .iter()
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .collect();
+
+    if sent.is_empty() {
+        complain("kanade: no lines to choose from on stdin");
+        return ExitCode::FAILURE;
+    }
+
+    if sent.len() > choose::MOST {
+        complain(&format!(
+            "kanade: {} lines on stdin, more than the {} a dmenu takes",
+            sent.len(),
+            choose::MOST
+        ));
+        return ExitCode::FAILURE;
+    }
+
+    if let Some(line) = sent
+        .iter()
+        .position(|line| line.chars().count() > choose::LONGEST)
+    {
+        complain(&format!(
+            "kanade: line {} on stdin is longer than the {} characters a dmenu takes",
+            line + 1,
+            choose::LONGEST
+        ));
+        return ExitCode::FAILURE;
+    }
+
+    let asked = choose::Asked {
+        prompt,
+        choices: sent,
+    };
+
+    match call_waiting(&asked.words()) {
+        Ok(Reply::Done(index)) => match index
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| lines.get(index))
+        {
+            Some(line) => {
+                let mut chosen = line.to_vec();
+                chosen.push(b'\n');
+
+                match written(io::stdout().lock(), &chosen) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(error) => {
+                        complain(&format!("kanade: stdout: {error}"));
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+            None => {
+                complain(&format!(
+                    "kanade: the shell chose {index:?}, which is no line"
+                ));
+                ExitCode::FAILURE
+            }
+        },
+        Ok(Reply::Refused(why)) if why == choose::DISMISSED => ExitCode::FAILURE,
+        Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => {
+            complain(&format!("kanade: {why}"));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /*
  * the shell's reply to `call`, whole within `patience`; one that is late or missing once the call
  * is sent leaves unknown whether the shell did it, like a screenshot niri may already be saving
  */
-fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Reply, String> {
-    let deadline = Instant::now() + patience;
+fn send(
+    mut stream: UnixStream,
+    call: &IpcCall,
+    patience: Option<Duration>,
+) -> Result<Reply, String> {
+    let deadline = patience.map(|patience| Instant::now() + patience);
+    let late = || format!("did not answer within {:?}", patience.unwrap_or_default());
 
     let sent = call
         .write(&mut stream)
@@ -768,14 +881,14 @@ fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Re
 
     // each read waits only what is left, so a reply in pieces is still bounded by `patience`
     let unanswered = loop {
-        let left = deadline.saturating_duration_since(Instant::now());
+        let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
 
-        if left.is_zero() {
-            break Some(format!("did not answer within {patience:?}"));
+        if left.is_some_and(|left| left.is_zero()) {
+            break Some(late());
         }
 
         let got = stream
-            .set_read_timeout(Some(left))
+            .set_read_timeout(left)
             .and_then(|()| stream.read(&mut read));
 
         match got {
@@ -791,7 +904,7 @@ fn send(mut stream: UnixStream, call: &IpcCall, patience: Duration) -> Result<Re
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
-                break Some(format!("did not answer within {patience:?}"));
+                break Some(late());
             }
             Err(error) => break Some(format!("closed the connection: {error}")),
         }
@@ -851,7 +964,7 @@ mod tests {
         });
 
         let call = IpcCall::new(HANDLER, &[String::from("status")]);
-        let reply = send(ours, &call, Duration::from_millis(50));
+        let reply = send(ours, &call, Some(Duration::from_millis(50)));
 
         assert!(!shell.join().expect("the shell").is_empty());
         reply
@@ -900,7 +1013,7 @@ mod tests {
         let reply = send(
             dripping("ok\nkanade 0.1.0", Duration::from_millis(30)),
             &call,
-            Duration::from_millis(100),
+            Some(Duration::from_millis(100)),
         );
 
         assert!(matches!(reply, Ok(Reply::Unknown(_))), "{reply:?}");

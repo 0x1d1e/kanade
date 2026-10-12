@@ -4,6 +4,7 @@
 use std::time::Instant;
 
 use crate::sources::notifications::Notifications;
+use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
@@ -28,23 +29,29 @@ use crate::sources::{
     apps, caffeine, fullscreen, google, live, session, sleep, wallpaper, weather,
 };
 use crate::supervise;
+use crate::surfaces::launcher;
 
-pub fn answer(arguments: &[String]) -> String {
+pub fn answer(arguments: &[String], reply: IpcReply) {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
-    let reply = match cli::parse(&words) {
+    let call = match cli::parse(&words) {
         // a client from another Kanade build may send what this one does not know
-        Err(Unparsed::Usage) => Reply::Refused(String::from(
+        Err(Unparsed::Usage) => Err(Reply::Refused(String::from(
             "not a command of this shell; run `kanade help` for what it takes",
-        )),
-        Err(Unparsed::Invalid(invalid)) => Reply::Refused(invalid.to_string()),
+        ))),
+        Err(Unparsed::Invalid(invalid)) => Err(Reply::Refused(invalid.to_string())),
         Ok((module, _)) if !modules::on(module.name) => {
-            Reply::Refused(format!("module {} is off", module.name))
+            Err(Reply::Refused(format!("module {} is off", module.name)))
         }
-        Ok((_, call)) => run(call),
+        Ok((_, call)) => Ok(call),
     };
 
-    reply.encode()
+    match call {
+        // answered once the user chooses or dismisses it, so the client waits on the user
+        Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
+        Ok(call) => reply.send(&run(call).encode()),
+        Err(refused) => reply.send(&refused.encode()),
+    }
 }
 
 fn run(call: Call) -> Reply {
@@ -57,6 +64,8 @@ fn run(call: Call) -> Reply {
             Reply::Done(String::new())
         }
         Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // `answer` keeps it waiting
+        Call::Dmenu(_) => Reply::Refused(String::from("dmenu waits on the Launcher")),
         Call::ClearNotifications => {
             Notifications::clear();
             Reply::Done(String::new())

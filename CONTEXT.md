@@ -99,6 +99,7 @@ One kind of answer the Launcher finds for a query: apps, the calculator, emoji, 
 - **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, emoji), then each provider's own.
 - Emoji answer only a query starting with `:`, and apps answer none of those.
 - Kanade's own seam; no plugin API.
+- In a visit opened by `kanade dmenu`, the lines read from stdin are the only provider (choose mode); a press answers the waiting client instead of acting.
 - **Avoid:** plugin, source (a source posts to the island)
 
 ## Satellite
