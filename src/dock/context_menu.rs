@@ -41,7 +41,7 @@ impl Service for Menu {
 }
 
 pub fn open(monitor: &str, item: &Item, at: Rect, edge: Edge) {
-    if desktop(&item.app).is_none() {
+    if desktop(&item.app).is_none() && !item.pinned() {
         return;
     }
 
@@ -205,7 +205,7 @@ fn rows(
     if start == 0 {
         rows.push(Box::new(action_row(
             0,
-            if open.item.pinned {
+            if open.item.pinned() {
                 "Unpin from Dock"
             } else {
                 "Pin to Dock"
@@ -425,11 +425,14 @@ fn activate(monitor: &str, index: usize) {
     let (item, index) = selected;
 
     if index == 0 {
-        let Some(entry) = desktop(&item.app) else {
+        let Some(id) = item
+            .pin
+            .clone()
+            .or_else(|| desktop(&item.app).map(|entry| entry.id.clone()))
+        else {
             return;
         };
-        let id = entry.id.clone();
-        let pinned = !item.pinned;
+        let pinned = !item.pinned();
 
         std::thread::spawn(move || {
             if let Err(error) = crate::settings::set_pinned(&id, pinned) {

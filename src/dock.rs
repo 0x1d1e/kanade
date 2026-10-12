@@ -126,27 +126,46 @@ struct Item {
     // its open windows, by id; none for a pinned app not running
     windows: Vec<Window>,
 
-    pinned: bool,
+    // the desktop file id it is pinned by, none for an app running unpinned
+    pin: Option<String>,
+}
+
+impl Item {
+    fn pinned(&self) -> bool {
+        self.pin.is_some()
+    }
+
+    // a pin no entry has, as of an app uninstalled or renamed: a placeholder that can be unpinned
+    fn missing(&self) -> bool {
+        self.pinned() && desktop(&self.app).is_none()
+    }
 }
 
 /*
  * the pinned apps in their order, each with its windows, then the running apps none pins in the
- * order they opened. A pinned id no entry has is left out, and `kanade status` names it
+ * order they opened. A pinned id no entry has stays as a placeholder, so it can be unpinned, and
+ * `kanade status` names it
  */
 fn items(windows: &Windows) -> Vec<Item> {
     let mut items: Vec<Item> = windows
         .pinned()
         .iter()
-        .filter_map(|pinned| pinned.entry.clone())
-        .map(|entry| Item {
-            windows: windows
-                .running()
-                .iter()
-                .find(|running| desktop(&running.app).is_some_and(|it| it.id == entry.id))
-                .map(|running| running.windows.clone())
-                .unwrap_or_default(),
-            app: App::Desktop(entry),
-            pinned: true,
+        .map(|pinned| match &pinned.entry {
+            Some(entry) => Item {
+                windows: windows
+                    .running()
+                    .iter()
+                    .find(|running| desktop(&running.app).is_some_and(|it| it.id == entry.id))
+                    .map(|running| running.windows.clone())
+                    .unwrap_or_default(),
+                app: App::Desktop(entry.clone()),
+                pin: Some(pinned.id.clone()),
+            },
+            None => Item {
+                app: App::Unmatched(None),
+                windows: Vec::new(),
+                pin: Some(pinned.id.clone()),
+            },
         })
         .collect();
 
@@ -158,7 +177,7 @@ fn items(windows: &Windows) -> Vec<Item> {
             items.push(Item {
                 app: running.app.clone(),
                 windows: running.windows.clone(),
-                pinned: false,
+                pin: None,
             });
         }
     }
@@ -261,7 +280,10 @@ pub fn status() -> String {
     let windows = Windows::read();
     let items = items(&windows);
 
-    let pinned = items.iter().filter(|item| item.pinned).count();
+    let pinned = items
+        .iter()
+        .filter(|item| item.pinned() && !item.missing())
+        .count();
     let mut line = format!(
         "dock: {pinned} pinned, {} running",
         items.iter().filter(|item| !item.windows.is_empty()).count()
@@ -1290,11 +1312,11 @@ fn depth(size: Size) -> f32 {
 
 // the Dock's icons in order, pinned ones apart from the rest
 fn pieces(items: &[Item]) -> Vec<Piece> {
-    let divided = items.iter().any(|item| item.pinned) && items.iter().any(|item| !item.pinned);
+    let divided = items.iter().any(|item| item.pinned()) && items.iter().any(|item| !item.pinned());
     let mut pieces = Vec::new();
 
     for (index, item) in items.iter().enumerate() {
-        if divided && index > 0 && item.pinned != items[index - 1].pinned {
+        if divided && index > 0 && item.pinned() != items[index - 1].pinned() {
             pieces.push(Piece::Divider);
         }
 
@@ -1812,6 +1834,7 @@ fn slot(
     let (width, height) = axes.size(side, side + DOT_ROOM);
     // by the app, as the icons before it come and go with the apps that open and close
     let identity = match (&item.app, item.windows.first()) {
+        _ if item.missing() => (3, item.pin.as_deref(), None),
         (App::Desktop(entry), _) => (0, Some(entry.id.as_str()), None),
         (App::Unmatched(app_id), _) if app_id.is_some() => (1, app_id.as_deref(), None),
         // a window with no app id is an item of its own
@@ -1871,7 +1894,8 @@ fn slot(
         })
 }
 
-// the app's icon, `side` across, or its initial on the quiet tile
+// the app's icon, `side` across, or its initial on the quiet tile; `?` with no name, as of a pin
+// no entry has
 fn mark(app: &App, side: f32, roles: &ThemeRoles) -> Box<dyn Widget> {
     if let Some(path) = desktop(app).and_then(|entry| entry.icon_file.clone()) {
         /*

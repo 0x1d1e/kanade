@@ -648,8 +648,13 @@ impl LookOrder {
             self.written = serial;
         }
 
-        // only a look at least as new as the latest replace request, and none older after it
-        let replace = self.replace_from > self.replaced && serial >= self.replace_from;
+        /*
+         * only a look at least as new as the latest replace request, and none older after it; one
+         * that found no image, as a lock screen's may, leaves the request to an older look still out
+         */
+        let replace = self.replace_from > self.replaced
+            && serial >= self.replace_from
+            && appearance.is_some();
         if replace {
             self.replaced = serial;
         }
@@ -1314,5 +1319,20 @@ mod tests {
         let startup = looks.finish(startup, Some(wallpaper.0.clone()));
         assert!(!startup.publish);
         assert_eq!(startup.appearance, Some(wallpaper.0.clone()));
+    }
+
+    #[test]
+    fn newer_imageless_lookup_does_not_consume_a_pending_replacement() {
+        let wallpaper = TestFile::new("png", b"wallpaper");
+        let mut looks = LookOrder::default();
+        let (external, _) = looks.start(Palette::Replace);
+        let (lock, _) = looks.start(Palette::Keep);
+
+        let lock = looks.finish(lock, None);
+        assert_eq!(lock.appearance, None);
+
+        let external = looks.finish(external, Some(wallpaper.0.clone()));
+        assert!(external.replace);
+        assert_eq!(external.appearance, Some(wallpaper.0.clone()));
     }
 }
