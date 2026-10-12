@@ -5,7 +5,7 @@
 //! act. The socket is `$XDG_RUNTIME_DIR/kanade.sock`; it is internal.
 
 use std::env;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -862,49 +862,18 @@ fn connect(arguments: &[String]) -> Result<UnixStream, String> {
  * with the line's place, so a line the Launcher shows cleaned is still printed whole
  */
 fn dmenu(prompt: Option<String>) -> ExitCode {
-    let mut input = Vec::new();
-
-    if let Err(error) = io::stdin().lock().read_to_end(&mut input) {
-        complain(&format!("kanade: stdin: {error}"));
-        return ExitCode::FAILURE;
-    }
-
-    // the lines as read, then as sent; empty ones are no choice
-    let lines: Vec<&[u8]> = input
-        .split(|&byte| byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .collect();
+    let lines = match choices(io::stdin().lock()) {
+        Ok(lines) => lines,
+        Err(why) => {
+            complain(&format!("kanade: {why}"));
+            return ExitCode::FAILURE;
+        }
+    };
 
     let sent: Vec<String> = lines
         .iter()
         .map(|line| String::from_utf8_lossy(line).into_owned())
         .collect();
-
-    if sent.is_empty() {
-        complain("kanade: no lines to choose from on stdin");
-        return ExitCode::FAILURE;
-    }
-
-    if sent.len() > choose::MOST {
-        complain(&format!(
-            "kanade: {} lines on stdin, more than the {} a dmenu takes",
-            sent.len(),
-            choose::MOST
-        ));
-        return ExitCode::FAILURE;
-    }
-
-    if let Some(line) = sent
-        .iter()
-        .position(|line| line.chars().count() > choose::LONGEST)
-    {
-        complain(&format!(
-            "kanade: line {} on stdin is longer than the {} characters a dmenu takes",
-            line + 1,
-            choose::LONGEST
-        ));
-        return ExitCode::FAILURE;
-    }
 
     let asked = choose::Asked {
         prompt,
@@ -942,6 +911,63 @@ fn dmenu(prompt: Option<String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/*
+ * the lines on `input` as read, empty ones no choice; refused as soon as there are more than a
+ * dmenu takes or one is longer, so a command's endless output is never held whole
+ */
+fn choices(mut input: impl BufRead) -> Result<Vec<Vec<u8>>, String> {
+    // a character is at most 4 bytes, and a byte not UTF-8 shows as one, so more is too long
+    let most_bytes = choose::LONGEST * 4;
+    let too_long = |number: usize| {
+        format!(
+            "line {number} on stdin is longer than the {} characters a dmenu takes",
+            choose::LONGEST
+        )
+    };
+
+    let mut lines = Vec::new();
+
+    for number in 1.. {
+        let mut line = Vec::new();
+        (&mut input)
+            .take(most_bytes as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|error| format!("stdin: {error}"))?;
+
+        let ended = line.last() == Some(&b'\n');
+        if ended {
+            line.pop();
+        }
+
+        if line.len() > most_bytes
+            || String::from_utf8_lossy(&line).chars().count() > choose::LONGEST
+        {
+            return Err(too_long(number));
+        }
+
+        if !line.is_empty() {
+            if lines.len() == choose::MOST {
+                return Err(format!(
+                    "more than the {} lines a dmenu takes on stdin",
+                    choose::MOST
+                ));
+            }
+
+            lines.push(line);
+        }
+
+        if !ended {
+            break;
+        }
+    }
+
+    if lines.is_empty() {
+        return Err(String::from("no lines to choose from on stdin"));
+    }
+
+    Ok(lines)
 }
 
 /*
@@ -1013,6 +1039,43 @@ fn send(
 mod tests {
 
     use super::*;
+
+    // endless "a\n", as a command that never stops writing
+    struct Endless;
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            for (at, byte) in buf.iter_mut().enumerate() {
+                *byte = if at % 2 == 0 { b'a' } else { b'\n' };
+            }
+            Ok(buf.len() / 2 * 2)
+        }
+    }
+
+    // a dmenu's stdin is refused at its limits without being read whole, and kept byte for byte
+    #[test]
+    fn dmenu_input_is_bounded_as_it_is_read() {
+        let lines = choices(io::BufReader::new(Endless));
+        assert!(lines.unwrap_err().starts_with("more than the"));
+
+        let line = choices(io::BufReader::new(io::repeat(b'a')));
+        assert!(line.unwrap_err().starts_with("line 1 "));
+
+        let longest = "\u{1F600}".repeat(choose::LONGEST);
+        assert_eq!(choices(longest.as_bytes()).unwrap().len(), 1);
+        let longer = format!("a\n\n{longest}x\n");
+        assert!(
+            choices(longer.as_bytes())
+                .unwrap_err()
+                .starts_with("line 3 ")
+        );
+
+        assert_eq!(
+            choices(&b"one\n\n\xff two\nthree"[..]).unwrap(),
+            [b"one".to_vec(), b"\xff two".to_vec(), b"three".to_vec()]
+        );
+        assert!(choices(&b"\n\n"[..]).is_err());
+    }
 
     #[test]
     fn replies_round_trip_and_anything_else_is_no_kanade() {
