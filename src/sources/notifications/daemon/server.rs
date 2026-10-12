@@ -7,6 +7,8 @@ use crate::bus::{Argument, Bus, Method, Value};
 use super::{Notification, Notifications, Urgency};
 
 use super::{Action, Reason, image_hint};
+use crate::config;
+use crate::sources::notifications::rules::{self, Fields};
 
 const NAME: &str = "org.freedesktop.Notifications";
 
@@ -65,11 +67,13 @@ fn notify(method: &Method) {
 
     let (actions, has_default) = read_actions(actions);
 
-    let notification = Notification {
+    let mut notification = Notification {
         // add() picks the real id
         id: 0,
 
         app_name: String::from(app_name.text()),
+        desktop_entry: String::from(hints.get("desktop-entry").text()),
+        category: String::from(hints.get("category").text()),
         summary: String::from(summary.text()),
         body: String::from(body.text()),
         icon: String::from(icon.text()),
@@ -83,7 +87,29 @@ fn notify(method: &Method) {
         resident: hints.get("resident").bool(),
 
         received: SystemTime::now(),
+
+        // add() picks it too
+        version: 0,
+
+        effects: rules::Effects::default(),
     };
+
+    // the rules in effect as it arrives decide what it does, for good
+    let effects = rules::resolve(
+        &config::get().notification_rules,
+        Fields {
+            app: &notification.app_name,
+            desktop_entry: &notification.desktop_entry,
+            category: &notification.category,
+            summary: &notification.summary,
+        },
+    );
+
+    if let Some(urgency) = effects.urgency {
+        notification.urgency = urgency;
+    }
+
+    notification.effects = effects;
 
     let replaces_id = replaces_id.number() as u32;
 

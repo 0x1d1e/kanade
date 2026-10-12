@@ -14,7 +14,7 @@ mod pane;
 mod shader;
 
 pub use self::body::{Body, Join, ahead};
-pub use self::capture::{forget, locked, place, shown};
+pub use self::capture::{forget, locked, origin, place, shown};
 pub use self::pane::{
     Pane, Seen, Variant, blurred, highlight, layer, lock_tint, see_through, swatch,
 };

@@ -32,6 +32,12 @@ pub enum Surface {
 
     // lock, sleep, restart, power off and log out, and the countdown to the last three (#156)
     Session,
+
+    // the wallpaper folder as a grid of pictures, one pressed to show it
+    Wallpapers,
+
+    // niri's keybinds, and the keys Kanade's own Surfaces take
+    Keys,
 }
 
 impl Surface {
@@ -41,6 +47,7 @@ impl Surface {
             Kind::Media => Some(Surface::Media),
             Kind::Notification => Some(Surface::Notifications),
             Kind::Session => Some(Surface::Session),
+            Kind::Reminder => Some(Surface::Calendar),
             _ => None,
         }
     }

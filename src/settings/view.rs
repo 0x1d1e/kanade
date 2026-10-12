@@ -13,7 +13,7 @@ use kanade_runtime::{
 };
 use toml::Value;
 
-use crate::config::{self, Choices, Kind, Location, Setting};
+use crate::config::{self, CalDav, Choices, DayTime, Kind, Location, Setting};
 use crate::glass;
 use crate::icon::Icon;
 use crate::look::{Along, Edge, Material, ShellMode};
@@ -94,6 +94,12 @@ const MILLIS: Steps = Steps {
 // a size steps by as much as a list row or two
 const PIXEL_STEP: u64 = 20;
 const PERCENT_STEP: u64 = 10;
+// an idle stage steps by half a minute
+const SECONDS_STEP: u64 = 30;
+// a lead or a staleness steps by five minutes, as calendars offer them
+const MINUTE_STEP: u64 = 5;
+// a warmth steps by about what the eye tells apart
+const KELVIN_STEP: u64 = 100;
 
 pub fn window() -> Window {
     let settings = Settings::read();
@@ -926,6 +932,71 @@ fn control(
 
             (Box::new(stepper(setting, percent, steps, roles)), true)
         }
+        Kind::Seconds(range, field) => {
+            let seconds = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: SECONDS_STEP,
+                unit: "s",
+                expected: "whole seconds",
+            };
+
+            (Box::new(stepper(setting, seconds, steps, roles)), true)
+        }
+        Kind::Minutes(range, field) => {
+            let minutes = (field.get)(read).as_secs() / 60;
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: MINUTE_STEP,
+                unit: "min",
+                expected: "whole minutes",
+            };
+
+            (Box::new(stepper(setting, minutes, steps, roles)), true)
+        }
+        Kind::Kelvin(range, field) => {
+            let kelvin = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: KELVIN_STEP,
+                unit: "K",
+                expected: "whole kelvin",
+            };
+
+            (Box::new(stepper(setting, kelvin, steps, roles)), true)
+        }
+        Kind::DayTime(_) => (
+            Box::new(field_with_hint(setting, "HH:MM", roles, move |text| {
+                let text = text.trim();
+                if text.is_empty() {
+                    change(path(key, None), None);
+                    return;
+                }
+
+                match DayTime::parse(text) {
+                    Ok(time) => change(path(key, None), Some(Value::String(time.to_string()))),
+                    Err(why) => {
+                        Settings::write().refused = Some(format!("Not saved: {key}: {why}"))
+                    }
+                }
+            })),
+            true,
+        ),
+        Kind::Count(count, field) => {
+            let number = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(count.range.least),
+                most: u64::from(count.range.most),
+                step: 1,
+                unit: count.unit,
+                expected: count.expected,
+            };
+
+            (Box::new(stepper(setting, number, steps, roles)), true)
+        }
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
         }
@@ -1026,7 +1097,60 @@ fn control(
 
             (Box::new(Column::new(rows).width(inner()).gap(6.0)), false)
         }
+        Kind::CalDav(field) => {
+            let accounts = (field.get)(read);
+            let to = |list: Vec<CalDav>| {
+                let list = Value::Array(list.iter().map(CalDav::value).collect());
+
+                move || change(path(key, None), Some(list.clone()))
+            };
+
+            let mut rows: Vec<Box<dyn Widget>> = accounts
+                .iter()
+                .enumerate()
+                .map(|(index, account)| {
+                    let mut without = accounts.clone();
+                    without.remove(index);
+
+                    Box::new(entry_line(
+                        &format!(
+                            "{}  \u{b7}  {} at {}",
+                            account.name, account.username, account.url
+                        ),
+                        children![icon_button(Icon::Dismiss, roles, to(without))],
+                        roles,
+                    )) as Box<dyn Widget>
+                })
+                .collect();
+
+            let given = accounts.clone();
+            rows.push(Box::new(text_field(
+                input(setting),
+                inner(),
+                "name, https:// address, username, then Enter",
+                roles,
+                move |text| {
+                    if text.trim().is_empty() {
+                        return;
+                    }
+
+                    match CalDav::parse(&text) {
+                        Ok(account) => {
+                            let mut list: Vec<Value> = given.iter().map(CalDav::value).collect();
+                            list.push(account);
+                            change(path(key, None), Some(Value::Array(list)));
+                        }
+                        Err(why) => {
+                            Settings::write().refused = Some(format!("Not saved: {key}: {why}"))
+                        }
+                    }
+                },
+            )));
+
+            (Box::new(Column::new(rows).width(inner()).gap(6.0)), false)
+        }
         Kind::Modules(_) => unreachable!("section_view draws the Modules row itself"),
+        Kind::Rules(_) => unreachable!("notifications.rules is set in config files only"),
     }
 }
 

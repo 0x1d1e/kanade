@@ -14,14 +14,17 @@ pub mod calendar;
 pub mod clipboard;
 pub mod controls;
 mod grid;
+pub mod keys;
 pub mod launcher;
 pub mod media;
 pub mod notifications;
 mod ring;
+mod search;
 pub mod session;
 mod slider;
 pub mod tray;
 mod visit;
+pub mod wallpapers;
 pub mod weather;
 
 /*

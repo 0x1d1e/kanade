@@ -135,6 +135,9 @@ pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
 pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
 pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
 
+// what the idle dim grace fades the outputs to before the lock (ADR 0047)
+pub const IDLE_DIM: Color = Color::rgb(0, 0, 0);
+
 // the OSD's capsule over an open Surface: darker, as it floats over the Island, not the desktop
 pub const SHADOW_HUD: Color = Color::rgba(0, 0, 0, 89);
 

@@ -422,7 +422,15 @@ fn reset_inputs() {
     for setting in modules::ALL.iter().flat_map(|module| module.settings) {
         let text = match &setting.kind {
             Kind::Millis(field) => (field.get)(&read).as_millis().to_string(),
-            Kind::Pixels(_, field) | Kind::Percent(_, field) => (field.get)(&read).to_string(),
+            Kind::Pixels(_, field)
+            | Kind::Percent(_, field)
+            | Kind::Seconds(_, field)
+            | Kind::Kelvin(_, field)
+            | Kind::Count(_, field) => (field.get)(&read).to_string(),
+            Kind::Minutes(_, field) => ((field.get)(&read).as_secs() / 60).to_string(),
+            Kind::DayTime(field) => (field.get)(&read)
+                .map(|time| time.to_string())
+                .unwrap_or_default(),
             Kind::Path(field) => (field.get)(&read).unwrap_or_default(),
             Kind::Text(field) if setting.key != "appearance.font" => {
                 (field.get)(&read).unwrap_or_default()
@@ -431,7 +439,9 @@ fn reset_inputs() {
             Kind::Location(field) => (field.get)(&read)
                 .map(|at| format!("{}, {}", at.latitude, at.longitude))
                 .unwrap_or_default(),
-            Kind::DesktopIds(_) | Kind::Paths(_) | Kind::AppIds(_) => String::new(),
+            Kind::DesktopIds(_) | Kind::Paths(_) | Kind::AppIds(_) | Kind::CalDav(_) => {
+                String::new()
+            }
             _ => continue,
         };
 

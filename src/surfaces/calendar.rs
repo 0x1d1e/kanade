@@ -26,7 +26,7 @@ use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::calendar::{Calendars, Events, Occurrence};
-use crate::sources::google;
+use crate::sources::{caldav, google};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
@@ -514,13 +514,20 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let shape = geometry::CALENDAR;
 
     // a Module that is off reads no Service
-    let account = modules::on("google-calendar")
+    let google = modules::on("google-calendar")
         .then(|| {
             google::Account::read()
                 .problem()
                 .map(google::Problem::brief)
+                .map(str::to_owned)
         })
         .flatten();
+    let caldav = modules::on("caldav").then(caldav::brief).flatten();
+    let account = match (google, caldav) {
+        (Some(google), Some(caldav)) => Some(format!("{google} \u{b7} {caldav}")),
+        (google, caldav) => google.or(caldav),
+    };
+    let account = account.as_deref();
 
     let agenda: Box<dyn Widget> = if calendars.files == 0 {
         Box::new(state(
@@ -697,7 +704,7 @@ fn cell(
 /*
  * the chosen day's name, its events ROWS at a time with the ring on one while it is in the agenda,
  * and their count under them, which says so when a rule ran to the limit and some are missing, and
- * why Google's do not sync, when they do not. While the month is `pending`, it says so instead of
+ * why Google's or a CalDAV account's do not sync, when they do not. While the month is `pending`, it says so instead of
  * no events, and the count says when the events shown could not be updated
  */
 fn agenda(

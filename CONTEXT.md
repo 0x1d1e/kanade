@@ -12,9 +12,16 @@ The single physical surface on one monitor. One per monitor.
 Something happening that may deserve attention. Has identity, Kind, Priority, Lifetime, Scope, Interrupt, Actions, Detail.
 - Identity is Kind plus a key, so keys from different Kinds never collide.
 - Detail is what its small form draws, typed per Kind (a Media Activity's track, a workspace switch's pager). It is not identity: a repost with new Detail replaces the Activity. A new track dissolves in place, the new art and text rising over the old without the form moving; a level that moves redraws in place.
-- **Invariant:** Lifetime, Priority, Scope and Interrupt are independent: the source sets each, and none implies another (ADR 0009). `Activity::new` refuses only what cannot be carried out: `Transient(0)`, and `AutoExpand` for a Kind with no Surface of its own (only Media, Notification and Session have one). Unusual combinations, like a Persistent FocusedOutput or a Critical that interrupts nothing, stand.
+- **Invariant:** Lifetime, Priority, Scope and Interrupt are independent: the source sets each, and none implies another (ADR 0009). `Activity::new` refuses only what cannot be carried out: `Transient(0)`, and `AutoExpand` for a Kind with no Surface of its own (only Media, Notification, Session and Reminder, whose is Calendar, have one). Unusual combinations, like a Persistent FocusedOutput or a Critical that interrupts nothing, stand.
 - **Invariant:** posting an Activity with an existing id replaces it and refreshes its Lifetime. Switching on through workspaces extends one Transient, not a queue of them.
 - **Avoid:** event, notification (a Notification is one Kind of Activity)
+
+## Live Activity
+An Activity of Kind `Live` another program posts through `kanade activity` (ADR 0042): a build, a download, a script. It shows a title, a pulse or how far along it is, and on Peek a detail line and a bar. The `live` Module owns it; it has no Surface, so a click opens Controls.
+- While live it is Persistent Ongoing and Global, so it can be a Satellite; ended, as done or failed, it is a Transient Actionable on the focused output, as a saved recording is.
+- **Invariant:** what comes in is bounded: at most `MOST` (`src/sources/live.rs`) live at once, ids from a small alphabet, titles and details one line of plain text cut to a length. A verb for an id that is not live is refused. Titles and details are never logged.
+- **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
+- **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
 ## Privacy cluster
 The microphone, camera and screen capture in use, a dot of its color each at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
@@ -24,12 +31,14 @@ The microphone, camera and screen capture in use, a dot of its color each at the
 ## Banner
 A notification card on the focused output, hanging from the Island on its edge and side and clear of the Dock, in its own Top-layer window per monitor (ADRs 0007, 0023). It comes out of the Island and goes back into it, as `banners.entrance` says. The `banners` Module draws it over what `notifications` keeps: the bus, state and history stay there.
 - Low shows 4 s, normal 6 s, Critical until closed. The pointer on any Banner pauses every timer. At most `MOST` (`src/banners/stack.rs`) show, newest nearest the Island; the rest queue, Critical first.
-- **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history.
-- **Invariant:** under DND only Critical Banners show; DND coming on drops the rest, queued too.
+- A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
+- **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
+- **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
 
 ## OSD
-A volume, brightness, keyboard backlight or microphone mute level, or a mode (Caps Lock, Num Lock, airplane mode), shown as a Transient Activity of `Feedback` Priority on the focused output's Island, over any other Activity and its Satellites, and over an open Surface or a Peek as a capsule (ADR 0021). It shows on a change, and on a level key pressed even at a limit. The Island shows over a fullscreen window only while an OSD or a Surface does. The `osd` Module reads `audio` and `brightness` only while they are on, and shows nothing for one that is off.
+A volume, brightness, keyboard backlight or microphone mute level, a mode (Caps Lock, Num Lock, airplane mode), or a keyboard layout switch, shown as a Transient Activity of `Feedback` Priority on the focused output's Island, over any other Activity and its Satellites, and over an open Surface or a Peek as a capsule (ADR 0021). It shows on a change, and on a level key pressed even at a limit. The Island shows over a fullscreen window only while an OSD or a Surface does. The `osd` Module reads `audio` and `brightness` only while they are on, and shows nothing for one that is off.
+- A keyboard layout shows in a mode's place, as a lamp with its short label (like "US") and the name XKB gives it, while `osd.layout` is on: only when niri switches between two or more layouts, never for the list niri gives at start or on a change of its config.
 - **Invariant:** one OSD at a time: a change while one shows takes its place and starts its time (`osd` in the config) again, so a held key extends one OSD.
 - **Avoid:** popup, toast
 
@@ -53,6 +62,7 @@ The Arbiter's output: `primary: Option<Activity>`, `satellites: Vec<Activity>` (
 How an Activity interrupts: `None | Preempt | AutoExpand(duration)`.
 - `None` only competes for the primary: a workspace switch wins it while it lives, then the previous primary returns. `Preempt` collapses the open Surface it shows on when it arrives, unless that is its own Surface. `AutoExpand` opens the Activity's own Surface on the focused island for `duration`, then gives every island it changed back its Presentation and Surface.
 - A repost with the same Interrupt is no new arrival, so it neither preempts nor expands again. One DND drops never arrives, so it interrupts nothing.
+- A Persistent Activity takes attention again by a repost turned Preempt, then one back to None: a pomodoro's phase the timer moved on to by itself is Actionable and Preempt for a few seconds, then Ongoing again (`src/sources/timer.rs`).
 - **Invariant:** an explicit user action while an AutoExpand is open (click or press, open or toggle, collapse, pin, a key the Surface consumes) cancels the restore: the user's choice owns the islands. The pointer entering or leaving does not, but the pointer still on the Surface at its deadline keeps it open, like Hold, until it leaves and the grace runs out.
 - **Invariant:** a Preempt arriving is policy, not choice: a pending AutoExpand gives the islands back first, then it preempts as it would have without one.
 
@@ -71,10 +81,10 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - **Avoid:** state (state is what Services hold)
 
 ## Surface
-Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Session`.
-- Media, Notifications and Session are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface. A Session Activity is a restart, power off or log out counting down, a lock, sleep, restart, power off or log out that was refused or failed, or one logind never answered, which may still happen; the Session Surface opens by user action too, and shows a countdown but no refusal, so a refusal or no answer closes it.
-- Controls, Launcher, Tray, Clipboard, Calendar and Weather have no Activity. They open only by user action.
-- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `session`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
+Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Wallpapers | Keys | Session`.
+- Media, Notifications and Session are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface. A Session Activity is a restart, power off or log out counting down, or the sleep, hibernation or power off `battery.critical_action` counts down at a critical battery, a lock, sleep, restart, power off or log out that was refused or failed, or one logind never answered, which may still happen; the Session Surface opens by user action too, and shows a countdown but no refusal, so a refusal or no answer closes it.
+- Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers and Keys have no Activity of their own Kind. They open only by user action; a click on a Reminder opens Calendar.
+- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `session`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is the runtime's build function)
 
 ## Sub-surface
@@ -90,10 +100,17 @@ One kind of answer the Launcher finds for a query: apps, the calculator, emoji, 
 - **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, emoji), then each provider's own.
 - Emoji answer only a query starting with `:`, and apps answer none of those.
 - Kanade's own seam; no plugin API.
+- In a visit opened by `kanade dmenu`, the lines read from stdin are the only provider (choose mode); a press answers the waiting client instead of acting.
 - **Avoid:** plugin, source (a source posts to the island)
 
+## Reminder
+An Activity saying a calendar event is coming: its title and how long until it starts, or ends for an alarm on its end, with Open and Dismiss (ADR 0043). It comes from the event's own `VALARM`s that display or play a sound, or `calendar.reminder` minutes before a timed event with none. Persistent, Ongoing, Global, interrupting nothing; it goes 5 minutes after its event starts, an hour after it went off at most, or on Open or Dismiss.
+- **Invariant:** a reminder goes off once. Which went off is kept in a file under the state directory, keyed by event, occurrence and alarm, the default lead by a mark of its own, so a restart, a clock set or a new `calendar.reminder` never fires one again.
+- **Invariant:** a missed reminder goes off only until 5 minutes after its event starts; past that it is dropped, never shown late.
+- **Avoid:** alarm (the `VALARM` it comes from), alert, notification
+
 ## Satellite
-Small secondary indicator beside the primary island: timer, VPN, low battery.
+Small secondary indicator beside the primary island: timer, VPN, low battery, a Live Activity.
 - Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Stop.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 - **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops.
@@ -102,7 +119,7 @@ Small secondary indicator beside the primary island: timer, VPN, low battery.
 ## Hold
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
 - **Invariant:** only an island opened without a press holds. The hold ends when the island collapses.
-- **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; only keys the open Surface consumes restart the bound, and typing into a held Surface that does not type collapses it. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. A Pin ends it. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/archived/plan.md` §6.1.
+- **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; only keys the open Surface consumes restart the bound, and typing into a held Surface that does not type collapses it. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. A Pin ends it. The one exception is a visit a `kanade dmenu` waits on: as with any dmenu, its hold lasts until the user answers with Escape, a choice or another Surface, since Escape always reaches it. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/archived/plan.md` §6.1.
 - **Avoid:** hold for a Peek or Surface the user opened. That is the island's Presentation.
 
 ## Pin
@@ -130,12 +147,20 @@ One piece of liquid glass: the Island's body, the Dock, or one Banner, named by 
 - **Invariant:** a pane nothing draws in captures nothing; nothing captures while Kanade holds the lock, from niri saying it locked until the lock ends (ADR 0025).
 - **Avoid:** layer (a `glass::layer` widget), surface (a Surface is the Island's), rim picture
 
+## Idle stage
+What the `idle` Module does after the user has been idle for so long (ADR 0047): `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`, each optional. The Dim grace comes first: a click-through Overlay layer on every output fading toward dark until the lock, taken away at once by any input.
+- **Invariant:** the lock never waits on the Dim grace: a dim that cannot draw still locks on time, and a lock that fails is asked again while the user stays idle. An error never leaves an idle session unlocked, and with a lock stage the monitors going off and the suspend wait until it holds.
+- **Invariant:** an inhibitor holds every stage: an app's Wayland idle inhibitor (niri never says idle), a logind idle inhibitor (`BlockInhibited` naming `idle`), or caffeine. A logind that cannot be asked inhibits nothing.
+- **Invariant:** the stage scheduler takes time as an input, never reads a clock.
+- **Avoid:** screensaver, DPMS (niri powers monitors off), idle inhibit (an inhibitor is what holds the stages)
+
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules/catalog.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.
+- Every Module is on unless the config turns it off, but `idle`, which is off unless turned on, so an idle daemon like hypridle keeps working (ADR 0047).
 - **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its verbs with `module <name> is off`. A Service only it reads stays cold.
 - **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
 - A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).
-- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable.
+- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable. The Night Light switch likewise belongs to `night-light`, and is unavailable without `wlsunset`. The Limit Charge switch belongs to `battery`, and shows only while UPower says the battery supports a charge limit.
 - Which Modules run is decided once at start; a change takes a restart.
 - **Avoid:** plugin (not built), feature flag, Service (a `Service` is shared state a Module reads)

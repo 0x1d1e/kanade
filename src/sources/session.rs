@@ -322,6 +322,11 @@ pub fn spawn() {
     supervise::spawn("session", move || follow(&woken));
 }
 
+// whether the session thread was started, as the battery's thread may read before it is
+pub fn started() -> bool {
+    WAKE.get().is_some()
+}
+
 // false once the session thread is gone, as when it could not start
 fn wake() -> bool {
     WAKE.get().is_some_and(|wake| wake.send(()).is_ok())
@@ -410,6 +415,8 @@ pub fn doing(end: Ending) -> &'static str {
         Ending::Restart => "Restarting",
         Ending::PowerOff => "Powering off",
         Ending::LogOut => "Logging out",
+        Ending::Suspend => "Sleeping",
+        Ending::Hibernate => "Hibernating",
     }
 }
 
@@ -419,6 +426,8 @@ pub fn at_once(end: Ending) -> &'static str {
         Ending::Restart => "Restart now",
         Ending::PowerOff => "Power off now",
         Ending::LogOut => "Log out now",
+        Ending::Suspend => "Sleep now",
+        Ending::Hibernate => "Hibernate now",
     }
 }
 
@@ -475,7 +484,7 @@ fn next_tick(countdown: &Countdown, now: Instant) -> Instant {
  * a new countdown, in place of any already counting; refused when no thread would end it, or while
  * logind has not answered the last request
  */
-fn start(end: Ending, now: Instant) -> Result<(), String> {
+fn start(end: Ending, now: Instant) -> Result<u64, String> {
     let started = if wake() {
         let mut pending = pending();
 
@@ -509,7 +518,15 @@ fn start(end: Ending, now: Instant) -> Result<(), String> {
     drop(island);
 
     wake();
-    Ok(())
+    Ok(counting.serial)
+}
+
+/*
+ * a countdown to `end` asked by Kanade itself, as a critical battery does, from any thread; the
+ * serial names it, to cancel it by. A refusal shows on the island too
+ */
+pub fn count_down(end: Ending) -> Result<u64, String> {
+    start(end, Instant::now())
 }
 
 fn dismiss(serial: u64) {
@@ -518,7 +535,8 @@ fn dismiss(serial: u64) {
     }
 }
 
-fn cancel(serial: u64) {
+// the countdown `serial` names, cancelled; a stale serial cancels nothing
+pub fn cancel(serial: u64) {
     if pending().take(serial).is_some() {
         IslandService::write().withdraw(&counting_id(serial), Instant::now());
         wake();
@@ -541,6 +559,8 @@ fn end_now(serial: u64) {
         Ending::Restart => manager(&system()?, "Reboot"),
         Ending::PowerOff => manager(&system()?, "PowerOff"),
         Ending::LogOut => terminate(&system()?),
+        Ending::Suspend => manager(&system()?, "Suspend"),
+        Ending::Hibernate => manager(&system()?, "Hibernate"),
     };
 
     // refused, it shows on the island

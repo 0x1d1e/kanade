@@ -69,6 +69,9 @@ pub enum Action {
 
     // opens Controls, the Clipboard or Settings, as the island does
     Open(Destination),
+
+    // answers the dmenu waiting with the place of the line chosen
+    Choose(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]

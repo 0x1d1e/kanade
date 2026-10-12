@@ -13,15 +13,15 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::calendar::Calendars;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, fullscreen, google,
-    keys, launch, media, network,
+    apps, audio, battery, bluetooth, caffeine, caldav, calendar, capture, charge_limit, clipboard,
+    fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
-    notifications, osd, pipewire, power, privacy, radios, recording, seat, session, sleep, system,
-    timer, tray, wake, wallpaper, weather, windows, workspace,
+    notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, secrets,
+    session, sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings,
-    shadow, supervise, surfaces, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, idle, ipc, lock, reload,
+    settings, shadow, supervise, surfaces, view,
 };
 
 use super::{CORE, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -228,18 +228,34 @@ pub const ALL: &[Module] = &[
     },
     Module {
         name: "battery",
-        about: "Battery state and the low-battery Activity",
+        about: "Battery state, the low-battery Activity, its critical action and charge limit",
         requires: &[CORE],
-        optional: &[],
+        optional: &["session"],
         warns: None,
-        needs: &[Need {
-            on: Provider::Program(battery::POWER.program),
-            without: POLLS,
+        needs: &[
+            Need {
+                on: Provider::Program(battery::POWER.program),
+                without: POLLS,
+            },
+            Need {
+                on: Provider::SystemService(osd::UPOWER),
+                without: "no charge limit",
+            },
+        ],
+        settings: config::BATTERY,
+        verbs: &[Verb {
+            name: "battery",
+            about: "Limit the battery's charge, through UPower",
+            usage: || String::from("battery limit on|off|status"),
+            parse: |arguments| {
+                charge_limit::Request::parse(arguments)
+                    .map(Call::Battery)
+                    .ok_or(Unparsed::Usage)
+            },
         }],
-        settings: &[],
-        verbs: &[],
         start: |app| {
             supervise::spawn("battery", battery::follow);
+            supervise::spawn("charge-limit", charge_limit::follow);
             app
         },
     },
@@ -273,19 +289,27 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::TIMER,
         verbs: &[Verb {
             name: "timer",
-            about: "Start, pause, resume or cancel the timer",
+            about: "Start a timer or a pomodoro; pause, resume, skip or cancel it",
             usage: || {
-                String::from(
-                    "timer start <duration>|pause|resume|cancel
-  <duration>: like 90s, 25m or 1h30m, up to 24h",
+                format!(
+                    "timer start <duration>|pomodoro [<focus> <break> <long-break> <rounds>]|pause|resume|skip|cancel
+  <duration>, <focus>, <break>, <long-break>: like 90s, 25m or 1h30m, up to 24h
+  <rounds>: focus rounds before the long break, 1-{}
+  pomodoro: takes the lengths in order; those left off come from timer.pomodoro.*
+  skip: moves the pomodoro to its next phase at once",
+                    timer::ROUNDS
                 )
             },
             parse: |arguments| {
                 let request = match arguments {
                     ["start", length] => timer::duration(length).map(timer::Request::Start),
+                    ["pomodoro", lengths @ ..] => {
+                        timer::lengths(lengths).map(timer::Request::Pomodoro)
+                    }
+                    ["skip"] => Some(timer::Request::Skip(None)),
                     ["pause"] => Some(timer::Request::Pause),
                     ["resume"] => Some(timer::Request::Resume),
                     ["cancel"] => Some(timer::Request::Cancel),
@@ -296,6 +320,30 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             timer::spawn();
+            app
+        },
+    },
+    // live Activities a script, a build or a download posts with `kanade activity` (ADR 0042)
+    Module {
+        name: "live",
+        about: "Activities other programs show with `kanade activity`",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::LIVE,
+        verbs: &[Verb {
+            name: "activity",
+            about: "Show what a script or a command does as a live Activity",
+            usage: live::usage,
+            parse: |arguments| {
+                live::Request::parse(arguments)
+                    .map(Call::Live)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("live", live::follow);
             app
         },
     },
@@ -341,10 +389,10 @@ pub const ALL: &[Module] = &[
         verbs: &[],
         start: |app| app,
     },
-    // with both of those off it shows only the lock lights and airplane mode
+    // with both of those off it shows only the lock lights, airplane mode and keyboard layouts
     Module {
         name: "osd",
-        about: "Volume, brightness, keyboard backlight and mode feedback",
+        about: "Volume, brightness, keyboard backlight, mode and keyboard layout feedback",
         requires: &[CORE],
         optional: &["audio", "brightness"],
         warns: None,
@@ -370,7 +418,7 @@ pub const ALL: &[Module] = &[
                 without: "the keyboard backlight shows nothing",
             },
         ],
-        settings: &[],
+        settings: config::OSD,
         verbs: &[Verb {
             name: "osd",
             about: "Show the volume or brightness OSD",
@@ -398,6 +446,9 @@ pub const ALL: &[Module] = &[
             // a VT switch hands the keyboards and radios to another session, which shows nothing
             supervise::spawn("seat", seat::follow);
 
+            // a keyboard layout switch shows whatever else is on, heard from niri
+            niri::on_layout(osd::layout);
+
             // reads the volume fresh for `kanade osd volume`
             if reads.audio {
                 let asks = osd::volume_asks();
@@ -423,7 +474,7 @@ pub const ALL: &[Module] = &[
                 without: POLLS,
             },
         ],
-        settings: &[],
+        settings: config::NOTIFICATIONS,
         // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
         // `notification-surface`'s
         verbs: &[Verb {
@@ -632,8 +683,8 @@ pub const ALL: &[Module] = &[
         settings: config::WALLPAPER,
         verbs: &[Verb {
             name: "wallpaper",
-            about: "Set the wallpaper or show the current one",
-            usage: || String::from("wallpaper set <path>|status"),
+            about: "Set the wallpaper or one at random, show status, open its Surface",
+            usage: || String::from("wallpaper set <path>|shuffle|status"),
             parse: |arguments| {
                 wallpaper::Request::parse(arguments)
                     .map(Call::Wallpaper)
@@ -658,16 +709,28 @@ pub const ALL: &[Module] = &[
             without: "no copying a calculator value or an emoji",
         }],
         settings: &[],
-        verbs: &[Verb {
-            name: "launcher",
-            about: "Open or close the launcher",
-            usage: || String::from("launcher open|close|toggle"),
-            parse: |arguments| {
-                Command::surface(Surface::Launcher, arguments)
-                    .map(Call::Island)
-                    .ok_or(Unparsed::Usage)
+        verbs: &[
+            Verb {
+                name: "launcher",
+                about: "Open or close the launcher",
+                usage: || String::from("launcher open|close|toggle"),
+                parse: |arguments| {
+                    Command::surface(Surface::Launcher, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
             },
-        }],
+            Verb {
+                name: "dmenu",
+                about: "Choose one of the lines on stdin in the launcher",
+                usage: surfaces::launcher::choose::usage,
+                parse: |arguments| {
+                    surfaces::launcher::choose::Asked::parse(arguments)
+                        .map(Call::Dmenu)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+        ],
         start: |app| {
             // read now, so the Launcher opens on a list
             apps::refresh();
@@ -735,6 +798,31 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
+    // the events' reminders, on the island (ADR 0043)
+    Module {
+        name: "calendar-reminders",
+        about: "Reminders of calendar events on the island",
+        requires: &[CORE, "calendar"],
+        optional: &["calendar-surface"],
+        warns: None,
+        needs: &[],
+        settings: config::REMINDERS,
+        verbs: &[Verb {
+            name: "reminders",
+            about: "Dismiss the reminders shown, or say when the next is",
+            usage: || String::from("reminders dismiss|status"),
+            parse: |arguments| {
+                reminders::Request::parse(arguments)
+                    .map(Call::Reminders)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            reminders::spawn();
+            service::watch::<Calendars>(reminders::changed);
+            app
+        },
+    },
     /*
      * a Google account's calendars, synced into files the calendar reads (ADR 0016); idle until
      * signed in
@@ -773,6 +861,41 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("google-calendar", google::follow);
+            app
+        },
+    },
+    /*
+     * CalDAV accounts' calendars, synced read-only into files the calendar reads (ADR 0044); idle
+     * with none configured
+     */
+    Module {
+        name: "caldav",
+        about: "CalDAV accounts synced into local calendar files",
+        requires: &[CORE, "calendar"],
+        optional: &[],
+        warns: None,
+        needs: &[Need {
+            on: Provider::SessionService(secrets::SERVICE),
+            without: "no logging in, as nothing keeps the passwords",
+        }],
+        settings: config::CALDAV,
+        verbs: &[Verb {
+            name: "caldav",
+            about: "Log in to a CalDAV account, sync, log out",
+            usage: || {
+                String::from(
+                    "caldav login <name>|logout <name>|sync [<name>]|status
+  <name>: an account's name in calendar.caldav; login asks for its password",
+                )
+            },
+            parse: |arguments| {
+                caldav::Request::parse(arguments)
+                    .map(Call::CalDav)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("caldav", caldav::follow);
             app
         },
     },
@@ -844,6 +967,48 @@ pub const ALL: &[Module] = &[
             surfaces::clipboard::start();
             app
         },
+    },
+    // the wallpaper folder on the island as a grid of pictures: search, choose, shuffle
+    Module {
+        name: "wallpaper-surface",
+        about: "The wallpaper folder as a grid of pictures to choose from",
+        requires: &[CORE, "wallpaper"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "wallpaper",
+            about: "Set the wallpaper or one at random, show status, open its Surface",
+            usage: || String::from("wallpaper open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Wallpapers, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
+    // niri's keybinds on the island, read from its config, and the keys Kanade's Surfaces take
+    Module {
+        name: "keys-surface",
+        about: "niri's keybinds and Kanade's own keys, to look up",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "keys",
+            about: "Open the keybinds' Surface",
+            usage: || String::from("keys open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Keys, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
     },
     /*
      * screenshots, by niri; its stream, which the core follows, says when each is saved. Screen
@@ -933,6 +1098,42 @@ pub const ALL: &[Module] = &[
         start: |app| app,
     },
     /*
+     * warms the screen by `wlsunset` (ADR 0046), all day or from sunset to sunrise, as
+     * `night-light.mode` says; held by its own thread, so it dies with Kanade
+     */
+    Module {
+        name: "night-light",
+        about: "Warms the screen at night",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(night_light::WLSUNSET),
+                without: "no night light",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "no night light, which could outlive Kanade without it",
+            },
+        ],
+        settings: config::NIGHT_LIGHT,
+        verbs: &[Verb {
+            name: "night-light",
+            about: "Warm the screen at night",
+            usage: || String::from("night-light on|off|toggle|status"),
+            parse: |arguments| {
+                night_light::Request::parse(arguments)
+                    .map(Call::NightLight)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("night-light", night_light::follow);
+            app
+        },
+    },
+    /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at
      * start it locks again a session logind still counts as locked, which a crash left on niri's
      * red screen
@@ -1013,6 +1214,35 @@ pub const ALL: &[Module] = &[
         start: |app| {
             session::spawn();
             app
+        },
+    },
+    /*
+     * idle in the shell (ADR 0047): a dim grace, then the lock, screens off and suspend; off by
+     * default, as hypridle may already do it
+     */
+    Module {
+        name: "idle",
+        about: "Dims, locks, turns the screens off and suspends when idle",
+        requires: &[CORE],
+        optional: &["lock", "session"],
+        warns: None,
+        needs: &[Need {
+            on: Provider::SystemService("org.freedesktop.login1"),
+            without: "logind's idle inhibitors are not honored, caffeine's only directly, and nothing suspends",
+        }],
+        settings: config::IDLE,
+        verbs: &[Verb {
+            name: "idle",
+            about: "Show the idle stages and what inhibits them",
+            usage: || String::from("idle status"),
+            parse: |arguments| match arguments {
+                ["status"] => Ok(Call::IdleStatus),
+                _ => Err(Unparsed::Usage),
+            },
+        }],
+        start: |app| {
+            idle::spawn();
+            app.window_per_monitor(idle::overlay::overlay)
         },
     },
     // the Settings window, which writes only the settings file

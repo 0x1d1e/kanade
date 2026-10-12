@@ -42,6 +42,8 @@ pub enum At {
     Bluetooth,
     Microphone,
     Dnd,
+    NightLight,
+    ChargeLimit,
     Speaker,
 
     // the chevron at the end of the speaker's level, which opens the Audio sub-surface
@@ -118,30 +120,39 @@ impl Service for Focus {
 
 /*
  * a level's targets, row by row, each with where its middle is across the Surface from 0 to 1, so
- * Up and Down go to the nearest one. `rows` are a listing sub-surface's, top first, under its header
+ * Up and Down go to the nearest one. `rows` are a listing sub-surface's, top first, under its header,
+ * or at the top level the switches' third row
  */
 fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
     match sub {
-        None => vec![
-            vec![
-                (At::WifiSwitch, 0.08),
-                (At::Wifi, 0.3),
-                (At::BluetoothSwitch, 0.58),
-                (At::Bluetooth, 0.8),
-            ],
-            vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
-            vec![(At::Speaker, 0.45), (At::Audio, 0.97)],
-            vec![(At::Brightness, 0.5)],
-            Profile::ALL
-                .into_iter()
-                .zip(0..)
-                .map(|(profile, index)| {
-                    let middle = (index as f32 + 0.5) / Profile::ALL.len() as f32;
+        // `rows` are the switches' third row, which has the charge limit only where it is supported
+        None => {
+            let mut grid = vec![
+                vec![
+                    (At::WifiSwitch, 0.08),
+                    (At::Wifi, 0.3),
+                    (At::BluetoothSwitch, 0.58),
+                    (At::Bluetooth, 0.8),
+                ],
+                vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
+            ];
 
-                    (At::Profile(profile), middle)
-                })
-                .collect(),
-        ],
+            grid.extend(rows);
+            grid.extend([
+                vec![(At::Speaker, 0.45), (At::Audio, 0.97)],
+                vec![(At::Brightness, 0.5)],
+                Profile::ALL
+                    .into_iter()
+                    .zip(0..)
+                    .map(|(profile, index)| {
+                        let middle = (index as f32 + 0.5) / Profile::ALL.len() as f32;
+
+                        (At::Profile(profile), middle)
+                    })
+                    .collect(),
+            ]);
+            grid
+        }
         Some(Subsurface::Wifi | Subsurface::Bluetooth) => {
             let mut grid = vec![vec![(At::Back, 0.0), (At::Radio, 1.0)]];
 

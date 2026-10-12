@@ -320,7 +320,7 @@ pub const UPRIGHT_TRAY: Shape = upright_tray(TRAY_SLOTS, TimePeek::ALL);
 
 pub const CONTROLS: Shape = Shape {
     width: 440.0,
-    height: 290.0,
+    height: 330.0,
     radius: 32.0,
 };
 
@@ -519,9 +519,13 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
         ) => CONTROLS,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,
-        Presentation::Expanded(Surface::Notifications | Surface::Launcher | Surface::Clipboard) => {
-            largest
-        }
+        Presentation::Expanded(
+            Surface::Notifications
+            | Surface::Launcher
+            | Surface::Clipboard
+            | Surface::Wallpapers
+            | Surface::Keys,
+        ) => largest,
     }
 }
 

@@ -1,5 +1,6 @@
 //! Caffeine (#141, docs/design.md Caffeine, ADR 0011): `kanade caffeine on [duration]` keeps the
-//! session from going idle, so nothing that waits on idle, like hypridle, locks or suspends it;
+//! session from going idle, so nothing that waits on idle, like the idle Module or hypridle, locks
+//! or suspends it;
 //! `off` lets it go idle again and `toggle` does whichever it is not. While on, a Persistent Ongoing
 //! Caffeine Activity says so and offers Turn off.
 //!
@@ -213,6 +214,11 @@ pub enum Settled {
     Lost(String),
 }
 
+// whether caffeine holds its inhibitor now
+pub fn holding() -> bool {
+    CAFFEINE.locked().holding.is_some()
+}
+
 // what the shell answers an `on`: its serial, to wait on through `status`
 pub fn starting(reply: &str) -> Option<u64> {
     reply.strip_prefix("starting #")?.parse().ok()
@@ -354,6 +360,7 @@ impl Caffeine {
 
         let length = holding.length;
         release(self.holding.replace(holding));
+        crate::idle::look();
 
         // under the lock, so its end, which takes it, posts after
         IslandService::write().post(on(serial, length), Instant::now());
@@ -403,6 +410,7 @@ impl Caffeine {
 
         if self.holding.is_some() {
             release(self.holding.take());
+            crate::idle::look();
             IslandService::write().withdraw(&id(), Instant::now());
         }
     }
@@ -413,6 +421,7 @@ impl Caffeine {
      */
     fn end(&mut self, serial: u64, said: VecDeque<String>) -> Option<Result<(), String>> {
         let mut holding = self.holding.take_if(|holding| holding.serial == serial)?;
+        crate::idle::look();
 
         let ended = ended(holding.child.wait(), said);
 

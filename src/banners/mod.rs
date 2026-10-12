@@ -104,6 +104,20 @@ impl Service for Banners {
         let receiver = NUDGE.receiver();
 
         loop {
+            /*
+             * every change to the stack nudges, so a Banner gone whose notification stays out of the
+             * history closes it here, past the Banners' lock
+             */
+            let left = if Self::read().stack.has_left() {
+                Self::write().stack.take_left()
+            } else {
+                Vec::new()
+            };
+
+            for (id, version) in left {
+                Notifications::expire(id, version);
+            }
+
             // no deadline waits forever, recv_timeout falls back to recv on overflow
             let wait = Self::read()
                 .stack
@@ -124,6 +138,7 @@ impl Service for Banners {
                 .is_some_and(|deadline| deadline <= now)
             {
                 Self::write().stack.expire(now);
+                nudge();
             }
         }
     }
@@ -202,6 +217,7 @@ impl Banner {
     pub fn of(notification: &Notification) -> Banner {
         Banner {
             id: notification.id(),
+            version: notification.version(),
             toast: notifications::toast(notification),
             urgency: notification.urgency(),
             default: notification.has_default_action(),
@@ -211,11 +227,14 @@ impl Banner {
                 .take(MOST_ACTIONS)
                 .map(|action| (action.key().to_owned(), action.label().to_owned()))
                 .collect(),
+            history: notification.effects().history,
+            bypass_dnd: notification.effects().bypass_dnd,
+            timeout: notification.effects().timeout,
         }
     }
 }
 
-// DND came on: only Critical Banners stay
+// DND came on: only Critical Banners stay, and those whose rule bypasses DND
 pub fn silence(now: Instant) {
     if modules::on("banners") && Banners::read().stack.silences() {
         Banners::write().stack.silence(now);
@@ -1117,10 +1136,14 @@ fn tall(text: &Text) -> f32 {
 fn tallest() -> f32 {
     let mut banner = Banner {
         id: 0,
+        version: 0,
         toast: Default::default(),
         urgency: Urgency::Normal,
         default: false,
         actions: vec![(String::new(), String::new())],
+        history: true,
+        bypass_dnd: false,
+        timeout: None,
     };
     banner.toast.body = "Ag ".repeat(400);
 

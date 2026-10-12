@@ -4,10 +4,12 @@
 use std::time::Instant;
 
 use crate::sources::notifications::Notifications;
+use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
 use crate::dock;
+use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::{Effect, IslandService};
@@ -23,25 +25,34 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{apps, caffeine, fullscreen, google, session, sleep, wallpaper, weather};
+use crate::sources::{
+    apps, caffeine, caldav, charge_limit, fullscreen, google, live, night_light, reminders,
+    session, sleep, wallpaper, weather,
+};
 use crate::supervise;
+use crate::surfaces::launcher;
 
-pub fn answer(arguments: &[String]) -> String {
+pub fn answer(arguments: &[String], reply: IpcReply) {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
-    let reply = match cli::parse(&words) {
+    let call = match cli::parse(&words) {
         // a client from another Kanade build may send what this one does not know
-        Err(Unparsed::Usage) => Reply::Refused(String::from(
+        Err(Unparsed::Usage) => Err(Reply::Refused(String::from(
             "not a command of this shell; run `kanade help` for what it takes",
-        )),
-        Err(Unparsed::Invalid(invalid)) => Reply::Refused(invalid.to_string()),
+        ))),
+        Err(Unparsed::Invalid(invalid)) => Err(Reply::Refused(invalid.to_string())),
         Ok((module, _)) if !modules::on(module.name) => {
-            Reply::Refused(format!("module {} is off", module.name))
+            Err(Reply::Refused(format!("module {} is off", module.name)))
         }
-        Ok((_, call)) => run(call),
+        Ok((_, call)) => Ok(call),
     };
 
-    reply.encode()
+    match call {
+        // answered once the user chooses or dismisses it, so the client waits on the user
+        Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
+        Ok(call) => reply.send(&run(call).encode()),
+        Err(refused) => reply.send(&refused.encode()),
+    }
 }
 
 fn run(call: Call) -> Reply {
@@ -53,6 +64,9 @@ fn run(call: Call) -> Reply {
             timer::request(request);
             Reply::Done(String::new())
         }
+        Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // `answer` keeps it waiting
+        Call::Dmenu(_) => Reply::Refused(String::from("dmenu waits on the Launcher")),
         Call::ClearNotifications => {
             Notifications::clear();
             Reply::Done(String::new())
@@ -73,12 +87,26 @@ fn run(call: Call) -> Reply {
         Call::Caffeine(request) => {
             caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        // through the settings file's writes, which the Settings window shares
+        Call::NightLight(request) => {
+            night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // UPower is asked on a thread of its own, answered by serial (`charge_limit::request`)
+        Call::Battery(request) => {
+            charge_limit::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
         // handed to the wallpaper's thread, as awww takes a while; `kanade` waits on it
         Call::Wallpaper(request) => {
             wallpaper::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // handed to the reminders' thread, so this answers at once
+        Call::Reminders(request) => {
+            reminders::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // the sync is on the CalDAV thread, so this answers at once
+        Call::CalDav(request) => caldav::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the fetch is on the weather's thread, so this answers at once
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
@@ -86,6 +114,7 @@ fn run(call: Call) -> Reply {
         // returns before niri locks, which the client waits for (`lock status`)
         Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::LockStatus => Reply::Done(lock::status()),
+        Call::IdleStatus => Reply::Done(idle::status()),
         // logind is asked on a thread of its own
         Call::Session(leave) => session::request(leave).map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())
@@ -156,6 +185,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("google-calendar") {
         lines.push(google::status());
+    }
+    if modules::on("caldav") {
+        lines.extend(caldav::status());
     }
     if modules::on("weather") {
         lines.push(weather::status());

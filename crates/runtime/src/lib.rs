@@ -27,6 +27,7 @@ mod widgets;
 mod window;
 
 pub mod backdrop;
+pub mod idle;
 pub mod queue;
 pub mod service;
 pub mod worker;
@@ -34,7 +35,10 @@ pub mod worker;
 pub use animation::{Animation, Blend, Easing, request_frame};
 pub use app::App;
 pub use full::Full;
-pub use graphics::image::draw_svg;
+pub use graphics::image::{
+    Format as ImageFormat, ImageState, MOST_PIXELS, decode as decode_image, draw_svg,
+    format as image_format,
+};
 pub use graphics::{Cap, Color, Gradient, Weight};
 pub use input::cursor_names::{
     Crosshair, Default, Grab, Grabbing, Move, NotAllowed, Pointer, ResizeBottom, ResizeBottomLeft,
@@ -42,7 +46,7 @@ pub use input::cursor_names::{
     ResizeTopRight, ResizeVertical, Text, Wait,
 };
 pub use input::{Button, Cursor, Key, Point, Scroll};
-pub use ipc::{IpcCall, ipc_socket};
+pub use ipc::{IpcCall, IpcReply, ipc_socket};
 pub use layer_window::{
     Horizontal, InputArea, Keyboard, Layer, LayerWindow, Margin, Vertical, WindowSize, Zone,
 };

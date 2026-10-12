@@ -5,7 +5,7 @@
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
 //! starts and the island closes; a value or an emoji is copied, or a wallpaper set, and the island
 //! closes once it is, or says it was not. It says when the apps are still being found and when
-//! nothing matches.
+//! nothing matches. `kanade dmenu` opens it on a script's lines alone (`choose`).
 
 use std::sync::Arc;
 use std::thread;
@@ -37,6 +37,7 @@ use super::{Outline, controls, store};
 
 mod apps;
 mod calculator;
+pub mod choose;
 mod destinations;
 mod emoji;
 mod provider;
@@ -44,6 +45,7 @@ mod wallpaper;
 
 use apps::Apps as AppsProvider;
 use calculator::Calculator;
+use choose::{Choices, Choosing};
 use destinations::{Destination, Destinations};
 use emoji::Emoji;
 use provider::{Action, Answer, Mark};
@@ -152,7 +154,7 @@ impl Search {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Wallpaper(_) => Some(format!("Not set: {why}")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
-            Action::Launch(_) => None,
+            Action::Launch(_) | Action::Choose(_) => None,
         }
     }
 
@@ -272,7 +274,7 @@ pub fn fit() {
         // a new visit lists every app
         (
             asks(apps.list().len()),
-            asks(found(apps.list(), &query).len()),
+            asks(found(visit, apps.list(), &query).len()),
         )
     };
 
@@ -287,6 +289,8 @@ pub fn start() {
     service::watch::<Radios>(fit);
     service::watch::<Apps>(fit);
     service::watch::<Search>(fit);
+    service::watch::<Choosing>(fit);
+    service::watch::<IslandService>(choose::follow);
     fit();
 }
 
@@ -373,12 +377,18 @@ fn destinations() -> Destinations {
         wifi: controls && radios.wifi,
         bluetooth: controls && radios.bluetooth,
         clipboard: modules::on("clipboard-surface"),
+        wallpapers: modules::on("wallpaper-surface"),
+        keys: modules::on("keys-surface"),
         settings: modules::on("settings"),
     }
 }
 
-// what the providers find for the query, best first
-fn found(apps: &[App], query: &str) -> Vec<Answer> {
+// what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit
+fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
+    if let Some((_, choices)) = choose::of(visit) {
+        return provider::ranked(&[&Choices(&choices)], query);
+    }
+
     // listed only for a wallpaper search, so no other query stats the directory
     let (images, current) = if wallpapers(query) {
         (sources::wallpaper::images(), sources::wallpaper::current())
@@ -407,8 +417,9 @@ fn found(apps: &[App], query: &str) -> Vec<Answer> {
 pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let apps = Apps::read();
     let search = Search::read().of(visit);
-    let found = found(apps.list(), &search.query);
+    let found = found(visit, apps.list(), &search.query);
     let search = search.bounded(found.len());
+    let choosing = choose::of(visit);
 
     let query = search.query.trim();
     let emoji = query.starts_with(emoji::PREFIX);
@@ -416,6 +427,11 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let list: Box<dyn Widget> = if !found.is_empty() {
         Box::new(list(monitor, &found, &search))
+    } else if choosing.is_some() {
+        Box::new(state(
+            "No matching choices",
+            &format!("Nothing found for \u{201c}{query}\u{201d}"),
+        ))
     } else if wallpapers && sources::wallpaper::images().is_empty() {
         Box::new(state(
             "No wallpapers",
@@ -446,7 +462,14 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(field(&search.query)) as Box<dyn Widget>,
+                Box::new(field(
+                    &search.query,
+                    match &choosing {
+                        Some((Some(prompt), _)) => prompt,
+                        Some((None, _)) => "Search choices",
+                        None => placeholder(),
+                    },
+                )) as Box<dyn Widget>,
                 list,
             ])
             .width(width())
@@ -472,7 +495,7 @@ fn directory() -> String {
  * a search icon, what is typed with the caret after it, or what to type faded; a query wider than
  * the field shows its end, where the typing is
  */
-fn field(query: &str) -> Rectangle {
+fn field(query: &str, placeholder: &str) -> Rectangle {
     let room = width() - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
 
     let caret = Rectangle::new()
@@ -484,10 +507,18 @@ fn field(query: &str) -> Rectangle {
         Box::new(
             Row::new(children![
                 caret,
-                Text::new(placeholder())
-                    .size(QUERY)
-                    .color(theme::island().on_surface_variant)
-                    .weight(theme::text::MEDIUM),
+                // a dmenu's prompt may be wider than the field
+                Rectangle::new()
+                    .width(room)
+                    .height(QUERY + 4.0)
+                    .align_child(Start, Center)
+                    .child(
+                        Text::new(placeholder)
+                            .size(QUERY)
+                            .color(theme::island().on_surface_variant)
+                            .weight(theme::text::MEDIUM)
+                            .elide(),
+                    ),
             ])
             .align(Center),
         )
@@ -778,7 +809,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let search = Search::read().of(visit);
-    let found = found(Apps::read().list(), &search.query);
+    let found = found(visit, Apps::read().list(), &search.query);
 
     let Some((mut search, presses)) = search.bounded(found.len()).step(key, found.len()) else {
         return false;
@@ -809,6 +840,12 @@ pub fn key(monitor: &str, key: Key) -> bool {
  * wallpaper once it is done. One of those at a time
  */
 fn press(monitor: &str, visit: u64, action: Action) {
+    if let Action::Choose(index) = action {
+        choose::chosen(visit, index);
+        view::collapse(monitor);
+        return;
+    }
+
     if let Action::Launch(launch) = &action {
         let launch = launch.clone();
 
@@ -851,13 +888,14 @@ fn press(monitor: &str, visit: u64, action: Action) {
         Action::Copy(text) => copy(text.clone(), done),
         Action::Wallpaper(path) => sources::wallpaper::set(
             path.clone(),
+            None,
             Some(Box::new(move |set: Result<(), Unset>| {
                 done(set.map_err(|unset| String::from(unset.brief())))
             })),
         )
         .map(drop)
         .map_err(|unset| String::from(unset.brief())),
-        Action::Launch(_) | Action::Open(_) => Ok(()),
+        Action::Launch(_) | Action::Open(_) | Action::Choose(_) => Ok(()),
     };
 
     if let Err(why) = started {
@@ -877,6 +915,14 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
             .ok_or("Controls did not open"),
         Destination::Clipboard => {
             IslandService::write().open(monitor, Surface::Clipboard, Instant::now());
+            Ok(())
+        }
+        Destination::Wallpapers => {
+            IslandService::write().open(monitor, Surface::Wallpapers, Instant::now());
+            Ok(())
+        }
+        Destination::Keys => {
+            IslandService::write().open(monitor, Surface::Keys, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {
@@ -928,7 +974,7 @@ fn wheel(lines: f32) {
     let visit = IslandService::read().visit();
 
     let search = Search::read().of(visit);
-    let count = found(Apps::read().list(), &search.query).len();
+    let count = found(visit, Apps::read().list(), &search.query).len();
 
     store(search.bounded(count).wheel(lines, count));
 }

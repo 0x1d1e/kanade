@@ -11,6 +11,8 @@ Mod+Alt+T hotkey-overlay-title="Island: Tray" { spawn "kanade" "tray" "toggle"; 
 Mod+Alt+V hotkey-overlay-title="Island: Clipboard" { spawn "kanade" "clipboard" "toggle"; }
 Mod+Alt+D hotkey-overlay-title="Island: Calendar" { spawn "kanade" "calendar" "toggle"; }
 Mod+Alt+W hotkey-overlay-title="Island: Weather" { spawn "kanade" "weather" "toggle"; }
+Mod+Alt+B hotkey-overlay-title="Island: Wallpapers" { spawn "kanade" "wallpaper" "toggle"; }
+Mod+Alt+Slash hotkey-overlay-title="Island: Keys" { spawn "kanade" "keys" "toggle"; }
 Mod+Alt+P hotkey-overlay-title="Island: Session" { spawn "kanade" "session" "menu"; }
 Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island" "collapse"; }
 ```
@@ -27,7 +29,9 @@ Mod+Alt+K hotkey-overlay-title="Caffeine" { spawn "kanade" "caffeine" "toggle"; 
 Mod+Alt+L hotkey-overlay-title="Lock" { spawn "kanade" "lock"; }
 ```
 
-An idle daemon locks the same way. For hypridle, in `~/.config/hypr/hypridle.conf`:
+Kanade can lock on idle itself: turn on the `idle` Module (`kanade module enable idle`, then restart Kanade) and stop any idle daemon. After `idle.dim` seconds the screens fade toward dark, and any input brings them back; at `idle.lock` the session locks, then `idle.screen_off` turns the monitors off and `idle.suspend` suspends, each 0 for never, see [Configuration](Configuration.md). A video playing, caffeine or any logind idle inhibitor holds every stage. `kanade idle status` says how it stands, and `kanade doctor` warns when hypridle runs beside it.
+
+With the Module off, as by default, an idle daemon locks the same way as the keybind. For hypridle, in `~/.config/hypr/hypridle.conf`:
 
 ```ini
 general {
@@ -40,7 +44,7 @@ listener {
 }
 ```
 
-Kanade locks before sleep on its own, so no `before_sleep_cmd` is needed, and caffeine keeps hypridle from locking or suspending. An explicit suspend still locks while caffeine is on. `kanade lock` exits 0 only once niri holds the lock for that call and no password typed since was accepted, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 at once when a password typed on the lock screen unlocks it or is being checked as it is called, and with 1 when niri refuses the lock, as while another locker holds the session. On the lock screen, type the password and press Enter.
+Kanade locks before sleep on its own, so no `before_sleep_cmd` is needed, and caffeine keeps the `idle` Module or hypridle from locking or suspending. An explicit suspend still locks while caffeine is on. `kanade lock` exits 0 only once niri holds the lock for that call and no password typed since was accepted, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 at once when a password typed on the lock screen unlocks it or is being checked as it is called, and with 1 when niri refuses the lock, as while another locker holds the session. On the lock screen, type the password and press Enter.
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
 
@@ -48,8 +52,10 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 |---|---|
 | Any Surface | Escape collapses. A pinned island gives the keyboard back, so the `collapse` bind closes it |
 | Notifications | arrows and Tab move the ring, Enter or Space presses what it is on, Backspace dismisses the card |
-| Launcher | typing searches apps, a sum like `2+2*3`, emoji after `:` (`:smile`), or a wallpaper after `@` (`@moon`), or where Kanade goes (`wifi`, `bluetooth`, `clipboard`, a setting like `magnification` or a page like `dock settings`); Up/Down/Home/End move the selection, Enter starts the app, copies the value or emoji, sets the wallpaper, or opens Controls, the Clipboard or Settings |
+| Launcher | typing searches apps, a sum like `2+2*3`, emoji after `:` (`:smile`), or a wallpaper after `@` (`@moon`), or where Kanade goes (`wifi`, `bluetooth`, `clipboard`, `wallpapers`, `keys`, a setting like `magnification` or a page like `dock settings`); Up/Down/Home/End move the selection, Enter starts the app, copies the value or emoji, sets the wallpaper, or opens Controls, the Clipboard, Wallpapers, Keys or Settings |
 | Clipboard | typing searches, arrows, Tab, Home and End move the ring, Enter copies the entry, deletes it or clears the history, whichever the ring is on |
+| Wallpapers | typing searches file names, arrows, Tab, Home and End move the ring over the pictures and Shuffle, Enter sets the one the ring is on, or one at random; it stays open to try another |
+| Keys | typing searches niri's keybinds and the keys on this page, Up/Down, Tab, Home and End move the ring through them |
 | Calendar | Left/Right move a day, Up/Down a week, `n`/`p` a month, Home or `t` go to today; Tab or Enter enters the day's agenda, where Up/Down move through its events; Tab, Enter or Escape leave it |
 | Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
 | Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |

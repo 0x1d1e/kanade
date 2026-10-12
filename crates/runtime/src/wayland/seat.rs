@@ -8,7 +8,9 @@ impl SeatHandler for WaylandState {
         &mut self.seat
     }
 
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {
+        self.follow_idle();
+    }
 
     fn new_capability(
         &mut self,
@@ -80,5 +82,8 @@ impl SeatHandler for WaylandState {
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {}
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {
+        self.forget_idle();
+        self.follow_idle();
+    }
 }

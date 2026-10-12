@@ -25,10 +25,18 @@ pub enum Kind {
     Caffeine,
     Session,
     Mode,
+
+    // posted by another program through `kanade activity` (ADR 0042)
+    Live,
+
+    NightLight,
+
+    // a calendar event about to start (ADR 0043)
+    Reminder,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 14] = [
+    pub const ALL: [Kind; 17] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -43,6 +51,9 @@ impl Kind {
         Kind::Caffeine,
         Kind::Session,
         Kind::Mode,
+        Kind::Live,
+        Kind::NightLight,
+        Kind::Reminder,
     ];
 
     // as IPC names it
@@ -62,6 +73,9 @@ impl Kind {
             Kind::Caffeine => "caffeine",
             Kind::Session => "session",
             Kind::Mode => "mode",
+            Kind::Live => "live",
+            Kind::NightLight => "night-light",
+            Kind::Reminder => "reminder",
         }
     }
 
@@ -236,7 +250,8 @@ pub enum Detail {
 
     Notification(Toast),
 
-    Timer(Countdown),
+    // a pomodoro's when it is one
+    Timer(Countdown, Option<Round>),
 
     Screenshot(Shot),
 
@@ -247,6 +262,13 @@ pub enum Detail {
     Session(Leaving),
 
     Mode(Mode),
+
+    // a keyboard layout switched to; in a mode's place, as one OSD shows either
+    Layout(Layout),
+    Live(Job),
+    // why the night light's wlsunset is not running
+    NightLight(String),
+    Reminder(Reminder),
 }
 
 impl Detail {
@@ -260,32 +282,55 @@ impl Detail {
             Detail::Battery(_) => Some(Kind::Battery),
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
-            Detail::Timer(_) => Some(Kind::Timer),
+            Detail::Timer(..) => Some(Kind::Timer),
             Detail::Screenshot(_) => Some(Kind::Screenshot),
             Detail::Recording(_) => Some(Kind::Recording),
             Detail::Caffeine(_) => Some(Kind::Caffeine),
             Detail::Session(_) => Some(Kind::Session),
-            Detail::Mode(_) => Some(Kind::Mode),
+            Detail::Mode(_) | Detail::Layout(_) => Some(Kind::Mode),
+            Detail::Live(_) => Some(Kind::Live),
+            Detail::NightLight(_) => Some(Kind::NightLight),
+            Detail::Reminder(_) => Some(Kind::Reminder),
         }
     }
 
     /*
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
      * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
-     * workspace switch moves the pager's mark, a mode turned back flips its word. A new track
-     * stays in place too, but dissolves
+     * workspace switch moves the pager's mark, a mode turned back flips its word, a live job's
+     * bar moves, a reminder counts down to its event. A new track stays in place too, but
+     * dissolves; a job that ends crossfades
      */
     pub fn is_level(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Detail::Volume(_)
-                | Detail::Brightness(_)
-                | Detail::Keyboard(_)
-                | Detail::Battery(_)
-                | Detail::Workspace(_)
-                | Detail::Mode(_)
-        )
+            | Detail::Brightness(_)
+            | Detail::Keyboard(_)
+            | Detail::Battery(_)
+            | Detail::Workspace(_)
+            | Detail::Mode(_)
+            | Detail::Layout(_)
+            | Detail::Reminder(_) => true,
+            Detail::Live(job) => job.ended.is_none(),
+            _ => false,
+        }
     }
+}
+
+/*
+ * a calendar event about to start, or the reminders past the few shown at once, as its source
+ * words them (ADR 0043)
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reminder {
+    // the event's title, or how many more there are
+    pub title: String,
+
+    // when it starts and how far off that is, like "09:30, in 15 min"
+    pub when: String,
+
+    // how far off in short, like "15m", for a Satellite
+    pub short: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -341,6 +386,16 @@ impl Mode {
             Mode::CapsLock(on) | Mode::NumLock(on) | Mode::Airplane(on) => on,
         }
     }
+}
+
+// the keyboard layout switched to
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    // a few capitals for the lamp, like "US"
+    pub short: String,
+
+    // as XKB names it, like "English (US)"
+    pub name: String,
 }
 
 // a battery running low, from where it shows until the charger goes in
@@ -441,15 +496,20 @@ pub enum Leave {
     Ending(Ending),
 }
 
-// a leave that ends what is open, so it is asked only once a countdown runs out
+/*
+ * a leave asked only once a countdown runs out: a restart, power off or log out, which end what is
+ * open, or the sleep or hibernation a critical battery asks for, which the user may not be there for
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
     Restart,
     PowerOff,
     LogOut,
+    Suspend,
+    Hibernate,
 }
 
-// a restart, power off or log out counting down, or one asked that did not happen or may yet
+// an Ending counting down, or one asked that did not happen or may yet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Leaving {
     /*
@@ -480,6 +540,30 @@ pub enum Leaving {
         leave: Leave,
         serial: String,
     },
+}
+
+/*
+ * what another program said of its live Activity (`kanade activity`, ADR 0042), plain text already
+ * bounded and stripped of control characters
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Job {
+    pub title: String,
+
+    // a second line, empty for none
+    pub detail: String,
+
+    // done so far in thousandths, none while it does not say
+    pub progress: Option<u16>,
+
+    // none while it runs
+    pub ended: Option<Ended>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    Done,
+    Failed,
 }
 
 // how the machine reaches the network, as NetworkManager's primary connection says
@@ -545,6 +629,22 @@ impl Countdown {
     pub fn running_out(&self) -> Option<Instant> {
         self.paused.is_none().then_some(self.ends)
     }
+}
+
+// what a pomodoro's countdown is for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Focus,
+    Break,
+    LongBreak,
+}
+
+// a pomodoro's phase, in round `round` of `rounds`, from 1
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Round {
+    pub phase: Phase,
+    pub round: u32,
+    pub rounds: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -756,7 +856,10 @@ mod tests {
                 Interrupt::AutoExpand(OSD),
             );
 
-            if matches!(kind, Kind::Media | Kind::Notification | Kind::Session) {
+            if matches!(
+                kind,
+                Kind::Media | Kind::Notification | Kind::Session | Kind::Reminder
+            ) {
                 assert!(activity.is_ok(), "{kind:?}");
             } else {
                 assert_eq!(

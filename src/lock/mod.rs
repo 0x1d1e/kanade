@@ -552,6 +552,11 @@ fn heard(news: News) {
     HEARD.notify_all();
 }
 
+// whether the session is locked, its lock on its way, or a password being checked on it
+pub fn holds() -> bool {
+    matches!(requests().holding(), Holding::Held | Holding::Checking)
+}
+
 /*
  * locks the session before it sleeps (`crate::sleep`), after `sleeping` shut the gate and dropped
  * a check; only logind opens and shuts it, so a wake heard before this runs stays heard. Asks for

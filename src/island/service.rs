@@ -144,6 +144,9 @@ struct Island {
     // the pointer is in the input region
     inside: bool,
 
+    // the visit a `kanade dmenu` waits on: neither the hold nor the grace collapses it
+    waits: Option<u64>,
+
     /*
      * the small form a morph took from under the pointer, its area held in the input region until
      * the pointer is over the body it heads for or leaves, so a body growing elsewhere along a side
@@ -552,6 +555,24 @@ impl IslandService {
     // right clicked to stay open after the pointer leaves
     pub fn pinned(&self, monitor: &str) -> bool {
         self.presentations.pinned(monitor)
+    }
+
+    /*
+     * a script waits on the Surface open in this visit, as `kanade dmenu` does: it stays open until
+     * the user answers, with Escape, a choice or another Surface, however long they take
+     */
+    pub fn wait(&mut self, monitor: &str) {
+        let visit = self.visit();
+        let island = self.island(monitor);
+        island.waits = Some(visit);
+
+        if island.due.take().is_some() {
+            nudge();
+        }
+    }
+
+    fn waits(&self, monitor: &str) -> bool {
+        self.get(monitor).waits == Some(self.visit())
     }
 
     // opened without a press, so it holds the keyboard until it collapses
@@ -1071,6 +1092,7 @@ impl IslandService {
 
         // nobody opened an AutoExpand's Surface, so the pointer leaving it is not a pointer leaving
         let pinned = self.pinned(monitor)
+            || self.waits(monitor)
             || self
                 .auto
                 .as_ref()
@@ -1534,6 +1556,30 @@ mod tests {
         assert!(!island.expanded(MONITOR));
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
         assert_eq!(island.deadline(), None);
+    }
+
+    // a dmenu waits for its user: no hold or grace dismisses it, Escape does, and the next
+    // opening holds again
+    #[test]
+    fn a_waiting_island_outlasts_the_hold_and_the_grace() {
+        let mut island = IslandService::new();
+        let now = Instant::now();
+
+        island.open(MONITOR, Surface::Launcher, now);
+        island.wait(MONITOR);
+        assert_eq!(island.deadline(), None);
+
+        island.hover(MONITOR, true, true, now + ms(10));
+        island.hover(MONITOR, false, true, now + ms(20));
+        island.expire(now + HOLD + GRACE);
+        assert!(island.expanded(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+
+        island.input(MONITOR, Input::Collapse, now + HOLD + GRACE);
+        assert!(!island.expanded(MONITOR));
+
+        island.open(MONITOR, Surface::Launcher, now + HOLD + GRACE);
+        assert_eq!(island.deadline(), Some(now + HOLD + GRACE + HOLD));
     }
 
     #[test]

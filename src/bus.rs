@@ -169,15 +169,27 @@ impl Bus {
             .expect("failed to watch signals: bad signal name")
             .build();
 
-        self.messages(rule.into_owned()).map(|message| {
-            let header = message.header();
+        self.messages(rule.into_owned()).map(signal)
+    }
 
-            Signal {
-                sender: header.sender().map(ToString::to_string).unwrap_or_default(),
-                path: header.path().map(ToString::to_string).unwrap_or_default(),
-                arguments: message_values(&message),
-            }
-        })
+    /// As `signals`, only those the object at `path` sends, so other objects' never wake the thread.
+    pub fn signals_from(
+        &self,
+        path: &str,
+        interface: &str,
+        name: &str,
+    ) -> impl Iterator<Item = Signal> + use<> {
+        let rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .path(path)
+            .expect("failed to watch signals: bad path")
+            .interface(interface)
+            .expect("failed to watch signals: bad interface name")
+            .member(name)
+            .expect("failed to watch signals: bad signal name")
+            .build();
+
+        self.messages(rule.into_owned()).map(signal)
     }
 
     /// Each call to `path` and `interface`, waited for; watch before taking the name, so no
@@ -241,6 +253,16 @@ impl Bus {
             .into_iter()
             .flatten()
             .filter_map(Result::ok)
+    }
+}
+
+fn signal(message: Message) -> Signal {
+    let header = message.header();
+
+    Signal {
+        sender: header.sender().map(ToString::to_string).unwrap_or_default(),
+        path: header.path().map(ToString::to_string).unwrap_or_default(),
+        arguments: message_values(&message),
     }
 }
 

@@ -16,14 +16,18 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{self, BufRead, Read};
+use std::hash::{BuildHasher, RandomState};
+use std::io::{self, BufRead};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
 use inotify::{Inotify, WatchDescriptor, WatchMask};
-use kanade_runtime::{MutexExt, queue::Queue, service::Service};
+use kanade_runtime::{MOST_PIXELS, MutexExt, queue::Queue, service::Service};
+
+// what the lock screen decodes, svg told by name and the rest by how they start
+pub use kanade_runtime::{ImageFormat as Format, image_format as format};
 
 use super::wake;
 use crate::{appearance, config, modules, supervise};
@@ -102,7 +106,18 @@ impl fmt::Display for Unset {
 struct Job {
     serial: u64,
     path: PathBuf,
+    from: Option<From>,
     done: Option<Done>,
+}
+
+/*
+ * where on the screen a transition that grows or shrinks a circle centers it, as awww takes it: 0
+ * to 1 across from the left and up from the bottom
+ */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct From {
+    pub x: f32,
+    pub y: f32,
 }
 
 #[derive(Default)]
@@ -134,6 +149,9 @@ static QUEUE: LazyLock<Queue<Job>> = LazyLock::new(Queue::new);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Set(PathBuf),
+
+    // a wallpaper of the directory picked at random, none of those showing
+    Shuffle,
     Status,
 }
 
@@ -141,6 +159,7 @@ impl Request {
     pub fn parse(arguments: &[&str]) -> Option<Request> {
         match arguments {
             ["set", path] if !path.is_empty() => Some(Request::Set(PathBuf::from(path))),
+            ["shuffle"] => Some(Request::Shuffle),
             ["status"] => Some(Request::Status),
             _ => None,
         }
@@ -149,9 +168,10 @@ impl Request {
 
 /*
  * asks awww to show the image at `path`, answering at once with its serial; `done` is told how it
- * went. Refused at once when there is no file there or no awww to ask
+ * went. A circle transition centers on `from`, else the middle. Refused at once when there is no
+ * file there or no awww to ask
  */
-pub fn set(path: PathBuf, done: Option<Done>) -> Result<u64, Unset> {
+pub fn set(path: PathBuf, from: Option<From>, done: Option<Done>) -> Result<u64, Unset> {
     if !path.is_file() {
         return Err(Unset::NoImage(path));
     }
@@ -171,23 +191,67 @@ pub fn set(path: PathBuf, done: Option<Done>) -> Result<u64, Unset> {
     };
 
     // the receiver lives in the static, so sending never fails
-    QUEUE.send(Job { serial, path, done });
+    QUEUE.send(Job {
+        serial,
+        path,
+        from,
+        done,
+    });
 
     Ok(serial)
 }
 
-// does what `request` asks: a set answered as setting, its serial to wait on through `status`
+/*
+ * does what `request` asks: a set answered as setting, its serial to wait on through `status`, a
+ * shuffle the same and then the image it picked
+ */
 pub fn request(request: Request) -> Result<String, String> {
     match request {
         Request::Set(path) if !path.is_absolute() => Err(format!(
             "{} is not an absolute path, which the shell needs",
             path.display()
         )),
-        Request::Set(path) => set(path, None)
+        Request::Set(path) => set(path, None, None)
             .map(|serial| format!("setting #{serial}"))
             .map_err(|unset| unset.to_string()),
+        Request::Shuffle => shuffle(None, None)
+            .map(|(serial, path)| format!("setting #{serial} {}", path.display())),
         Request::Status => Ok(WALLPAPER.locked().status().to_string()),
     }
+}
+
+/*
+ * sets a wallpaper of the directory picked at random, none of those showing, as `set` does: its
+ * serial and the image, or why there is none to set
+ */
+pub fn shuffle(from: Option<From>, done: Option<Done>) -> Result<(u64, PathBuf), String> {
+    let images = images();
+    let path =
+        pick(&images, &showing(), RandomState::new().hash_one(())).ok_or_else(
+            || match directory() {
+                Some(directory) if images.is_empty() => {
+                    format!("no wallpapers in {}", directory.display())
+                }
+                Some(directory) => format!("no other wallpaper in {}", directory.display()),
+                None => String::from("no wallpaper folder, as HOME is not set"),
+            },
+        )?;
+
+    let serial = set(path.clone(), from, done).map_err(|unset| unset.to_string())?;
+
+    Ok((serial, path))
+}
+
+// one of `images` none of `showing`, the `random`th of those left
+fn pick(images: &[PathBuf], showing: &[PathBuf], random: u64) -> Option<PathBuf> {
+    let left: Vec<&PathBuf> = images
+        .iter()
+        .filter(|image| !showing.contains(image))
+        .collect();
+
+    let at = usize::try_from(random % u64::try_from(left.len()).ok()?.max(1)).ok()?;
+
+    left.get(at).map(|&image| image.clone())
 }
 
 // what the shell answers a set: its serial, to wait on through `status`
@@ -195,9 +259,34 @@ pub fn setting(reply: &str) -> Option<u64> {
     reply.strip_prefix("setting #")?.parse().ok()
 }
 
+// what the shell answers a shuffle: its serial, and the image it picked
+pub fn shuffled(reply: &str) -> Option<(u64, PathBuf)> {
+    let (serial, path) = reply.strip_prefix("setting #")?.split_once(' ')?;
+
+    Some((serial.parse().ok()?, PathBuf::from(path)))
+}
+
 // the image Kanade last set, none until it sets one
 pub fn current() -> Option<PathBuf> {
     WALLPAPER.locked().current.clone()
+}
+
+/*
+ * the images showing now as best known: what awww said it shows on each output when last asked,
+ * which follows every set through its cache (`watch`), else the one Kanade last set
+ */
+pub fn showing() -> Vec<PathBuf> {
+    let mut showing: Vec<PathBuf> = Shown::read()
+        .by
+        .values()
+        .map(|shown| shown.path.clone())
+        .collect();
+
+    if showing.is_empty() {
+        showing.extend(current());
+    }
+
+    showing
 }
 
 // for `kanade status`
@@ -324,11 +413,17 @@ pub fn serve() {
         let job = QUEUE.receiver().recv();
 
         // the sender lives in the static, so the queue never closes
-        let Ok(Job { serial, path, done }) = job else {
+        let Ok(Job {
+            serial,
+            path,
+            from,
+            done,
+        }) = job
+        else {
             return;
         };
 
-        let shown = show(&[AWWW], &path, LIMIT);
+        let shown = show(&[AWWW], &path, config::get().transition, from, LIMIT);
 
         if let Err(why) = &shown {
             eprintln!(
@@ -368,10 +463,16 @@ pub fn serve() {
 }
 
 /*
- * `awww img` through `awww`, the program and any arguments before its own, killed after `limit`;
- * says that the daemon is not running rather than awww's own words for it
+ * `awww img` through `awww`, the program and any arguments before its own, with `transition`,
+ * killed after `limit`; says that the daemon is not running rather than awww's own words for it
  */
-fn show(awww: &[&str], path: &Path, limit: Duration) -> Result<(), Unset> {
+fn show(
+    awww: &[&str],
+    path: &Path,
+    transition: config::Transition,
+    from: Option<From>,
+    limit: Duration,
+) -> Result<(), Unset> {
     let text = path.to_str().ok_or_else(|| {
         Unset::Refused(format!("{} is not UTF-8, which awww needs", path.display()))
     })?;
@@ -382,7 +483,10 @@ fn show(awww: &[&str], path: &Path, limit: Duration) -> Result<(), Unset> {
         wake::act_within(program, &args, limit)
     };
 
-    act(&["img", text]).map_err(|failed| match failed {
+    let img = img(text, transition, from);
+    let img: Vec<&str> = img.iter().map(String::as_str).collect();
+
+    act(&img).map_err(|failed| match failed {
         wake::Failed::Overran(limit) => Unset::Stuck(limit),
         wake::Failed::Said(why) => match act(&["query"]) {
             Ok(()) => Unset::Refused(why),
@@ -390,6 +494,29 @@ fn show(awww: &[&str], path: &Path, limit: Duration) -> Result<(), Unset> {
             Err(_) => Unset::NoDaemon,
         },
     })
+}
+
+/*
+ * awww's arguments to show `path` with `transition`: a circle centered on `from`, which awww reads
+ * as fractions of the screen for having a point; awww's own center without one
+ */
+fn img(path: &str, transition: config::Transition, from: Option<From>) -> Vec<String> {
+    let mut img = vec![
+        String::from("img"),
+        String::from("--transition-type"),
+        String::from(transition.kind),
+        String::from("--transition-duration"),
+        format!("{:.3}", transition.duration.as_secs_f32()),
+    ];
+
+    if let Some(From { x, y }) = from.filter(|_| transition.circle()) {
+        img.push(String::from("--transition-pos"));
+        img.push(format!("{:.3},{:.3}", x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
+    }
+
+    img.push(String::from(path));
+
+    img
 }
 
 // who runs the daemon the wallpaper is set on
@@ -915,45 +1042,8 @@ fn lightness(path: &Path) -> Option<f32> {
     light
 }
 
-// what the lock screen decodes: all but svg told by how they start, svg by name
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    Png,
-    Jpeg,
-    Webp,
-    Gif,
-    Svg,
-}
-
-pub fn format(path: &Path) -> Option<Format> {
-    let mut start = [0; 12];
-    let read = fs::File::open(path)
-        .and_then(|mut file| file.read(&mut start))
-        .ok()?;
-    let start = &start[..read];
-
-    if start.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some(Format::Png)
-    } else if start.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some(Format::Jpeg)
-    } else if start.starts_with(b"RIFF")
-        && start.get(8..).is_some_and(|rest| rest.starts_with(b"WEBP"))
-    {
-        Some(Format::Webp)
-    } else if start.starts_with(b"GIF8") {
-        Some(Format::Gif)
-    } else {
-        path.extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
-            .then_some(Format::Svg)
-    }
-}
-
 // how many rows of a png are read for its lightness: one in so many
 const ROWS: usize = 8;
-
-// the most pixels an image read for its lightness may have, an 8K screen's
-const MOST_PIXELS: usize = 7680 * 4320;
 
 fn decoded_light(path: &Path) -> Option<f32> {
     let (pixels, components) = match format(path)? {
@@ -1011,142 +1101,13 @@ fn decoded_light(path: &Path) -> Option<f32> {
 // the longest side an svg is drawn at to take its mean: all its pixels are read
 const MEAN_SIDE: f32 = 256.0;
 
-// the most bytes an svg is read from
-const MOST_SVG: u64 = 8 << 20;
-
 /*
  * an image whole, as 8-bit RGBA with plain alpha, for the lock screen to draw: the first frame of
  * a webp or gif, an svg drawn with its longest side `vector_side` pixels across; none past
  * `MOST_PIXELS`, told by its header
  */
 pub fn decoded(path: &Path, vector_side: f32) -> Option<(u32, u32, Vec<u8>)> {
-    match format(path)? {
-        Format::Png => {
-            let file = io::BufReader::new(fs::File::open(path).ok()?);
-            let mut decoder = png::Decoder::new(file);
-            decoder.set_transformations(png::Transformations::normalize_to_color8());
-
-            let mut reader = decoder.read_info().ok()?;
-            let info = reader.info();
-            let (width, height) = (info.width, info.height);
-            if width as usize * height as usize > MOST_PIXELS {
-                return None;
-            }
-
-            let mut pixels = vec![0; reader.output_buffer_size()?];
-            let frame = reader.next_frame(&mut pixels).ok()?;
-            pixels.truncate(frame.buffer_size());
-
-            let rgba = match frame.color_type.samples() {
-                4 => pixels,
-                3 => rgba(&pixels, 3, |pixel| [pixel[0], pixel[1], pixel[2], 255]),
-                2 => rgba(&pixels, 2, |pixel| [pixel[0], pixel[0], pixel[0], pixel[1]]),
-                1 => rgba(&pixels, 1, |pixel| [pixel[0], pixel[0], pixel[0], 255]),
-                _ => return None,
-            };
-
-            Some((width, height, rgba))
-        }
-        Format::Jpeg => {
-            let file = io::BufReader::new(fs::File::open(path).ok()?);
-            let options = zune_jpeg::zune_core::options::DecoderOptions::default()
-                .jpeg_set_out_colorspace(zune_jpeg::zune_core::colorspace::ColorSpace::RGBA);
-            let mut decoder = zune_jpeg::JpegDecoder::new_with_options(file, options);
-            decoder.decode_headers().ok()?;
-
-            let (width, height) = decoder.dimensions()?;
-            if width * height > MOST_PIXELS {
-                return None;
-            }
-
-            let pixels = decoder.decode().ok()?;
-
-            Some((
-                u32::try_from(width).ok()?,
-                u32::try_from(height).ok()?,
-                pixels,
-            ))
-        }
-        Format::Webp => {
-            let file = io::BufReader::new(fs::File::open(path).ok()?);
-            let mut decoder = image_webp::WebPDecoder::new(file).ok()?;
-
-            let (width, height) = decoder.dimensions();
-            if width as usize * height as usize > MOST_PIXELS {
-                return None;
-            }
-
-            let mut pixels = vec![0; decoder.output_buffer_size()?];
-            decoder.read_image(&mut pixels).ok()?;
-
-            let rgba = if decoder.has_alpha() {
-                pixels
-            } else {
-                rgba(&pixels, 3, |pixel| [pixel[0], pixel[1], pixel[2], 255])
-            };
-
-            Some((width, height, rgba))
-        }
-        Format::Gif => {
-            let file = io::BufReader::new(fs::File::open(path).ok()?);
-            let mut options = gif::DecodeOptions::new();
-            options.set_color_output(gif::ColorOutput::RGBA);
-
-            // the crate's own 50 MB would refuse a screen past 12 MP, below `MOST_PIXELS`
-            options.set_memory_limit(gif::MemoryLimit::Bytes(std::num::NonZeroU64::new(
-                MOST_PIXELS as u64 * 4,
-            )?));
-
-            let mut decoder = options.read_info(file).ok()?;
-            let (width, height) = (usize::from(decoder.width()), usize::from(decoder.height()));
-            if width * height > MOST_PIXELS {
-                return None;
-            }
-
-            // the first frame, which may cover only part of the screen, on a clear one
-            let frame = decoder.read_next_frame().ok()??;
-            let mut canvas = vec![0; width * height * 4];
-            let (left, top) = (usize::from(frame.left), usize::from(frame.top));
-            let across = usize::from(frame.width);
-
-            // what lies past the screen's edge is clipped
-            let visible = across.min(width.saturating_sub(left)) * 4;
-
-            for (row, pixels) in frame.buffer.chunks_exact(across * 4).enumerate() {
-                let start = ((top + row) * width + left) * 4;
-
-                if top + row >= height {
-                    break;
-                }
-                canvas[start..start + visible].copy_from_slice(&pixels[..visible]);
-            }
-
-            Some((
-                u32::from(decoder.width()),
-                u32::from(decoder.height()),
-                canvas,
-            ))
-        }
-        Format::Svg => {
-            // read up to a byte past the cap, so a longer one is refused and a special file is no wait
-            let mut bytes = Vec::new();
-            fs::File::open(path)
-                .ok()?
-                .take(MOST_SVG + 1)
-                .read_to_end(&mut bytes)
-                .ok()?;
-            if bytes.len() as u64 > MOST_SVG {
-                return None;
-            }
-
-            kanade_runtime::draw_svg(&bytes, vector_side)
-        }
-    }
-}
-
-// pixels of `components` each, made RGBA one by one
-fn rgba(pixels: &[u8], components: usize, each: impl Fn(&[u8]) -> [u8; 4]) -> Vec<u8> {
-    pixels.chunks_exact(components).flat_map(each).collect()
+    kanade_runtime::decode_image(path, vector_side)
 }
 
 // the mean luma of 8-bit pixels of `components` each, gray or red, green and blue first
@@ -1334,5 +1295,31 @@ mod tests {
         let external = looks.finish(external, Some(wallpaper.0.clone()));
         assert!(external.replace);
         assert_eq!(external.appearance, Some(wallpaper.0.clone()));
+    }
+
+    #[test]
+    fn shuffle_never_picks_an_image_showing() {
+        let images: Vec<PathBuf> = ["a.png", "b.png", "c.png"].map(PathBuf::from).into();
+        let showing = [PathBuf::from("b.png")];
+
+        let picked: Vec<PathBuf> = (0..6)
+            .filter_map(|random| pick(&images, &showing, random))
+            .collect();
+
+        assert_eq!(picked.len(), 6);
+        assert!(!picked.contains(&showing[0]));
+        assert!(picked.contains(&images[0]) && picked.contains(&images[2]));
+
+        assert_eq!(pick(&images[1..2], &showing, 7), None);
+        assert_eq!(pick(&[], &[], 7), None);
+    }
+
+    #[test]
+    fn shuffle_reply_keeps_a_path_with_spaces() {
+        assert_eq!(
+            shuffled("setting #12 /home/k/Pictures/Wallpapers/a lake.png"),
+            Some((12, PathBuf::from("/home/k/Pictures/Wallpapers/a lake.png")))
+        );
+        assert_eq!(shuffled("no other wallpaper in /tmp"), None);
     }
 }

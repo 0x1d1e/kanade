@@ -38,6 +38,7 @@ use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
@@ -46,10 +47,12 @@ use crate::look::{
     Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
+use crate::sources::caldav;
+use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 
 // plan 5.2: a level change shows for 1000-1400 ms
-const OSD: Duration = Duration::from_millis(1200);
+const OSD_TIME: Duration = Duration::from_millis(1200);
 
 // a timing outside this keeps its default: a spring needs some time, and a minute is no glance
 pub const SHORTEST: u64 = 1;
@@ -84,9 +87,20 @@ pub struct Config {
     // `wallpaper.directory`: where the Launcher finds wallpapers, else ~/Pictures/Wallpapers
     pub wallpapers: Option<String>,
 
+    // `wallpaper.transition` and `wallpaper.transition_duration`: how awww moves to a new wallpaper
+    pub transition: Transition,
+
     // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
     // directory (ADR 0015)
     pub calendars: Vec<String>,
+
+    // `calendar.reminder`: minutes before an event without alarms of its own that it is reminded
+    // of, 0 for none (ADR 0043)
+    pub reminder: u32,
+
+    // `calendar.caldav`: the CalDAV accounts synced into calendar files, each password in the
+    // Secret Service (ADR 0044)
+    pub caldav: Vec<CalDav>,
 
     // `weather.location`: where the weather is for; none fetches nothing (ADR 0017)
     pub location: Option<Location>,
@@ -128,8 +142,26 @@ pub struct Config {
     // `privacy.indicators`
     pub privacy_indicators: bool,
 
+    // `idle.*`: after how long idle each stage fires (ADR 0047)
+    pub idle: Stages,
+
     // `banners.entrance`
     pub entrance: Entrance,
+
+    // `notifications.rules`: what a notification does, by the first rule matching it
+    pub notification_rules: Vec<Rule>,
+
+    // `osd.layout`: a keyboard layout switch shows as an OSD
+    pub osd_layout: bool,
+    // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
+    pub live_stale: Duration,
+    // `battery.*`: when a draining battery shows, and what a critical one does
+    pub battery: Battery,
+
+    // `night-light.*`: when and how warm the screen turns (ADR 0046)
+    pub night_light: NightLight,
+    // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
+    pub pomodoro: Pomodoro,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -299,6 +331,80 @@ impl Config {
     }
 }
 
+// a whole number in a range, in a unit the docs and Settings name
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Count {
+    pub range: Range,
+
+    // after the number, like `min`, and what a value must be, like `whole minutes`
+    pub unit: &'static str,
+    pub expected: &'static str,
+}
+
+// a pomodoro's focus, break and long break in minutes, and the focus rounds before a long break
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pomodoro {
+    pub work: u32,
+    pub short: u32,
+    pub long: u32,
+    pub rounds: u32,
+}
+
+impl Pomodoro {
+    const MINUTES: Count = Count {
+        range: Range {
+            least: 1,
+            most: 180,
+        },
+        unit: "min",
+        expected: "whole minutes",
+    };
+    pub const ROUNDS: Count = Count {
+        range: Range { least: 1, most: 12 },
+        unit: "rounds",
+        expected: "whole rounds",
+    };
+}
+
+impl Default for Pomodoro {
+    fn default() -> Self {
+        Pomodoro {
+            work: 25,
+            short: 5,
+            long: 15,
+            rounds: 4,
+        }
+    }
+}
+
+/*
+ * how awww moves to a new wallpaper: one of its transitions, those a Settings row has room for,
+ * and how long it takes, which awww's own "simple" fade ignores
+ */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transition {
+    pub kind: &'static str,
+    pub duration: Duration,
+}
+
+impl Transition {
+    pub const KINDS: &[&str] = &["simple", "fade", "wipe", "grow", "outer"];
+
+    // the two that grow or shrink a circle, from where the wallpaper was chosen
+    pub fn circle(self) -> bool {
+        matches!(self.kind, "grow" | "outer")
+    }
+}
+
+impl Default for Transition {
+    fn default() -> Self {
+        Transition {
+            kind: "simple",
+            duration: Duration::from_millis(1000),
+        }
+    }
+}
+
 // one output's overrides: the keys it sets, and their values in a config of their own
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Output {
@@ -310,14 +416,18 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             island: Timings::default(),
-            osd: OSD,
+            osd: OSD_TIME,
             palette: None,
             clock: Hours::default(),
-            off: Vec::new(),
+            // idle locking is hypridle's until this Module is turned on (ADR 0047)
+            off: vec!["idle"],
             apps: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
+            transition: Transition::default(),
             calendars: Vec::new(),
+            reminder: 0,
+            caldav: Vec::new(),
             location: None,
             place: None,
             units: Units::default(),
@@ -342,9 +452,253 @@ impl Default for Config {
             visualizer: Visualizer::default(),
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
+            idle: Stages {
+                dim: Some(Duration::from_secs(270)),
+                lock: Some(Duration::from_secs(300)),
+                screen_off: Some(Duration::from_secs(330)),
+                suspend: None,
+            },
             entrance: Entrance::default(),
+            notification_rules: Vec::new(),
+            osd_layout: true,
+            live_stale: Duration::from_secs(30 * 60),
+            battery: Battery::default(),
+            night_light: NightLight::default(),
+            pomodoro: Pomodoro::default(),
             outputs: BTreeMap::new(),
         }
+    }
+}
+
+// `battery.*`, in percent of a full battery
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Battery {
+    // at or below, a draining battery shows
+    pub low: u32,
+
+    // at or below, it preempts and `critical_action` counts down; never above `low`
+    pub critical: u32,
+
+    // what a critical battery asks of logind after a countdown, none for nothing
+    pub critical_action: CriticalAction,
+}
+
+impl Battery {
+    pub const LOW: Range = Range { least: 5, most: 50 };
+    pub const CRITICAL: Range = Range { least: 2, most: 30 };
+
+    // `critical` as it counts: one above `low` is `low`, so a battery is never critical yet not low
+    pub fn critical(self) -> u32 {
+        self.critical.min(self.low)
+    }
+}
+
+impl Default for Battery {
+    fn default() -> Self {
+        Battery {
+            low: 20,
+            critical: 10,
+            critical_action: CriticalAction::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CriticalAction {
+    #[default]
+    None,
+    Suspend,
+    Hibernate,
+    PowerOff,
+}
+
+impl CriticalAction {
+    pub const NAMES: &[&str] = &["none", "suspend", "hibernate", "poweroff"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CriticalAction::None => "none",
+            CriticalAction::Suspend => "suspend",
+            CriticalAction::Hibernate => "hibernate",
+            CriticalAction::PowerOff => "poweroff",
+        }
+    }
+
+    pub fn named(name: &str) -> CriticalAction {
+        match name {
+            "suspend" => CriticalAction::Suspend,
+            "hibernate" => CriticalAction::Hibernate,
+            "poweroff" => CriticalAction::PowerOff,
+            _ => CriticalAction::None,
+        }
+    }
+}
+
+// `night-light.*`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NightLight {
+    pub mode: NightMode,
+
+    // how warm the screen turns, in kelvin
+    pub temperature: u32,
+
+    // when it warms and cools again, both set or the location's sun is the schedule
+    pub sunset: Option<DayTime>,
+    pub sunrise: Option<DayTime>,
+}
+
+impl NightLight {
+    pub const TEMPERATURE: Range = Range {
+        least: 1000,
+        most: 6500,
+    };
+}
+
+impl Default for NightLight {
+    fn default() -> Self {
+        NightLight {
+            mode: NightMode::Off,
+            temperature: 4000,
+            sunset: None,
+            sunrise: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NightMode {
+    #[default]
+    Off,
+
+    // warm all day
+    On,
+
+    // warm from sunset to sunrise
+    Schedule,
+}
+
+impl NightMode {
+    pub const NAMES: &[&str] = &["off", "on", "schedule"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NightMode::Off => "off",
+            NightMode::On => "on",
+            NightMode::Schedule => "schedule",
+        }
+    }
+
+    pub fn named(name: &str) -> NightMode {
+        match name {
+            "on" => NightMode::On,
+            "schedule" => NightMode::Schedule,
+            _ => NightMode::Off,
+        }
+    }
+}
+
+// a time of day, `HH:MM` on a 24 hour clock
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DayTime {
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl DayTime {
+    const EXPECTED: &str = "expected a time as \"HH:MM\", 00:00 to 23:59";
+
+    pub fn parse(text: &str) -> Result<DayTime, String> {
+        let number = |text: &str| {
+            (text.len() == 2 && text.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| text.parse::<u8>().ok())
+                .flatten()
+        };
+
+        text.trim()
+            .split_once(':')
+            .and_then(|(hour, minute)| Some((number(hour)?, number(minute)?)))
+            .filter(|&(hour, minute)| hour < 24 && minute < 60)
+            .map(|(hour, minute)| DayTime { hour, minute })
+            .ok_or_else(|| String::from(DayTime::EXPECTED))
+    }
+}
+
+impl std::fmt::Display for DayTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour, self.minute)
+    }
+}
+
+// a CalDAV account, as `[[calendar.caldav]]` names it; its password is never here
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalDav {
+    // what the user calls it: `kanade caldav login <name>`, and the Calendar Surface's word
+    pub name: String,
+
+    // the server, or any address on it that discovery starts from
+    pub url: String,
+    pub username: String,
+}
+
+impl CalDav {
+    const EXPECTED: &str = "expected { name = \"...\", url = \"https://...\", username = \"...\" }";
+
+    fn read(value: &Value) -> Result<CalDav, String> {
+        let table = value.as_table().ok_or(CalDav::EXPECTED)?;
+
+        if let Some(unknown) = table
+            .keys()
+            .find(|key| !["name", "url", "username"].contains(&key.as_str()))
+        {
+            return Err(format!("unknown key {unknown} in a CalDAV account"));
+        }
+
+        let line = |key: &str| {
+            table
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && !text.contains('\n'))
+                .map(str::to_owned)
+                .ok_or_else(|| format!("a CalDAV account needs {key} as a line of text"))
+        };
+
+        let account = CalDav {
+            name: line("name")?,
+            url: line("url")?,
+            username: line("username")?,
+        };
+        caldav::checked(&account.url).map_err(|why| format!("{}: {why}", account.name))?;
+
+        Ok(account)
+    }
+
+    pub fn value(&self) -> Value {
+        Value::Table(toml::Table::from_iter([
+            (String::from("name"), Value::String(self.name.clone())),
+            (String::from("url"), Value::String(self.url.clone())),
+            (
+                String::from("username"),
+                Value::String(self.username.clone()),
+            ),
+        ]))
+    }
+
+    // `name, url, username` as typed into Settings, as a TOML value
+    pub fn parse(text: &str) -> Result<Value, String> {
+        let [name, url, username]: [&str; 3] = text
+            .split(',')
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| String::from("expected name, url, username"))?;
+        let value = Value::Table(toml::Table::from_iter([
+            (String::from("name"), Value::String(name.to_owned())),
+            (String::from("url"), Value::String(url.to_owned())),
+            (String::from("username"), Value::String(username.to_owned())),
+        ]));
+
+        CalDav::read(&value).map(|account| account.value())
     }
 }
 
@@ -488,6 +842,15 @@ pub enum Kind {
     // whole percent in a range
     Percent(Range, Field<u32>),
 
+    // whole seconds in a range, 0 being never
+    Seconds(Range, Field<u32>),
+    // whole minutes in a range
+    Minutes(Range, Field<Duration>),
+    // a color temperature, whole kelvin in a range
+    Kelvin(Range, Field<u32>),
+    // a whole number of something else in a range
+    Count(Count, Field<u32>),
+
     // one of these strings
     Choice(Choices, Field<&'static str>),
 
@@ -499,6 +862,9 @@ pub enum Kind {
 
     // `[latitude, longitude]` in degrees; unset is none
     Location(Field<Option<Location>>),
+
+    // a time of day as "HH:MM"; unset is none
+    DayTime(Field<Option<DayTime>>),
 
     // a list of `.desktop` file ids, the `.desktop` optional, each kept once; a layer replaces the
     // list below
@@ -513,6 +879,11 @@ pub enum Kind {
 
     // a table of Module name = true or false, merged by name; the Field holds the ones off
     Modules(Field<Vec<&'static str>>),
+
+    // a list of notification rules, each a table; a layer replaces the list below
+    Rules(Field<Vec<Rule>>),
+    // a list of CalDAV accounts, each name once; a layer replaces the list below
+    CalDav(Field<Vec<CalDav>>),
 }
 
 impl Kind {
@@ -525,6 +896,10 @@ impl Kind {
             Kind::Millis(field) => (field.set)(config, millis(value)?),
             Kind::Pixels(range, field) => (field.set)(config, pixels(value, *range)?),
             Kind::Percent(range, field) => (field.set)(config, percent(value, *range)?),
+            Kind::Seconds(range, field) => (field.set)(config, seconds(value, *range)?),
+            Kind::Minutes(range, field) => (field.set)(config, minutes(value, *range)?),
+            Kind::Kelvin(range, field) => (field.set)(config, kelvin(value, *range)?),
+            Kind::Count(count, field) => (field.set)(config, counted(value, *count)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -556,6 +931,10 @@ impl Kind {
                 (field.set)(config, Some(text.trim().to_owned()));
             }
             Kind::Location(field) => (field.set)(config, Some(Location::read(value)?)),
+            Kind::DayTime(field) => {
+                let text = value.as_str().ok_or(DayTime::EXPECTED)?;
+                (field.set)(config, Some(DayTime::parse(text)?));
+            }
             Kind::DesktopIds(field) => {
                 let list = value
                     .as_array()
@@ -624,6 +1003,24 @@ impl Kind {
 
                 (field.set)(config, off);
             }
+            Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::CalDav(field) => {
+                let list = value
+                    .as_array()
+                    .ok_or("expected a list of CalDAV accounts")?;
+                let mut accounts: Vec<CalDav> = Vec::new();
+
+                for entry in list {
+                    let account = CalDav::read(entry)?;
+
+                    if accounts.iter().any(|kept| kept.name == account.name) {
+                        return Err(format!("two CalDAV accounts are named {}", account.name));
+                    }
+                    accounts.push(account);
+                }
+
+                (field.set)(config, accounts);
+            }
         }
 
         Ok(())
@@ -636,12 +1033,18 @@ impl Kind {
             Kind::Millis(field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
             }
-            Kind::Pixels(_, field) | Kind::Percent(_, field) => {
-                Value::Integer(i64::from((field.get)(config)))
+            Kind::Pixels(_, field)
+            | Kind::Percent(_, field)
+            | Kind::Seconds(_, field)
+            | Kind::Kelvin(_, field)
+            | Kind::Count(_, field) => Value::Integer(i64::from((field.get)(config))),
+            Kind::Minutes(_, field) => {
+                Value::Integer(i64::try_from((field.get)(config).as_secs() / 60).ok()?)
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
+            Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
             Kind::DesktopIds(field) | Kind::Paths(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
@@ -657,6 +1060,12 @@ impl Kind {
                     .map(|name| (name.to_owned(), Value::Boolean(false)))
                     .collect(),
             ),
+            Kind::Rules(field) => {
+                Value::Array((field.get)(config).iter().map(Rule::value).collect())
+            }
+            Kind::CalDav(field) => {
+                Value::Array((field.get)(config).iter().map(CalDav::value).collect())
+            }
         };
 
         match &value {
@@ -671,13 +1080,21 @@ impl Kind {
         match self {
             Kind::Switch(field) => field.copy(from, to),
             Kind::Millis(field) => field.copy(from, to),
-            Kind::Pixels(_, field) | Kind::Percent(_, field) => field.copy(from, to),
+            Kind::Pixels(_, field)
+            | Kind::Percent(_, field)
+            | Kind::Seconds(_, field)
+            | Kind::Kelvin(_, field)
+            | Kind::Count(_, field) => field.copy(from, to),
+            Kind::Minutes(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
+            Kind::DayTime(field) => field.copy(from, to),
             Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
+            Kind::Rules(field) => field.copy(from, to),
+            Kind::CalDav(field) => field.copy(from, to),
         }
     }
 
@@ -1131,18 +1548,46 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "modules",
         label: "Modules",
-        help: "every Module is on unless set to false here",
+        help: "every Module is on unless set to false here; idle is off unless set to true",
         kind: Kind::Modules(Field {
             get: |config| config.off.clone(),
             set: |config, off| config.off = off,
         }),
-        example: Some("{ media = false }"),
+        example: None,
 
         // the runtime registers windows only at start
         restart: true,
         per_output: false,
     },
 ];
+
+pub const NOTIFICATIONS: &[Setting] = &[Setting {
+    key: "notifications.rules",
+    label: "Notification rules",
+    help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, bypass_dnd, timeout (ms) and urgency; file only",
+    kind: Kind::Rules(Field {
+        get: |config| config.notification_rules.clone(),
+        set: |config, rules| config.notification_rules = rules,
+    }),
+    example: Some(
+        "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
+    ),
+    restart: false,
+    per_output: false,
+}];
+
+pub const OSD: &[Setting] = &[Setting {
+    key: "osd.layout",
+    label: "Keyboard layout switch",
+    help: "a keyboard layout switch shows as an OSD, with two or more layouts",
+    kind: Kind::Switch(Field {
+        get: |config| config.osd_layout,
+        set: |config, on| config.osd_layout = on,
+    }),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
 
 pub const WINDOWS: &[Setting] = &[Setting {
     key: "windows.apps",
@@ -1271,18 +1716,110 @@ pub const DOCK: &[Setting] = &[
     },
 ];
 
-pub const WALLPAPER: &[Setting] = &[Setting {
-    key: "wallpaper.directory",
-    label: "Wallpaper folder",
-    help: "the images the Launcher offers after `@`, else ~/Pictures/Wallpapers",
-    kind: Kind::Path(Field {
-        get: |config| config.wallpapers.clone(),
-        set: |config, wallpapers| config.wallpapers = wallpapers,
-    }),
-    example: Some("\"~/Pictures/Wallpapers\""),
-    restart: false,
-    per_output: false,
-}];
+pub const WALLPAPER: &[Setting] = &[
+    Setting {
+        key: "wallpaper.directory",
+        label: "Wallpaper folder",
+        help: "the images the Launcher offers after `@` and the Wallpapers Surface shows, else ~/Pictures/Wallpapers",
+        kind: Kind::Path(Field {
+            get: |config| config.wallpapers.clone(),
+            set: |config, wallpapers| config.wallpapers = wallpapers,
+        }),
+        example: Some("\"~/Pictures/Wallpapers\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "wallpaper.transition",
+        label: "Transition",
+        help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle",
+        kind: Kind::Choice(
+            Choices::named(Transition::KINDS),
+            Field {
+                get: |config| config.transition.kind,
+                set: |config, kind| config.transition.kind = kind,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "wallpaper.transition_duration",
+        label: "Transition length",
+        help: "how long a transition other than \"simple\" takes",
+        kind: Kind::Millis(Field {
+            get: |config| config.transition.duration,
+            set: |config, duration| config.transition.duration = duration,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
+pub const TIMER: &[Setting] = &[
+    Setting {
+        key: "timer.pomodoro.work",
+        label: "Focus",
+        help: "how long a pomodoro's focus lasts, unless `kanade timer pomodoro` says",
+        kind: Kind::Count(
+            Pomodoro::MINUTES,
+            Field {
+                get: |config| config.pomodoro.work,
+                set: |config, minutes| config.pomodoro.work = minutes,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "timer.pomodoro.break",
+        label: "Break",
+        help: "how long the break after a focus lasts",
+        kind: Kind::Count(
+            Pomodoro::MINUTES,
+            Field {
+                get: |config| config.pomodoro.short,
+                set: |config, minutes| config.pomodoro.short = minutes,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "timer.pomodoro.long_break",
+        label: "Long break",
+        help: "how long the break after the last round's focus lasts",
+        kind: Kind::Count(
+            Pomodoro::MINUTES,
+            Field {
+                get: |config| config.pomodoro.long,
+                set: |config, minutes| config.pomodoro.long = minutes,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "timer.pomodoro.rounds",
+        label: "Rounds",
+        help: "how many focus rounds come before a long break",
+        kind: Kind::Count(
+            Pomodoro::ROUNDS,
+            Field {
+                get: |config| config.pomodoro.rounds,
+                set: |config, rounds| config.pomodoro.rounds = rounds,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const CALENDAR: &[Setting] = &[Setting {
     key: "calendar.paths",
@@ -1294,6 +1831,46 @@ pub const CALENDAR: &[Setting] = &[Setting {
         set: |config, calendars| config.calendars = calendars,
     }),
     example: Some("[\"~/.local/share/calendars\", \"~/Documents/holidays.ics\"]"),
+    restart: false,
+    per_output: false,
+}];
+
+// the longest lead `calendar.reminder` takes, a week
+pub const REMINDER: Range = Range {
+    least: 0,
+    most: 7 * 24 * 60,
+};
+
+pub const CALDAV: &[Setting] = &[Setting {
+    key: "calendar.caldav",
+    label: "CalDAV accounts",
+    help: "CalDAV accounts synced read-only, each password kept in the Secret Service by \
+           `kanade caldav login <name>`, never here",
+    kind: Kind::CalDav(Field {
+        get: |config| config.caldav.clone(),
+        set: |config, caldav| config.caldav = caldav,
+    }),
+    example: Some(
+        "[{ name = \"fastmail\", url = \"https://caldav.fastmail.com\", username = \"you@fastmail.com\" }]",
+    ),
+    restart: false,
+    per_output: false,
+}];
+
+pub const REMINDERS: &[Setting] = &[Setting {
+    key: "calendar.reminder",
+    label: "Default reminder",
+    help: "minutes before a timed event with no reminders of its own to remind of it, 0 for none",
+    kind: Kind::Minutes(
+        REMINDER,
+        Field {
+            get: |config| Duration::from_secs(u64::from(config.reminder) * 60),
+            set: |config, lead| {
+                config.reminder = u32::try_from(lead.as_secs() / 60).unwrap_or(u32::MAX)
+            },
+        },
+    ),
+    example: None,
     restart: false,
     per_output: false,
 }];
@@ -1371,6 +1948,27 @@ pub const MEDIA: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+pub const LIVE_STALE: Range = Range {
+    least: 1,
+    most: 1440,
+};
+
+pub const LIVE: &[Setting] = &[Setting {
+    key: "live.stale",
+    label: "Withdraw after",
+    help: "how long a live Activity from `kanade activity` shows without a word from its program",
+    kind: Kind::Minutes(
+        LIVE_STALE,
+        Field {
+            get: |config| config.live_stale,
+            set: |config, stale| config.live_stale = stale,
+        },
+    ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 pub const LOCK: &[Setting] = &[Setting {
     key: "lock.backdrop",
     label: "Backdrop",
@@ -1386,6 +1984,202 @@ pub const LOCK: &[Setting] = &[Setting {
     restart: false,
     per_output: false,
 }];
+
+// whole seconds each idle stage waits, up to a day, 0 being never
+pub const IDLE_SECONDS: Range = Range {
+    least: 0,
+    most: 86_400,
+};
+
+fn stage(after: Option<Duration>) -> u32 {
+    after.map_or(0, |after| {
+        u32::try_from(after.as_secs()).unwrap_or(u32::MAX)
+    })
+}
+
+fn after(seconds: u32) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)))
+}
+
+// what the idle Module does, and when (ADR 0047)
+pub const IDLE: &[Setting] = &[
+    Setting {
+        key: "idle.dim",
+        label: "Dim after",
+        help: "seconds idle before the screens fade toward dark, until the lock; any input brings them back; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.dim),
+                set: |config, seconds| config.idle.dim = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "idle.lock",
+        label: "Lock after",
+        help: "seconds idle before the session locks, as `kanade lock` does; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.lock),
+                set: |config, seconds| config.idle.lock = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "idle.screen_off",
+        label: "Screens off after",
+        help: "seconds idle before niri powers the monitors off, back on at any input; never before the lock holds; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.screen_off),
+                set: |config, seconds| config.idle.screen_off = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "idle.suspend",
+        label: "Suspend after",
+        help: "seconds idle before the machine suspends, through logind; never before the lock holds; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.suspend),
+                set: |config, seconds| config.idle.suspend = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
+pub const BATTERY: &[Setting] = &[
+    Setting {
+        key: "battery.low",
+        label: "Low battery",
+        help: "at or below, a draining battery shows on the island",
+        kind: Kind::Percent(
+            Battery::LOW,
+            Field {
+                get: |config| config.battery.low,
+                set: |config, low| config.battery.low = low,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "battery.critical",
+        label: "Critical battery",
+        help: "at or below, the battery interrupts and battery.critical_action counts down; one above battery.low counts as battery.low",
+        kind: Kind::Percent(
+            Battery::CRITICAL,
+            Field {
+                get: |config| config.battery.critical,
+                set: |config, critical| config.battery.critical = critical,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "battery.critical_action",
+        label: "When critical",
+        help: "what a draining critical battery does after a 60 s countdown that Cancel or a charger stops: \"none\", \"suspend\", \"hibernate\" or \"poweroff\"",
+        kind: Kind::Choice(
+            Choices::labeled(
+                CriticalAction::NAMES,
+                &[
+                    ("none", "Nothing"),
+                    ("suspend", "Sleep"),
+                    ("hibernate", "Hibernate"),
+                    ("poweroff", "Power off"),
+                ],
+            ),
+            Field {
+                get: |config| config.battery.critical_action.name(),
+                set: |config, name| config.battery.critical_action = CriticalAction::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
+pub const NIGHT_LIGHT: &[Setting] = &[
+    Setting {
+        key: "night-light.mode",
+        label: "Night light",
+        help: "warms the screen through wlsunset: \"off\", \"on\" all day, or on a \"schedule\" from sunset to sunrise",
+        kind: Kind::Choice(
+            Choices::labeled(
+                NightMode::NAMES,
+                &[("off", "Off"), ("on", "Always"), ("schedule", "Schedule")],
+            ),
+            Field {
+                get: |config| config.night_light.mode.name(),
+                set: |config, name| config.night_light.mode = NightMode::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "night-light.temperature",
+        label: "Warmth",
+        help: "the screen's color temperature while warm; lower is warmer, 6500 is neutral",
+        kind: Kind::Kelvin(
+            NightLight::TEMPERATURE,
+            Field {
+                get: |config| config.night_light.temperature,
+                set: |config, kelvin| config.night_light.temperature = kelvin,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "night-light.sunset",
+        label: "Warm from",
+        help: "when the schedule warms the screen, as \"HH:MM\"; with night-light.sunrise it is the schedule, else the sun at weather.location is",
+        kind: Kind::DayTime(Field {
+            get: |config| config.night_light.sunset,
+            set: |config, time| config.night_light.sunset = time,
+        }),
+        example: Some("\"20:00\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "night-light.sunrise",
+        label: "Neutral from",
+        help: "when the schedule turns the screen neutral again, as \"HH:MM\"",
+        kind: Kind::DayTime(Field {
+            get: |config| config.night_light.sunrise,
+            set: |config, time| config.night_light.sunrise = time,
+        }),
+        example: Some("\"07:00\""),
+        restart: false,
+        per_output: false,
+    },
+];
 
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
@@ -1418,6 +2212,34 @@ pub fn scale_animation(duration: Duration, speed: u32) -> Duration {
     duration.mul_f64(100.0 / f64::from(speed.clamp(ANIMATION_SPEED.least, ANIMATION_SPEED.most)))
 }
 
+fn seconds(value: &Value, range: Range) -> Result<u32, String> {
+    let seconds = value.as_integer().ok_or("expected whole seconds")?;
+
+    u32::try_from(seconds)
+        .ok()
+        .filter(|seconds| (range.least..=range.most).contains(seconds))
+        .ok_or_else(|| format!("{seconds} is outside {}-{} s", range.least, range.most))
+}
+
+fn minutes(value: &Value, range: Range) -> Result<Duration, String> {
+    let minutes = value.as_integer().ok_or("expected whole minutes")?;
+
+    u32::try_from(minutes)
+        .ok()
+        .filter(|minutes| (range.least..=range.most).contains(minutes))
+        .map(|minutes| Duration::from_secs(u64::from(minutes) * 60))
+        .ok_or_else(|| format!("{minutes} is outside {}-{} min", range.least, range.most))
+}
+
+fn kelvin(value: &Value, range: Range) -> Result<u32, String> {
+    let kelvin = value.as_integer().ok_or("expected whole kelvin")?;
+
+    u32::try_from(kelvin)
+        .ok()
+        .filter(|kelvin| (range.least..=range.most).contains(kelvin))
+        .ok_or_else(|| format!("{kelvin} is outside {}-{} K", range.least, range.most))
+}
+
 fn percent(value: &Value, range: Range) -> Result<u32, String> {
     let percent = value.as_integer().ok_or("expected whole percent")?;
 
@@ -1425,6 +2247,18 @@ fn percent(value: &Value, range: Range) -> Result<u32, String> {
         .ok()
         .filter(|percent| (range.least..=range.most).contains(percent))
         .ok_or_else(|| format!("{percent} is outside {}-{} %", range.least, range.most))
+}
+
+fn counted(value: &Value, count: Count) -> Result<u32, String> {
+    let number = value
+        .as_integer()
+        .ok_or_else(|| format!("expected {}", count.expected))?;
+    let Range { least, most } = count.range;
+
+    u32::try_from(number)
+        .ok()
+        .filter(|number| (least..=most).contains(number))
+        .ok_or_else(|| format!("{number} is outside {least}-{most} {}", count.unit))
 }
 
 // one `[modules]` entry over the Modules off: a Module in the registry on or off by name
@@ -1513,6 +2347,17 @@ pub fn defaults() -> String {
             Kind::Percent(range, _) => {
                 help.push_str(&format!(", % {}-{}", range.least, range.most))
             }
+            Kind::Seconds(range, _) => {
+                help.push_str(&format!(", s {}-{}", range.least, range.most))
+            }
+            Kind::Minutes(range, _) => {
+                help.push_str(&format!(", min {}-{}", range.least, range.most))
+            }
+            Kind::Kelvin(range, _) => help.push_str(&format!(", K {}-{}", range.least, range.most)),
+            Kind::Count(count, _) => help.push_str(&format!(
+                ", {} {}-{}",
+                count.unit, count.range.least, count.range.most
+            )),
             _ => {}
         }
         if setting.restart {
@@ -2264,7 +3109,7 @@ mod tests {
                 osd: ms(1000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
-                off: vec!["media"],
+                off: vec!["idle", "media"],
                 apps: BTreeMap::new(),
                 pinned: Vec::new(),
                 wallpapers: None,
@@ -2349,13 +3194,35 @@ mod tests {
                 "dock.magnification",
                 "dock.size",
                 "dock.merge",
+                "battery.low",
+                "battery.critical",
+                "battery.critical_action",
                 "media.visualizer",
+                "timer.pomodoro.work",
+                "timer.pomodoro.break",
+                "timer.pomodoro.long_break",
+                "timer.pomodoro.rounds",
+                "live.stale",
+                "osd.layout",
+                "notifications.rules",
                 "wallpaper.directory",
+                "wallpaper.transition",
+                "wallpaper.transition_duration",
                 "calendar.paths",
+                "calendar.reminder",
+                "calendar.caldav",
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "night-light.mode",
+                "night-light.temperature",
+                "night-light.sunset",
+                "night-light.sunrise",
                 "lock.backdrop",
+                "idle.dim",
+                "idle.lock",
+                "idle.screen_off",
+                "idle.suspend",
             ]
         );
         assert_eq!(
@@ -2499,7 +3366,7 @@ mod tests {
 
         let next = restarted(&running, read);
         assert_eq!(next.clock, Hours::Twelve);
-        assert_eq!(next.off, ["media", "timer"]);
+        assert_eq!(next.off, ["idle", "media", "timer"]);
     }
 
     /*
@@ -2627,7 +3494,7 @@ HDMI-A-1 = "12h"
         assert_eq!(problems, vec![]);
         assert_eq!(config.island.hover, ms(90));
         assert_eq!(config.palette.as_deref(), Some("a \"b\" \\c\t"));
-        assert_eq!(config.off, ["media"]);
+        assert_eq!(config.off, ["idle", "media"]);
     }
 
     // a later file wins key by key; a table it leaves out keeps what is below
@@ -2644,7 +3511,7 @@ HDMI-A-1 = "12h"
         assert_eq!(config.island.hover, ms(100));
         assert_eq!(config.island.expand, ms(300));
         assert_eq!(config.palette.as_deref(), Some("/a.png"));
-        assert_eq!(config.off, ["media", "battery"]);
+        assert_eq!(config.off, ["idle", "media", "battery"]);
     }
 
     // what a bad key would have set stays as the layers below left it
@@ -2678,7 +3545,7 @@ battery = false
         assert_eq!(config.osd, ms(1000));
         assert_eq!(config.palette, None);
         assert_eq!(config.clock, Hours::TwentyFour);
-        assert_eq!(config.off, ["battery"]);
+        assert_eq!(config.off, ["idle", "battery"]);
         assert_eq!(
             problems[1],
             said(&[
@@ -2762,6 +3629,48 @@ battery = false
         );
     }
 
+    // `[[notifications.rules]]` reads as a list a later file replaces; a bad rule keeps the list
+    // below and says where
+    #[test]
+    fn notification_rules_are_a_list_a_later_file_replaces() {
+        let first = "[[notifications.rules]]\napp = \"Slack\"\nbanner = false\n\n[[notifications.rules]]\nsummary = \"battery\"\nbypass_dnd = true\n";
+
+        let (config, problems) = one(first);
+        assert_eq!(problems, vec![]);
+        assert_eq!(config.notification_rules.len(), 2);
+        assert_eq!(config.notification_rules[0].app.as_deref(), Some("Slack"));
+        assert_eq!(config.notification_rules[1].bypass_dnd, Some(true));
+
+        let (config, problems) = layers(
+            &[
+                first,
+                "\n[[notifications.rules]]\napp = \"Mail\"\nsumary = \"x\"\n",
+            ],
+            MIGRATIONS,
+        );
+        assert_eq!(config.notification_rules.len(), 2);
+        assert_eq!(problems[1].len(), 1);
+        assert_eq!(problems[1][0].0, 2);
+        assert!(
+            problems[1][0]
+                .1
+                .starts_with("notifications.rules: rule 1: unknown key sumary"),
+            "{:?}",
+            problems[1]
+        );
+
+        let (config, problems) = layers(
+            &[first, "[[notifications.rules]]\ncategory = \"email\"\n"],
+            MIGRATIONS,
+        );
+        assert_eq!(problems, [vec![], vec![]]);
+        assert_eq!(config.notification_rules.len(), 1);
+        assert_eq!(
+            config.notification_rules[0].category.as_deref(),
+            Some("email")
+        );
+    }
+
     // a path list expands `~/`, keeps each once, and a later file's replaces the one below
     #[test]
     fn calendar_paths_are_a_list_of_paths() {
@@ -2784,6 +3693,79 @@ battery = false
             one("calendar.paths = \"~/cal\"").1,
             said(&[(1, "calendar.paths: expected a list of \"path\"s")])
         );
+    }
+
+    // a time is "HH:MM" on a 24 hour clock and a temperature whole kelvin in range; anything else
+    // keeps what was below
+    #[test]
+    fn the_night_light_takes_times_of_day_and_kelvin_in_range() {
+        let first = "[night-light]\nmode = \"schedule\"\ntemperature = 3400\nsunset = \"21:30\"\nsunrise = \" 06:05 \"";
+        let (config, problems) = layers(&[first], MIGRATIONS);
+        let evening = DayTime {
+            hour: 21,
+            minute: 30,
+        };
+
+        assert_eq!(problems, [vec![]]);
+        assert_eq!(config.night_light.mode, NightMode::Schedule);
+        assert_eq!(config.night_light.temperature, 3400);
+        assert_eq!(config.night_light.sunset, Some(evening));
+        assert_eq!(
+            config.night_light.sunrise,
+            Some(DayTime { hour: 6, minute: 5 })
+        );
+        assert_eq!(evening.to_string(), "21:30");
+
+        for bad in [
+            "\"24:00\"",
+            "\"23:60\"",
+            "\"7:00\"",
+            "\"07:0\"",
+            "\"0700\"",
+            "\"-1:00\"",
+            "\"+1:00\"",
+            "\"\"",
+            "2100",
+        ] {
+            let (config, problems) =
+                layers(&[first, &format!("night-light.sunset = {bad}")], MIGRATIONS);
+
+            assert_eq!(config.night_light.sunset, Some(evening), "{bad}");
+            assert_eq!(
+                problems[1],
+                said(&[(1, &format!("night-light.sunset: {}", DayTime::EXPECTED))]),
+                "{bad}"
+            );
+        }
+
+        for (bad, why) in [
+            ("999", "999 is outside 1000-6500 K"),
+            ("6501", "6501 is outside 1000-6500 K"),
+            ("-4000", "-4000 is outside 1000-6500 K"),
+            ("4000.5", "expected whole kelvin"),
+            ("\"4000\"", "expected whole kelvin"),
+        ] {
+            let (config, problems) = layers(
+                &[first, &format!("night-light.temperature = {bad}")],
+                MIGRATIONS,
+            );
+
+            assert_eq!(config.night_light.temperature, 3400, "{bad}");
+            assert_eq!(
+                problems[1],
+                said(&[(1, &format!("night-light.temperature: {why}"))]),
+                "{bad}"
+            );
+        }
+
+        for edge in ["1000", "6500"] {
+            let (_, problems) = layers(
+                &[first, &format!("night-light.temperature = {edge}")],
+                MIGRATIONS,
+            );
+
+            assert_eq!(problems[1], vec![], "{edge}");
+        }
     }
 
     // a location is two numbers in range, integers too; anything else keeps what was below

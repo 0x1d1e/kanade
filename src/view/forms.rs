@@ -9,13 +9,15 @@ use kanade_runtime::{
 };
 
 use crate::icon::Icon;
-use crate::island::activity::{Action, Activity, Awake, Clip, Detail, Leave, Leaving, Shot, Track};
+use crate::island::activity::{
+    Action, Activity, Awake, Clip, Detail, Leave, Leaving, Reminder, Shot, Track,
+};
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
 use crate::island::presentation::{Content, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::sources::{caffeine, capture, session};
+use crate::sources::{caffeine, capture, reminders, session};
 use crate::surfaces;
 use crate::theme;
 
@@ -23,7 +25,9 @@ use super::media::{Change, media_compact, media_peek, tile};
 use super::rest::placeholder;
 use super::satellites::satellite_mark;
 use super::shape::{Room, hang, shape, upright};
-use super::status::{Level, battery, battery_icon, charge_tone, level, mode, timer, workspace};
+use super::status::{
+    Level, battery, battery_icon, charge_tone, layout, level, mode, timer, workspace,
+};
 use super::toast::{critical, toast_compact, toast_peek};
 
 /*
@@ -66,6 +70,8 @@ pub(super) fn surface(
         Surface::Clipboard => Some(surfaces::clipboard::surface(monitor, island.visit())),
         Surface::Calendar => Some(surfaces::calendar::surface(monitor, island.visit())),
         Surface::Weather => Some(surfaces::weather::surface(monitor)),
+        Surface::Wallpapers => Some(surfaces::wallpapers::surface(monitor, island.visit())),
+        Surface::Keys => Some(surfaces::keys::surface(monitor, island.visit())),
         Surface::Session => Some(surfaces::session::surface(
             open,
             island.visit(),
@@ -168,7 +174,12 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
     let mut row = Vec::<Box<dyn Widget>>::new();
 
     match activity.detail() {
-        Detail::Timer(_) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Timer(..) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Live(job) if job.progress.is_some() => {
+            let (icon, ink) = super::live::mark(job);
+            row.push(Box::new(icon.on(14.0, ink)));
+        }
+        Detail::Reminder(_) => row.push(Box::new(Icon::Calendar.draw(14.0))),
         Detail::Session(Leaving::Counting { end, .. }) => {
             row.push(Box::new(
                 surfaces::session::icon(Leave::Ending(*end)).draw(14.0),
@@ -231,11 +242,17 @@ pub(super) fn small_form(
             level(presentation, Level::keyboard(percent))
         }
         (presentation, Some(&Detail::Mode(shown))) => self::mode(presentation, shown),
+        (presentation, Some(Detail::Layout(layout))) => self::layout(presentation, layout),
         (presentation, Some(Detail::Battery(charge))) => battery(presentation, charge),
         (presentation, Some(Detail::Workspace(workspace))) => {
             self::workspace(presentation, workspace)
         }
-        (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
+        (presentation, Some(Detail::Timer(countdown, round))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            self::timer(presentation, countdown, round.as_ref(), actions, now)
+        }
+        (presentation, Some(Detail::Live(job))) => super::live::live(presentation, job),
         (presentation, Some(Detail::Screenshot(shot))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 
@@ -255,6 +272,14 @@ pub(super) fn small_form(
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 
             self::session(presentation, leaving, actions, now)
+        }
+        (presentation, Some(Detail::NightLight(why))) => night_light(presentation, why),
+        (presentation, Some(Detail::Reminder(shown))) => {
+            let activity = content.activity.as_ref();
+            let actions = activity.map_or(&[][..], Activity::actions);
+            let key = activity.map_or("", |activity| activity.id().key());
+
+            reminder(presentation, shown, actions, key)
         }
         _ => None,
     }
@@ -350,6 +375,41 @@ pub(super) fn caffeine(
     )
 }
 
+// the sunset, then why the night light is not on; it has nothing to press
+fn night_light(presentation: Presentation, why: &str) -> Option<Rectangle> {
+    titled(
+        presentation,
+        Lead::Mark(Icon::Sunset, theme::island().on_surface),
+        "Night light failed",
+        why,
+        Pills {
+            actions: &[],
+            subject: "",
+            act: |_, _| {},
+        },
+    )
+}
+
+// the calendar, the event's title, then when it starts and how far off that is
+fn reminder(
+    presentation: Presentation,
+    reminder: &Reminder,
+    actions: &[Action],
+    key: &str,
+) -> Option<Rectangle> {
+    titled(
+        presentation,
+        Lead::Mark(Icon::Calendar, theme::island().on_surface),
+        &reminder.title,
+        &reminder.when,
+        Pills {
+            actions,
+            subject: key,
+            act: reminders::act,
+        },
+    )
+}
+
 // what counts down, then how long is left, or why it was refused
 pub(super) fn session(
     presentation: Presentation,
@@ -416,10 +476,10 @@ enum Lead<'a> {
 }
 
 // an Activity's actions, each run by its source's `act` with the key and what it acts on
-struct Pills<'a> {
-    actions: &'a [Action],
-    subject: &'a str,
-    act: fn(&str, &str),
+pub(super) struct Pills<'a> {
+    pub(super) actions: &'a [Action],
+    pub(super) subject: &'a str,
+    pub(super) act: fn(&str, &str),
 }
 
 /*
@@ -516,7 +576,7 @@ fn lead_tile(lead: Lead, side: f32, radius: f32) -> Box<dyn Widget> {
 }
 
 // an action, run on a left click before the click reaches the island
-fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
+pub(super) fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
     let label = Text::new(&action.label)
         .size(theme::text::LABEL_SMALL)
         .color(theme::island().on_surface)

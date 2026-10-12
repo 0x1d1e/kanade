@@ -69,14 +69,14 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Group | Modules |
 | --- | --- |
 | Core | `island` |
-| Activities | `media`, `timer`, `battery`, `workspace` |
-| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `weather` |
+| Activities | `media`, `timer`, `live`, `battery`, `workspace` |
+| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `google-calendar`, `caldav`, `calendar-reminders`, `weather` |
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
-| Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface` |
-| Utilities | `capture`, `caffeine`, `doctor` |
+| Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface` |
+| Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
-| Session | `lock`, `session`, `settings` |
+| Session | `lock`, `idle`, `session`, `settings` |
 
 Rules:
 
@@ -87,7 +87,7 @@ Rules:
 - `osd` optionally reads `audio`/`brightness`, the keyboards' evdev devices (input group), `/dev/rfkill` and logind's `Active` (ADR 0021); typing and key repeat are the runtime's (ADR 0034).
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `privacy` default on; disable warns indicators disappear.
-- `calendar` network/account sync optional; local calendar still works without it.
+- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` and `caldav` → `calendar`; `caldav` makes no request without an account in `calendar.caldav`, bounded refresh with backoff (ADR 0044). `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
 - module toggle requires restart while the runtime registers windows only at startup.
 
@@ -127,14 +127,15 @@ Rules:
 
 ### Core Surfaces
 
-- **Launcher**: providers = apps, calculator, emoji, wallpaper, destinations (Wi-Fi and Bluetooth open Controls on their sub-surface, Clipboard its history, each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet.
+- **Launcher**: providers = apps, calculator, emoji, wallpaper, destinations (Wi-Fi and Bluetooth open Controls on their sub-surface, Clipboard its history, each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface, never by the hold or the grace; a newer one replaces the one waiting, a Launcher the user opened refuses it.
 - **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio (done, #133).
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
-- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016).
+- **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.
+- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016); optional CalDAV accounts synced read-only the same way, passwords only in the Secret Service ([ADR 0044](adr/0044-caldav-accounts.md)). Reminders from events' `VALARM`s, or a default lead, as an Ongoing Activity counting down, each going off once across restarts ([ADR 0043](adr/0043-calendar-reminders.md)).
 - **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
 
 ### Tray
@@ -166,20 +167,32 @@ Idle inhibitor toggle/activity. Prevent idle/lock/suspend only while explicitly 
 
 A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. The shell answers `on` at once as starting and a worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; `kanade` waits on `caffeine status` within one 5 s patience. Off, toggle and a newer on supersede a start by serial. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
 
+### Live Activities
+
+`kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word; a thread sleeps until the next one is due, none while none is live. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with.
+
+### Night light
+
+`night-light.mode` off, on or on a schedule, at `night-light.temperature` K, through a `wlsunset` held under `setpriv --pdeathsig` while not off; a schedule is `night-light.sunset`/`sunrise`, else the sun at `weather.location`. A config change restarts it; one that ends restarts with a backoff and shows once as a Transient Failed Activity. The Controls switch and `kanade night-light` write the mode to the settings file ([ADR 0046](adr/0046-night-light-through-wlsunset.md)).
+
+### Battery
+
+A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker by serial, so the draw thread never waits, and a refusal shows on the switch.
+
 ### Presentation migration
 
 [ADR 0007](adr/0007-banners-and-osd-leave-the-island.md), its OSD part superseded by [ADR 0021](adr/0021-the-osd-returns-to-the-island.md).
 
-- notification toast → **Banner**: focused output, hanging from the Island and coming out of it ([ADR 0023](adr/0023-banners-come-out-of-the-island.md)); 4 s low, 6 s normal, critical sticky; hover pause; max 3.
-- volume/brightness/mic and Caps Lock/Num Lock/airplane mode → **OSD**, a `Feedback` Transient on the Island, from changes and from the level keys, masked evdev (ADR 0021).
+- notification toast → **Banner**: focused output, hanging from the Island and coming out of it ([ADR 0023](adr/0023-banners-come-out-of-the-island.md)); 4 s low, 6 s normal, critical sticky; hover pause; max 3; per-app rules (`notifications.rules`, first match wins) choose Banner, history, DND bypass, time and urgency, applied as a notification arrives.
+- volume/brightness/mic, Caps Lock/Num Lock/airplane mode and a keyboard layout switch niri announces (`osd.layout`) → **OSD**, a `Feedback` Transient on the Island, from changes and from the level keys, masked evdev (ADR 0021).
 - Island keeps durable Activities.
 
 ### Later
 
 - **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; edge and side, magnification under the pointer, autohide, reserve or float over windows; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144); merges with the Island where they share an edge and a side, `dock.merge` (ADR 0031).
-- **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>`, Launcher `@` over `wallpaper.directory`; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
+- **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>|shuffle`, Launcher `@` over `wallpaper.directory`, and the Wallpapers Surface: the folder as a grid of thumbnails the runtime decodes off the draw thread into a bounded cache, the one showing marked, searched by file name; a pick's `wallpaper.transition` grows from its tile; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
 - **Lock**: `ext-session-lock` + PAM (`login` service); as macOS's, date, time, user and a glass password pill over the output's wallpaper as `lock.backdrop` says ([ADR 0024](adr/0024-glass-on-every-surface.md)), no notification content; drawn and held by `kanade-lock` over a Wayland connection of its own, a surface committed per output as niri sizes it, so niri shows no red ([ADR 0025](adr/0025-the-lock-screen-over-its-own-connection.md)); `kanade lock`, which exits 0 once niri holds the lock for that call and no password was accepted since, undoing an unlock niri has not ended yet, 1 when niri refuses it, and 3 when that is not known, as while a password is checked (#196); re-locks at start on a true logind `LockedHint`; Kanade runs as the `kanade.service` user unit tied to `graphical-session.target`, `Restart=always` with a start limit; doctor checks PAM, logind and the unit (done, #154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
-- **Idle/suspend**: on logind `PrepareForSleep` the `lock` Module locks and confirms before letting go of its `systemd-inhibit --what=sleep --mode=delay` holder (ADR 0011, under `setpriv --pdeathsig`), retaken on resume; signals only from logind's unique name, over Kanade's own zbus system connection, connected again with a backoff when lost. From `PrepareForSleep(true)` until `(false)` no password goes to PAM: the gate shuts as the signal is heard, and on each connection from logind's `PreparingForSleep`; only logind saying `false` opens it, never a lost bus or no answer; a password typed while it is shut stays in the field, shows Locked for sleep and asks logind, so a `(false)` never heard does not keep it shut. Kanade checks a password with PAM once and asks `kanade-lock` to unlock under the same lock as the gate (ADR 0025); sleep drops a check, so its late result unlocks nothing. An unlock sent just before `PrepareForSleep(true)` is asked over, and sleep waits up to logind's delay for niri to hold the lock again, so the session unlocks only for that moment. A holder that ends or cannot start is retaken with a backoff (1 s doubling to 5 min), followed by its stdout closing, not polled; `kanade status` says how it stands. Caffeine is an idle inhibitor only: it stops hypridle's idle lock, not an explicit suspend's lock. Idle locking is hypridle's (`lock_cmd = kanade lock`), documented in README (done, #155).
+- **Idle/suspend**: on logind `PrepareForSleep` the `lock` Module locks and confirms before letting go of its `systemd-inhibit --what=sleep --mode=delay` holder (ADR 0011, under `setpriv --pdeathsig`), retaken on resume; signals only from logind's unique name, over Kanade's own zbus system connection, connected again with a backoff when lost. From `PrepareForSleep(true)` until `(false)` no password goes to PAM: the gate shuts as the signal is heard, and on each connection from logind's `PreparingForSleep`; only logind saying `false` opens it, never a lost bus or no answer; a password typed while it is shut stays in the field, shows Locked for sleep and asks logind, so a `(false)` never heard does not keep it shut. Kanade checks a password with PAM once and asks `kanade-lock` to unlock under the same lock as the gate (ADR 0025); sleep drops a check, so its late result unlocks nothing. An unlock sent just before `PrepareForSleep(true)` is asked over, and sleep waits up to logind's delay for niri to hold the lock again, so the session unlocks only for that moment. A holder that ends or cannot start is retaken with a backoff (1 s doubling to 5 min), followed by its stdout closing, not polled; `kanade status` says how it stands. Caffeine is an idle inhibitor only: it stops an idle lock, not an explicit suspend's lock. Idle locking is the `idle` Module's when on (ADR 0047): stages `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend` after the runtime's `ext-idle-notify-v1` primitive says idle, the dim grace a click-through Overlay layer per output fading toward dark until the lock, which never waits on it and is asked again while it fails; logind's idle inhibitors and caffeine hold every stage. Off by default, idle locking stays hypridle's (`lock_cmd = kanade lock`), documented in the wiki's Keyboard page; doctor warns when both run.
 - **Session**: the Session Surface and `kanade session`: lock by the `lock` Module, sleep/restart/poweroff/logout via logind over Kanade's own zbus system connection, not interactive, so polkit never asks for a password typed after a Cancel; restart, power off and log out first count down 60 s as a Critical Global Preempt Session Activity with Cancel and Now, a newer one replacing it by serial; one logind call at a time, never given up on: until it answers no other is asked and no countdown starts. A call never made, as with no system bus or session, is a refusal. An error logind sends is one too, unless it passes on an answer it never got (a timeout or lost connection); one the bus sends is a refusal only if it never delivered the call (no logind, its policy or limits denied it, activation failed). Anything else is no answer (the bus's NoReply, a timeout, a lost connection, a panic): a Critical Preempt Session Activity says it may still happen, Persistent on every island with Dismiss, a countdown running is refused at once, and none is asked until Kanade restarts. A refusal closes the Session Surface, which shows none, and shows a Failed Activity with the reason, logind's if it gave one, Critical while a countdown is, Transient on the focused output for a lock or sleep, and Persistent on every island with Dismiss for a restart, power off or log out, which may have counted down unattended (done, #156).
 - **Settings**: floated normal window; schema-backed overrides; pages by task, with search, Inspect (the keys) and Undo ([ADR 0029](adr/0029-settings-pages-by-task.md)); per-output keys file-only (done, #148).
 
@@ -225,10 +238,11 @@ Schema registry (`config::Setting`, per Module) defines each setting once: key/k
 
 ## CLI
 
-Public: `kanade <verb> [args]`; the runtime's IPC socket (`$XDG_RUNTIME_DIR/kanade.sock`) internal.
+Public: `kanade <verb> [args]`; the runtime's IPC socket (`$XDG_RUNTIME_DIR/kanade.sock`) internal. A handler answers through an `IpcReply` it may keep, so a call can wait on the user: `dmenu` waits with no deadline, every other verb answers at once, within the client's 5 s.
 
 ```text
 launcher open|close|toggle
+dmenu [--prompt <text>]
 controls open|close|toggle
 media open|close|toggle
 island collapse
@@ -236,12 +250,20 @@ notifications open|close|toggle|clear
 notifications dnd on|off|toggle
 clipboard open|close|toggle|clear
 calendar open|close|toggle
+reminders dismiss|status
+caldav login <name>|logout <name>|sync [<name>]|status
 weather open|close|toggle|refresh|status
-timer start <dur>|pause|resume|cancel
+timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
+activity start <id> <title>|progress <id> <amount>|detail <id> [text]
+activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
-wallpaper set <path>|status
+night-light on|off|toggle|status
+battery limit on|off|status
+wallpaper set <path>|shuffle|status
+wallpaper open|close|toggle
+keys open|close|toggle
 osd volume|brightness
 settings open [page]|close
 config reload|validate|defaults
@@ -249,6 +271,7 @@ status
 doctor
 module list|enable <name>|disable <name>
 lock
+idle status
 session menu|suspend|reboot|poweroff|logout
 ```
 

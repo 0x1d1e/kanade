@@ -110,7 +110,9 @@ pub fn key(monitor: &str, key: Key) {
         let used = (modules::on("notification-surface")
             && surfaces::notifications::key(monitor, key))
             || (modules::on("launcher") && surfaces::launcher::key(monitor, key))
-            || (modules::on("clipboard-surface") && surfaces::clipboard::key(monitor, key));
+            || (modules::on("clipboard-surface") && surfaces::clipboard::key(monitor, key))
+            || (modules::on("wallpaper-surface") && surfaces::wallpapers::key(monitor, key))
+            || (modules::on("keys-surface") && surfaces::keys::key(monitor, key));
 
         if !used {
             stray(monitor, key);

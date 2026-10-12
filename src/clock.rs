@@ -12,7 +12,8 @@
 //! holds `interrupt`, which std lacks, for a child that must end cleanly, the one place a UTC
 //! moment becomes local time, which the calendar's events need too, `authenticate`, Linux-PAM's
 //! password check, which the lock screen runs itself so it can drop a result sleep made stale, and
-//! the kernel's input and rfkill ABI the OSD reads keys, lock lights and radios through (ADR 0021).
+//! the kernel's input and rfkill ABI the OSD reads keys, lock lights and radios through (ADR 0021),
+//! and `WallTimer`, a wall-clock moment for a thread to wait for, like a calendar reminder.
 
 use std::ffi::{CString, c_char, c_int, c_long, c_ulong, c_void};
 use std::fs::File;
@@ -53,6 +54,7 @@ const ECANCELED: i32 = 125;
 pub const SIGINT: c_int = 2;
 const SIGUSR1: c_int = 10;
 const SIG_DFL: usize = 0;
+const SIG_IGN: usize = 1;
 
 // USER_HZ, the clock ticks /proc counts a process's start time in
 pub const USER_HZ: u64 = 100;
@@ -348,6 +350,48 @@ pub fn spawn() {
     }
 }
 
+/*
+ * a wall-clock moment one thread waits for, like a calendar reminder's (ADR 0043): it fires at the
+ * moment set, at once after a resume that passed it, and early when the clock is set, so the
+ * waiter works out again what is due. `set` and `wait` may be on different threads
+ */
+pub struct WallTimer(File);
+
+impl WallTimer {
+    pub fn new() -> io::Result<WallTimer> {
+        // SAFETY: plain call, the fd it returns is owned below
+        let fd = unsafe { timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: a fresh fd nothing else owns
+        Ok(WallTimer(File::from(unsafe { OwnedFd::from_raw_fd(fd) })))
+    }
+
+    // fires at `at` seconds since the epoch, at once for one past; replaces the moment set before
+    pub fn set(&self, at: i64) -> io::Result<()> {
+        // 0 would disarm it, and any moment before now fires at once
+        let at = c_long::try_from(at.max(1)).unwrap_or(c_long::MAX);
+
+        arm(self.0.as_raw_fd(), at)
+    }
+
+    // asleep until the moment set passes or the clock is set
+    pub fn wait(&self) -> io::Result<()> {
+        let mut expirations = [0; 8];
+
+        loop {
+            match (&self.0).read_exact(&mut expirations) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.raw_os_error() == Some(ECANCELED) => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 // the time shows but never turns again, which stderr and `kanade status` say
 fn unturned(problem: &str) {
     let why = format!("{problem}, the time will not turn");
@@ -494,6 +538,17 @@ pub fn user_signal(pid: u32) -> io::Result<()> {
 }
 
 /*
+ * this process ignores SIGINT, so Ctrl+C ends only the child it waits on, which `default_sigint`
+ * gives back the default, and it can still say how the child ended (`kanade activity run`)
+ */
+pub fn ignore_sigint() {
+    // SAFETY: plain call, setting a disposition, no handler
+    unsafe {
+        signal(SIGINT, SIG_IGN);
+    }
+}
+
+/*
  * `command` starts with SIGINT at its default, so `interrupt` ends it even when Kanade was started
  * with SIGINT ignored, as a job run in the background of a script is, which children inherit
  */
@@ -504,6 +559,145 @@ pub fn default_sigint(command: &mut Command) -> &mut Command {
             signal(SIGINT, SIG_DFL);
             Ok(())
         })
+    }
+}
+
+// <asm-generic/termbits.h> and <asm-generic/ioctls.h>, as on x86_64, aarch64 and riscv64
+const TCGETS: c_ulong = 0x5401;
+const TCSETS: c_ulong = 0x5402;
+const ISIG: u32 = 0o1;
+const ICANON: u32 = 0o2;
+const ECHO: u32 = 0o10;
+const VTIME: usize = 5;
+const VMIN: usize = 6;
+
+// the kernel's `struct termios`, which TCGETS and TCSETS take, not glibc's larger one
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Termios {
+    c_iflag: u32,
+    c_oflag: u32,
+    c_cflag: u32,
+    c_lflag: u32,
+    c_line: u8,
+    c_cc: [u8; 19],
+}
+
+const _: () = assert!(size_of::<Termios>() == 36);
+
+// a terminal's mode as it was, put back when dropped, on every path out
+struct Restore {
+    fd: c_int,
+    mode: Termios,
+}
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        // SAFETY: TCSETS reads a `Termios` the kernel's size from a live pointer
+        unsafe { ioctl(self.fd, TCSETS, &raw const self.mode) };
+    }
+}
+
+// what a key typed at a hidden prompt does to the line
+#[derive(Debug, PartialEq, Eq)]
+enum Typed {
+    More,
+    Entered,
+    Cancelled,
+}
+
+/*
+ * `byte` typed into `line`: Enter ends it, Ctrl+C cancels, as does Ctrl+D on an empty line;
+ * Backspace takes back a character, Ctrl+U the whole line
+ */
+fn type_into(line: &mut Vec<u8>, byte: u8) -> Typed {
+    match byte {
+        b'\r' | b'\n' => Typed::Entered,
+        0x03 => Typed::Cancelled,
+        0x04 if line.is_empty() => Typed::Cancelled,
+        0x04 => Typed::More,
+        0x7f | 0x08 => {
+            // a whole UTF-8 character: its continuation bytes, then its first
+            while line.pop().is_some_and(|last| last & 0xc0 == 0x80) {}
+            Typed::More
+        }
+        0x15 => {
+            line.zeroize();
+            line.clear();
+            Typed::More
+        }
+        byte => {
+            line.push(byte);
+            Typed::More
+        }
+    }
+}
+
+/*
+ * a line read from stdin with nothing shown as it is typed, like a password, none when the user
+ * cancelled. From a terminal it reads key by key, without echo or signals, so Ctrl+C cancels here
+ * and the terminal is always left as it was; from a pipe it reads the first line. Every copy is
+ * zeroed
+ */
+pub fn hidden_line() -> io::Result<Option<Zeroizing<String>>> {
+    let fd = io::stdin().as_raw_fd();
+    let mut mode = Termios {
+        c_iflag: 0,
+        c_oflag: 0,
+        c_cflag: 0,
+        c_lflag: 0,
+        c_line: 0,
+        c_cc: [0; 19],
+    };
+
+    // SAFETY: TCGETS writes a `Termios` the kernel's size to a live pointer
+    let terminal = unsafe { ioctl(fd, TCGETS, &raw mut mode) } == 0;
+    // room enough that a typed line never moves, leaving a copy behind
+    let mut line = Zeroizing::new(Vec::with_capacity(4096));
+
+    if terminal {
+        let restore = Restore { fd, mode };
+        let mut hidden = mode;
+        hidden.c_lflag &= !(ECHO | ICANON | ISIG);
+        hidden.c_cc[VMIN] = 1;
+        hidden.c_cc[VTIME] = 0;
+
+        // SAFETY: as above
+        if unsafe { ioctl(fd, TCSETS, &raw const hidden) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut stdin = io::stdin().lock();
+        let mut byte = [0u8];
+        loop {
+            match stdin.read(&mut byte)? {
+                0 if line.is_empty() => return Ok(None),
+                0 => break,
+                _ => match type_into(&mut line, byte[0]) {
+                    Typed::More => {}
+                    Typed::Entered => break,
+                    Typed::Cancelled => return Ok(None),
+                },
+            }
+        }
+        drop(restore);
+    } else {
+        let mut stdin = io::stdin().lock();
+        let mut byte = [0u8];
+        while stdin.read(&mut byte)? == 1 && byte[0] != b'\n' {
+            line.push(byte[0]);
+        }
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+    }
+
+    match String::from_utf8(std::mem::take(&mut *line)) {
+        Ok(text) => Ok(Some(Zeroizing::new(text))),
+        Err(error) => {
+            error.into_bytes().zeroize();
+            Err(io::Error::new(io::ErrorKind::InvalidData, "not UTF-8"))
+        }
     }
 }
 
@@ -665,6 +859,34 @@ fn read(hour: c_int, minute: c_int, hours: Hours) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn typed(keys: &[u8]) -> (Vec<u8>, Typed) {
+        let mut line = Vec::new();
+
+        for &key in keys {
+            match type_into(&mut line, key) {
+                Typed::More => {}
+                done => return (line, done),
+            }
+        }
+
+        (line, Typed::More)
+    }
+
+    // a password typed with corrections is what was meant, and Ctrl+C never sends a half one
+    #[test]
+    fn a_hidden_line_takes_corrections_and_cancels() {
+        assert_eq!(typed(b"pw\r"), (b"pw".to_vec(), Typed::Entered));
+        assert_eq!(typed(b"pwx\x7f!\n"), (b"pw!".to_vec(), Typed::Entered));
+        assert_eq!(
+            typed("p\u{e9}\x7f\r".as_bytes()),
+            (b"p".to_vec(), Typed::Entered)
+        );
+        assert_eq!(typed(b"wrong\x15pw\r"), (b"pw".to_vec(), Typed::Entered));
+        assert_eq!(typed(b"pw\x03").1, Typed::Cancelled);
+        assert_eq!(typed(b"\x04").1, Typed::Cancelled);
+        assert_eq!(typed(b"pw\x04\r"), (b"pw".to_vec(), Typed::Entered));
+    }
 
     // a Caps Lock press as a 64-bit kernel writes it: a timeval of two longs, type, code, value
     #[test]

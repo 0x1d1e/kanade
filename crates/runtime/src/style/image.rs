@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use crate::graphics::{Area, image};
+use crate::graphics::Area;
+use crate::graphics::image::{self, ImageState};
 
 pub struct Image {
     pub(crate) path: PathBuf,
@@ -82,6 +83,15 @@ impl Image {
         let path = path.as_ref();
 
         image::load(path, None, 0).is_some()
+    }
+
+    /*
+     * how the copy this draws stands, starting its decode if nothing asked for it yet, so a
+     * picture still loading or unreadable can show something in its place; a window that reads
+     * one loading is drawn again once it is done
+     */
+    pub fn state(&self) -> ImageState {
+        image::state(&self.path, self.thumbnail, self.blur)
     }
 }
 

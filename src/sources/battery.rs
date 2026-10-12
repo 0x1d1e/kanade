@@ -1,6 +1,8 @@
-//! Low and critical battery (plan 5.1, 7): one Persistent Activity while the battery drains below
-//! `LOW`, shown amber with its number. Below `CRITICAL` it turns Critical, red, and preempts an open
-//! Surface. Charging withdraws it.
+//! Low and critical battery (plan 5.1, 7): one Persistent Activity while the battery drains to
+//! `battery.low`, shown amber with its number. At `battery.critical` it turns Critical, red, and
+//! preempts an open Surface, and `battery.critical_action`, unless none, counts down through the
+//! session Module as a restart does, so Cancel stops it. Charging withdraws it and cancels the
+//! countdown.
 //!
 //! The kernel's power supply files have no subscription, so this reads them every 5 s, and every
 //! second for a while after the kernel announces a charger going in or out (`wake`), as the status
@@ -12,18 +14,14 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::service::Service;
 
+use super::session;
 use super::wake::{Announcer, Pace, Wakes};
+use crate::config::{self, CriticalAction};
 use crate::island::activity::{
-    Activity, Charge, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
+    Activity, Charge, Detail, Ending, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
-use crate::supervise;
-
-// at or below, the battery shows (plan 7: amber)
-const LOW: u8 = 20;
-
-// at or below, it preempts (plan 5.1 rule 4: red)
-const CRITICAL: u8 = 10;
+use crate::{modules, supervise};
 
 const PACE: Pace = Pace {
     // a charger that goes in shows within this of the kernel's status
@@ -62,8 +60,8 @@ impl BatteryLevel {
 impl From<Reading> for BatteryLevel {
     fn from(reading: Reading) -> Self {
         BatteryLevel {
-            percent: reading.present.then_some(reading.percent),
-            charging: reading.present && !reading.draining,
+            percent: reading.present.then_some(reading.percent).flatten(),
+            charging: reading.charging,
         }
     }
 }
@@ -82,30 +80,111 @@ impl Service for BatteryLevel {
 struct Reading {
     // false without a battery, as on a desktop
     present: bool,
-    percent: u8,
+
+    // none while the kernel gives no number, which is never low nor critical
+    percent: Option<u8>,
 
     // on battery power; false without a battery, or plugged in, charging or not
     draining: bool,
+
+    // plugged in, as Rest shows it; `Not charging` is plugged in, usually because it is full
+    charging: bool,
 }
 
 impl Reading {
-    // the first supply whose type is Battery, so a laptop's AC adapter is skipped
+    // the machine's batteries, as one
     fn read() -> Reading {
-        let Some(path) = battery() else {
-            return Reading {
-                present: false,
-                percent: 0,
-                draining: false,
-            };
+        let cells: Vec<Cell> = batteries().iter().map(|path| Cell::read(path)).collect();
+
+        Reading::of(&cells)
+    }
+
+    /*
+     * several batteries, as some laptops have, weigh by their energy, as UPower does, else average.
+     * Only `Discharging` drains: `Unknown` or nothing is what a battery says when it cannot tell,
+     * and a guess must not power the machine off
+     */
+    fn of(cells: &[Cell]) -> Reading {
+        let draining = cells.iter().any(|cell| cell.status == "Discharging");
+        let charging = !draining
+            && cells
+                .iter()
+                .any(|cell| matches!(cell.status.as_str(), "Charging" | "Full" | "Not charging"));
+
+        let energy = cells
+            .iter()
+            .map(|cell| cell.energy)
+            .collect::<Option<Vec<_>>>();
+        let percent = match energy {
+            Some(energy) if !energy.is_empty() => {
+                let (now, full) = energy
+                    .iter()
+                    .fold((0, 0), |(now, full), cell| (now + cell.0, full + cell.1));
+
+                (full > 0).then(|| (now * 100 / full).min(100) as u8)
+            }
+            _ => {
+                let capacity = cells
+                    .iter()
+                    .map(|cell| cell.capacity)
+                    .collect::<Option<Vec<_>>>();
+
+                capacity
+                    .filter(|capacity| !capacity.is_empty())
+                    .map(|capacity| {
+                        let sum: u32 = capacity.iter().map(|&percent| u32::from(percent)).sum();
+                        (sum / capacity.len() as u32).min(100) as u8
+                    })
+            }
         };
 
-        // `Not charging` is plugged in, usually because it is full
-        let status = supply(&path, "status");
-
         Reading {
-            present: true,
-            percent: supply(&path, "capacity").parse().unwrap_or(0),
-            draining: !matches!(status.as_str(), "Charging" | "Full" | "Not charging"),
+            present: !cells.is_empty(),
+            percent,
+            draining,
+            charging,
+        }
+    }
+}
+
+// one battery as the kernel gives it
+#[derive(Debug, Clone, PartialEq)]
+struct Cell {
+    status: String,
+    capacity: Option<u8>,
+
+    // now and full, in µWh or µAh as the battery counts
+    energy: Option<(u64, u64)>,
+}
+
+impl Cell {
+    fn read(path: &Path) -> Cell {
+        let number = |name: &str| supply(path, name).parse::<u64>().ok();
+        let pair = |now: &str, full: &str| number(now).zip(number(full));
+
+        Cell {
+            status: supply(path, "status"),
+            capacity: supply(path, "capacity").parse().ok(),
+            energy: pair("energy_now", "energy_full").or_else(|| pair("charge_now", "charge_full")),
+        }
+    }
+}
+
+// at or below, the battery shows amber (plan 7), and at or below `critical` red, preempting
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Thresholds {
+    low: u8,
+    critical: u8,
+}
+
+impl Thresholds {
+    fn configured() -> Thresholds {
+        let battery = config::get().battery;
+        let percent = |value: u32| u8::try_from(value).unwrap_or(u8::MAX);
+
+        Thresholds {
+            low: percent(battery.low),
+            critical: percent(battery.critical()),
         }
     }
 }
@@ -115,25 +194,138 @@ impl Reading {
  * once critical stays critical, until the charger goes in: a reading that wobbles one percent up
  * at the threshold neither withdraws nor de-escalates it
  */
-fn charge(shown: Option<Charge>, now: Reading) -> Option<Charge> {
+fn charge(shown: Option<Charge>, now: Reading, at: Thresholds) -> Option<Charge> {
     if !now.draining {
         return None;
     }
 
-    let critical = now.percent <= CRITICAL || shown.is_some_and(|charge| charge.critical);
+    // a battery that gives no number keeps what shows
+    let Some(percent) = now.percent else {
+        return shown;
+    };
 
-    (critical || now.percent <= LOW || shown.is_some()).then_some(Charge {
-        percent: now.percent,
-        critical,
-    })
+    let critical = percent <= at.critical || shown.is_some_and(|charge| charge.critical);
+
+    (critical || percent <= at.low || shown.is_some()).then_some(Charge { percent, critical })
 }
 
-fn battery() -> Option<PathBuf> {
-    fs::read_dir(POWER_SUPPLIES)
-        .ok()?
+// what the critical battery asks of the session Module
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ask {
+    CountDown(Ending),
+    Cancel(u64),
+}
+
+// a countdown the session refused is asked again after this, doubled each time up to `LONGEST`
+const SOONEST: Duration = Duration::from_secs(5);
+const LONGEST: Duration = Duration::from_secs(60);
+
+/*
+ * counts down once each time the battery turns critical while draining: Cancel, or a countdown that
+ * ran out and woke on battery, does not start another until a charger has gone in, which also
+ * cancels one counting. One the session refused is asked again, ever less often
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Guard {
+    armed: bool,
+
+    // the countdown it started, by serial, while it may still be counting
+    counting: Option<u64>,
+
+    // after a refusal: when to ask again, and how long the next wait is
+    again: Option<(Instant, Duration)>,
+}
+
+impl Guard {
+    fn new() -> Guard {
+        Guard {
+            armed: true,
+            counting: None,
+            again: None,
+        }
+    }
+
+    // what to ask after a reading at `now`; `critical` as the island shows it, so it is sticky too
+    fn next(
+        &mut self,
+        draining: bool,
+        critical: bool,
+        end: Option<Ending>,
+        now: Instant,
+    ) -> Option<Ask> {
+        if !draining {
+            self.armed = true;
+            self.again = None;
+            return self.counting.take().map(Ask::Cancel);
+        }
+
+        let due = self.again.is_none_or(|(at, _)| at <= now);
+        let end = end.filter(|_| critical && self.armed && due)?;
+        self.armed = false;
+
+        Some(Ask::CountDown(end))
+    }
+
+    fn started(&mut self, serial: u64) {
+        self.counting = Some(serial);
+        self.again = None;
+    }
+
+    // the session refused the countdown asked at `now`: asked again later
+    fn refused(&mut self, now: Instant) {
+        let wait = self.again.map_or(SOONEST, |(_, wait)| wait);
+
+        self.armed = true;
+        self.again = Some((now + wait, (wait * 2).min(LONGEST)));
+    }
+
+    // a countdown not asked after all, asked again at the next reading
+    fn retry(&mut self) {
+        self.armed = true;
+    }
+}
+
+fn ending(action: CriticalAction) -> Option<Ending> {
+    match action {
+        CriticalAction::None => None,
+        CriticalAction::Suspend => Some(Ending::Suspend),
+        CriticalAction::Hibernate => Some(Ending::Hibernate),
+        CriticalAction::PowerOff => Some(Ending::PowerOff),
+    }
+}
+
+// asks the session Module, which owns countdowns; a refusal shows on the island from there
+fn ask(guard: &mut Guard, ask: Ask) {
+    match ask {
+        Ask::Cancel(serial) => session::cancel(serial),
+        Ask::CountDown(_) if !modules::on("session") => {
+            eprintln!(
+                "kanade: battery: battery.critical_action needs the session Module, which is off"
+            );
+        }
+        // a battery critical as Kanade starts, read before the session thread is
+        Ask::CountDown(_) if !session::started() => guard.retry(),
+        Ask::CountDown(end) => match session::count_down(end) {
+            Ok(serial) => guard.started(serial),
+            Err(why) => {
+                eprintln!("kanade: battery: cannot count down, asking again: {why}");
+                guard.refused(Instant::now());
+            }
+        },
+    }
+}
+
+// the supplies that power the machine: not its AC adapter, nor a mouse's or headset's battery
+fn batteries() -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(POWER_SUPPLIES) else {
+        return Vec::new();
+    };
+
+    entries
         .flatten()
         .map(|entry| entry.path())
-        .find(|path| supply(path, "type") == "Battery")
+        .filter(|path| supply(path, "type") == "Battery" && supply(path, "scope") != "Device")
+        .collect()
 }
 
 fn supply(path: &Path, name: &str) -> String {
@@ -171,11 +363,12 @@ pub fn follow() {
     let mut wakes = Wakes::new(PACE, vec![POWER]);
     let mut shown = None;
     let mut last = None;
+    let mut guard = Guard::new();
 
     supervise::run("battery", || {
         loop {
             let reading = Reading::read();
-            let next = charge(shown, reading);
+            let next = charge(shown, reading, Thresholds::configured());
 
             if next != shown {
                 let now = Instant::now();
@@ -185,6 +378,13 @@ pub fn follow() {
                     Some(charge) => island.post(activity(charge), now),
                     None => island.withdraw(&id(), now),
                 }
+            }
+
+            let critical = next.is_some_and(|charge| charge.critical);
+            let end = ending(config::get().battery.critical_action);
+
+            if let Some(next) = guard.next(reading.draining, critical, end, Instant::now()) {
+                ask(&mut guard, next);
             }
 
             let busy = last != Some(reading);
@@ -197,4 +397,152 @@ pub fn follow() {
             wakes.wait(busy);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AT: Thresholds = Thresholds {
+        low: 20,
+        critical: 10,
+    };
+
+    fn draining(percent: u8) -> Reading {
+        Reading {
+            present: true,
+            percent: Some(percent),
+            draining: true,
+            charging: false,
+        }
+    }
+
+    fn shown(percent: u8, critical: bool) -> Option<Charge> {
+        Some(Charge { percent, critical })
+    }
+
+    #[test]
+    fn the_battery_shows_at_its_thresholds_and_holds_until_charging() {
+        assert_eq!(charge(None, draining(21), AT), None);
+        assert_eq!(charge(None, draining(20), AT), shown(20, false));
+        assert_eq!(charge(None, draining(10), AT), shown(10, true));
+
+        // a wobble up past a threshold neither withdraws nor de-escalates
+        assert_eq!(charge(shown(20, false), draining(21), AT), shown(21, false));
+        assert_eq!(charge(shown(10, true), draining(11), AT), shown(11, true));
+
+        // a charger withdraws it, at any percent
+        let plugged = Reading {
+            draining: false,
+            ..draining(5)
+        };
+        assert_eq!(charge(shown(5, true), plugged, AT), None);
+    }
+
+    fn cell(status: &str, capacity: Option<u8>, energy: Option<(u64, u64)>) -> Cell {
+        Cell {
+            status: status.to_owned(),
+            capacity,
+            energy,
+        }
+    }
+
+    // an unreadable or unsure battery must never power the machine off
+    #[test]
+    fn a_battery_that_cannot_tell_is_never_critical() {
+        let unread = Reading::of(&[cell("Discharging", None, None)]);
+        assert_eq!(unread.percent, None);
+        assert_eq!(charge(None, unread, AT), None);
+        assert_eq!(charge(shown(15, false), unread, AT), shown(15, false));
+
+        let unsure = Reading::of(&[cell("Unknown", Some(3), None)]);
+        assert!(!unsure.draining);
+        assert_eq!(charge(None, unsure, AT), None);
+    }
+
+    #[test]
+    fn several_batteries_weigh_by_energy() {
+        let both = Reading::of(&[
+            cell("Discharging", Some(5), Some((1, 20))),
+            cell("Unknown", Some(90), Some((72, 80))),
+        ]);
+
+        assert_eq!(both.percent, Some(73));
+        assert!(both.draining);
+        assert_eq!(charge(None, both, AT), None);
+
+        let none = Reading::of(&[]);
+        assert!(!none.present && none.percent.is_none() && !none.draining);
+    }
+
+    #[test]
+    fn a_critical_battery_counts_down_once_until_a_charger_goes_in() {
+        let end = Some(Ending::Suspend);
+        let now = Instant::now();
+        let mut guard = Guard::new();
+
+        assert_eq!(guard.next(true, false, end, now), None);
+        assert_eq!(
+            guard.next(true, true, end, now),
+            Some(Ask::CountDown(Ending::Suspend))
+        );
+        guard.started(7);
+
+        // Cancel, or waking on battery after it ran out, starts no other
+        assert_eq!(guard.next(true, true, end, now), None);
+
+        // a charger cancels it and re-arms
+        assert_eq!(guard.next(false, false, end, now), Some(Ask::Cancel(7)));
+        assert_eq!(guard.next(false, false, end, now), None);
+        assert_eq!(
+            guard.next(true, true, end, now),
+            Some(Ask::CountDown(Ending::Suspend))
+        );
+    }
+
+    #[test]
+    fn no_action_counts_nothing_down_and_stays_armed() {
+        let now = Instant::now();
+        let mut guard = Guard::new();
+
+        assert_eq!(guard.next(true, true, None, now), None);
+        assert_eq!(
+            guard.next(true, true, Some(Ending::Hibernate), now),
+            Some(Ask::CountDown(Ending::Hibernate))
+        );
+    }
+
+    // a countdown the session refused is asked again, ever less often, until one starts
+    #[test]
+    fn a_refused_countdown_is_asked_again() {
+        let end = Some(Ending::PowerOff);
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let mut guard = Guard::new();
+
+        assert_eq!(
+            guard.next(true, true, end, at(0)),
+            Some(Ask::CountDown(Ending::PowerOff))
+        );
+        guard.refused(at(0));
+
+        assert_eq!(guard.next(true, true, end, at(4)), None);
+        assert_eq!(
+            guard.next(true, true, end, at(5)),
+            Some(Ask::CountDown(Ending::PowerOff))
+        );
+        guard.refused(at(5));
+
+        // the wait doubles
+        assert_eq!(guard.next(true, true, end, at(14)), None);
+        assert_eq!(
+            guard.next(true, true, end, at(15)),
+            Some(Ask::CountDown(Ending::PowerOff))
+        );
+        guard.started(3);
+
+        // started, it counts down once as before
+        assert_eq!(guard.next(true, true, end, at(100)), None);
+        assert_eq!(guard.next(false, false, end, at(101)), Some(Ask::Cancel(3)));
+    }
 }

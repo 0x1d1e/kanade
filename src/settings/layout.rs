@@ -55,8 +55,17 @@ pub const MATERIAL: &str = "appearance.material";
 
 // the Modules page's groups, each Module but the core once
 pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
-    ("Desktop", &["dock", "windows", "wallpaper", "workspace"]),
-    ("Activities", &["media", "timer", "battery"]),
+    (
+        "Desktop",
+        &[
+            "dock",
+            "windows",
+            "wallpaper",
+            "wallpaper-surface",
+            "workspace",
+        ],
+    ),
+    ("Activities", &["media", "timer", "live", "battery"]),
     (
         "Notifications & privacy",
         &[
@@ -80,8 +89,10 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "tray",
             "launcher",
             "caffeine",
+            "night-light",
             "clipboard",
             "clipboard-surface",
+            "keys-surface",
         ],
     ),
     (
@@ -89,18 +100,21 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
         &[
             "calendar",
             "calendar-surface",
+            "calendar-reminders",
             "google-calendar",
+            "caldav",
             "weather",
             "weather-surface",
         ],
     ),
-    ("Session", &["lock", "session", "settings"]),
+    ("Session", &["lock", "idle", "session", "settings"]),
 ];
 
 pub const MODULES: &str = "modules";
 
-// settings owned by another control surface but still accepted in the config schema
-pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned"];
+// settings owned by another control surface, or lists of tables set in config files only, but
+// still accepted in the config schema
+pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned", "notifications.rules"];
 
 // old config keys that remain readable but no longer affect the shell
 pub const LEGACY_KEYS: &[&str] = &["theme.palette"];
@@ -188,6 +202,10 @@ pub const PAGES: &[Page] = &[
                 title: "Playing media",
                 rows: &[Row::Key("media.visualizer")],
             },
+            Section {
+                title: "Feedback",
+                rows: &[Row::Key("osd.layout")],
+            },
         ],
     },
     Page {
@@ -257,7 +275,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "notifications",
         title: "Notifications & privacy",
-        summary: "How Banners arrive and how capture is marked",
+        summary: "How Banners arrive, how capture is marked and how long live Activities wait",
         group: "Experience",
         icon: Icon::Bell,
         sections: &[
@@ -269,7 +287,27 @@ pub const PAGES: &[Page] = &[
                 title: "Privacy",
                 rows: &[Row::Key("privacy.indicators")],
             },
+            Section {
+                title: "Live Activities",
+                rows: &[Row::Key("live.stale")],
+            },
         ],
+    },
+    Page {
+        name: "timer",
+        title: "Timer",
+        summary: "How long a pomodoro's focus and breaks last",
+        group: "Experience",
+        icon: Icon::Stopwatch,
+        sections: &[Section {
+            title: "Pomodoro",
+            rows: &[
+                Row::Key("timer.pomodoro.work"),
+                Row::Key("timer.pomodoro.break"),
+                Row::Key("timer.pomodoro.long_break"),
+                Row::Key("timer.pomodoro.rounds"),
+            ],
+        }],
     },
     Page {
         name: "modules",
@@ -285,17 +323,25 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "data",
         title: "Data",
-        summary: "Where wallpapers, calendars and the weather come from",
+        summary: "Where wallpapers, calendars and the weather come from, and how a wallpaper changes",
         group: "System",
         icon: Icon::Data,
         sections: &[
             Section {
                 title: "Wallpaper",
-                rows: &[Row::Key("wallpaper.directory")],
+                rows: &[
+                    Row::Key("wallpaper.directory"),
+                    Row::Key("wallpaper.transition"),
+                    Row::Key("wallpaper.transition_duration"),
+                ],
             },
             Section {
                 title: "Calendar",
-                rows: &[Row::Key("calendar.paths")],
+                rows: &[
+                    Row::Key("calendar.paths"),
+                    Row::Key("calendar.reminder"),
+                    Row::Key("calendar.caldav"),
+                ],
             },
             Section {
                 title: "Weather",
@@ -308,15 +354,52 @@ pub const PAGES: &[Page] = &[
         ],
     },
     Page {
+        name: "power",
+        title: "Power & night light",
+        summary: "When the battery warns and what it does when critical; how warm the screen turns at night",
+        group: "System",
+        icon: Icon::Sunset,
+        sections: &[
+            Section {
+                title: "Battery",
+                rows: &[
+                    Row::Key("battery.low"),
+                    Row::Key("battery.critical"),
+                    Row::Key("battery.critical_action"),
+                ],
+            },
+            Section {
+                title: "Night light",
+                rows: &[
+                    Row::Key("night-light.mode"),
+                    Row::Key("night-light.temperature"),
+                    Row::Key("night-light.sunset"),
+                    Row::Key("night-light.sunrise"),
+                ],
+            },
+        ],
+    },
+    Page {
         name: "lock",
         title: "Lock screen",
-        summary: "What shows behind the lock screen",
+        summary: "What shows behind the lock screen, and when the session locks on its own",
         group: "System",
         icon: Icon::Lock,
-        sections: &[Section {
-            title: "",
-            rows: &[Row::Key("lock.backdrop")],
-        }],
+        sections: &[
+            Section {
+                title: "",
+                rows: &[Row::Key("lock.backdrop")],
+            },
+            Section {
+                title: "When idle",
+                rows: &[
+                    Row::Key("idle.dim"),
+                    Row::Key("idle.lock"),
+                    Row::Key("idle.screen_off"),
+                    Row::Key("idle.suspend"),
+                ],
+            },
+        ],
     },
 ];
 

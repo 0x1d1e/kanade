@@ -162,6 +162,11 @@ pub fn take_read() -> Reads {
     READ.take()
 }
 
+// wakes the event loop, from any thread, to pick up what was asked of it without drawing
+pub fn wake() {
+    ping();
+}
+
 fn ping() {
     // a write before the loop exists is picked up by the first frame anyway
     let Some(wake) = WAKE.get() else {

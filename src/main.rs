@@ -12,6 +12,7 @@ mod dock;
 mod doctor;
 mod glass;
 mod icon;
+mod idle;
 mod ipc;
 mod island;
 mod lock;

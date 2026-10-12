@@ -1,6 +1,6 @@
 use crate::allocator;
 use crate::graphics::font;
-use crate::ipc::IpcHandlers;
+use crate::ipc::{IpcHandlers, IpcReply};
 use crate::wayland::WaylandApp;
 use crate::window::Named;
 use crate::{LayerWindow, Monitor, Window};
@@ -48,8 +48,9 @@ impl App {
         self
     }
 
-    // lets `kanade <name> [arguments...]` run the handler while the shell is running
-    pub fn ipc(mut self, name: &str, handler: fn(&[String]) -> String) -> Self {
+    // lets `kanade <name> [arguments...]` run the handler while the shell is running; it answers
+    // through the reply, at once or once it knows
+    pub fn ipc(mut self, name: &str, handler: fn(&[String], IpcReply)) -> Self {
         self.handlers.insert(name, handler);
 
         self

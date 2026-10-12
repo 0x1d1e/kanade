@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
@@ -7,7 +6,7 @@ use smithay_client_toolkit::reexports::calloop::{
     Interest, LoopHandle, Mode, PostAction, generic::Generic,
 };
 
-use crate::ipc::{IpcCall, IpcHandlers, ipc_socket};
+use crate::ipc::{IpcCall, IpcHandlers, IpcReply, ipc_socket};
 
 use super::WaylandState;
 
@@ -49,7 +48,7 @@ fn listen() -> UnixListener {
     listener
 }
 
-fn answer(mut stream: UnixStream, handlers: &IpcHandlers) {
+fn answer(stream: UnixStream, handlers: &IpcHandlers) {
     // a client that never finishes sending must not freeze the shell
     let timeout = Some(Duration::from_secs(1));
 
@@ -61,7 +60,5 @@ fn answer(mut stream: UnixStream, handlers: &IpcHandlers) {
         return;
     };
 
-    let reply = handlers.run(&call);
-
-    let _ = stream.write_all(reply.as_bytes());
+    handlers.run(&call, IpcReply::new(stream));
 }
