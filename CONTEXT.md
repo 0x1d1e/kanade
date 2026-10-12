@@ -154,6 +154,6 @@ A feature the user can turn off in `[modules]` of the config: `src/modules/catal
 - **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its verbs with `module <name> is off`. A Service only it reads stays cold.
 - **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
 - A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).
-- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable.
+- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable. The Night Light switch likewise belongs to `night-light`, and is unavailable without `wlsunset`.
 - Which Modules run is decided once at start; a change takes a restart.
 - **Avoid:** plugin (not built), feature flag, Service (a `Service` is shared state a Module reads)

@@ -13,7 +13,7 @@ use kanade_runtime::{
 };
 use toml::Value;
 
-use crate::config::{self, Choices, Kind, Location, Setting};
+use crate::config::{self, Choices, DayTime, Kind, Location, Setting};
 use crate::glass;
 use crate::icon::Icon;
 use crate::look::{Along, Edge, Material, ShellMode};
@@ -97,6 +97,8 @@ const PERCENT_STEP: u64 = 10;
 // an idle stage steps by half a minute
 const SECONDS_STEP: u64 = 30;
 const MINUTE_STEP: u64 = 5;
+// a warmth steps by about what the eye tells apart
+const KELVIN_STEP: u64 = 100;
 
 pub fn window() -> Window {
     let settings = Settings::read();
@@ -953,6 +955,35 @@ fn control(
 
             (Box::new(stepper(setting, minutes, steps, roles)), true)
         }
+        Kind::Kelvin(range, field) => {
+            let kelvin = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: KELVIN_STEP,
+                unit: "K",
+                expected: "whole kelvin",
+            };
+
+            (Box::new(stepper(setting, kelvin, steps, roles)), true)
+        }
+        Kind::DayTime(_) => (
+            Box::new(field_with_hint(setting, "HH:MM", roles, move |text| {
+                let text = text.trim();
+                if text.is_empty() {
+                    change(path(key, None), None);
+                    return;
+                }
+
+                match DayTime::parse(text) {
+                    Ok(time) => change(path(key, None), Some(Value::String(time.to_string()))),
+                    Err(why) => {
+                        Settings::write().refused = Some(format!("Not saved: {key}: {why}"))
+                    }
+                }
+            })),
+            true,
+        ),
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
         }

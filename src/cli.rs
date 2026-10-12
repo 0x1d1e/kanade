@@ -19,7 +19,9 @@ use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{caffeine, capture, google, live, osd, recording, timer, wallpaper, weather};
+use crate::sources::{
+    caffeine, capture, google, live, night_light, osd, recording, timer, wallpaper, weather,
+};
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor, lock};
 
@@ -59,6 +61,7 @@ pub enum Call {
     Screenshot(capture::Mode),
     Record(recording::Request),
     Caffeine(caffeine::Request),
+    NightLight(night_light::Request),
     Wallpaper(wallpaper::Request),
     Google(google::Request),
     Weather(weather::Request),

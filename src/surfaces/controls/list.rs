@@ -22,7 +22,7 @@ pub const GAP: f32 = 14.0;
 // where the rows go
 pub const LIST: f32 = geometry::CONTROLS.height - 2.0 * INSET - HEADER - GAP;
 
-pub const ROWS: usize = 4;
+pub const ROWS: usize = 5;
 pub const ROW_GAP: f32 = 6.0;
 pub const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 pub const ROW_INSET: f32 = 12.0;

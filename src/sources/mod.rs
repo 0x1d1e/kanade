@@ -21,6 +21,7 @@ pub mod launch;
 pub mod live;
 pub mod media;
 pub mod network;
+pub mod night_light;
 pub mod niri;
 pub mod notifications;
 pub mod osd;

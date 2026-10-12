@@ -28,10 +28,12 @@ pub enum Kind {
 
     // posted by another program through `kanade activity` (ADR 0042)
     Live,
+
+    NightLight,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -47,6 +49,7 @@ impl Kind {
         Kind::Session,
         Kind::Mode,
         Kind::Live,
+        Kind::NightLight,
     ];
 
     // as IPC names it
@@ -67,6 +70,7 @@ impl Kind {
             Kind::Session => "session",
             Kind::Mode => "mode",
             Kind::Live => "live",
+            Kind::NightLight => "night-light",
         }
     }
 
@@ -256,6 +260,8 @@ pub enum Detail {
     // a keyboard layout switched to; in a mode's place, as one OSD shows either
     Layout(Layout),
     Live(Job),
+    // why the night light's wlsunset is not running
+    NightLight(String),
 }
 
 impl Detail {
@@ -276,6 +282,7 @@ impl Detail {
             Detail::Session(_) => Some(Kind::Session),
             Detail::Mode(_) | Detail::Layout(_) => Some(Kind::Mode),
             Detail::Live(_) => Some(Kind::Live),
+            Detail::NightLight(_) => Some(Kind::NightLight),
         }
     }
 

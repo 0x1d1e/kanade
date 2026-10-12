@@ -320,7 +320,7 @@ pub const UPRIGHT_TRAY: Shape = upright_tray(TRAY_SLOTS, TimePeek::ALL);
 
 pub const CONTROLS: Shape = Shape {
     width: 440.0,
-    height: 290.0,
+    height: 330.0,
     radius: 32.0,
 };
 

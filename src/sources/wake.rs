@@ -396,6 +396,21 @@ pub fn hold_lock(program: &str, args: &[&str]) -> io::Result<Child> {
         .spawn()
 }
 
+/*
+ * starts `program` as a holder of something the compositor gives back once it dies, like the
+ * screen's gamma (ADR 0046). Only through setpriv, never without: it would hold it for good with no
+ * Kanade left to stop it. Its stderr is piped, for why it ended; what it says on stdout is dropped
+ */
+pub fn hold_quiet(program: &str, args: &[&str]) -> io::Result<Child> {
+    Command::new(SETPRIV)
+        .args(["--pdeathsig", KILL, program])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+}
+
 // ends what `run` runs from another thread: kills the program, or ends the wait to run it again,
 // and it does not run again
 #[derive(Clone, Default)]

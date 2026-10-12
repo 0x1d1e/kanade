@@ -14,7 +14,7 @@ use crate::island::service::IslandService;
 use crate::sources::calendar::Calendars;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, fullscreen, google,
-    keys, launch, live, media, network,
+    keys, launch, live, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, seat, session, sleep, system,
     timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -970,6 +970,42 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| app,
+    },
+    /*
+     * warms the screen by `wlsunset` (ADR 0046), all day or from sunset to sunrise, as
+     * `night-light.mode` says; held by its own thread, so it dies with Kanade
+     */
+    Module {
+        name: "night-light",
+        about: "Warms the screen at night",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(night_light::WLSUNSET),
+                without: "no night light",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "no night light, which could outlive Kanade without it",
+            },
+        ],
+        settings: config::NIGHT_LIGHT,
+        verbs: &[Verb {
+            name: "night-light",
+            about: "Warm the screen at night",
+            usage: || String::from("night-light on|off|toggle|status"),
+            parse: |arguments| {
+                night_light::Request::parse(arguments)
+                    .map(Call::NightLight)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("night-light", night_light::follow);
+            app
+        },
     },
     /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at

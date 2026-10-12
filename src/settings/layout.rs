@@ -80,6 +80,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "tray",
             "launcher",
             "caffeine",
+            "night-light",
             "clipboard",
             "clipboard-surface",
         ],
@@ -315,6 +316,22 @@ pub const PAGES: &[Page] = &[
                 ],
             },
         ],
+    },
+    Page {
+        name: "power",
+        title: "Power & night light",
+        summary: "How warm the screen turns at night, and when",
+        group: "System",
+        icon: Icon::Sunset,
+        sections: &[Section {
+            title: "Night light",
+            rows: &[
+                Row::Key("night-light.mode"),
+                Row::Key("night-light.temperature"),
+                Row::Key("night-light.sunset"),
+                Row::Key("night-light.sunrise"),
+            ],
+        }],
     },
     Page {
         name: "lock",

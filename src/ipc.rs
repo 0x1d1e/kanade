@@ -26,7 +26,7 @@ use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, caffeine, fullscreen, google, live, session, sleep, wallpaper, weather,
+    apps, caffeine, fullscreen, google, live, night_light, session, sleep, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -85,6 +85,10 @@ fn run(call: Call) -> Reply {
         // on the draw thread, which systemd-inhibit dies with (`caffeine::request`)
         Call::Caffeine(request) => {
             caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // through the settings file's writes, which the Settings window shares
+        Call::NightLight(request) => {
+            night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // handed to the wallpaper's thread, as awww takes a while; `kanade` waits on it
         Call::Wallpaper(request) => {

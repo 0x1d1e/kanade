@@ -74,7 +74,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface` |
-| Utilities | `capture`, `caffeine`, `doctor` |
+| Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `idle`, `session`, `settings` |
 
@@ -170,6 +170,10 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 `kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word; a thread sleeps until the next one is due, none while none is live. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with.
 
+### Night light
+
+`night-light.mode` off, on or on a schedule, at `night-light.temperature` K, through a `wlsunset` held under `setpriv --pdeathsig` while not off; a schedule is `night-light.sunset`/`sunrise`, else the sun at `weather.location`. A config change restarts it; one that ends restarts with a backoff and shows once as a Transient Failed Activity. The Controls switch and `kanade night-light` write the mode to the settings file ([ADR 0046](adr/0046-night-light-through-wlsunset.md)).
+
 ### Presentation migration
 
 [ADR 0007](adr/0007-banners-and-osd-leave-the-island.md), its OSD part superseded by [ADR 0021](adr/0021-the-osd-returns-to-the-island.md).
@@ -248,6 +252,7 @@ activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
+night-light on|off|toggle|status
 wallpaper set <path>|status
 osd volume|brightness
 settings open [page]|close

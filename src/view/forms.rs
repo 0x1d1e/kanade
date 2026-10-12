@@ -264,6 +264,7 @@ pub(super) fn small_form(
 
             self::session(presentation, leaving, actions, now)
         }
+        (presentation, Some(Detail::NightLight(why))) => night_light(presentation, why),
         _ => None,
     }
 }
@@ -354,6 +355,21 @@ pub(super) fn caffeine(
             actions,
             subject,
             act: caffeine::act,
+        },
+    )
+}
+
+// the sunset, then why the night light is not on; it has nothing to press
+fn night_light(presentation: Presentation, why: &str) -> Option<Rectangle> {
+    titled(
+        presentation,
+        Lead::Mark(Icon::Sunset, theme::island().on_surface),
+        "Night light failed",
+        why,
+        Pills {
+            actions: &[],
+            subject: "",
+            act: |_, _| {},
         },
     )
 }

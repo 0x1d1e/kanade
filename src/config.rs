@@ -143,6 +143,8 @@ pub struct Config {
     pub osd_layout: bool,
     // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
     pub live_stale: Duration,
+    // `night-light.*`: when and how warm the screen turns (ADR 0046)
+    pub night_light: NightLight,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -366,8 +368,104 @@ impl Default for Config {
             notification_rules: Vec::new(),
             osd_layout: true,
             live_stale: Duration::from_secs(30 * 60),
+            night_light: NightLight::default(),
             outputs: BTreeMap::new(),
         }
+    }
+}
+
+// `night-light.*`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NightLight {
+    pub mode: NightMode,
+
+    // how warm the screen turns, in kelvin
+    pub temperature: u32,
+
+    // when it warms and cools again, both set or the location's sun is the schedule
+    pub sunset: Option<DayTime>,
+    pub sunrise: Option<DayTime>,
+}
+
+impl NightLight {
+    pub const TEMPERATURE: Range = Range {
+        least: 1000,
+        most: 6500,
+    };
+}
+
+impl Default for NightLight {
+    fn default() -> Self {
+        NightLight {
+            mode: NightMode::Off,
+            temperature: 4000,
+            sunset: None,
+            sunrise: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NightMode {
+    #[default]
+    Off,
+
+    // warm all day
+    On,
+
+    // warm from sunset to sunrise
+    Schedule,
+}
+
+impl NightMode {
+    pub const NAMES: &[&str] = &["off", "on", "schedule"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NightMode::Off => "off",
+            NightMode::On => "on",
+            NightMode::Schedule => "schedule",
+        }
+    }
+
+    pub fn named(name: &str) -> NightMode {
+        match name {
+            "on" => NightMode::On,
+            "schedule" => NightMode::Schedule,
+            _ => NightMode::Off,
+        }
+    }
+}
+
+// a time of day, `HH:MM` on a 24 hour clock
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DayTime {
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl DayTime {
+    const EXPECTED: &str = "expected a time as \"HH:MM\", 00:00 to 23:59";
+
+    pub fn parse(text: &str) -> Result<DayTime, String> {
+        let number = |text: &str| {
+            (text.len() == 2 && text.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| text.parse::<u8>().ok())
+                .flatten()
+        };
+
+        text.trim()
+            .split_once(':')
+            .and_then(|(hour, minute)| Some((number(hour)?, number(minute)?)))
+            .filter(|&(hour, minute)| hour < 24 && minute < 60)
+            .map(|(hour, minute)| DayTime { hour, minute })
+            .ok_or_else(|| String::from(DayTime::EXPECTED))
+    }
+}
+
+impl std::fmt::Display for DayTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour, self.minute)
     }
 }
 
@@ -515,6 +613,8 @@ pub enum Kind {
     Seconds(Range, Field<u32>),
     // whole minutes in a range
     Minutes(Range, Field<Duration>),
+    // a color temperature, whole kelvin in a range
+    Kelvin(Range, Field<u32>),
 
     // one of these strings
     Choice(Choices, Field<&'static str>),
@@ -527,6 +627,9 @@ pub enum Kind {
 
     // `[latitude, longitude]` in degrees; unset is none
     Location(Field<Option<Location>>),
+
+    // a time of day as "HH:MM"; unset is none
+    DayTime(Field<Option<DayTime>>),
 
     // a list of `.desktop` file ids, the `.desktop` optional, each kept once; a layer replaces the
     // list below
@@ -558,6 +661,7 @@ impl Kind {
             Kind::Percent(range, field) => (field.set)(config, percent(value, *range)?),
             Kind::Seconds(range, field) => (field.set)(config, seconds(value, *range)?),
             Kind::Minutes(range, field) => (field.set)(config, minutes(value, *range)?),
+            Kind::Kelvin(range, field) => (field.set)(config, kelvin(value, *range)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -589,6 +693,10 @@ impl Kind {
                 (field.set)(config, Some(text.trim().to_owned()));
             }
             Kind::Location(field) => (field.set)(config, Some(Location::read(value)?)),
+            Kind::DayTime(field) => {
+                let text = value.as_str().ok_or(DayTime::EXPECTED)?;
+                (field.set)(config, Some(DayTime::parse(text)?));
+            }
             Kind::DesktopIds(field) => {
                 let list = value
                     .as_array()
@@ -670,15 +778,17 @@ impl Kind {
             Kind::Millis(field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
             }
-            Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
-                Value::Integer(i64::from((field.get)(config)))
-            }
+            Kind::Pixels(_, field)
+            | Kind::Percent(_, field)
+            | Kind::Seconds(_, field)
+            | Kind::Kelvin(_, field) => Value::Integer(i64::from((field.get)(config))),
             Kind::Minutes(_, field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_secs() / 60).ok()?)
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
+            Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
             Kind::DesktopIds(field) | Kind::Paths(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
@@ -711,13 +821,15 @@ impl Kind {
         match self {
             Kind::Switch(field) => field.copy(from, to),
             Kind::Millis(field) => field.copy(from, to),
-            Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
-                field.copy(from, to)
-            }
+            Kind::Pixels(_, field)
+            | Kind::Percent(_, field)
+            | Kind::Seconds(_, field)
+            | Kind::Kelvin(_, field) => field.copy(from, to),
             Kind::Minutes(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
+            Kind::DayTime(field) => field.copy(from, to),
             Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
@@ -1560,6 +1672,66 @@ pub const IDLE: &[Setting] = &[
     },
 ];
 
+pub const NIGHT_LIGHT: &[Setting] = &[
+    Setting {
+        key: "night-light.mode",
+        label: "Night light",
+        help: "warms the screen through wlsunset: \"off\", \"on\" all day, or on a \"schedule\" from sunset to sunrise",
+        kind: Kind::Choice(
+            Choices::labeled(
+                NightMode::NAMES,
+                &[("off", "Off"), ("on", "Always"), ("schedule", "Schedule")],
+            ),
+            Field {
+                get: |config| config.night_light.mode.name(),
+                set: |config, name| config.night_light.mode = NightMode::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "night-light.temperature",
+        label: "Warmth",
+        help: "the screen's color temperature while warm; lower is warmer, 6500 is neutral",
+        kind: Kind::Kelvin(
+            NightLight::TEMPERATURE,
+            Field {
+                get: |config| config.night_light.temperature,
+                set: |config, kelvin| config.night_light.temperature = kelvin,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "night-light.sunset",
+        label: "Warm from",
+        help: "when the schedule warms the screen, as \"HH:MM\"; with night-light.sunrise it is the schedule, else the sun at weather.location is",
+        kind: Kind::DayTime(Field {
+            get: |config| config.night_light.sunset,
+            set: |config, time| config.night_light.sunset = time,
+        }),
+        example: Some("\"20:00\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "night-light.sunrise",
+        label: "Neutral from",
+        help: "when the schedule turns the screen neutral again, as \"HH:MM\"",
+        kind: Kind::DayTime(Field {
+            get: |config| config.night_light.sunrise,
+            set: |config, time| config.night_light.sunrise = time,
+        }),
+        example: Some("\"07:00\""),
+        restart: false,
+        per_output: false,
+    },
+];
+
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
     match id.strip_suffix(".desktop") {
@@ -1608,6 +1780,15 @@ fn minutes(value: &Value, range: Range) -> Result<Duration, String> {
         .filter(|minutes| (range.least..=range.most).contains(minutes))
         .map(|minutes| Duration::from_secs(u64::from(minutes) * 60))
         .ok_or_else(|| format!("{minutes} is outside {}-{} min", range.least, range.most))
+}
+
+fn kelvin(value: &Value, range: Range) -> Result<u32, String> {
+    let kelvin = value.as_integer().ok_or("expected whole kelvin")?;
+
+    u32::try_from(kelvin)
+        .ok()
+        .filter(|kelvin| (range.least..=range.most).contains(kelvin))
+        .ok_or_else(|| format!("{kelvin} is outside {}-{} K", range.least, range.most))
 }
 
 fn percent(value: &Value, range: Range) -> Result<u32, String> {
@@ -1711,6 +1892,7 @@ pub fn defaults() -> String {
             Kind::Minutes(range, _) => {
                 help.push_str(&format!(", min {}-{}", range.least, range.most))
             }
+            Kind::Kelvin(range, _) => help.push_str(&format!(", K {}-{}", range.least, range.most)),
             _ => {}
         }
         if setting.restart {
@@ -2556,6 +2738,10 @@ mod tests {
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "night-light.mode",
+                "night-light.temperature",
+                "night-light.sunset",
+                "night-light.sunrise",
                 "lock.backdrop",
                 "idle.dim",
                 "idle.lock",
@@ -3031,6 +3217,79 @@ battery = false
             one("calendar.paths = \"~/cal\"").1,
             said(&[(1, "calendar.paths: expected a list of \"path\"s")])
         );
+    }
+
+    // a time is "HH:MM" on a 24 hour clock and a temperature whole kelvin in range; anything else
+    // keeps what was below
+    #[test]
+    fn the_night_light_takes_times_of_day_and_kelvin_in_range() {
+        let first = "[night-light]\nmode = \"schedule\"\ntemperature = 3400\nsunset = \"21:30\"\nsunrise = \" 06:05 \"";
+        let (config, problems) = layers(&[first], MIGRATIONS);
+        let evening = DayTime {
+            hour: 21,
+            minute: 30,
+        };
+
+        assert_eq!(problems, [vec![]]);
+        assert_eq!(config.night_light.mode, NightMode::Schedule);
+        assert_eq!(config.night_light.temperature, 3400);
+        assert_eq!(config.night_light.sunset, Some(evening));
+        assert_eq!(
+            config.night_light.sunrise,
+            Some(DayTime { hour: 6, minute: 5 })
+        );
+        assert_eq!(evening.to_string(), "21:30");
+
+        for bad in [
+            "\"24:00\"",
+            "\"23:60\"",
+            "\"7:00\"",
+            "\"07:0\"",
+            "\"0700\"",
+            "\"-1:00\"",
+            "\"+1:00\"",
+            "\"\"",
+            "2100",
+        ] {
+            let (config, problems) =
+                layers(&[first, &format!("night-light.sunset = {bad}")], MIGRATIONS);
+
+            assert_eq!(config.night_light.sunset, Some(evening), "{bad}");
+            assert_eq!(
+                problems[1],
+                said(&[(1, &format!("night-light.sunset: {}", DayTime::EXPECTED))]),
+                "{bad}"
+            );
+        }
+
+        for (bad, why) in [
+            ("999", "999 is outside 1000-6500 K"),
+            ("6501", "6501 is outside 1000-6500 K"),
+            ("-4000", "-4000 is outside 1000-6500 K"),
+            ("4000.5", "expected whole kelvin"),
+            ("\"4000\"", "expected whole kelvin"),
+        ] {
+            let (config, problems) = layers(
+                &[first, &format!("night-light.temperature = {bad}")],
+                MIGRATIONS,
+            );
+
+            assert_eq!(config.night_light.temperature, 3400, "{bad}");
+            assert_eq!(
+                problems[1],
+                said(&[(1, &format!("night-light.temperature: {why}"))]),
+                "{bad}"
+            );
+        }
+
+        for edge in ["1000", "6500"] {
+            let (_, problems) = layers(
+                &[first, &format!("night-light.temperature = {edge}")],
+                MIGRATIONS,
+            );
+
+            assert_eq!(problems[1], vec![], "{edge}");
+        }
     }
 
     // a location is two numbers in range, integers too; anything else keeps what was below

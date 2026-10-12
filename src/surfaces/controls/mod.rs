@@ -1,5 +1,5 @@
-//! The Controls Surface (plan 7): Wi-Fi, Bluetooth, the microphone and Do Not Disturb as
-//! switches, the speaker's volume and the screen's brightness as levels, and the power profile.
+//! The Controls Surface (plan 7): Wi-Fi, Bluetooth, the microphone, Do Not Disturb and the night
+//! light as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
 //! header names the apps the privacy cluster stands for.
@@ -25,6 +25,7 @@ use self::focus::{Act, At, Focus, Subsurface};
 use super::slider::Slider;
 use super::{Outline, store};
 use crate::cluster;
+use crate::config::{self, NightMode};
 use crate::icon::Icon;
 use crate::island::activity::Uplink;
 use crate::island::geometry;
@@ -34,6 +35,7 @@ use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::network::{Connectivity, set_wifi};
+use crate::sources::night_light::{self, Shade};
 use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::Privacy;
@@ -53,7 +55,7 @@ mod wifi;
 const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
 
 const HEADER: f32 = 20.0;
-const GAP: f32 = 14.0;
+const GAP: f32 = 8.0;
 
 // a switch, round ends concentric with its knob
 const SWITCH: f32 = 48.0;
@@ -194,7 +196,7 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
     Some(Box::new(Row::new(row).width(Parent).gap(6.0).align(Center)))
 }
 
-// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb
+// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light
 fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
@@ -223,8 +225,14 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     );
     let microphone = switch(microphone, width, false, on(At::Microphone), None);
     let dnd = switch(dnd, width, false, on(At::Dnd), None);
+    let night = switch(self::night_light(), width, false, on(At::NightLight), None);
 
-    Column::new(children![row(wifi, bluetooth), row(microphone, dnd)]).gap(SWITCH_GAP)
+    Column::new(children![
+        row(wifi, bluetooth),
+        row(microphone, dnd),
+        Row::new(children![night]).gap(SWITCH_GAP)
+    ])
+    .gap(SWITCH_GAP)
 }
 
 // one switch, as the Surface draws it
@@ -249,6 +257,7 @@ enum Press {
     Bluetooth { adapter: String, on: bool },
     Microphone,
     Dnd(bool),
+    NightLight(bool),
 }
 
 fn wifi(connectivity: &Connectivity) -> Switch {
@@ -339,6 +348,40 @@ fn dnd(on: Option<bool>) -> Switch {
         status: String::from(status),
         on: on == Some(true),
         press: on.map(|on| Press::Dnd(!on)),
+    }
+}
+
+/*
+ * on while `night-light.mode` is not off, saying when, or why wlsunset is not running; unavailable
+ * while its Module is off or wlsunset is not installed
+ */
+fn night_light() -> Switch {
+    let shade = modules::on("night-light").then(|| Shade::read().clone());
+    let night = config::get().night_light;
+    let on = night.mode != NightMode::Off;
+
+    let status = match &shade {
+        None => String::from("Unavailable"),
+        Some(shade) if shade.missing => format!("Needs {}", night_light::WLSUNSET),
+        Some(Shade {
+            failed: Some(why), ..
+        }) if on => why.clone(),
+        Some(_) => match (night.mode, night.sunset, night.sunrise) {
+            (NightMode::Off, ..) => String::from("Off"),
+            (NightMode::On, ..) => String::from("On"),
+            (NightMode::Schedule, Some(sunset), Some(sunrise)) => format!("{sunset} to {sunrise}"),
+            (NightMode::Schedule, ..) => String::from("Sunset to sunrise"),
+        },
+    };
+
+    Switch {
+        icon: Icon::Sunset,
+        name: "Night Light",
+        status,
+        on: on && shade.is_some(),
+        press: shade
+            .filter(|shade| !shade.missing)
+            .map(|_| Press::NightLight(!on)),
     }
 }
 
@@ -460,6 +503,7 @@ fn run(press: Press) {
         Press::Bluetooth { adapter, on } => bluez::power(adapter, on),
         Press::Microphone => Audio::toggle_microphone_mute(),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
+        Press::NightLight(on) => night_light::switch(on),
     }
 }
 
@@ -910,6 +954,7 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
 
             dnd(on).press
         }
+        At::NightLight => night_light().press,
         At::Wifi => {
             if Connectivity::read().wifi == Radio::Missing {
                 return focus;

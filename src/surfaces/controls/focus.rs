@@ -42,6 +42,7 @@ pub enum At {
     Bluetooth,
     Microphone,
     Dnd,
+    NightLight,
     Speaker,
 
     // the chevron at the end of the speaker's level, which opens the Audio sub-surface
@@ -130,6 +131,7 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32
                 (At::Bluetooth, 0.8),
             ],
             vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
+            vec![(At::NightLight, 0.25)],
             vec![(At::Speaker, 0.45), (At::Audio, 0.97)],
             vec![(At::Brightness, 0.5)],
             Profile::ALL
