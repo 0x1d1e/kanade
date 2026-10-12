@@ -83,6 +83,9 @@ pub struct Schedule {
 
     // the lock held since the count began
     locked: bool,
+
+    // the stages never count from before this: when they last changed
+    floor: Option<Instant>,
 }
 
 impl Schedule {
@@ -95,6 +98,15 @@ impl Schedule {
             dimmed: false,
             retry: None,
             locked: false,
+            floor: None,
+        }
+    }
+
+    /// New stages at `at`: a user already idle is counted from then, as after input.
+    pub fn since(stages: Stages, at: Instant) -> Self {
+        Self {
+            floor: Some(at),
+            ..Self::new(stages)
         }
     }
 
@@ -114,8 +126,9 @@ impl Schedule {
         }
 
         let first = self.stages.first().unwrap_or_default();
+        let since = at.checked_sub(first).unwrap_or(at);
 
-        self.idle = Some(at.checked_sub(first).unwrap_or(at));
+        self.idle = Some(self.floor.map_or(since, |floor| since.max(floor)));
     }
 
     /// Input came: nothing fires until idle again, and the dim goes at once.
@@ -459,6 +472,36 @@ mod tests {
             }]
         );
         assert_eq!(schedule.tick(start + secs(600)), [Action::Suspend]);
+    }
+
+    // new stages while idle count from the change, even with the first stage's time the same
+    #[test]
+    fn a_reload_while_idle_counts_from_the_reload() {
+        let start = Instant::now();
+        let reload = start + secs(290);
+
+        let later = Stages {
+            lock: Some(secs(600)),
+            ..stages()
+        };
+        let mut schedule = Schedule::since(later, reload);
+        schedule.idled(start + secs(270));
+
+        assert_eq!(schedule.next(), Some(reload + secs(270)));
+        assert!(!schedule.tick(start + secs(600)).contains(&Action::Lock));
+        assert_eq!(schedule.next(), Some(reload + secs(600)));
+        assert_eq!(schedule.tick(reload + secs(600)), [Action::Lock]);
+
+        // a lock moved sooner, already past, does not fire at once
+        let sooner = Stages {
+            lock: Some(secs(280)),
+            ..stages()
+        };
+        let mut schedule = Schedule::since(sooner, reload);
+        schedule.idled(start + secs(270));
+
+        assert_eq!(schedule.tick(reload), []);
+        assert!(schedule.tick(reload + secs(280)).contains(&Action::Lock));
     }
 
     #[test]

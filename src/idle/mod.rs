@@ -97,7 +97,7 @@ fn follow(looks: &mpsc::Receiver<()>) {
         if stages != schedule.stages() {
             let actions = schedule.resumed();
             act(&mut schedule, actions, now);
-            schedule = Schedule::new(stages);
+            schedule = Schedule::since(stages, now);
             seen = None;
 
             if first != stages.first() {
