@@ -20,8 +20,8 @@ use crate::sources::{
     timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings,
-    shadow, supervise, surfaces, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, idle, ipc, lock, reload,
+    settings, shadow, supervise, surfaces, view,
 };
 
 use super::{CORE, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -1016,6 +1016,35 @@ pub const ALL: &[Module] = &[
         start: |app| {
             session::spawn();
             app
+        },
+    },
+    /*
+     * idle in the shell (ADR 0047): a dim grace, then the lock, screens off and suspend; off by
+     * default, as hypridle may already do it
+     */
+    Module {
+        name: "idle",
+        about: "Dims, locks, turns the screens off and suspends when idle",
+        requires: &[CORE],
+        optional: &["lock", "session"],
+        warns: None,
+        needs: &[Need {
+            on: Provider::SystemService("org.freedesktop.login1"),
+            without: "logind's idle inhibitors are not honored, caffeine's only directly, and nothing suspends",
+        }],
+        settings: config::IDLE,
+        verbs: &[Verb {
+            name: "idle",
+            about: "Show the idle stages and what inhibits them",
+            usage: || String::from("idle status"),
+            parse: |arguments| match arguments {
+                ["status"] => Ok(Call::IdleStatus),
+                _ => Err(Unparsed::Usage),
+            },
+        }],
+        start: |app| {
+            idle::spawn();
+            app.window_per_monitor(idle::overlay::overlay)
         },
     },
     // the Settings window, which writes only the settings file

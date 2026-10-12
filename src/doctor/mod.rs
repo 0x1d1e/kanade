@@ -508,7 +508,30 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
         }
     }
 
+    // two idle daemons would each lock, dim and suspend on their own timers
+    if resolved.on("idle") {
+        for daemon in IDLE_DAEMONS.iter().filter(|daemon| process_running(daemon)) {
+            checks.push(Check::warn(format!(
+                "{daemon} runs while module idle is on, so both act on idle; stop {daemon} or set `[modules] idle = false`"
+            )));
+        }
+    }
+
     checks
+}
+
+// idle daemons that would act beside the idle Module
+const IDLE_DAEMONS: &[&str] = &["hypridle", "swayidle"];
+
+// whether a process of this name runs, as `/proc/<pid>/comm` names it
+fn process_running(name: &str) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+
+    entries.flatten().any(|entry| {
+        fs::read_to_string(entry.path().join("comm")).is_ok_and(|comm| comm.trim_end() == name)
+    })
 }
 
 // what doctor found of a Need

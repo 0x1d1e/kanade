@@ -94,7 +94,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "weather-surface",
         ],
     ),
-    ("Session", &["lock", "session", "settings"]),
+    ("Session", &["lock", "idle", "session", "settings"]),
 ];
 
 pub const MODULES: &str = "modules";
@@ -315,13 +315,24 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "lock",
         title: "Lock screen",
-        summary: "What shows behind the lock screen",
+        summary: "What shows behind the lock screen, and when the session locks on its own",
         group: "System",
         icon: Icon::Lock,
-        sections: &[Section {
-            title: "",
-            rows: &[Row::Key("lock.backdrop")],
-        }],
+        sections: &[
+            Section {
+                title: "",
+                rows: &[Row::Key("lock.backdrop")],
+            },
+            Section {
+                title: "When idle",
+                rows: &[
+                    Row::Key("idle.dim"),
+                    Row::Key("idle.lock"),
+                    Row::Key("idle.screen_off"),
+                    Row::Key("idle.suspend"),
+                ],
+            },
+        ],
     },
 ];
 

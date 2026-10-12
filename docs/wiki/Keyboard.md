@@ -27,7 +27,9 @@ Mod+Alt+K hotkey-overlay-title="Caffeine" { spawn "kanade" "caffeine" "toggle"; 
 Mod+Alt+L hotkey-overlay-title="Lock" { spawn "kanade" "lock"; }
 ```
 
-An idle daemon locks the same way. For hypridle, in `~/.config/hypr/hypridle.conf`:
+Kanade can lock on idle itself: turn on the `idle` Module (`kanade module enable idle`, then restart Kanade) and stop any idle daemon. After `idle.dim` seconds the screens fade toward dark, and any input brings them back; at `idle.lock` the session locks, then `idle.screen_off` turns the monitors off and `idle.suspend` suspends, each 0 for never, see [Configuration](Configuration.md). A video playing, caffeine or any logind idle inhibitor holds every stage. `kanade idle status` says how it stands, and `kanade doctor` warns when hypridle runs beside it.
+
+With the Module off, as by default, an idle daemon locks the same way as the keybind. For hypridle, in `~/.config/hypr/hypridle.conf`:
 
 ```ini
 general {
@@ -40,7 +42,7 @@ listener {
 }
 ```
 
-Kanade locks before sleep on its own, so no `before_sleep_cmd` is needed, and caffeine keeps hypridle from locking or suspending. An explicit suspend still locks while caffeine is on. `kanade lock` exits 0 only once niri holds the lock for that call and no password typed since was accepted, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 at once when a password typed on the lock screen unlocks it or is being checked as it is called, and with 1 when niri refuses the lock, as while another locker holds the session. On the lock screen, type the password and press Enter.
+Kanade locks before sleep on its own, so no `before_sleep_cmd` is needed, and caffeine keeps the `idle` Module or hypridle from locking or suspending. An explicit suspend still locks while caffeine is on. `kanade lock` exits 0 only once niri holds the lock for that call and no password typed since was accepted, never for a lock ending right before it, so a suspend hook can wait on it. It exits 3 at once when a password typed on the lock screen unlocks it or is being checked as it is called, and with 1 when niri refuses the lock, as while another locker holds the session. On the lock screen, type the password and press Enter.
 
 An island opened this way takes the keyboard. If nothing on it is used for 5 s and the pointer never comes onto it, it collapses and gives the keyboard back. An island opened with a click gets keys after the click.
 

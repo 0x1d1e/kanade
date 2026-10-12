@@ -38,6 +38,7 @@ use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
@@ -128,6 +129,9 @@ pub struct Config {
 
     // `privacy.indicators`
     pub privacy_indicators: bool,
+
+    // `idle.*`: after how long idle each stage fires (ADR 0047)
+    pub idle: Stages,
 
     // `banners.entrance`
     pub entrance: Entrance,
@@ -320,7 +324,8 @@ impl Default for Config {
             osd: OSD_TIME,
             palette: None,
             clock: Hours::default(),
-            off: Vec::new(),
+            // idle locking is hypridle's until this Module is turned on (ADR 0047)
+            off: vec!["idle"],
             apps: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
@@ -349,6 +354,12 @@ impl Default for Config {
             visualizer: Visualizer::default(),
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
+            idle: Stages {
+                dim: Some(Duration::from_secs(270)),
+                lock: Some(Duration::from_secs(300)),
+                screen_off: Some(Duration::from_secs(330)),
+                suspend: None,
+            },
             entrance: Entrance::default(),
             notification_rules: Vec::new(),
             osd_layout: true,
@@ -497,6 +508,9 @@ pub enum Kind {
     // whole percent in a range
     Percent(Range, Field<u32>),
 
+    // whole seconds in a range, 0 being never
+    Seconds(Range, Field<u32>),
+
     // one of these strings
     Choice(Choices, Field<&'static str>),
 
@@ -537,6 +551,7 @@ impl Kind {
             Kind::Millis(field) => (field.set)(config, millis(value)?),
             Kind::Pixels(range, field) => (field.set)(config, pixels(value, *range)?),
             Kind::Percent(range, field) => (field.set)(config, percent(value, *range)?),
+            Kind::Seconds(range, field) => (field.set)(config, seconds(value, *range)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -649,7 +664,7 @@ impl Kind {
             Kind::Millis(field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
             }
-            Kind::Pixels(_, field) | Kind::Percent(_, field) => {
+            Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
                 Value::Integer(i64::from((field.get)(config)))
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
@@ -687,7 +702,9 @@ impl Kind {
         match self {
             Kind::Switch(field) => field.copy(from, to),
             Kind::Millis(field) => field.copy(from, to),
-            Kind::Pixels(_, field) | Kind::Percent(_, field) => field.copy(from, to),
+            Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
+                field.copy(from, to)
+            }
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
@@ -1148,12 +1165,12 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "modules",
         label: "Modules",
-        help: "every Module is on unless set to false here",
+        help: "every Module is on unless set to false here; idle is off unless set to true",
         kind: Kind::Modules(Field {
             get: |config| config.off.clone(),
             set: |config, off| config.off = off,
         }),
-        example: Some("{ media = false }"),
+        example: None,
 
         // the runtime registers windows only at start
         restart: true,
@@ -1432,6 +1449,86 @@ pub const LOCK: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+// whole seconds each idle stage waits, up to a day, 0 being never
+pub const IDLE_SECONDS: Range = Range {
+    least: 0,
+    most: 86_400,
+};
+
+fn stage(after: Option<Duration>) -> u32 {
+    after.map_or(0, |after| {
+        u32::try_from(after.as_secs()).unwrap_or(u32::MAX)
+    })
+}
+
+fn after(seconds: u32) -> Option<Duration> {
+    (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)))
+}
+
+// what the idle Module does, and when (ADR 0047)
+pub const IDLE: &[Setting] = &[
+    Setting {
+        key: "idle.dim",
+        label: "Dim after",
+        help: "seconds idle before the screens fade toward dark, until the lock; any input brings them back; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.dim),
+                set: |config, seconds| config.idle.dim = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "idle.lock",
+        label: "Lock after",
+        help: "seconds idle before the session locks, as `kanade lock` does; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.lock),
+                set: |config, seconds| config.idle.lock = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "idle.screen_off",
+        label: "Screens off after",
+        help: "seconds idle before niri powers the monitors off, back on at any input; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.screen_off),
+                set: |config, seconds| config.idle.screen_off = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "idle.suspend",
+        label: "Suspend after",
+        help: "seconds idle before the machine suspends, through logind; 0 is never",
+        kind: Kind::Seconds(
+            IDLE_SECONDS,
+            Field {
+                get: |config| stage(config.idle.suspend),
+                set: |config, seconds| config.idle.suspend = after(seconds),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
     match id.strip_suffix(".desktop") {
@@ -1461,6 +1558,15 @@ fn pixels(value: &Value, range: Range) -> Result<u32, String> {
 
 pub fn scale_animation(duration: Duration, speed: u32) -> Duration {
     duration.mul_f64(100.0 / f64::from(speed.clamp(ANIMATION_SPEED.least, ANIMATION_SPEED.most)))
+}
+
+fn seconds(value: &Value, range: Range) -> Result<u32, String> {
+    let seconds = value.as_integer().ok_or("expected whole seconds")?;
+
+    u32::try_from(seconds)
+        .ok()
+        .filter(|seconds| (range.least..=range.most).contains(seconds))
+        .ok_or_else(|| format!("{seconds} is outside {}-{} s", range.least, range.most))
 }
 
 fn percent(value: &Value, range: Range) -> Result<u32, String> {
@@ -1557,6 +1663,9 @@ pub fn defaults() -> String {
             }
             Kind::Percent(range, _) => {
                 help.push_str(&format!(", % {}-{}", range.least, range.most))
+            }
+            Kind::Seconds(range, _) => {
+                help.push_str(&format!(", s {}-{}", range.least, range.most))
             }
             _ => {}
         }
@@ -2309,7 +2418,7 @@ mod tests {
                 osd: ms(1000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
-                off: vec!["media"],
+                off: vec!["idle", "media"],
                 apps: BTreeMap::new(),
                 pinned: Vec::new(),
                 wallpapers: None,
@@ -2403,6 +2512,10 @@ mod tests {
                 "weather.place",
                 "weather.units",
                 "lock.backdrop",
+                "idle.dim",
+                "idle.lock",
+                "idle.screen_off",
+                "idle.suspend",
             ]
         );
         assert_eq!(
@@ -2546,7 +2659,7 @@ mod tests {
 
         let next = restarted(&running, read);
         assert_eq!(next.clock, Hours::Twelve);
-        assert_eq!(next.off, ["media", "timer"]);
+        assert_eq!(next.off, ["idle", "media", "timer"]);
     }
 
     /*
@@ -2674,7 +2787,7 @@ HDMI-A-1 = "12h"
         assert_eq!(problems, vec![]);
         assert_eq!(config.island.hover, ms(90));
         assert_eq!(config.palette.as_deref(), Some("a \"b\" \\c\t"));
-        assert_eq!(config.off, ["media"]);
+        assert_eq!(config.off, ["idle", "media"]);
     }
 
     // a later file wins key by key; a table it leaves out keeps what is below
@@ -2691,7 +2804,7 @@ HDMI-A-1 = "12h"
         assert_eq!(config.island.hover, ms(100));
         assert_eq!(config.island.expand, ms(300));
         assert_eq!(config.palette.as_deref(), Some("/a.png"));
-        assert_eq!(config.off, ["media", "battery"]);
+        assert_eq!(config.off, ["idle", "media", "battery"]);
     }
 
     // what a bad key would have set stays as the layers below left it
@@ -2725,7 +2838,7 @@ battery = false
         assert_eq!(config.osd, ms(1000));
         assert_eq!(config.palette, None);
         assert_eq!(config.clock, Hours::TwentyFour);
-        assert_eq!(config.off, ["battery"]);
+        assert_eq!(config.off, ["idle", "battery"]);
         assert_eq!(
             problems[1],
             said(&[

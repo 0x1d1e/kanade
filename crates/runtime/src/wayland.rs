@@ -1,6 +1,7 @@
 mod backdrop;
 mod compositor;
 mod effect;
+mod idle;
 mod keyboard;
 mod layer;
 mod normal;
@@ -17,7 +18,11 @@ mod wake;
 mod windows;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
+use smithay_client_toolkit::reexports::protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::ExtIdleNotificationV1, ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
 use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
 use smithay_client_toolkit::reexports::protocols::wp::{
     fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -85,6 +90,10 @@ struct WaylandState {
     toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     toplevels: HashMap<ObjectId, Toplevel>,
 
+    // idle followed per timeout `idle::watch` asks for, none without the compositor's idle notifier
+    idle_notifier: Option<ExtIdleNotifierV1>,
+    idle_notifications: Vec<(Duration, ExtIdleNotificationV1)>,
+
     // the panes whose backdrops are copied from the compositor, none without its screencopy
     captures: Option<Captures>,
 
@@ -140,6 +149,8 @@ impl WaylandApp {
 
         let toplevel_manager = toplevels::bind(&globals, &qh);
 
+        let idle_notifier = idle::bind(&globals, &qh);
+
         let captures = backdrop::bind(&globals, &qh);
         let capable = captures.is_some();
 
@@ -171,6 +182,9 @@ impl WaylandApp {
 
             toplevel_manager,
             toplevels: HashMap::new(),
+
+            idle_notifier,
+            idle_notifications: Vec::new(),
 
             captures,
 
@@ -204,6 +218,9 @@ impl WaylandApp {
         wake::insert(&event_loop.handle());
 
         backdrop::insert(&event_loop.handle(), capable);
+
+        // what was asked before the loop could be woken
+        state.follow_idle();
 
         Self { state, event_loop }
     }

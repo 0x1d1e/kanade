@@ -8,6 +8,7 @@ use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
 use crate::dock;
+use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::{Effect, IslandService};
@@ -86,6 +87,7 @@ fn run(call: Call) -> Reply {
         // returns before niri locks, which the client waits for (`lock status`)
         Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::LockStatus => Reply::Done(lock::status()),
+        Call::IdleStatus => Reply::Done(idle::status()),
         // logind is asked on a thread of its own
         Call::Session(leave) => session::request(leave).map_or_else(Reply::Refused, Reply::Done),
         Call::Osd(asked) => osd::show(asked, modules::osd_reads())

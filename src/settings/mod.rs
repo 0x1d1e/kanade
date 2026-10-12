@@ -422,7 +422,9 @@ fn reset_inputs() {
     for setting in modules::ALL.iter().flat_map(|module| module.settings) {
         let text = match &setting.kind {
             Kind::Millis(field) => (field.get)(&read).as_millis().to_string(),
-            Kind::Pixels(_, field) | Kind::Percent(_, field) => (field.get)(&read).to_string(),
+            Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
+                (field.get)(&read).to_string()
+            }
             Kind::Path(field) => (field.get)(&read).unwrap_or_default(),
             Kind::Text(field) if setting.key != "appearance.font" => {
                 (field.get)(&read).unwrap_or_default()

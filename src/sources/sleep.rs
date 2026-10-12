@@ -16,8 +16,8 @@
 //! saying it is not opens the gate: a bus lost, or a logind that does not answer, keeps it as it
 //! was.
 //!
-//! An idle lock is the idle daemon's, like hypridle running `kanade lock`, which honors caffeine's
-//! idle inhibitor.
+//! An idle lock is the idle Module's (`crate::idle`, ADR 0047), or an idle daemon's, like hypridle
+//! running `kanade lock`; both honor caffeine's idle inhibitor.
 
 use std::convert::Infallible;
 use std::io;

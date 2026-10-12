@@ -94,6 +94,8 @@ const MILLIS: Steps = Steps {
 // a size steps by as much as a list row or two
 const PIXEL_STEP: u64 = 20;
 const PERCENT_STEP: u64 = 10;
+// an idle stage steps by half a minute
+const SECONDS_STEP: u64 = 30;
 
 pub fn window() -> Window {
     let settings = Settings::read();
@@ -925,6 +927,18 @@ fn control(
             };
 
             (Box::new(stepper(setting, percent, steps, roles)), true)
+        }
+        Kind::Seconds(range, field) => {
+            let seconds = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: SECONDS_STEP,
+                unit: "s",
+                expected: "whole seconds",
+            };
+
+            (Box::new(stepper(setting, seconds, steps, roles)), true)
         }
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)

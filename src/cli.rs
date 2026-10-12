@@ -62,6 +62,7 @@ pub enum Call {
     Osd(osd::Asked),
     Lock,
     LockStatus,
+    IdleStatus,
     Session(Leave),
     Settings(Option<&'static str>),
     CloseSettings,

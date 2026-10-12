@@ -11,7 +11,7 @@ Kanade needs:
 - For screen recording: `wf-recorder`, and a VA-API driver for the GPU.
 - For the wallpaper: [awww](https://codeberg.org/LGFae/awww) (`awww` and `awww-daemon`), which draws it; Kanade picks the image and runs `awww-daemon` unless one runs already, only through `setpriv` (util-linux), so it never outlives Kanade.
 - For wallpaper-derived shell colors and configured app themes: Matugen 4.x (optional; without it, Kanade uses built-in colors). With `appearance.sync`: qt5ct/qt6ct for Qt apps, Darkly for a Qt6 style that draws the palette, and the Pywalfox browser extension for Firefox and Zen (all optional).
-- For caffeine and locking before sleep: `systemd-inhibit` (systemd) and `setpriv` (util-linux), which ties the inhibitor to Kanade so it never outlives it.
+- For caffeine, locking before sleep and the `idle` Module's inhibitors: `systemd-inhibit` (systemd) and `setpriv` (util-linux), which ties the inhibitor to Kanade so it never outlives it.
 - For Google Calendar: a Secret Service, like GNOME Keyring, KWallet or KeePassXC, and `xdg-open`. See [Google Calendar](Google-Calendar.md).
 
 ```sh
