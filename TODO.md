@@ -91,3 +91,17 @@ Not worth changing, by this review:
 - [ ] A fullscreen window hides the dots by choice, and one `Fullscreen::covers` misses (no app id) hides them on the Top layer too; consider a niri-side hint if a capture under fullscreen proves a real gap.
 
 
+
+## Acknowledgements features (review, low-level, unfixed)
+
+- Keys and Wallpapers stat the files on each frame they draw (`binds()`, `wallpaper::images()`); cache by mtime if it shows.
+- The image loader keeps queued thumbnails scrolled past; a thumbnail is keyed by path only, so a picture replaced in place shows the old one until restart.
+- `night_light::turn` rereads the calendars it does not need.
+- Reminders: MORE's `of` grows with each reminder joined; a deleted event's reminder stays until dismissed or due.
+- Clipboard and Launcher search look duplicated with `src/surfaces/search.rs`.
+- A dmenu reply to a client that stopped reading may block the UI thread up to 1 s (`IpcReply::send`).
+- Live Activities: no throttle on a client reposting many times a second.
+- A three-letter layout label may be cramped in the OSD capsule; Controls grew 290 to 330 px, check Tray, Weather and Session by eye.
+- The critical battery countdown names no battery reason line.
+- The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
+- A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
