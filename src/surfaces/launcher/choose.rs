@@ -210,7 +210,10 @@ pub fn choose(asked: Asked, reply: IpcReply) {
 
     dismiss();
 
-    match IslandService::read().resolve(Command::Open(Surface::Launcher)) {
+    // bound first: a read held through the match would deadlock the write in it
+    let effect = IslandService::read().resolve(Command::Open(Surface::Launcher));
+
+    match effect {
         Ok(Some(effect)) => IslandService::write().apply(effect, Instant::now()),
         Ok(None) => {}
         Err(error) => return refuse(reply, &error.to_string()),
