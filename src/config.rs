@@ -2036,7 +2036,7 @@ pub const IDLE: &[Setting] = &[
     Setting {
         key: "idle.screen_off",
         label: "Screens off after",
-        help: "seconds idle before niri powers the monitors off, back on at any input; 0 is never",
+        help: "seconds idle before niri powers the monitors off, back on at any input; never before the lock holds; 0 is never",
         kind: Kind::Seconds(
             IDLE_SECONDS,
             Field {
@@ -2051,7 +2051,7 @@ pub const IDLE: &[Setting] = &[
     Setting {
         key: "idle.suspend",
         label: "Suspend after",
-        help: "seconds idle before the machine suspends, through logind; 0 is never",
+        help: "seconds idle before the machine suspends, through logind; never before the lock holds; 0 is never",
         kind: Kind::Seconds(
             IDLE_SECONDS,
             Field {

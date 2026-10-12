@@ -6,7 +6,9 @@
 //! `ext-idle-notify-v1`, which honors the Wayland idle inhibitors apps hold. logind's idle
 //! inhibitors (`logind`) and caffeine hold every stage too. `schedule` says what fires when;
 //! this thread does it. The lock never waits on the dim: a dim that cannot draw still locks on
-//! time, and a lock that fails is asked again while the user stays idle.
+//! time, and a lock that fails is asked again while the user stays idle. With a lock stage, the
+//! monitors go off and the machine suspends only once it holds, so a session never looks secured
+//! unlocked.
 
 mod logind;
 pub mod overlay;
@@ -164,6 +166,7 @@ fn act(schedule: &mut Schedule, actions: Vec<Action>, now: Instant) {
                     schedule.lock_failed(Instant::now());
                 } else {
                     SEEN.locked().failed = None;
+                    schedule.lock_held();
                 }
             }
             Action::ScreenOff => {

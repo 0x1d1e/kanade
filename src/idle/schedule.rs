@@ -80,6 +80,9 @@ pub struct Schedule {
 
     // when a lock that failed is asked for again
     retry: Option<Instant>,
+
+    // the lock held since the count began
+    locked: bool,
 }
 
 impl Schedule {
@@ -91,6 +94,7 @@ impl Schedule {
             fired: Vec::new(),
             dimmed: false,
             retry: None,
+            locked: false,
         }
     }
 
@@ -149,6 +153,22 @@ impl Schedule {
         }
     }
 
+    /// The lock asked for holds: the stages waiting on it may fire.
+    pub fn lock_held(&mut self) {
+        self.locked = true;
+        self.retry = None;
+    }
+
+    /*
+     * whether `stage` must wait for the lock, when there is one: the monitors going off or the
+     * machine suspending would make a session that never locked look secured
+     */
+    fn waits(&self, stage: Stage) -> bool {
+        matches!(stage, Stage::ScreenOff | Stage::Suspend)
+            && !self.locked
+            && self.stages.lock.is_some()
+    }
+
     /// What fires by `now`, in the order of the stages' times.
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         let Some(since) = self.counting() else {
@@ -158,6 +178,7 @@ impl Schedule {
         let mut due: Vec<(Instant, Stage)> = self
             .stages
             .each()
+            .filter(|&(stage, _)| !self.waits(stage))
             .map(|(stage, after)| (since + after, stage))
             .filter(|(at, stage)| *at <= now && !self.fired.contains(stage))
             .collect();
@@ -203,7 +224,7 @@ impl Schedule {
 
         self.stages
             .each()
-            .filter(|(stage, _)| !self.fired.contains(stage))
+            .filter(|&(stage, _)| !self.fired.contains(&stage) && !self.waits(stage))
             .map(|(_, after)| since + after)
             .chain(self.retry)
             .min()
@@ -213,6 +234,7 @@ impl Schedule {
     fn reset(&mut self) -> Vec<Action> {
         self.fired.clear();
         self.retry = None;
+        self.locked = false;
 
         if std::mem::take(&mut self.dimmed) {
             vec![Action::Undim]
@@ -265,6 +287,7 @@ mod tests {
         assert_eq!(schedule.tick(start + secs(280)), []);
         assert_eq!(schedule.next(), Some(start + secs(300)));
         assert_eq!(schedule.tick(start + secs(300)), [Action::Lock]);
+        schedule.lock_held();
         assert_eq!(schedule.tick(start + secs(330)), [Action::ScreenOff]);
         assert_eq!(schedule.next(), None);
         assert_eq!(schedule.tick(start + secs(3600)), []);
@@ -282,9 +305,65 @@ mod tests {
                     until: start + secs(300),
                     dark: true
                 },
-                Action::Lock,
-                Action::ScreenOff
+                Action::Lock
             ]
+        );
+
+        // the monitors go off once the lock holds, not before
+        schedule.lock_held();
+        assert_eq!(schedule.next(), Some(start + secs(330)));
+        assert_eq!(schedule.tick(start + secs(400)), [Action::ScreenOff]);
+    }
+
+    // a lock that keeps failing never lets the monitors off nor the machine suspend
+    #[test]
+    fn nothing_after_the_lock_fires_while_it_fails() {
+        let (mut schedule, start) = idle_at(Stages {
+            suspend: Some(secs(600)),
+            ..stages()
+        });
+
+        let mut at = start + secs(300);
+        assert!(schedule.tick(at).contains(&Action::Lock));
+
+        while at < start + secs(3600) {
+            schedule.lock_failed(at);
+            at = schedule.next().unwrap();
+            assert_eq!(schedule.tick(at), [Action::Lock]);
+        }
+
+        schedule.lock_held();
+        assert_eq!(schedule.tick(at), [Action::ScreenOff, Action::Suspend]);
+    }
+
+    // the monitors set to go off before the lock still wait for it
+    #[test]
+    fn a_screen_off_before_the_lock_waits_for_it() {
+        let (mut schedule, start) = idle_at(Stages {
+            dim: None,
+            lock: Some(secs(300)),
+            screen_off: Some(secs(60)),
+            suspend: None,
+        });
+
+        assert_eq!(schedule.next(), Some(start + secs(300)));
+        assert_eq!(schedule.tick(start + secs(300)), [Action::Lock]);
+        schedule.lock_held();
+        assert_eq!(schedule.tick(start + secs(300)), [Action::ScreenOff]);
+    }
+
+    // with no lock stage, nothing waits
+    #[test]
+    fn without_a_lock_the_monitors_go_off_on_time() {
+        let (mut schedule, start) = idle_at(Stages {
+            lock: None,
+            ..stages()
+        });
+
+        assert!(
+            schedule
+                .tick(start + secs(330))
+                .contains(&Action::ScreenOff)
         );
     }
 

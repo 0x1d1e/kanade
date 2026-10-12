@@ -149,7 +149,7 @@ One piece of liquid glass: the Island's body, the Dock, or one Banner, named by 
 
 ## Idle stage
 What the `idle` Module does after the user has been idle for so long (ADR 0047): `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`, each optional. The Dim grace comes first: a click-through Overlay layer on every output fading toward dark until the lock, taken away at once by any input.
-- **Invariant:** the lock never waits on the Dim grace: a dim that cannot draw still locks on time, and a lock that fails is asked again while the user stays idle. An error never leaves an idle session unlocked.
+- **Invariant:** the lock never waits on the Dim grace: a dim that cannot draw still locks on time, and a lock that fails is asked again while the user stays idle. An error never leaves an idle session unlocked, and with a lock stage the monitors going off and the suspend wait until it holds.
 - **Invariant:** an inhibitor holds every stage: an app's Wayland idle inhibitor (niri never says idle), a logind idle inhibitor (`BlockInhibited` naming `idle`), or caffeine. A logind that cannot be asked inhibits nothing.
 - **Invariant:** the stage scheduler takes time as an input, never reads a clock.
 - **Avoid:** screensaver, DPMS (niri powers monitors off), idle inhibit (an inhibitor is what holds the stages)
