@@ -216,10 +216,14 @@ enum Ask {
     Cancel(u64),
 }
 
+// a countdown the session refused is asked again after this, doubled each time up to `LONGEST`
+const SOONEST: Duration = Duration::from_secs(5);
+const LONGEST: Duration = Duration::from_secs(60);
+
 /*
  * counts down once each time the battery turns critical while draining: Cancel, or a countdown that
  * ran out and woke on battery, does not start another until a charger has gone in, which also
- * cancels one counting
+ * cancels one counting. One the session refused is asked again, ever less often
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Guard {
@@ -227,6 +231,9 @@ struct Guard {
 
     // the countdown it started, by serial, while it may still be counting
     counting: Option<u64>,
+
+    // after a refusal: when to ask again, and how long the next wait is
+    again: Option<(Instant, Duration)>,
 }
 
 impl Guard {
@@ -234,17 +241,26 @@ impl Guard {
         Guard {
             armed: true,
             counting: None,
+            again: None,
         }
     }
 
-    // what to ask after a reading; `critical` as the island shows it, so it is sticky too
-    fn next(&mut self, draining: bool, critical: bool, end: Option<Ending>) -> Option<Ask> {
+    // what to ask after a reading at `now`; `critical` as the island shows it, so it is sticky too
+    fn next(
+        &mut self,
+        draining: bool,
+        critical: bool,
+        end: Option<Ending>,
+        now: Instant,
+    ) -> Option<Ask> {
         if !draining {
             self.armed = true;
+            self.again = None;
             return self.counting.take().map(Ask::Cancel);
         }
 
-        let end = end.filter(|_| critical && self.armed)?;
+        let due = self.again.is_none_or(|(at, _)| at <= now);
+        let end = end.filter(|_| critical && self.armed && due)?;
         self.armed = false;
 
         Some(Ask::CountDown(end))
@@ -252,6 +268,15 @@ impl Guard {
 
     fn started(&mut self, serial: u64) {
         self.counting = Some(serial);
+        self.again = None;
+    }
+
+    // the session refused the countdown asked at `now`: asked again later
+    fn refused(&mut self, now: Instant) {
+        let wait = self.again.map_or(SOONEST, |(_, wait)| wait);
+
+        self.armed = true;
+        self.again = Some((now + wait, (wait * 2).min(LONGEST)));
     }
 
     // a countdown not asked after all, asked again at the next reading
@@ -282,7 +307,10 @@ fn ask(guard: &mut Guard, ask: Ask) {
         Ask::CountDown(_) if !session::started() => guard.retry(),
         Ask::CountDown(end) => match session::count_down(end) {
             Ok(serial) => guard.started(serial),
-            Err(why) => eprintln!("kanade: battery: cannot count down: {why}"),
+            Err(why) => {
+                eprintln!("kanade: battery: cannot count down, asking again: {why}");
+                guard.refused(Instant::now());
+            }
         },
     }
 }
@@ -355,7 +383,7 @@ pub fn follow() {
             let critical = next.is_some_and(|charge| charge.critical);
             let end = ending(config::get().battery.critical_action);
 
-            if let Some(next) = guard.next(reading.draining, critical, end) {
+            if let Some(next) = guard.next(reading.draining, critical, end, Instant::now()) {
                 ask(&mut guard, next);
             }
 
@@ -450,35 +478,71 @@ mod tests {
     #[test]
     fn a_critical_battery_counts_down_once_until_a_charger_goes_in() {
         let end = Some(Ending::Suspend);
+        let now = Instant::now();
         let mut guard = Guard::new();
 
-        assert_eq!(guard.next(true, false, end), None);
+        assert_eq!(guard.next(true, false, end, now), None);
         assert_eq!(
-            guard.next(true, true, end),
+            guard.next(true, true, end, now),
             Some(Ask::CountDown(Ending::Suspend))
         );
         guard.started(7);
 
         // Cancel, or waking on battery after it ran out, starts no other
-        assert_eq!(guard.next(true, true, end), None);
+        assert_eq!(guard.next(true, true, end, now), None);
 
         // a charger cancels it and re-arms
-        assert_eq!(guard.next(false, false, end), Some(Ask::Cancel(7)));
-        assert_eq!(guard.next(false, false, end), None);
+        assert_eq!(guard.next(false, false, end, now), Some(Ask::Cancel(7)));
+        assert_eq!(guard.next(false, false, end, now), None);
         assert_eq!(
-            guard.next(true, true, end),
+            guard.next(true, true, end, now),
             Some(Ask::CountDown(Ending::Suspend))
         );
     }
 
     #[test]
     fn no_action_counts_nothing_down_and_stays_armed() {
+        let now = Instant::now();
         let mut guard = Guard::new();
 
-        assert_eq!(guard.next(true, true, None), None);
+        assert_eq!(guard.next(true, true, None, now), None);
         assert_eq!(
-            guard.next(true, true, Some(Ending::Hibernate)),
+            guard.next(true, true, Some(Ending::Hibernate), now),
             Some(Ask::CountDown(Ending::Hibernate))
         );
+    }
+
+    // a countdown the session refused is asked again, ever less often, until one starts
+    #[test]
+    fn a_refused_countdown_is_asked_again() {
+        let end = Some(Ending::PowerOff);
+        let start = Instant::now();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let mut guard = Guard::new();
+
+        assert_eq!(
+            guard.next(true, true, end, at(0)),
+            Some(Ask::CountDown(Ending::PowerOff))
+        );
+        guard.refused(at(0));
+
+        assert_eq!(guard.next(true, true, end, at(4)), None);
+        assert_eq!(
+            guard.next(true, true, end, at(5)),
+            Some(Ask::CountDown(Ending::PowerOff))
+        );
+        guard.refused(at(5));
+
+        // the wait doubles
+        assert_eq!(guard.next(true, true, end, at(14)), None);
+        assert_eq!(
+            guard.next(true, true, end, at(15)),
+            Some(Ask::CountDown(Ending::PowerOff))
+        );
+        guard.started(3);
+
+        // started, it counts down once as before
+        assert_eq!(guard.next(true, true, end, at(100)), None);
+        assert_eq!(guard.next(false, false, end, at(101)), Some(Ask::Cancel(3)));
     }
 }
