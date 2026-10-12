@@ -174,6 +174,10 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 `night-light.mode` off, on or on a schedule, at `night-light.temperature` K, through a `wlsunset` held under `setpriv --pdeathsig` while not off; a schedule is `night-light.sunset`/`sunrise`, else the sun at `weather.location`. A config change restarts it; one that ends restarts with a backoff and shows once as a Transient Failed Activity. The Controls switch and `kanade night-light` write the mode to the settings file ([ADR 0046](adr/0046-night-light-through-wlsunset.md)).
 
+### Battery
+
+A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker by serial, so the draw thread never waits, and a refusal shows on the switch.
+
 ### Presentation migration
 
 [ADR 0007](adr/0007-banners-and-osd-leave-the-island.md), its OSD part superseded by [ADR 0021](adr/0021-the-osd-returns-to-the-island.md).
@@ -253,6 +257,7 @@ capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
 night-light on|off|toggle|status
+battery limit on|off|status
 wallpaper set <path>|status
 osd volume|brightness
 settings open [page]|close

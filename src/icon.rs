@@ -44,6 +44,7 @@ const STOPWATCH: &str = include_str!("icons/stopwatch.svg");
 const CAMERA: &str = include_str!("icons/camera.svg");
 const CUP: &str = include_str!("icons/cup.svg");
 const SUNSET: &str = include_str!("icons/sunset.svg");
+const BATTERY_LIMIT: &str = include_str!("icons/battery-limit.svg");
 const PREVIOUS: &str = include_str!("icons/previous.svg");
 const PLAY: &str = include_str!("icons/play.svg");
 const PAUSE: &str = include_str!("icons/pause.svg");
@@ -125,6 +126,9 @@ pub(crate) enum Icon {
 
     // the sun half set, for the night light
     Sunset,
+
+    // a battery filled only part way, for the charge limit
+    BatteryLimit,
 
     // media transport; a triangle's weight sits left of its box, so Play sits right to look centered
     Previous,
@@ -281,6 +285,7 @@ impl Icon {
             Icon::Camera => &[CAMERA],
             Icon::Cup => &[CUP],
             Icon::Sunset => &[SUNSET],
+            Icon::BatteryLimit => &[BATTERY_LIMIT],
             Icon::Previous => &[PREVIOUS],
             Icon::Play => &[PLAY],
             Icon::Pause => &[PAUSE],

@@ -1,5 +1,5 @@
-//! The Controls Surface (plan 7): Wi-Fi, Bluetooth, the microphone, Do Not Disturb and the night
-//! light as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
+//! The Controls Surface (plan 7): Wi-Fi, Bluetooth, the microphone, Do Not Disturb, the night
+//! light and, where the battery supports it, its charge limit as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
 //! header names the apps the privacy cluster stands for.
@@ -34,6 +34,7 @@ use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
+use crate::sources::charge_limit::{self, ChargeLimit};
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
 use crate::sources::notifications;
@@ -129,9 +130,13 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
         .child(content)
 }
 
-// the targets a listing sub-surface lists under its header, read now
+// the targets a listing sub-surface lists under its header, or the switches' third row, read now
 fn rows(sub: Option<&Subsurface>) -> Vec<Vec<(At, f32)>> {
     match sub {
+        None if charge_limit().is_some() => {
+            vec![vec![(At::NightLight, 0.25), (At::ChargeLimit, 0.75)]]
+        }
+        None => vec![vec![(At::NightLight, 0.25)]],
         Some(Subsurface::Wifi) => wifi::rows(Connectivity::read().wifi, &Networks::read()),
         Some(Subsurface::Bluetooth) => bluetooth::rows(&Adapter::read(), &Prompt::read()),
         Some(Subsurface::Audio) => audio::rows(&mixer()),
@@ -196,7 +201,7 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
     Some(Box::new(Row::new(row).width(Parent).gap(6.0).align(Center)))
 }
 
-// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light
+// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge limit
 fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
@@ -226,11 +231,22 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let microphone = switch(microphone, width, false, on(At::Microphone), None);
     let dnd = switch(dnd, width, false, on(At::Dnd), None);
     let night = switch(self::night_light(), width, false, on(At::NightLight), None);
+    let mut third = children![night];
+
+    if let Some(limit) = self::charge_limit() {
+        third.push(Box::new(switch(
+            limit,
+            width,
+            false,
+            on(At::ChargeLimit),
+            None,
+        )));
+    }
 
     Column::new(children![
         row(wifi, bluetooth),
         row(microphone, dnd),
-        Row::new(children![night]).gap(SWITCH_GAP)
+        Row::new(third).gap(SWITCH_GAP)
     ])
     .gap(SWITCH_GAP)
 }
@@ -258,6 +274,7 @@ enum Press {
     Microphone,
     Dnd(bool),
     NightLight(bool),
+    ChargeLimit(bool),
 }
 
 fn wifi(connectivity: &Connectivity) -> Switch {
@@ -386,6 +403,32 @@ fn night_light() -> Switch {
 }
 
 /*
+ * on while UPower stops charging short of full, saying where, or that UPower is being asked, or why
+ * it refused; none, so not drawn, while the battery cannot limit its charge or its Module is off
+ */
+fn charge_limit() -> Option<Switch> {
+    let limit = modules::on("battery")
+        .then(|| ChargeLimit::read().clone())
+        .filter(|limit| limit.supported)?;
+
+    let status = match (&limit.asked, limit.enabled, limit.end) {
+        (Some((_, None)), ..) => String::from("Asking"),
+        (Some((_, Some(Err(why)))), ..) => why.clone(),
+        (_, true, Some(end)) => format!("Stops at {end}%"),
+        (_, true, None) => String::from("On"),
+        (_, false, _) => String::from("Off"),
+    };
+
+    Some(Switch {
+        icon: Icon::BatteryLimit,
+        name: "Limit Charge",
+        status,
+        on: limit.enabled,
+        press: Some(Press::ChargeLimit(!limit.enabled)),
+    })
+}
+
+/*
  * its knob filled while on, then its name and status. Pressing it switches it, or with `opens` only
  * its knob does, and the rest of it, a chevron at its end, presses `opens`, its sub-surface.
  * `knob_ring` and `ring` say the ring is on the knob or the whole of it
@@ -504,6 +547,10 @@ fn run(press: Press) {
         Press::Microphone => Audio::toggle_microphone_mute(),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
         Press::NightLight(on) => night_light::switch(on),
+        // refused at once only when it is no longer supported, which the switch then stops showing
+        Press::ChargeLimit(on) => {
+            let _ = charge_limit::ask(on);
+        }
     }
 }
 
@@ -955,6 +1002,7 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
             dnd(on).press
         }
         At::NightLight => night_light().press,
+        At::ChargeLimit => charge_limit().and_then(|limit| limit.press),
         At::Wifi => {
             if Connectivity::read().wifi == Radio::Missing {
                 return focus;

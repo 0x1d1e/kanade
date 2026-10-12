@@ -26,7 +26,8 @@ use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, caffeine, fullscreen, google, live, night_light, session, sleep, wallpaper, weather,
+    apps, caffeine, charge_limit, fullscreen, google, live, night_light, session, sleep, wallpaper,
+    weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -89,6 +90,10 @@ fn run(call: Call) -> Reply {
         // through the settings file's writes, which the Settings window shares
         Call::NightLight(request) => {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // UPower is asked on a thread of its own, answered by serial (`charge_limit::request`)
+        Call::Battery(request) => {
+            charge_limit::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // handed to the wallpaper's thread, as awww takes a while; `kanade` waits on it
         Call::Wallpaper(request) => {

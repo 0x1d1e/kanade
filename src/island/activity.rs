@@ -470,15 +470,20 @@ pub enum Leave {
     Ending(Ending),
 }
 
-// a leave that ends what is open, so it is asked only once a countdown runs out
+/*
+ * a leave asked only once a countdown runs out: a restart, power off or log out, which end what is
+ * open, or the sleep or hibernation a critical battery asks for, which the user may not be there for
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
     Restart,
     PowerOff,
     LogOut,
+    Suspend,
+    Hibernate,
 }
 
-// a restart, power off or log out counting down, or one asked that did not happen or may yet
+// an Ending counting down, or one asked that did not happen or may yet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Leaving {
     /*

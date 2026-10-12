@@ -320,18 +320,28 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "power",
         title: "Power & night light",
-        summary: "How warm the screen turns at night, and when",
+        summary: "When the battery warns and what it does when critical; how warm the screen turns at night",
         group: "System",
         icon: Icon::Sunset,
-        sections: &[Section {
-            title: "Night light",
-            rows: &[
-                Row::Key("night-light.mode"),
-                Row::Key("night-light.temperature"),
-                Row::Key("night-light.sunset"),
-                Row::Key("night-light.sunrise"),
-            ],
-        }],
+        sections: &[
+            Section {
+                title: "Battery",
+                rows: &[
+                    Row::Key("battery.low"),
+                    Row::Key("battery.critical"),
+                    Row::Key("battery.critical_action"),
+                ],
+            },
+            Section {
+                title: "Night light",
+                rows: &[
+                    Row::Key("night-light.mode"),
+                    Row::Key("night-light.temperature"),
+                    Row::Key("night-light.sunset"),
+                    Row::Key("night-light.sunrise"),
+                ],
+            },
+        ],
     },
     Page {
         name: "lock",

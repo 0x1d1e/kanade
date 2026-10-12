@@ -301,6 +301,7 @@ pub fn icon(leave: Leave) -> Icon {
         Leave::Ending(Ending::Restart) => Icon::Restart,
         Leave::Ending(Ending::PowerOff) => Icon::Power,
         Leave::Ending(Ending::LogOut) => Icon::LogOut,
+        Leave::Ending(Ending::Suspend | Ending::Hibernate) => Icon::Moon,
     }
 }
 
@@ -311,6 +312,8 @@ pub fn name(leave: Leave) -> &'static str {
         Leave::Ending(Ending::Restart) => "Restart",
         Leave::Ending(Ending::PowerOff) => "Power off",
         Leave::Ending(Ending::LogOut) => "Log out",
+        Leave::Ending(Ending::Suspend) => "Sleep",
+        Leave::Ending(Ending::Hibernate) => "Hibernate",
     }
 }
 

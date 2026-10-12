@@ -13,8 +13,8 @@ use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::calendar::Calendars;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, fullscreen, google,
-    keys, launch, live, media, network, night_light,
+    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard,
+    fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, seat, session, sleep, system,
     timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -228,18 +228,34 @@ pub const ALL: &[Module] = &[
     },
     Module {
         name: "battery",
-        about: "Battery state and the low-battery Activity",
+        about: "Battery state, the low-battery Activity, its critical action and charge limit",
         requires: &[CORE],
-        optional: &[],
+        optional: &["session"],
         warns: None,
-        needs: &[Need {
-            on: Provider::Program(battery::POWER.program),
-            without: POLLS,
+        needs: &[
+            Need {
+                on: Provider::Program(battery::POWER.program),
+                without: POLLS,
+            },
+            Need {
+                on: Provider::SystemService(osd::UPOWER),
+                without: "no charge limit",
+            },
+        ],
+        settings: config::BATTERY,
+        verbs: &[Verb {
+            name: "battery",
+            about: "Limit the battery's charge, through UPower",
+            usage: || String::from("battery limit on|off|status"),
+            parse: |arguments| {
+                charge_limit::Request::parse(arguments)
+                    .map(Call::Battery)
+                    .ok_or(Unparsed::Usage)
+            },
         }],
-        settings: &[],
-        verbs: &[],
         start: |app| {
             supervise::spawn("battery", battery::follow);
+            supervise::spawn("charge-limit", charge_limit::follow);
             app
         },
     },

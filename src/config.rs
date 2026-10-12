@@ -143,6 +143,9 @@ pub struct Config {
     pub osd_layout: bool,
     // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
     pub live_stale: Duration,
+    // `battery.*`: when a draining battery shows, and what a critical one does
+    pub battery: Battery,
+
     // `night-light.*`: when and how warm the screen turns (ADR 0046)
     pub night_light: NightLight,
 
@@ -368,8 +371,73 @@ impl Default for Config {
             notification_rules: Vec::new(),
             osd_layout: true,
             live_stale: Duration::from_secs(30 * 60),
+            battery: Battery::default(),
             night_light: NightLight::default(),
             outputs: BTreeMap::new(),
+        }
+    }
+}
+
+// `battery.*`, in percent of a full battery
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Battery {
+    // at or below, a draining battery shows
+    pub low: u32,
+
+    // at or below, it preempts and `critical_action` counts down; never above `low`
+    pub critical: u32,
+
+    // what a critical battery asks of logind after a countdown, none for nothing
+    pub critical_action: CriticalAction,
+}
+
+impl Battery {
+    pub const LOW: Range = Range { least: 5, most: 50 };
+    pub const CRITICAL: Range = Range { least: 2, most: 30 };
+
+    // `critical` as it counts: one above `low` is `low`, so a battery is never critical yet not low
+    pub fn critical(self) -> u32 {
+        self.critical.min(self.low)
+    }
+}
+
+impl Default for Battery {
+    fn default() -> Self {
+        Battery {
+            low: 20,
+            critical: 10,
+            critical_action: CriticalAction::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CriticalAction {
+    #[default]
+    None,
+    Suspend,
+    Hibernate,
+    PowerOff,
+}
+
+impl CriticalAction {
+    pub const NAMES: &[&str] = &["none", "suspend", "hibernate", "poweroff"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CriticalAction::None => "none",
+            CriticalAction::Suspend => "suspend",
+            CriticalAction::Hibernate => "hibernate",
+            CriticalAction::PowerOff => "poweroff",
+        }
+    }
+
+    pub fn named(name: &str) -> CriticalAction {
+        match name {
+            "suspend" => CriticalAction::Suspend,
+            "hibernate" => CriticalAction::Hibernate,
+            "poweroff" => CriticalAction::PowerOff,
+            _ => CriticalAction::None,
         }
     }
 }
@@ -1672,6 +1740,62 @@ pub const IDLE: &[Setting] = &[
     },
 ];
 
+pub const BATTERY: &[Setting] = &[
+    Setting {
+        key: "battery.low",
+        label: "Low battery",
+        help: "at or below, a draining battery shows on the island",
+        kind: Kind::Percent(
+            Battery::LOW,
+            Field {
+                get: |config| config.battery.low,
+                set: |config, low| config.battery.low = low,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "battery.critical",
+        label: "Critical battery",
+        help: "at or below, the battery interrupts and battery.critical_action counts down; one above battery.low counts as battery.low",
+        kind: Kind::Percent(
+            Battery::CRITICAL,
+            Field {
+                get: |config| config.battery.critical,
+                set: |config, critical| config.battery.critical = critical,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "battery.critical_action",
+        label: "When critical",
+        help: "what a draining critical battery does after a 60 s countdown that Cancel or a charger stops: \"none\", \"suspend\", \"hibernate\" or \"poweroff\"",
+        kind: Kind::Choice(
+            Choices::labeled(
+                CriticalAction::NAMES,
+                &[
+                    ("none", "Nothing"),
+                    ("suspend", "Sleep"),
+                    ("hibernate", "Hibernate"),
+                    ("poweroff", "Power off"),
+                ],
+            ),
+            Field {
+                get: |config| config.battery.critical_action.name(),
+                set: |config, name| config.battery.critical_action = CriticalAction::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 pub const NIGHT_LIGHT: &[Setting] = &[
     Setting {
         key: "night-light.mode",
@@ -2729,6 +2853,9 @@ mod tests {
                 "dock.magnification",
                 "dock.size",
                 "dock.merge",
+                "battery.low",
+                "battery.critical",
+                "battery.critical_action",
                 "media.visualizer",
                 "live.stale",
                 "osd.layout",

@@ -20,7 +20,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
 use crate::sources::{
-    caffeine, capture, google, live, night_light, osd, recording, timer, wallpaper, weather,
+    caffeine, capture, charge_limit, google, live, night_light, osd, recording, timer, wallpaper,
+    weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor, lock};
@@ -62,6 +63,7 @@ pub enum Call {
     Record(recording::Request),
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
+    Battery(charge_limit::Request),
     Wallpaper(wallpaper::Request),
     Google(google::Request),
     Weather(weather::Request),
@@ -465,6 +467,14 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&caffeine_status_call(), deadline)
             }))
         }
+        (
+            Call::Battery(charge_limit::Request::On | charge_limit::Request::Off),
+            Ok(Reply::Done(text)),
+        ) if let Some(serial) = charge_limit::asking(&text) => {
+            Ok(settle_charge_limit(serial, PATIENCE, |deadline| {
+                call_until(&charge_limit_status_call(), deadline)
+            }))
+        }
         (Call::Wallpaper(wallpaper::Request::Set(path)), Ok(Reply::Done(text)))
             if let Some(serial) = wallpaper::setting(&text) =>
         {
@@ -670,6 +680,35 @@ fn settle_caffeine(
 }
 
 /*
+ * the shell answers the charge limit's `on` and `off` at once, as asking (`charge_limit::request`),
+ * so this waits until UPower answered
+ */
+fn settle_charge_limit(
+    serial: u64,
+    patience: Duration,
+    ask: impl FnMut(Instant) -> Result<Reply, String>,
+) -> Reply {
+    settle(
+        patience,
+        || {
+            format!(
+                "UPower did not answer within {}s; the charge limit may still change",
+                patience.as_secs()
+            )
+        },
+        "the charge limit may still change",
+        ask,
+        |status| {
+            Some(match charge_limit::settled(status, serial)? {
+                charge_limit::Settled::Done(text) => Settling::Settled(Reply::Done(text)),
+                charge_limit::Settled::Refused(why) => Settling::Settled(Reply::Refused(why)),
+                charge_limit::Settled::Waiting => Settling::Waiting,
+            })
+        },
+    )
+}
+
+/*
  * the shell answers a wallpaper's set at once, as setting (`wallpaper::request`), so this waits
  * until awww showed it, done at the path it shows
  */
@@ -722,6 +761,13 @@ fn wallpaper_status_call() -> Vec<String> {
 
 fn caffeine_status_call() -> Vec<String> {
     ["caffeine", "status"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+fn charge_limit_status_call() -> Vec<String> {
+    ["battery", "limit", "status"]
         .into_iter()
         .map(String::from)
         .collect()
