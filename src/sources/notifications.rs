@@ -16,7 +16,7 @@
 //! for the Notifications Surface.
 
 use std::process;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use crate::bus::Bus;
 use kanade_runtime::service::Service;
@@ -107,8 +107,8 @@ impl Daemon {
     }
 }
 
-// one version of a notification: a replacement keeps the id and gets a new time
-type Version = (u32, SystemTime);
+// one version of a notification: a replacement keeps the id and gets a new version
+type Version = (u32, u64);
 
 /*
  * the versions in `now` that were not in `before`, to show, and the ids gone from it, to close. A
@@ -243,7 +243,7 @@ pub fn follow() {
             let now: Vec<Version> = notifications
                 .list()
                 .iter()
-                .map(|notification| (notification.id(), notification.received()))
+                .map(|notification| (notification.id(), notification.version()))
                 .collect();
 
             let (posted, gone) = changes(&before, &now);
@@ -254,7 +254,7 @@ pub fn follow() {
                 .list()
                 .iter()
                 .filter(|notification| {
-                    posted.contains(&(notification.id(), notification.received()))
+                    posted.contains(&(notification.id(), notification.version()))
                 })
                 .collect();
 
@@ -276,10 +276,10 @@ pub fn follow() {
                 .collect();
 
             // those whose rule keeps them out of the history, which close unless a Banner shows
-            let unkept: Vec<u32> = arrived
+            let unkept: Vec<(u32, u64)> = arrived
                 .iter()
                 .filter(|notification| !notification.effects().history)
-                .map(|notification| notification.id())
+                .map(|notification| (notification.id(), notification.version()))
                 .collect();
 
             drop(notifications);
@@ -325,9 +325,9 @@ pub fn follow() {
             };
 
             // a Banner that arrives and goes is the Banners' to close, as it leaves
-            let expired: Vec<u32> = unkept
+            let expired: Vec<(u32, u64)> = unkept
                 .into_iter()
-                .filter(|id| !shown.iter().any(|banner| banner.id == *id))
+                .filter(|(id, _)| !shown.iter().any(|banner| banner.id == *id))
                 .collect();
 
             if !shown.is_empty() || !closed.is_empty() {
@@ -343,8 +343,8 @@ pub fn follow() {
                 }
             }
 
-            for id in expired {
-                Notifications::expire(id);
+            for (id, version) in expired {
+                Notifications::expire(id, version);
             }
 
             // until the daemon has the bus name, nothing it would announce can arrive

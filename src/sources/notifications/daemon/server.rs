@@ -88,6 +88,9 @@ fn notify(method: &Method) {
 
         received: SystemTime::now(),
 
+        // add() picks it too
+        version: 0,
+
         effects: rules::Effects::default(),
     };
 

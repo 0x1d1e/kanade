@@ -114,8 +114,8 @@ impl Service for Banners {
                 Vec::new()
             };
 
-            for id in left {
-                Notifications::expire(id);
+            for (id, version) in left {
+                Notifications::expire(id, version);
             }
 
             // no deadline waits forever, recv_timeout falls back to recv on overflow
@@ -217,6 +217,7 @@ impl Banner {
     pub fn of(notification: &Notification) -> Banner {
         Banner {
             id: notification.id(),
+            version: notification.version(),
             toast: notifications::toast(notification),
             urgency: notification.urgency(),
             default: notification.has_default_action(),
@@ -1135,6 +1136,7 @@ fn tall(text: &Text) -> f32 {
 fn tallest() -> f32 {
     let mut banner = Banner {
         id: 0,
+        version: 0,
         toast: Default::default(),
         urgency: Urgency::Normal,
         default: false,

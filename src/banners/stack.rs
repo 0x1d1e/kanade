@@ -21,6 +21,10 @@ const NORMAL: Duration = Duration::from_secs(6);
 #[derive(Debug, Clone, PartialEq)]
 pub struct Banner {
     pub id: u32,
+
+    // its notification's version, so leaving closes only the version it showed
+    pub version: u64,
+
     pub toast: Toast,
     pub urgency: Urgency,
 
@@ -82,8 +86,9 @@ pub struct Stack {
     // the pointer is on a Banner
     hovered: bool,
 
-    // the Banners that left, any way, whose notification stays out of the history, for it to close
-    left: Vec<u32>,
+    // the Banners that left, any way, whose notification stays out of the history, for it to close:
+    // id and version
+    left: Vec<(u32, u64)>,
 }
 
 impl Stack {
@@ -93,14 +98,14 @@ impl Stack {
      * it leaves is the new version's rule, never the old one's
      */
     pub fn arrive(&mut self, banner: Banner, dnd: bool, now: Instant) {
-        self.left.retain(|&left| left != banner.id);
+        self.left.retain(|&(left, _)| left != banner.id);
 
         if dnd && !banner.loud() {
             self.shown.retain(|shown| shown.banner.id != banner.id);
             self.queued.retain(|queued| queued.id != banner.id);
 
             if !banner.history {
-                self.left.push(banner.id);
+                self.left.push((banner.id, banner.version));
             }
 
             self.promote(now);
@@ -149,7 +154,7 @@ impl Stack {
     }
 
     // the Banners that left whose notification stays out of the history, each once
-    pub fn take_left(&mut self) -> Vec<u32> {
+    pub fn take_left(&mut self) -> Vec<(u32, u64)> {
         std::mem::take(&mut self.left)
     }
 
@@ -161,10 +166,10 @@ impl Stack {
     fn keep(&mut self, stays: impl Fn(&Banner) -> bool, now: Instant) -> bool {
         let before = (self.shown.len(), self.queued.len());
 
-        let leaving: Vec<u32> = self
+        let leaving: Vec<(u32, u64)> = self
             .all()
             .filter(|banner| !stays(banner) && !banner.history)
-            .map(|banner| banner.id)
+            .map(|banner| (banner.id, banner.version))
             .collect();
         self.left.extend(leaving);
 
@@ -218,7 +223,7 @@ impl Stack {
 
         for shown in self.shown.iter().filter(|shown| over(shown)) {
             if !shown.banner.history {
-                self.left.push(shown.banner.id);
+                self.left.push((shown.banner.id, shown.banner.version));
             }
         }
 
@@ -295,6 +300,7 @@ mod tests {
     fn banner(id: u32, urgency: Urgency) -> Banner {
         Banner {
             id,
+            version: 0,
             toast: Toast::default(),
             urgency,
             default: false,
@@ -352,19 +358,19 @@ mod tests {
 
         // its timer
         stack.expire(now + LOW);
-        assert_eq!(stack.take_left(), [1]);
+        assert_eq!(stack.take_left(), [(1, 0)]);
 
         // DND coming on
         stack.silence(now);
-        assert_eq!(stack.take_left(), [2]);
+        assert_eq!(stack.take_left(), [(2, 0)]);
 
         // its X, or its sender closing it
         stack.close(3, now);
-        assert_eq!(stack.take_left(), [3]);
+        assert_eq!(stack.take_left(), [(3, 0)]);
 
         // dropped as it arrives under DND
         stack.arrive(unkept(5, Urgency::Normal), true, now);
-        assert_eq!(stack.take_left(), [5]);
+        assert_eq!(stack.take_left(), [(5, 0)]);
         assert!(!stack.has_left());
     }
 
@@ -394,7 +400,7 @@ mod tests {
             true,
             now,
         );
-        assert_eq!(stack.take_left(), [1]);
+        assert_eq!(stack.take_left(), [(1, 0)]);
     }
 
     // a rule's time stands for any urgency, a Critical one too

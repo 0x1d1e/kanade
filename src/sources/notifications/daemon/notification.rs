@@ -34,6 +34,9 @@ pub struct Notification {
 
     pub(crate) received: SystemTime,
 
+    // which version of the id this is: each replacement gets a new one, never reused
+    pub(crate) version: u64,
+
     // what the rule that matched it as it arrived does, its urgency already applied
     pub(crate) effects: Effects,
 }
@@ -61,6 +64,10 @@ impl Notification {
     // pass this to Notifications::dismiss
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     pub fn app_name(&self) -> &str {
