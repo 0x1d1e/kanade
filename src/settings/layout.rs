@@ -56,7 +56,7 @@ pub const MATERIAL: &str = "appearance.material";
 // the Modules page's groups, each Module but the core once
 pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
     ("Desktop", &["dock", "windows", "wallpaper", "workspace"]),
-    ("Activities", &["media", "timer", "battery"]),
+    ("Activities", &["media", "timer", "live", "battery"]),
     (
         "Notifications & privacy",
         &[
@@ -262,7 +262,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "notifications",
         title: "Notifications & privacy",
-        summary: "How Banners arrive and how capture is marked",
+        summary: "How Banners arrive, how capture is marked and how long live Activities wait",
         group: "Experience",
         icon: Icon::Bell,
         sections: &[
@@ -273,6 +273,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "Privacy",
                 rows: &[Row::Key("privacy.indicators")],
+            },
+            Section {
+                title: "Live Activities",
+                rows: &[Row::Key("live.stale")],
             },
         ],
     },

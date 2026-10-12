@@ -24,7 +24,9 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
-use crate::sources::{apps, caffeine, fullscreen, google, session, sleep, wallpaper, weather};
+use crate::sources::{
+    apps, caffeine, fullscreen, google, live, session, sleep, wallpaper, weather,
+};
 use crate::supervise;
 
 pub fn answer(arguments: &[String]) -> String {
@@ -54,6 +56,7 @@ fn run(call: Call) -> Reply {
             timer::request(request);
             Reply::Done(String::new())
         }
+        Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
         Call::ClearNotifications => {
             Notifications::clear();
             Reply::Done(String::new())

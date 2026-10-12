@@ -25,10 +25,13 @@ pub enum Kind {
     Caffeine,
     Session,
     Mode,
+
+    // posted by another program through `kanade activity` (ADR 0042)
+    Live,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 14] = [
+    pub const ALL: [Kind; 15] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -43,6 +46,7 @@ impl Kind {
         Kind::Caffeine,
         Kind::Session,
         Kind::Mode,
+        Kind::Live,
     ];
 
     // as IPC names it
@@ -62,6 +66,7 @@ impl Kind {
             Kind::Caffeine => "caffeine",
             Kind::Session => "session",
             Kind::Mode => "mode",
+            Kind::Live => "live",
         }
     }
 
@@ -250,6 +255,7 @@ pub enum Detail {
 
     // a keyboard layout switched to; in a mode's place, as one OSD shows either
     Layout(Layout),
+    Live(Job),
 }
 
 impl Detail {
@@ -269,26 +275,28 @@ impl Detail {
             Detail::Caffeine(_) => Some(Kind::Caffeine),
             Detail::Session(_) => Some(Kind::Session),
             Detail::Mode(_) | Detail::Layout(_) => Some(Kind::Mode),
+            Detail::Live(_) => Some(Kind::Live),
         }
     }
 
     /*
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
      * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
-     * workspace switch moves the pager's mark, a mode turned back flips its word. A new track
-     * stays in place too, but dissolves
+     * workspace switch moves the pager's mark, a mode turned back flips its word, a live job's
+     * bar moves. A new track stays in place too, but dissolves; a job that ends crossfades
      */
     pub fn is_level(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Detail::Volume(_)
-                | Detail::Brightness(_)
-                | Detail::Keyboard(_)
-                | Detail::Battery(_)
-                | Detail::Workspace(_)
-                | Detail::Mode(_)
-                | Detail::Layout(_)
-        )
+            | Detail::Brightness(_)
+            | Detail::Keyboard(_)
+            | Detail::Battery(_)
+            | Detail::Workspace(_)
+            | Detail::Mode(_)
+            | Detail::Layout(_) => true,
+            Detail::Live(job) => job.ended.is_none(),
+            _ => false,
+        }
     }
 }
 
@@ -494,6 +502,30 @@ pub enum Leaving {
         leave: Leave,
         serial: String,
     },
+}
+
+/*
+ * what another program said of its live Activity (`kanade activity`, ADR 0042), plain text already
+ * bounded and stripped of control characters
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Job {
+    pub title: String,
+
+    // a second line, empty for none
+    pub detail: String,
+
+    // done so far in thousandths, none while it does not say
+    pub progress: Option<u16>,
+
+    // none while it runs
+    pub ended: Option<Ended>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    Done,
+    Failed,
 }
 
 // how the machine reaches the network, as NetworkManager's primary connection says

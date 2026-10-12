@@ -171,6 +171,10 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
 
     match activity.detail() {
         Detail::Timer(_) => row.push(Box::new(Icon::Stopwatch.draw(14.0))),
+        Detail::Live(job) if job.progress.is_some() => {
+            let (icon, ink) = super::live::mark(job);
+            row.push(Box::new(icon.on(14.0, ink)));
+        }
         Detail::Session(Leaving::Counting { end, .. }) => {
             row.push(Box::new(
                 surfaces::session::icon(Leave::Ending(*end)).draw(14.0),
@@ -239,6 +243,7 @@ pub(super) fn small_form(
             self::workspace(presentation, workspace)
         }
         (presentation, Some(Detail::Timer(countdown))) => self::timer(presentation, countdown, now),
+        (presentation, Some(Detail::Live(job))) => super::live::live(presentation, job),
         (presentation, Some(Detail::Screenshot(shot))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 

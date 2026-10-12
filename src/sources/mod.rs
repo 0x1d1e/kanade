@@ -18,6 +18,7 @@ pub mod icons;
 pub mod json;
 pub mod keys;
 pub mod launch;
+pub mod live;
 pub mod media;
 pub mod network;
 pub mod niri;

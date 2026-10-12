@@ -53,6 +53,7 @@ const ECANCELED: i32 = 125;
 pub const SIGINT: c_int = 2;
 const SIGUSR1: c_int = 10;
 const SIG_DFL: usize = 0;
+const SIG_IGN: usize = 1;
 
 // USER_HZ, the clock ticks /proc counts a process's start time in
 pub const USER_HZ: u64 = 100;
@@ -490,6 +491,17 @@ pub fn user_signal(pid: u32) -> io::Result<()> {
     match unsafe { kill(pid, SIGUSR1) } {
         0 => Ok(()),
         _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/*
+ * this process ignores SIGINT, so Ctrl+C ends only the child it waits on, which `default_sigint`
+ * gives back the default, and it can still say how the child ended (`kanade activity run`)
+ */
+pub fn ignore_sigint() {
+    // SAFETY: plain call, setting a disposition, no handler
+    unsafe {
+        signal(SIGINT, SIG_IGN);
     }
 }
 

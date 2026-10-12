@@ -69,7 +69,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Group | Modules |
 | --- | --- |
 | Core | `island` |
-| Activities | `media`, `timer`, `battery`, `workspace` |
+| Activities | `media`, `timer`, `live`, `battery`, `workspace` |
 | Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `weather` |
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
@@ -166,6 +166,10 @@ Idle inhibitor toggle/activity. Prevent idle/lock/suspend only while explicitly 
 
 A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. The shell answers `on` at once as starting and a worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; `kanade` waits on `caffeine status` within one 5 s patience. Off, toggle and a newer on supersede a start by serial. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
 
+### Live Activities
+
+`kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word; a thread sleeps until the next one is due, none while none is live. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with.
+
 ### Presentation migration
 
 [ADR 0007](adr/0007-banners-and-osd-leave-the-island.md), its OSD part superseded by [ADR 0021](adr/0021-the-osd-returns-to-the-island.md).
@@ -238,6 +242,8 @@ clipboard open|close|toggle|clear
 calendar open|close|toggle
 weather open|close|toggle|refresh|status
 timer start <dur>|pause|resume|cancel
+activity start <id> <title>|progress <id> <amount>|detail <id> [text]
+activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status

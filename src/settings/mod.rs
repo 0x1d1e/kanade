@@ -425,6 +425,7 @@ fn reset_inputs() {
             Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
                 (field.get)(&read).to_string()
             }
+            Kind::Minutes(_, field) => ((field.get)(&read).as_secs() / 60).to_string(),
             Kind::Path(field) => (field.get)(&read).unwrap_or_default(),
             Kind::Text(field) if setting.key != "appearance.font" => {
                 (field.get)(&read).unwrap_or_default()

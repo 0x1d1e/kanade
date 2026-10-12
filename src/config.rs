@@ -141,6 +141,8 @@ pub struct Config {
 
     // `osd.layout`: a keyboard layout switch shows as an OSD
     pub osd_layout: bool,
+    // `live.stale`: how long a live Activity lasts without a word from its program (ADR 0042)
+    pub live_stale: Duration,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -363,6 +365,7 @@ impl Default for Config {
             entrance: Entrance::default(),
             notification_rules: Vec::new(),
             osd_layout: true,
+            live_stale: Duration::from_secs(30 * 60),
             outputs: BTreeMap::new(),
         }
     }
@@ -510,6 +513,8 @@ pub enum Kind {
 
     // whole seconds in a range, 0 being never
     Seconds(Range, Field<u32>),
+    // whole minutes in a range
+    Minutes(Range, Field<Duration>),
 
     // one of these strings
     Choice(Choices, Field<&'static str>),
@@ -552,6 +557,7 @@ impl Kind {
             Kind::Pixels(range, field) => (field.set)(config, pixels(value, *range)?),
             Kind::Percent(range, field) => (field.set)(config, percent(value, *range)?),
             Kind::Seconds(range, field) => (field.set)(config, seconds(value, *range)?),
+            Kind::Minutes(range, field) => (field.set)(config, minutes(value, *range)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -667,6 +673,9 @@ impl Kind {
             Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
                 Value::Integer(i64::from((field.get)(config)))
             }
+            Kind::Minutes(_, field) => {
+                Value::Integer(i64::try_from((field.get)(config).as_secs() / 60).ok()?)
+            }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
@@ -705,6 +714,7 @@ impl Kind {
             Kind::Pixels(_, field) | Kind::Percent(_, field) | Kind::Seconds(_, field) => {
                 field.copy(from, to)
             }
+            Kind::Minutes(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
@@ -1433,6 +1443,27 @@ pub const MEDIA: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+pub const LIVE_STALE: Range = Range {
+    least: 1,
+    most: 1440,
+};
+
+pub const LIVE: &[Setting] = &[Setting {
+    key: "live.stale",
+    label: "Withdraw after",
+    help: "how long a live Activity from `kanade activity` shows without a word from its program",
+    kind: Kind::Minutes(
+        LIVE_STALE,
+        Field {
+            get: |config| config.live_stale,
+            set: |config, stale| config.live_stale = stale,
+        },
+    ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 pub const LOCK: &[Setting] = &[Setting {
     key: "lock.backdrop",
     label: "Backdrop",
@@ -1569,6 +1600,16 @@ fn seconds(value: &Value, range: Range) -> Result<u32, String> {
         .ok_or_else(|| format!("{seconds} is outside {}-{} s", range.least, range.most))
 }
 
+fn minutes(value: &Value, range: Range) -> Result<Duration, String> {
+    let minutes = value.as_integer().ok_or("expected whole minutes")?;
+
+    u32::try_from(minutes)
+        .ok()
+        .filter(|minutes| (range.least..=range.most).contains(minutes))
+        .map(|minutes| Duration::from_secs(u64::from(minutes) * 60))
+        .ok_or_else(|| format!("{minutes} is outside {}-{} min", range.least, range.most))
+}
+
 fn percent(value: &Value, range: Range) -> Result<u32, String> {
     let percent = value.as_integer().ok_or("expected whole percent")?;
 
@@ -1666,6 +1707,9 @@ pub fn defaults() -> String {
             }
             Kind::Seconds(range, _) => {
                 help.push_str(&format!(", s {}-{}", range.least, range.most))
+            }
+            Kind::Minutes(range, _) => {
+                help.push_str(&format!(", min {}-{}", range.least, range.most))
             }
             _ => {}
         }
@@ -2504,6 +2548,7 @@ mod tests {
                 "dock.size",
                 "dock.merge",
                 "media.visualizer",
+                "live.stale",
                 "osd.layout",
                 "notifications.rules",
                 "wallpaper.directory",

@@ -45,13 +45,14 @@ pub(super) fn satellites(
 
 /*
  * a battery shows its number in its tone, a timer or countdown what is left, a recording that it
- * records in the capture tone, caffeine its cup, a refusal or no answer a mark in the critical
- * tone, the rest their Kind
+ * records in the capture tone, caffeine its cup, a live Activity how far along or its mark, a
+ * refusal or no answer a mark in the critical tone, the rest their Kind
  */
 pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         Detail::Recording(_) => label(String::from("Rec"), theme::SEMANTIC.capture),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
+        Detail::Live(job) => super::live::satellite(job),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown) => label(timer::short(countdown, now), timer_tone(countdown)),
         Detail::Session(Leaving::Counting { countdown, .. }) => label(
@@ -105,5 +106,6 @@ pub(super) fn abbreviation(kind: Kind) -> &'static str {
         Kind::Caffeine => "Cf",
         Kind::Session => "Ss",
         Kind::Mode => "Md",
+        Kind::Live => "Lv",
     }
 }

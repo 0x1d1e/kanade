@@ -19,7 +19,7 @@ use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::recording::Settled;
-use crate::sources::{caffeine, capture, google, osd, recording, timer, wallpaper, weather};
+use crate::sources::{caffeine, capture, google, live, osd, recording, timer, wallpaper, weather};
 use crate::{config, doctor, lock};
 
 // the one IPC handler the shell registers, which every verb goes through
@@ -51,6 +51,7 @@ pub struct Verb {
 pub enum Call {
     Island(Command),
     Timer(timer::Request),
+    Live(live::Request),
     ClearNotifications,
     ClearClipboard,
     Screenshot(capture::Mode),
@@ -396,6 +397,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    // runs here, telling the shell as it goes
+    if let Call::Live(live::Request::Run { id, title, command }) = &asked {
+        return live::run(id, title, command);
+    }
 
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {

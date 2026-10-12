@@ -14,7 +14,7 @@ use crate::island::service::IslandService;
 use crate::sources::calendar::Calendars;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, clipboard, fullscreen, google,
-    keys, launch, media, network,
+    keys, launch, live, media, network,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, seat, session, sleep, system,
     timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -296,6 +296,30 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             timer::spawn();
+            app
+        },
+    },
+    // live Activities a script, a build or a download posts with `kanade activity` (ADR 0042)
+    Module {
+        name: "live",
+        about: "Activities other programs show with `kanade activity`",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::LIVE,
+        verbs: &[Verb {
+            name: "activity",
+            about: "Show what a script or a command does as a live Activity",
+            usage: live::usage,
+            parse: |arguments| {
+                live::Request::parse(arguments)
+                    .map(Call::Live)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("live", live::follow);
             app
         },
     },

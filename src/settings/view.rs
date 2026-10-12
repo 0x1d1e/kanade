@@ -96,6 +96,7 @@ const PIXEL_STEP: u64 = 20;
 const PERCENT_STEP: u64 = 10;
 // an idle stage steps by half a minute
 const SECONDS_STEP: u64 = 30;
+const MINUTE_STEP: u64 = 5;
 
 pub fn window() -> Window {
     let settings = Settings::read();
@@ -939,6 +940,18 @@ fn control(
             };
 
             (Box::new(stepper(setting, seconds, steps, roles)), true)
+        }
+        Kind::Minutes(range, field) => {
+            let minutes = (field.get)(read).as_secs() / 60;
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: MINUTE_STEP,
+                unit: "min",
+                expected: "whole minutes",
+            };
+
+            (Box::new(stepper(setting, minutes, steps, roles)), true)
         }
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
