@@ -3,7 +3,11 @@ use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+// the most a call may send, past the longest `kanade dmenu`, and how long it may take to
+const MOST: u64 = 24 * 1024 * 1024;
+const PATIENCE: Duration = Duration::from_secs(2);
 
 pub struct IpcCall {
     pub(crate) name: String,
@@ -61,9 +65,16 @@ impl IpcCall {
         Ok(())
     }
 
-    // reads until the sender closes its side, which marks the end of the call
+    /*
+     * reads until the sender closes its side, which marks the end of the call; a sender that
+     * sends too much, or drips it past `PATIENCE`, is cut off, since the shell waits on it
+     */
     pub(crate) fn read(reader: impl Read) -> io::Result<Self> {
-        let mut lines = BufReader::new(reader).lines();
+        let bounded = Bounded {
+            reader: reader.take(MOST + 1),
+            until: Instant::now() + PATIENCE,
+        };
+        let mut lines = BufReader::new(bounded).lines();
 
         let Some(name) = lines.next() else {
             return Err(io::ErrorKind::UnexpectedEof.into());
@@ -74,6 +85,25 @@ impl IpcCall {
         let arguments = lines.collect::<io::Result<Vec<String>>>()?;
 
         Ok(Self { name, arguments })
+    }
+}
+
+// a reader that fails past `until`, and once its `Take` ran out with more to come
+struct Bounded<R> {
+    reader: io::Take<R>,
+    until: Instant,
+}
+
+impl<R: Read> Read for Bounded<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if Instant::now() > self.until {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        if self.reader.limit() == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "call too long"));
+        }
+
+        self.reader.read(buffer)
     }
 }
 
@@ -99,4 +129,20 @@ pub fn ipc_socket() -> PathBuf {
         env::var_os("XDG_RUNTIME_DIR").expect("failed to find socket: XDG_RUNTIME_DIR is not set");
 
     PathBuf::from(runtime_directory).join("kanade.sock")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the shell's own thread reads a call, so one past the bound is refused, not read on
+    #[test]
+    fn a_call_past_the_bound_is_refused() {
+        let call = IpcCall::read("dmenu\n--\nline\n".as_bytes()).unwrap();
+        assert_eq!((call.name.as_str(), call.arguments.len()), ("dmenu", 2));
+
+        let long = vec![b'x'; MOST as usize + 1];
+        let error = IpcCall::read(long.as_slice()).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
 }

@@ -89,7 +89,7 @@ fn follow(looks: &mpsc::Receiver<()>) {
 
     loop {
         let now = Instant::now();
-        let stages = config::get().idle;
+        let stages = stages();
 
         // new stages count from the start, as after input
         if stages != schedule.stages() {
@@ -202,9 +202,20 @@ fn seconds(after: Option<Duration>) -> String {
     )
 }
 
+// the stages configured; none locks with the lock Module off, so the dim never falls dark unlocked
+fn stages() -> Stages {
+    let mut stages = config::get().idle;
+
+    if !modules::on("lock") {
+        stages.lock = None;
+    }
+
+    stages
+}
+
 // `kanade idle status`: the stages, where the count stands, and what inhibits it
 pub fn status() -> String {
-    let stages = config::get().idle;
+    let stages = stages();
     let seen = SEEN.locked();
     let mut lines = vec![
         format!("dim {}", seconds(stages.dim)),

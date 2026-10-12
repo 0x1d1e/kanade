@@ -23,4 +23,5 @@ Idle locking was hypridle's (`lock_cmd = kanade lock`). The lock then came witho
 - The stages follow a config reload, counting from the start again.
 - niri powers the monitors back on at input; the dim, if any, is already gone by then.
 - With logind unreachable and caffeine turned off while the user stays idle, the stages count again only at the next idle or input event.
-- Suspend needs the `session` Module, and a lock needs the `lock` Module; without them the stage only logs why.
+- Suspend needs the `session` Module; without it the stage only logs why. A lock needs the `lock` Module; with it off there is no lock stage, and the dim fades only partly, as with no lock after it.
+- The dim is click-through, so the click that wakes a dimmed screen also reaches the window under it.
