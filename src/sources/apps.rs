@@ -15,6 +15,8 @@ use super::launch::Launch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct App {
+    pub id: String,
+
     pub name: String,
 
     // `Comment`, else `GenericName`
@@ -90,6 +92,7 @@ fn listed(entries: Vec<Entry>) -> Vec<App> {
         .filter(|entry| !entry.no_display)
         .filter_map(|entry| {
             Some(App {
+                id: entry.id,
                 icon_file: entry
                     .icon
                     .as_deref()

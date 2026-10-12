@@ -75,14 +75,15 @@ Not worth changing, by this review:
 - [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
 - [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons).
-- [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; with `dock.reserve` it now reserves as a merged Fold.
+- [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; it does not reserve space while autohiding.
 - [ ] A non-liquid union has no border.
 - [ ] Fold has no dots for running apps at rest and no keyboard focus hold; its Tray and hover Peek need a right click.
 - [ ] Overview and fullscreen use the existing covered path only.
 
 ## Idle Island
 
-- [ ] The strip's agenda width (`view::resize`, `rest::Agenda`) follows the minute timer and the calendars, which a window drawing the time arms; with no window drawing the time, an event that ended stays in the width until one does (at most a minute while the Island is up).
+- [x] The strip's agenda width (`view::resize`, `rest::Agenda`) arms the minute timer when Calendar is on and any connected output shows the agenda, even if no window draws the time; an ended event stops taking room on the next minute.
+  - Not run: hidden-clock agenda expiry in the live session.
 - [ ] The Tray Surface shrinks to its list as a menu goes back to it, under the pointer; Clipboard does the same on a query.
 
 ## Privacy dots (ADR 0033)

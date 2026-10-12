@@ -49,6 +49,9 @@ pub struct Spring<const N: usize> {
     // the current leg's damping ratio
     z: f32,
 
+    // the current leg's response; in Reduced mode this is the content fade duration
+    response: Duration,
+
     target: [f32; N],
 
     // the current leg: x(t) = target - (a + b t) e^(-wt), t counted from `start`
@@ -67,6 +70,7 @@ impl<const N: usize> Spring<N> {
             damping: CRITICAL,
             w: 0.0,
             z: CRITICAL,
+            response: REDUCED_FADE,
             target: value,
             a: [0.0; N],
             b: [0.0; N],
@@ -84,12 +88,13 @@ impl<const N: usize> Spring<N> {
      * No overshoot from rest or on a reversal toward the other endpoint. A same-direction target
      * closer than speed / w may be passed, since keeping the velocity leaves no other way to stop.
      * The same target keeps the motion but still starts a leg, for content that changes in place.
-     * The leg covers 95% of its way in `response`; reduced motion ignores it
+     * The leg covers 95% of its way in `response`; Reduced snaps geometry and uses it for opacity
      */
     pub fn to(&mut self, target: [f32; N], response: Duration, now: Instant) {
         let position = self.at(now);
         let velocity = self.velocity(now);
 
+        self.response = response;
         self.w = match self.mode {
             Mode::Spring => RESPONSE_FACTOR / response.as_secs_f32(),
             Mode::Reduced => 0.0,
@@ -194,7 +199,7 @@ impl<const N: usize> Spring<N> {
         let t = self.elapsed(now);
 
         if self.mode == Mode::Reduced {
-            return t >= REDUCED_FADE.as_secs_f32();
+            return t >= self.response.as_secs_f32();
         }
 
         if self.envelope(t) > SETTLE_SHARE {
@@ -212,7 +217,7 @@ impl<const N: usize> Spring<N> {
      * 0 when the current leg starts, 1 once it arrives; measured on the dimension that has the
      * furthest to go, and starting over at 0 on every `to`, when the content changes anyway.
      * A leg that goes nowhere runs as a move from rest would, so content still fades in step.
-     * Reduced motion: geometry is already there, this fades linearly over REDUCED_FADE
+     * Reduced motion: geometry is already there, this fades linearly over the response
      */
     pub fn progress(&self, now: Instant) -> f32 {
         if self.settled(now) {
@@ -222,7 +227,7 @@ impl<const N: usize> Spring<N> {
         let t = self.elapsed(now);
 
         if self.mode == Mode::Reduced {
-            return t / REDUCED_FADE.as_secs_f32();
+            return t / self.response.as_secs_f32();
         }
 
         let furthest = (0..N)

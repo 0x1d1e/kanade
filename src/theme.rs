@@ -2,22 +2,13 @@
 //! `island::service::Timings` and `island::motion::REDUCED_FADE`, as `island/` cannot see this
 //! file. No component writes a color literal (`src/boundary.rs`).
 //!
-//! The Island is glass, dark or light as `appearance.tone` sets whatever the wallpaper: `island()`,
-//! from `SEMANTIC`. With `theme.palette` in the config (#39) an image, usually the wallpaper, gives
-//! `ThemeRoles` through `palette`'s `Palette`, for what draws beside the Island, like Banners.
+//! The Island, Dock, Banners and Settings share light or dark roles. Matugen derives them from the
+//! wallpaper awww shows at startup or one Kanade sets; otherwise the shell uses its built-in roles.
 
 use std::ffi::CString;
-use std::path::Path;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use kanade_runtime::{App, Color};
-use kanade_runtime::{MutexExt, service::Service as _};
-
-use crate::sources::palette::Palette;
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
-
-use crate::look::Tone;
+use kanade_runtime::{App, Color};
 
 // colors that mean something, the same in every theme (plan 7)
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,10 +95,7 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
 
 // the Island's roles in the tone `appearance.tone` sets
 pub fn island() -> ThemeRoles {
-    match crate::config::get().appearance.tone {
-        Tone::Dark => ISLAND_DARK,
-        Tone::Light => ISLAND_LIGHT,
-    }
+    crate::appearance::roles(crate::config::get().appearance.tone)
 }
 
 // what tints glass, by tone; `glass` sets how much
@@ -268,90 +256,9 @@ pub mod space {
     pub const TARGET: f32 = 24.0;
 }
 
-// a palette surface is at most this light, about rgb(28, 28, 30): still near-black (plan 7)
-const SURFACE_LUMINANCE: f32 = 0.012;
-
-// how far from grey a palette surface and its text may be, so neither reads as a semantic color
-const SURFACE_CHROMA: f32 = 0.06;
-const ON_SURFACE_CHROMA: f32 = 0.1;
-
-// palette text on its surface, near the Island's 17
-const ON_SURFACE_CONTRAST: f32 = 15.0;
-
-// secondary text on a container, WCAG AA for small text
-const VARIANT_CONTRAST: f32 = 4.5;
-
-// a palette primary on its surface, WCAG for a control
-const PRIMARY_CONTRAST: f32 = 3.0;
-
-// the Island's steps from surface to text, so a palette theme keeps its hierarchy
-const CONTAINER_HIGH: f32 = 0.14;
-const VARIANT: f32 = 0.61;
-const CONTAINER: f32 = 0.07;
-const OUTLINE: f32 = 0.365;
-
-// colors picked from the image, as many as a whole shell's theme needs (`Palette`)
-const PICKED: usize = 16;
-
-// set while `follow` has an image open, so black and white never reads the Palette
-static FOLLOWING: AtomicBool = AtomicBool::new(false);
-
-// the last palette colors and the roles they gave, since every color a view draws asks
-static LAST: Mutex<Option<([Color; 3], ThemeRoles)>> = Mutex::new(None);
-
-/*
- * at start and on each reload that changes it (#102): `roles` follow the image at `path` from now
- * on, and `Palette` picks its colors again whenever the file changes. None is black and white;
- * `Palette` cannot close an image, so one already open keeps watching it, unread
- */
-pub fn follow(path: Option<&str>) {
-    let Some(path) = path else {
-        FOLLOWING.store(false, Ordering::Relaxed);
-        return;
-    };
-
-    if !Path::new(path).is_file() {
-        eprintln!("kanade: theme.palette {path} is not a file yet, black and white until it is");
-    }
-
-    Palette::write().open(path, PICKED);
-
-    FOLLOWING.store(true, Ordering::Relaxed);
-}
-
-// black and white until the image gives colors, the image's after; never the Island's
+// roles used by the Settings window and other shell-owned windows
 pub fn roles() -> ThemeRoles {
-    if !FOLLOWING.load(Ordering::Relaxed) {
-        return island();
-    }
-
-    let colors = {
-        let palette = Palette::read();
-
-        let (Some(background), Some(accent)) = (palette.background(), palette.accent()) else {
-            return island();
-        };
-
-        // tinted by the image when one of its colors reads on the background
-        let foreground = palette
-            .readable_on(background)
-            .unwrap_or_else(|| plain_on(background));
-
-        [background, foreground, accent]
-    };
-
-    let mut last = LAST.locked();
-
-    match *last {
-        Some((seen, roles)) if seen == colors => roles,
-        _ => {
-            let [background, foreground, accent] = colors;
-            let roles = ThemeRoles::from_palette(background, foreground, accent);
-            *last = Some((colors, roles));
-
-            roles
-        }
-    }
+    island()
 }
 
 impl ThemeRoles {
@@ -359,67 +266,6 @@ impl ThemeRoles {
     pub fn track(&self) -> Color {
         over(self.surface_container_high, self.surface)
     }
-
-    /*
-     * the image's darkest color, darkened to near-black and kept near grey, under its readable
-     * color, lightened until it reads as the Island does; the neutral roles step between them, and
-     * primary is its most vivid color, lightened until it shows on the surface
-     */
-    pub fn from_palette(background: Color, foreground: Color, accent: Color) -> ThemeRoles {
-        let surface = toward(grey(background, SURFACE_CHROMA), Color::BLACK, |color| {
-            luminance(color) <= SURFACE_LUMINANCE
-        });
-        let on_surface = toward(grey(foreground, ON_SURFACE_CHROMA), Color::WHITE, |color| {
-            contrast(color, surface) >= ON_SURFACE_CONTRAST
-        });
-        let step = |amount| mix(surface, on_surface, amount);
-        let surface_container = step(CONTAINER);
-        let primary = toward(accent, on_surface, |color| {
-            contrast(color, surface) >= PRIMARY_CONTRAST
-        });
-
-        ThemeRoles {
-            primary,
-            on_primary: plain_on(primary),
-            surface,
-            on_surface,
-            on_surface_variant: toward(step(VARIANT), on_surface, |color| {
-                contrast(color, surface_container) >= VARIANT_CONTRAST
-            }),
-            surface_container,
-            surface_container_high: step(CONTAINER_HIGH),
-            outline: step(OUTLINE),
-        }
-    }
-}
-
-// black or white, whichever reads better on `color`
-fn plain_on(color: Color) -> Color {
-    if contrast(Color::BLACK, color) >= contrast(Color::WHITE, color) {
-        Color::BLACK
-    } else {
-        Color::WHITE
-    }
-}
-
-// `color` moved toward grey until its chroma is at most `chroma`
-fn grey(color: Color, chroma: f32) -> Color {
-    let [r, g, b] = [color.red(), color.green(), color.blue()].map(u16::from);
-    let mean = ((r + g + b) / 3) as u8;
-
-    toward(color, Color::rgb(mean, mean, mean), |color| {
-        saturation(color) <= chroma
-    })
-}
-
-// the first of `from` mixed toward `to` in small steps that is `good`, else `to`
-fn toward(from: Color, to: Color, good: impl Fn(Color) -> bool) -> Color {
-    const STEPS: u8 = 50;
-
-    (0..=STEPS)
-        .map(|step| mix(from, to, f32::from(step) / f32::from(STEPS)))
-        .find(|&color| good(color))
-        .unwrap_or(to)
 }
 
 // `color` at `opacity`, to fade a single text without a group of its own

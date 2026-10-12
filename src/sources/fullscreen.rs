@@ -60,7 +60,8 @@ impl Fullscreen {
         let fills = shown.tile.0 >= f64::from(monitor.width) - 1.0
             && shown.tile.1 >= f64::from(monitor.height) - 1.0;
 
-        // a window without an app id cannot be told from another such
+        // The sources can be joined only by app id; output and size do not distinguish a
+        // fullscreen window from an unrelated maximized-to-edges window.
         fills
             && shown.app_id.is_some()
             && windows
@@ -75,4 +76,57 @@ impl Service for Fullscreen {
     }
 
     fn listen() {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unidentified_niri_window_does_not_match_an_unrelated_fullscreen_window() {
+        let monitor = Monitor {
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+        };
+        let fullscreen = Fullscreen {
+            shown: BTreeMap::from([(
+                monitor.name.clone(),
+                Showing {
+                    app_id: None,
+                    tile: (1920.0, 1080.0),
+                },
+            )]),
+        };
+        let window = FullscreenWindow {
+            output: monitor.name.clone(),
+            app_id: Some("browser".into()),
+        };
+
+        assert!(!fullscreen.covers(&[window], &monitor));
+    }
+
+    #[test]
+    fn two_unidentified_windows_do_not_match_by_output_alone() {
+        let monitor = Monitor {
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+        };
+        let fullscreen = Fullscreen {
+            shown: BTreeMap::from([(
+                monitor.name.clone(),
+                Showing {
+                    app_id: None,
+                    tile: (1920.0, 1080.0),
+                },
+            )]),
+        };
+        let window = FullscreenWindow {
+            output: monitor.name.clone(),
+            app_id: None,
+        };
+
+        assert!(!fullscreen.covers(&[window], &monitor));
+    }
 }

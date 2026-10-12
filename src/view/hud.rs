@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::{Center, End, Monitor, Padding, Rectangle, Shadow, Start, request_frame};
 
+use crate::config;
 use crate::island::geometry;
 use crate::island::presentation::{Content, Presentation};
 use crate::island::service::IslandService;
@@ -53,9 +54,12 @@ pub(super) fn hud(
 
     let form = small_form(&shown, None, now)?;
 
-    let coming = now.saturating_duration_since(since).as_secs_f32() / HUD_IN.as_secs_f32();
+    let speed = config::get().animation_speed;
+    let coming = now.saturating_duration_since(since).as_secs_f32()
+        / config::scale_animation(HUD_IN, speed).as_secs_f32();
     let going = expiry.map_or(1.0, |expiry| {
-        expiry.saturating_duration_since(now).as_secs_f32() / HUD_OUT.as_secs_f32()
+        expiry.saturating_duration_since(now).as_secs_f32()
+            / config::scale_animation(HUD_OUT, speed).as_secs_f32()
     });
 
     // eased out, as the Island's own fades

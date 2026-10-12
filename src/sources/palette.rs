@@ -15,7 +15,6 @@ use super::wallpaper;
 const SAMPLE_SIDE: f32 = 256.0;
 
 mod median_cut;
-mod pick;
 mod sample;
 
 // colors taken from an image, usually the wallpaper, most common first
@@ -103,21 +102,6 @@ impl Palette {
     // sorted by how much of the image each one covers
     pub fn colors(&self) -> &[Color] {
         &self.colors
-    }
-
-    // the most vivid color, for highlights; none before the image gave colors
-    pub fn accent(&self) -> Option<Color> {
-        pick::most_vivid(&self.colors)
-    }
-
-    // the darkest color, so light text always reads on it
-    pub fn background(&self) -> Option<Color> {
-        pick::darkest(&self.colors)
-    }
-
-    // the most contrasting color readable on `background`, none when none is
-    pub fn readable_on(&self, background: Color) -> Option<Color> {
-        pick::readable_on(background, &self.colors)
     }
 }
 

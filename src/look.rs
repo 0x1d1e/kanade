@@ -185,6 +185,14 @@ impl DockSize {
 }
 
 choice! {
+    // how the Island and Dock are arranged, `shell.mode`
+    ShellMode {
+        Separate = "separate",
+        Combined = "combined",
+    }
+}
+
+choice! {
     // how the Island and the Dock join where they share an edge and a side, `dock.merge`
     Merge {
         // the Dock stays as a plate on the edge; the Island rises from its middle on a liquid neck

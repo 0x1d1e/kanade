@@ -22,7 +22,7 @@ use kanade_runtime::{MutexExt, service::Service};
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
 use crate::sources::{calendar, weather, windows};
-use crate::{dock, modules, settings, supervise, theme, view};
+use crate::{appearance, dock, modules, settings, supervise, view};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -86,14 +86,20 @@ pub fn reload() -> Outcome {
                 // swapped first, so the windows the island's write wakes draw the new config
                 config::install(next.clone());
 
-                if next.palette != running.palette {
-                    theme::follow(next.palette.as_deref());
+                if next.appearance.tone != running.appearance.tone {
+                    appearance::tone_changed(next.appearance.tone);
+                }
+
+                if next.appearance.sync != running.appearance.sync
+                    || next.appearance.sync && next.appearance.tone != running.appearance.tone
+                {
+                    appearance::sync(&next);
                 }
 
                 {
                     // read under the write, so an output changing meanwhile cannot land first
                     let mut island = IslandService::write();
-                    island.retime(next.island);
+                    island.retime(next.animation_timings());
                     view::resize(&mut island);
                 }
 

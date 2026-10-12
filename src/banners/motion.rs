@@ -6,7 +6,8 @@
 use std::time::{Duration, Instant};
 
 use super::stack::Banner;
-use crate::island::motion::{CRITICAL, Mode, Spring};
+use crate::config;
+use crate::island::motion::{CRITICAL, Spring};
 
 // coming out takes about as long as the body growing to a Surface, going back in a little less
 const COME: Duration = Duration::from_millis(520);
@@ -53,10 +54,12 @@ impl Motion {
         shown: &[Banner],
         height: impl Fn(&Banner) -> f32,
         gap: f32,
-        motion: Mode,
-        damping: f32,
+        config: &config::Config,
         now: Instant,
     ) {
+        let motion = config.island.motion;
+        let damping = config.island.damping;
+
         // a reload may have changed the motion: each taken from where it stands
         for card in &mut self.cards {
             if card.out.mode() != motion {
@@ -73,7 +76,7 @@ impl Motion {
 
                 // going, it never swings back out of the Island
                 card.out.damp(CRITICAL);
-                card.out.to([0.0], GO, now);
+                card.out.to([0.0], config.animation_duration(GO), now);
             }
         }
 
@@ -102,12 +105,12 @@ impl Motion {
 
                     // and one taken from where it stood by a reload heads on out
                     if card.out.target() != [OUT] {
-                        card.out.to([OUT], COME, now);
+                        card.out.to([OUT], config.animation_duration(COME), now);
                     }
 
                     if card.slot.target() != [slot] {
                         card.slot.damp(damping);
-                        card.slot.to([slot], SLIDE, now);
+                        card.slot.to([slot], config.animation_duration(SLIDE), now);
                     }
 
                     card.banner = banner.clone();
@@ -116,7 +119,7 @@ impl Motion {
                 None => {
                     let mut out = Spring::new([0.0], motion);
                     out.damp(damping);
-                    out.to([OUT], COME, now);
+                    out.to([OUT], config.animation_duration(COME), now);
 
                     // it comes out where it goes, the rest make room
                     Card {

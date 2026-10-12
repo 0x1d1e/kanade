@@ -41,6 +41,7 @@ pub struct Timings {
     pub expand: Duration,
     pub surface_change: Duration,
     pub collapse: Duration,
+    pub reduced_fade: Duration,
     pub hover: Duration,
     pub grace: Duration,
 }
@@ -53,6 +54,7 @@ impl Default for Timings {
             expand: EXPAND,
             surface_change: SURFACE_CHANGE,
             collapse: COLLAPSE,
+            reduced_fade: super::motion::REDUCED_FADE,
             hover: HOVER_DELAY,
             grace: GRACE,
         }
@@ -63,6 +65,15 @@ impl Timings {
     // a new track dissolves in about as long as a Surface takes to replace another
     pub fn track_change(&self) -> Duration {
         self.surface_change
+    }
+
+    // reduced motion uses one short fade instead of the shape's normal transition response
+    pub fn for_motion(&self, response: Duration) -> Duration {
+        if self.motion == Mode::Reduced {
+            self.reduced_fade
+        } else {
+            response
+        }
     }
 }
 
@@ -294,14 +305,15 @@ impl IslandService {
     // a body headed for a size no longer asked for heads for the new one from where it stands
     fn retarget(&mut self, now: Instant) {
         let visit = self.visit();
+        let response = self.timings.for_motion(self.timings.expand);
 
         for (monitor, island) in &mut self.islands {
             let sizes = (&self.sizes, visit, self.sizes.holds(monitor));
-            reaim(island, sizes, self.timings.expand, now);
+            reaim(island, sizes, response, now);
         }
 
         let sizes = (&self.sizes, visit, self.sizes.holds(""));
-        reaim(&mut self.untouched, sizes, self.timings.expand, now);
+        reaim(&mut self.untouched, sizes, response, now);
     }
 
     // the canvas this output's island moves its body in, before the output clamps it
@@ -1154,9 +1166,14 @@ fn follow(
     let expanded = matches!(presentation, Presentation::Expanded(_));
     let motion = timings.motion;
 
-    island
-        .satellites
-        .follow(marks, timings.expand, timings.collapse, motion, now);
+    island.satellites.follow(
+        marks,
+        timings.expand,
+        timings.collapse,
+        timings.reduced_fade,
+        motion,
+        now,
+    );
 
     island.held &= expanded;
 
@@ -1167,7 +1184,12 @@ fn follow(
 
     // the same content in a new visit may be sized otherwise
     if content == *island.content.target() {
-        reaim(island, (sizes, visit, holds), timings.expand, now);
+        reaim(
+            island,
+            (sizes, visit, holds),
+            timings.for_motion(timings.expand),
+            now,
+        );
         return;
     }
 
@@ -1178,7 +1200,7 @@ fn follow(
     if island.content.target().swapped(&content) {
         let stood = island.swap.as_ref().map_or(0.0, |swap| swap.at(now)[0]);
         let mut swap = Spring::new([1.0 - stood], motion);
-        swap.to([0.0], timings.expand, now);
+        swap.to([0.0], timings.for_motion(timings.expand), now);
         island.swap = Some(swap);
     }
 
@@ -1208,14 +1230,14 @@ fn follow(
 
         spring.to(
             sizes.target(presentation, visit, holds).into(),
-            response(from, presentation, timings),
+            timings.for_motion(response(from, presentation, timings)),
             now,
         );
 
         // new content fades in whole, its track with it
         island.track = track.map(|track| Dissolve::new(track, motion));
     } else if let (Some(dissolve), Some(track)) = (&mut island.track, track) {
-        dissolve.to(track, timings.track_change(), now);
+        dissolve.to(track, timings.for_motion(timings.track_change()), now);
     }
 }
 
@@ -2018,18 +2040,19 @@ mod tests {
         assert!(!island.settled(MONITOR, now + ms(1_000) + EXPAND));
     }
 
-    // geometry is there at once, the content still crossfades and asks for frames for 80 ms
+    // geometry is there at once, the content crossfades for the configured reduced-motion duration
     #[test]
     fn reduced_motion_snaps_the_shape_and_fades_the_content() {
         let now = Instant::now();
         let mut island = IslandService::new();
         island.timings.motion = Mode::Reduced;
+        island.timings.reduced_fade = ms(40);
 
         island.open(MONITOR, Surface::Controls, now);
 
         assert_eq!(island.shape(MONITOR, now), geometry::CONTROLS);
-        assert!(!island.settled(MONITOR, now + ms(40)));
-        assert!(island.settled(MONITOR, now + ms(80)));
+        assert!(!island.settled(MONITOR, now + ms(20)));
+        assert!(island.settled(MONITOR, now + ms(40)));
 
         let content = |at| -> Vec<_> {
             island

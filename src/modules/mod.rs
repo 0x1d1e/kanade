@@ -11,8 +11,8 @@ use kanade_runtime::App;
 
 use crate::cli::Verb;
 use crate::island::presentation::Surface;
-use crate::sources::{niri, osd};
-use crate::{config, reload, settings, supervise};
+use crate::sources::{niri, osd, wallpaper};
+use crate::{appearance, config, reload, settings, supervise};
 
 mod catalog;
 
@@ -328,6 +328,7 @@ static MODULES: OnceLock<Modules> = OnceLock::new();
  */
 pub fn start(mut app: App) -> App {
     let modules = MODULES.get_or_init(|| resolve(ALL, |name| config::get().off(name)));
+    appearance::sync(&config::get());
 
     for module in ALL {
         let state = modules.state(module.name).expect("every module resolved");
@@ -345,6 +346,9 @@ pub fn start(mut app: App) -> App {
 
     // after every Module has taken the window and screenshot events it hears, so none is missed
     supervise::spawn("niri", niri::follow);
+    if modules.on("wallpaper") {
+        wallpaper::look_for_appearance();
+    }
 
     app
 }

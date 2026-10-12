@@ -18,6 +18,9 @@ use crate::merge::{self, Plate, Shell};
 pub struct Stand {
     pub canvas: Canvas,
     pub hang: Hang,
+
+    // the Island canvas stands this far from the output edge in a merged shell
+    pub edge_offset: f32,
 }
 
 // the Island's body at an instant: its shape, bounded by the canvas, and how far out it is, 0 to 1
@@ -42,6 +45,7 @@ impl Stand {
             geometry::body(pose.shape, self.hang, self.canvas),
             self.hang,
             pose.out,
+            self.edge_offset,
         )
     }
 
@@ -56,6 +60,7 @@ impl Stand {
                 self.hang,
                 self.canvas,
                 pose.out,
+                self.edge_offset,
             ),
             under,
             self.hang,
@@ -233,5 +238,67 @@ pub fn within(body: glass::Body, origin: (f32, f32)) -> glass::Body {
             ..join
         }),
         ..body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dock::Extent;
+    use crate::look::Merge;
+
+    #[test]
+    fn merged_hidden_body_clears_the_edge_and_trigger_stays_on_it() {
+        let canvas = Canvas {
+            width: 500.0,
+            height: 500.0,
+        };
+        let extent = Extent {
+            width: 300.0,
+            height: 50.0,
+            depth: 54.0,
+            strip: 32.0,
+            inset: 0.0,
+            before: 0.0,
+            after: 0.0,
+            swell: 0.0,
+            rise: 0.0,
+        };
+
+        for (edge, island_y) in [(geometry::Edge::Top, 14.0), (geometry::Edge::Bottom, 0.0)] {
+            let hang = Hang {
+                edge,
+                side: geometry::Side::Middle,
+            };
+            let shell = Shell {
+                form: Merge::Keystone,
+                extent,
+                size: (500.0, 514.0),
+                island: (0.0, island_y),
+                dock: (0.0, 0.0),
+                strip: 0.0,
+            };
+            let stand = Stand {
+                canvas,
+                hang,
+                edge_offset: shell.edge_offset(canvas, edge),
+            };
+            let pose = stand.pose(geometry::REST, 0.0);
+            let body = stand.body(pose);
+            let reach = Scene::new(stand, Some(shell.clone())).reach(pose, None)[0];
+
+            match edge {
+                geometry::Edge::Top => {
+                    assert!(body.bottom() + shell.island.1 <= 0.0);
+                    assert_eq!(reach.y, 0.0);
+                }
+                geometry::Edge::Bottom => {
+                    assert!(body.y + shell.island.1 >= shell.size.1);
+                    assert_eq!(reach.bottom(), shell.size.1);
+                }
+                geometry::Edge::Left | geometry::Edge::Right => unreachable!(),
+            }
+            assert_eq!(reach.height, autohide::TRIGGER);
+        }
     }
 }

@@ -43,6 +43,14 @@ pub fn set(path: &[String], value: Option<Value>) -> Result<(), String> {
         .map_err(|refusal| refusal.why)
 }
 
+pub fn set_pinned(id: &str, pinned: bool) -> Result<(), String> {
+    let file = config::settings_file()
+        .ok_or_else(|| String::from("no home directory to keep settings in"))?;
+    let (below, _) = config::layers(false);
+
+    set_pinned_in(&file, &below, id, pinned).map_err(|refusal| refusal.why)
+}
+
 // why a write was refused; `stale` if the file holds other than the write expected, which no retry mends
 pub struct Refusal {
     pub why: String,
@@ -78,21 +86,61 @@ fn set_in(
     expected: &[Entry],
 ) -> Result<Vec<Replaced>, Refusal> {
     let _writing = WRITING.locked();
-
-    let text = match fs::read_to_string(file) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(Refusal::failed(format!(
-                "{} unreadable: {error}",
-                file.display()
-            )));
-        }
-    };
+    let text = read(file)?;
 
     holds(&text, expected).map_err(|why| Refusal { why, stale: true })?;
+    replace(file, &text, below, edits)
+}
 
-    let (new, replaced) = change(&text, below, edits)
+fn set_pinned_in(file: &Path, below: &Config, id: &str, pinned: bool) -> Result<(), Refusal> {
+    let _writing = WRITING.locked();
+    let text = read(file)?;
+    let table = config::settings_table(&text).map_err(Refusal::failed)?;
+    let mut current = below.clone();
+
+    if let Some(problem) = config::apply_table(&mut current, &table).into_iter().next() {
+        return Err(Refusal::failed(problem));
+    }
+
+    let mut ids = current.pinned;
+    if pinned {
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_owned());
+        }
+    } else {
+        ids.retain(|existing| existing != id);
+    }
+
+    replace(
+        file,
+        &text,
+        below,
+        vec![(
+            vec![String::from("dock"), String::from("pinned")],
+            Some(Value::Array(ids.into_iter().map(Value::String).collect())),
+        )],
+    )
+    .map(drop)
+}
+
+fn read(file: &Path) -> Result<String, Refusal> {
+    match fs::read_to_string(file) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(Refusal::failed(format!(
+            "{} unreadable: {error}",
+            file.display()
+        ))),
+    }
+}
+
+fn replace(
+    file: &Path,
+    text: &str,
+    below: &Config,
+    edits: Vec<Entry>,
+) -> Result<Vec<Replaced>, Refusal> {
+    let (new, replaced) = change(text, below, edits)
         .map_err(|problem| Refusal::failed(format!("{} not written: {problem}", file.display())))?;
 
     if replaced.iter().any(|each| each.was != each.now) {
@@ -548,6 +596,40 @@ mod tests {
         fs::create_dir(&file).unwrap();
         let failed = set_in(&file, &Config::default(), edits(), &[]).err();
         assert!(failed.is_some_and(|refusal| !refusal.stale));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn dock_pin_mutations_keep_each_change_without_a_config_reload() {
+        let dir = std::env::temp_dir().join(format!("kanade-pins-{}", std::process::id()));
+        let file = dir.join("settings.toml");
+        let below = Config::default();
+
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&file, "[dock]\npinned = [\"one.desktop\"]\n").unwrap();
+
+        let pin = |id, pinned| {
+            set_pinned_in(&file, &below, id, pinned)
+                .unwrap_or_else(|refusal| panic!("{}", refusal.why));
+        };
+        pin("two.desktop", true);
+        pin("three.desktop", true);
+        pin("two.desktop", true);
+
+        let mut current = below.clone();
+        let table = config::settings_table(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(config::apply_table(&mut current, &table).is_empty());
+        assert_eq!(
+            current.pinned,
+            ["one.desktop", "two.desktop", "three.desktop"]
+        );
+
+        pin("one.desktop", false);
+        let mut current = below.clone();
+        let table = config::settings_table(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(config::apply_table(&mut current, &table).is_empty());
+        assert_eq!(current.pinned, ["two.desktop", "three.desktop"]);
 
         fs::remove_dir_all(dir).unwrap();
     }

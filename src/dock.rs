@@ -1,8 +1,9 @@
 //! The Dock (#144, docs/design.md Later): the pinned apps, then the running apps that are not
 //! pinned, on every monitor where `dock.edge` and `dock.align` put it, each with a dot while it
 //! runs. A click focuses a running app's window, the next one if it has the focus already, or
-//! launches an app that is not running. It reads `windows` (ADR 0014), which finds the pinned apps'
-//! entries and every icon, so drawing reads no file, and the pointer over it: the icons near the
+//! launches an app that is not running. Right-click pins or unpins an app and opens its declared
+//! Desktop Entry actions. It reads `windows` (ADR 0014), which finds the pinned apps' entries and
+//! every icon, so drawing reads no file, and the pointer over it: the icons near the
 //! pointer grow as on macOS (`dock.magnification`) from their `dock.size`, and an autohidden Dock
 //! comes out from its edge. It steps out of the way of the Island where it grows over it, as an
 //! open Surface beside it, and fades back as it closes. It goes by its row at rest, so its own
@@ -41,6 +42,8 @@ use crate::sources::niri::{self, Acted, Window, WindowId};
 use crate::sources::windows::{self, App, DesktopEntry, Windows};
 use crate::theme::{self, SEMANTIC, ThemeRoles, radius};
 use crate::view;
+
+mod context_menu;
 
 // the dot under a running app's icon, and the room around it
 const DOT: f32 = 4.0;
@@ -176,6 +179,28 @@ enum Press {
     Focus(WindowId),
 
     Launch(Launch),
+
+    DesktopAction { launch: Launch, id: String },
+}
+
+struct ContextTarget {
+    monitor: String,
+    at: Rect,
+    edge: Edge,
+}
+
+impl ContextTarget {
+    fn at(monitor: &str, origin: (f32, f32), edge: Edge, rect: Rect) -> Self {
+        Self {
+            monitor: monitor.to_owned(),
+            at: Rect {
+                x: origin.0 + rect.x,
+                y: origin.1 + rect.y,
+                ..rect
+            },
+            edge,
+        }
+    }
 }
 
 /*
@@ -213,6 +238,7 @@ fn carry_out(press: Press) {
                 }
             }
             Press::Launch(launch) => launch.run(),
+            Press::DesktopAction { launch, id } => launch.run_action(id),
         };
 
         if let Err(error) = done {
@@ -224,6 +250,10 @@ fn carry_out(press: Press) {
 // pins the configured apps, at start and after a reload
 pub fn pin() {
     windows::pin(config::get().pinned.clone());
+}
+
+pub(crate) fn context_window(monitor: &Monitor) -> LayerWindow {
+    context_menu::window(monitor)
 }
 
 // for `kanade status`
@@ -329,7 +359,7 @@ pub fn extent() -> Option<Extent> {
     let size = Size::of(config.dock_size);
     let pieces = pieces(&items);
     let most = config.magnify.most();
-    let along = config.dock_place.anchor.along;
+    let along = config.dock_placement().anchor.along;
 
     if let Some((had, kept, magnified, placed, extent)) = WORKED.locked().as_ref()
         && *had == pieces
@@ -431,7 +461,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let pointers = Pointers::read_part(&monitor.name);
 
     let config = config::get();
-    let place = config.dock_place;
+    let place = config.dock_placement();
 
     // merged, a Crown's icons grow over the Island's body just in from the plate, as they do over anything
     let most = config.magnify.most();
@@ -484,7 +514,15 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let drawn = {
         let mut drawn = DRAWN.locked();
         let last = drawn.get(&monitor.name).copied();
-        let next = Drawn::next(last, autohide, config.island.motion, shown, covered, now);
+        let next = Drawn::next(
+            last,
+            autohide,
+            config.island.motion,
+            shown,
+            covered,
+            config.animation_speed,
+            now,
+        );
 
         drawn.insert(monitor.name.clone(), next);
         next
@@ -493,7 +531,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let (shown, aside) = (drawn.shown, drawn.aside);
 
     // the Island's spring growing past or back from its small forms, and the Dock easing after it
-    if crossing || drawn.easing(covered, now) {
+    if crossing || drawn.easing(covered, now, config.animation_speed) {
         request_frame();
     }
 
@@ -531,6 +569,24 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         height: size.body(),
     });
     let (window_width, window_height) = axes.size(canvas.width, canvas.height);
+    let context_origin = if merged {
+        merge::shell(monitor).map_or((0.0, 0.0), |shell| {
+            let origin = surface_origin(
+                monitor,
+                config.island_placement().anchor,
+                shell.size,
+                Margin::default(),
+            );
+            (origin.0 + shell.dock.0, origin.1 + shell.dock.1)
+        })
+    } else {
+        surface_origin(
+            monitor,
+            place.anchor,
+            (window_width, window_height),
+            margin(place.anchor),
+        )
+    };
 
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut slots = items.iter();
@@ -567,7 +623,16 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
                 });
 
                 layers.push(Box::new(
-                    slot(item, side, far, axes, &roles, true).translate(at.x, at.y),
+                    slot(
+                        item,
+                        side,
+                        far,
+                        axes,
+                        &roles,
+                        true,
+                        ContextTarget::at(&monitor.name, context_origin, place.anchor.edge, at),
+                    )
+                    .translate(at.x, at.y),
                 ));
             }
         }
@@ -647,7 +712,7 @@ pub(crate) fn between(
     let pointers = Pointers::read_part(&monitor.name);
 
     let config = config::get();
-    let place = config.dock_place;
+    let place = config.dock_placement();
     let size = Size::of(config.dock_size);
     let now = Instant::now();
     let roles = theme::island();
@@ -724,6 +789,13 @@ pub(crate) fn between(
         }
     };
 
+    let origin = surface_origin(
+        monitor,
+        config.island_placement().anchor,
+        shell.size,
+        Margin::default(),
+    );
+    let context_origin = (origin.0 + shell.dock.0, origin.1 + shell.dock.1);
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut slots = items.iter();
     let axes = Axes::of(place.anchor);
@@ -798,9 +870,17 @@ pub(crate) fn between(
                 };
 
                 layers.push(Box::new(
-                    slot(item, side, far, axes, &roles, alpha >= 0.5)
-                        .opacity(alpha)
-                        .translate(at.x, at.y),
+                    slot(
+                        item,
+                        side,
+                        far,
+                        axes,
+                        &roles,
+                        alpha >= 0.5,
+                        ContextTarget::at(&monitor.name, context_origin, place.anchor.edge, at),
+                    )
+                    .opacity(alpha)
+                    .translate(at.x, at.y),
                 ));
             }
         }
@@ -913,7 +993,7 @@ impl Laid {
  * capture behind the plate it had before
  */
 fn merged(monitor: &Monitor) -> LayerWindow {
-    let place = config::get().dock_place;
+    let place = config::get().dock_placement();
 
     glass::place(monitor, PANE, place.anchor, (1.0, 1.0), None);
 
@@ -1040,7 +1120,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 pub fn reserve(_monitor: &Monitor) -> LayerWindow {
     let items = !items(&Windows::read()).is_empty();
     let config = config::get();
-    let place = config.dock_place;
+    let place = config.dock_placement();
     let body = Size::of(config.dock_size).body();
     let reserved = island_room(place.anchor) + body + EDGE_GAP - island_reserved(place.anchor);
     let (width, height) = Axes::of(place.anchor).size(1.0, reserved.max(1.0));
@@ -1072,6 +1152,30 @@ pub fn reserve(_monitor: &Monitor) -> LayerWindow {
 }
 
 // off the screen's side the Dock sits against, as off its edge, and past the Island on its place
+fn surface_origin(
+    monitor: &Monitor,
+    anchor: Anchor,
+    size: (f32, f32),
+    margin: Margin,
+) -> (f32, f32) {
+    let x = match anchor.horizontal() {
+        Horizontal::Left => margin.left as f32,
+        Horizontal::Middle => {
+            (monitor.width as f32 - size.0 + margin.left as f32 - margin.right as f32) / 2.0
+        }
+        Horizontal::Right => monitor.width as f32 - size.0 - margin.right as f32,
+    };
+    let y = match anchor.vertical() {
+        Vertical::Top => margin.top as f32,
+        Vertical::Middle => {
+            (monitor.height as f32 - size.1 + margin.top as f32 - margin.bottom as f32) / 2.0
+        }
+        Vertical::Bottom => monitor.height as f32 - size.1 - margin.bottom as f32,
+    };
+
+    (x, y)
+}
+
 fn margin(anchor: Anchor) -> Margin {
     let side = EDGE_GAP as i32;
     let edge = island_room(anchor) as i32;
@@ -1111,7 +1215,7 @@ fn island_room(anchor: Anchor) -> f32 {
         return 0.0;
     }
 
-    room_for(config::get().island_place.anchor, anchor)
+    room_for(config::get().island_placement().anchor, anchor)
 }
 
 /*
@@ -1120,7 +1224,7 @@ fn island_room(anchor: Anchor) -> f32 {
  * Island or along the edge from it
  */
 fn island_reserved(anchor: Anchor) -> f32 {
-    if config::get().island_place.anchor.edge == anchor.edge {
+    if config::get().island_placement().anchor.edge == anchor.edge {
         view::reserved()
     } else {
         0.0
@@ -1136,7 +1240,7 @@ fn island_reserved(anchor: Anchor) -> f32 {
 pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
     let items = items(&Windows::read());
     let config = config::get();
-    let place = config.dock_place;
+    let place = config.dock_placement();
 
     if !modules::on("dock")
         || merge::form().is_some()
@@ -1237,7 +1341,7 @@ fn covered(
     depth: f32,
     now: Instant,
 ) -> (f32, bool) {
-    let island_anchor = config::get().island_place.anchor;
+    let island_anchor = config::get().island_placement().anchor;
     let room = room_for(island_anchor, anchor);
     let island = IslandService::read();
     let satellites = island.satellites(&monitor.name);
@@ -1535,10 +1639,13 @@ impl Drawn {
         motion: Mode,
         shown: f32,
         covered: f32,
+        animation_speed: u32,
         now: Instant,
     ) -> Self {
+        let fade_in = config::scale_animation(FADE_IN, animation_speed);
+        let hide = config::scale_animation(HIDE, animation_speed);
         let back = last.map_or(0.0, |last| {
-            last.aside - now.duration_since(last.at).as_secs_f32() / FADE_IN.as_secs_f32()
+            last.aside - now.duration_since(last.at).as_secs_f32() / fade_in.as_secs_f32()
         });
 
         let switched = match last {
@@ -1550,7 +1657,7 @@ impl Drawn {
         };
 
         let shown = switched.map_or(shown, |(since, from)| {
-            let gone = (now.duration_since(since).as_secs_f32() / HIDE.as_secs_f32()).min(1.0);
+            let gone = (now.duration_since(since).as_secs_f32() / hide.as_secs_f32()).min(1.0);
 
             // eased as the springs are, slow off and slow in
             from + (shown - from) * (1.0 - (gone * PI).cos()) / 2.0
@@ -1566,11 +1673,11 @@ impl Drawn {
     }
 
     // whether the next frame differs: still fading back for the Island, or sliding for a switch
-    fn easing(&self, covered: f32, now: Instant) -> bool {
+    fn easing(&self, covered: f32, now: Instant, animation_speed: u32) -> bool {
         self.aside > covered
-            || self
-                .switched
-                .is_some_and(|(since, _)| now.duration_since(since) < HIDE)
+            || self.switched.is_some_and(|(since, _)| {
+                now.duration_since(since) < config::scale_animation(HIDE, animation_speed)
+            })
     }
 }
 
@@ -1670,6 +1777,7 @@ fn slot(
     axes: Axes,
     roles: &ThemeRoles,
     live: bool,
+    target: ContextTarget,
 ) -> Rectangle {
     let mut column: Vec<Box<dyn Widget>> = vec![mark(&item.app, side, roles)];
 
@@ -1749,13 +1857,18 @@ fn slot(
         return slot;
     }
 
-    slot.cursor(Cursor::Pointer).on_click(move |button| {
-        if button == Button::Left
-            && let Some(press) = press.clone()
-        {
-            carry_out(press);
-        }
-    })
+    let context = item.clone();
+
+    slot.cursor(Cursor::Pointer)
+        .on_click(move |button| match button {
+            Button::Left => {
+                if let Some(press) = press.clone() {
+                    carry_out(press);
+                }
+            }
+            Button::Right => context_menu::open(&target.monitor, &context, target.at, target.edge),
+            Button::Middle => {}
+        })
 }
 
 // the app's icon, `side` across, or its initial on the quiet tile
@@ -2161,7 +2274,8 @@ impl Pointer {
      * so one switched mid move sets off again from there
      */
     fn retime(&mut self, now: Instant) {
-        let timings = config::get().island;
+        let config = config::get();
+        let timings = config.island;
 
         if self.grow.mode() != timings.motion {
             let grow = self.grow.target();
@@ -2175,13 +2289,25 @@ impl Pointer {
 
             // still on their way where they were going; a spring at rest stays so
             if self.grow.at(now) != grow {
-                self.grow
-                    .to(grow, if grow[0] > 0.0 { GROW } else { SHRINK }, now);
+                self.grow.to(
+                    grow,
+                    config::scale_animation(
+                        if grow[0] > 0.0 { GROW } else { SHRINK },
+                        config.animation_speed,
+                    ),
+                    now,
+                );
             }
 
             if self.shown.at(now) != shown {
-                self.shown
-                    .to(shown, if shown[0] > 0.0 { SHOW } else { HIDE }, now);
+                self.shown.to(
+                    shown,
+                    config::scale_animation(
+                        if shown[0] > 0.0 { SHOW } else { HIDE },
+                        config.animation_speed,
+                    ),
+                    now,
+                );
             }
         }
     }
@@ -2214,7 +2340,8 @@ fn hover(monitor: &str, inside: bool) {
     pointer.retime(now);
 
     // folded, the Dock comes out of the Island with the pointer as an autohidden one does
-    let autohide = autohides(config::get().dock_place) || merge::folds();
+    let config = config::get();
+    let autohide = autohides(config.dock_placement()) || merge::folds();
 
     /*
      * one always out stands shown while the pointer is in and hidden once it left, at once, so
@@ -2231,7 +2358,11 @@ fn hover(monitor: &str, inside: bool) {
         // back in before it hid, it is out or coming out already
         if autohide && pointer.shown.target() != [100.0] {
             pointer.shown.damp(config::get().island.damping);
-            pointer.shown.to([100.0], SHOW, now);
+            pointer.shown.to(
+                [100.0],
+                config::scale_animation(SHOW, config.animation_speed),
+                now,
+            );
         }
     } else {
         pointer.left = Some(now);
@@ -2239,7 +2370,11 @@ fn hover(monitor: &str, inside: bool) {
 
         // a Dock that never grew, as with magnification off, has nothing to draw shrinking
         if pointer.grow.at(now) != [0.0] {
-            pointer.grow.to([0.0], SHRINK, now);
+            pointer.grow.to(
+                [0.0],
+                config::scale_animation(SHRINK, config.animation_speed),
+                now,
+            );
         }
 
         if !autohide {
@@ -2266,12 +2401,15 @@ fn hover(monitor: &str, inside: bool) {
                     pointers.part(&monitor);
 
                     let now = Instant::now();
+                    let animation_speed = config::get().animation_speed;
                     let pointer = pointers.by.get_mut(&monitor).expect("latest found it");
 
                     // going, it never passes the edge and swings back into view
                     pointer.retime(now);
                     pointer.shown.damp(CRITICAL);
-                    pointer.shown.to([0.0], HIDE, now);
+                    pointer
+                        .shown
+                        .to([0.0], config::scale_animation(HIDE, animation_speed), now);
                 } else {
                     pointers.quiet();
                 }
@@ -2291,6 +2429,7 @@ pub fn forget_gone() {
     }
 
     DRAWN.locked().retain(|monitor, _| here(monitor));
+    context_menu::forget_gone(&monitors);
 }
 
 fn pointed(monitor: &str, x: f32) {
@@ -2310,6 +2449,7 @@ fn pointed(monitor: &str, x: f32) {
         return;
     }
 
+    let animation_speed = config::get().animation_speed;
     let now = Instant::now();
     let mut pointers = Pointers::write();
 
@@ -2325,7 +2465,9 @@ fn pointed(monitor: &str, x: f32) {
     if pointer.inside && !pointer.growing {
         pointer.growing = true;
         pointer.retime(now);
-        pointer.grow.to([100.0], GROW, now);
+        pointer
+            .grow
+            .to([100.0], config::scale_animation(GROW, animation_speed), now);
     }
 }
 

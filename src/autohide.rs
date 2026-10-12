@@ -69,7 +69,14 @@ impl Out {
         }
     }
 
-    fn step(&mut self, idle: bool, now: Instant, motion: Mode, damping: f32) -> Step {
+    fn step(
+        &mut self,
+        idle: bool,
+        now: Instant,
+        motion: Mode,
+        damping: f32,
+        animation_speed: u32,
+    ) -> Step {
         // a reload may have changed the motion: taken from where it stands
         if self.spring.mode() != motion {
             self.spring = Spring::new(self.spring.at(now), motion);
@@ -90,10 +97,18 @@ impl Out {
             if hides {
                 // going, it never passes the edge and swings back into view
                 self.spring.damp(CRITICAL);
-                self.spring.to([target], HIDE, now);
+                self.spring.to(
+                    [target],
+                    config::scale_animation(HIDE, animation_speed),
+                    now,
+                );
             } else {
                 self.spring.damp(damping);
-                self.spring.to([target], SHOW, now);
+                self.spring.to(
+                    [target],
+                    config::scale_animation(SHOW, animation_speed),
+                    now,
+                );
             }
         }
 
@@ -127,7 +142,7 @@ pub fn out(monitor: &str, idle: bool, forced: bool, now: Instant) -> (f32, bool)
 
     let mut outs = OUT.locked();
 
-    if !(config.island_place.autohide || forced) {
+    if !(config.island_placement().autohide || forced) {
         // forgets this output, not the others, which may be hiding for lack of a Rest to show
         if let Some(outs) = outs.as_mut() {
             outs.by.remove(monitor);
@@ -142,7 +157,13 @@ pub fn out(monitor: &str, idle: bool, forced: bool, now: Instant) -> (f32, bool)
         .by
         .entry(monitor.to_owned())
         .or_insert_with(|| Out::new(config.island.motion))
-        .step(idle, now, config.island.motion, config.island.damping);
+        .step(
+            idle,
+            now,
+            config.island.motion,
+            config.island.damping,
+            config.animation_speed,
+        );
 
     // an Island no longer idle by then draws once more, for nothing
     if let Some(wake) = step.wake {
@@ -189,13 +210,13 @@ pub fn forget_gone() {
  * the body `out` of the way out, slid past its edge the rest: hidden, it just clears the screen, so
  * it shows from the start of the way back. Its shadow, which reaches further, the Island fades
  */
-pub fn slide(body: Rect, hang: Hang, out: f32) -> Rect {
+pub fn slide(body: Rect, hang: Hang, out: f32, edge_offset: f32) -> Rect {
     let thickness = if hang.sideways() {
         body.width
     } else {
         body.height
     };
-    let away = (geometry::TOP + thickness) * (1.0 - out);
+    let away = (geometry::TOP + thickness + edge_offset) * (1.0 - out);
 
     match hang.edge {
         Edge::Top => Rect {
@@ -218,25 +239,25 @@ pub fn slide(body: Rect, hang: Hang, out: f32) -> Rect {
 }
 
 // the strip on the edge beside a body, which takes the pointer that brings it back
-pub fn trigger(body: Rect, hang: Hang, canvas: Canvas) -> Rect {
+pub fn trigger(body: Rect, hang: Hang, canvas: Canvas, edge_offset: f32) -> Rect {
     match hang.edge {
         Edge::Top => Rect {
-            y: 0.0,
+            y: -edge_offset,
             height: TRIGGER,
             ..body
         },
         Edge::Bottom => Rect {
-            y: canvas.height - TRIGGER,
+            y: canvas.height - TRIGGER + edge_offset,
             height: TRIGGER,
             ..body
         },
         Edge::Left => Rect {
-            x: 0.0,
+            x: -edge_offset,
             width: TRIGGER,
             ..body
         },
         Edge::Right => Rect {
-            x: canvas.width - TRIGGER,
+            x: canvas.width - TRIGGER + edge_offset,
             width: TRIGGER,
             ..body
         },
@@ -248,14 +269,14 @@ pub fn trigger(body: Rect, hang: Hang, canvas: Canvas) -> Rect {
  * it; else its area, and never less than that strip, so an Island just coming out, its area still
  * past the window, keeps the pointer that brought it
  */
-pub fn area(body: Rect, hang: Hang, canvas: Canvas, out: f32) -> Rect {
-    let strip = trigger(body, hang, canvas);
+pub fn area(body: Rect, hang: Hang, canvas: Canvas, out: f32, edge_offset: f32) -> Rect {
+    let strip = trigger(body, hang, canvas, edge_offset);
 
     if out <= 0.0 {
         return strip;
     }
 
-    let area = geometry::input_area(slide(body, hang, out), canvas);
+    let area = geometry::input_area(slide(body, hang, out, edge_offset), canvas);
 
     let x = area.x.min(strip.x);
     let y = area.y.min(strip.y);
