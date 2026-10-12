@@ -461,29 +461,44 @@ pub fn checked(url: &str) -> Result<Uri, String> {
 }
 
 /*
- * whether the password may go to `there`, an address a server named: the account's own server,
- * or a sibling under the same parent domain, as iCloud's caldav.icloud.com sends each account to
- * its pNN-caldav.icloud.com. Never another domain, nor another address on this machine
+ * whether the password may go to `there`, an address a server named: only the account's own
+ * origin, its scheme, host and port. iCloud alone is known to name another host for an account's
+ * calendars, its pNN-caldav.icloud.com, so that one is trusted by name, over HTTPS
  */
 fn trusted(account: &Uri, there: &Uri) -> bool {
     let (Some(home), Some(host)) = (account.host(), there.host()) else {
         return false;
     };
-    if account.scheme() != there.scheme() {
+    let port = |uri: &Uri| {
+        uri.port_u16().or_else(|| match uri.scheme_str()? {
+            "https" => Some(443),
+            "http" => Some(80),
+            _ => None,
+        })
+    };
+    if account.scheme() != there.scheme() || port(account) != port(there) {
         return false;
     }
-    if home == host {
-        return true;
-    }
 
-    // an address by number has no parent domain
-    let named = |host: &str| !host.starts_with('[') && host.parse::<std::net::IpAddr>().is_err();
-    let parent = home.split_once('.').map(|(_, parent)| parent);
+    let home = home.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
 
-    named(home)
-        && named(host)
-        && parent
-            .is_some_and(|parent| parent.contains('.') && host.ends_with(&format!(".{parent}")))
+    home == host || (icloud(&home) && icloud(&host) && there.scheme_str() == Some("https"))
+}
+
+// caldav.icloud.com, or a partition of it: pNN-caldav.icloud.com
+fn icloud(host: &str) -> bool {
+    let Some(name) = host.strip_suffix(".icloud.com") else {
+        return false;
+    };
+
+    name == "caldav"
+        || name
+            .strip_suffix("-caldav")
+            .and_then(|partition| partition.strip_prefix('p'))
+            .is_some_and(|number| {
+                !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+            })
 }
 
 // `scheme://host:port` of an address
@@ -1368,7 +1383,7 @@ END:VCALENDAR
 
     // a server cannot send the password elsewhere by naming another address in its answer
     #[test]
-    fn the_password_goes_only_to_the_account_and_its_siblings() {
+    fn the_password_goes_only_to_the_account_and_icloud_partitions() {
         let trusts = |account: &str, there: &str| {
             trusted(&account.parse().unwrap(), &there.parse().unwrap())
         };
@@ -1399,6 +1414,29 @@ END:VCALENDAR
         ));
         assert!(!trusts("https://caldav.icloud.com/", "https://localhost/"));
         assert!(!trusts("https://10.0.0.5/", "https://1.0.0.5/"));
+
+        // a public suffix is no parent domain
+        assert!(!trusts("https://example.co.uk/", "https://attacker.co.uk/"));
+        assert!(!trusts(
+            "https://dav.example.com/",
+            "https://other.example.com/"
+        ));
+        assert!(!trusts(
+            "https://caldav.icloud.com/",
+            "https://evil.icloud.com/"
+        ));
+        assert!(!trusts(
+            "https://caldav.icloud.com/",
+            "https://p-caldav.icloud.com/"
+        ));
+
+        // another port is another server
+        assert!(!trusts("https://example.com/", "https://example.com:8443/"));
+        assert!(!trusts("http://localhost:5232/", "http://localhost:5233/"));
+        assert!(!trusts(
+            "https://caldav.icloud.com/",
+            "https://p63-caldav.icloud.com:8443/"
+        ));
     }
 
     // the password goes over HTTPS, or to this machine
