@@ -929,6 +929,27 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
+    // niri's keybinds on the island, read from its config, and the keys Kanade's Surfaces take
+    Module {
+        name: "keys-surface",
+        about: "niri's keybinds and Kanade's own keys, to look up",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "keys",
+            about: "Open the keybinds' Surface",
+            usage: || String::from("keys open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Keys, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
     /*
      * screenshots, by niri; its stream, which the core follows, says when each is saved. Screen
      * recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own

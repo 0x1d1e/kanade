@@ -520,7 +520,11 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,
         Presentation::Expanded(
-            Surface::Notifications | Surface::Launcher | Surface::Clipboard | Surface::Wallpapers,
+            Surface::Notifications
+            | Surface::Launcher
+            | Surface::Clipboard
+            | Surface::Wallpapers
+            | Surface::Keys,
         ) => largest,
     }
 }

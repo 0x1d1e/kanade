@@ -4,7 +4,7 @@
 
 | Verb | Does |
 |---|---|
-| `launcher\|controls\|media\|notifications\|tray\|clipboard\|calendar\|weather\|wallpaper open` | opens that Surface on the focused output |
+| `launcher\|controls\|media\|notifications\|tray\|clipboard\|calendar\|weather\|wallpaper\|keys open` | opens that Surface on the focused output |
 | `... close` | collapses it when it is open there |
 | `... toggle` | opens it, or collapses it when it is already open there |
 | `dmenu [--prompt <text>]` | opens the Launcher on the focused output with only the lines read from stdin, searched as it searches apps, the prompt in its field. Prints the line pressed, exactly as read, and exits 0; Escape, a collapse or another Surface exits 1 with nothing printed. Empty lines are skipped; at most 5000 lines of up to 1000 characters. One at a time: a second `dmenu` replaces the first, which exits 1. As any island opened by a verb, it holds the keyboard 5 s after the last key, then collapses. Part of the `launcher` Module |

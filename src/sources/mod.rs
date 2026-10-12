@@ -4,6 +4,7 @@
 pub mod apps;
 pub mod audio;
 pub mod battery;
+pub mod binds;
 pub mod bluetooth;
 pub mod brightness;
 pub mod bus;

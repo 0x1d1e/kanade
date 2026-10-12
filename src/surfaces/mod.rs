@@ -14,6 +14,7 @@ pub mod calendar;
 pub mod clipboard;
 pub mod controls;
 mod grid;
+pub mod keys;
 pub mod launcher;
 pub mod media;
 pub mod notifications;

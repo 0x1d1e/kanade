@@ -92,6 +92,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "night-light",
             "clipboard",
             "clipboard-surface",
+            "keys-surface",
         ],
     ),
     (

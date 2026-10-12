@@ -73,7 +73,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `weather` |
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
-| Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface` |
+| Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface` |
 | Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `idle`, `session`, `settings` |
@@ -134,6 +134,7 @@ Rules:
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
+- **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.
 - **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016).
 - **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
 
@@ -260,6 +261,7 @@ night-light on|off|toggle|status
 battery limit on|off|status
 wallpaper set <path>|shuffle|status
 wallpaper open|close|toggle
+keys open|close|toggle
 osd volume|brightness
 settings open [page]|close
 config reload|validate|defaults

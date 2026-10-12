@@ -378,6 +378,7 @@ fn destinations() -> Destinations {
         bluetooth: controls && radios.bluetooth,
         clipboard: modules::on("clipboard-surface"),
         wallpapers: modules::on("wallpaper-surface"),
+        keys: modules::on("keys-surface"),
         settings: modules::on("settings"),
     }
 }
@@ -918,6 +919,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
         }
         Destination::Wallpapers => {
             IslandService::write().open(monitor, Surface::Wallpapers, Instant::now());
+            Ok(())
+        }
+        Destination::Keys => {
+            IslandService::write().open(monitor, Surface::Keys, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {

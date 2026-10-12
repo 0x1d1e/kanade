@@ -35,6 +35,9 @@ pub enum Surface {
 
     // the wallpaper folder as a grid of pictures, one pressed to show it
     Wallpapers,
+
+    // niri's keybinds, and the keys Kanade's own Surfaces take
+    Keys,
 }
 
 impl Surface {
