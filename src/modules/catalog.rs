@@ -423,7 +423,7 @@ pub const ALL: &[Module] = &[
                 without: POLLS,
             },
         ],
-        settings: &[],
+        settings: config::NOTIFICATIONS,
         // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
         // `notification-surface`'s
         verbs: &[Verb {

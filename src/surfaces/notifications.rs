@@ -400,11 +400,19 @@ impl Card {
     }
 }
 
-// newest first, a replaced one counting from its replacement
+/*
+ * newest first, a replaced one counting from its replacement; one its rule keeps out of the
+ * history never shows here, only as its Banner
+ */
 fn cards() -> Vec<Card> {
     let notifications = Notifications::read();
 
-    let mut cards: Vec<Card> = notifications.list().iter().map(Card::of).collect();
+    let mut cards: Vec<Card> = notifications
+        .list()
+        .iter()
+        .filter(|notification| notification.effects().history)
+        .map(Card::of)
+        .collect();
     cards.sort_by_key(|card| Reverse(card.received));
 
     cards

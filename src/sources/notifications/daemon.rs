@@ -21,6 +21,9 @@ pub struct Notifications {
 // the numbers the spec gives each way a notification can close
 #[derive(Clone, Copy)]
 pub enum Reason {
+    // its rule keeps it out of the history, and its Banner is gone or never showed
+    Expired = 1,
+
     Dismissed = 2,
 
     // the sender asked with CloseNotification
@@ -68,6 +71,19 @@ impl Notifications {
 
         for id in ids {
             notifications.close(id, Reason::Dismissed);
+        }
+    }
+
+    // closes one its rule keeps out of the history; read first, as a write wakes every reader,
+    // and one already gone changes nothing
+    pub fn expire(id: u32) {
+        let here = Self::read()
+            .list
+            .iter()
+            .any(|notification| notification.id == id);
+
+        if here {
+            Self::write().close(id, Reason::Expired);
         }
     }
 

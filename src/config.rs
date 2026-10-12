@@ -46,6 +46,7 @@ use crate::look::{
     Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
+use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 
 // plan 5.2: a level change shows for 1000-1400 ms
@@ -130,6 +131,9 @@ pub struct Config {
 
     // `banners.entrance`
     pub entrance: Entrance,
+
+    // `notifications.rules`: what a notification does, by the first rule matching it
+    pub notification_rules: Vec<Rule>,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -343,6 +347,7 @@ impl Default for Config {
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
             entrance: Entrance::default(),
+            notification_rules: Vec::new(),
             outputs: BTreeMap::new(),
         }
     }
@@ -513,6 +518,9 @@ pub enum Kind {
 
     // a table of Module name = true or false, merged by name; the Field holds the ones off
     Modules(Field<Vec<&'static str>>),
+
+    // a list of notification rules, each a table; a layer replaces the list below
+    Rules(Field<Vec<Rule>>),
 }
 
 impl Kind {
@@ -624,6 +632,7 @@ impl Kind {
 
                 (field.set)(config, off);
             }
+            Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
         }
 
         Ok(())
@@ -657,6 +666,9 @@ impl Kind {
                     .map(|name| (name.to_owned(), Value::Boolean(false)))
                     .collect(),
             ),
+            Kind::Rules(field) => {
+                Value::Array((field.get)(config).iter().map(Rule::value).collect())
+            }
         };
 
         match &value {
@@ -678,6 +690,7 @@ impl Kind {
             Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
+            Kind::Rules(field) => field.copy(from, to),
         }
     }
 
@@ -1143,6 +1156,21 @@ pub const ISLAND: &[Setting] = &[
         per_output: false,
     },
 ];
+
+pub const NOTIFICATIONS: &[Setting] = &[Setting {
+    key: "notifications.rules",
+    label: "Notification rules",
+    help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, bypass_dnd, timeout (ms) and urgency; file only",
+    kind: Kind::Rules(Field {
+        get: |config| config.notification_rules.clone(),
+        set: |config, rules| config.notification_rules = rules,
+    }),
+    example: Some(
+        "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
+    ),
+    restart: false,
+    per_output: false,
+}];
 
 pub const WINDOWS: &[Setting] = &[Setting {
     key: "windows.apps",
@@ -2350,6 +2378,7 @@ mod tests {
                 "dock.size",
                 "dock.merge",
                 "media.visualizer",
+                "notifications.rules",
                 "wallpaper.directory",
                 "calendar.paths",
                 "weather.location",
@@ -2759,6 +2788,48 @@ battery = false
         assert_eq!(
             one("dock.pinned = \"firefox\"").1,
             said(&[(1, "dock.pinned: expected a list of \"desktop file id\"s")])
+        );
+    }
+
+    // `[[notifications.rules]]` reads as a list a later file replaces; a bad rule keeps the list
+    // below and says where
+    #[test]
+    fn notification_rules_are_a_list_a_later_file_replaces() {
+        let first = "[[notifications.rules]]\napp = \"Slack\"\nbanner = false\n\n[[notifications.rules]]\nsummary = \"battery\"\nbypass_dnd = true\n";
+
+        let (config, problems) = one(first);
+        assert_eq!(problems, vec![]);
+        assert_eq!(config.notification_rules.len(), 2);
+        assert_eq!(config.notification_rules[0].app.as_deref(), Some("Slack"));
+        assert_eq!(config.notification_rules[1].bypass_dnd, Some(true));
+
+        let (config, problems) = layers(
+            &[
+                first,
+                "\n[[notifications.rules]]\napp = \"Mail\"\nsumary = \"x\"\n",
+            ],
+            MIGRATIONS,
+        );
+        assert_eq!(config.notification_rules.len(), 2);
+        assert_eq!(problems[1].len(), 1);
+        assert_eq!(problems[1][0].0, 2);
+        assert!(
+            problems[1][0]
+                .1
+                .starts_with("notifications.rules: rule 1: unknown key sumary"),
+            "{:?}",
+            problems[1]
+        );
+
+        let (config, problems) = layers(
+            &[first, "[[notifications.rules]]\ncategory = \"email\"\n"],
+            MIGRATIONS,
+        );
+        assert_eq!(problems, [vec![], vec![]]);
+        assert_eq!(config.notification_rules.len(), 1);
+        assert_eq!(
+            config.notification_rules[0].category.as_deref(),
+            Some("email")
         );
     }
 

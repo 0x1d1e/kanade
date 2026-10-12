@@ -9,7 +9,7 @@
 | `... toggle` | opens it, or collapses it when it is already open there |
 | `island collapse` | collapses the open island on the focused output |
 | `notifications clear` | dismisses every notification |
-| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification Banners stop showing, Critical ones still do |
+| `notifications dnd on\|off\|toggle` | Do Not Disturb: notification Banners stop showing, Critical ones and those a rule lets bypass it (`notifications.rules`) still do |
 | `clipboard clear` | forgets the clipboard history; what is on the clipboard stays |
 | `capture screenshot area\|window\|output` | asks niri for a screenshot of a picked area, the focused window or the focused output, saved under `~/Pictures/Screenshots`; prints its path |
 | `capture record start\|stop\|status` | records the focused output with `wf-recorder`, encoded on the GPU, to `~/Videos/Screencasts`; `start` and `stop` print its path once it records or is saved, `status` says how it stands |

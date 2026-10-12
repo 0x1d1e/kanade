@@ -1,6 +1,8 @@
 //! Which Banners show and for how long (ADR 0007): at most `MOST` at a time, the rest queued in
-//! arrival order with Critical ones ahead. Low shows 4 s, normal 6 s, Critical until closed. The
-//! pointer on any Banner pauses every timer. Time is an input; this never reads a clock.
+//! arrival order with Critical ones ahead. Low shows 4 s, normal 6 s, Critical until closed, unless
+//! its notification's rule gives a time. The pointer on any Banner pauses every timer. Under DND
+//! only Critical ones show, and those whose rule bypasses DND. Time is an input; this never reads a
+//! clock.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -27,6 +29,12 @@ pub struct Banner {
 
     // key and label
     pub actions: Vec<(String, String)>,
+
+    // from its notification's rule: kept in the history once the Banner is gone, shown under DND,
+    // and how long it shows over its urgency's time
+    pub history: bool,
+    pub bypass_dnd: bool,
+    pub timeout: Option<Duration>,
 }
 
 impl Banner {
@@ -34,13 +42,18 @@ impl Banner {
         self.urgency == Urgency::Critical
     }
 
+    // shows under DND
+    pub fn loud(&self) -> bool {
+        self.critical() || self.bypass_dnd
+    }
+
     // none is sticky
     fn length(&self) -> Option<Duration> {
-        match self.urgency {
+        self.timeout.or(match self.urgency {
             Urgency::Low => Some(LOW),
             Urgency::Normal => Some(NORMAL),
             Urgency::Critical => None,
-        }
+        })
     }
 }
 
@@ -68,16 +81,24 @@ pub struct Stack {
 
     // the pointer is on a Banner
     hovered: bool,
+
+    // the Banners that left, any way, whose notification stays out of the history, for it to close
+    left: Vec<u32>,
 }
 
 impl Stack {
     /*
      * a new notification, or a new version of one, which replaces it where it is and starts its
-     * time again. DND drops a non-Critical one, and the version it replaces
+     * time again. DND drops one that is not loud, and the version it replaces
      */
     pub fn arrive(&mut self, banner: Banner, dnd: bool, now: Instant) {
-        if dnd && !banner.critical() {
+        if dnd && !banner.loud() {
             self.close(banner.id, now);
+
+            if !banner.history && !self.left.contains(&banner.id) {
+                self.left.push(banner.id);
+            }
+
             return;
         }
 
@@ -108,23 +129,42 @@ impl Stack {
 
     // its sender or the user closed it; false when it was not here
     pub fn close(&mut self, id: u32, now: Instant) -> bool {
-        let before = (self.shown.len(), self.queued.len());
-
-        self.shown.retain(|shown| shown.banner.id != id);
-        self.queued.retain(|queued| queued.id != id);
-
-        let closed = before != (self.shown.len(), self.queued.len());
-
-        self.promote(now);
-        closed
+        self.keep(|banner| banner.id != id, now)
     }
 
-    // DND came on: only Critical Banners stay; false when there was nothing to drop
+    // DND came on: only loud Banners stay; false when there was nothing to drop
     pub fn silence(&mut self, now: Instant) -> bool {
+        self.keep(Banner::loud, now)
+    }
+
+    // anything DND would drop
+    pub fn silences(&self) -> bool {
+        self.shown.iter().any(|shown| !shown.banner.loud())
+            || self.queued.iter().any(|queued| !queued.loud())
+    }
+
+    // the Banners that left whose notification stays out of the history, each once
+    pub fn take_left(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.left)
+    }
+
+    pub fn has_left(&self) -> bool {
+        !self.left.is_empty()
+    }
+
+    // only the Banners `stays` holds, shown or queued, noting each that leaves; false when none did
+    fn keep(&mut self, stays: impl Fn(&Banner) -> bool, now: Instant) -> bool {
         let before = (self.shown.len(), self.queued.len());
 
-        self.shown.retain(|shown| shown.banner.critical());
-        self.queued.retain(Banner::critical);
+        let leaving: Vec<u32> = self
+            .all()
+            .filter(|banner| !stays(banner) && !banner.history)
+            .map(|banner| banner.id)
+            .collect();
+        self.left.extend(leaving);
+
+        self.shown.retain(|shown| stays(&shown.banner));
+        self.queued.retain(&stays);
 
         let dropped = before != (self.shown.len(), self.queued.len());
 
@@ -132,10 +172,11 @@ impl Stack {
         dropped
     }
 
-    // anything DND would drop
-    pub fn silences(&self) -> bool {
-        self.shown.iter().any(|shown| !shown.banner.critical())
-            || self.queued.iter().any(|queued| !queued.critical())
+    fn all(&self) -> impl Iterator<Item = &Banner> {
+        self.shown
+            .iter()
+            .map(|shown| &shown.banner)
+            .chain(&self.queued)
     }
 
     pub fn hovered(&self) -> bool {
@@ -168,8 +209,15 @@ impl Stack {
 
     // takes down every Banner whose time ran out, and shows queued ones in their place
     pub fn expire(&mut self, now: Instant) {
-        self.shown
-            .retain(|shown| !matches!(shown.timer, Timer::Running(until) if until <= now));
+        let over = |shown: &Shown| matches!(shown.timer, Timer::Running(until) if until <= now);
+
+        for shown in self.shown.iter().filter(|shown| over(shown)) {
+            if !shown.banner.history {
+                self.left.push(shown.banner.id);
+            }
+        }
+
+        self.shown.retain(|shown| !over(shown));
 
         self.promote(now);
     }
@@ -232,5 +280,107 @@ fn timer(banner: &Banner, hovered: bool, now: Instant) -> Timer {
         None => Timer::Sticky,
         Some(length) if hovered => Timer::Paused(length),
         Some(length) => Timer::Running(now + length),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn banner(id: u32, urgency: Urgency) -> Banner {
+        Banner {
+            id,
+            toast: Toast::default(),
+            urgency,
+            default: false,
+            actions: Vec::new(),
+            history: true,
+            bypass_dnd: false,
+            timeout: None,
+        }
+    }
+
+    fn ids(stack: &Stack) -> Vec<u32> {
+        let mut ids: Vec<u32> = stack.shown().map(|banner| banner.id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    // a rule's bypass shows a Banner under DND as a Critical one does, and nothing else does
+    #[test]
+    fn dnd_keeps_only_critical_and_bypassing_banners() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+        let bypassing = Banner {
+            bypass_dnd: true,
+            ..banner(3, Urgency::Low)
+        };
+
+        stack.arrive(banner(1, Urgency::Normal), false, now);
+        stack.arrive(banner(2, Urgency::Critical), false, now);
+        stack.arrive(bypassing.clone(), false, now);
+        assert!(stack.silence(now));
+        assert_eq!(ids(&stack), [2, 3]);
+        assert!(!stack.silences());
+
+        let mut quiet = Stack::default();
+        quiet.arrive(banner(1, Urgency::Normal), true, now);
+        quiet.arrive(bypassing, true, now);
+        assert_eq!(ids(&quiet), [3]);
+    }
+
+    // a Banner whose notification stays out of the history is noted however it leaves, once
+    #[test]
+    fn an_unkept_banner_is_noted_as_it_leaves() {
+        let now = Instant::now();
+        let unkept = |id, urgency| Banner {
+            history: false,
+            ..banner(id, urgency)
+        };
+        let mut stack = Stack::default();
+
+        stack.arrive(unkept(1, Urgency::Low), false, now);
+        stack.arrive(unkept(2, Urgency::Normal), false, now);
+        stack.arrive(unkept(3, Urgency::Critical), false, now);
+        stack.arrive(banner(4, Urgency::Low), false, now);
+        assert!(!stack.has_left());
+
+        // its timer
+        stack.expire(now + LOW);
+        assert_eq!(stack.take_left(), [1]);
+
+        // DND coming on
+        stack.silence(now);
+        assert_eq!(stack.take_left(), [2]);
+
+        // its X, or its sender closing it
+        stack.close(3, now);
+        assert_eq!(stack.take_left(), [3]);
+
+        // dropped as it arrives under DND
+        stack.arrive(unkept(5, Urgency::Normal), true, now);
+        assert_eq!(stack.take_left(), [5]);
+        assert!(!stack.has_left());
+    }
+
+    // a rule's time stands for any urgency, a Critical one too
+    #[test]
+    fn a_rule_s_timeout_times_even_a_critical_banner() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        stack.arrive(banner(1, Urgency::Critical), false, now);
+        stack.arrive(
+            Banner {
+                timeout: Some(Duration::from_secs(2)),
+                ..banner(2, Urgency::Critical)
+            },
+            false,
+            now,
+        );
+
+        assert_eq!(stack.deadline(), Some(now + Duration::from_secs(2)));
+        stack.expire(now + Duration::from_secs(2));
+        assert_eq!(ids(&stack), [1]);
     }
 }

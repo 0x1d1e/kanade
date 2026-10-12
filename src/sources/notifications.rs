@@ -6,6 +6,9 @@
 //! DND (`notifications dnd toggle`) silences Banners, never the history. Banners never take the
 //! keyboard.
 //!
+//! A notification's rule (`rules`) may show it with no Banner, under DND, for its own time, or keep
+//! it out of the history: then it closes as expired once its Banner is gone, or at once with none.
+//!
 //! `Notifications` has no subscription, so this reads it again when the bus carries a
 //! notification arriving or closing (`wake`), and polls while that settles or the bus cannot be
 //! watched; a read that finds the same notifications shows nothing. Kanade is the daemon only if no
@@ -27,6 +30,7 @@ use crate::island::service::IslandService;
 use crate::{banners, modules, supervise};
 
 mod daemon;
+pub mod rules;
 
 pub use daemon::{Notification, Notifications, Urgency};
 
@@ -257,11 +261,26 @@ pub fn follow() {
             let shown: Vec<Banner> = if shows_banners {
                 arrived
                     .iter()
+                    .filter(|notification| notification.effects().banner)
                     .map(|notification| Banner::of(notification))
                     .collect()
             } else {
                 Vec::new()
             };
+
+            // a new version whose rule shows no Banner takes the old version's down
+            let quiet: Vec<u32> = arrived
+                .iter()
+                .filter(|notification| !notification.effects().banner)
+                .map(|notification| notification.id())
+                .collect();
+
+            // those whose rule keeps them out of the history, which close unless a Banner shows
+            let unkept: Vec<u32> = arrived
+                .iter()
+                .filter(|notification| !notification.effects().history)
+                .map(|notification| notification.id())
+                .collect();
 
             drop(notifications);
 
@@ -293,9 +312,10 @@ pub fn follow() {
                 (
                     shown
                         .into_iter()
-                        .filter(|banner| !dnd || banner.critical() || banners.contains(banner.id))
+                        .filter(|banner| !dnd || banner.loud() || banners.contains(banner.id))
                         .collect(),
                     gone.iter()
+                        .chain(&quiet)
                         .copied()
                         .filter(|id| banners.contains(*id))
                         .collect(),
@@ -303,6 +323,12 @@ pub fn follow() {
             } else {
                 (Vec::new(), Vec::new())
             };
+
+            // a Banner that arrives and goes is the Banners' to close, as it leaves
+            let expired: Vec<u32> = unkept
+                .into_iter()
+                .filter(|id| !shown.iter().any(|banner| banner.id == *id))
+                .collect();
 
             if !shown.is_empty() || !closed.is_empty() {
                 let now = Instant::now();
@@ -315,6 +341,10 @@ pub fn follow() {
                 for id in closed {
                     banners.close(id, now);
                 }
+            }
+
+            for id in expired {
+                Notifications::expire(id);
             }
 
             // until the daemon has the bus name, nothing it would announce can arrive

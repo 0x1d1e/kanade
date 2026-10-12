@@ -24,8 +24,9 @@ The microphone, camera and screen capture in use, a dot of its color each at the
 ## Banner
 A notification card on the focused output, hanging from the Island on its edge and side and clear of the Dock, in its own Top-layer window per monitor (ADRs 0007, 0023). It comes out of the Island and goes back into it, as `banners.entrance` says. The `banners` Module draws it over what `notifications` keeps: the bus, state and history stay there.
 - Low shows 4 s, normal 6 s, Critical until closed. The pointer on any Banner pauses every timer. At most `MOST` (`src/banners/stack.rs`) show, newest nearest the Island; the rest queue, Critical first.
-- **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history.
-- **Invariant:** under DND only Critical Banners show; DND coming on drops the rest, queued too.
+- A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
+- **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
+- **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
 
 ## OSD

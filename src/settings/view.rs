@@ -1027,6 +1027,7 @@ fn control(
             (Box::new(Column::new(rows).width(inner()).gap(6.0)), false)
         }
         Kind::Modules(_) => unreachable!("section_view draws the Modules row itself"),
+        Kind::Rules(_) => unreachable!("notifications.rules is set in config files only"),
     }
 }
 

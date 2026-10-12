@@ -99,8 +99,9 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
 
 pub const MODULES: &str = "modules";
 
-// settings owned by another control surface but still accepted in the config schema
-pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned"];
+// settings owned by another control surface, or lists of tables set in config files only, but
+// still accepted in the config schema
+pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned", "notifications.rules"];
 
 // old config keys that remain readable but no longer affect the shell
 pub const LEGACY_KEYS: &[&str] = &["theme.palette"];

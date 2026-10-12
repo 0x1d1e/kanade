@@ -1,10 +1,18 @@
 use std::time::SystemTime;
 
+use super::super::rules::Effects;
+
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub(crate) id: u32,
 
     pub(crate) app_name: String,
+
+    // the `desktop-entry` hint, like "org.gnome.Nautilus", and the `category` hint, like
+    // "im.received"; empty when the sender gives none
+    pub(crate) desktop_entry: String,
+
+    pub(crate) category: String,
 
     pub(crate) summary: String,
 
@@ -25,6 +33,9 @@ pub struct Notification {
     pub(crate) resident: bool,
 
     pub(crate) received: SystemTime,
+
+    // what the rule that matched it as it arrived does, its urgency already applied
+    pub(crate) effects: Effects,
 }
 
 // a button a notification asks for, like "reply" or "open"
@@ -88,6 +99,10 @@ impl Notification {
     // whether clicking the notification itself does something, see Notifications::click
     pub fn has_default_action(&self) -> bool {
         self.has_default
+    }
+
+    pub fn effects(&self) -> Effects {
+        self.effects
     }
 
     // when it arrived, or when the sender last replaced it
