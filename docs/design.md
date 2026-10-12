@@ -127,7 +127,7 @@ Rules:
 
 ### Core Surfaces
 
-- **Launcher**: providers = apps, calculator, emoji, wallpaper, destinations (Wi-Fi and Bluetooth open Controls on their sub-surface, Clipboard its history, each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface; a newer one replaces the one waiting.
+- **Launcher**: providers = apps, calculator, emoji, wallpaper, destinations (Wi-Fi and Bluetooth open Controls on their sub-surface, Clipboard its history, each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface, never by the hold or the grace; a newer one replaces the one waiting, a Launcher the user opened refuses it.
 - **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio (done, #133).
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.

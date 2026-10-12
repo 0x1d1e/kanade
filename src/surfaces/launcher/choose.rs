@@ -2,7 +2,8 @@
 //! sends them; the Launcher opens on the focused island showing only those, searched as it searches
 //! apps, and the call waits for the user. Pressing one answers its place in the list, so the client
 //! prints its own line exactly; Escape, a collapse or another Surface dismisses it, and the client
-//! exits 1. One at a time: a newer dmenu replaces the one waiting, which is dismissed, so a client
+//! exits 1. It waits as long as the user takes: neither the hold nor the pointer leaving collapses
+//! it. A Launcher the user is typing in is refused, never taken over. One at a time: a newer dmenu replaces the one waiting, which is dismissed, so a client
 //! that went away never keeps the next one from opening.
 
 use std::sync::{Arc, Mutex};
@@ -200,7 +201,13 @@ pub fn choose(asked: Asked, reply: IpcReply) {
         return refuse(reply, "no lines to choose from on stdin");
     }
 
-    // a newer one replaces it
+    // a Launcher the user is typing in is theirs; a dmenu waiting in it is replaced by a newer one
+    let theirs =
+        IslandService::read().surface() == Some(Surface::Launcher) && WAITING.locked().is_none();
+    if theirs {
+        return refuse(reply, "the Launcher is in use");
+    }
+
     dismiss();
 
     match IslandService::read().resolve(Command::Open(Surface::Launcher)) {
@@ -210,13 +217,15 @@ pub fn choose(asked: Asked, reply: IpcReply) {
     }
 
     let (shows, visit, overview) = {
-        let island = IslandService::read();
+        let mut island = IslandService::write();
+        let shows = island.surface() == Some(Surface::Launcher);
 
-        (
-            island.surface() == Some(Surface::Launcher),
-            island.visit(),
-            island.overview(),
-        )
+        // it waits for the user, however long they take, rather than collapse after the hold
+        if let Some(monitor) = island.expanded_on().filter(|_| shows).map(str::to_owned) {
+            island.wait(&monitor);
+        }
+
+        (shows, island.visit(), island.overview())
     };
 
     if !shows {
