@@ -1,10 +1,13 @@
 //! The Island's window and the reserve strip: one window per output draws the body, its forms
 //! (in the modules below), the Satellites, the cluster and the Dock merged into it.
 
+use std::collections::HashMap;
 use std::iter;
 use std::rc::Rc;
+use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
+use kanade_runtime::MutexExt;
 use kanade_runtime::service::{Service, Write};
 use kanade_runtime::{
     Button, Center, Horizontal, Layer, LayerWindow, Monitor, Parent, Rectangle, Scroll, Stack,
@@ -22,7 +25,7 @@ use crate::island::arbiter::SATELLITES;
 use crate::island::geometry::{self, Rect};
 use crate::island::presentation::{Content, Input, Presentation};
 use crate::island::service::IslandService;
-use crate::look::Merge;
+use crate::look::{Anchor, Merge};
 use crate::merge;
 use crate::scene::{self, Scene, Stand};
 use crate::shadow;
@@ -70,6 +73,49 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
 
 // the Island's body, as liquid glass names its pane
 const ISLAND: &str = "island";
+
+// where each output's body last stood on it, and the output's size, in logical pixels
+struct Placed {
+    body: (f32, f32),
+    screen: (f32, f32),
+}
+
+static PLACED: LazyLock<Mutex<HashMap<String, Placed>>> = LazyLock::new(Mutex::default);
+
+// as drawn: the body's corner on the output, from the window's corner there and the body in it
+fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
+    let screen = (monitor.width, monitor.height);
+    let corner = glass::origin(anchor, (window.0.round(), window.1.round()), screen);
+    let placed = Placed {
+        body: (corner.0 + body.x, corner.1 + body.y),
+        screen: (screen.0 as f32, screen.1 as f32),
+    };
+
+    let mut all = PLACED.locked();
+
+    match all.get_mut(&monitor.name) {
+        Some(old) => *old = placed,
+        None => {
+            all.insert(monitor.name.clone(), placed);
+        }
+    }
+}
+
+/*
+ * a point of the body as last drawn, as a fraction of its output: 0 to 1 across from the left and
+ * down from the top; none before it is drawn there
+ */
+pub(crate) fn on_screen(monitor: &str, (x, y): (f32, f32)) -> Option<(f32, f32)> {
+    let all = PLACED.locked();
+    let placed = all.get(monitor)?;
+
+    (placed.screen.0 > 0.0 && placed.screen.1 > 0.0).then(|| {
+        (
+            (placed.body.0 + x) / placed.screen.0,
+            (placed.body.1 + y) / placed.screen.1,
+        )
+    })
+}
 
 // the opacity the incoming content reaches before it takes input; the outgoing never does
 const LIVE: f32 = 0.5;
@@ -379,6 +425,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     );
 
     let window = scene.window();
+
+    placed(monitor, place.anchor, window, scene.in_window(body_rect));
 
     // where the pointer reaches in this window: the Island's area, and the Dock's if merged
     let reach: Vec<_> = scene

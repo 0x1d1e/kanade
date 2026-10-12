@@ -972,8 +972,6 @@ dependencies = [
  "emojis",
  "enumflags2",
  "fontconfig",
- "gif",
- "image-webp",
  "inotify",
  "kanade-lock",
  "kanade-runtime",
@@ -1012,6 +1010,8 @@ name = "kanade-runtime"
 version = "0.1.0"
 dependencies = [
  "fontconfig",
+ "gif",
+ "image-webp",
  "png",
  "resvg",
  "smithay-client-toolkit",

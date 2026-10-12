@@ -482,6 +482,13 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&wallpaper_status_call(), deadline)
             }))
         }
+        (Call::Wallpaper(wallpaper::Request::Shuffle), Ok(Reply::Done(text)))
+            if let Some((serial, path)) = wallpaper::shuffled(&text) =>
+        {
+            Ok(settle_wallpaper(serial, &path, PATIENCE, |deadline| {
+                call_until(&wallpaper_status_call(), deadline)
+            }))
+        }
         (Call::Lock, Ok(Reply::Done(text))) if let Some(request) = lock::requested(&text) => {
             Ok(settle_lock(&request, PATIENCE, |deadline| {
                 call_until(&lock_status_call(), deadline)

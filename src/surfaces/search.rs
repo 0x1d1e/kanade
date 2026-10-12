@@ -1,0 +1,128 @@
+//! What a Surface searched as it is typed shows: the field the query goes in and the state that
+//! stands where nothing is listed. Drawn as the Clipboard and the Launcher draw their own.
+
+use kanade_runtime::{
+    Center, Column, Padding, Rectangle, Row, Size, Start, Text, Widget, children,
+};
+
+use crate::icon::Icon;
+use crate::theme::space::TARGET;
+use crate::theme::{self};
+
+pub const FIELD: f32 = 44.0;
+const FIELD_INSET: f32 = 16.0;
+const ICON_GAP: f32 = 12.0;
+
+// the typed text's size, and the caret after it
+const QUERY: f32 = theme::text::TITLE;
+const CARET: f32 = 1.5;
+
+/*
+ * `width` across: a search icon, what is typed with the caret after it, or `placeholder` faded; a
+ * query wider than the field shows its end, where the typing is
+ */
+pub fn field(query: &str, placeholder: &str, width: f32) -> Rectangle {
+    let room = width - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
+
+    let caret = Rectangle::new()
+        .width(CARET)
+        .height(QUERY + 4.0)
+        .fill(theme::island().on_surface);
+
+    let typed: Box<dyn Widget> = if query.is_empty() {
+        Box::new(
+            Row::new(children![
+                caret,
+                Text::new(placeholder)
+                    .size(QUERY)
+                    .color(theme::island().on_surface_variant)
+                    .weight(theme::text::MEDIUM),
+            ])
+            .align(Center),
+        )
+    } else {
+        Box::new(Row::new(children![tail(query, room), caret]).align(Center))
+    };
+
+    Rectangle::new()
+        .width(width)
+        .height(FIELD)
+        .radius(FIELD / 2.0)
+        .fill(theme::island().surface_container)
+        .padding(Padding {
+            top: 0.0,
+            right: FIELD_INSET,
+            bottom: 0.0,
+            left: FIELD_INSET,
+        })
+        .align_child(Start, Center)
+        .child(
+            Row::new(vec![
+                Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
+                    as Box<dyn Widget>,
+                typed,
+            ])
+            .gap(ICON_GAP)
+            .align(Center),
+        )
+}
+
+// the end of `query` that fits in `width`, an ellipsis before it when the start is cut
+fn tail(query: &str, width: f32) -> Text {
+    let text = |shown: &str| {
+        Text::new(shown)
+            .size(QUERY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::MEDIUM)
+    };
+    let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
+
+    let whole = text(query);
+
+    if fits(&whole) {
+        return whole;
+    }
+
+    let letters: Vec<char> = query.chars().collect();
+
+    (1..letters.len())
+        .map(|cut| {
+            text(&format!(
+                "\u{2026}{}",
+                letters[cut..].iter().collect::<String>()
+            ))
+        })
+        .find(fits)
+        .unwrap_or_else(|| text("\u{2026}"))
+}
+
+// what it means, `width` by `height` where the list goes: its icon, a title and a detail line
+pub fn state(icon: Icon, title: &str, detail: &str, width: f32, height: f32) -> Rectangle {
+    let mut lines = children![
+        icon.draw(28.0),
+        Text::new(title)
+            .size(theme::text::BODY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD),
+    ];
+
+    if !detail.is_empty() {
+        let text = Text::new(detail)
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::island().on_surface_variant)
+            .weight(theme::text::MEDIUM);
+
+        // centred while it fits, elided only when a long one does not, since elided text fills its
+        // width
+        lines.push(Box::new(match text.width() {
+            Size::Fixed(natural) if natural <= width => text,
+            _ => text.elide(),
+        }));
+    }
+
+    Rectangle::new()
+        .width(width)
+        .height(height)
+        .align_child(Center, Center)
+        .child(Column::new(lines).gap(6.0).align(Center))
+}

@@ -55,7 +55,16 @@ pub const MATERIAL: &str = "appearance.material";
 
 // the Modules page's groups, each Module but the core once
 pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
-    ("Desktop", &["dock", "windows", "wallpaper", "workspace"]),
+    (
+        "Desktop",
+        &[
+            "dock",
+            "windows",
+            "wallpaper",
+            "wallpaper-surface",
+            "workspace",
+        ],
+    ),
     ("Activities", &["media", "timer", "live", "battery"]),
     (
         "Notifications & privacy",
@@ -311,13 +320,17 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "data",
         title: "Data",
-        summary: "Where wallpapers, calendars and the weather come from",
+        summary: "Where wallpapers, calendars and the weather come from, and how a wallpaper changes",
         group: "System",
         icon: Icon::Data,
         sections: &[
             Section {
                 title: "Wallpaper",
-                rows: &[Row::Key("wallpaper.directory")],
+                rows: &[
+                    Row::Key("wallpaper.directory"),
+                    Row::Key("wallpaper.transition"),
+                    Row::Key("wallpaper.transition_duration"),
+                ],
             },
             Section {
                 title: "Calendar",

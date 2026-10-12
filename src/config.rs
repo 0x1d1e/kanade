@@ -86,6 +86,9 @@ pub struct Config {
     // `wallpaper.directory`: where the Launcher finds wallpapers, else ~/Pictures/Wallpapers
     pub wallpapers: Option<String>,
 
+    // `wallpaper.transition` and `wallpaper.transition_duration`: how awww moves to a new wallpaper
+    pub transition: Transition,
+
     // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
     // directory (ADR 0015)
     pub calendars: Vec<String>,
@@ -365,6 +368,34 @@ impl Default for Pomodoro {
     }
 }
 
+/*
+ * how awww moves to a new wallpaper: one of its transitions, those a Settings row has room for,
+ * and how long it takes, which awww's own "simple" fade ignores
+ */
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transition {
+    pub kind: &'static str,
+    pub duration: Duration,
+}
+
+impl Transition {
+    pub const KINDS: &[&str] = &["simple", "fade", "wipe", "grow", "outer"];
+
+    // the two that grow or shrink a circle, from where the wallpaper was chosen
+    pub fn circle(self) -> bool {
+        matches!(self.kind, "grow" | "outer")
+    }
+}
+
+impl Default for Transition {
+    fn default() -> Self {
+        Transition {
+            kind: "simple",
+            duration: Duration::from_millis(1000),
+        }
+    }
+}
+
 // one output's overrides: the keys it sets, and their values in a config of their own
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Output {
@@ -384,6 +415,7 @@ impl Default for Config {
             apps: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
+            transition: Transition::default(),
             calendars: Vec::new(),
             location: None,
             place: None,
@@ -1577,18 +1609,47 @@ pub const DOCK: &[Setting] = &[
     },
 ];
 
-pub const WALLPAPER: &[Setting] = &[Setting {
-    key: "wallpaper.directory",
-    label: "Wallpaper folder",
-    help: "the images the Launcher offers after `@`, else ~/Pictures/Wallpapers",
-    kind: Kind::Path(Field {
-        get: |config| config.wallpapers.clone(),
-        set: |config, wallpapers| config.wallpapers = wallpapers,
-    }),
-    example: Some("\"~/Pictures/Wallpapers\""),
-    restart: false,
-    per_output: false,
-}];
+pub const WALLPAPER: &[Setting] = &[
+    Setting {
+        key: "wallpaper.directory",
+        label: "Wallpaper folder",
+        help: "the images the Launcher offers after `@` and the Wallpapers Surface shows, else ~/Pictures/Wallpapers",
+        kind: Kind::Path(Field {
+            get: |config| config.wallpapers.clone(),
+            set: |config, wallpapers| config.wallpapers = wallpapers,
+        }),
+        example: Some("\"~/Pictures/Wallpapers\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "wallpaper.transition",
+        label: "Transition",
+        help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle",
+        kind: Kind::Choice(
+            Choices::named(Transition::KINDS),
+            Field {
+                get: |config| config.transition.kind,
+                set: |config, kind| config.transition.kind = kind,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "wallpaper.transition_duration",
+        label: "Transition length",
+        help: "how long a transition other than \"simple\" takes",
+        kind: Kind::Millis(Field {
+            get: |config| config.transition.duration,
+            set: |config, duration| config.transition.duration = duration,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const TIMER: &[Setting] = &[
     Setting {
@@ -2998,6 +3059,8 @@ mod tests {
                 "osd.layout",
                 "notifications.rules",
                 "wallpaper.directory",
+                "wallpaper.transition",
+                "wallpaper.transition_duration",
                 "calendar.paths",
                 "weather.location",
                 "weather.place",

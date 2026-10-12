@@ -1,6 +1,6 @@
 /*
  * where Kanade itself goes, as a Launcher provider: Wi-Fi and Bluetooth open Controls on their
- * networks and devices, Clipboard opens the history, and each page of Settings and each setting
+ * networks and devices, Clipboard opens the history, Wallpapers the wallpaper grid, and each page of Settings and each setting
  * opens Settings on the page showing it. They only open: switching a radio or joining a network
  * is done in the Surface they open
  */
@@ -16,6 +16,7 @@ pub enum Destination {
     Wifi,
     Bluetooth,
     Clipboard,
+    Wallpapers,
 
     // Settings, on the page of this name
     Settings(&'static str),
@@ -27,6 +28,7 @@ pub struct Destinations {
     pub wifi: bool,
     pub bluetooth: bool,
     pub clipboard: bool,
+    pub wallpapers: bool,
     pub settings: bool,
 }
 
@@ -74,6 +76,14 @@ impl LauncherProvider for Destinations {
                 "History",
                 &["clipboard", "clip", "paste", "history"][..],
                 Destination::Clipboard,
+            ),
+            (
+                self.wallpapers,
+                Icon::Picture,
+                "Wallpapers",
+                "Choose a wallpaper",
+                &["wallpapers", "wallpaper", "background"][..],
+                Destination::Wallpapers,
             ),
         ];
 

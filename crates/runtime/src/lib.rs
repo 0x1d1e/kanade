@@ -35,7 +35,10 @@ pub mod worker;
 pub use animation::{Animation, Blend, Easing, request_frame};
 pub use app::App;
 pub use full::Full;
-pub use graphics::image::draw_svg;
+pub use graphics::image::{
+    Format as ImageFormat, ImageState, MOST_PIXELS, decode as decode_image, draw_svg,
+    format as image_format,
+};
 pub use graphics::{Cap, Color, Gradient, Weight};
 pub use input::cursor_names::{
     Crosshair, Default, Grab, Grabbing, Move, NotAllowed, Pointer, ResizeBottom, ResizeBottomLeft,

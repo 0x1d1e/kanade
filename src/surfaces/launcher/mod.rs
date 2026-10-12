@@ -377,6 +377,7 @@ fn destinations() -> Destinations {
         wifi: controls && radios.wifi,
         bluetooth: controls && radios.bluetooth,
         clipboard: modules::on("clipboard-surface"),
+        wallpapers: modules::on("wallpaper-surface"),
         settings: modules::on("settings"),
     }
 }
@@ -886,6 +887,7 @@ fn press(monitor: &str, visit: u64, action: Action) {
         Action::Copy(text) => copy(text.clone(), done),
         Action::Wallpaper(path) => sources::wallpaper::set(
             path.clone(),
+            None,
             Some(Box::new(move |set: Result<(), Unset>| {
                 done(set.map_err(|unset| String::from(unset.brief())))
             })),
@@ -912,6 +914,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
             .ok_or("Controls did not open"),
         Destination::Clipboard => {
             IslandService::write().open(monitor, Surface::Clipboard, Instant::now());
+            Ok(())
+        }
+        Destination::Wallpapers => {
+            IslandService::write().open(monitor, Surface::Wallpapers, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {

@@ -24,7 +24,7 @@ pub fn locked(locked: bool) {
 }
 
 // the canvas's top left corner on its output, anchored as the window is
-fn origin(anchor: Anchor, canvas: (f32, f32), screen: (u32, u32)) -> (f32, f32) {
+pub fn origin(anchor: Anchor, canvas: (f32, f32), screen: (u32, u32)) -> (f32, f32) {
     let (screen_width, screen_height) = (screen.0 as f32, screen.1 as f32);
 
     let x = match anchor.horizontal() {

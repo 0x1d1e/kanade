@@ -1,29 +1,33 @@
+mod decode;
 mod shrink;
 mod soften;
 mod svg;
 
 use std::any::TypeId;
 use std::collections::HashMap;
-use std::io::Cursor;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::thread;
-
-use png::{ColorType, Decoder, Transformations};
-use zune_jpeg::JpegDecoder;
-use zune_jpeg::zune_core::bytestream::ZCursor;
-use zune_jpeg::zune_core::colorspace::ColorSpace;
-use zune_jpeg::zune_core::options::DecoderOptions;
 
 use crate::changes;
 use crate::unpoisoned::MutexExt;
 
-const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
-
-const JPEG_SIGNATURE: [u8; 3] = [0xFF, 0xD8, 0xFF];
+pub use decode::{Format, MOST_PIXELS, decode, format};
 
 // one size for every svg; keying the cache by the shown size would sharpen a big svg that looks soft
 const ICON_SIDE: f32 = 256.0;
+
+// how many images decode at once: a grid of thumbnails fills in parallel, and the rest of the
+// machine keeps its cores
+const WORKERS: usize = 3;
+
+/*
+ * the most small copies kept, and their most bytes, a grid of a few hundred wallpapers' worth;
+ * past either, those no window holds go, the longest unused first
+ */
+const THUMBNAILS: usize = 512;
+const THUMBNAIL_BYTES: usize = 128 << 20;
 
 // an svg's bytes drawn with the longest side `longest` pixels across: width, height, plain RGBA
 pub fn draw_svg(bytes: &[u8], longest: f32) -> Option<(u32, u32, Vec<u8>)> {
@@ -56,6 +60,21 @@ impl Bitmap {
     pub fn height(&self) -> u32 {
         self.height
     }
+
+    fn bytes(&self) -> usize {
+        self.pixels.len()
+    }
+}
+
+// how an image asked for stands
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageState {
+    // waiting for a worker, or decoding
+    Loading,
+    Ready,
+
+    // unreadable, or not an image the runtime decodes
+    Failed,
 }
 
 /*
@@ -67,44 +86,122 @@ struct Decoded;
 // a file, the size it is shrunk to cover (none for its own size), and how far it is blurred
 type Key = (PathBuf, Option<(u32, u32)>, u32);
 
-// every image asked for: none while it is still decoding, or when it could not be read
-static LOADED: LazyLock<Mutex<HashMap<Key, Option<Arc<Bitmap>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+enum Slot {
+    Loading,
+    Ready(Arc<Bitmap>),
+    Failed,
+}
+
+struct Entry {
+    slot: Slot,
+
+    // the tick it was last asked for at
+    used: u64,
+}
+
+// every image asked for, and those waiting for a worker
+#[derive(Default)]
+struct Loader {
+    entries: HashMap<Key, Entry>,
+
+    // the last asked decodes first, so the pictures in view fill in before ones scrolled past
+    waiting: Vec<Key>,
+
+    // counts every ask, for which small copy went unused longest
+    tick: u64,
+
+    workers: usize,
+}
+
+static LOADER: LazyLock<Mutex<Loader>> = LazyLock::new(Mutex::default);
+
+// wakes a worker for a key waiting
+static WAITING: Condvar = Condvar::new();
 
 /*
  * decoding a large image takes long enough to drop frames, so it happens
- * on its own thread; until it is done this gives none and the image is
+ * on a worker; until it is done this gives none and the image is
  * left out, then the window is woken to draw it
  */
 pub fn load(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> Option<Arc<Bitmap>> {
-    let mut loaded = LOADED.locked();
+    ask(path, cover, blur).1
+}
 
+// how the image stands, asking for it if nothing did yet
+pub fn state(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> ImageState {
+    ask(path, cover, blur).0
+}
+
+fn ask(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> (ImageState, Option<Arc<Bitmap>>) {
+    let mut loader = LOADER.locked();
+
+    loader.tick += 1;
+    let tick = loader.tick;
     let key = (path.to_path_buf(), cover, blur);
 
-    if let Some(image) = loaded.get(&key) {
-        if image.is_none() {
-            changes::note_read(TypeId::of::<Decoded>());
-        }
+    if let Some(entry) = loader.entries.get_mut(&key) {
+        entry.used = tick;
 
-        return image.clone();
+        return match &entry.slot {
+            Slot::Loading => {
+                changes::note_read(TypeId::of::<Decoded>());
+                (ImageState::Loading, None)
+            }
+            Slot::Ready(image) => (ImageState::Ready, Some(Arc::clone(image))),
+            Slot::Failed => (ImageState::Failed, None),
+        };
     }
 
-    loaded.insert(key.clone(), None);
+    loader.entries.insert(
+        key.clone(),
+        Entry {
+            slot: Slot::Loading,
+            used: tick,
+        },
+    );
+    loader.waiting.push(key);
 
-    thread::spawn(move || decode(key));
+    if loader.workers < WORKERS {
+        loader.workers += 1;
+        thread::spawn(work);
+    }
+
+    drop(loader);
+    WAITING.notify_one();
 
     changes::note_read(TypeId::of::<Decoded>());
 
-    None
+    (ImageState::Loading, None)
 }
 
-fn decode(key: Key) {
-    let (path, cover, blur) = &key;
+// decodes what waits, for good
+fn work() {
+    loop {
+        let key = {
+            let mut loader = LOADER.locked();
 
-    // a broken file stays empty instead of taking the shell down
-    let Some(image) = read(path) else {
-        return;
-    };
+            loop {
+                if let Some(key) = loader.waiting.pop() {
+                    break key;
+                }
+
+                loader = WAITING.wait(loader).unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+
+        // a decoder that panics on a broken file fails that image, not the worker
+        let image = panic::catch_unwind(AssertUnwindSafe(|| read_key(&key)))
+            .ok()
+            .flatten();
+
+        finish(key, image);
+    }
+}
+
+fn read_key(key: &Key) -> Option<Bitmap> {
+    let (path, cover, blur) = key;
+
+    let image = read(path)?;
 
     // only the small copy is kept, the full size one is dropped here
     let image = match cover {
@@ -113,22 +210,94 @@ fn decode(key: Key) {
     };
 
     // blurred after shrinking, where there are far fewer pixels to average
-    let image = soften::soften(image, *blur);
+    Some(soften::soften(image, *blur))
+}
 
-    LOADED.locked().insert(key, Some(Arc::new(image)));
+fn finish(key: Key, image: Option<Bitmap>) {
+    let mut loader = LOADER.locked();
+
+    if let Some(entry) = loader.entries.get_mut(&key) {
+        entry.slot = match image {
+            Some(image) => Slot::Ready(Arc::new(image)),
+            None => Slot::Failed,
+        };
+    }
+
+    if key.1.is_some() {
+        loader.trim();
+    }
+
+    drop(loader);
 
     changes::mark(TypeId::of::<Decoded>());
 }
 
+impl Loader {
+    /*
+     * small copies past THUMBNAILS or THUMBNAIL_BYTES go, the longest unused first; one a window
+     * holds stays, and so does one still decoding. A failed one goes too, so a file being written
+     * then is read again later
+     */
+    fn trim(&mut self) {
+        // a small copy, with its bytes
+        fn thumbnail<'a>(
+            (key, entry): (&'a Key, &'a Entry),
+        ) -> Option<(&'a Key, &'a Entry, usize)> {
+            let bytes = match &entry.slot {
+                Slot::Ready(image) => image.bytes(),
+                _ => 0,
+            };
+
+            key.1.is_some().then_some((key, entry, bytes))
+        }
+
+        let (mut count, mut bytes) = self
+            .entries
+            .iter()
+            .filter_map(thumbnail)
+            .fold((0, 0), |(count, total), (_, _, bytes)| {
+                (count + 1, total + bytes)
+            });
+
+        if count <= THUMBNAILS && bytes <= THUMBNAIL_BYTES {
+            return;
+        }
+
+        let mut unheld: Vec<(u64, Key, usize)> = self
+            .entries
+            .iter()
+            .filter_map(thumbnail)
+            .filter(|(_, entry, _)| match &entry.slot {
+                Slot::Ready(image) => Arc::strong_count(image) == 1,
+                Slot::Failed => true,
+                Slot::Loading => false,
+            })
+            .map(|(key, entry, bytes)| (entry.used, key.clone(), bytes))
+            .collect();
+
+        unheld.sort_unstable_by_key(|(used, ..)| *used);
+
+        for (_, key, size) in unheld {
+            if count <= THUMBNAILS && bytes <= THUMBNAIL_BYTES {
+                break;
+            }
+
+            self.entries.remove(&key);
+            count -= 1;
+            bytes -= size;
+        }
+    }
+}
+
 /*
- * frees a full size image no window shows anymore; small copies stay,
- * they cost little and decoding them again is slow
+ * frees a full size image no window shows anymore; small copies stay
+ * until there are too many, as decoding them again is slow
  */
 pub fn forget(image: &Arc<Bitmap>) {
-    let mut loaded = LOADED.locked();
+    let mut loader = LOADER.locked();
 
-    loaded.retain(|(_, cover, _), kept| {
-        let same = kept.as_ref().is_some_and(|kept| Arc::ptr_eq(kept, image));
+    loader.entries.retain(|(_, cover, _), entry| {
+        let same = matches!(&entry.slot, Slot::Ready(kept) if Arc::ptr_eq(kept, image));
 
         cover.is_some() || !same
     });
@@ -136,102 +305,11 @@ pub fn forget(image: &Arc<Bitmap>) {
 
 // none for a file that can't be read or decoded, like one still being written
 pub fn read(path: &Path) -> Option<Bitmap> {
-    let bytes = std::fs::read(path).ok()?;
+    let (width, height, pixels) = decode(path, ICON_SIDE)?;
 
-    // the file's first bytes say its format, whatever its name ends in
-    if bytes.starts_with(&PNG_SIGNATURE) {
-        return decode_png(&bytes);
-    }
-
-    if bytes.starts_with(&JPEG_SIGNATURE) {
-        return decode_jpeg(&bytes);
-    }
-
-    if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
-    {
-        let (width, height, pixels) = svg::rasterize(&bytes, ICON_SIDE)?;
-
-        return Some(Bitmap {
-            width,
-            height,
-            pixels: Arc::new(pixels),
-        });
-    }
-
-    // only png, jpeg and svg are supported
-    None
-}
-
-fn decode_png(bytes: &[u8]) -> Option<Bitmap> {
-    let mut decoder = Decoder::new(Cursor::new(bytes));
-
-    // palettes, tiny bit depths and 16 bit samples all turn into plain 8 bit channels
-    decoder.set_transformations(Transformations::normalize_to_color8());
-
-    let mut reader = decoder.read_info().ok()?;
-
-    let size = reader.output_buffer_size()?;
-
-    let mut pixels = vec![0; size];
-
-    let frame = reader.next_frame(&mut pixels).ok()?;
-
-    pixels.truncate(frame.buffer_size());
-
-    let bitmap = Bitmap {
-        width: frame.width,
-        height: frame.height,
-        pixels: Arc::new(expand(&pixels, frame.color_type)),
-    };
-
-    Some(bitmap)
-}
-
-// fills in the channels a png left out, so every pixel is red, green, blue, alpha
-fn expand(pixels: &[u8], color_type: ColorType) -> Vec<u8> {
-    match color_type {
-        ColorType::Rgba => pixels.to_vec(),
-
-        ColorType::Rgb => pixels
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
-            .collect(),
-
-        ColorType::GrayscaleAlpha => pixels
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
-            .collect(),
-
-        ColorType::Grayscale => pixels
-            .iter()
-            .flat_map(|&gray| [gray, gray, gray, 255])
-            .collect(),
-
-        ColorType::Indexed => panic!("failed to decode png: palette was not expanded"),
-    }
-}
-
-fn decode_jpeg(bytes: &[u8]) -> Option<Bitmap> {
-    // a bitmap has four channels, jpeg only stores three
-    let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
-
-    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-
-    let pixels = decoder.decode().ok()?;
-
-    let info = decoder.info()?;
-
-    let bitmap = Bitmap {
-        width: u32::from(info.width),
-        height: u32::from(info.height),
+    Some(Bitmap {
+        width,
+        height,
         pixels: Arc::new(pixels),
-    };
-
-    Some(bitmap)
+    })
 }

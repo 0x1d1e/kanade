@@ -32,6 +32,9 @@ pub enum Surface {
 
     // lock, sleep, restart, power off and log out, and the countdown to the last three (#156)
     Session,
+
+    // the wallpaper folder as a grid of pictures, one pressed to show it
+    Wallpapers,
 }
 
 impl Surface {

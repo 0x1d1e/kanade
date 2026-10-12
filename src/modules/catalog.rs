@@ -683,8 +683,8 @@ pub const ALL: &[Module] = &[
         settings: config::WALLPAPER,
         verbs: &[Verb {
             name: "wallpaper",
-            about: "Set the wallpaper or show the current one",
-            usage: || String::from("wallpaper set <path>|status"),
+            about: "Set the wallpaper or one at random, show status, open its Surface",
+            usage: || String::from("wallpaper set <path>|shuffle|status"),
             parse: |arguments| {
                 wallpaper::Request::parse(arguments)
                     .map(Call::Wallpaper)
@@ -907,6 +907,27 @@ pub const ALL: &[Module] = &[
             surfaces::clipboard::start();
             app
         },
+    },
+    // the wallpaper folder on the island as a grid of pictures: search, choose, shuffle
+    Module {
+        name: "wallpaper-surface",
+        about: "The wallpaper folder as a grid of pictures to choose from",
+        requires: &[CORE, "wallpaper"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        verbs: &[Verb {
+            name: "wallpaper",
+            about: "Set the wallpaper or one at random, show status, open its Surface",
+            usage: || String::from("wallpaper open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Wallpapers, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
     },
     /*
      * screenshots, by niri; its stream, which the core follows, says when each is saved. Screen

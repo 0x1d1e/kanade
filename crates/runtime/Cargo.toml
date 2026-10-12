@@ -22,3 +22,6 @@ zune-jpeg = "0.5.15"
 png = "0.18.1"
 # turns svg icons into pixels once, so they draw like any other image
 resvg = { version = "0.48.1", default-features = false }
+# a webp or gif, first frame only, like a wallpaper
+image-webp = "0.2"
+gif = { version = "0.14", default-features = false, features = ["std"] }

@@ -68,6 +68,7 @@ pub(super) fn surface(
         Surface::Clipboard => Some(surfaces::clipboard::surface(monitor, island.visit())),
         Surface::Calendar => Some(surfaces::calendar::surface(monitor, island.visit())),
         Surface::Weather => Some(surfaces::weather::surface(monitor)),
+        Surface::Wallpapers => Some(surfaces::wallpapers::surface(monitor, island.visit())),
         Surface::Session => Some(surfaces::session::surface(
             open,
             island.visit(),

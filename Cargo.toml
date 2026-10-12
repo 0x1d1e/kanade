@@ -54,9 +54,6 @@ simd-adler32 = "0.3"
 # the runtime already builds them; how light the wallpaper behind the lock screen is (ADR 0024)
 png = "0.18"
 zune-jpeg = "0.5"
-# a webp or gif wallpaper or face for the lock screen, first frame only
-image-webp = "0.2"
-gif = { version = "0.14", default-features = false, features = ["std"] }
 # RustCrypto already builds it; the password zeroed on every path it leaves the lock by
 zeroize = { version = "1", features = ["std"] }
 

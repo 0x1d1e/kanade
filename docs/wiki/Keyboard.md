@@ -11,6 +11,7 @@ Mod+Alt+T hotkey-overlay-title="Island: Tray" { spawn "kanade" "tray" "toggle"; 
 Mod+Alt+V hotkey-overlay-title="Island: Clipboard" { spawn "kanade" "clipboard" "toggle"; }
 Mod+Alt+D hotkey-overlay-title="Island: Calendar" { spawn "kanade" "calendar" "toggle"; }
 Mod+Alt+W hotkey-overlay-title="Island: Weather" { spawn "kanade" "weather" "toggle"; }
+Mod+Alt+B hotkey-overlay-title="Island: Wallpapers" { spawn "kanade" "wallpaper" "toggle"; }
 Mod+Alt+P hotkey-overlay-title="Island: Session" { spawn "kanade" "session" "menu"; }
 Mod+Alt+Escape hotkey-overlay-title="Island: Collapse" { spawn "kanade" "island" "collapse"; }
 ```
@@ -50,8 +51,9 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 |---|---|
 | Any Surface | Escape collapses. A pinned island gives the keyboard back, so the `collapse` bind closes it |
 | Notifications | arrows and Tab move the ring, Enter or Space presses what it is on, Backspace dismisses the card |
-| Launcher | typing searches apps, a sum like `2+2*3`, emoji after `:` (`:smile`), or a wallpaper after `@` (`@moon`), or where Kanade goes (`wifi`, `bluetooth`, `clipboard`, a setting like `magnification` or a page like `dock settings`); Up/Down/Home/End move the selection, Enter starts the app, copies the value or emoji, sets the wallpaper, or opens Controls, the Clipboard or Settings |
+| Launcher | typing searches apps, a sum like `2+2*3`, emoji after `:` (`:smile`), or a wallpaper after `@` (`@moon`), or where Kanade goes (`wifi`, `bluetooth`, `clipboard`, `wallpapers`, a setting like `magnification` or a page like `dock settings`); Up/Down/Home/End move the selection, Enter starts the app, copies the value or emoji, sets the wallpaper, or opens Controls, the Clipboard, Wallpapers or Settings |
 | Clipboard | typing searches, arrows, Tab, Home and End move the ring, Enter copies the entry, deletes it or clears the history, whichever the ring is on |
+| Wallpapers | typing searches file names, arrows, Tab, Home and End move the ring over the pictures and Shuffle, Enter sets the one the ring is on, or one at random; it stays open to try another |
 | Calendar | Left/Right move a day, Up/Down a week, `n`/`p` a month, Home or `t` go to today; Tab or Enter enters the day's agenda, where Up/Down move through its events; Tab, Enter or Escape leave it |
 | Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
 | Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |

@@ -4,7 +4,7 @@
 
 | Verb | Does |
 |---|---|
-| `launcher\|controls\|media\|notifications\|tray\|clipboard\|calendar\|weather open` | opens that Surface on the focused output |
+| `launcher\|controls\|media\|notifications\|tray\|clipboard\|calendar\|weather\|wallpaper open` | opens that Surface on the focused output |
 | `... close` | collapses it when it is open there |
 | `... toggle` | opens it, or collapses it when it is already open there |
 | `dmenu [--prompt <text>]` | opens the Launcher on the focused output with only the lines read from stdin, searched as it searches apps, the prompt in its field. Prints the line pressed, exactly as read, and exits 0; Escape, a collapse or another Surface exits 1 with nothing printed. Empty lines are skipped; at most 5000 lines of up to 1000 characters. One at a time: a second `dmenu` replaces the first, which exits 1. As any island opened by a verb, it holds the keyboard 5 s after the last key, then collapses. Part of the `launcher` Module |
@@ -18,7 +18,7 @@
 | `night-light on\|off\|toggle\|status` | warms the screen through `wlsunset`: `on` turns it back on as the config says (a schedule when one is set, else all day), `off` turns it off, both kept across restarts in `settings.toml`; `status` says the mode and why `wlsunset` is not running, if it should be |
 | `battery limit on\|off\|status` | asks UPower (1.90 or later) to stop charging the battery short of full, at the threshold UPower or the firmware sets, or to charge it full again; returns once UPower answered, printing the state or why it refused. `status` says whether it is on and where charging stops, or why it is unavailable |
 | `settings open [<page>]\|close` | opens Settings on a task page (`appearance`, `shell`, `island`, `dock`, `motion`, `notifications`, `timer`, `modules`, `data`, `power` or `lock`), or on its last page; a Module with settings opens the page containing them. `close` closes the window |
-| `wallpaper set <path>\|status` | sets the wallpaper to an image through awww, and prints its path once awww shows it; `status` names the one set since start |
+| `wallpaper set <path>\|shuffle\|status` | sets the wallpaper to an image through awww, and prints its path once awww shows it; `shuffle` sets one from `wallpaper.directory` at random, other than the one showing; `status` names the one set since start |
 | `google-calendar sign-in <client.json>\|sign-out\|sync\|status` | signs in to Google Calendar through the browser, with a Desktop app OAuth client's JSON file, see [Google Calendar](Google-Calendar.md); `sign-out` revokes access and deletes the credentials and synced events, `sync` syncs now, `status` says how the account stands |
 | `weather refresh\|status` | fetches the weather now, or says how it stands and when it was fetched |
 | `osd volume\|brightness` | shows the OSD for the volume or brightness as it is, on the focused output, for a keybind that changes it outside Kanade; refused while `osd`, or `audio` or `brightness`, is off |
