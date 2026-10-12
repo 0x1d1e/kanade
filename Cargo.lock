@@ -981,6 +981,7 @@ dependencies = [
  "png",
  "proc-macro2",
  "ring",
+ "roxmltree",
  "rustybuzz",
  "serde",
  "serde_json",

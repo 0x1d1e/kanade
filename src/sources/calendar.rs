@@ -1,8 +1,8 @@
 //! Local calendars (#150, ADR 0015, docs/design.md Calendar): the events of the iCalendar (`.ics`)
 //! files under `calendar.paths`, else `$XDG_DATA_HOME/calendars`, which is where vdirsyncer and
 //! khal keep theirs, a directory of `.ics` files for each calendar, and of the files
-//! `google-calendar` syncs (ADR 0016). Kanade only reads them; nothing here talks to a network or
-//! holds an account.
+//! `google-calendar` and `caldav` sync (ADR 0016, ADR 0044). Kanade only reads them; nothing here
+//! talks to a network or holds an account.
 //!
 //! The files are read on this source's thread, parsed whole into `Calendars`, and read again
 //! after a change under a watched place settles, or a config reload. The watch is inotify on each
@@ -48,7 +48,7 @@ use chrono::{
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::google;
+use super::{caldav, google};
 use crate::{clock, config, modules, supervise};
 
 // where the calendars are without `calendar.paths`, under the XDG data directory
@@ -273,6 +273,10 @@ pub fn reread() {
     // to read again (ADR 0016)
     if modules::on("google-calendar") {
         places.extend(google::vouched().filter(|dir| dir.is_dir()));
+    }
+    // each configured CalDAV account's, once a sync made it (ADR 0044)
+    if modules::on("caldav") {
+        places.extend(caldav::places());
     }
 
     let found = find(&places);

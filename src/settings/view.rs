@@ -13,7 +13,7 @@ use kanade_runtime::{
 };
 use toml::Value;
 
-use crate::config::{self, Choices, DayTime, Kind, Location, Setting};
+use crate::config::{self, CalDav, Choices, DayTime, Kind, Location, Setting};
 use crate::glass;
 use crate::icon::Icon;
 use crate::look::{Along, Edge, Material, ShellMode};
@@ -1091,6 +1091,58 @@ fn control(
                         Settings::write().refused = Some(format!(
                             "Not saved: {key}: expected app id = .desktop file id"
                         ));
+                    }
+                },
+            )));
+
+            (Box::new(Column::new(rows).width(inner()).gap(6.0)), false)
+        }
+        Kind::CalDav(field) => {
+            let accounts = (field.get)(read);
+            let to = |list: Vec<CalDav>| {
+                let list = Value::Array(list.iter().map(CalDav::value).collect());
+
+                move || change(path(key, None), Some(list.clone()))
+            };
+
+            let mut rows: Vec<Box<dyn Widget>> = accounts
+                .iter()
+                .enumerate()
+                .map(|(index, account)| {
+                    let mut without = accounts.clone();
+                    without.remove(index);
+
+                    Box::new(entry_line(
+                        &format!(
+                            "{}  \u{b7}  {} at {}",
+                            account.name, account.username, account.url
+                        ),
+                        children![icon_button(Icon::Dismiss, roles, to(without))],
+                        roles,
+                    )) as Box<dyn Widget>
+                })
+                .collect();
+
+            let given = accounts.clone();
+            rows.push(Box::new(text_field(
+                input(setting),
+                inner(),
+                "name, https:// address, username, then Enter",
+                roles,
+                move |text| {
+                    if text.trim().is_empty() {
+                        return;
+                    }
+
+                    match CalDav::parse(&text) {
+                        Ok(account) => {
+                            let mut list: Vec<Value> = given.iter().map(CalDav::value).collect();
+                            list.push(account);
+                            change(path(key, None), Some(Value::Array(list)));
+                        }
+                        Err(why) => {
+                            Settings::write().refused = Some(format!("Not saved: {key}: {why}"))
+                        }
                     }
                 },
             )));

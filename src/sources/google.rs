@@ -53,7 +53,7 @@ use super::calendar;
 use crate::{clock, config};
 
 // the Secret Service, which keeps the credentials
-pub const SECRETS: &str = "org.freedesktop.secrets";
+pub const SECRETS: &str = super::secrets::SERVICE;
 
 // what opens the consent screen in the browser
 pub const OPEN: &str = "xdg-open";

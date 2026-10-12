@@ -47,6 +47,7 @@ use crate::look::{
     Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
+use crate::sources::caldav;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 
@@ -96,6 +97,10 @@ pub struct Config {
     // `calendar.reminder`: minutes before an event without alarms of its own that it is reminded
     // of, 0 for none (ADR 0043)
     pub reminder: u32,
+
+    // `calendar.caldav`: the CalDAV accounts synced into calendar files, each password in the
+    // Secret Service (ADR 0044)
+    pub caldav: Vec<CalDav>,
 
     // `weather.location`: where the weather is for; none fetches nothing (ADR 0017)
     pub location: Option<Location>,
@@ -422,6 +427,7 @@ impl Default for Config {
             transition: Transition::default(),
             calendars: Vec::new(),
             reminder: 0,
+            caldav: Vec::new(),
             location: None,
             place: None,
             units: Units::default(),
@@ -623,6 +629,79 @@ impl std::fmt::Display for DayTime {
     }
 }
 
+// a CalDAV account, as `[[calendar.caldav]]` names it; its password is never here
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalDav {
+    // what the user calls it: `kanade caldav login <name>`, and the Calendar Surface's word
+    pub name: String,
+
+    // the server, or any address on it that discovery starts from
+    pub url: String,
+    pub username: String,
+}
+
+impl CalDav {
+    const EXPECTED: &str = "expected { name = \"...\", url = \"https://...\", username = \"...\" }";
+
+    fn read(value: &Value) -> Result<CalDav, String> {
+        let table = value.as_table().ok_or(CalDav::EXPECTED)?;
+
+        if let Some(unknown) = table
+            .keys()
+            .find(|key| !["name", "url", "username"].contains(&key.as_str()))
+        {
+            return Err(format!("unknown key {unknown} in a CalDAV account"));
+        }
+
+        let line = |key: &str| {
+            table
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && !text.contains('\n'))
+                .map(str::to_owned)
+                .ok_or_else(|| format!("a CalDAV account needs {key} as a line of text"))
+        };
+
+        let account = CalDav {
+            name: line("name")?,
+            url: line("url")?,
+            username: line("username")?,
+        };
+        caldav::checked(&account.url).map_err(|why| format!("{}: {why}", account.name))?;
+
+        Ok(account)
+    }
+
+    pub fn value(&self) -> Value {
+        Value::Table(toml::Table::from_iter([
+            (String::from("name"), Value::String(self.name.clone())),
+            (String::from("url"), Value::String(self.url.clone())),
+            (
+                String::from("username"),
+                Value::String(self.username.clone()),
+            ),
+        ]))
+    }
+
+    // `name, url, username` as typed into Settings, as a TOML value
+    pub fn parse(text: &str) -> Result<Value, String> {
+        let [name, url, username]: [&str; 3] = text
+            .split(',')
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| String::from("expected name, url, username"))?;
+        let value = Value::Table(toml::Table::from_iter([
+            (String::from("name"), Value::String(name.to_owned())),
+            (String::from("url"), Value::String(url.to_owned())),
+            (String::from("username"), Value::String(username.to_owned())),
+        ]));
+
+        CalDav::read(&value).map(|account| account.value())
+    }
+}
+
 // a point on the Earth, in degrees, north and east positive
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Location {
@@ -803,6 +882,8 @@ pub enum Kind {
 
     // a list of notification rules, each a table; a layer replaces the list below
     Rules(Field<Vec<Rule>>),
+    // a list of CalDAV accounts, each name once; a layer replaces the list below
+    CalDav(Field<Vec<CalDav>>),
 }
 
 impl Kind {
@@ -923,6 +1004,23 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::CalDav(field) => {
+                let list = value
+                    .as_array()
+                    .ok_or("expected a list of CalDAV accounts")?;
+                let mut accounts: Vec<CalDav> = Vec::new();
+
+                for entry in list {
+                    let account = CalDav::read(entry)?;
+
+                    if accounts.iter().any(|kept| kept.name == account.name) {
+                        return Err(format!("two CalDAV accounts are named {}", account.name));
+                    }
+                    accounts.push(account);
+                }
+
+                (field.set)(config, accounts);
+            }
         }
 
         Ok(())
@@ -965,6 +1063,9 @@ impl Kind {
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
+            Kind::CalDav(field) => {
+                Value::Array((field.get)(config).iter().map(CalDav::value).collect())
+            }
         };
 
         match &value {
@@ -993,6 +1094,7 @@ impl Kind {
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
+            Kind::CalDav(field) => field.copy(from, to),
         }
     }
 
@@ -1738,6 +1840,22 @@ pub const REMINDER: Range = Range {
     least: 0,
     most: 7 * 24 * 60,
 };
+
+pub const CALDAV: &[Setting] = &[Setting {
+    key: "calendar.caldav",
+    label: "CalDAV accounts",
+    help: "CalDAV accounts synced read-only, each password kept in the Secret Service by \
+           `kanade caldav login <name>`, never here",
+    kind: Kind::CalDav(Field {
+        get: |config| config.caldav.clone(),
+        set: |config, caldav| config.caldav = caldav,
+    }),
+    example: Some(
+        "[{ name = \"fastmail\", url = \"https://caldav.fastmail.com\", username = \"you@fastmail.com\" }]",
+    ),
+    restart: false,
+    per_output: false,
+}];
 
 pub const REMINDERS: &[Setting] = &[Setting {
     key: "calendar.reminder",
@@ -3092,6 +3210,7 @@ mod tests {
                 "wallpaper.transition_duration",
                 "calendar.paths",
                 "calendar.reminder",
+                "calendar.caldav",
                 "weather.location",
                 "weather.place",
                 "weather.units",

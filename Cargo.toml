@@ -49,6 +49,8 @@ serde_json = "1"
 ring = "0.17"
 base64 = "0.23"
 percent-encoding = "2"
+# the runtime already builds it (usvg); CalDAV's WebDAV answers (ADR 0044)
+roxmltree = "0.21"
 # png already builds them; the checksums of the pictures Kanade writes, as fast as a rim
 # streaming behind a scrolling page needs
 crc32fast = "1"

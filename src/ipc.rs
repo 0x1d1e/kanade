@@ -26,8 +26,8 @@ use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, caffeine, charge_limit, fullscreen, google, live, night_light, reminders, session, sleep,
-    wallpaper, weather,
+    apps, caffeine, caldav, charge_limit, fullscreen, google, live, night_light, reminders,
+    session, sleep, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -105,6 +105,8 @@ fn run(call: Call) -> Reply {
         Call::Reminders(request) => {
             reminders::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        // the sync is on the CalDAV thread, so this answers at once
+        Call::CalDav(request) => caldav::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the fetch is on the weather's thread, so this answers at once
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
@@ -183,6 +185,9 @@ fn status() -> Vec<String> {
     }
     if modules::on("google-calendar") {
         lines.push(google::status());
+    }
+    if modules::on("caldav") {
+        lines.extend(caldav::status());
     }
     if modules::on("weather") {
         lines.push(weather::status());
