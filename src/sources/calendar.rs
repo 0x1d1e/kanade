@@ -649,7 +649,13 @@ fn expand(
             TimeOrDelta::Time(end) => end,
             TimeOrDelta::Delta(delta) => event.start + delta,
         };
-        let Some(occurrence) = occurrence(component, &event.start, &end_at, local) else {
+        let (Some(start_at), Some(end_at)) = (
+            offset(component, event.start),
+            offset(component, end_at),
+        ) else {
+            continue;
+        };
+        let Some(occurrence) = occurrence(component, &start_at, &end_at, local) else {
             continue;
         };
 
@@ -665,6 +671,24 @@ fn expand(
     }
 
     whole
+}
+
+/*
+ * a time calcard gave with no zone, in the UTC or offset its event's DTSTART is written in: it
+ * expands a recurring event so written as though it had none, which would put a daily 09:00Z
+ * meeting at 09:00 on every clock
+ */
+fn offset(component: &ICalendarComponent, at: DateTime<Tz>) -> Option<DateTime<Tz>> {
+    let zone = start_of(component)
+        .and_then(PartialDateTime::to_date_time)
+        .and_then(|written| written.tz());
+
+    match zone {
+        Some(zone) if at.timezone().is_floating() => {
+            zone.from_local_datetime(&at.naive_local()).single()
+        }
+        _ => Some(at),
+    }
 }
 
 // the midnights that start `from` and `to`
@@ -2506,5 +2530,21 @@ mod tests {
         assert!(midnight.on(day(2026, 10, 9)));
         assert!(!midnight.on(day(2026, 10, 8)));
         assert!(midnight.moment());
+    }
+
+    // calcard expands a recurring event written in UTC as though it had no zone
+    #[test]
+    fn a_recurring_event_in_utc_keeps_its_zone() {
+        let calendars = calendar(&event(&[
+            "UID:daily",
+            "SUMMARY:Standup",
+            "DTSTART:20261011T090000Z",
+            "DTEND:20261011T091500Z",
+            "RRULE:FREQ=DAILY",
+        ]));
+
+        let found = complete(&calendars, day(2026, 10, 12), day(2026, 10, 13), plus_two);
+        let starts: Vec<NaiveDateTime> = found.iter().map(|found| found.start).collect();
+        assert_eq!(starts, [at(day(2026, 10, 12), 11, 0)]);
     }
 }
