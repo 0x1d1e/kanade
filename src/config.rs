@@ -39,11 +39,11 @@ use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
 use crate::island::geometry::{self, Shape};
-use crate::island::motion::Mode;
+use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
     Along, Anchor, Bounce, DockSize, Edge, Entrance, Highlight, LockBackdrop, Magnify, Material,
-    Merge, Placement, Tone, Visualizer,
+    Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
 use crate::sources::weather::Units;
@@ -54,6 +54,10 @@ const OSD: Duration = Duration::from_millis(1200);
 // a timing outside this keeps its default: a spring needs some time, and a minute is no glance
 pub const SHORTEST: u64 = 1;
 pub const LONGEST: u64 = 60_000;
+pub const ANIMATION_SPEED: Range = Range {
+    least: 25,
+    most: 400,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -62,7 +66,7 @@ pub struct Config {
     // how long the OSD and a workspace switch on the island show
     pub osd: Duration,
 
-    // the image the theme roles are taken from, usually the wallpaper; the Island stays black and white
+    // legacy `theme.palette`, accepted for old configs but no longer used
     pub palette: Option<String>,
 
     // how the time reads at Rest
@@ -96,6 +100,9 @@ pub struct Config {
     // `appearance.*`: what the bodies are made of, and how they move
     pub appearance: Appearance,
 
+    // `animation.speed`: a global multiplier for animation durations
+    pub animation_speed: u32,
+
     // `island.*`: where the Island sits, and how large it grows
     pub island_place: Placement,
     pub largest: Largest,
@@ -105,6 +112,9 @@ pub struct Config {
     pub magnify: Magnify,
     pub dock_size: DockSize,
     pub merge: Merge,
+
+    // `shell.*`: the combined shell's placement, or the separate Island and Dock
+    pub shell: ShellConfig,
 
     // `rest.*`: what an idle Island shows
     pub rest: Rest,
@@ -131,8 +141,26 @@ pub struct Appearance {
     pub tone: Tone,
     pub highlight: Highlight,
 
+    // share the tone with supported desktop, GTK, Qt and Zen appearance adapters
+    pub sync: bool,
+
     // the family every label is set in, else Inter, else the system's sans-serif
     pub font: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellConfig {
+    pub mode: ShellMode,
+    pub anchor: Anchor,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            mode: ShellMode::Separate,
+            anchor: Anchor::default(),
+        }
+    }
 }
 
 // `island.width` and `island.height`: the largest body, which the Surfaces with a list grow to
@@ -166,7 +194,7 @@ impl Default for Largest {
     }
 }
 
-// whole logical pixels from `least` to `most`
+// an inclusive numeric range used by bounded settings
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Range {
     pub least: u32,
@@ -208,6 +236,36 @@ impl Rest {
 }
 
 impl Config {
+    pub fn island_placement(&self) -> Placement {
+        let mut place = self.island_place;
+        if self.shell.mode == ShellMode::Combined {
+            place.anchor = self.shell.anchor;
+        }
+        place
+    }
+
+    pub fn dock_placement(&self) -> Placement {
+        let mut place = self.dock_place;
+        if self.shell.mode == ShellMode::Combined {
+            place.anchor = self.shell.anchor;
+        }
+        place
+    }
+
+    pub fn animation_duration(&self, duration: Duration) -> Duration {
+        scale_animation(duration, self.animation_speed)
+    }
+
+    // only transitions scale; the pointer's hover and leave delays keep their meaning
+    pub fn animation_timings(&self) -> Timings {
+        let mut timings = self.island;
+        timings.expand = self.animation_duration(timings.expand);
+        timings.surface_change = self.animation_duration(timings.surface_change);
+        timings.collapse = self.animation_duration(timings.collapse);
+        timings.reduced_fade = self.animation_duration(REDUCED_FADE);
+        timings
+    }
+
     pub fn off(&self, module: &str) -> bool {
         self.off.contains(&module)
     }
@@ -264,6 +322,7 @@ impl Default for Config {
             place: None,
             units: Units::default(),
             appearance: Appearance::default(),
+            animation_speed: 100,
             island_place: Placement {
                 anchor: Anchor::default(),
                 autohide: false,
@@ -278,6 +337,7 @@ impl Default for Config {
             magnify: Magnify::default(),
             dock_size: DockSize::default(),
             merge: Merge::default(),
+            shell: ShellConfig::default(),
             rest: Rest::default(),
             visualizer: Visualizer::default(),
             lock_backdrop: LockBackdrop::default(),
@@ -425,6 +485,9 @@ pub enum Kind {
     // whole logical pixels in a range
     Pixels(Range, Field<u32>),
 
+    // whole percent in a range
+    Percent(Range, Field<u32>),
+
     // one of these strings
     Choice(Choices, Field<&'static str>),
 
@@ -461,6 +524,7 @@ impl Kind {
             }
             Kind::Millis(field) => (field.set)(config, millis(value)?),
             Kind::Pixels(range, field) => (field.set)(config, pixels(value, *range)?),
+            Kind::Percent(range, field) => (field.set)(config, percent(value, *range)?),
             Kind::Choice(options, field) => {
                 let expected = format!(
                     "expected {}",
@@ -572,7 +636,9 @@ impl Kind {
             Kind::Millis(field) => {
                 Value::Integer(i64::try_from((field.get)(config).as_millis()).ok()?)
             }
-            Kind::Pixels(_, field) => Value::Integer(i64::from((field.get)(config))),
+            Kind::Pixels(_, field) | Kind::Percent(_, field) => {
+                Value::Integer(i64::from((field.get)(config)))
+            }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
@@ -605,7 +671,7 @@ impl Kind {
         match self {
             Kind::Switch(field) => field.copy(from, to),
             Kind::Millis(field) => field.copy(from, to),
-            Kind::Pixels(_, field) => field.copy(from, to),
+            Kind::Pixels(_, field) | Kind::Percent(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
@@ -625,8 +691,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "reduced_motion",
         label: "Reduce motion",
-        help: "the island snaps to its new shape and only fades its content, over 80 ms; \
-               KANADE_REDUCED_MOTION=1 or 0 overrides it",
+        help: "the island snaps to its new shape and fades its content; the fade is 80 ms at 100% animation speed; KANADE_REDUCED_MOTION=1 or 0 overrides it",
         kind: Kind::Switch(Field {
             get: |config| config.island.motion == Mode::Reduced,
             set: |config, reduced| {
@@ -735,13 +800,58 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "theme.palette",
-        label: "Palette image",
-        help: "the image the Settings window takes its tone from",
+        label: "Legacy palette image",
+        help: "accepted from older config files; no longer changes the shell theme",
         kind: Kind::Path(Field {
             get: |config| config.palette.clone(),
             set: |config, palette| config.palette = palette,
         }),
         example: Some("\"~/Pictures/wallpaper.jpg\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "shell.mode",
+        label: "Arrangement",
+        help: "separate keeps the Island and Dock in their own positions; combined puts both in one shell, with apps on either side",
+        kind: Kind::Choice(
+            Choices::named(ShellMode::NAMES),
+            Field {
+                get: |config| config.shell.mode.name(),
+                set: |config, name| config.shell.mode = ShellMode::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "shell.edge",
+        label: "Combined edge",
+        help: "which top or bottom edge the combined shell hangs from; stored while Separate is active",
+        kind: Kind::Choice(
+            Choices::named(&["top", "bottom"]),
+            Field {
+                get: |config| config.shell.anchor.edge.name(),
+                set: |config, name| config.shell.anchor.edge = Edge::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "shell.align",
+        label: "Combined position",
+        help: "where along that edge the combined shell sits; stored while Separate is active",
+        kind: Kind::Choice(
+            Choices::named(Along::NAMES),
+            Field {
+                get: |config| config.shell.anchor.along.name(),
+                set: |config, name| config.shell.anchor.along = Along::named(name),
+            },
+        ),
+        example: None,
         restart: false,
         per_output: false,
     },
@@ -762,8 +872,8 @@ pub const ISLAND: &[Setting] = &[
     },
     Setting {
         key: "appearance.tone",
-        label: "Glass tone",
-        help: "dark glass under light text, or light glass under dark text",
+        label: "Color tone",
+        help: "selects light or dark; Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
         kind: Kind::Choice(
             Choices::named(Tone::NAMES),
             Field {
@@ -791,6 +901,33 @@ pub const ISLAND: &[Setting] = &[
         per_output: false,
     },
     Setting {
+        key: "appearance.sync",
+        label: "Sync desktop appearance",
+        help: "sets the desktop color preference and paired GTK theme; writes the wallpaper colors for GTK, qt5ct/qt6ct, KDE apps, niri, kitty and Pywalfox. Kvantum gives way to Darkly or Fusion; GTK and Qt apps need restart. Other apps are unchanged",
+        kind: Kind::Switch(Field {
+            get: |config| config.appearance.sync,
+            set: |config, sync| config.appearance.sync = sync,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "animation.speed",
+        label: "Animation speed",
+        help: "100% is unchanged; higher values are faster. Interaction delays and countdowns do not change",
+        kind: Kind::Percent(
+            ANIMATION_SPEED,
+            Field {
+                get: |config| config.animation_speed,
+                set: |config, speed| config.animation_speed = speed,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
         key: "appearance.motion",
         label: "Spring character",
         help: "how the Island and Dock settle: \"bouncy\" like macOS, \"smooth\" with no overshoot, \"snappy\", or \"playful\"",
@@ -808,7 +945,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.font",
         label: "Font",
-        help: "the font family every label is set in, else Inter, else the system's sans-serif",
+        help: "installed family for shell labels; unset uses Inter, then sans-serif. A family without a static SemiBold face renders regular weights",
         kind: Kind::Text(Field {
             get: |config| config.appearance.font.clone(),
             set: |config, font| config.appearance.font = font,
@@ -1277,6 +1414,19 @@ fn pixels(value: &Value, range: Range) -> Result<u32, String> {
         .ok_or_else(|| format!("{px} is outside {}-{} px", range.least, range.most))
 }
 
+pub fn scale_animation(duration: Duration, speed: u32) -> Duration {
+    duration.mul_f64(100.0 / f64::from(speed.clamp(ANIMATION_SPEED.least, ANIMATION_SPEED.most)))
+}
+
+fn percent(value: &Value, range: Range) -> Result<u32, String> {
+    let percent = value.as_integer().ok_or("expected whole percent")?;
+
+    u32::try_from(percent)
+        .ok()
+        .filter(|percent| (range.least..=range.most).contains(percent))
+        .ok_or_else(|| format!("{percent} is outside {}-{} %", range.least, range.most))
+}
+
 // one `[modules]` entry over the Modules off: a Module in the registry on or off by name
 fn turn(off: &mut Vec<&'static str>, name: &str, value: &Value) -> Result<(), String> {
     let module = modules::ALL
@@ -1359,6 +1509,9 @@ pub fn defaults() -> String {
             Kind::Millis(_) => help.push_str(&format!(", ms {SHORTEST}-{LONGEST}")),
             Kind::Pixels(range, _) => {
                 help.push_str(&format!(", px {}-{}", range.least, range.most))
+            }
+            Kind::Percent(range, _) => {
+                help.push_str(&format!(", % {}-{}", range.least, range.most))
             }
             _ => {}
         }
@@ -2045,6 +2198,30 @@ mod tests {
         assert_eq!(one("\n  # nothing\n"), (Config::default(), vec![]));
     }
 
+    #[test]
+    fn animation_speed_scales_transitions_not_interaction_delays() {
+        let (config, problems) = one(
+            "[animation]\nspeed = 200\n\n[timings]\nhover = 120\nexpand = 200\nsurface_change = 240\ncollapse = 160\ngrace = 250\nosd = 1200",
+        );
+
+        assert!(problems.is_empty());
+        assert_eq!(config.animation_duration(ms(220)), ms(110));
+        assert_eq!(
+            config.animation_timings(),
+            Timings {
+                hover: ms(120),
+                expand: ms(100),
+                surface_change: ms(120),
+                collapse: ms(80),
+                reduced_fade: ms(40),
+                grace: ms(250),
+                ..Timings::default()
+            }
+        );
+        assert_eq!(config.osd, ms(1200));
+        assert_eq!(scale_animation(ms(200), 50), ms(400));
+    }
+
     // the README's and this module's examples, as v0.1 read them
     #[test]
     fn a_v0_1_file_loads_unchanged() {
@@ -2139,9 +2316,14 @@ mod tests {
                 "timings.grace",
                 "timings.osd",
                 "theme.palette",
+                "shell.mode",
+                "shell.edge",
+                "shell.align",
                 "appearance.material",
                 "appearance.tone",
                 "appearance.highlight",
+                "appearance.sync",
+                "animation.speed",
                 "appearance.motion",
                 "appearance.font",
                 "island.edge",
@@ -2206,6 +2388,62 @@ mod tests {
                 setting.key
             );
         }
+    }
+
+    #[test]
+    fn combined_shell_uses_its_own_anchor_without_changing_separate_placements() {
+        let config = Config {
+            island_place: Placement {
+                anchor: Anchor {
+                    edge: Edge::Left,
+                    along: Along::Right,
+                },
+                autohide: true,
+                reserve: true,
+            },
+            dock_place: Placement {
+                anchor: Anchor {
+                    edge: Edge::Bottom,
+                    along: Along::Left,
+                },
+                autohide: true,
+                reserve: false,
+            },
+            shell: ShellConfig {
+                mode: ShellMode::Combined,
+                anchor: Anchor {
+                    edge: Edge::Bottom,
+                    along: Along::Right,
+                },
+            },
+            ..Config::default()
+        };
+
+        let island = config.island_placement();
+        assert_eq!(island.anchor, config.shell.anchor);
+        assert!(island.autohide && island.reserve);
+        let dock = config.dock_placement();
+        assert_eq!(dock.anchor, config.shell.anchor);
+        assert!(dock.autohide);
+        assert!(!dock.reserve);
+        assert_eq!(config.island_place.anchor.edge, Edge::Left);
+        assert_eq!(config.island_place.anchor.along, Along::Right);
+        assert_eq!(config.dock_place.anchor.edge, Edge::Bottom);
+        assert_eq!(config.dock_place.anchor.along, Along::Left);
+    }
+
+    #[test]
+    fn separate_shell_uses_its_own_saved_placements() {
+        let mut config = Config::default();
+        config.island_place.anchor.edge = Edge::Right;
+        config.dock_place.anchor.along = Along::Left;
+        config.shell.anchor = Anchor {
+            edge: Edge::Bottom,
+            along: Along::Right,
+        };
+
+        assert_eq!(config.island_placement(), config.island_place);
+        assert_eq!(config.dock_placement(), config.dock_place);
     }
 
     // what a key reads it gives back, so its default and its docs are what the config holds

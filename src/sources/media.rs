@@ -450,6 +450,7 @@ impl Watcher {
             return;
         }
 
+        self.timings = IslandService::read().timings();
         let last = self
             .published
             .as_ref()
@@ -465,8 +466,9 @@ impl Watcher {
                 Some(last) => {
                     let (mut track, mut tint) = (last.track, last.accent);
 
-                    track.to(seen.track, self.timings.track_change(), now);
-                    tint.to(accent, self.timings.track_change(), now);
+                    let response = self.timings.for_motion(self.timings.track_change());
+                    track.to(seen.track, response, now);
+                    tint.to(accent, response, now);
 
                     (track, tint)
                 }

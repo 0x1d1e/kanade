@@ -99,11 +99,17 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
 
 pub const MODULES: &str = "modules";
 
+// settings owned by another control surface but still accepted in the config schema
+pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned"];
+
+// old config keys that remain readable but no longer affect the shell
+pub const LEGACY_KEYS: &[&str] = &["theme.palette"];
+
 pub const PAGES: &[Page] = &[
     Page {
         name: "appearance",
         title: "Appearance",
-        summary: "What the Island, Dock and lock screen are made of, and how they read",
+        summary: "Choose shell colors, material, highlight and type",
         group: "Shell",
         icon: Icon::Palette,
         sections: &[
@@ -116,18 +122,39 @@ pub const PAGES: &[Page] = &[
                 rows: &[
                     Row::Key("appearance.tone"),
                     Row::Key("appearance.highlight"),
+                    Row::Key("appearance.sync"),
                 ],
             },
             Section {
-                title: "Color & type",
-                rows: &[Row::Key("theme.palette"), Row::Key("appearance.font")],
+                title: "Type",
+                rows: &[Row::Key("appearance.font")],
+            },
+        ],
+    },
+    Page {
+        name: "shell",
+        title: "Shell",
+        summary: "Choose whether the Island and Dock stand apart or share one window",
+        group: "Shell",
+        icon: Icon::Island,
+        sections: &[
+            Section {
+                title: "Arrangement",
+                rows: &[Row::Key("shell.mode")],
+            },
+            Section {
+                title: "Combined position",
+                rows: &[Row::Position {
+                    edge: "shell.edge",
+                    align: "shell.align",
+                }],
             },
         ],
     },
     Page {
         name: "island",
         title: "Island",
-        summary: "Where the Island sits, how large it grows and what it shows at Rest",
+        summary: "Where the Island sits in Separate mode, how large it grows and what it shows at Rest",
         group: "Shell",
         icon: Icon::Island,
         sections: &[
@@ -166,7 +193,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "dock",
         title: "Dock",
-        summary: "Where the Dock sits, how it moves and what it keeps",
+        summary: "Where the Dock sits in Separate mode, and how its icons move",
         group: "Shell",
         icon: Icon::Dock,
         sections: &[
@@ -190,10 +217,6 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("dock.size"), Row::Key("dock.magnification")],
             },
             Section {
-                title: "Your apps",
-                rows: &[Row::Key("dock.pinned")],
-            },
-            Section {
                 title: "Advanced",
                 rows: &[Row::Key("windows.apps")],
             },
@@ -202,10 +225,14 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "motion",
         title: "Motion & timing",
-        summary: "How the Island and Dock move, and how long they wait",
+        summary: "How quickly transitions move and how long the Island waits",
         group: "Experience",
         icon: Icon::Pulse,
         sections: &[
+            Section {
+                title: "Animation speed",
+                rows: &[Row::Key("animation.speed")],
+            },
             Section {
                 title: "Response",
                 rows: &[Row::Key("appearance.motion")],
@@ -309,26 +336,42 @@ mod tests {
     use crate::modules::{self, CORE};
 
     #[test]
-    fn every_key_shows_on_one_page() {
+    fn every_setting_is_shown_once_or_owned_by_another_control() {
         let shown: Vec<&str> = PAGES
             .iter()
             .flat_map(|page| page.sections)
             .flat_map(|section| section.rows)
             .flat_map(Row::keys)
             .collect();
-
-        for module in modules::ALL {
-            for setting in module.settings {
-                let times = shown.iter().filter(|&&key| key == setting.key).count();
-                assert_eq!(times, 1, "{} shows {times} times", setting.key);
-            }
-        }
-
-        let keys = modules::ALL
+        let settings: Vec<&str> = modules::ALL
             .iter()
             .flat_map(|module| module.settings)
-            .count();
-        assert_eq!(shown.len(), keys, "a page shows a key no Module owns");
+            .map(|setting| setting.key)
+            .collect();
+
+        for key in EXTERNAL_KEYS {
+            assert!(settings.contains(key), "{key} remains in the config schema");
+            assert!(
+                !shown.contains(key),
+                "{key} belongs to its own control surface"
+            );
+        }
+        for key in LEGACY_KEYS {
+            assert!(settings.contains(key), "{key} remains in the config schema");
+            assert!(!shown.contains(key), "{key} is no longer shown");
+        }
+        for key in &settings {
+            let times = shown.iter().filter(|&&shown| shown == *key).count();
+            assert_eq!(
+                times,
+                usize::from(!EXTERNAL_KEYS.contains(key) && !LEGACY_KEYS.contains(key)),
+                "{key} shows {times} times"
+            );
+        }
+        assert_eq!(
+            shown.len(),
+            settings.len() - EXTERNAL_KEYS.len() - LEGACY_KEYS.len()
+        );
     }
 
     #[test]

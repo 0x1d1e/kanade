@@ -5,11 +5,12 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Center, Column, Monitors, Padding, Parent, Rectangle, Row, Size, Start, Text, Widget, children,
+    Center, Column, Monitor, Monitors, Padding, Parent, Rectangle, Row, Size, Start, Text, Widget,
+    children,
 };
 
 use crate::clock::{self, Hours};
-use crate::config;
+use crate::config::{self, Config};
 use crate::icon::Icon;
 use crate::island::activity::Activity;
 use crate::island::geometry::{self, Shape};
@@ -290,8 +291,10 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
 
 // the next of today's timed events not over yet, the one under way included: its start, then its title
 fn next_event(today: NaiveDate, now: i64, hours: Hours) -> Option<String> {
-    let events = calendar::upcoming(today);
+    next_event_in(&calendar::upcoming(today), now, hours)
+}
 
+fn next_event_in(events: &[calendar::Occurrence], now: i64, hours: Hours) -> Option<String> {
     events
         .iter()
         .find(|event| !event.all_day && event.span.1.max(event.span.0 + 1) > now)
@@ -329,33 +332,24 @@ impl Service for Agenda {
 
 /*
  * measures the next event's line on each output that shows it, to the most the strip gives it in
- * the largest body that output holds (`fits`). It keeps off the clock's timer, which only a window
- * drawing the time may arm
+ * the largest body that output holds (`fits`). It arms the clock's minute timer when a connected
+ * output shows the agenda, even if no window draws the time, so an ended event stops taking room
  */
 pub(crate) fn measure_agenda(fits: &HashMap<String, Shape>) {
     let now = weather::now();
     let config = config::get();
-    let today = clock::local_time(now)
-        .map(|time| time.date())
-        .filter(|_| modules::on("calendar"));
-
-    let widths = today.map_or_else(HashMap::new, |today| {
-        Monitors::read()
-            .all()
-            .iter()
-            .filter_map(|monitor| {
-                let on = config.on(&monitor.name);
-                let label = next_event(today, now, on.clock).filter(|_| on.rest.agenda)?;
-                let most = geometry::agenda_most(fits.get(&monitor.name)?.width);
-
-                match agenda_line(label).width() {
-                    Size::Fixed(width) => {
-                        Some((monitor.name.clone(), (width.ceil() as u16).min(most)))
-                    }
-                    _ => None,
-                }
-            })
-            .collect()
+    let monitors = Monitors::read();
+    let agenda_enabled = wants_agenda_clock(modules::on("calendar"), &config, monitors.all());
+    let today = if agenda_enabled {
+        // Agenda width depends on time even when no Rest or Tray currently draws the clock.
+        let _ = clock::now(config.clock);
+        clock::local_time(now).map(|time| time.date())
+    } else {
+        None
+    };
+    let events = today.map(calendar::upcoming);
+    let widths = events.as_deref().map_or_else(HashMap::new, |events| {
+        agenda_widths(monitors.all(), &config, fits, now, events)
     });
 
     let next = Agenda(widths);
@@ -363,6 +357,35 @@ pub(crate) fn measure_agenda(fits: &HashMap<String, Shape>) {
     if *Agenda::read() != next {
         *Agenda::write() = next;
     }
+}
+
+fn wants_agenda_clock(calendar: bool, config: &Config, monitors: &[Monitor]) -> bool {
+    calendar
+        && monitors
+            .iter()
+            .any(|monitor| config.on(&monitor.name).rest.agenda)
+}
+
+fn agenda_widths(
+    monitors: &[Monitor],
+    config: &Config,
+    fits: &HashMap<String, Shape>,
+    now: i64,
+    events: &[calendar::Occurrence],
+) -> HashMap<String, u16> {
+    monitors
+        .iter()
+        .filter_map(|monitor| {
+            let on = config.on(&monitor.name);
+            let label = next_event_in(events, now, on.clock).filter(|_| on.rest.agenda)?;
+            let most = geometry::agenda_most(fits.get(&monitor.name)?.width);
+
+            match agenda_line(label).width() {
+                Size::Fixed(width) => Some((monitor.name.clone(), (width.ceil() as u16).min(most))),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /*
@@ -448,4 +471,90 @@ pub(super) fn placeholder(content: &Content) -> Option<Rectangle> {
                     .weight(theme::text::MEDIUM),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_clock_agenda_width_clears_after_an_event_ends() {
+        let monitor = Monitor {
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+        };
+        let mut config = Config::default();
+        config.rest.clock = false;
+        config.rest.agenda = true;
+        let fits = HashMap::from([(
+            monitor.name.clone(),
+            Shape {
+                width: 900.0,
+                height: 600.0,
+                radius: 28.0,
+            },
+        )]);
+        let start = NaiveDate::from_ymd_opt(2026, 10, 11)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let event = calendar::Occurrence {
+            title: "Meeting".into(),
+            location: None,
+            start,
+            end: start + chrono::Duration::minutes(1),
+            span: (1_000, 1_060),
+            all_day: false,
+        };
+
+        let before = agenda_widths(
+            std::slice::from_ref(&monitor),
+            &config,
+            &fits,
+            1_000,
+            std::slice::from_ref(&event),
+        );
+        assert!(before.get(&monitor.name).is_some_and(|width| *width > 0));
+
+        let after = agenda_widths(
+            std::slice::from_ref(&monitor),
+            &config,
+            &fits,
+            1_060,
+            std::slice::from_ref(&event),
+        );
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn agenda_timer_demand_follows_visible_agenda_outputs_not_clock_visibility() {
+        let monitor = Monitor {
+            name: "eDP-1".into(),
+            width: 1920,
+            height: 1080,
+        };
+        let mut config = Config::default();
+        config.rest.clock = false;
+        config.rest.agenda = true;
+
+        assert!(wants_agenda_clock(
+            true,
+            &config,
+            std::slice::from_ref(&monitor)
+        ));
+        assert!(!wants_agenda_clock(true, &config, &[]));
+        assert!(!wants_agenda_clock(
+            false,
+            &config,
+            std::slice::from_ref(&monitor)
+        ));
+
+        config.rest.agenda = false;
+        assert!(!wants_agenda_clock(
+            true,
+            &config,
+            std::slice::from_ref(&monitor)
+        ));
+    }
 }

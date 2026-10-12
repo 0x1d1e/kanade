@@ -7,7 +7,7 @@ use kanade_runtime::Monitor;
 use crate::config;
 use crate::dock;
 use crate::island::geometry::{self, Canvas, ROOM_WIDTH, Rect, TOP};
-use crate::look::{Along, Anchor, Edge, Merge};
+use crate::look::{Along, Anchor, Edge, Merge, Placement, ShellMode};
 use crate::modules;
 use crate::theme::radius;
 use crate::view;
@@ -45,21 +45,36 @@ pub fn apart() -> f32 {
     })
 }
 
+fn chosen(config: &config::Config, dock: Placement) -> Option<Merge> {
+    if config.shell.mode == ShellMode::Combined {
+        Some(if dock.autohide {
+            Merge::Fold
+        } else {
+            Merge::Keystone
+        })
+    } else {
+        match config.merge {
+            Merge::Off => None,
+            _ if dock.autohide => Some(Merge::Fold),
+            form => Some(form),
+        }
+    }
+}
+
+fn joined_visible(mode: ShellMode, island_hides: bool) -> bool {
+    mode == ShellMode::Combined || !island_hides
+}
+
 fn joined() -> Option<(Merge, dock::Extent)> {
     let config = config::get();
-    let (island, dock) = (config.island_place, config.dock_place);
+    let (island, dock) = (config.island_placement(), config.dock_placement());
 
-    // a Dock that autohides is out only while the pointer holds it, which is what a Fold is
-    let form = match config.merge {
-        Merge::Off => return None,
-        _ if dock.autohide => Merge::Fold,
-        form => form,
-    };
+    let form = chosen(&config, dock)?;
 
     let merged = modules::on("dock")
         && island.anchor == dock.anchor
         && !island.anchor.sideways()
-        && !view::hides();
+        && joined_visible(config.shell.mode, view::hides());
 
     merged
         .then(dock::extent)
@@ -125,6 +140,17 @@ pub struct Plate {
 }
 
 impl Shell {
+    // how far the Island canvas stands from the shell window's edge, along the edge it hangs from
+    pub fn edge_offset(&self, canvas: Canvas, edge: geometry::Edge) -> f32 {
+        match edge {
+            geometry::Edge::Top => self.island.1,
+            geometry::Edge::Bottom => self.size.1 - self.island.1 - canvas.height,
+            geometry::Edge::Left => self.island.0,
+            geometry::Edge::Right => self.size.0 - self.island.0 - canvas.width,
+        }
+        .max(0.0)
+    }
+
     // whether the Island is among the Dock's icons rather than above its plate
     pub fn among(&self) -> bool {
         matches!(self.form, Merge::Keystone | Merge::Fold)
@@ -184,7 +210,7 @@ impl Shell {
 
 pub fn shell(monitor: &Monitor) -> Option<Shell> {
     let (form, extent) = joined()?;
-    let anchor = config::get().island_place.anchor;
+    let anchor = config::get().island_placement().anchor;
 
     Some(arrange(form, anchor, view::canvas(monitor), extent))
 }
@@ -275,5 +301,107 @@ fn among(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> S
         island: (left, island_y),
         dock: (0.0, 0.0),
         strip,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dock(autohide: bool) -> Placement {
+        Placement {
+            anchor: Anchor::default(),
+            autohide,
+            reserve: false,
+        }
+    }
+
+    #[test]
+    fn separate_mode_keeps_legacy_merge_choices() {
+        let mut config = config::Config::default();
+        config.shell.mode = ShellMode::Separate;
+
+        for form in [Merge::Crown, Merge::Keystone, Merge::Fold, Merge::Off] {
+            config.merge = form;
+            assert_eq!(
+                chosen(&config, dock(false)),
+                (form != Merge::Off).then_some(form)
+            );
+            assert_eq!(
+                chosen(&config, dock(true)),
+                match form {
+                    Merge::Off => None,
+                    _ => Some(Merge::Fold),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn shell_edge_offset_accounts_for_top_and_bottom_canvas_insets() {
+        let canvas = Canvas {
+            width: 500.0,
+            height: 500.0,
+        };
+        let extent = dock::Extent {
+            width: 300.0,
+            height: 50.0,
+            depth: 54.0,
+            strip: 32.0,
+            inset: 0.0,
+            before: 0.0,
+            after: 0.0,
+            swell: 0.0,
+            rise: 0.0,
+        };
+
+        for edge in [Edge::Top, Edge::Bottom] {
+            let shell = arrange(
+                Merge::Keystone,
+                Anchor {
+                    edge,
+                    along: Along::Center,
+                },
+                canvas,
+                extent,
+            );
+            assert_eq!(
+                shell.edge_offset(
+                    canvas,
+                    Anchor {
+                        edge,
+                        along: Along::Center
+                    }
+                    .hang()
+                    .edge
+                ),
+                14.0
+            );
+        }
+    }
+
+    #[test]
+    fn combined_stays_joined_when_the_island_hides() {
+        assert!(joined_visible(ShellMode::Combined, true));
+        assert!(joined_visible(ShellMode::Combined, false));
+    }
+
+    #[test]
+    fn separate_mode_keeps_hiding_the_merge_with_the_island() {
+        assert!(!joined_visible(ShellMode::Separate, true));
+        assert!(joined_visible(ShellMode::Separate, false));
+    }
+
+    #[test]
+    fn combined_mode_uses_its_form_without_rewriting_legacy_merge() {
+        let mut config = config::Config::default();
+        config.shell.mode = ShellMode::Combined;
+
+        for legacy in [Merge::Crown, Merge::Keystone, Merge::Fold, Merge::Off] {
+            config.merge = legacy;
+            assert_eq!(chosen(&config, dock(false)), Some(Merge::Keystone));
+            assert_eq!(chosen(&config, dock(true)), Some(Merge::Fold));
+            assert_eq!(config.merge, legacy);
+        }
     }
 }

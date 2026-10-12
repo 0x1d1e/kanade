@@ -20,8 +20,8 @@ use crate::sources::{
     timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    autohide, banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings, shadow,
-    supervise, surfaces, theme, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, ipc, lock, reload, settings,
+    shadow, supervise, surfaces, view,
 };
 
 use super::{CORE, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -104,7 +104,7 @@ pub const ALL: &[Module] = &[
         start: |app| {
             let config = config::get();
 
-            IslandService::write().retime(config.island);
+            IslandService::write().retime(config.animation_timings());
             /*
              * an output that comes, goes or changes may leave the largest body more or less room;
              * watched before the first read, so none comes between, and read under the write, so a
@@ -118,7 +118,6 @@ pub const ALL: &[Module] = &[
             service::watch::<Monitors>(autohide::forget_gone);
             service::watch::<Monitors>(cluster::forget_gone);
             IslandService::write().withhold(&withheld());
-            theme::follow(config.palette.as_deref());
             reload::spawn();
             clock::spawn();
             shadow::prepare();
@@ -204,6 +203,7 @@ pub const ALL: &[Module] = &[
 
             app.window_per_monitor(dock::reserve)
                 .window_per_monitor(dock::window)
+                .window_per_monitor(dock::context_window)
         },
     },
     // the privacy cluster: the microphone and camera from PipeWire, and screen casts from the
@@ -624,6 +624,10 @@ pub const ALL: &[Module] = &[
                 on: Provider::Program(wake::SETPRIV),
                 without: "no wallpaper unless awww-daemon runs already, as Kanade's could outlive it",
             },
+            Need {
+                on: Provider::Program(appearance::MATUGEN),
+                without: "no wallpaper-derived shell colors or configured application templates",
+            },
         ],
         settings: config::WALLPAPER,
         verbs: &[Verb {
@@ -639,6 +643,7 @@ pub const ALL: &[Module] = &[
         start: |app| {
             supervise::spawn("wallpaper", wallpaper::follow);
             supervise::spawn("wallpaper-set", wallpaper::serve);
+            supervise::spawn("wallpaper-shown", wallpaper::watch);
             app
         },
     },

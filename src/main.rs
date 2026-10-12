@@ -1,3 +1,4 @@
+mod appearance;
 mod autohide;
 mod banners;
 #[cfg(test)]
@@ -40,6 +41,14 @@ fn main() -> ExitCode {
     if arguments == [sources::clipboard::HAND_OVER] {
         sources::clipboard::hand_over_selection();
         return ExitCode::SUCCESS;
+    }
+
+    // a browser starts its native messaging host with the manifest's path and the extension
+    if arguments
+        .iter()
+        .any(|argument| argument == appearance::pywalfox::EXTENSION)
+    {
+        return appearance::pywalfox::host();
     }
 
     if !arguments.is_empty() {

@@ -189,11 +189,12 @@ No literal theme colors in components.
 
 - `ThemeRoles`: changing M3-like roles.
 - `SemanticColors`: `privacy`, `capture`, `warning`, `critical`, `island_surface`, `on_island_surface`.
-- Island semantics = black or white by `appearance.tone`, independent of the wallpaper; the Dock and Banners take the same.
+- The Island, Dock, Banners and Settings share semantic roles from `ThemeRoles`; `appearance.tone` chooses light or dark.
 - radii/spacing/type/motion = tokens too; in `src/theme.rs`, motion in `island::service::Timings` + `island::motion` (`island/` stays pure).
-- v0.1 source = the wallpaper `Palette` (`src/sources/palette.rs`).
-- later = matugen template; cache key = wallpaper hash + scheme + contrast + mode + matugen version.
-- matugen fail → last good → black/white.
+- At startup, Kanade reads the wallpaper awww shows. Matugen derives both palettes from it and renders only configured targets; a wallpaper Kanade sets, or one set with `awww img` outside Kanade (followed through awww's cache), replaces that palette. The active tone selects the shell palette, and changing tone rerenders configured targets ([ADR 0039](adr/0039-wallpaper-palettes-through-matugen.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)).
+- `theme.palette` remains accepted for old config files but is ignored; cover art may still supply the Media track accent.
+- Matugen is optional. Without it, or when generation fails, Kanade uses its built-in roles. No app outside the configured Matugen targets is themed by this path.
+- `appearance.sync` is opt-in: it sets the desktop color preference, pairs GTK3 themes, and writes the wallpaper scheme as Kanade's own GTK3/GTK4 CSS, qt5ct/qt6ct palette and KDE color scheme, niri's window colors and kitty's colors; it is Pywalfox's native host, so Firefox and Zen follow live ([ADR 0040](adr/0040-targeted-desktop-appearance-adapters.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)). niri and kitty change live, GTK, Qt and KDE apps at start; unsupported apps are unchanged.
 
 ## Config
 
@@ -253,7 +254,7 @@ session menu|suspend|reboot|poweroff|logout
 
 `status`: protocol/config versions, module/Service state, pending restart, last errors.
 
-`doctor`: read-only diagnostics by default: Kanade/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. Checks land with their Modules; matugen pending. Warns about a `kanade.service` unit that is not enabled or does not run the shell it talks to.
+`doctor`: read-only diagnostics by default: Kanade/niri versions, required protocols, sockets/IPC, module deps, D-Bus services, PipeWire, NM/BlueZ, PAM/logind, awww/matugen, capture backends, config validity. Explicit fix mode only for safe Kanade-owned state; none in v0.2. Checks land with their Modules. Warns about a `kanade.service` unit that is not enabled or does not run the shell it talks to.
 
 ## Runtime + dependencies
 
@@ -343,4 +344,4 @@ Need design before commitment:
 
 ## Fixed
 
-No bar. No Mission Control clone. No geometry-only fullscreen heuristic. Privacy outside Arbiter. Activity fields orthogonal. Notification state ≠ UI. Dock consumes `windows`, not `workspace`. `audio` ≠ privacy capture monitoring. Detailed controls use macOS-style sub-surfaces. Launcher ships apps/calculator/emoji/wallpaper providers. Clipboard/capture/caffeine/calendar/weather in scope. Per-app mixer + device selection in scope. Config hot reload + doctor in scope. English-only; no system monitor/fingerprint/OSK. Kanade Cargo owns builds; Kanade owns its runtime. No second UI framework. Real TOML/serde; user config never rewritten. v0.1 Palette; matugen later. Lock in the shell process; no `kanade-lock` (ADR 0018).
+No bar. No Mission Control clone. No geometry-only fullscreen heuristic. Privacy outside Arbiter. Activity fields orthogonal. Notification state ≠ UI. Dock consumes `windows`, not `workspace`. `audio` ≠ privacy capture monitoring. Detailed controls use macOS-style sub-surfaces. Launcher ships apps/calculator/emoji/wallpaper providers. Clipboard/capture/caffeine/calendar/weather in scope. Per-app mixer + device selection in scope. Config hot reload + doctor in scope. English-only; no system monitor/fingerprint/OSK. Kanade Cargo owns builds; Kanade owns its runtime. No second UI framework. Real TOML/serde; user config never rewritten. Matugen derives semantic shell roles from wallpaper when available; only user-configured app templates receive outputs, and legacy `theme.palette` is ignored. Lock in the shell process; no `kanade-lock` (ADR 0018).

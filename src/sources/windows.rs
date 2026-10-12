@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::desktop::{self, Entry};
+use super::desktop::{self, Action, Entry};
 use super::icons;
 use super::launch::Launch;
 use super::niri::{Heard, Window, WindowId};
@@ -35,6 +35,8 @@ pub struct DesktopEntry {
 
     // how it starts, none for an entry with nothing to run
     pub launch: Option<Launch>,
+
+    pub actions: Vec<Action>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,6 +350,7 @@ fn shown(entry: &Entry) -> DesktopEntry {
             .as_deref()
             .and_then(|icon| icons::find(icon, None)),
         launch: entry.launch.clone(),
+        actions: entry.actions.clone(),
     }
 }
 

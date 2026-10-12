@@ -80,7 +80,7 @@ const LIVE: f32 = 0.5;
 pub fn hides() -> bool {
     let config = config::get();
 
-    config.island_place.autohide || shape::rests().iter().all(|rest| rest.bare(has_battery()))
+    config.island_placement().autohide || shape::rests().iter().all(|rest| rest.bare(has_battery()))
 }
 
 /*
@@ -92,13 +92,38 @@ pub fn hides() -> bool {
  */
 pub fn reserved() -> f32 {
     let config = config::get();
-    let place = config.island_place;
+    let place = config.island_placement();
+    let dock_place = config.dock_placement();
+    let island_visible = !hides();
+    let merged = merge::form().is_some();
+    let dock_can_reserve = dock_place.reserve && !dock_place.autohide && merged;
+    let dock_reach = (!island_visible && dock_can_reserve)
+        .then(dock::extent)
+        .flatten()
+        .map_or(0.0, |extent| extent.depth);
 
-    // merged, the Dock's plate stands between it and the edge, and its reserve is this one too
-    let reserve = place.reserve || config.dock_place.reserve && merge::form().is_some();
+    reservation_depth(
+        island_visible,
+        place.reserve,
+        dock_can_reserve,
+        geometry::rest_reach(place.anchor.hang(), SATELLITES) + geometry::TOP,
+        dock_reach,
+        merge::apart(),
+    )
+}
 
-    if reserve && !hides() {
-        geometry::rest_reach(place.anchor.hang(), SATELLITES) + geometry::TOP + merge::apart()
+fn reservation_depth(
+    island_visible: bool,
+    island_reserve: bool,
+    dock_can_reserve: bool,
+    island_reach: f32,
+    dock_reach: f32,
+    apart: f32,
+) -> f32 {
+    if island_visible && (island_reserve || dock_can_reserve) {
+        island_reach + apart
+    } else if dock_can_reserve {
+        dock_reach
     } else {
         0.0
     }
@@ -109,7 +134,7 @@ pub fn reserved() -> f32 {
  * layer-shell reserves the thickness of a window held to one edge
  */
 pub fn reserve(_monitor: &Monitor) -> LayerWindow {
-    let place = config::get().island_place;
+    let place = config::get().island_placement();
     let reserved = reserved();
 
     // held to its edge alone, so the runtime reserves its thickness off that edge
@@ -144,9 +169,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let keyboard = island.keyboard(&monitor.name);
     let canvas = canvas(monitor);
-    let place = config::get().island_place;
+    let place = config::get().island_placement();
     let hang = place.anchor.hang();
-    let stand = Stand { canvas, hang };
 
     /*
      * merged with the Dock (ADR 0031), this window draws both: the Island's canvas lies at
@@ -154,6 +178,14 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
      */
     let shell = merge::shell(monitor);
     let origin = shell.as_ref().map_or((0.0, 0.0), |shell| shell.island);
+    let edge_offset = shell
+        .as_ref()
+        .map_or(0.0, |shell| shell.edge_offset(canvas, hang.edge));
+    let stand = Stand {
+        canvas,
+        hang,
+        edge_offset,
+    };
 
     let content = island.content(&monitor.name, now);
 
@@ -239,12 +271,16 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let captured = capture(&island, &monitor.name, stand, &scene, glass_body, now);
 
     // hidden past its edge, it captures nothing there
+    let merged_dock_visible = shell
+        .as_ref()
+        .zip(laid.as_ref())
+        .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
     let liquid = glass::place(
         monitor,
         ISLAND,
         place.anchor,
         scene.window(),
-        ((out > 0.0 || sliding) && (!covered || raised)).then_some(captured),
+        capture_visible(out, sliding, merged_dock_visible, covered, raised).then_some(captured),
     );
 
     let backdrop = glass::shown(&spot, glass_body);
@@ -553,6 +589,16 @@ fn shadows(
     shadow
 }
 
+fn capture_visible(
+    out: f32,
+    sliding: bool,
+    merged_dock_visible: bool,
+    covered: bool,
+    raised: bool,
+) -> bool {
+    (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised)
+}
+
 /*
  * captured out to everywhere the body goes until its rim is shown, so it fits as the body
  * grows, and never samples the Island where the spring overshoots on the way; and to where it
@@ -685,4 +731,36 @@ fn hover_target(
         .on_scroll(move |Scroll { y, .. }| route(&scrolled, Input::Wheel(y)));
 
     (target, track)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_island_keeps_only_a_requested_merged_dock_reservation() {
+        assert_eq!(
+            reservation_depth(false, false, true, 90.0, 50.0, 12.0),
+            50.0
+        );
+        assert_eq!(reservation_depth(false, true, false, 90.0, 0.0, 12.0), 0.0);
+        assert_eq!(reservation_depth(false, false, false, 90.0, 0.0, 12.0), 0.0);
+    }
+
+    #[test]
+    fn visible_merged_shell_reserves_its_combined_reach() {
+        assert_eq!(reservation_depth(true, true, true, 80.0, 0.0, 12.0), 92.0);
+        assert_eq!(reservation_depth(true, false, true, 80.0, 0.0, 12.0), 92.0);
+        assert_eq!(reservation_depth(true, true, false, 80.0, 0.0, 0.0), 80.0);
+        assert_eq!(reservation_depth(false, false, false, 90.0, 0.0, 12.0), 0.0);
+        assert_eq!(reservation_depth(true, false, false, 80.0, 0.0, 12.0), 0.0);
+    }
+
+    #[test]
+    fn visible_merged_dock_keeps_glass_capturing_after_island_hides() {
+        assert!(capture_visible(0.0, false, true, false, false));
+        assert!(!capture_visible(0.0, false, false, false, false));
+        assert!(!capture_visible(0.0, false, true, true, false));
+        assert!(capture_visible(0.0, false, true, true, true));
+    }
 }

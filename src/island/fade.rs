@@ -101,7 +101,7 @@ impl<T: InPlace + Default> Default for Crossfade<T> {
 
 /*
  * the new content rising over the old in place, both showing until it arrives. Its own spring,
- * since the body does not move; under reduced motion it still fades, see motion::REDUCED_FADE
+ * since the body does not move; under reduced motion its fade uses the configured response
  */
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dissolve<T> {

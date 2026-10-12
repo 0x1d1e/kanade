@@ -51,7 +51,11 @@ const ECANCELED: i32 = 125;
 
 // <signal.h>
 pub const SIGINT: c_int = 2;
+const SIGUSR1: c_int = 10;
 const SIG_DFL: usize = 0;
+
+// USER_HZ, the clock ticks /proc counts a process's start time in
+pub const USER_HZ: u64 = 100;
 
 #[repr(C)]
 struct Tm {
@@ -473,6 +477,17 @@ pub fn interrupt(child: &Child) -> io::Result<()> {
 
     // SAFETY: plain call
     match unsafe { kill(pid, SIGINT) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+// sends `pid` SIGUSR1, which a terminal like kitty takes as reloading its config
+pub fn user_signal(pid: u32) -> io::Result<()> {
+    let pid = c_int::try_from(pid).map_err(io::Error::other)?;
+
+    // SAFETY: plain call
+    match unsafe { kill(pid, SIGUSR1) } {
         0 => Ok(()),
         _ => Err(io::Error::last_os_error()),
     }

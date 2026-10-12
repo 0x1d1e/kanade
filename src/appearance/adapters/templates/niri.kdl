@@ -1,0 +1,34 @@
+// Kanade appearance sync: wallpaper colors through Matugen, rewritten on each change
+// included at the end of config.kdl, so it sets only colors and wins over earlier ones; niri
+// reloads it live. Borders and focus ring stay on or off as config.kdl says
+
+layout {
+    focus-ring {
+        active-color "{{primary}}"
+        inactive-color "{{outline_variant}}"
+        urgent-color "{{error}}"
+    }
+
+    border {
+        active-color "{{primary}}"
+        inactive-color "{{outline_variant}}"
+        urgent-color "{{error}}"
+    }
+
+    tab-indicator {
+        active-color "{{primary}}"
+        inactive-color "{{outline_variant}}"
+        urgent-color "{{error}}"
+    }
+
+    insert-hint {
+        color "{{primary}}80"
+    }
+}
+
+recent-windows {
+    highlight {
+        active-color "{{primary}}"
+        urgent-color "{{error}}"
+    }
+}

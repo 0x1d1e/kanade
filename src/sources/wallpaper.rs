@@ -12,20 +12,21 @@
 //! serial; `kanade` waits on `status` for how it went.
 
 use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, Read};
 use std::panic;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
+use inotify::{Inotify, WatchDescriptor, WatchMask};
 use kanade_runtime::{MutexExt, queue::Queue, service::Service};
 
 use super::wake;
-use crate::{config, modules, supervise};
+use crate::{appearance, config, modules, supervise};
 
 pub const AWWW: &str = "awww";
 pub const DAEMON: &str = "awww-daemon";
@@ -45,6 +46,9 @@ const LIMIT: Duration = Duration::from_secs(10);
 // how often, and how far apart, a daemon not yet answering what it shows is asked again
 const TRIES: u32 = 5;
 const AGAIN: Duration = Duration::from_secs(1);
+
+// for awww to write the cache of every output, so one external set is one look
+const SETTLE: Duration = Duration::from_millis(150);
 
 // how many sets `status` says how they went, so a `kanade` waiting on one finds it after others
 const RECENT: usize = 16;
@@ -339,7 +343,7 @@ pub fn serve() {
             wallpaper.pending.retain(|pending| *pending != serial);
 
             if shown.is_ok() {
-                wallpaper.current = Some(path);
+                wallpaper.current = Some(path.clone());
             }
 
             // the lock screen shows the new one from its first frame
@@ -351,6 +355,10 @@ pub fn serve() {
                 wallpaper.done.pop_front();
             }
             wallpaper.done.push_back((serial, shown.clone()));
+        }
+
+        if shown.is_ok() {
+            appearance::wallpaper(path);
         }
 
         if let Some(done) = done {
@@ -527,7 +535,7 @@ fn image(path: &Path) -> bool {
 
 /*
  * the image awww shows on each output, by its name, as the lock screen draws it behind the clock;
- * looked up as a lock is asked (`look`), as a wallpaper may have been set by anything since
+ * looked up at startup and when a lock is asked, since anything may have set it
  */
 #[derive(Debug, Default)]
 pub struct Shown {
@@ -555,19 +563,144 @@ impl Shown {
     }
 }
 
+// One shell palette follows the focused output, or a stable first output when focus is unknown.
+fn appearance_path(by: &HashMap<String, PathBuf>, focused_output: Option<&str>) -> Option<PathBuf> {
+    let showing = focused_output
+        .and_then(|output| by.get(output))
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            by.iter()
+                .filter(|(_, path)| path.is_file())
+                .min_by(|(first, _), (next, _)| first.as_str().cmp(next.as_str()))
+                .map(|(_, path)| path)
+        })?;
+
+    Some(showing.clone())
+}
+
+fn has_wallpaper(said: &str) -> bool {
+    appearance_path(&shown(said), None).is_some()
+}
+
+fn query_look<E>(
+    retry_for_image: bool,
+    mut query: impl FnMut() -> Result<String, E>,
+) -> Result<String, E> {
+    let mut retries = 0;
+
+    loop {
+        match query() {
+            Ok(said) if !retry_for_image || has_wallpaper(&said) => return Ok(said),
+            Ok(said) if retries == TRIES => return Ok(said),
+            Err(error) if retries == TRIES => return Err(error),
+            Ok(_) | Err(_) => {}
+        }
+
+        retries += 1;
+        std::thread::sleep(AGAIN);
+    }
+}
+
+// what a look does with the appearance palette
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Palette {
+    // nothing
+    Keep,
+
+    // seeds it at start, unless a wallpaper set since gave one
+    Seed,
+
+    // replaces it with what awww now shows, after something else set the wallpaper
+    Replace,
+}
+
+#[derive(Debug, Default)]
+struct LookOrder {
+    issued: u64,
+    written: u64,
+    appearance_pending: bool,
+
+    // the first look that may replace the palette, and the last that did
+    replace_from: u64,
+    replaced: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LookCompletion {
+    publish: bool,
+    appearance: Option<PathBuf>,
+    replace: bool,
+}
+
+impl LookOrder {
+    fn start(&mut self, palette: Palette) -> (u64, bool) {
+        self.issued += 1;
+        self.appearance_pending |= palette == Palette::Seed;
+        if palette == Palette::Replace {
+            self.replace_from = self.issued;
+        }
+        (self.issued, self.appearance_pending)
+    }
+
+    fn finish(&mut self, serial: u64, appearance: Option<PathBuf>) -> LookCompletion {
+        let publish = serial > self.written;
+        if publish {
+            self.written = serial;
+        }
+
+        /*
+         * only a look at least as new as the latest replace request, and none older after it; one
+         * that found no image, as a lock screen's may, leaves the request to an older look still out
+         */
+        let replace = self.replace_from > self.replaced
+            && serial >= self.replace_from
+            && appearance.is_some();
+        if replace {
+            self.replaced = serial;
+        }
+
+        let appearance = if self.appearance_pending || replace {
+            appearance
+        } else {
+            None
+        };
+        if appearance.is_some() {
+            self.appearance_pending = false;
+        }
+
+        LookCompletion {
+            publish,
+            appearance,
+            replace,
+        }
+    }
+}
+
+static LOOKS: Mutex<LookOrder> = Mutex::new(LookOrder {
+    issued: 0,
+    written: 0,
+    appearance_pending: false,
+    replace_from: 0,
+    replaced: 0,
+});
+
 /*
  * asks awww what it shows, off the caller's thread; a daemon still starting, as at login, is asked
- * again a few times, and one never answering leaves what was known
+ * again a few times until an image appears or the bounded retry window ends
  */
 pub fn look() {
-    /*
-     * which look is newest, and which wrote last: one still asking again never overwrites what a
-     * later one found, nor is what it finds thrown away for a later one that found nothing
-     */
-    static LOOKS: AtomicU64 = AtomicU64::new(0);
-    static WROTE: Mutex<u64> = Mutex::new(0);
+    look_with(Palette::Keep);
+}
 
-    let this = LOOKS.fetch_add(1, Ordering::Relaxed) + 1;
+pub fn look_for_appearance() {
+    look_with(Palette::Seed);
+}
+
+fn look_with(palette: Palette) {
+    let (this, retry_for_image) = {
+        let mut looks = LOOKS.locked();
+        looks.start(palette)
+    };
 
     // awww looked for off the caller's thread too, as it may be asked on the way to sleep
     let spawned = std::thread::Builder::new()
@@ -577,22 +710,18 @@ pub fn look() {
                 return;
             }
 
-            let mut said = wake::query_within(AWWW, &["query"], LIMIT);
-
-            for _ in 0..TRIES {
-                if said.is_ok() {
-                    break;
-                }
-
-                std::thread::sleep(AGAIN);
-                said = wake::query_within(AWWW, &["query"], LIMIT);
-            }
-
+            let said = query_look(retry_for_image, || {
+                wake::query_within(AWWW, &["query"], LIMIT)
+            });
             let Ok(said) = said else {
                 return;
             };
-            // a wallpaper that is no image the lock screen decodes is as none: it shows solid
-            let by: HashMap<String, Showing> = shown(&said)
+            let raw = shown(&said);
+            let focused = super::niri::Niri::read().seen.focused_output.clone();
+            let palette = appearance_path(&raw, focused.as_deref());
+
+            // A palette may use an image the lock screen cannot decode, so keep its candidates apart.
+            let by: HashMap<String, Showing> = raw
                 .into_iter()
                 .filter(|(_, path)| format(path).is_some())
                 .map(|(output, path)| {
@@ -602,24 +731,144 @@ pub fn look() {
                 })
                 .collect();
 
-            // held while written, so looks write in turn
-            let mut wrote = WROTE.locked();
+            // held while written, so looks write in turn; a newer lock lookup can also claim a
+            // pending startup seed before an older startup query finishes
+            let palette = {
+                let mut looks = LOOKS.locked();
+                let completion = looks.finish(this, palette);
 
-            // a look older than one written is dropped, so a later one is never undone
-            if *wrote >= this {
-                return;
-            }
-            *wrote = this;
+                if completion.publish && Shown::read().by != by {
+                    Shown::write().by = by;
+                }
 
-            // read first, as a write redraws the lock screens
-            if Shown::read().by != by {
-                Shown::write().by = by;
+                completion.appearance.map(|path| (path, completion.replace))
+            };
+
+            match palette {
+                Some((path, true)) => appearance::shown_wallpaper(path),
+                Some((path, false)) => appearance::seed_wallpaper(path),
+                None => {}
             }
         });
 
     if let Err(error) = spawned {
         eprintln!("kanade: cannot ask awww for the wallpaper: {error}");
     }
+}
+
+// awww's cache: a directory per awww version, in it a file per output that each `awww img` rewrites
+fn cache() -> Option<PathBuf> {
+    env::var_os("XDG_CACHE_HOME")
+        .filter(|cache| !cache.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|cache| cache.join("awww"))
+}
+
+/*
+ * follows a wallpaper set outside Kanade, as by `awww img` in a script: a write to awww's cache
+ * looks again, for the lock screen, and replaces the appearance palette. It blocks on inotify, so
+ * it costs no idle wakeups
+ */
+pub fn watch() {
+    let Some(cache) = cache() else { return };
+
+    if let Err(error) = watch_cache(&cache) {
+        eprintln!("kanade: cannot follow wallpapers set outside Kanade: {error}");
+    }
+}
+
+fn watch_cache(cache: &Path) -> io::Result<()> {
+    let mut inotify = Inotify::init()?;
+    let mut buffer = [0; 4096];
+    let mut watches = arm_cache(&mut inotify, cache, Vec::new());
+
+    loop {
+        let mut shown = false;
+        let mut moved = false;
+        for event in inotify.read_events_blocking(&mut buffer)? {
+            match watches.iter().position(|watch| *watch == event.wd) {
+                Some(0) => moved = true,
+                Some(_) => shown = true,
+                // a watch already replaced, saying it ended
+                None => {}
+            }
+        }
+
+        // awww writes one output's file after the other: until a quiet SETTLE, one look for all
+        while shown {
+            std::thread::sleep(SETTLE);
+            let events = match inotify.read_events(&mut buffer) {
+                Ok(events) => events,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            };
+            let mut quiet = true;
+            for event in events {
+                quiet = false;
+                match watches.iter().position(|watch| *watch == event.wd) {
+                    Some(0) => moved = true,
+                    Some(_) => shown = true,
+                    None => {}
+                }
+            }
+            if quiet {
+                break;
+            }
+        }
+
+        if moved {
+            watches = arm_cache(&mut inotify, cache, watches);
+        }
+        if shown {
+            look_with(Palette::Replace);
+        }
+    }
+}
+
+// the watch on the cache, or its nearest parent while awww has made none, first; then one on
+// each version's directory
+fn arm_cache(
+    inotify: &mut Inotify,
+    cache: &Path,
+    old: Vec<WatchDescriptor>,
+) -> Vec<WatchDescriptor> {
+    for watch in old {
+        // fails for a watch the kernel already ended
+        let _ = inotify.watches().remove(watch);
+    }
+
+    let mut dir = cache;
+    while !dir.is_dir() {
+        let Some(parent) = dir.parent() else {
+            return Vec::new();
+        };
+        dir = parent;
+    }
+
+    let parent =
+        WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::DELETE_SELF | WatchMask::ONLYDIR;
+    let mut watches = match inotify.watches().add(dir, parent) {
+        Ok(watch) => vec![watch],
+        Err(error) => {
+            eprintln!("kanade: cannot watch {}: {error}", dir.display());
+            return Vec::new();
+        }
+    };
+    if dir != cache {
+        return watches;
+    }
+
+    let versions = cache.read_dir().into_iter().flatten().flatten();
+    for version in versions.filter(|entry| entry.path().is_dir()) {
+        let outputs = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO | WatchMask::ONLYDIR;
+        match inotify.watches().add(version.path(), outputs) {
+            Ok(watch) => watches.push(watch),
+            Err(error) => eprintln!("kanade: cannot watch {}: {error}", version.path().display()),
+        }
+    }
+
+    watches
 }
 
 // how many wallpapers' lightness is kept
@@ -952,4 +1201,138 @@ fn shown(said: &str) -> HashMap<String, PathBuf> {
     }
 
     shown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TestFile(PathBuf);
+
+    impl TestFile {
+        fn new(extension: &str, bytes: &[u8]) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "kanade-wallpaper-test-{}-{}.{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+                extension
+            ));
+            fs::write(&path, bytes).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn appearance_uses_focused_output_then_stable_first_available_image() {
+        let first = TestFile::new("png", b"first");
+        let second = TestFile::new("png", b"second");
+        let missing = PathBuf::from("/wallpapers/missing.png");
+        let by = HashMap::from([
+            (String::from("B-output"), second.0.clone()),
+            (String::from("A-output"), first.0.clone()),
+            (String::from("0-output"), missing),
+        ]);
+
+        assert_eq!(
+            appearance_path(&by, Some("B-output")),
+            Some(second.0.clone())
+        );
+        assert_eq!(
+            appearance_path(&by, Some("0-output")),
+            Some(first.0.clone())
+        );
+        assert_eq!(appearance_path(&HashMap::new(), None), None);
+    }
+
+    #[test]
+    fn palette_candidates_include_images_the_lock_screen_cannot_decode() {
+        let bmp = TestFile::new("bmp", b"BM");
+        let by = HashMap::from([(String::from("eDP-1"), bmp.0.clone())]);
+
+        assert_eq!(format(&bmp.0), None);
+        assert_eq!(appearance_path(&by, Some("eDP-1")), Some(bmp.0.clone()));
+    }
+
+    #[test]
+    fn startup_lookup_retries_successful_solid_queries_until_an_image_appears() {
+        let wallpaper = TestFile::new("bmp", b"BM");
+        let replies = std::cell::RefCell::new(VecDeque::from([
+            Ok::<_, ()>(String::from(
+                ": eDP-1: 1920x1080, scale: 1, currently displaying: color: #111111",
+            )),
+            Ok(format!(
+                ": eDP-1: 1920x1080, scale: 1, currently displaying: image: {}",
+                wallpaper.0.display()
+            )),
+        ]));
+        let mut calls = 0;
+
+        let said = query_look(true, || {
+            calls += 1;
+            replies.borrow_mut().pop_front().unwrap()
+        })
+        .unwrap();
+
+        assert_eq!(calls, 2);
+        assert!(said.contains(&wallpaper.0.display().to_string()));
+    }
+
+    #[test]
+    fn newer_lock_lookup_can_finish_the_pending_startup_seed() {
+        let wallpaper = TestFile::new("png", b"wallpaper");
+        let mut looks = LookOrder::default();
+        let (startup, _) = looks.start(Palette::Seed);
+        let (lock, retry) = looks.start(Palette::Keep);
+        assert!(retry);
+
+        let lock = looks.finish(lock, Some(wallpaper.0.clone()));
+        assert!(lock.publish);
+        assert_eq!(lock.appearance, Some(wallpaper.0.clone()));
+
+        let startup = looks.finish(startup, Some(wallpaper.0.clone()));
+        assert!(!startup.publish);
+        assert_eq!(startup.appearance, None);
+        assert!(!looks.appearance_pending);
+    }
+
+    #[test]
+    fn newer_solid_lookup_does_not_discard_the_pending_startup_seed() {
+        let wallpaper = TestFile::new("png", b"wallpaper");
+        let mut looks = LookOrder::default();
+        let (startup, _) = looks.start(Palette::Seed);
+        let (lock, retry) = looks.start(Palette::Keep);
+        assert!(retry);
+
+        let lock = looks.finish(lock, None);
+        assert!(lock.publish);
+        assert_eq!(lock.appearance, None);
+        assert!(looks.appearance_pending);
+
+        let startup = looks.finish(startup, Some(wallpaper.0.clone()));
+        assert!(!startup.publish);
+        assert_eq!(startup.appearance, Some(wallpaper.0.clone()));
+    }
+
+    #[test]
+    fn newer_imageless_lookup_does_not_consume_a_pending_replacement() {
+        let wallpaper = TestFile::new("png", b"wallpaper");
+        let mut looks = LookOrder::default();
+        let (external, _) = looks.start(Palette::Replace);
+        let (lock, _) = looks.start(Palette::Keep);
+
+        let lock = looks.finish(lock, None);
+        assert_eq!(lock.appearance, None);
+
+        let external = looks.finish(external, Some(wallpaper.0.clone()));
+        assert!(external.replace);
+        assert_eq!(external.appearance, Some(wallpaper.0.clone()));
+    }
 }

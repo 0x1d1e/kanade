@@ -16,13 +16,16 @@ use toml::Value;
 use crate::config::{self, Choices, Kind, Location, Setting};
 use crate::glass;
 use crate::icon::Icon;
-use crate::look::{Along, Edge, Material};
+use crate::look::{Along, Edge, Material, ShellMode};
 use crate::modules::{self, CORE, Module};
 use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
 
 use super::layout::{self, MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
-use super::{SEARCH, Settings, change, change_all, input, inspect, path, search, turn_to, undo};
+use super::{
+    FONT_SEARCH, SEARCH, Settings, change, change_all, font_search, input, inspect, path, search,
+    select_font, turn_to, undo,
+};
 
 // the size it opens at, and the smallest it can be made
 const WIDTH: f32 = 920.0;
@@ -90,6 +93,7 @@ const MILLIS: Steps = Steps {
 
 // a size steps by as much as a list row or two
 const PIXEL_STEP: u64 = 20;
+const PERCENT_STEP: u64 = 10;
 
 pub fn window() -> Window {
     let settings = Settings::read();
@@ -665,14 +669,32 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
             let edge = setting(edge).expect("the layout's keys are the schema's");
             let align = setting(align).expect("the layout's keys are the schema's");
 
-            labeled(
-                label(
-                    settings,
-                    &[edge, align],
-                    "Position",
-                    "Which edge of the screen, and where along it",
-                    roles,
+            let (title, description) = match edge.key {
+                "shell.edge" => (
+                    "Combined position",
+                    "The combined shell uses a top or bottom edge; the separate placements stay untouched",
                 ),
+                "island.edge" if settings.read.shell.mode == ShellMode::Combined => (
+                    "Separate Island position",
+                    "Saved for Separate mode. Combined uses its own position",
+                ),
+                "dock.edge" if settings.read.shell.mode == ShellMode::Combined => (
+                    "Separate Dock position",
+                    "Saved for Separate mode. Combined uses its own position",
+                ),
+                "island.edge" => (
+                    "Separate Island position",
+                    "Used only in Separate mode; Combined has its own position",
+                ),
+                "dock.edge" => (
+                    "Separate Dock position",
+                    "Used only in Separate mode; Combined has its own position",
+                ),
+                _ => ("Position", "Which edge of the screen, and where along it"),
+            };
+
+            labeled(
+                label(settings, &[edge, align], title, description, roles),
                 Box::new(position(settings, edge, align, roles)),
                 true,
                 roles,
@@ -866,9 +888,10 @@ fn control(
         }
         Kind::Choice(options, field) => {
             let chosen = (field.get)(read);
+            let enabled = key != "dock.merge" || read.shell.mode == ShellMode::Separate;
 
             (
-                Box::new(segmented(options, chosen, roles, move |option| {
+                Box::new(segmented(options, chosen, roles, enabled, move |option| {
                     change(path(key, None), Some(Value::String(option.to_owned())));
                 })),
                 true,
@@ -890,6 +913,21 @@ fn control(
             };
 
             (Box::new(stepper(setting, px, steps, roles)), true)
+        }
+        Kind::Percent(range, field) => {
+            let percent = u64::from((field.get)(read));
+            let steps = Steps {
+                least: u64::from(range.least),
+                most: u64::from(range.most),
+                step: PERCENT_STEP,
+                unit: "%",
+                expected: "whole percent",
+            };
+
+            (Box::new(stepper(setting, percent, steps, roles)), true)
+        }
+        Kind::Text(_) if key == "appearance.font" => {
+            (Box::new(font_picker(settings, roles)), false)
         }
         Kind::Path(_) | Kind::Text(_) => (
             Box::new(field_with_hint(
@@ -990,6 +1028,125 @@ fn control(
         }
         Kind::Modules(_) => unreachable!("section_view draws the Modules row itself"),
     }
+}
+
+fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
+    const FONT_FIELD: f32 = 320.0;
+    const SUGGESTIONS: usize = 8;
+
+    let families = settings.fonts.clone();
+    let matching = super::fonts::matching(&families, &settings.font_query, SUGGESTIONS);
+    let chosen = settings.read.appearance.font.as_deref();
+    let query = settings.font_query.clone();
+    let field = Rectangle::new()
+        .width(FONT_FIELD)
+        .height(FIELD)
+        .radius(radius::ROW - 2.0)
+        .fill(roles.surface_container_high)
+        .border(1.0, faint(roles.outline))
+        .padding(sides(10.0))
+        .align_child(Start, Center)
+        .child(
+            TextInput::new(FONT_SEARCH)
+                .width(Parent)
+                .size(theme::text::LABEL)
+                .color(roles.on_surface)
+                .placeholder("Search installed font families")
+                .on_change(font_search)
+                .on_submit(move |query| {
+                    if let Some(family) = super::fonts::matching(&families, &query, 1)
+                        .into_iter()
+                        .next()
+                    {
+                        select_font(Some(family));
+                    }
+                }),
+        );
+
+    let mut items = children![field];
+    if settings.fonts_loading {
+        items.push(Box::new(font_note(
+            "Listing installed font families…",
+            roles,
+        )));
+    } else if let Some(error) = &settings.fonts_error {
+        items.push(Box::new(font_note(error, roles)));
+    } else if settings.fonts_loaded && settings.fonts.is_empty() {
+        items.push(Box::new(font_note(
+            "Fontconfig returned no installed families",
+            roles,
+        )));
+    } else if query.trim().is_empty() {
+        let system = if chosen.is_some() {
+            "Use the system default"
+        } else {
+            "Using the system default: Inter, then sans-serif"
+        };
+        if chosen.is_some() {
+            items.push(Box::new(font_choice(system, false, roles, || {
+                select_font(None)
+            })));
+        } else {
+            items.push(Box::new(font_note(system, roles)));
+        }
+    } else if matching.is_empty() {
+        items.push(Box::new(font_note("No installed family matches", roles)));
+    } else {
+        for family in matching {
+            let selected = chosen.is_some_and(|chosen| chosen.eq_ignore_ascii_case(&family));
+            let choice = family.clone();
+            items.push(Box::new(font_choice(&family, selected, roles, move || {
+                select_font(Some(choice.clone()))
+            })));
+        }
+        items.push(Box::new(font_note(
+            "Type to narrow the list. Enter chooses the first match.",
+            roles,
+        )));
+    }
+
+    Column::new(items).width(FONT_FIELD).gap(6.0)
+}
+
+fn font_choice(
+    name: &str,
+    selected: bool,
+    roles: &ThemeRoles,
+    press: impl Fn() + 'static,
+) -> Rectangle {
+    let name = name.to_owned();
+    let text = Text::new(name)
+        .size(theme::text::LABEL)
+        .color(roles.on_surface)
+        .weight(if selected {
+            theme::text::SEMIBOLD
+        } else {
+            theme::text::MEDIUM
+        })
+        .elide();
+    let row = Rectangle::new()
+        .width(320.0)
+        .height(34.0)
+        .radius(radius::ROW - 4.0)
+        .padding(sides(10.0))
+        .align_child(Start, Center)
+        .cursor(Cursor::Pointer)
+        .on_click(left(press))
+        .child(text);
+
+    if selected {
+        row.fill(roles.surface_container_high)
+    } else {
+        row
+    }
+}
+
+fn font_note(text: &str, roles: &ThemeRoles) -> Text {
+    Text::new(text)
+        .size(theme::text::LABEL_SMALL)
+        .color(roles.on_surface_variant)
+        .weight(theme::text::MEDIUM)
+        .wrap()
 }
 
 /*
@@ -1222,6 +1379,12 @@ fn position(
         (align_field.get)(&settings.read),
     );
     let (edge_key, align_key) = (edge.key, align.key);
+    let active = match edge.key {
+        "shell.edge" => settings.read.shell.mode == ShellMode::Combined,
+        "island.edge" | "dock.edge" => settings.read.shell.mode == ShellMode::Separate,
+        _ => true,
+    };
+    let combined_position = edge.key == "shell.edge";
 
     // a place to press: the pill as the bar would lie there, lit where it is now
     let place = move |to: (&'static str, &'static str), (width, height): (f32, f32)| {
@@ -1242,26 +1405,33 @@ fn position(
         };
 
         let (cell_width, cell_height) = if sideways { (24.0, 44.0) } else { (48.0, 24.0) };
-
-        Box::new(
+        let selectable = active && !(combined_position && sideways);
+        let cell = Rectangle::new()
+            .width(cell_width)
+            .height(cell_height)
+            .align_child(Center, Center);
+        let cell = if selectable {
+            cell.cursor(Cursor::Pointer).on_click(left(press))
+        } else {
+            cell
+        };
+        let cell = cell.child(
             Rectangle::new()
-                .width(cell_width)
-                .height(cell_height)
-                .align_child(Center, Center)
-                .cursor(Cursor::Pointer)
-                .on_click(left(press))
-                .child(
-                    Rectangle::new()
-                        .width(width)
-                        .height(height)
-                        .radius(5.0)
-                        .fill(if here {
-                            roles.primary
-                        } else {
-                            faint(roles.on_surface_variant)
-                        }),
-                ),
-        ) as Box<dyn Widget>
+                .width(width)
+                .height(height)
+                .radius(5.0)
+                .fill(if here {
+                    roles.primary
+                } else {
+                    faint(roles.on_surface_variant)
+                }),
+        );
+
+        Box::new(if selectable {
+            cell
+        } else {
+            cell.opacity(theme::DISABLED)
+        }) as Box<dyn Widget>
     };
 
     let line = |side: Edge| {
@@ -1421,6 +1591,7 @@ fn segmented(
     options: &'static Choices,
     chosen: &str,
     roles: &ThemeRoles,
+    enabled: bool,
     choose: impl Fn(&'static str) + Clone + 'static,
 ) -> Rectangle {
     const INSET: f32 = 3.0;
@@ -1446,16 +1617,27 @@ fn segmented(
                 .width(width)
                 .height(HEIGHT)
                 .radius(HEIGHT / 2.0)
-                .align_child(Center, Center)
-                .cursor(Cursor::Pointer)
-                .on_click(left(move || choose(option)))
-                .child(text);
-
-            Box::new(if here {
+                .align_child(Center, Center);
+            let segment = if enabled {
+                segment
+                    .cursor(Cursor::Pointer)
+                    .on_click(left(move || choose(option)))
+            } else {
+                segment
+            };
+            let segment = segment.child(text);
+            let segment = if here {
                 segment.fill(roles.primary)
             } else {
                 segment
-            }) as Box<dyn Widget>
+            };
+            let segment = if enabled {
+                segment
+            } else {
+                segment.opacity(theme::DISABLED)
+            };
+
+            Box::new(segment) as Box<dyn Widget>
         })
         .collect();
 

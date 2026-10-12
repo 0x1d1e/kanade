@@ -31,6 +31,16 @@ pub struct Entry {
 
     // how it starts, none for an entry with nothing to run
     pub launch: Option<Launch>,
+
+    // app-specific commands exposed in the Dock's right-click menu
+    pub actions: Vec<Action>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    pub id: String,
+    pub name: String,
+    pub launch: Launch,
 }
 
 // the `applications` dirs of the XDG data dirs, the user's first, so their files win
@@ -141,37 +151,66 @@ enum Read {
 }
 
 fn read(id: String, file: &Path, text: &str) -> Read {
-    let mut fields = BTreeMap::new();
-    let mut inside = false;
-    let mut group = false;
+    #[derive(Clone)]
+    enum Group {
+        Main,
+        Action(String),
+    }
+
+    let mut main = BTreeMap::<&str, &str>::new();
+    let mut actions = BTreeMap::<String, BTreeMap<&str, &str>>::new();
+    let mut current = None;
+    let mut has_main = false;
 
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
-            inside = line == "[Desktop Entry]";
-            group |= inside;
-        } else if inside && let Some((key, value)) = line.split_once('=') {
-            // the first wins, as the spec forbids a key twice
-            fields.entry(key.trim()).or_insert(value.trim());
+            current = if line == "[Desktop Entry]" {
+                has_main = true;
+                Some(Group::Main)
+            } else {
+                line.strip_prefix("[Desktop Action ")
+                    .and_then(|group| group.strip_suffix(']'))
+                    .filter(|id| !id.is_empty())
+                    .map(|id| Group::Action(id.to_owned()))
+            };
+        } else if let Some((key, value)) = line.split_once('=') {
+            let (key, value) = (key.trim(), value.trim());
+
+            match current.as_ref() {
+                Some(Group::Main) => {
+                    // the first wins, as the spec forbids a key twice
+                    main.entry(key).or_insert(value);
+                }
+                Some(Group::Action(id)) => {
+                    actions
+                        .entry(id.clone())
+                        .or_default()
+                        .entry(key)
+                        .or_insert(value);
+                }
+                None => {}
+            }
         }
     }
 
-    let field = |key| {
+    let field = |fields: &BTreeMap<&str, &str>, key: &str| -> Option<String> {
         fields
             .get(key)
+            .copied()
             .filter(|value| !value.is_empty())
-            .map(|value| unescape(value))
+            .map(unescape)
     };
 
-    if !group {
+    if !has_main {
         return Read::Invalid;
     }
 
     // `Hidden` alone deletes, with no `Type` or `Name`
-    if fields.get("Hidden") == Some(&"true") {
+    if main.get("Hidden") == Some(&"true") {
         return Read::Other;
     }
 
-    let (Some(kind), Some(name)) = (field("Type"), field("Name")) else {
+    let (Some(kind), Some(app_name)) = (field(&main, "Type"), field(&main, "Name")) else {
         return Read::Invalid;
     };
 
@@ -179,27 +218,60 @@ fn read(id: String, file: &Path, text: &str) -> Read {
         return Read::Other;
     }
 
-    let icon = field("Icon");
-    let flag = |key| fields.get(key) == Some(&"true");
+    let icon = field(&main, "Icon");
+    let flag = |key| main.get(key) == Some(&"true");
+    let path = field(&main, "Path");
+    let terminal = flag("Terminal");
+    let dbus_activatable = flag("DBusActivatable");
     let launch = Launch::of(&Fields {
         id: &id,
-        name: &name,
+        name: &app_name,
         icon: icon.as_deref(),
         file,
-        exec: field("Exec").as_deref(),
-        path: field("Path").as_deref(),
-        terminal: flag("Terminal"),
-        dbus_activatable: flag("DBusActivatable"),
+        exec: field(&main, "Exec").as_deref(),
+        path: path.as_deref(),
+        terminal,
+        dbus_activatable,
     });
+
+    let mut seen = HashSet::new();
+    let actions = field(&main, "Actions")
+        .into_iter()
+        .flat_map(|actions| actions.split(';').map(str::to_owned).collect::<Vec<_>>())
+        .filter(|action| !action.is_empty() && seen.insert(action.clone()))
+        .filter_map(|action_id| {
+            let fields = actions.get(&action_id)?;
+            let name = field(fields, "Name")?;
+            let exec = field(fields, "Exec");
+            let icon = field(fields, "Icon");
+            let launch = Launch::of(&Fields {
+                id: &id,
+                name: &app_name,
+                icon: icon.as_deref(),
+                file,
+                exec: exec.as_deref(),
+                path: path.as_deref(),
+                terminal,
+                dbus_activatable,
+            })?;
+
+            Some(Action {
+                id: action_id,
+                name,
+                launch,
+            })
+        })
+        .collect();
 
     Read::App(Box::new(Entry {
         id,
-        name,
+        name: app_name,
         icon,
-        description: field("Comment").or_else(|| field("GenericName")),
-        wm_class: field("StartupWMClass"),
+        description: field(&main, "Comment").or_else(|| field(&main, "GenericName")),
+        wm_class: field(&main, "StartupWMClass"),
         no_display: flag("NoDisplay"),
         launch,
+        actions,
     }))
 }
 
@@ -303,6 +375,7 @@ StartupWMClass=other
                     terminal: false,
                     dbus_activatable: false,
                 }),
+                actions: Vec::new(),
             }))
         );
     }
@@ -330,6 +403,81 @@ StartupWMClass=other
             Some("Browser")
         );
         assert_eq!(description(""), None);
+    }
+
+    #[test]
+    fn desktop_actions_follow_the_declared_order_and_use_their_exec() {
+        let text = "\
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=browser
+Path=/opt/browser
+Terminal=true
+Actions=NewWindow;Private;Missing;NewWindow;
+
+[Desktop Action Private]
+Name=New Private Window
+Exec=browser --private %c
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=browser --new-window
+
+[Desktop Action Missing]
+Name=Missing Exec
+";
+        let Read::App(entry) = read(String::from("browser.desktop"), Path::new(FILE), text) else {
+            panic!("an app");
+        };
+
+        assert_eq!(
+            entry
+                .actions
+                .iter()
+                .map(|action| (action.id.as_str(), action.name.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("NewWindow", "New Window"),
+                ("Private", "New Private Window")
+            ]
+        );
+        assert_eq!(
+            entry.actions[0].launch.command(),
+            Some("browser --new-window")
+        );
+        assert_eq!(entry.actions[1].launch.command(), Some("browser --private"));
+        assert_eq!(
+            entry.actions[0].launch.shell_line().as_deref(),
+            Some("cd -- '/opt/browser' && exec 'xdg-terminal-exec' 'browser' '--new-window'")
+        );
+    }
+
+    #[test]
+    fn dbus_activatable_actions_without_exec_are_kept() {
+        let text = "\
+[Desktop Entry]
+Type=Application
+Name=Browser
+Exec=browser
+DBusActivatable=true
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+";
+        let Read::App(entry) = read(
+            String::from("org.example.Browser.desktop"),
+            Path::new(FILE),
+            text,
+        ) else {
+            panic!("an app");
+        };
+
+        assert_eq!(entry.actions.len(), 1);
+        assert_eq!(entry.actions[0].id, "NewWindow");
+        assert_eq!(entry.actions[0].name, "New Window");
+        assert_eq!(entry.actions[0].launch.command(), None);
     }
 
     #[test]

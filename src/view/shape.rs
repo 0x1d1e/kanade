@@ -213,7 +213,7 @@ impl Drop for Room {
 
 // where the Island hangs, as `island.edge` and `island.align` say
 pub(crate) fn hang() -> Hang {
-    config::get().island_place.anchor.hang()
+    config::get().island_placement().anchor.hang()
 }
 
 // along a side edge the small forms stand upright, their content stacked

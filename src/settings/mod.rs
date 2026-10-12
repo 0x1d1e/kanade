@@ -8,6 +8,7 @@
 //! after each write and after each reload, so a view never reads a file while drawing.
 
 mod file;
+mod fonts;
 mod layout;
 mod view;
 
@@ -43,6 +44,13 @@ pub struct Settings {
 
     // each change written since the window opened, which Undo writes back if the file still holds it
     history: Vec<Vec<file::Replaced>>,
+
+    // installed font families, listed off the draw thread
+    fonts: Vec<String>,
+    fonts_loaded: bool,
+    fonts_loading: bool,
+    fonts_error: Option<String>,
+    font_query: String,
 
     // the config the files give now, the settings file included, which a reload applies
     read: Config,
@@ -201,6 +209,10 @@ pub fn placed() -> &'static [Placed] {
         modules::ALL
             .iter()
             .flat_map(|module| module.settings)
+            .filter(|setting| {
+                !layout::EXTERNAL_KEYS.contains(&setting.key)
+                    && !layout::LEGACY_KEYS.contains(&setting.key)
+            })
             .filter_map(|setting| {
                 let page = layout::page_of(setting.key)?;
 
@@ -221,6 +233,7 @@ pub fn placed() -> &'static [Placed] {
  */
 pub fn open(page: Option<&'static str>) {
     refresh();
+    load_fonts();
 
     {
         let mut settings = Settings::write();
@@ -326,6 +339,10 @@ pub fn set(path: &[&str], value: Option<Value>) -> Result<(), String> {
     file::set(&path, value)
 }
 
+pub fn set_pinned(id: &str, pinned: bool) -> Result<(), String> {
+    file::set_pinned(id, pinned)
+}
+
 // turns to a page, leaving any search
 fn turn_to(page: &'static str) {
     {
@@ -341,6 +358,50 @@ fn search(query: String) {
     Settings::write().query = query;
 }
 
+fn font_search(query: String) {
+    Settings::write().font_query = query;
+}
+
+fn select_font(family: Option<String>) {
+    change(path("appearance.font", None), family.map(Value::String));
+}
+
+fn load_fonts() {
+    let start = {
+        let mut settings = Settings::write();
+        if settings.fonts_loading || (settings.fonts_loaded && settings.fonts_error.is_none()) {
+            false
+        } else {
+            settings.fonts_loading = true;
+            settings.fonts_error = None;
+            true
+        }
+    };
+    if !start {
+        return;
+    }
+
+    let worker = std::thread::Builder::new()
+        .name(String::from("kanade-font-list"))
+        .spawn(|| {
+            let listed = fonts::installed();
+            let mut settings = Settings::write();
+            settings.fonts_loading = false;
+            settings.fonts_loaded = true;
+            match listed {
+                Ok(families) => settings.fonts = families,
+                Err(error) => settings.fonts_error = Some(error),
+            }
+        });
+
+    if let Err(error) = worker {
+        let mut settings = Settings::write();
+        settings.fonts_loading = false;
+        settings.fonts_loaded = true;
+        settings.fonts_error = Some(format!("Could not list fonts: {error}"));
+    }
+}
+
 fn inspect() {
     let mut settings = Settings::write();
     settings.inspect = !settings.inspect;
@@ -353,16 +414,21 @@ fn path(key: &str, entry: Option<&str>) -> Vec<String> {
 
 // each text input back to what the files give: a path's value, an empty field to add an entry
 fn reset_inputs() {
-    let settings = Settings::read();
+    let read = {
+        let settings = Settings::read();
+        settings.read.clone()
+    };
 
     for setting in modules::ALL.iter().flat_map(|module| module.settings) {
         let text = match &setting.kind {
-            Kind::Millis(field) => (field.get)(&settings.read).as_millis().to_string(),
-            Kind::Pixels(_, field) => (field.get)(&settings.read).to_string(),
-            Kind::Path(field) | Kind::Text(field) => {
-                (field.get)(&settings.read).unwrap_or_default()
+            Kind::Millis(field) => (field.get)(&read).as_millis().to_string(),
+            Kind::Pixels(_, field) | Kind::Percent(_, field) => (field.get)(&read).to_string(),
+            Kind::Path(field) => (field.get)(&read).unwrap_or_default(),
+            Kind::Text(field) if setting.key != "appearance.font" => {
+                (field.get)(&read).unwrap_or_default()
             }
-            Kind::Location(field) => (field.get)(&settings.read)
+            Kind::Text(_) => continue,
+            Kind::Location(field) => (field.get)(&read)
                 .map(|at| format!("{}, {}", at.latitude, at.longitude))
                 .unwrap_or_default(),
             Kind::DesktopIds(_) | Kind::Paths(_) | Kind::AppIds(_) => String::new(),
@@ -371,10 +437,15 @@ fn reset_inputs() {
 
         TextInput::set_text(input(setting), &text);
     }
+
+    let font = read.appearance.font.clone().unwrap_or_default();
+    TextInput::set_text(FONT_SEARCH, &font);
+    Settings::write().font_query = font;
 }
 
-// the search field's text input id
+// the search fields' text input ids
 const SEARCH: &str = "settings search";
+const FONT_SEARCH: &str = "settings font search";
 
 thread_local! {
     // each setting's text input id, made once, as an id lives as long as the input's text

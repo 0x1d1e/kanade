@@ -104,7 +104,8 @@ pub fn read(monitor: &str, covered: bool, now: Instant) -> Option<Cluster> {
         [false; SENSORS]
     };
 
-    let timings = config::get().island;
+    let config = config::get();
+    let timings = config.animation_timings();
     let mut fades = FADE.locked();
     let Fade(dots) = fades
         .get_or_insert_with(HashMap::new)
@@ -115,7 +116,12 @@ pub fn read(monitor: &str, covered: bool, now: Instant) -> Option<Cluster> {
     let mut moving = false;
 
     for ((dot, active), (_, ink)) in dots.iter_mut().zip(active).zip(sensors()) {
-        dot.follow(active, timings.expand, timings.collapse, now);
+        dot.follow(
+            active,
+            timings.for_motion(timings.expand),
+            timings.for_motion(timings.collapse),
+            now,
+        );
         moving |= dot.moving(now);
 
         if dot.shown || dot.moving(now) {

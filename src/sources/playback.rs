@@ -72,7 +72,7 @@ pub struct Deck {
  * the accent as it changes, on its own spring: with the track, and again whenever the artwork's
  * accent turns up late, since a file not there yet is read again on a later tick. A change of
  * mind goes on from where it is and how fast it moves, so it never jumps; under reduced motion it
- * fades from where it is over motion::REDUCED_FADE
+ * fades from where it is over the configured reduced-motion response
  */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tint {

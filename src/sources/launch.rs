@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use zbus::blocking::{Connection, connection};
-use zbus::zvariant::Value;
+use zbus::zvariant::{OwnedValue, Value};
 
 use super::json;
 use super::niri::{self, Acted};
@@ -117,6 +117,11 @@ impl Launch {
             .map(|command| command.written.as_str())
     }
 
+    #[cfg(test)]
+    pub(crate) fn shell_line(&self) -> Option<String> {
+        self.command.as_ref().map(Command::shell)
+    }
+
     // starts it; blocks on the bus and niri, so off the view thread
     pub fn run(&self) -> Result<(), String> {
         self.start(
@@ -130,6 +135,20 @@ impl Launch {
         )
     }
 
+    // invokes the declared Desktop Action, using ActivateAction or its Exec fallback
+    pub fn run_action(&self, action: &str) -> Result<(), String> {
+        self.start_action(
+            action,
+            |name, action| match connection::Builder::session()
+                .and_then(|bus| bus.method_timeout(ANSWER).build())
+            {
+                Ok(bus) => activate_action(&bus, name, action),
+                Err(error) => Activation::Undelivered(format!("no session bus: {error}")),
+            },
+            Command::run,
+        )
+    }
+
     // activates it when it is activatable, running `Exec` only when that was not delivered
     fn start(
         &self,
@@ -137,14 +156,45 @@ impl Launch {
         spawn: impl FnOnce(&Command) -> Result<(), String>,
     ) -> Result<(), String> {
         let activated = self.activate.as_deref().map(|name| (name, activate(name)));
+        self.start_with(activated, None, spawn)
+    }
 
+    fn start_action(
+        &self,
+        action: &str,
+        activate: impl FnOnce(&str, &str) -> Activation,
+        spawn: impl FnOnce(&Command) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let activated = self
+            .activate
+            .as_deref()
+            .map(|name| (name, activate(name, action)));
+        self.start_with(activated, Some(action), spawn)
+    }
+
+    fn start_with(
+        &self,
+        activated: Option<(&str, Activation)>,
+        action: Option<&str>,
+        spawn: impl FnOnce(&Command) -> Result<(), String>,
+    ) -> Result<(), String> {
         match (activated, &self.command) {
             (Some((_, Activation::Done)), _) => Ok(()),
-            (Some((name, Activation::Unknown(why))), _) => Err(format!(
-                "activating {name}: {why}; it may still start, so Exec does not run"
-            )),
+            (Some((name, Activation::Unknown(why))), _) => {
+                let target = action.map_or_else(
+                    || name.to_owned(),
+                    |action| format!("action {action} of {name}"),
+                );
+                Err(format!(
+                    "activating {target}: {why}; it may still start, so Exec does not run"
+                ))
+            }
             (Some((name, Activation::Undelivered(why))), None) => {
-                Err(format!("activating {name}: {why}"))
+                let target = action.map_or_else(
+                    || name.to_owned(),
+                    |action| format!("action {action} of {name}"),
+                );
+                Err(format!("activating {target}: {why}"))
             }
             (Some((_, Activation::Undelivered(_))) | None, Some(command)) => spawn(command),
             (None, None) => Err(String::from("nothing to launch")),
@@ -165,15 +215,30 @@ enum Activation {
 
 // `org.freedesktop.Application.Activate`, which D-Bus starts the app for
 fn activate(bus: &Connection, name: &str) -> Activation {
+    call(bus, name, "Activate", &(HashMap::<&str, Value>::new(),))
+}
+
+// `org.freedesktop.Application.ActivateAction`, which invokes the declared Desktop Action
+fn activate_action(bus: &Connection, name: &str, action: &str) -> Activation {
+    call(
+        bus,
+        name,
+        "ActivateAction",
+        &(
+            action,
+            Vec::<OwnedValue>::new(),
+            HashMap::<&str, Value>::new(),
+        ),
+    )
+}
+
+fn call<B>(bus: &Connection, name: &str, method: &str, args: &B) -> Activation
+where
+    B: serde::ser::Serialize + zbus::zvariant::DynamicType,
+{
     let path = format!("/{}", name.replace('.', "/").replace('-', "_"));
 
-    match bus.call_method(
-        Some(name),
-        path.as_str(),
-        Some(APPLICATION),
-        "Activate",
-        &(HashMap::<&str, Value>::new(),),
-    ) {
+    match bus.call_method(Some(name), path.as_str(), Some(APPLICATION), method, args) {
         Ok(_) => Activation::Done,
         Err(zbus::Error::MethodError(error, _, _))
             if UNDELIVERED.contains(&error.as_str()) || error.starts_with(SPAWN) =>
@@ -534,12 +599,83 @@ mod tests {
         (bus, activated)
     }
 
+    fn action_app() -> (
+        Connection,
+        std::sync::mpsc::Receiver<(String, String, String, usize)>,
+    ) {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (got, action_called) = std::sync::mpsc::channel();
+        let (subscribed, listening) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let app = connection::Builder::async_io_unix_stream(theirs)
+                .server(zbus::Guid::generate())
+                .unwrap()
+                .p2p()
+                .build()
+                .unwrap();
+
+            let messages = zbus::blocking::MessageIterator::from(&app);
+            subscribed.send(()).unwrap();
+
+            for message in messages.map_while(Result::ok) {
+                let header = message.header();
+                if header
+                    .member()
+                    .is_some_and(|member| member == "ActivateAction")
+                {
+                    let (action, parameters, _): (
+                        String,
+                        Vec<OwnedValue>,
+                        HashMap<String, OwnedValue>,
+                    ) = message.body().deserialize().unwrap();
+                    got.send((
+                        header.path().unwrap().to_string(),
+                        header.signature().to_string_no_parens(),
+                        action,
+                        parameters.len(),
+                    ))
+                    .unwrap();
+                    app.reply(&header, &()).unwrap();
+                }
+            }
+        });
+
+        let bus = connection::Builder::async_io_unix_stream(ours)
+            .p2p()
+            .method_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        listening.recv().unwrap();
+
+        (bus, action_called)
+    }
+
     fn launch_with_exec() -> Launch {
         Launch::of(&Fields {
             dbus_activatable: true,
             ..fields("app")
         })
         .unwrap()
+    }
+
+    #[test]
+    fn activate_action_sends_the_declared_name_to_the_application() {
+        let (bus, actions) = action_app();
+
+        assert_eq!(
+            activate_action(&bus, "org.example.App", "NewWindow"),
+            Activation::Done
+        );
+        assert_eq!(
+            actions.recv_timeout(Duration::from_secs(5)),
+            Ok((
+                String::from("/org/example/App"),
+                String::from("sava{sv}"),
+                String::from("NewWindow"),
+                0,
+            ))
+        );
     }
 
     #[test]
@@ -561,6 +697,91 @@ mod tests {
         );
         assert!(started.is_err_and(|error| error.contains("Exec does not run")));
         assert!(!spawned);
+    }
+
+    #[test]
+    fn a_declared_dbus_action_uses_activate_action_and_safe_exec_fallback() {
+        let launch = launch_with_exec();
+        let mut sent = None;
+        let mut spawned = false;
+
+        assert!(
+            launch
+                .start_action(
+                    "NewWindow",
+                    |name, action| {
+                        sent = Some((name.to_owned(), action.to_owned()));
+                        Activation::Done
+                    },
+                    |_| {
+                        spawned = true;
+                        Ok(())
+                    },
+                )
+                .is_ok()
+        );
+        assert_eq!(
+            sent,
+            Some((String::from("org.example.App"), String::from("NewWindow")))
+        );
+        assert!(!spawned);
+
+        let mut spawned = false;
+        assert!(
+            launch
+                .start_action(
+                    "NewWindow",
+                    |_, _| Activation::Undelivered(String::from("service missing")),
+                    |_| {
+                        spawned = true;
+                        Ok(())
+                    },
+                )
+                .is_ok()
+        );
+        assert!(spawned);
+
+        let mut spawned = false;
+        assert!(
+            launch
+                .start_action(
+                    "NewWindow",
+                    |_, _| Activation::Unknown(String::from("no reply")),
+                    |_| {
+                        spawned = true;
+                        Ok(())
+                    },
+                )
+                .is_err()
+        );
+        assert!(!spawned);
+    }
+
+    #[test]
+    fn a_dbus_only_action_needs_no_exec_fallback() {
+        let launch = Launch::of(&Fields {
+            exec: None,
+            dbus_activatable: true,
+            ..fields("")
+        })
+        .unwrap();
+        let mut activated = false;
+
+        assert_eq!(launch.command(), None);
+        assert!(
+            launch
+                .start_action(
+                    "NewWindow",
+                    |_, action| {
+                        assert_eq!(action, "NewWindow");
+                        activated = true;
+                        Activation::Done
+                    },
+                    |_| panic!("no Exec fallback is declared"),
+                )
+                .is_ok()
+        );
+        assert!(activated);
     }
 
     #[test]

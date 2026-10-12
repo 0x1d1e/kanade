@@ -234,11 +234,15 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     let now = Instant::now();
     let config = config::get();
-    let anchor = config.island_place.anchor;
+    let anchor = config.island_placement().anchor;
     let hang = anchor.hang();
 
     let canvas = view::canvas(monitor);
-    let stand = Stand { canvas, hang };
+    let stand = Stand {
+        canvas,
+        hang,
+        edge_offset: 0.0,
+    };
     let tallest = *TALLEST.get_or_init(tallest);
     let reach = ShadowStyle::AMBIENT.reach() as f32;
 
@@ -338,8 +342,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             &shown,
             |banner| heights.get(&banner.id).copied().unwrap_or_default(),
             GAP,
-            config.island.motion,
-            config.island.damping,
+            &config,
             now,
         );
 

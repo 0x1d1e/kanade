@@ -102,9 +102,16 @@ impl Satellites {
         marks: Vec<Mark>,
         enter: Duration,
         leave: Duration,
+        reduced_fade: Duration,
         mode: Mode,
         now: Instant,
     ) {
+        let (enter, leave) = if mode == Mode::Reduced {
+            (reduced_fade, reduced_fade)
+        } else {
+            (enter, leave)
+        };
+
         self.dots
             .retain(|dot| !(dot.leaving && dot.presence.settled(now)));
 
