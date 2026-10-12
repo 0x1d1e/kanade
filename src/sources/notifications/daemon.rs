@@ -74,13 +74,15 @@ impl Notifications {
         }
     }
 
-    // closes one its rule keeps out of the history; read first, as a write wakes every reader,
-    // and one already gone changes nothing
+    /*
+     * closes one its rule keeps out of the history, as its rule stands now, so a newer version kept
+     * there stays; read first, as a write wakes every reader, and one already gone changes nothing
+     */
     pub fn expire(id: u32) {
         let here = Self::read()
             .list
             .iter()
-            .any(|notification| notification.id == id);
+            .any(|notification| notification.id == id && !notification.effects().history);
 
         if here {
             Self::write().close(id, Reason::Expired);

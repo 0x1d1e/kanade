@@ -89,16 +89,21 @@ pub struct Stack {
 impl Stack {
     /*
      * a new notification, or a new version of one, which replaces it where it is and starts its
-     * time again. DND drops one that is not loud, and the version it replaces
+     * time again. DND drops one that is not loud, and the version it replaces. Whether it closes as
+     * it leaves is the new version's rule, never the old one's
      */
     pub fn arrive(&mut self, banner: Banner, dnd: bool, now: Instant) {
-        if dnd && !banner.loud() {
-            self.close(banner.id, now);
+        self.left.retain(|&left| left != banner.id);
 
-            if !banner.history && !self.left.contains(&banner.id) {
+        if dnd && !banner.loud() {
+            self.shown.retain(|shown| shown.banner.id != banner.id);
+            self.queued.retain(|queued| queued.id != banner.id);
+
+            if !banner.history {
                 self.left.push(banner.id);
             }
 
+            self.promote(now);
             return;
         }
 
@@ -361,6 +366,35 @@ mod tests {
         stack.arrive(unkept(5, Urgency::Normal), true, now);
         assert_eq!(stack.take_left(), [5]);
         assert!(!stack.has_left());
+    }
+
+    // a new version DND drops closes as its own rule says, never as the version it replaced
+    #[test]
+    fn a_replacement_under_dnd_follows_its_own_rule() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+        let loud_unkept = Banner {
+            bypass_dnd: true,
+            history: false,
+            ..banner(1, Urgency::Normal)
+        };
+
+        stack.arrive(loud_unkept.clone(), true, now);
+        stack.arrive(banner(1, Urgency::Normal), true, now);
+        assert!(!stack.contains(1));
+        assert!(!stack.has_left());
+
+        // and the other way, a kept version replaced by an unkept one closes
+        stack.arrive(loud_unkept, true, now);
+        stack.arrive(
+            Banner {
+                history: false,
+                ..banner(1, Urgency::Normal)
+            },
+            true,
+            now,
+        );
+        assert_eq!(stack.take_left(), [1]);
     }
 
     // a rule's time stands for any urgency, a Critical one too
