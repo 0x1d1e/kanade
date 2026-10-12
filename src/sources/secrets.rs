@@ -22,6 +22,9 @@ const COLLECTION: &str = "org.freedesktop.Secret.Collection";
 const ITEM: &str = "org.freedesktop.Secret.Item";
 const PROMPT: &str = "org.freedesktop.Secret.Prompt";
 
+// what the user dismissing the keyring's prompt fails with
+pub const NOT_UNLOCKED: &str = "the keyring was not unlocked";
+
 // an item's attributes, which find it; each of Kanade's has `application` = `kanade`
 pub type Attributes<'a> = &'a [(&'a str, &'a str)];
 
@@ -100,7 +103,7 @@ impl Keyring {
         let (dismissed, result): (bool, OwnedValue) = message.body().deserialize().map_err(said)?;
 
         if dismissed {
-            return Err(String::from("the keyring was not unlocked"));
+            return Err(String::from(NOT_UNLOCKED));
         }
 
         Ok(Some(result))

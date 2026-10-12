@@ -442,6 +442,15 @@ pub fn checked(url: &str) -> Result<Uri, String> {
     );
     match uri.scheme_str() {
         _ if uri.host().is_none_or(str::is_empty) => Err(format!("{url} names no server")),
+        // a name and password in the address would go around the keyring, and can hide its host
+        _ if uri
+            .authority()
+            .is_some_and(|authority| authority.as_str().contains('@')) =>
+        {
+            Err(format!(
+                "{url} has a name in it; set `username` instead, the password goes in the keyring"
+            ))
+        }
         Some("https") => Ok(uri),
         Some("http") if local => Ok(uri),
         Some("http") => Err(format!(
@@ -449,6 +458,32 @@ pub fn checked(url: &str) -> Result<Uri, String> {
         )),
         _ => Err(format!("{url} is not an https:// address")),
     }
+}
+
+/*
+ * whether the password may go to `there`, an address a server named: the account's own server,
+ * or a sibling under the same parent domain, as iCloud's caldav.icloud.com sends each account to
+ * its pNN-caldav.icloud.com. Never another domain, nor another address on this machine
+ */
+fn trusted(account: &Uri, there: &Uri) -> bool {
+    let (Some(home), Some(host)) = (account.host(), there.host()) else {
+        return false;
+    };
+    if account.scheme() != there.scheme() {
+        return false;
+    }
+    if home == host {
+        return true;
+    }
+
+    // an address by number has no parent domain
+    let named = |host: &str| !host.starts_with('[') && host.parse::<std::net::IpAddr>().is_err();
+    let parent = home.split_once('.').map(|(_, parent)| parent);
+
+    named(home)
+        && named(host)
+        && parent
+            .is_some_and(|parent| parent.contains('.') && host.ends_with(&format!(".{parent}")))
 }
 
 // `scheme://host:port` of an address
@@ -687,8 +722,16 @@ impl<'a> Dav<'a> {
             .map_err(|error| Problem::Server(error.to_string()))?;
         let mut url = url.to_owned();
 
+        let account = checked(self.url).map_err(Problem::Server)?;
+
         for _ in 0..=HOPS {
             let uri = checked(&url).map_err(Problem::Server)?;
+            if !trusted(&account, &uri) {
+                return Err(Problem::Server(format!(
+                    "{} names another server, {url}; the password goes only to its own",
+                    self.url
+                )));
+            }
             let request = http::Request::builder()
                 .method(method.clone())
                 .uri(uri.clone())
@@ -1057,12 +1100,14 @@ impl Worker {
 
                 /*
                  * a wrong password is not tried again until a login, nor one not kept, nor a
-                 * keyring the user would be asked to unlock again and again; `sync` asks again
+                 * keyring whose prompt the user dismissed, which would ask again and again;
+                 * `sync` asks again. A keyring not running yet is tried as a server is
                  */
-                let waits = matches!(
-                    problem,
-                    Problem::Refused | Problem::LoggedOut | Problem::Keyring(_)
-                );
+                let waits = match &problem {
+                    Problem::Refused | Problem::LoggedOut => true,
+                    Problem::Keyring(why) => why == secrets::NOT_UNLOCKED,
+                    _ => false,
+                };
                 if problem == Problem::Refused {
                     synced.password = None;
                 }
@@ -1321,6 +1366,41 @@ END:VCALENDAR
         assert_eq!(resolve(base, "  "), None);
     }
 
+    // a server cannot send the password elsewhere by naming another address in its answer
+    #[test]
+    fn the_password_goes_only_to_the_account_and_its_siblings() {
+        let trusts = |account: &str, there: &str| {
+            trusted(&account.parse().unwrap(), &there.parse().unwrap())
+        };
+
+        assert!(trusts(
+            "https://caldav.icloud.com/",
+            "https://p63-caldav.icloud.com:443/1/"
+        ));
+        assert!(trusts(
+            "https://example.com/dav/",
+            "https://example.com:443/dav/me/"
+        ));
+        assert!(trusts(
+            "http://localhost:5232/",
+            "http://localhost:5232/me/"
+        ));
+
+        assert!(!trusts("https://example.com/", "https://evil.com/"));
+        assert!(!trusts("https://example.com/", "https://other.com/"));
+        assert!(!trusts("https://dav.example.co.uk/", "https://evil.co.uk/"));
+        assert!(!trusts(
+            "https://caldav.icloud.com/",
+            "https://icloud.com.evil.org/"
+        ));
+        assert!(!trusts(
+            "https://caldav.icloud.com/",
+            "http://p63-caldav.icloud.com/"
+        ));
+        assert!(!trusts("https://caldav.icloud.com/", "https://localhost/"));
+        assert!(!trusts("https://10.0.0.5/", "https://1.0.0.5/"));
+    }
+
     // the password goes over HTTPS, or to this machine
     #[test]
     fn only_a_safe_address_gets_the_password() {
@@ -1332,5 +1412,7 @@ END:VCALENDAR
         assert!(checked("http://localhost.example.org/").is_err());
         assert!(checked("ftp://cloud.example.org/").is_err());
         assert!(checked("cloud.example.org").is_err());
+        assert!(checked("https://me:secret@cloud.example.org/").is_err());
+        assert!(checked("https://cloud.example.org@evil.example/").is_err());
     }
 }
