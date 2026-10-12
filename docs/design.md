@@ -70,7 +70,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | --- | --- |
 | Core | `island` |
 | Activities | `media`, `timer`, `live`, `battery`, `workspace` |
-| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `weather` |
+| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `calendar-reminders`, `weather` |
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface` |
@@ -87,7 +87,7 @@ Rules:
 - `osd` optionally reads `audio`/`brightness`, the keyboards' evdev devices (input group), `/dev/rfkill` and logind's `Active` (ADR 0021); typing and key repeat are the runtime's (ADR 0034).
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `privacy` default on; disable warns indicators disappear.
-- `calendar` network/account sync optional; local calendar still works without it.
+- `calendar` network/account sync optional; local calendar still works without it. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
 - module toggle requires restart while the runtime registers windows only at startup.
 
@@ -135,7 +135,7 @@ Rules:
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
 - **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.
-- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016).
+- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016). Reminders from events' `VALARM`s, or a default lead, as an Ongoing Activity counting down, each going off once across restarts ([ADR 0043](adr/0043-calendar-reminders.md)).
 - **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
 
 ### Tray
@@ -250,6 +250,7 @@ notifications open|close|toggle|clear
 notifications dnd on|off|toggle
 clipboard open|close|toggle|clear
 calendar open|close|toggle
+reminders dismiss|status
 weather open|close|toggle|refresh|status
 timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
 activity start <id> <title>|progress <id> <amount>|detail <id> [text]

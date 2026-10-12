@@ -35,9 +35,10 @@ use calcard::common::timezone::Tz;
 use calcard::icalendar::dates::TimeOrDelta;
 use calcard::icalendar::timezone::TzResolver;
 use calcard::icalendar::{
-    ICalendar, ICalendarComponent, ICalendarComponentType, ICalendarDay, ICalendarDuration,
-    ICalendarEntry, ICalendarFrequency, ICalendarMonth, ICalendarParameterName, ICalendarProperty,
-    ICalendarRecurrenceRule, ICalendarStatus, ICalendarValue, ICalendarWeekday,
+    ICalendar, ICalendarAction, ICalendarComponent, ICalendarComponentType, ICalendarDay,
+    ICalendarDuration, ICalendarEntry, ICalendarFrequency, ICalendarMonth, ICalendarParameterName,
+    ICalendarParameterValue, ICalendarProperty, ICalendarRecurrenceRule, ICalendarRelated,
+    ICalendarStatus, ICalendarValue, ICalendarWeekday,
 };
 use calcard::{Entry, Parser};
 use chrono::{
@@ -119,6 +120,11 @@ impl Calendars {
     // the events that fall on the days from `from` until `to`, in local time
     pub fn occurrences(&self, from: NaiveDate, to: NaiveDate) -> Events {
         occurrences(&self.calendars, from, to, clock::local_time)
+    }
+
+    // the events from `range.0` until `range.1`, in seconds since the epoch, with their alarms
+    pub fn reminded(&self, range: (i64, i64)) -> Vec<Reminded> {
+        reminded(&self.calendars, range, clock::local_time)
     }
 }
 
@@ -591,12 +597,128 @@ pub(super) fn occurrences(
             LIMIT,
             (start, end),
             &local,
-            &mut found.occurrences,
+            &mut |occurrence, _, _| found.occurrences.push(occurrence),
         );
     }
 
     sort(&mut found.occurrences);
     found
+}
+
+/*
+ * the occurrences that overlap `range`, in seconds since the epoch, each with its event's UID and
+ * the alarms of it that show (ADR 0043); a rule that runs to the limit gives the ones it reached
+ */
+pub(super) fn reminded(
+    calendars: &[ICalendar],
+    range: (i64, i64),
+    local: impl Fn(i64) -> Option<NaiveDateTime>,
+) -> Vec<Reminded> {
+    let mut found = Vec::new();
+
+    for calendar in calendars {
+        expand(
+            &bounded(calendar, range, &local),
+            LIMIT,
+            range,
+            &local,
+            &mut |occurrence, calendar, event| {
+                found.push(Reminded {
+                    uid: text(event, &ICalendarProperty::Uid)
+                        .unwrap_or_else(|| occurrence.title.clone()),
+                    triggers: triggers(calendar, event, &local),
+                    occurrence,
+                });
+            },
+        );
+    }
+
+    found
+}
+
+// an occurrence and what reminds of it
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reminded {
+    // its event's UID, the title for one with none; a change to one occurrence shares it
+    pub uid: String,
+    pub occurrence: Occurrence,
+
+    // its event's own alarms that show, none for one that has none
+    pub triggers: Vec<Trigger>,
+}
+
+// when an alarm goes off (RFC 5545 3.8.6.3)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Trigger {
+    // this many seconds after the occurrence starts, or ends; before it when negative
+    Start(i64),
+    End(i64),
+
+    // at this moment, in seconds since the epoch, whichever occurrence it is
+    At(i64),
+}
+
+/*
+ * the triggers of an event's alarms that show, DISPLAY and AUDIO alike; an EMAIL or a PROCEDURE
+ * is for another program, and Apple's ACTION:NONE is no alarm
+ */
+fn triggers(
+    calendar: &ICalendar,
+    event: &ICalendarComponent,
+    local: &impl Fn(i64) -> Option<NaiveDateTime>,
+) -> Vec<Trigger> {
+    event
+        .component_ids
+        .iter()
+        .filter_map(|&id| calendar.components.get(usize::try_from(id).ok()?))
+        .filter(|alarm| alarm.component_type == ICalendarComponentType::VAlarm)
+        .filter(|alarm| {
+            matches!(
+                alarm
+                    .property(&ICalendarProperty::Action)
+                    .and_then(|action| action.values.first()),
+                Some(ICalendarValue::Action(
+                    ICalendarAction::Display | ICalendarAction::Audio
+                ))
+            )
+        })
+        .filter_map(|alarm| trigger(alarm, local))
+        .collect()
+}
+
+fn trigger(
+    alarm: &ICalendarComponent,
+    local: &impl Fn(i64) -> Option<NaiveDateTime>,
+) -> Option<Trigger> {
+    let entry = alarm.property(&ICalendarProperty::Trigger)?;
+
+    match entry.values.first()? {
+        ICalendarValue::Duration(duration) => {
+            let seconds = duration.as_seconds();
+            let end = entry.params.iter().any(|param| {
+                param.name == ICalendarParameterName::Related
+                    && param.value == ICalendarParameterValue::Related(ICalendarRelated::End)
+            });
+
+            Some(if end {
+                Trigger::End(seconds)
+            } else {
+                Trigger::Start(seconds)
+            })
+        }
+        // UTC as RFC 5545 asks; one with no zone is when the local clock reads it
+        ICalendarValue::PartialDateTime(at) if at.has_time() => {
+            let at = at.to_date_time()?;
+
+            match at.offset {
+                Some(_) => at
+                    .to_date_time_with_tz(Tz::UTC)
+                    .map(|at| Trigger::At(at.timestamp())),
+                None => instant(at.date_time, local).map(Trigger::At),
+            }
+        }
+        _ => None,
+    }
 }
 
 // by start, all-day ones first
@@ -617,7 +739,7 @@ fn expand(
     limit: usize,
     (start, end): (i64, i64),
     local: &impl Fn(i64) -> Option<NaiveDateTime>,
-    found: &mut Vec<Occurrence>,
+    found: &mut impl FnMut(Occurrence, &ICalendar, &ICalendarComponent),
 ) -> bool {
     let events = calendar.expand_dates(Tz::Floating, limit).events;
 
@@ -649,10 +771,9 @@ fn expand(
             TimeOrDelta::Time(end) => end,
             TimeOrDelta::Delta(delta) => event.start + delta,
         };
-        let (Some(start_at), Some(end_at)) = (
-            offset(component, event.start),
-            offset(component, end_at),
-        ) else {
+        let (Some(start_at), Some(end_at)) =
+            (offset(component, event.start), offset(component, end_at))
+        else {
             continue;
         };
         let Some(occurrence) = occurrence(component, &start_at, &end_at, local) else {
@@ -666,7 +787,7 @@ fn expand(
             starts < end && ends > start
         };
         if inside {
-            found.push(occurrence);
+            found(occurrence, calendar, component);
         }
     }
 
@@ -1586,7 +1707,8 @@ fn starts(
  * a calendar as one of its events that recur each, with their exceptions, and one of the rest:
  * calcard's limit on occurrences is for a whole calendar, so a rule that runs to it, like one
  * every minute for years, would otherwise hide the events after it. Each keeps the calendar's
- * time zones, which its times may name; whatever is not an event goes
+ * time zones, which its times may name, and each event its alarms (ADR 0043); whatever else is
+ * not an event goes
  */
 fn series(calendar: ICalendar) -> Vec<ICalendar> {
     let uid = |component: &ICalendarComponent| text(component, &ICalendarProperty::Uid);
@@ -1598,11 +1720,33 @@ fn series(calendar: ICalendar) -> Vec<ICalendar> {
         .filter_map(uid)
         .collect();
 
+    // each event's alarms by its place, to go with it
+    let mut alarms: HashMap<usize, Vec<ICalendarComponent>> = HashMap::new();
+    for (index, event) in calendar.components.iter().enumerate() {
+        if event.component_type != ICalendarComponentType::VEvent {
+            continue;
+        }
+
+        let of: Vec<ICalendarComponent> = event
+            .component_ids
+            .iter()
+            .filter_map(|&id| calendar.components.get(usize::try_from(id).ok()?))
+            .filter(|alarm| alarm.component_type == ICalendarComponentType::VAlarm)
+            .map(|alarm| ICalendarComponent {
+                component_ids: Vec::new(),
+                ..alarm.clone()
+            })
+            .collect();
+        if !of.is_empty() {
+            alarms.insert(index, of);
+        }
+    }
+
     let mut head = Vec::new();
     let mut rest = Vec::new();
     let mut each: Vec<(Option<String>, Vec<ICalendarComponent>)> = Vec::new();
 
-    for mut component in calendar.components {
+    for (index, mut component) in calendar.components.into_iter().enumerate() {
         component.component_ids.clear();
 
         match component.component_type {
@@ -1614,15 +1758,19 @@ fn series(calendar: ICalendar) -> Vec<ICalendar> {
                 let alone =
                     key.is_none() && component.property(&ICalendarProperty::Rrule).is_some();
 
+                // the event, then its alarms
+                let mut with = vec![component];
+                with.extend(alarms.remove(&index).unwrap_or_default());
+
                 if key.is_none() && !alone {
-                    rest.push(component);
+                    rest.extend(with);
                 } else if let Some(group) = each
                     .iter_mut()
                     .find(|(uid, _)| key.is_some() && *uid == key)
                 {
-                    group.1.push(component);
+                    group.1.extend(with);
                 } else {
-                    each.push((key, vec![component]));
+                    each.push((key, with));
                 }
             }
             _ => {}
@@ -1630,8 +1778,11 @@ fn series(calendar: ICalendar) -> Vec<ICalendar> {
     }
 
     // the VCALENDAR first, as calcard reads a calendar's root
-    let with_head = |events: Vec<ICalendarComponent>| ICalendar {
-        components: head.iter().cloned().chain(events).collect(),
+    let with_head = |events: Vec<ICalendarComponent>| {
+        let mut components: Vec<ICalendarComponent> = head.iter().cloned().chain(events).collect();
+        link(&mut components);
+
+        ICalendar { components }
     };
 
     let mut found: Vec<ICalendar> = each
@@ -1643,6 +1794,23 @@ fn series(calendar: ICalendar) -> Vec<ICalendar> {
     }
 
     found
+}
+
+// each event's children again: the alarms right after it, as `series` placed them
+fn link(components: &mut [ICalendarComponent]) {
+    let mut event = None;
+
+    for index in 0..components.len() {
+        match components[index].component_type {
+            ICalendarComponentType::VEvent => event = Some(index),
+            ICalendarComponentType::VAlarm => {
+                if let (Some(event), Ok(id)) = (event, u32::try_from(index)) {
+                    components[event].component_ids.push(id);
+                }
+            }
+            _ => event = None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1710,7 +1878,13 @@ mod tests {
         );
         let mut found = Vec::new();
         for calendar in calendars {
-            assert!(expand(calendar, usize::MAX, range, &local, &mut found));
+            assert!(expand(
+                calendar,
+                usize::MAX,
+                range,
+                &local,
+                &mut |occurrence, _, _| found.push(occurrence),
+            ));
         }
         sort(&mut found);
         found
@@ -2530,6 +2704,57 @@ mod tests {
         assert!(midnight.on(day(2026, 10, 9)));
         assert!(!midnight.on(day(2026, 10, 8)));
         assert!(midnight.moment());
+    }
+
+    // the alarms that show, of plain and recurring events alike, as their triggers say (ADR 0043)
+    #[test]
+    fn an_event_keeps_the_alarms_that_show() {
+        let calendars = calendar(
+            "BEGIN:VEVENT\r\nUID:once\r\nSUMMARY:Review\r\n\
+             DTSTART:20261012T100000Z\r\nDTEND:20261012T110000Z\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:x\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER;RELATED=END:-PT5M\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT1H\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:x\r\n\
+             TRIGGER;VALUE=DATE-TIME:20261012T080000Z\r\nEND:VALARM\r\n\
+             END:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:daily\r\nSUMMARY:Standup\r\n\
+             DTSTART:20261011T090000Z\r\nDTEND:20261011T091500Z\r\nRRULE:FREQ=DAILY\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:x\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n\
+             END:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:bare\r\nSUMMARY:Lunch\r\n\
+             DTSTART:20261012T120000Z\r\nDTEND:20261012T130000Z\r\nEND:VEVENT\r\n",
+        );
+        let from = instant(at(day(2026, 10, 12), 0, 0), &plus_two).unwrap();
+        let mut found = reminded(&calendars, (from, from + 24 * 3600), plus_two);
+        found.sort_by_key(|reminded| reminded.occurrence.span.0);
+
+        let read: Vec<(&str, i64, &[Trigger])> = found
+            .iter()
+            .map(|reminded| {
+                (
+                    reminded.uid.as_str(),
+                    reminded.occurrence.span.0,
+                    reminded.triggers.as_slice(),
+                )
+            })
+            .collect();
+        let eight = DateTime::parse_from_rfc3339("2026-10-12T08:00:00Z")
+            .unwrap()
+            .timestamp();
+
+        assert_eq!(
+            read,
+            [
+                ("daily", eight + 3600, &[Trigger::Start(-600)][..]),
+                (
+                    "once",
+                    eight + 2 * 3600,
+                    &[Trigger::Start(-900), Trigger::End(-300), Trigger::At(eight)][..]
+                ),
+                ("bare", eight + 4 * 3600, &[][..]),
+            ]
+        );
     }
 
     // calcard expands a recurring event written in UTC as though it had no zone

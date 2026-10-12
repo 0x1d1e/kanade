@@ -12,7 +12,8 @@
 //! holds `interrupt`, which std lacks, for a child that must end cleanly, the one place a UTC
 //! moment becomes local time, which the calendar's events need too, `authenticate`, Linux-PAM's
 //! password check, which the lock screen runs itself so it can drop a result sleep made stale, and
-//! the kernel's input and rfkill ABI the OSD reads keys, lock lights and radios through (ADR 0021).
+//! the kernel's input and rfkill ABI the OSD reads keys, lock lights and radios through (ADR 0021),
+//! and `WallTimer`, a wall-clock moment for a thread to wait for, like a calendar reminder.
 
 use std::ffi::{CString, c_char, c_int, c_long, c_ulong, c_void};
 use std::fs::File;
@@ -346,6 +347,48 @@ pub fn spawn() {
             supervise::spawn("clock", move || follow(&mut timer));
         }
         Err(error) => unturned(&format!("no clock timer ({error})")),
+    }
+}
+
+/*
+ * a wall-clock moment one thread waits for, like a calendar reminder's (ADR 0043): it fires at the
+ * moment set, at once after a resume that passed it, and early when the clock is set, so the
+ * waiter works out again what is due. `set` and `wait` may be on different threads
+ */
+pub struct WallTimer(File);
+
+impl WallTimer {
+    pub fn new() -> io::Result<WallTimer> {
+        // SAFETY: plain call, the fd it returns is owned below
+        let fd = unsafe { timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: a fresh fd nothing else owns
+        Ok(WallTimer(File::from(unsafe { OwnedFd::from_raw_fd(fd) })))
+    }
+
+    // fires at `at` seconds since the epoch, at once for one past; replaces the moment set before
+    pub fn set(&self, at: i64) -> io::Result<()> {
+        // 0 would disarm it, and any moment before now fires at once
+        let at = c_long::try_from(at.max(1)).unwrap_or(c_long::MAX);
+
+        arm(self.0.as_raw_fd(), at)
+    }
+
+    // asleep until the moment set passes or the clock is set
+    pub fn wait(&self) -> io::Result<()> {
+        let mut expirations = [0; 8];
+
+        loop {
+            match (&self.0).read_exact(&mut expirations) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.raw_os_error() == Some(ECANCELED) => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 

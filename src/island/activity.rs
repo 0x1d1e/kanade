@@ -30,10 +30,13 @@ pub enum Kind {
     Live,
 
     NightLight,
+
+    // a calendar event about to start (ADR 0043)
+    Reminder,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 16] = [
+    pub const ALL: [Kind; 17] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -50,6 +53,7 @@ impl Kind {
         Kind::Mode,
         Kind::Live,
         Kind::NightLight,
+        Kind::Reminder,
     ];
 
     // as IPC names it
@@ -71,6 +75,7 @@ impl Kind {
             Kind::Mode => "mode",
             Kind::Live => "live",
             Kind::NightLight => "night-light",
+            Kind::Reminder => "reminder",
         }
     }
 
@@ -263,6 +268,7 @@ pub enum Detail {
     Live(Job),
     // why the night light's wlsunset is not running
     NightLight(String),
+    Reminder(Reminder),
 }
 
 impl Detail {
@@ -284,6 +290,7 @@ impl Detail {
             Detail::Mode(_) | Detail::Layout(_) => Some(Kind::Mode),
             Detail::Live(_) => Some(Kind::Live),
             Detail::NightLight(_) => Some(Kind::NightLight),
+            Detail::Reminder(_) => Some(Kind::Reminder),
         }
     }
 
@@ -291,7 +298,8 @@ impl Detail {
      * a level that moves rather than a new thing to show, so a repost of its Activity redraws it
      * where it stands: a held volume key slides one bar, a draining battery ticks its number, a
      * workspace switch moves the pager's mark, a mode turned back flips its word, a live job's
-     * bar moves. A new track stays in place too, but dissolves; a job that ends crossfades
+     * bar moves, a reminder counts down to its event. A new track stays in place too, but
+     * dissolves; a job that ends crossfades
      */
     pub fn is_level(&self) -> bool {
         match self {
@@ -301,11 +309,28 @@ impl Detail {
             | Detail::Battery(_)
             | Detail::Workspace(_)
             | Detail::Mode(_)
-            | Detail::Layout(_) => true,
+            | Detail::Layout(_)
+            | Detail::Reminder(_) => true,
             Detail::Live(job) => job.ended.is_none(),
             _ => false,
         }
     }
+}
+
+/*
+ * a calendar event about to start, or the reminders past the few shown at once, as its source
+ * words them (ADR 0043)
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reminder {
+    // the event's title, or how many more there are
+    pub title: String,
+
+    // when it starts and how far off that is, like "09:30, in 15 min"
+    pub when: String,
+
+    // how far off in short, like "15m", for a Satellite
+    pub short: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -831,7 +856,10 @@ mod tests {
                 Interrupt::AutoExpand(OSD),
             );
 
-            if matches!(kind, Kind::Media | Kind::Notification | Kind::Session) {
+            if matches!(
+                kind,
+                Kind::Media | Kind::Notification | Kind::Session | Kind::Reminder
+            ) {
                 assert!(activity.is_ok(), "{kind:?}");
             } else {
                 assert_eq!(

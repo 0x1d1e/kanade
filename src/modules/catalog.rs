@@ -16,8 +16,8 @@ use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard,
     fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
-    notifications, osd, pipewire, power, privacy, radios, recording, seat, session, sleep, system,
-    timer, tray, wake, wallpaper, weather, windows, workspace,
+    notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
+    sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, dock, idle, ipc, lock, reload,
@@ -797,6 +797,31 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| app,
+    },
+    // the events' reminders, on the island (ADR 0043)
+    Module {
+        name: "calendar-reminders",
+        about: "Reminders of calendar events on the island",
+        requires: &[CORE, "calendar"],
+        optional: &["calendar-surface"],
+        warns: None,
+        needs: &[],
+        settings: config::REMINDERS,
+        verbs: &[Verb {
+            name: "reminders",
+            about: "Dismiss the reminders shown, or say when the next is",
+            usage: || String::from("reminders dismiss|status"),
+            parse: |arguments| {
+                reminders::Request::parse(arguments)
+                    .map(Call::Reminders)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            reminders::spawn();
+            service::watch::<Calendars>(reminders::changed);
+            app
+        },
     },
     /*
      * a Google account's calendars, synced into files the calendar reads (ADR 0016); idle until

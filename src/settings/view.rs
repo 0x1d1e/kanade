@@ -96,6 +96,7 @@ const PIXEL_STEP: u64 = 20;
 const PERCENT_STEP: u64 = 10;
 // an idle stage steps by half a minute
 const SECONDS_STEP: u64 = 30;
+// a lead or a staleness steps by five minutes, as calendars offer them
 const MINUTE_STEP: u64 = 5;
 // a warmth steps by about what the eye tells apart
 const KELVIN_STEP: u64 = 100;

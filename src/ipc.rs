@@ -26,8 +26,8 @@ use crate::sources::timer;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, caffeine, charge_limit, fullscreen, google, live, night_light, session, sleep, wallpaper,
-    weather,
+    apps, caffeine, charge_limit, fullscreen, google, live, night_light, reminders, session, sleep,
+    wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -101,6 +101,10 @@ fn run(call: Call) -> Reply {
         }
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // handed to the reminders' thread, so this answers at once
+        Call::Reminders(request) => {
+            reminders::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
         // the fetch is on the weather's thread, so this answers at once
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)

@@ -9,13 +9,15 @@ use kanade_runtime::{
 };
 
 use crate::icon::Icon;
-use crate::island::activity::{Action, Activity, Awake, Clip, Detail, Leave, Leaving, Shot, Track};
+use crate::island::activity::{
+    Action, Activity, Awake, Clip, Detail, Leave, Leaving, Reminder, Shot, Track,
+};
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
 use crate::island::presentation::{Content, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::sources::{caffeine, capture, session};
+use crate::sources::{caffeine, capture, reminders, session};
 use crate::surfaces;
 use crate::theme;
 
@@ -177,6 +179,7 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
             let (icon, ink) = super::live::mark(job);
             row.push(Box::new(icon.on(14.0, ink)));
         }
+        Detail::Reminder(_) => row.push(Box::new(Icon::Calendar.draw(14.0))),
         Detail::Session(Leaving::Counting { end, .. }) => {
             row.push(Box::new(
                 surfaces::session::icon(Leave::Ending(*end)).draw(14.0),
@@ -271,6 +274,13 @@ pub(super) fn small_form(
             self::session(presentation, leaving, actions, now)
         }
         (presentation, Some(Detail::NightLight(why))) => night_light(presentation, why),
+        (presentation, Some(Detail::Reminder(shown))) => {
+            let activity = content.activity.as_ref();
+            let actions = activity.map_or(&[][..], Activity::actions);
+            let key = activity.map_or("", |activity| activity.id().key());
+
+            reminder(presentation, shown, actions, key)
+        }
         _ => None,
     }
 }
@@ -376,6 +386,26 @@ fn night_light(presentation: Presentation, why: &str) -> Option<Rectangle> {
             actions: &[],
             subject: "",
             act: |_, _| {},
+        },
+    )
+}
+
+// the calendar, the event's title, then when it starts and how far off that is
+fn reminder(
+    presentation: Presentation,
+    reminder: &Reminder,
+    actions: &[Action],
+    key: &str,
+) -> Option<Rectangle> {
+    titled(
+        presentation,
+        Lead::Mark(Icon::Calendar, theme::island().on_surface),
+        &reminder.title,
+        &reminder.when,
+        Pills {
+            actions,
+            subject: key,
+            act: reminders::act,
         },
     )
 }

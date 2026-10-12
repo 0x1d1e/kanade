@@ -93,6 +93,10 @@ pub struct Config {
     // directory (ADR 0015)
     pub calendars: Vec<String>,
 
+    // `calendar.reminder`: minutes before an event without alarms of its own that it is reminded
+    // of, 0 for none (ADR 0043)
+    pub reminder: u32,
+
     // `weather.location`: where the weather is for; none fetches nothing (ADR 0017)
     pub location: Option<Location>,
 
@@ -417,6 +421,7 @@ impl Default for Config {
             wallpapers: None,
             transition: Transition::default(),
             calendars: Vec::new(),
+            reminder: 0,
             location: None,
             place: None,
             units: Units::default(),
@@ -1724,6 +1729,30 @@ pub const CALENDAR: &[Setting] = &[Setting {
         set: |config, calendars| config.calendars = calendars,
     }),
     example: Some("[\"~/.local/share/calendars\", \"~/Documents/holidays.ics\"]"),
+    restart: false,
+    per_output: false,
+}];
+
+// the longest lead `calendar.reminder` takes, a week
+pub const REMINDER: Range = Range {
+    least: 0,
+    most: 7 * 24 * 60,
+};
+
+pub const REMINDERS: &[Setting] = &[Setting {
+    key: "calendar.reminder",
+    label: "Default reminder",
+    help: "minutes before a timed event with no reminders of its own to remind of it, 0 for none",
+    kind: Kind::Minutes(
+        REMINDER,
+        Field {
+            get: |config| Duration::from_secs(u64::from(config.reminder) * 60),
+            set: |config, lead| {
+                config.reminder = u32::try_from(lead.as_secs() / 60).unwrap_or(u32::MAX)
+            },
+        },
+    ),
+    example: None,
     restart: false,
     per_output: false,
 }];
@@ -3062,6 +3091,7 @@ mod tests {
                 "wallpaper.transition",
                 "wallpaper.transition_duration",
                 "calendar.paths",
+                "calendar.reminder",
                 "weather.location",
                 "weather.place",
                 "weather.units",

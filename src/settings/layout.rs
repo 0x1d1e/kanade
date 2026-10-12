@@ -100,6 +100,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
         &[
             "calendar",
             "calendar-surface",
+            "calendar-reminders",
             "google-calendar",
             "weather",
             "weather-surface",
@@ -335,7 +336,7 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Calendar",
-                rows: &[Row::Key("calendar.paths")],
+                rows: &[Row::Key("calendar.paths"), Row::Key("calendar.reminder")],
             },
             Section {
                 title: "Weather",

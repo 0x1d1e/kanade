@@ -47,6 +47,7 @@ impl Surface {
             Kind::Media => Some(Surface::Media),
             Kind::Notification => Some(Surface::Notifications),
             Kind::Session => Some(Surface::Session),
+            Kind::Reminder => Some(Surface::Calendar),
             _ => None,
         }
     }

@@ -20,6 +20,7 @@
 | `settings open [<page>]\|close` | opens Settings on a task page (`appearance`, `shell`, `island`, `dock`, `motion`, `notifications`, `timer`, `modules`, `data`, `power` or `lock`), or on its last page; a Module with settings opens the page containing them. `close` closes the window |
 | `wallpaper set <path>\|shuffle\|status` | sets the wallpaper to an image through awww, and prints its path once awww shows it; `shuffle` sets one from `wallpaper.directory` at random, other than the one showing; `status` names the one set since start |
 | `google-calendar sign-in <client.json>\|sign-out\|sync\|status` | signs in to Google Calendar through the browser, with a Desktop app OAuth client's JSON file, see [Google Calendar](Google-Calendar.md); `sign-out` revokes access and deletes the credentials and synced events, `sync` syncs now, `status` says how the account stands |
+| `reminders dismiss\|status` | `dismiss` takes away the calendar reminders the island shows, as their Dismiss does; `status` says how many show and when the next goes off |
 | `weather refresh\|status` | fetches the weather now, or says how it stands and when it was fetched |
 | `osd volume\|brightness` | shows the OSD for the volume or brightness as it is, on the focused output, for a keybind that changes it outside Kanade; refused while `osd`, or `audio` or `brightness`, is off |
 | `timer start <duration>` | starts the timer, like `90s`, `25m` or `1h30m`, up to 24h |
