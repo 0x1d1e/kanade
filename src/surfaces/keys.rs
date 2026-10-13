@@ -399,7 +399,12 @@ pub fn surface(_monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(search::field(&lookup.query, "Search keys", width())) as Box<dyn Widget>,
+                Box::new(search::field(
+                    Icon::Search,
+                    &lookup.query,
+                    "Search keys",
+                    width(),
+                )) as Box<dyn Widget>,
                 list,
                 Box::new(footer(&laid, &lookup)),
             ])

@@ -39,9 +39,9 @@ Not worth changing, by this review:
 
 - [x] One atomic file write: `atomic::write` with `Mode::{Shared, Private, Exactly}` (settings, reminders, recents, appearance adapters, calendar mirror)
   - Not folded in: `raster::store` (a cache of hundreds of pictures; the fsync would cost startup) and the glass shader (it locks the file before naming it).
-- [x] One `Backoff` (`backoff.rs`) for logind, seat, sleep, tray, wake, night light, battery, weather, CalDAV and Google. Google now retries a failed sync after 1 min, doubling to 15 min, not a flat 15 min.
+- [x] One `Backoff` (`backoff.rs`) for logind, seat, sleep, tray, wake, night light, battery, weather and Google. Google now retries a failed sync after 1 min, doubling to 15 min, not a flat 15 min.
 - [x] `sources/json.rs` is `serde_json::Value` with `parse`, `array` and `quote`; the hand-rolled parser is gone.
-- [x] `sources/mirror.rs` is the calendar-sync file mirror for Google and CalDAV; `clock::unix_seconds` replaces four copies.
+- [x] `sources/mirror.rs` is the calendar-sync file mirror for Google; `clock::unix_seconds` replaces four copies.
 - [x] A Service's panic reaches `kanade status` (`service::on_panic`, set by `supervise::follow_services`); the restart delay is one constant.
 - [ ] About 80 comment blocks run over four lines (worst: `shadow.rs:1`, `dock.rs:1344`, `view/mod.rs:729`, `calendar.rs:1087`). Each states real constraints, so cut them one by one, not in bulk.
 - [ ] ADR 0003 still says "std-only JSON parser"; history, left as written.
@@ -55,7 +55,7 @@ Not worth changing, by this review:
 - [x] Modules carry `hooks.status` and `hooks.reload`; `kanade status` and a config reload walk the Modules that are on. `modules::on("<name>")` stays string-keyed at its other 60 call sites.
   - Not done: replacing the central `Call` enum with a per-Verb `run`; `kanade status` lists the Modules' lines in catalog order, not the old hand-kept order.
 - [x] "plan N" references in code comments now say the fact; `docs/archived/plan.md` stays history.
-- Not taken: a shared remote-sync loop for Google, CalDAV and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ (CalDAV is per account), so a helper would need as many parameters as it saves lines.
+- Not taken: a shared remote-sync loop for Google and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ, so a helper would need as many parameters as it saves lines.
 - Not taken: a `Target` table for the appearance adapters' `apply` and `disable`; their sequencing differs per target (Zen's marker block, GTK's restore state).
 - [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
 
@@ -129,7 +129,8 @@ Not worth changing, by this review:
 - The critical battery countdown names no battery reason line.
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
-- CalDAV: a keyring that answers with no item counts as logged out and drops the account's synced events, as does `forget` after a config read that fell back to defaults; they are a cache, synced again on login.
+
+- Calendar Surface: events added with `a` cannot be edited or deleted there, only by deleting their file in `$XDG_DATA_HOME/kanade/events` (ADR 0045); recurrence, place and a reminder cannot be typed.
 
 ## Design audit (not done)
 

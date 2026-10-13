@@ -2,9 +2,9 @@
 //! chosen day on the right, from the local calendars (`sources::calendar`). It opens only from IPC
 //! or a keybind, so it holds the keyboard: the arrow keys move the chosen day, by a day or a week,
 //! `n` and `p` turn to the next and the previous month, Home or `t` goes back to today, and Tab
-//! moves the ring into the agenda, where Up and Down walk its events, and back. Weeks start on
-//! Monday (ADR 0015). It says when there are no calendars, when the day has no events, and while
-//! the month's events are expanded, which is off the draw thread.
+//! moves the ring into the agenda, where Up and Down walk its events, and back, and `a` types a new
+//! event for the chosen day into a file of its own (ADR 0045). Weeks start on Monday (ADR 0015). It says when there are no calendars, when the
+//! day has no events, and while the month's events are expanded, which is off the draw thread.
 
 use std::mem;
 use std::sync::{Arc, Mutex};
@@ -25,8 +25,8 @@ use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::sources::calendar::{Calendars, Events, Occurrence};
-use crate::sources::{caldav, google};
+use crate::sources::calendar::{Calendars, Events, Occurrence, add};
+use crate::sources::google;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
@@ -120,6 +120,58 @@ impl Visited for Browse {
             visit,
             ..Browse::default()
         }
+    }
+}
+
+/*
+ * the event being typed, for one visit: none until `a` or the Add pill starts it. Written by input
+ * only, never by the view
+ */
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Adding {
+    visit: u64,
+    text: Option<String>,
+
+    // what the last Enter could not save
+    problem: Option<String>,
+}
+
+impl Service for Adding {
+    fn new() -> Self {
+        Adding::default()
+    }
+
+    fn listen() {}
+}
+
+impl Visited for Adding {
+    fn visit(&self) -> u64 {
+        self.visit
+    }
+
+    fn begin(visit: u64) -> Self {
+        Adding {
+            visit,
+            ..Adding::default()
+        }
+    }
+}
+
+impl Adding {
+    // the text after `key`, none for a key that edits nothing
+    fn typed(&self, key: Key) -> Option<String> {
+        let mut text = self.text.clone()?;
+
+        match key {
+            Key::Character(letter) => text.push(letter),
+            Key::Space => text.push(' '),
+            Key::Backspace => {
+                text.pop();
+            }
+            _ => return None,
+        }
+
+        Some(text)
     }
 }
 
@@ -507,6 +559,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let today = clock::today();
     let calendars = Calendars::read().clone();
     let browse = Browse::read().of(visit);
+    let adding = Adding::read().of(visit);
     let day = browse.day(today);
     let start = grid_start(day);
     let Shown { month, pending } = month_of(&calendars, start);
@@ -515,7 +568,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let shape = geometry::CALENDAR;
 
     // a Module that is off reads no Service
-    let google = modules::on("google-calendar")
+    let account = modules::on("google-calendar")
         .then(|| {
             google::Account::read()
                 .problem()
@@ -523,21 +576,20 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
                 .map(str::to_owned)
         })
         .flatten();
-    let caldav = modules::on("caldav").then(caldav::brief).flatten();
-    let account = match (google, caldav) {
-        (Some(google), Some(caldav)) => Some(format!("{google} \u{b7} {caldav}")),
-        (google, caldav) => google.or(caldav),
-    };
     let account = account.as_deref();
 
-    let agenda: Box<dyn Widget> = if calendars.files == 0 {
+    let agenda: Box<dyn Widget> = if let Some(text) = &adding.text {
+        Box::new(entry(day, today, text, adding.problem.as_deref()))
+    } else if calendars.files == 0 {
         Box::new(state(
             monitor,
             "No calendars",
-            account.unwrap_or("Connect an account or add .ics files in Settings"),
+            account.unwrap_or("Add an event, or connect an account in Settings"),
         ))
     } else {
-        Box::new(agenda(day, today, &month, pending, &browse, account))
+        Box::new(agenda(
+            monitor, day, today, &month, pending, &browse, account,
+        ))
     };
 
     Rectangle::new()
@@ -700,10 +752,11 @@ fn cell(
 /*
  * the chosen day's name, its events ROWS at a time with the ring on one while it is in the agenda,
  * and their count under them, which says so when a rule ran to the limit and some are missing, and
- * why Google's or a CalDAV account's do not sync, when they do not. While the month is `pending`, it says so instead of
+ * why Google's do not sync, when they do not. While the month is `pending`, it says so instead of
  * no events, and the count says when the events shown could not be updated
  */
 fn agenda(
+    monitor: &str,
     day: NaiveDate,
     today: NaiveDate,
     month: &Month,
@@ -720,11 +773,17 @@ fn agenda(
         .weight(theme::text::SEMIBOLD)
         .elide();
 
-    let header = Rectangle::new()
-        .width(AGENDA)
-        .height(HEADER)
-        .align_child(Start, Center)
-        .child(title);
+    let header = Row::new(children![
+        Rectangle::new()
+            .width(AGENDA - ADD_WIDTH - GAP)
+            .height(HEADER)
+            .align_child(Start, Center)
+            .child(title),
+        add_pill(monitor),
+    ])
+    .width(AGENDA)
+    .height(HEADER)
+    .align(Center);
 
     let list: Box<dyn Widget> = if events.is_empty() {
         Box::new(
@@ -807,6 +866,75 @@ fn agenda(
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ),
+    ])
+    .width(AGENDA)
+    .height(HEIGHT)
+    .gap(GAP)
+}
+
+const ADD_WIDTH: f32 = 56.0;
+const ADD_HEIGHT: f32 = 24.0;
+
+// starts an event, as `a` does
+fn add_pill(monitor: &str) -> Rectangle {
+    let monitor = monitor.to_owned();
+
+    Rectangle::new()
+        .width(ADD_WIDTH)
+        .height(ADD_HEIGHT)
+        .radius(ADD_HEIGHT / 2.0)
+        .border(1.0, theme::island().outline)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(move || start(&monitor)))
+        .child(
+            Text::new("+ Add")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
+
+/*
+ * the agenda while an event is typed for `day`: the day's name, the field with what is typed, and
+ * under it what the text can say, or what the last Enter could not save
+ */
+fn entry(day: NaiveDate, today: NaiveDate, text: &str, problem: Option<&str>) -> Column {
+    let title = Text::new(named(day, today))
+        .size(theme::text::TITLE)
+        .color(theme::island().on_surface)
+        .weight(theme::text::SEMIBOLD)
+        .elide();
+
+    let header = Rectangle::new()
+        .width(AGENDA)
+        .height(HEADER)
+        .align_child(Start, Center)
+        .child(title);
+
+    let hint = |line: &str, ink| {
+        Box::new(
+            Text::new(line)
+                .size(theme::text::LABEL_SMALL)
+                .color(ink)
+                .weight(theme::text::MEDIUM)
+                .elide(),
+        ) as Box<dyn Widget>
+    };
+    let quiet = theme::island().on_surface_variant;
+
+    let mut lines = vec![
+        Box::new(search::field(Icon::Calendar, text, "14:30 Dentist", AGENDA)) as Box<dyn Widget>,
+    ];
+    lines.push(match problem {
+        Some(problem) => hint(problem, theme::signals().warning),
+        None => hint("Enter saves, Esc cancels", quiet),
+    });
+    lines.push(hint("14:30 or 9:00-10:30 first; else all day", quiet));
+
+    Column::new(vec![
+        Box::new(header) as Box<dyn Widget>,
+        Box::new(Column::new(lines).width(AGENDA).gap(GAP)),
     ])
     .width(AGENDA)
     .height(HEIGHT)
@@ -916,6 +1044,7 @@ fn state(monitor: &str, title: &str, detail: &str) -> Rectangle {
                     .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM)
                     .elide(),
+                add_pill(monitor),
                 search::settings_pill(monitor, search::DATA),
             ])
             .width(AGENDA)
@@ -933,7 +1062,73 @@ pub fn key(monitor: &str, key: Key) -> bool {
         return false;
     }
 
+    let adding = Adding::read().of(IslandService::read().visit());
+
+    if adding.text.is_some() {
+        return typing(monitor, adding, key);
+    }
+    if key == Key::Character('a') {
+        start(monitor);
+        return true;
+    }
+
     pressed(monitor, key)
+}
+
+// the event typed so far takes the key, Enter saving it on the chosen day and Escape dropping it
+fn typing(monitor: &str, adding: Adding, key: Key) -> bool {
+    let next = match key {
+        Key::Escape => Adding {
+            text: None,
+            problem: None,
+            ..adding
+        },
+        Key::Enter => save(adding),
+        key => match adding.typed(key) {
+            Some(text) => Adding {
+                text: Some(text),
+                problem: None,
+                ..adding
+            },
+            None => adding,
+        },
+    };
+
+    store(next);
+    IslandService::write().attend(monitor, Instant::now());
+
+    true
+}
+
+// the typed event written to its file, else what to correct in it
+fn save(adding: Adding) -> Adding {
+    let day = Browse::read().of(adding.visit).day(clock::today());
+    let text = adding.text.as_deref().unwrap_or_default();
+
+    let saved = add::parse(text, day)
+        .and_then(|event| add::save(&event).map_err(|error| format!("Could not save: {error}")));
+
+    match saved {
+        Ok(()) => Adding {
+            text: None,
+            problem: None,
+            ..adding
+        },
+        Err(problem) => Adding {
+            problem: Some(problem),
+            ..adding
+        },
+    }
+}
+
+// an empty event to type, on the visit open now
+fn start(monitor: &str) {
+    store(Adding {
+        visit: IslandService::read().visit(),
+        text: Some(String::new()),
+        problem: None,
+    });
+    IslandService::write().attend(monitor, Instant::now());
 }
 
 // a key or the press that stands for one, on the visit open now

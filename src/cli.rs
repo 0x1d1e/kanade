@@ -17,8 +17,8 @@ use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::{
-    caffeine, caldav, capture, charge_limit, google, live, night_light, osd, recording, reminders,
-    timer, wallpaper, weather,
+    caffeine, capture, charge_limit, google, live, night_light, osd, recording, reminders, timer,
+    wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -64,7 +64,6 @@ pub enum Call {
     Wallpaper(wallpaper::Request),
     Google(google::Request),
     Reminders(reminders::Request),
-    CalDav(caldav::Request),
     Weather(weather::Request),
     Osd(osd::Asked),
     Lock,
@@ -407,35 +406,6 @@ pub fn run(arguments: &[String]) -> ExitCode {
     // runs here, telling the shell as it goes
     if let Call::Live(live::Request::Run { id, title, command }) = &asked {
         return live::run(id, title, command);
-    }
-
-    // a password is asked here, never sent to the shell, which then syncs with what is kept
-    if let Call::CalDav(caldav::Request::Login(name) | caldav::Request::Logout(name)) = &asked {
-        let done = match &asked {
-            Call::CalDav(caldav::Request::Login(_)) => caldav::login(name),
-            _ => caldav::logout(name),
-        };
-
-        return match done {
-            Ok(said) => {
-                let sync = [String::from("caldav"), String::from("sync"), name.clone()];
-                let synced = match call(&sync) {
-                    Ok(Reply::Done(_)) => String::new(),
-                    Err(problem) if problem.starts_with("no shell is running") => {
-                        String::from("\nthe shell syncs it when it starts")
-                    }
-                    Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => {
-                        format!("\nthe shell was not told: {why}")
-                    }
-                };
-
-                print(&format!("{said}{synced}\n"), ExitCode::SUCCESS)
-            }
-            Err(why) => {
-                complain(&format!("kanade: {why}"));
-                ExitCode::FAILURE
-            }
-        };
     }
 
     // the lines come from stdin, never the arguments

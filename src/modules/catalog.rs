@@ -17,11 +17,11 @@ use crate::sources::notifications::Daemon;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, caldav, calendar, capture, charge_limit, clipboard,
+    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard,
     fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
-    notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, secrets,
-    session, sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
+    notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
+    sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, dock, idle, ipc, lock, reload,
@@ -916,45 +916,6 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("google-calendar", google::follow);
-            app
-        },
-    },
-    /*
-     * CalDAV accounts' calendars, synced read-only into files the calendar reads (ADR 0044); idle
-     * with none configured
-     */
-    Module {
-        name: "caldav",
-        about: "CalDAV accounts synced into local calendar files",
-        requires: &[CORE, "calendar"],
-        optional: &[],
-        warns: None,
-        needs: &[Need {
-            on: Provider::SessionService(secrets::SERVICE),
-            without: "no logging in, as nothing keeps the passwords",
-        }],
-        settings: config::CALDAV,
-        hooks: Hooks {
-            status: Some(caldav::status),
-            reload: Some(caldav::reread),
-        },
-        verbs: &[Verb {
-            name: "caldav",
-            about: "Log in to a CalDAV account, sync, log out",
-            usage: || {
-                String::from(
-                    "caldav login <name>|logout <name>|sync [<name>]|status
-  <name>: an account's name in calendar.caldav; login asks for its password",
-                )
-            },
-            parse: |arguments| {
-                caldav::Request::parse(arguments)
-                    .map(Call::CalDav)
-                    .ok_or(Unparsed::Usage)
-            },
-        }],
-        start: |app| {
-            supervise::spawn("caldav", caldav::follow);
             app
         },
     },

@@ -439,9 +439,7 @@ fn reset_inputs() {
             Kind::Location(field) => (field.get)(&read)
                 .map(|at| format!("{}, {}", at.latitude, at.longitude))
                 .unwrap_or_default(),
-            Kind::DesktopIds(_) | Kind::Paths(_) | Kind::AppIds(_) | Kind::CalDav(_) => {
-                String::new()
-            }
+            Kind::DesktopIds(_) | Kind::Paths(_) | Kind::AppIds(_) => String::new(),
             _ => continue,
         };
 

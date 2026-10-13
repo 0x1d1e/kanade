@@ -1,8 +1,7 @@
 //! `kanade doctor` (docs/design.md CLI): read-only diagnostics of what Kanade runs on, a line
 //! each: versions, the shell, niri, the Wayland protocols, the buses and PipeWire, the config, the
-//! Modules it turns on and what each needs outside Kanade, then each CalDAV account's sync. Runs
-//! without a shell, which may be what is wrong, so it reads everything itself, but for the sync,
-//! which only the shell knows. A failure means Kanade, or a Module that is on, cannot work; a
+//! Modules it turns on and what each needs outside Kanade. Runs without a shell, which may be what
+//! is wrong, so it reads everything itself. A failure means Kanade, or a Module that is on, cannot work; a
 //! warning, that it runs worse. There is no fix mode yet: Kanade owns no state a fix could touch.
 
 mod wayland;
@@ -22,7 +21,7 @@ use crate::config::{self, Config};
 use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{bus, caldav, clipboard, keys, niri, pipewire, radios};
+use crate::sources::{bus, clipboard, keys, niri, pipewire, radios};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -99,7 +98,6 @@ pub fn run() -> ExitCode {
     checks.extend(sockets());
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
-    checks.extend(caldav_accounts(&config, running));
 
     let report: String = checks
         .iter()
@@ -436,28 +434,6 @@ fn config_check(problems: Vec<String>) -> Check {
 }
 
 // which Modules run with this config, why one is not as asked, and what each that runs needs
-/*
- * each CalDAV account's sync, as the shell that syncs it tells. Without a shell, or with the Module
- * off, which the Modules' checks report, there is none to tell; the keyring is not asked here, as
- * that could ask the user to unlock it
- */
-fn caldav_accounts(config: &Config, running: bool) -> Vec<Check> {
-    if !running || config.caldav.is_empty() {
-        return Vec::new();
-    }
-
-    match cli::call(&[String::from("caldav"), String::from("status")]) {
-        Ok(Reply::Done(status)) => status
-            .lines()
-            .map(|line| match caldav::healthy(line) {
-                true => Check::ok(line.to_owned()),
-                false => Check::warn(line.to_owned()),
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
 fn modules(config: &Config, running: bool) -> Vec<Check> {
     let resolved = modules::resolve(modules::ALL, |name| config.off(name));
 

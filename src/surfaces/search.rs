@@ -18,10 +18,10 @@ const QUERY: f32 = theme::text::TITLE;
 const CARET: f32 = 1.5;
 
 /*
- * `width` across: a search icon, what is typed with the caret after it, or `placeholder` faded; a
+ * `width` across: `icon`, what is typed with the caret after it, or `placeholder` faded; a
  * query wider than the field shows its end, where the typing is
  */
-pub fn field(query: &str, placeholder: &str, width: f32) -> Rectangle {
+pub fn field(icon: Icon, query: &str, placeholder: &str, width: f32) -> Rectangle {
     let room = width - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
 
     let caret = Rectangle::new()
@@ -58,8 +58,7 @@ pub fn field(query: &str, placeholder: &str, width: f32) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
-                    as Box<dyn Widget>,
+                Box::new(icon.on(TARGET, theme::island().on_surface_variant)) as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)

@@ -423,8 +423,12 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(search::field(&pick.query, "Search wallpapers", width()))
-                    as Box<dyn Widget>,
+                Box::new(search::field(
+                    Icon::Search,
+                    &pick.query,
+                    "Search wallpapers",
+                    width(),
+                )) as Box<dyn Widget>,
                 grid,
                 Box::new(footer(monitor, &pick, &found, all)),
             ])

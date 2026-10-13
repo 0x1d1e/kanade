@@ -48,8 +48,10 @@ use chrono::{
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::{caldav, google};
+use super::google;
 use crate::{clock, config, modules, supervise};
+
+pub mod add;
 
 // where the calendars are without `calendar.paths`, under the XDG data directory
 const DIRECTORY: &str = "calendars";
@@ -274,10 +276,9 @@ pub fn reread() {
     if modules::on("google-calendar") {
         places.extend(google::vouched().filter(|dir| dir.is_dir()));
     }
-    // each configured CalDAV account's, once a sync made it (ADR 0044)
-    if modules::on("caldav") {
-        places.extend(caldav::places());
-    }
+
+    // the events added in the Calendar Surface, whatever `calendar.paths` names (ADR 0045)
+    places.extend(add::directory());
 
     let found = find(&places);
 
