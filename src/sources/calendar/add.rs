@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -108,9 +108,30 @@ pub fn stem(uid: &str) -> Option<&str> {
     })
 }
 
-// the event as typed again, to change it
+// the name of the file in `events`, the events directory, that `file` is, none for any other file
+pub fn named<'a>(file: &'a Path, events: Option<&Path>) -> Option<&'a str> {
+    let stem = file.file_stem()?.to_str()?;
+
+    (events.is_some()
+        && file.parent() == events
+        && file.extension().is_some_and(|extension| extension == "ics")
+        && self::stem(&uid(stem)) == Some(stem))
+    .then_some(stem)
+}
+
+// the UID of the event kept in file `stem`
+pub fn uid(stem: &str) -> String {
+    format!("{stem}{DOMAIN}")
+}
+
+/*
+ * the event as typed again, to change it. An end an hour after the start is the start alone, as
+ * typed: the end may be past midnight, which `span` takes for an end before the start
+ */
 pub fn text(event: &Occurrence) -> String {
-    match (event.all_day, event.moment()) {
+    let hour = event.end == event.start + HOUR;
+
+    match (event.all_day, event.moment() || hour) {
         (true, _) => event.title.clone(),
         (false, true) => format!("{} {}", event.start.format("%H:%M"), event.title),
         (false, false) => format!(
@@ -148,7 +169,7 @@ pub fn remove(stem: &str) -> io::Result<()> {
 fn file(stem: &str) -> io::Result<PathBuf> {
     let dir = directory().ok_or_else(|| io::Error::other("no data directory"))?;
 
-    if self::stem(&format!("{stem}{DOMAIN}")) != Some(stem) {
+    if self::stem(&uid(stem)) != Some(stem) {
         return Err(io::Error::from(io::ErrorKind::InvalidInput));
     }
 
@@ -157,7 +178,7 @@ fn file(stem: &str) -> io::Result<PathBuf> {
 
 fn write(stem: &str, event: &Event) -> io::Result<()> {
     let stamp = DateTime::from_timestamp(clock::unix_seconds(), 0).unwrap_or_default();
-    let text = vcalendar(event, &format!("{stem}{DOMAIN}"), stamp.naive_utc());
+    let text = vcalendar(event, &uid(stem), stamp.naive_utc());
 
     atomic::write(&file(stem)?, text.as_bytes(), Mode::Private)
 }
@@ -285,7 +306,12 @@ mod tests {
     // what the field shows to change an event types back as the same event
     #[test]
     fn an_event_typed_again_is_the_event() {
-        for typed in ["Dentist", "9:05-10:05 Standup", "14:30-15:45 Review"] {
+        for typed in [
+            "Dentist",
+            "9:05-10:05 Standup",
+            "14:30-15:45 Review",
+            "23:30 Deployment",
+        ] {
             let event = parse(typed, day()).unwrap();
             let found = read_back(&vcalendar(&event, "a@kanade", at(8, 0)));
 

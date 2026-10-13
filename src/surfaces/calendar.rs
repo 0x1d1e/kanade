@@ -7,6 +7,7 @@
 //! day has no events, and while the month's events are expanded, which is off the draw thread.
 
 use std::mem;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -126,9 +127,12 @@ impl Visited for Browse {
     }
 }
 
+// tells one save from another
+static SAVES: AtomicU64 = AtomicU64::new(0);
+
 /*
  * the event being typed, for one visit: none until `a` or the Add pill starts it, or `e` starts
- * changing an event added here. Written by input only, never by the view
+ * changing an event added here. Written by input and by the save it started, never by the view
  */
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Adding {
@@ -141,8 +145,8 @@ pub struct Adding {
     // what the last Enter could not save
     problem: Option<String>,
 
-    // the file is being written, which keeps the text as it is until it says whether it is saved
-    saving: bool,
+    // the save that is writing the file, which keeps the text as it is until it says how it went
+    saving: Option<u64>,
 }
 
 impl Service for Adding {
@@ -593,7 +597,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             today,
             text,
             adding.problem.as_deref(),
-            adding.saving,
+            adding.saving.is_some(),
         ))
     } else if calendars.files == 0 {
         Box::new(state(
@@ -1113,15 +1117,21 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
 // the event typed so far takes the key, Enter saving it on the chosen day and Escape dropping it
 fn typing(monitor: &str, adding: Adding, key: Key) -> bool {
+    let mut write = None;
     let next = match key {
-        _ if adding.saving => adding,
+        _ if adding.saving.is_some() => adding,
         Key::Escape => Adding {
             text: None,
             replacing: None,
             problem: None,
             ..adding
         },
-        Key::Enter => save(adding),
+        Key::Enter => {
+            let (next, saving) = save(adding);
+
+            write = saving;
+            next
+        }
         key => match adding.typed(key) {
             Some(text) => Adding {
                 text: Some(text),
@@ -1133,70 +1143,99 @@ fn typing(monitor: &str, adding: Adding, key: Key) -> bool {
     };
 
     store(next);
+    if let Some(write) = write {
+        write.start();
+    }
     IslandService::write().attend(monitor, Instant::now());
 
     true
 }
 
-// the typed event on its way to its file, else what to correct in it
-fn save(adding: Adding) -> Adding {
+// the typed event as saving, with the write to start once that is stored, else what to correct in it
+fn save(adding: Adding) -> (Adding, Option<Write>) {
     let day = Browse::read().of(adding.visit).day(clock::today());
     let text = adding.text.as_deref().unwrap_or_default();
 
     match add::parse(text, day) {
         Ok(event) => {
-            write_off_thread(adding.visit, adding.replacing.clone(), event);
+            let id = SAVES.fetch_add(1, Ordering::Relaxed);
+            let write = Write {
+                visit: adding.visit,
+                id,
+                replacing: adding.replacing.clone(),
+                event,
+            };
 
-            Adding {
-                problem: None,
-                saving: true,
-                ..adding
-            }
+            (
+                Adding {
+                    problem: None,
+                    saving: Some(id),
+                    ..adding
+                },
+                Some(write),
+            )
         }
-        Err(problem) => Adding {
-            problem: Some(problem),
-            ..adding
-        },
+        Err(problem) => (
+            Adding {
+                problem: Some(problem),
+                ..adding
+            },
+            None,
+        ),
     }
 }
 
-/*
- * writes the file on a thread of its own, as a slow disk must not stall the frames, nor the
- * volume keys on the control worker; `settled` says how it went
- */
-fn write_off_thread(visit: u64, replacing: Option<String>, event: add::Event) {
-    let write = move || {
-        let written = match &replacing {
-            Some(stem) => add::replace(stem, &event),
-            None => add::save(&event),
+// one save: which it is, so only its own end settles the field that waits on it
+struct Write {
+    visit: u64,
+    id: u64,
+    replacing: Option<String>,
+    event: add::Event,
+}
+
+impl Write {
+    /*
+     * writes the file on a thread of its own, as a slow disk must not stall the frames, nor the
+     * volume keys on the control worker; `settled` says how it went. After `Adding` says it is
+     * saving, so an end never comes before it
+     */
+    fn start(self) {
+        let (visit, id) = (self.visit, self.id);
+
+        let write = move || {
+            let written = match &self.replacing {
+                Some(stem) => add::replace(stem, &self.event),
+                None => add::save(&self.event),
+            };
+
+            settled(
+                visit,
+                id,
+                written.map_err(|error| format!("Could not save: {error}")),
+            );
         };
 
-        settled(
-            visit,
-            written.map_err(|error| format!("Could not save: {error}")),
-        );
-    };
-
-    if let Err(error) = thread::Builder::new()
-        .name(String::from("calendar-write"))
-        .spawn(write)
-    {
-        settled(visit, Err(format!("Could not save: {error}")));
+        if let Err(error) = thread::Builder::new()
+            .name(String::from("calendar-write"))
+            .spawn(write)
+        {
+            settled(visit, id, Err(format!("Could not save: {error}")));
+        }
     }
 }
 
 // the text is dropped once it is saved, and kept with what went wrong otherwise
-fn settled(visit: u64, written: Result<(), String>) {
+fn settled(visit: u64, id: u64, written: Result<(), String>) {
     let mut adding = Adding::write();
 
-    if adding.visit != visit || !adding.saving {
+    if adding.visit != visit || adding.saving != Some(id) {
         return;
     }
 
     match written {
         Ok(()) => *adding = Adding::begin(visit),
         Err(problem) => {
-            adding.saving = false;
+            adding.saving = None;
             adding.problem = Some(problem);
         }
     }
@@ -1214,7 +1253,7 @@ fn change(monitor: &str, text: String, replacing: Option<String>) {
         text: Some(text),
         replacing,
         problem: None,
-        saving: false,
+        saving: None,
     });
     IslandService::write().attend(monitor, Instant::now());
 }
