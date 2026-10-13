@@ -368,7 +368,7 @@ fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
     if look.field.typed == 0
         && let Some(faces) = look.faces
     {
-        let line = faces.regular.shape("Enter Password", BODY * scale, false);
+        let line = faces.regular.shape("Enter password", BODY * scale, false);
         faces.regular.draw(
             pixmap,
             &line,

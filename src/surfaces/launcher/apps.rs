@@ -1,9 +1,10 @@
 // the apps `sources::apps` lists, as a Launcher provider; pressing one starts it
 
 use crate::sources::apps::App;
+use crate::sources::recents;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, wallpaper};
+use super::{emoji, history, wallpaper};
 
 // the apps, and whether `@` searches wallpapers instead
 pub struct Apps<'a>(pub &'a [App], pub bool);
@@ -12,13 +13,24 @@ impl LauncherProvider for Apps<'_> {
     // by name within a fit, since the list is sorted so; an empty query finds every app
     fn find(&self, query: &str) -> Vec<Answer> {
         // an emoji or wallpaper search, which no app answers
-        if query.starts_with(emoji::PREFIX) || (self.1 && query.starts_with(wallpaper::PREFIX)) {
+        if query.starts_with(emoji::PREFIX)
+            || query.starts_with(history::PREFIX)
+            || (self.1 && query.starts_with(wallpaper::PREFIX))
+        {
             return Vec::new();
         }
 
         let query = query.to_lowercase();
 
-        self.0
+        // with nothing typed, the apps started lately come first, newest first
+        let recent = if query.is_empty() {
+            recents::ids()
+        } else {
+            Vec::new()
+        };
+
+        let mut answers: Vec<(usize, Answer)> = self
+            .0
             .iter()
             .filter_map(|app| {
                 let fit = fit(
@@ -27,10 +39,19 @@ impl LauncherProvider for Apps<'_> {
                     app.description.as_deref().unwrap_or_default(),
                     app.command(),
                 )?;
+                let place = recent.iter().position(|id| *id == app.id);
 
-                Some(answer(app, fit))
+                Some((
+                    place.unwrap_or(usize::MAX),
+                    answer(app, place.map_or(fit, |_| Fit::Recent)),
+                ))
             })
-            .collect()
+            .collect();
+
+        // stable, so the rest stay by name
+        answers.sort_by_key(|(place, _)| *place);
+
+        answers.into_iter().map(|(_, answer)| answer).collect()
     }
 }
 
@@ -70,6 +91,6 @@ fn answer(app: &App, fit: Fit) -> Answer {
         title: app.name.clone(),
         detail: app.description.clone().unwrap_or_default(),
         mark,
-        action: Action::Launch(app.launch.clone()),
+        action: Action::Launch(app.launch.clone(), app.id.clone()),
     }
 }

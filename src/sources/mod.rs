@@ -35,6 +35,7 @@ pub mod power;
 pub mod privacy;
 pub mod pulse;
 pub mod radios;
+pub mod recents;
 pub mod recording;
 pub mod reminders;
 pub mod seat;

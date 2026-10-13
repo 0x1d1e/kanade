@@ -51,7 +51,7 @@ pub(super) fn satellites(
  */
 pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
-        Detail::Recording(_) => label(String::from("Rec"), theme::SEMANTIC.capture),
+        Detail::Recording(_) => label(String::from("Rec"), theme::signals().capture),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
         Detail::Live(job) => super::live::satellite(job),
         Detail::NightLight(_) => Box::new(Icon::Sunset.draw(14.0)),
@@ -63,7 +63,7 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
             theme::island().on_surface,
         ),
         Detail::Session(Leaving::Failed { .. } | Leaving::Unanswered { .. }) => {
-            label(String::from("!"), theme::SEMANTIC.critical)
+            label(String::from("!"), theme::signals().critical)
         }
         _ => label(
             abbreviation(activity.kind()).to_owned(),

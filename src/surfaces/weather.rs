@@ -1,19 +1,24 @@
 //! The Weather Surface (#152, ADR 0017, docs/design.md Weather): the weather now on the left and
 //! the days ahead on the right, from `sources::weather`. It opens only from IPC or a keybind and
-//! has no targets, so Escape or a typed character collapses it. A forecast that is not the latest,
+//! has no targets, so Escape or a typed character collapses it; without a location, Enter or the
+//! pill opens Settings. A forecast that is not the latest,
 //! after a failed fetch or a suspend, stays shown with the time it is from; without one it says
 //! why: no location set, the first fetch on its way, or the failure.
 
 use chrono::{Datelike, NaiveDate};
+use kanade_runtime::Key;
 use kanade_runtime::service::Service;
 use kanade_runtime::{
     Center, Column, Padding, Rectangle, Row, SpaceBetween, Start, Text, Widget, children,
 };
 
+use super::search;
 use crate::clock;
 use crate::config::{self, Config};
 use crate::icon::Icon;
 use crate::island::geometry;
+use crate::island::presentation::{Presentation, Surface};
+use crate::island::service::IslandService;
 use crate::sources::weather::{self, Condition, Day, Forecast, Problem, State, Units, Weather};
 use crate::theme::space::INSET;
 use crate::theme::{self, radius};
@@ -62,7 +67,7 @@ pub fn surface(monitor: &str) -> Rectangle {
                 .gap(SIDE_GAP),
             )
         }
-        None => Box::new(missing(&weather.state)),
+        None => Box::new(missing(monitor, &weather.state)),
     };
 
     Rectangle::new()
@@ -298,33 +303,60 @@ fn weekday(date: NaiveDate) -> &'static str {
  * why there is no forecast to show, across the whole Surface. Each line is short and fixed, so it
  * centers unelided; Open-Meteo's own words are in `kanade weather status`
  */
-fn missing(state: &State) -> Rectangle {
+fn missing(monitor: &str, state: &State) -> Rectangle {
     let (title, detail) = match state {
-        State::Unset => ("No location", "Set weather.location in Settings"),
+        State::Unset => ("No location", "Choose where to show the weather"),
         State::Fetching | State::Fetched => ("Fetching the weather", "From Open-Meteo"),
         State::Failed(problem @ Problem::Offline(_)) => (problem.brief(), "Trying again soon"),
         State::Failed(problem @ Problem::Refused(_)) => {
-            (problem.brief(), "See kanade weather status")
+            (problem.brief(), "Check the location in Settings")
         }
     };
+
+    // a missing or refused location is settled in Settings, nothing else is the user's to fix
+    let settle = matches!(state, State::Unset | State::Failed(Problem::Refused(_)));
+
+    let mut lines = children![
+        Icon::Cloud.draw(28.0),
+        Text::new(title)
+            .size(theme::text::BODY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD),
+        Text::new(detail)
+            .size(theme::text::LABEL_SMALL)
+            .color(theme::island().on_surface_variant)
+            .weight(theme::text::MEDIUM),
+    ];
+
+    if settle {
+        lines.push(Box::new(search::settings_pill(monitor, search::DATA)));
+    }
 
     Rectangle::new()
         .width(WIDTH)
         .height(HEIGHT)
         .align_child(Center, Center)
-        .child(
-            Column::new(children![
-                Icon::Cloud.draw(28.0),
-                Text::new(title)
-                    .size(theme::text::BODY)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD),
-                Text::new(detail)
-                    .size(theme::text::LABEL_SMALL)
-                    .color(theme::island().on_surface_variant)
-                    .weight(theme::text::MEDIUM),
-            ])
-            .gap(6.0)
-            .align(Center),
-        )
+        .child(Column::new(lines).gap(6.0).align(Center))
+}
+
+/*
+ * Enter while the Weather has no location to show, or one the service refused: opens Settings on
+ * it. False for any other key, which collapses the island as before
+ */
+pub fn key(monitor: &str, key: Key) -> bool {
+    let settle = matches!(
+        Weather::read().state,
+        State::Unset | State::Failed(Problem::Refused(_))
+    );
+
+    if key != Key::Enter
+        || !settle
+        || IslandService::read().presentation(monitor) != Presentation::Expanded(Surface::Weather)
+    {
+        return false;
+    }
+
+    search::open_settings(monitor, search::DATA);
+
+    true
 }

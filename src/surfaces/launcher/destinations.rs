@@ -9,7 +9,7 @@ use crate::icon::Icon;
 use crate::settings;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, wallpaper};
+use super::{emoji, history, wallpaper};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Destination {
@@ -47,6 +47,7 @@ impl LauncherProvider for Destinations {
         if query.chars().count() < FROM
             || query.starts_with(emoji::PREFIX)
             || query.starts_with(wallpaper::PREFIX)
+            || query.starts_with(history::PREFIX)
         {
             return Vec::new();
         }

@@ -150,9 +150,9 @@ pub(super) fn timer(
 // amber while low, red once critical, and never color alone: the number and the words say it too
 pub(super) fn charge_tone(charge: &Charge) -> Color {
     if charge.critical {
-        theme::SEMANTIC.critical
+        theme::signals().critical
     } else {
-        theme::SEMANTIC.warning
+        theme::signals().warning
     }
 }
 
@@ -184,9 +184,9 @@ pub(super) fn battery(presentation: Presentation, charge: &Charge) -> Option<Rec
     let tone = charge_tone(charge);
 
     let title = if charge.critical {
-        "Battery Critical"
+        "Battery critical"
     } else {
-        "Low Battery"
+        "Low battery"
     };
 
     let mut words = children![
@@ -732,7 +732,8 @@ pub(crate) fn bar_on(width: f32, fraction: f32, tone: Color, roles: &ThemeRoles)
         .width(width)
         .height(height)
         .radius(height / 2.0)
-        .fill(roles.surface_container_high);
+        .fill(roles.surface_container_high)
+        .border(1.0, theme::faded(roles.on_surface_variant, 0.6));
 
     let mut layers = children![track];
 

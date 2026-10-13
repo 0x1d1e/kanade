@@ -401,7 +401,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let pick = pick.bounded(&found, &current);
 
     let grid: Box<dyn Widget> = if all == 0 {
-        Box::new(missing())
+        Box::new(missing(monitor))
     } else if found.is_empty() {
         Box::new(search::state(
             Icon::Picture,
@@ -434,7 +434,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 }
 
 // the folder has no picture: it is not set, not there, or holds none
-fn missing() -> Rectangle {
+fn missing(monitor: &str) -> Rectangle {
     let (title, detail) = match wallpaper::directory() {
         None => (
             String::from("No wallpaper folder"),
@@ -450,7 +450,14 @@ fn missing() -> Rectangle {
         ),
     };
 
-    search::state(Icon::Picture, &title, &detail, width(), room())
+    search::state_with(
+        Icon::Picture,
+        &title,
+        &detail,
+        Some(search::settings_pill(monitor, search::DATA)),
+        width(),
+        room(),
+    )
 }
 
 /*
@@ -674,6 +681,12 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
         island.visit()
     };
+
+    // Enter on the empty state presses its way out
+    if key == Key::Enter && wallpaper::images().is_empty() {
+        search::open_settings(monitor, search::DATA);
+        return true;
+    }
 
     let current = wallpaper::showing();
     let pick = Pick::read().of(visit);

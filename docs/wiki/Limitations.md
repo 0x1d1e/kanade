@@ -16,3 +16,4 @@
 - The clipboard history leaves out only a copy its app marks sensitive with `x-kde-passwordManagerHint`, as `wl-copy --sensitive` does. A password copied without it is kept like any other copy until removed or cleared. See [ADR 0019](../adr/0019-clipboard-sensitive-content.md).
 - The privacy cluster's microphone and camera see only capture that goes through PipeWire, using `pw-dump` from the `pipewire` package. An app that opens `/dev/video*` or ALSA directly, like `ffmpeg -f v4l2`, does not show. See [ADR 0003](../adr/0003-privacy-from-pipewire-graph.md).
 
+- The Settings window is a normal window, so niri tiles it. To float it, add a niri window rule: `window-rule { match app-id="kanade" title="Kanade Settings"; open-floating true; }`.

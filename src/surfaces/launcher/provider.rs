@@ -18,6 +18,9 @@ pub enum Fit {
     // what the query asks for, like the value of a sum
     Answer,
 
+    // an app started lately, before the rest while nothing is typed
+    Recent,
+
     // the name is the query
     Exact,
 
@@ -59,10 +62,14 @@ pub enum Mark {
 // what pressing an answer does; each closes the island once done
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
-    Launch(Launch),
+    // an app's way to start, and its id for the recents
+    Launch(Launch, String),
 
     // puts the text on the clipboard
     Copy(String),
+
+    // puts the clipboard history's entry of this id back on the clipboard
+    Paste(u64),
 
     // sets the image as the wallpaper
     Wallpaper(PathBuf),

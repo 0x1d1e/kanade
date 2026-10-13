@@ -30,6 +30,7 @@ use crate::sources::{caldav, google};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 
+use super::search;
 use super::visit::Visited;
 use super::{Outline, store};
 
@@ -531,14 +532,9 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let agenda: Box<dyn Widget> = if calendars.files == 0 {
         Box::new(state(
+            monitor,
             "No calendars",
-            match account {
-                Some(problem) => problem,
-                None if config::get().calendars.is_empty() => {
-                    "Add .ics files to ~/.local/share/calendars"
-                }
-                None => "No .ics files in calendar.paths",
-            },
+            account.unwrap_or("Connect an account or add .ics files in Settings"),
         ))
     } else {
         Box::new(agenda(day, today, &month, pending, &browse, account))
@@ -903,7 +899,7 @@ fn when(event: &Occurrence, day: NaiveDate) -> String {
 }
 
 // what it means, where the agenda goes
-fn state(title: &str, detail: &str) -> Rectangle {
+fn state(monitor: &str, title: &str, detail: &str) -> Rectangle {
     Rectangle::new()
         .width(AGENDA)
         .height(HEIGHT)
@@ -920,6 +916,7 @@ fn state(title: &str, detail: &str) -> Rectangle {
                     .color(theme::island().on_surface_variant)
                     .weight(theme::text::MEDIUM)
                     .elide(),
+                search::settings_pill(monitor, search::DATA),
             ])
             .width(AGENDA)
             .gap(6.0)
@@ -941,6 +938,12 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
 // a key or the press that stands for one, on the visit open now
 fn pressed(monitor: &str, key: Key) -> bool {
+    // Enter on the empty state presses its way out
+    if key == Key::Enter && Calendars::read().files == 0 {
+        search::open_settings(monitor, search::DATA);
+        return true;
+    }
+
     let visit = IslandService::read().visit();
     let today = clock::today();
     let browse = Browse::read().of(visit);
@@ -962,12 +965,15 @@ fn pressed(monitor: &str, key: Key) -> bool {
 fn choose(monitor: &str, date: NaiveDate) {
     let visit = IslandService::read().visit();
 
+    // read apart, since `store` writes
+    let browse = Browse::read().of(visit);
+
     store(Browse {
         day: Some(date),
         agenda: false,
         selected: 0,
         first: 0,
-        ..Browse::read().of(visit)
+        ..browse
     });
     IslandService::write().attend(monitor, Instant::now());
 }
@@ -1001,4 +1007,29 @@ fn wheel(lines: f32) {
     };
 
     store(browse);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::*;
+
+    // pressing a day wrote the Browse it still held a read of, which hung the UI thread for good
+    #[test]
+    fn pressing_a_day_chooses_it_without_deadlocking() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let (done, finished) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            choose("test", date);
+            let _ = done.send(());
+        });
+
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("choose hung");
+        assert_eq!(Browse::read().day, Some(date));
+    }
 }

@@ -1018,7 +1018,7 @@ fn card(banner: &Banner, height: f32, roles: &ThemeRoles) -> Rectangle {
             Row::new(children![
                 Text::new("Critical")
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::SEMANTIC.critical)
+                    .color(theme::signals().critical)
                     .weight(theme::text::SEMIBOLD),
                 sender,
             ])

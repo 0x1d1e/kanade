@@ -40,7 +40,7 @@ use crate::scene;
 use crate::sources::launch::Launch;
 use crate::sources::niri::{self, Acted, Window, WindowId};
 use crate::sources::windows::{self, App, DesktopEntry, Windows};
-use crate::theme::{self, SEMANTIC, ThemeRoles, radius};
+use crate::theme::{self, ThemeRoles, radius};
 use crate::view;
 
 mod context_menu;
@@ -1805,7 +1805,7 @@ fn slot(
         let urgent = item.windows.iter().any(|window| window.urgent);
 
         let color = if urgent {
-            SEMANTIC.warning
+            theme::signals().warning
         } else if focused {
             roles.on_surface
         } else {

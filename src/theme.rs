@@ -41,6 +41,26 @@ pub const SEMANTIC: SemanticColors = SemanticColors {
     on_island_surface: Color::rgb(242, 242, 247),
 };
 
+// the signal colors on light glass, where the bright ones fall under 3:1 (dots, glyphs) or 4.5:1 (text)
+const SIGNALS_LIGHT: SemanticColors = SemanticColors {
+    privacy: Color::rgb(14, 122, 46),
+    capture: Color::rgb(143, 82, 0),
+    warning: Color::rgb(143, 82, 0),
+    critical: Color::rgb(179, 38, 30),
+    ..SEMANTIC
+};
+
+/*
+ * the colors that mean something, in the Island's tone: `SEMANTIC` on dark glass, darker hues of
+ * the same meaning on light glass
+ */
+pub fn signals() -> SemanticColors {
+    match crate::config::get().appearance.tone {
+        crate::look::Tone::Dark => SEMANTIC,
+        crate::look::Tone::Light => SIGNALS_LIGHT,
+    }
+}
+
 // M3-like roles a theme changes
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeRoles {
@@ -87,7 +107,7 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
     on_primary: Color::rgb(250, 250, 252),
     surface: Color::rgb(246, 246, 250),
     on_surface: Color::rgb(28, 28, 30),
-    on_surface_variant: Color::rgba(60, 60, 67, 166),
+    on_surface_variant: Color::rgba(60, 60, 67, 210),
     surface_container: Color::rgba(0, 0, 0, 14),
     surface_container_high: Color::rgba(0, 0, 0, 26),
     outline: Color::rgba(0, 0, 0, 46),

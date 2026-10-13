@@ -298,7 +298,7 @@ pub fn row(
             Text::new(status)
                 .size(theme::text::LABEL_SMALL)
                 .color(if error {
-                    theme::SEMANTIC.critical
+                    theme::signals().critical
                 } else {
                     theme::island().on_surface_variant
                 })
