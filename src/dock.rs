@@ -324,7 +324,7 @@ pub(crate) struct Laid {
     pub(crate) strip: Rect,
     pub(crate) radius: f32,
 
-    // where the strip is as it slides, a little before and until the glass's lead on, none at rest
+    // what the glass is captured out to besides the strip: where it slides, a little before and until the glass's lead on, and the icons' rise past it; none at rest
     gone: Vec<Rect>,
 
     // how far the pointer holds the Dock out of the Island it is folded into, 0 to 1; 1 otherwise
@@ -596,24 +596,41 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     });
     let (window_width, window_height) = axes.size(canvas.width, canvas.height);
 
-    // the copy the glass is frosted from lags the slide, and holds the strip's own pixels where it was
-    let gone = match pointer {
-        Some(pointer) if autohide && !merged && moving(&pointer.shown, now) => {
-            let since = now.checked_sub(glass::LEAD / 4).unwrap_or(now);
+    /*
+     * the copy the glass is frosted from holds the Dock's own pixels outside the strip: its icons
+     * rising past it as they grow, and, as the copy lags the slide, the strip where it was. Both
+     * are captured inside, so the frost never samples them
+     */
+    let lifted = pointer.is_some_and(|pointer| pointer.inside || moving(&pointer.grow, now));
+    let slid = autohide && pointer.is_some_and(|pointer| moving(&pointer.shown, now));
 
-            iter::once(since)
-                .chain((1..=4).map(|step| now + glass::LEAD * step / 4))
-                .map(|at| {
-                    axes.rect(Rect {
-                        x: left,
-                        y: self::strip_y(far, size, canvas.height, pointer.shown(at)),
-                        width: row.width,
-                        height: size.body(),
-                    })
+    let gone = if merged || !(lifted || slid) {
+        Vec::new()
+    } else {
+        let since = now.checked_sub(glass::LEAD / 4).unwrap_or(now);
+        let rise = if lifted {
+            size.icon * (most - 1.0)
+        } else {
+            0.0
+        };
+
+        iter::once(since)
+            .chain((0..=4).map(|step| now + glass::LEAD * step / 4))
+            .map(|at| {
+                let y = self::strip_y(
+                    far,
+                    size,
+                    canvas.height,
+                    pointer.map_or(shown, |pointer| pointer.shown(at)),
+                );
+                axes.rect(Rect {
+                    x: left,
+                    y: if far { y - rise } else { y },
+                    width: row.width,
+                    height: size.body() + rise,
                 })
-                .collect()
-        }
-        _ => Vec::new(),
+            })
+            .collect()
     };
 
     let context_origin = if merged {
