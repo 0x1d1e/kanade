@@ -361,7 +361,7 @@ fn controls(monitor: &str, deck: Option<&Deck>, accent: Color, width: f32) -> Ro
     // Controls is where the rest of the machine is, one press from the player
     let controls = modules::on("controls");
     let level = if controls {
-        level - TARGET - 10.0
+        level - TARGET - gap
     } else {
         level
     };
