@@ -4,13 +4,14 @@
 //! And `wayland_client` stays in `doctor/`: the runtime owns Kanade's Wayland, doctor only inspects it;
 //! `crates/lock`, outside `src/`, has its own connection, for the lock screen (ADR 0025).
 //! And no color literal outside `theme.rs`: components draw theme tokens. Test code may.
+//! And every `modules::on("name")` names a Module in the catalog: an unknown name is just off.
 
 use std::collections::HashSet;
 use std::fs;
 use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
-use proc_macro2::{TokenStream, TokenTree};
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
 use syn::{
@@ -542,6 +543,68 @@ fn colors_stay_in_theme() {
     }
 
     assert!(!color_literals(&fs::read_to_string(theme).unwrap()).is_empty());
+}
+
+// the string literals handed to `modules::on(..)`, macro bodies included
+fn module_names(tokens: TokenStream, out: &mut Vec<String>) {
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+
+    for (at, token) in tokens.iter().enumerate() {
+        if let TokenTree::Group(group) = token {
+            module_names(group.stream(), out);
+        }
+
+        let [
+            TokenTree::Ident(module),
+            TokenTree::Punct(_),
+            TokenTree::Punct(_),
+            TokenTree::Ident(on),
+            TokenTree::Group(call),
+        ] = tokens[at..].iter().take(5).collect::<Vec<_>>()[..]
+        else {
+            continue;
+        };
+
+        if module != "modules" || on != "on" || call.delimiter() != Delimiter::Parenthesis {
+            continue;
+        }
+
+        if let Some(TokenTree::Literal(name)) = call.stream().into_iter().next() {
+            out.push(name.to_string().trim_matches('"').to_owned());
+        }
+    }
+}
+
+#[test]
+fn module_names_are_in_the_catalog() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    let mut files = Vec::new();
+
+    rust_files(&src, &src.join("modules"), &mut files);
+
+    let mut names = Vec::new();
+
+    for path in files {
+        module_names(
+            fs::read_to_string(path).unwrap().parse().unwrap(),
+            &mut names,
+        );
+    }
+
+    // the scan finds the calls at all
+    assert!(names.len() > 50, "found only {} calls", names.len());
+
+    let unknown: Vec<_> = names
+        .iter()
+        .filter(|name| {
+            !crate::modules::ALL
+                .iter()
+                .any(|module| module.name == name.as_str())
+        })
+        .collect();
+
+    assert!(unknown.is_empty(), "no such Module: {unknown:?}");
 }
 
 #[cfg(test)]

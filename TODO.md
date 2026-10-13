@@ -51,12 +51,13 @@ Not worth changing, by this review:
   - A shell that restarts mid-call now reads as "closed the connection without answering" (exit 3), not the old per-feature "lost" messages.
   - `capture record start` still polls for the first frame's file every 50 ms for up to 5 s; wf-recorder has no event for it.
 - [x] One bounded-child runner for the appearance adapters and Matugen (`appearance/child.rs`); the adapters' output is now read as it is written and capped at 1 MiB.
-- [x] Modules carry `hooks.status` and `hooks.reload`; `kanade status` and a config reload walk the Modules that are on. `modules::on("<name>")` stays string-keyed at its other 60 call sites.
+- [x] Modules carry `hooks.status` and `hooks.reload`; `kanade status` and a config reload walk the Modules that are on. `modules::on("<name>")` stays string-keyed at its other 60 call sites; `boundary::module_names_are_in_the_catalog` fails on a name the catalog lacks.
   - Not done: replacing the central `Call` enum with a per-Verb `run`; `kanade status` lists the Modules' lines in catalog order, not the old hand-kept order.
 - [x] "plan N" references in code comments now say the fact; `docs/archived/plan.md` stays history.
 - Not taken: a shared remote-sync loop for Google and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ, so a helper would need as many parameters as it saves lines.
 - Not taken: a `Target` table for the appearance adapters' `apply` and `disable`; their sequencing differs per target (Zen's marker block, GTK's restore state).
-- [ ] Dead after ADR 0049: the runtime's `Image::blurred` and `graphics/image/soften.rs` (no caller); `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
+- [x] `Image::blurred`, the loader's blur key and `graphics/image/soften.rs` are gone (no caller after ADR 0049).
+- [ ] Dead after ADR 0049: `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
 - [ ] A plain (unmerged) pane needs no shader: a `Rectangle` fill would drop the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
 - [ ] Retake the memory and frame baselines (`docs/memory.md`) now the capture is gone.
 - [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
