@@ -1,4 +1,4 @@
-//! The Clipboard Surface (#137): the clipboard history, newest first, searched as it is typed.
+//! The Clipboard Surface: the clipboard history, newest first, searched as it is typed.
 //! It opens only from IPC or a keybind, so it always holds the keyboard, like the Launcher: typing
 //! searches, the arrow keys move a ring over each entry, its delete and Clear all, and Enter
 //! presses what the ring is on. Pressing an entry copies it and closes the island once it is on the
@@ -322,7 +322,7 @@ fn reveal(offset: f32, row: usize) -> f32 {
     offset.min(top).max(top + ROW - room())
 }
 
-// the rows any part of shows at `offset`, as a range; only these are built (#36)
+// the rows any part of shows at `offset`, as a range; only these are built
 fn shown(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;
     let first = (offset / step).floor() as usize;

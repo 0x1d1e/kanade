@@ -1,4 +1,4 @@
-//! The Tray (#135): at Rest the pointer on the island raises the strip, the time's Peek then a slot per
+//! The Tray: at Rest the pointer on the island raises the strip, the time's Peek then a slot per
 //! tray item, its icon taking the item's left, middle and right clicks and its wheel. The Tray
 //! Surface lists them all, each with the chevron to its menu, a sub-surface a submenu deep. Past
 //! the strip's slots the last opens it. Every target is a key away, a ring on the one the arrows
@@ -27,7 +27,11 @@ use crate::view;
 
 mod focus;
 
-const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
+const WIDTH: f32 = geometry::TRAY_LIST.width - 2.0 * INSET;
+
+// the Controls' lists, in the Tray's narrower body
+const ROOMY: list::Rows = list::ROOMY.within(WIDTH);
+const COMPACT: list::Rows = list::COMPACT.within(WIDTH);
 
 // an icon in a strip slot
 const SLOT_ICON: f32 = 20.0;
@@ -157,17 +161,22 @@ fn more(monitor: &str, count: usize) -> Rectangle {
 
 /*
  * tells the island how tall the Tray asks to be: as its items, so a few leave no room below, and
- * as the Controls while a menu is open. After each change of the items or the focus, never from a view
+ * as the entries of the menu level open. After each change of the items, the menu or the focus,
+ * never from a view
  */
 pub fn fit() {
     let _ordered = super::fitting();
     let visit = IslandService::read().visit();
-    let listed = list::asks(items().len());
-    let open = Focus::read().of(visit, false).item.is_some();
-    let held = if open {
-        geometry::CONTROLS.height
-    } else {
-        listed
+    let items = items();
+    let menu = Menu::read().clone();
+    let listed = ROOMY.asks(items.len());
+    let focus = level(Focus::read().of(visit, false), &items, &menu);
+
+    let held = match (focus.item, node(&focus, &menu)) {
+        (None, _) => listed,
+        (Some(_), Some(node)) => COMPACT.asks(shown(node).len()),
+        (Some(_), None) if menu.failed => COMPACT.asks(0),
+        (Some(_), None) => listed,
     };
 
     super::ask(Surface::Tray, listed, Some((visit, held)));
@@ -176,6 +185,7 @@ pub fn fit() {
 // at start: the body follows the items and the menu open from now on
 pub fn start() {
     service::watch::<Tray>(fit);
+    service::watch::<Menu>(fit);
     service::watch::<Focus>(fit);
     fit();
 }
@@ -228,7 +238,7 @@ fn icon(item: &Item, side: f32) -> Box<dyn Widget> {
  * out, so only then does the ring show
  */
 pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
-    let shape = geometry::CONTROLS;
+    let shape = geometry::TRAY_LIST;
     let items = items();
     let menu = Menu::read().clone();
 
@@ -267,17 +277,16 @@ fn listing(items: &[Item], focus: &Focus, ring: Option<&At>) -> Column {
     .align(Center);
 
     let body: Box<dyn Widget> = if items.is_empty() {
-        Box::new(list::state(Icon::Check, "Nothing in the tray", ""))
+        Box::new(ROOMY.state(Icon::Check, "Nothing in the tray", ""))
     } else {
         let items = items.to_vec();
         let ring = ring.cloned();
 
-        Box::new(list::scrolling(
-            items.len(),
-            focus.offset,
-            scroll,
-            move |index| Box::new(item_row(&items[index], ring.as_ref())),
-        ))
+        Box::new(
+            ROOMY.scrolling(items.len(), focus.offset, scroll, move |index| {
+                Box::new(item_row(&items[index], ring.as_ref()))
+            }),
+        )
     };
 
     Column::new(vec![Box::new(header), body])
@@ -316,16 +325,17 @@ fn item_row(item: &Item, ring: Option<&At>) -> Rectangle {
         ));
     }
 
-    list::frame(
-        Row::new(parts)
-            .width(Parent)
-            .gap(list::ICON_GAP)
-            .align(Center),
-        ring == Some(&At::Item(key)),
-    )
-    .identity(key)
-    .cursor(Cursor::Pointer)
-    .on_click(super::on_left(move || click(Act::Press(At::Item(key)))))
+    ROOMY
+        .frame(
+            Row::new(parts)
+                .width(Parent)
+                .gap(list::ICON_GAP)
+                .align(Center),
+            ring == Some(&At::Item(key)),
+        )
+        .identity(key)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(move || click(Act::Press(At::Item(key)))))
 }
 
 // a menu level: the back chevron and the item's title, then its entries
@@ -364,22 +374,19 @@ fn menu_listing(
     let entries = node.map(shown).unwrap_or_default();
 
     let body: Box<dyn Widget> = match node {
-        None if menu.failed => Box::new(list::state(Icon::Back, "The menu did not open", "")),
-        None => Box::new(list::state(Icon::Forward, "Opening", "")),
-        Some(_) if entries.is_empty() => Box::new(list::state(Icon::Check, "Nothing in it", "")),
+        None if menu.failed => Box::new(ROOMY.state(Icon::Back, "The menu did not open", "")),
+        None => Box::new(ROOMY.state(Icon::Forward, "Opening", "")),
+        Some(_) if entries.is_empty() => Box::new(ROOMY.state(Icon::Check, "Nothing in it", "")),
         Some(_) => {
             let ring = ring.cloned();
 
-            Box::new(list::scrolling(
-                entries.len(),
-                focus.offset,
-                scroll,
-                move |index| {
+            Box::new(
+                COMPACT.scrolling(entries.len(), focus.offset, scroll, move |index| {
                     let (entry, ruled) = &entries[index];
 
                     Box::new(entry_row(entry, *ruled, ring.as_ref()))
-                },
-            ))
+                }),
+            )
         }
     };
 
@@ -437,13 +444,15 @@ fn entry_row(entry: &Entry, ruled: bool, ring: Option<&At>) -> Rectangle {
         parts.push(Box::new(Icon::Forward.draw(18.0)));
     }
 
-    let mut layers = children![list::frame(
-        Row::new(parts)
-            .width(Parent)
-            .gap(list::ICON_GAP)
-            .align(Center),
-        ring == Some(&At::Entry(id)),
-    )];
+    let mut layers = children![
+        COMPACT.frame(
+            Row::new(parts)
+                .width(Parent)
+                .gap(list::ICON_GAP)
+                .align(Center),
+            ring == Some(&At::Entry(id)),
+        )
+    ];
 
     // the separator, in the middle of the gap above
     if ruled {
@@ -452,16 +461,16 @@ fn entry_row(entry: &Entry, ruled: bool, ring: Option<&At>) -> Rectangle {
                 .width(WIDTH - 2.0 * list::ROW_INSET)
                 .height(1.0)
                 .fill(theme::island().surface_container_high)
-                .translate(list::ROW_INSET, -(list::ROW_GAP + 1.0) / 2.0),
+                .translate(list::ROW_INSET, -(COMPACT.gap + 1.0) / 2.0),
         ));
     }
 
     let row = Rectangle::new()
         .width(WIDTH)
-        .height(list::ROW)
+        .height(COMPACT.row)
         .identity(id)
         .align_child(Start, Start)
-        .child(Stack::new(layers).width(WIDTH).height(list::ROW));
+        .child(Stack::new(layers).width(WIDTH).height(COMPACT.row));
 
     if !entry.enabled {
         return row.opacity(DISABLED);
@@ -652,6 +661,11 @@ fn close() {
     }
 }
 
+// the rows a level stands in: the items' two lines each, a menu's entries close
+fn rows_of(focus: &Focus) -> list::Rows {
+    if focus.item.is_some() { COMPACT } else { ROOMY }
+}
+
 // the rows scrolled by `pixels`, down further down; the ring hides, the pointer moving now
 fn scroll(pixels: f32) {
     let visit = IslandService::read().visit();
@@ -661,7 +675,7 @@ fn scroll(pixels: f32) {
     let grid = focus.grid(rows(&focus, &items, &menu));
     let mut focus = settled(focus, &grid).hidden();
 
-    let most = list::most(grid.len().saturating_sub(focus.header()));
+    let most = rows_of(&focus).most(grid.len().saturating_sub(focus.header()));
     focus.offset = (focus.offset + pixels).clamp(0.0, most);
 
     store(focus);
@@ -671,6 +685,6 @@ fn scroll(pixels: f32) {
 fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
     let count = grid.len().saturating_sub(focus.header());
 
-    focus.offset = list::scrolled(focus.offset, count, focus.row(grid));
+    focus.offset = rows_of(&focus).scrolled(focus.offset, count, focus.row(grid));
     focus
 }

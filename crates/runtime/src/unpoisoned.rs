@@ -1,4 +1,4 @@
-//! Taking a lock whose holder panicked. Kanade's threads come back after a panic (#95), and the
+//! Taking a lock whose holder panicked. Kanade's threads come back after a panic, and the
 //! data a lock guards is still wanted by the next one, so a poisoned lock is taken as it is rather
 //! than panicking every thread after the first.
 

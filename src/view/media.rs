@@ -106,7 +106,7 @@ fn peek_lines(change: Change) -> Column {
 }
 
 /*
- * a track as it dissolves where it stands (#37): the one it replaces still beneath, and how far
+ * a track as it dissolves where it stands: the one it replaces still beneath, and how far
  * the new one has risen over it. Only a dissolve to the track drawn counts, since a Media Activity
  * that fades out whole has a Crossfade that moved on from it
  */

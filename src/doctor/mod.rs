@@ -1,4 +1,4 @@
-//! `kanade doctor` (#105, docs/design.md CLI): read-only diagnostics of what Kanade runs on, a line
+//! `kanade doctor` (docs/design.md CLI): read-only diagnostics of what Kanade runs on, a line
 //! each: versions, the shell, niri, the Wayland protocols, the buses and PipeWire, the config, the
 //! Modules it turns on and what each needs outside Kanade, then each CalDAV account's sync. Runs
 //! without a shell, which may be what is wrong, so it reads everything itself, but for the sync,

@@ -90,7 +90,7 @@ pub fn sound(mixer: &Mixer, switching: Switching, offset: f32, ring: Option<&At>
     let lines = lines(mixer);
 
     let list: Box<dyn Widget> = if lines.is_empty() {
-        Box::new(list::state(
+        Box::new(list::ROOMY.state(
             Icon::Speaker(0),
             "No sound devices",
             "Or PipeWire isn\u{2019}t running",
@@ -98,7 +98,7 @@ pub fn sound(mixer: &Mixer, switching: Switching, offset: f32, ring: Option<&At>
     } else {
         let defaults = Defaults::read();
 
-        Box::new(list::list(lines.len(), offset, |index| {
+        Box::new(list::ROOMY.list(lines.len(), offset, |index| {
             let line = lines[index];
 
             Box::new(
@@ -260,7 +260,7 @@ fn level(
                 .weight(theme::text::SEMIBOLD),
         );
 
-    list::frame(
+    list::ROOMY.frame(
         Row::new(children![icon, middle, number])
             .width(Parent)
             .gap(ICON_GAP)

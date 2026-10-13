@@ -25,6 +25,7 @@ use toml::Value;
 use super::caffeine;
 use super::capture::SHOWN;
 use super::wake::{self, NOT_FOUND, SETPRIV};
+use crate::backoff::Backoff;
 use crate::config::{self, Location, NightLight, NightMode};
 use crate::island::activity::{Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope};
 use crate::island::service::IslandService;
@@ -264,16 +265,15 @@ impl Drop for Running {
 }
 
 // what `follow` keeps between messages
-#[derive(Default)]
 struct Holder {
     // what wlsunset should run with, none while off, or why it cannot run
     wanted: Option<Result<Option<Vec<String>>, String>>,
 
     running: Option<Running>,
 
-    // when it runs again after it ended, and how long the next wait after that is
+    // when it runs again after it ended
     retry: Option<Instant>,
-    wait: Option<Duration>,
+    backoff: Backoff,
 
     // whether a failure showed since the config last changed or wlsunset last ran for a while
     shown: bool,
@@ -290,7 +290,7 @@ struct Holder {
  * with the thread that started it, as setpriv says, and a panic drops the one running
  */
 pub fn follow() {
-    let mut holder = Holder::default();
+    let mut holder = Holder::new();
     holder.reread();
 
     let queue = QUEUE.receiver();
@@ -314,6 +314,18 @@ pub fn follow() {
 }
 
 impl Holder {
+    fn new() -> Self {
+        Self {
+            wanted: None,
+            running: None,
+            retry: None,
+            backoff: Backoff::new(FIRST_RETRY, LAST_RETRY),
+            shown: false,
+            issued: 0,
+            missing: false,
+        }
+    }
+
     // what the config says now; a change starts wlsunset again, or stops it
     fn reread(&mut self) {
         let config = config::get();
@@ -334,7 +346,7 @@ impl Holder {
 
         self.running = None;
         self.retry = None;
-        self.wait = None;
+        self.backoff.reset();
         self.shown = false;
         self.wanted = Some(wanted);
 
@@ -411,7 +423,7 @@ impl Holder {
         // one that ran for a while failed anew, so it shows again and waits as at first
         if ran >= HEALTHY {
             self.shown = false;
-            self.wait = None;
+            self.backoff.reset();
         }
 
         let missing = matches!(&status, Ok(status) if status.code() == Some(NOT_FOUND));
@@ -431,10 +443,7 @@ impl Holder {
         }
 
         if again {
-            let wait = self.wait.unwrap_or(FIRST_RETRY);
-
-            self.retry = Some(Instant::now() + wait);
-            self.wait = Some((wait * 2).min(LAST_RETRY));
+            self.retry = Some(Instant::now() + self.backoff.failed());
         }
 
         self.publish(false, Some(why));

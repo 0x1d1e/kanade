@@ -1,4 +1,4 @@
-//! The audio devices and app streams (#132, ADR 0011): what `pulse`'s `Audio` lacks, since it has the
+//! The audio devices and app streams (ADR 0011): what `pulse`'s `Audio` lacks, since it has the
 //! default speaker and microphone only. Read from PipeWire's graph through `pw-dump --monitor`, run
 //! apart from `privacy`'s, so this wakes only when the graph does; changed through `wpctl`, one
 //! action each, run in turn off the draw thread. What capture is in use is `privacy`'s, not this.
@@ -347,7 +347,7 @@ fn entry(object: &Object) -> Option<Entry> {
  */
 fn level(info: &Json) -> Level {
     let props = info.get("params").and_then(|params| params.get("Props"));
-    let props = props.and_then(Json::as_array).unwrap_or_default();
+    let props = props.and_then(json::array).unwrap_or_default();
 
     let Some(props) = props
         .iter()
@@ -359,7 +359,7 @@ fn level(info: &Json) -> Level {
         };
     };
 
-    let channels = props.get("channelVolumes").and_then(Json::as_array);
+    let channels = props.get("channelVolumes").and_then(json::array);
     let loudest = channels
         .unwrap_or_default()
         .iter()
@@ -384,7 +384,7 @@ fn percent(cubed: f64) -> u8 {
 
 // the keys of the defaults' metadata with the device each names, none for a removed one
 fn defaults(metadata: &Json) -> impl Iterator<Item = (&str, Option<String>)> {
-    let entries = metadata.get("metadata").and_then(Json::as_array);
+    let entries = metadata.get("metadata").and_then(json::array);
 
     entries
         .unwrap_or_default()
@@ -406,7 +406,7 @@ fn default_name(value: &Json) -> Option<String> {
     let name = |value: &Json| value.get("name")?.as_str().map(String::from);
 
     match value {
-        Json::String(text) => Json::parse(text).as_ref().and_then(name),
+        Json::String(text) => json::parse(text).as_ref().and_then(name),
         value => name(value),
     }
 }

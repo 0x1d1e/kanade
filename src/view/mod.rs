@@ -728,7 +728,7 @@ fn glass_pane(
 
 /*
  * exactly the input region, so leaving it is leaving the island; niri also sends the leave
- * when the region shrinks away from a still pointer (#3), which is what reports it here.
+ * when the region shrinks away from a still pointer, which is what reports it here.
  * Hover, click and arming all take this one target: the runtime hit-tests only on pointer events,
  * so a body that grows under a still pointer (Peek) would never report it on the body.
  * It draws nothing, and comes first: the runtime knows what the pointer is on by its place among

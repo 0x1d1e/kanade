@@ -1,4 +1,4 @@
-//! The public CLI (#103, docs/design.md CLI): `kanade` runs the shell, `kanade <verb> [args]` asks
+//! The public CLI (docs/design.md CLI): `kanade` runs the shell, `kanade <verb> [args]` asks
 //! the running one over the runtime's IPC. Each Module names the verbs it owns (`Module::verbs`), so the
 //! usage and the parse follow from the Modules, and the shell refuses the verbs of a Module that is
 //! off. Both sides parse the same words: this process to answer a typo without a shell, the shell to
@@ -525,7 +525,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 call_until(&lock_status_call(), deadline)
             }))
         }
-        // a shell from before #196, or any answer naming no request to wait on
+        // an older shell, or any answer naming no request to wait on
         (Call::Lock, Ok(Reply::Done(_))) => Ok(Reply::Unknown(String::from(
             "the shell names no lock request to wait on, as it is older than this kanade; restart \
              it. The session may still lock",
@@ -549,7 +549,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
 /*
  * writes `text` to stdout and gives back `code` as the exit code. A closed pipe is no failure, as its
- * reader, like `head`, wanted no more (#197); any other error is said on stderr and fails
+ * reader, like `head`, wanted no more; any other error is said on stderr and fails
  */
 pub fn print(text: &str, code: ExitCode) -> ExitCode {
     match written(io::stdout().lock(), text.as_bytes()) {
@@ -648,7 +648,7 @@ fn settle_recording(
 /*
  * the shell answers a lock at once, as it only asks niri for it (`lock::start`), so this waits
  * until niri says it holds the lock for `request`, which no lock before it can, and the lock still
- * holds when asked (#196)
+ * holds when asked
  */
 fn settle_lock(
     request: &lock::Request,

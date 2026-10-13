@@ -15,6 +15,7 @@ use zbus::MatchRule;
 use zbus::blocking::{Connection, MessageIterator};
 use zbus::zvariant::OwnedValue;
 
+use crate::backoff::Backoff;
 use crate::lock;
 
 const LOGIND: &str = "org.freedesktop.login1";
@@ -37,7 +38,7 @@ pub fn seated() -> bool {
 
 // runs on its own thread for good
 pub fn follow() {
-    let mut wait = FIRST;
+    let mut backoff = Backoff::new(FIRST, LONGEST);
     let mut said = None;
 
     loop {
@@ -52,12 +53,7 @@ pub fn follow() {
             said = Some(why);
         }
 
-        if started.elapsed() >= LASTED {
-            wait = FIRST;
-        }
-
-        thread::sleep(wait);
-        wait = (wait * 2).min(LONGEST);
+        thread::sleep(backoff.after(started.elapsed(), LASTED));
     }
 }
 

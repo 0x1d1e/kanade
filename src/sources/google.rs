@@ -1,4 +1,4 @@
-//! Google Calendar sync (#151, ADR 0016, docs/design.md Calendar): an optional account whose
+//! Google Calendar sync (ADR 0016, docs/design.md Calendar): an optional account whose
 //! calendars the `calendar` Module shows beside the local ones. `kanade google-calendar sign-in
 //! <client.json>` signs in through the browser with the user's own OAuth client (`oauth`); the
 //! client and the refresh token go to the Secret Service (`secret`), never to the config or a log.
@@ -30,16 +30,15 @@ mod oauth;
 mod secret;
 
 use std::fmt;
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use kanade_runtime::{queue::Queue, service::Service};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -49,7 +48,8 @@ use ureq::Agent;
 
 use self::oauth::{Access, Client, Pending};
 use self::secret::Credentials;
-use super::calendar;
+use super::{calendar, mirror};
+use crate::backoff::Backoff;
 use crate::{clock, config};
 
 // the Secret Service, which keeps the credentials
@@ -60,6 +60,9 @@ pub const OPEN: &str = "xdg-open";
 
 // how often the events are fetched again: a change made elsewhere shows within it
 const INTERVAL: Duration = Duration::from_secs(15 * 60);
+
+// the first wait after a failed sync, doubling up to `INTERVAL`
+const RETRY: Duration = Duration::from_secs(60);
 
 // the days synced each side of now, which the Calendar Surface shows Google's events within
 const PAST: i64 = 366 * 24 * 60 * 60;
@@ -559,18 +562,31 @@ impl<O: Outside> Worker<O> {
             self.load();
         }
         let mut due = self.kept.is_some();
+        let mut backoff = Backoff::new(RETRY, INTERVAL);
 
         loop {
             self.vet();
 
             if due {
                 self.sync();
+
+                if self.account.problem().is_some() {
+                    backoff.failed();
+                } else {
+                    backoff.reset();
+                }
             }
 
             // a refused grant waits for a sign-in, as asking again is refused again
             let waits = self.kept.is_some() && self.account.problem() != Some(&Problem::Revoked);
             let message = if waits {
-                match queue.recv_timeout(INTERVAL) {
+                let again = if backoff.failing() {
+                    backoff.wait()
+                } else {
+                    INTERVAL
+                };
+
+                match queue.recv_timeout(again) {
                     Ok(message) => message,
                     Err(RecvTimeoutError::Timeout) => Message::Sync,
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -815,15 +831,17 @@ impl<O: Outside> Worker<O> {
         let synced = self
             .outside
             .fetch(credentials, &mut self.access)
-            .and_then(|files| {
+            .and_then(|mut files| {
                 let dir = self
                     .places
                     .events
                     .as_ref()
                     .ok_or_else(|| Problem::Disk(String::from("no home directory")))?;
 
-                write(dir, &credentials.account, &files)
-                    .map_err(|error| Problem::Disk(error.to_string()))
+                // first, so the events are never another sign-in's than it names
+                files.insert(0, (String::from(OWNER), credentials.account.clone()));
+
+                mirror::sync(dir, &files).map_err(|error| Problem::Disk(error.to_string()))
             });
 
         match synced {
@@ -833,7 +851,7 @@ impl<O: Outside> Worker<O> {
                     self.outside.reread();
                 }
 
-                self.set(State::SignedIn, Some(now()));
+                self.set(State::SignedIn, Some(clock::unix_seconds()));
             }
             Err(problem) => {
                 if self.account.problem() != Some(&problem) {
@@ -877,14 +895,6 @@ impl<O: Outside> Worker<O> {
     }
 }
 
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
-}
-
 // each calendar shown in Google Calendar, as the name of its file and the file
 fn fetch(
     agent: &Agent,
@@ -906,7 +916,7 @@ fn fetch(
         CALENDAR_PAGES,
     )?;
 
-    let now = now();
+    let now = clock::unix_seconds();
     let (Some(from), Some(to)) = (ics::rfc3339(now - PAST), ics::rfc3339(now + AHEAD)) else {
         return Err(Problem::Refused(String::from("the clock is out of range")));
     };
@@ -1059,66 +1069,10 @@ fn refusal(status: u16, body: &Value) -> Problem {
     }
 }
 
-/*
- * the synced files in `dir`, for the sign-in `account`, each written only when it changed, and
- * the files of calendars no longer shown deleted; true when it made `dir`. Only Kanade reads them,
- * as they hold the user's events
- */
-fn write(dir: &Path, account: &str, files: &[(String, String)]) -> io::Result<bool> {
-    let created = !dir.is_dir();
-
-    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-
-    // first, so the events are never another sign-in's than it names
-    let owner = dir.join(OWNER);
-    if fs::read_to_string(&owner).ok().as_deref() != Some(account) {
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(owner)?
-            .write_all(account.as_bytes())?;
-    }
-
-    for (name, text) in files {
-        let path = dir.join(name);
-        if fs::read_to_string(&path).is_ok_and(|kept| kept == *text) {
-            continue;
-        }
-
-        // not `.ics`, so the calendar never reads one half written
-        let part = dir.join(format!(".{name}.part"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&part)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-
-        fs::rename(&part, &path)?;
-    }
-
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        let ours = path.extension().is_some_and(|extension| extension == "ics");
-        let kept = path
-            .file_name()
-            .is_some_and(|name| files.iter().any(|(kept, _)| name == kept.as_str()));
-
-        if ours && !kept {
-            fs::remove_file(path)?;
-        }
-    }
-
-    Ok(created)
-}
-
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::io::Write as _;
     use std::sync::Mutex;
 
     use kanade_runtime::MutexExt;
@@ -1192,49 +1146,6 @@ mod tests {
             name,
             file_name("en.usa#holiday@group.v.calendar.google.com")
         );
-    }
-
-    #[test]
-    fn a_sync_writes_only_what_changed_and_deletes_what_went() {
-        let dir = env::temp_dir().join(format!("kanade-google-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let files = |list: &[(&str, &str)]| -> Vec<(String, String)> {
-            list.iter()
-                .map(|(name, text)| (String::from(*name), String::from(*text)))
-                .collect()
-        };
-
-        assert!(matches!(
-            write(&dir, "a", &files(&[("a.ics", "A"), ("b.ics", "B")])),
-            Ok(true)
-        ));
-        let mode = fs::metadata(&dir).map(|metadata| {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.permissions().mode() & 0o777
-        });
-        assert_eq!(mode.ok(), Some(0o700));
-
-        let written = fs::metadata(dir.join("a.ics")).and_then(|metadata| metadata.modified());
-        fs::write(dir.join("notes.txt"), "mine").ok();
-
-        assert!(matches!(
-            write(&dir, "a", &files(&[("a.ics", "A")])),
-            Ok(false)
-        ));
-        assert_eq!(
-            fs::metadata(dir.join("a.ics"))
-                .and_then(|metadata| metadata.modified())
-                .ok(),
-            written.ok()
-        );
-        assert!(!dir.join("b.ics").exists());
-        assert!(dir.join("notes.txt").exists());
-        assert_eq!(
-            fs::read_to_string(dir.join(OWNER)).ok().as_deref(),
-            Some("a")
-        );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

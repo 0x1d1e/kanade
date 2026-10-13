@@ -16,7 +16,7 @@ use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
 use super::satellites::{Mark, Satellites};
 
-// how long a morph takes, by what it changes, see `response`: 0.8 of plan 5.2's 180, 220 and 180 ms (#210)
+// how long a morph takes, by what it changes, see `response`: 0.8 of plan 5.2's 180, 220 and 180 ms
 const EXPAND: Duration = Duration::from_millis(144);
 const SURFACE_CHANGE: Duration = Duration::from_millis(176);
 const COLLAPSE: Duration = Duration::from_millis(144);
@@ -30,7 +30,7 @@ const GRACE: Duration = Duration::from_millis(250);
 // a little past the target and back, like macOS's island
 const DAMPING: f32 = 0.72;
 
-// the island's motion and pointer timings (#39); the defaults are the constants above
+// the island's motion and pointer timings; the defaults are the constants above
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Timings {
     pub motion: Mode,
@@ -78,14 +78,14 @@ impl Timings {
 }
 
 /*
- * an island opened without a press holds the keyboard until it collapses (#4), so it collapses on
- * its own after this unless the pointer comes onto it (#48). Only keys the open Surface consumes
+ * an island opened without a press holds the keyboard until it collapses, so it collapses on
+ * its own after this unless the pointer comes onto it. Only keys the open Surface consumes
  * restart it (`attend`): someone typing into a window who missed the island would hold it forever
  */
 const HOLD: Duration = Duration::from_secs(5);
 
 /*
- * a deadline change nudges listen(), which otherwise sleeps until the next deadline (#5);
+ * a deadline change nudges listen(), which otherwise sleeps until the next deadline;
  * one pending nudge is enough, since listen() reads every deadline again when it wakes
  */
 static NUDGE: LazyLock<Nudge> = LazyLock::new(Nudge::new);
@@ -138,7 +138,7 @@ struct Island {
     armed: bool,
 
     // opened without a press (IPC, keybind), so OnDemand never got focus; held until collapse,
-    // since niri drops the focus on any switch to OnDemand, even right after a press (#4)
+    // since niri drops the focus on any switch to OnDemand, even right after a press
     held: bool,
 
     // the pointer is in the input region
@@ -212,9 +212,9 @@ impl Service for IslandService {
     }
 
     /*
-     * sleeps until the next deadline or a nudge, so an idle island never wakes (#5);
+     * sleeps until the next deadline or a nudge, so an idle island never wakes;
      * a nudge sent between the read and the wait is still queued, so the wait never misses it.
-     * A panic here listens again after 5 s: the runtime restarts every Service's listen (#95)
+     * A panic here listens again after 5 s: the runtime restarts every Service's listen
      */
     fn listen() {
         let receiver = NUDGE.receiver();
@@ -252,7 +252,7 @@ impl IslandService {
         self.timings
     }
 
-    // the config's timings, at start and on each reload (#102); a motion under way keeps its own
+    // the config's timings, at start and on each reload; a motion under way keeps its own
     pub fn retime(&mut self, timings: Timings) {
         self.timings = timings;
     }
@@ -329,7 +329,7 @@ impl IslandService {
         self.presentations.withhold(surfaces);
     }
 
-    // the tray items there are now; the pointer at Rest shows them, a slot each (#135)
+    // the tray items there are now; the pointer at Rest shows them, a slot each
     pub fn set_tray(&mut self, count: usize, now: Instant) {
         self.presentations.set_tray(count);
         self.sync(now);
@@ -586,9 +586,9 @@ impl IslandService {
     }
 
     /*
-     * OnDemand focuses only on a press, so it must be on before the press that expands (#2).
+     * OnDemand focuses only on a press, so it must be on before the press that expands.
      * Exclusive would keep the keyboard from overlays opened later (niri gives it to the first
-     * mapped exclusive surface), so only an island opened without a press holds it (#4)
+     * mapped exclusive surface), so only an island opened without a press holds it
      */
     pub fn keyboard(&self, monitor: &str) -> Keyboard {
         if self.held(monitor) {
@@ -960,7 +960,7 @@ impl IslandService {
 
         /*
          * a pinned island stays open with nobody on it, so it waits for nothing and gives back a
-         * held keyboard: holding it unattended would starve every other window (#48)
+         * held keyboard: holding it unattended would starve every other window
          */
         if self.presentations.pinned(monitor) {
             let island = self.island(monitor);
@@ -1104,7 +1104,7 @@ impl IslandService {
             return;
         }
 
-        // on before any press, since OnDemand focuses only on one (#2)
+        // on before any press, since OnDemand focuses only on one
         island.inside = inside;
         island.armed = inside;
         island.under = None;
@@ -1458,7 +1458,7 @@ mod tests {
         assert!(island.shape(MONITOR, now + 4 * second).height < fresh);
     }
 
-    // a small output shrinks only its own body (#212)
+    // a small output shrinks only its own body
     #[test]
     fn a_small_output_shrinks_only_its_own_body() {
         let now = Instant::now();
@@ -1780,7 +1780,7 @@ mod tests {
         assert_eq!(island.presentation(MONITOR), Presentation::Peek);
     }
 
-    // #135: at Rest the hover delay shows the time's form with the tray items, and leaving it waits out the grace
+    // at Rest the hover delay shows the time's form with the tray items, and leaving it waits out the grace
     #[test]
     fn hover_at_rest_shows_the_tray_after_the_delay() {
         let now = Instant::now();
@@ -2060,7 +2060,7 @@ mod tests {
         assert!(change < 0.93, "{change}");
     }
 
-    // #39: a configured timing replaces its default everywhere it applies
+    // a configured timing replaces its default everywhere it applies
     #[test]
     fn configured_timings_time_the_island() {
         let now = Instant::now();
@@ -2621,7 +2621,7 @@ mod tests {
         assert!(island.pinned(MONITOR));
     }
 
-    // the accept case of #20 and #109: shows, expires, and the persistent one returns with no re-post
+    // the accept case: shows, expires, and the persistent one returns with no re-post
     #[test]
     fn a_workspace_switch_over_a_persistent_shows_expires_and_returns() {
         let now = Instant::now();
@@ -2676,7 +2676,7 @@ mod tests {
         assert!(island.settled(MONITOR, settled));
     }
 
-    // #37: another song in the same Media Activity dissolves in place, no crossfade leg, no morph
+    // another song in the same Media Activity dissolves in place, no crossfade leg, no morph
     #[test]
     fn a_new_track_dissolves_where_it_stands() {
         let song = |title: &str, playing| {
@@ -2785,7 +2785,7 @@ mod tests {
 
     /*
      * along a side edge Peek and Tray are shorter than the pill they grow from, so a pointer still
-     * at its end would be left out of the region (niri reports that as a leave, #3) and the island
+     * at its end would be left out of the region (niri reports that as a leave) and the island
      * would collapse; on every edge the region holds where the pointer was until it moves on
      */
     #[test]

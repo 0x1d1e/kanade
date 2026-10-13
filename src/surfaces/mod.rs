@@ -49,7 +49,7 @@ fn ask(surface: Surface, fresh: f32, visit: Option<(u64, f32)>) {
 
 /*
  * a Surface target pressed with the left button. Only the topmost target gets a click, so a right
- * click on it would otherwise never reach the island beneath: it pins the island there too (#31)
+ * click on it would otherwise never reach the island beneath: it pins the island there too
  */
 fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
     move |button| match button {

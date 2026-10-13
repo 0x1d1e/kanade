@@ -9,6 +9,7 @@ use std::thread;
 
 use kanade_runtime::MutexExt;
 
+use crate::atomic::{self, Mode};
 use crate::config;
 
 // as many as the empty query lists ahead of the alphabet
@@ -55,19 +56,8 @@ fn save() {
     let _saving = SAVING.locked();
     let list = RECENT.locked().clone().unwrap_or_default();
 
-    let Some(file) = file() else {
-        return;
-    };
-
-    if let Some(dir) = file.parent() {
-        let _ = fs::create_dir_all(dir);
-    }
-
-    // replaced whole, so a crash mid-write leaves the old list
-    let temporary = file.with_extension("tmp");
-
-    if fs::write(&temporary, list.join("\n")).is_ok() && fs::rename(&temporary, &file).is_err() {
-        let _ = fs::remove_file(&temporary);
+    if let Some(file) = file() {
+        let _ = atomic::write(&file, list.join("\n").as_bytes(), Mode::Shared);
     }
 }
 

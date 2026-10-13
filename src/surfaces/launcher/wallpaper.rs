@@ -1,5 +1,5 @@
 /*
- * wallpapers, as a Launcher provider (#145): a query starting with `@` searches the images in the
+ * wallpapers, as a Launcher provider: a query starting with `@` searches the images in the
  * wallpaper directory by name, and pressing one sets it. Only on that prefix, so a search for apps
  * never fills with images
  */

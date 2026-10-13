@@ -323,7 +323,7 @@ impl Focus {
                 let count = grid.len() - 1;
                 let shown = moved.row.saturating_sub(1);
 
-                focus.offset = list::reveal(focus.offset, shown, count);
+                focus.offset = list::ROOMY.reveal(focus.offset, shown, count);
             }
         }
 

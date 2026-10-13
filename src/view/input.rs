@@ -49,7 +49,7 @@ pub(super) fn hover(monitor: &str, inside: bool, peeks: bool) {
     }
 }
 
-// the wheel reaches no Presentation yet, so nothing is written for it (#27)
+// the wheel reaches no Presentation yet, so nothing is written for it
 pub(super) fn route(monitor: &str, input: Input) {
     if input.decides() {
         IslandService::write().input(monitor, input, Instant::now());

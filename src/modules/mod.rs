@@ -1,8 +1,8 @@
-//! Modules (#94, docs/design.md Modules): every feature the user can turn off. A Module names the
+//! Modules (docs/design.md Modules): every feature the user can turn off. A Module names the
 //! Modules it requires and those it can do without; `resolve` decides once at start which run, and
 //! `start` starts only those. A Module that is off starts no thread, opens no window, reads no
 //! Service and refuses its verbs, so the Services only it reads stay cold. Turning one on or
-//! off takes a restart, since the runtime registers windows only at start. `kanade module` (#149) lists
+//! off takes a restart, since the runtime registers windows only at start. `kanade module` lists
 //! them and turns one on or off in the settings file, saying what the restart will change.
 
 use std::sync::OnceLock;

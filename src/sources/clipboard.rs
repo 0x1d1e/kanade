@@ -1,4 +1,4 @@
-//! The clipboard (#136, ADR 0011): a history of what was copied, text and images, newest first,
+//! The clipboard (ADR 0011): a history of what was copied, text and images, newest first,
 //! bounded and kept only in memory. `wl-paste --watch` runs Kanade itself at each new selection
 //! (`hand_over`), which hands back that selection's content with its state and type, so what is
 //! kept is what that state was about. Restoring an entry hands

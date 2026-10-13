@@ -15,18 +15,18 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Write as _};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use chrono::{Days, NaiveDateTime};
 use kanade_runtime::{MutexExt, service::Service};
 use ring::digest;
 
 use super::calendar::{Calendars, Reminded, Trigger};
+use crate::atomic::{self, Mode};
 use crate::clock::{self, WallTimer};
 use crate::island::activity::{
     Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Reminder, Scope,
@@ -292,37 +292,9 @@ pub fn load(path: &Path) -> Fired {
     }
 }
 
-/*
- * writes them whole beside the file, then over it, so a crash leaves the old file or the new one,
- * never part of either. Only the owner reads it, as it says when the user's events are
- */
+// only the owner reads it, as it says when the user's events are
 pub fn save(path: &Path, fired: &Fired) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)?;
-    }
-
-    let part = path.with_extension("part");
-    let written = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&part)
-        .and_then(|mut file| {
-            file.write_all(fired.text().as_bytes())?;
-            file.sync_all()
-        });
-
-    match written.and_then(|()| fs::rename(&part, path)) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(&part);
-            Err(error)
-        }
-    }
+    atomic::write(path, fired.text().as_bytes(), Mode::Private)
 }
 
 // what `kanade reminders` asks
@@ -513,7 +485,7 @@ fn follow(events: &Receiver<Event>, timer: &WallTimer) {
 
     supervise::run("calendar-reminders", || {
         loop {
-            let now = seconds();
+            let now = clock::unix_seconds();
             let next = monitor.step(now).unwrap_or(now + REEXPAND);
 
             if let Err(error) = timer.set(next) {
@@ -686,14 +658,6 @@ fn candidate(reminded: Reminded) -> Candidate {
         all_day: reminded.occurrence.all_day,
         triggers: reminded.triggers,
     }
-}
-
-fn seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 // the next moment a countdown to `to` reads otherwise, none once it reads now
@@ -1034,7 +998,7 @@ mod tests {
 
         save(&path, &fired).unwrap();
         assert_eq!(load(&path), fired);
-        assert!(!path.with_extension("part").exists());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
 
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(&path).unwrap().permissions().mode();

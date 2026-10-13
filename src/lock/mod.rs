@@ -1,11 +1,11 @@
-//! The lock screen (#154, ADRs 0018, 0025): `kanade-lock` holds ext-session-lock over its own
+//! The lock screen (ADRs 0018, 0025): `kanade-lock` holds ext-session-lock over its own
 //! Wayland connection and draws it, as soon as niri sizes each lock surface; the shell hands it
 //! what each output's shows (`scene`) and checks the password typed with PAM. Every monitor shows
 //! the time, the date, who is signed in and a password field, and nothing else: no notification,
 //! no Activity. The password goes from the field to PAM and nowhere else; the field is emptied as
 //! it is sent, and it is never logged or drawn.
 //!
-//! `kanade lock` exits 0 only once niri says the lock it asked for holds (#196), with no password
+//! `kanade lock` exits 0 only once niri says the lock it asked for holds, with no password
 //! typed since being checked or accepted. logind's `LockedHint` may still say the last lock right
 //! after an unlock, so it is only for a crash.
 //!
@@ -69,7 +69,7 @@ struct Requests {
     // niri refused the newest request's lock, as while another locker holds the session
     denied: bool,
 
-    // from logind's `PrepareForSleep(true)` until `(false)`: no password goes to PAM (#155)
+    // from logind's `PrepareForSleep(true)` until `(false)`: no password goes to PAM
     sleeping: bool,
 
     // the sleeps begun, so a wake found late opens only the gate of the sleep it was asked about
@@ -764,7 +764,7 @@ mod tests {
     use super::*;
     use kanade_lock::stage::{Stage, Step};
 
-    // #155: an accepted password ends the lock, so sleep asks over it
+    // an accepted password ends the lock, so sleep asks over it
     #[test]
     fn sleep_asks_over_an_unlock() {
         let mut requests = Requests::new();
@@ -840,7 +840,7 @@ mod tests {
         assert_eq!(requests.next(asked), Next::Ask);
     }
 
-    // #155: on its way to sleep, a password typed goes nowhere until the machine wakes
+    // on its way to sleep, a password typed goes nowhere until the machine wakes
     #[test]
     fn no_password_goes_to_pam_while_the_machine_sleeps() {
         let mut requests = Requests::new();
@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(requests.said().status, Status::Checking);
     }
 
-    // #155: Enter pressed again and again while sleep shuts the gate asks logind once at a time
+    // Enter pressed again and again while sleep shuts the gate asks logind once at a time
     #[test]
     fn logind_is_asked_once_per_sleep_at_a_time() {
         let mut requests = Requests::new();
@@ -885,7 +885,7 @@ mod tests {
         assert_eq!(requests.ask(), Some(2));
     }
 
-    // #155: a check sleep dropped unlocks nothing, however late PAM ends it
+    // a check sleep dropped unlocks nothing, however late PAM ends it
     #[test]
     fn sleep_drops_a_password_being_checked() {
         let mut requests = Requests::new();
@@ -1037,7 +1037,7 @@ mod tests {
         assert_eq!(requests.said().status, Status::Checking);
     }
 
-    // #196: a lock is confirmed only once niri holds it, and only while no unlock is asked
+    // a lock is confirmed only once niri holds it, and only while no unlock is asked
     #[test]
     fn a_lock_is_confirmed_only_while_no_unlock_is_pending() {
         let mut requests = Requests::new();
@@ -1187,7 +1187,7 @@ mod tests {
                         return false;
                     };
 
-                    // no password goes to PAM while the machine sleeps (#155)
+                    // no password goes to PAM while the machine sleeps
                     assert!(!sleeping);
                     self.check = Some((check, self.requests.newest, false));
                 }

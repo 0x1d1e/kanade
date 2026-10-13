@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::json::Json;
+use super::json::{self, Json};
 use crate::island::activity::Workspace;
 use crate::supervise;
 
@@ -154,7 +154,7 @@ impl Known {
     // nothing
     fn apply(&mut self, event: &Json) {
         if let Some(changed) = event.get("WorkspacesChanged") {
-            let workspaces = changed.get("workspaces").and_then(Json::as_array);
+            let workspaces = changed.get("workspaces").and_then(json::array);
 
             self.workspaces.clear();
             self.focused = None;
@@ -209,7 +209,7 @@ impl Known {
                 listed.window = changed.get("active_window_id").and_then(Json::as_u64);
             }
         } else if let Some(changed) = event.get("WindowsChanged") {
-            let windows = changed.get("windows").and_then(Json::as_array);
+            let windows = changed.get("windows").and_then(json::array);
 
             self.windows = windows
                 .unwrap_or_default()
@@ -225,10 +225,10 @@ impl Known {
         } else if let Some(changed) = event.get("WindowLayoutsChanged") {
             for change in changed
                 .get("changes")
-                .and_then(Json::as_array)
+                .and_then(json::array)
                 .unwrap_or_default()
             {
-                if let Some([id, layout]) = change.as_array()
+                if let Some([id, layout]) = json::array(change)
                     && let Some(window) = id.as_u64().and_then(|id| self.windows.get_mut(&id))
                     && let Some(tile) = self::tile(layout)
                 {
@@ -244,7 +244,7 @@ impl Known {
 
             self.overview = open;
         } else if let Some(changed) = event.get("CastsChanged") {
-            let casts = changed.get("casts").and_then(Json::as_array);
+            let casts = changed.get("casts").and_then(json::array);
 
             self.casts = casts
                 .unwrap_or_default()
@@ -321,7 +321,7 @@ fn shown(window: &Json) -> Option<(u64, Showing)> {
 }
 
 fn tile(layout: &Json) -> Option<(f64, f64)> {
-    match layout.get("tile_size")?.as_array()? {
+    match json::array(layout.get("tile_size")?)? {
         [width, height] => Some((width.as_f64()?, height.as_f64()?)),
         _ => None,
     }
@@ -350,7 +350,7 @@ fn captured(event: &Json) -> Option<String> {
 // what a window event says; none for another event, and for those `windows` ignores, like layouts
 fn windowed(event: &Json) -> Option<Heard> {
     if let Some(changed) = event.get("WindowsChanged") {
-        let windows = changed.get("windows").and_then(Json::as_array);
+        let windows = changed.get("windows").and_then(json::array);
 
         Some(Heard::All(
             windows
@@ -414,7 +414,7 @@ impl Layouts {
             let layouts = changed.get("keyboard_layouts");
             let names = layouts
                 .and_then(|layouts| layouts.get("names"))
-                .and_then(Json::as_array)
+                .and_then(json::array)
                 .unwrap_or_default();
 
             self.names = names
@@ -661,7 +661,7 @@ fn exchange(stream: UnixStream, request: &str, patience: Duration) -> io::Result
         return Ok(Exchange::Unclear(error));
     }
 
-    let parsed = Json::parse(&reply);
+    let parsed = json::parse(&reply);
 
     if let Some(answer) = parsed.as_ref().and_then(|parsed| parsed.get("Ok")) {
         return Ok(Exchange::Answered(answer.clone()));
@@ -702,7 +702,7 @@ fn watch(
 
     // niri answers the request first, events follow on the same connection
     match lines.next() {
-        Some(Ok(reply)) if Json::parse(&reply).is_some_and(|reply| reply.get("Ok").is_some()) => {}
+        Some(Ok(reply)) if json::parse(&reply).is_some_and(|reply| reply.get("Ok").is_some()) => {}
         Some(Ok(reply)) => return io::Error::other(format!("niri refused: {reply}")),
         Some(Err(error)) => return error,
         None => return io::ErrorKind::UnexpectedEof.into(),
@@ -715,7 +715,7 @@ fn watch(
         };
 
         // a line this reader cannot follow is skipped, the next event still counts
-        let Some(event) = Json::parse(&line) else {
+        let Some(event) = json::parse(&line) else {
             eprintln!("kanade: skipped a niri event that is not JSON: {line}");
             continue;
         };

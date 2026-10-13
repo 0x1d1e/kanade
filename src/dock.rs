@@ -1,4 +1,4 @@
-//! The Dock (#144, docs/design.md Later): the pinned apps, then the running apps that are not
+//! The Dock (docs/design.md Later): the pinned apps, then the running apps that are not
 //! pinned, on every monitor where `dock.edge` and `dock.align` put it, each with a dot while it
 //! runs. A click focuses a running app's window, the next one if it has the focus already, or
 //! launches an app that is not running. Right-click pins or unpins an app and opens its declared

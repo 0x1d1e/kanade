@@ -66,21 +66,21 @@ pub fn devices(
     ring: Option<&At>,
 ) -> Column {
     let list: Box<dyn Widget> = match adapter.radio {
-        Radio::Missing => Box::new(list::state(
+        Radio::Missing => Box::new(list::ROOMY.state(
             Icon::Bluetooth,
             "Bluetooth is unavailable",
             "No adapter, or bluetoothd isn\u{2019}t running",
         )),
-        Radio::Off => Box::new(list::state(
+        Radio::Off => Box::new(list::ROOMY.state(
             Icon::Bluetooth,
             "Bluetooth is off",
             "Turn it on to see devices",
         )),
         Radio::On if *prompt != Prompt::None => Box::new(self::prompt(adapter, prompt, ring)),
         Radio::On if adapter.devices.is_empty() => {
-            Box::new(list::state(Icon::Bluetooth, "Looking for devices", ""))
+            Box::new(list::ROOMY.state(Icon::Bluetooth, "Looking for devices", ""))
         }
-        Radio::On => Box::new(list::list(adapter.devices.len(), offset, |index| {
+        Radio::On => Box::new(list::ROOMY.list(adapter.devices.len(), offset, |index| {
             Box::new(row(&adapter.devices[index], request, ring))
         })),
     };

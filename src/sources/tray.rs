@@ -1,4 +1,4 @@
-//! The tray (#134, ADR 0011): the StatusNotifierItems apps show, hosted by Kanade. Kanade serves the
+//! The tray (ADR 0011): the StatusNotifierItems apps show, hosted by Kanade. Kanade serves the
 //! StatusNotifierWatcher items register with, unless another program already does; then it hosts
 //! that one's items, and takes over the name once that program quits. Each item's properties are
 //! read again when it says they changed, off this thread, so a slow or dead item stalls only its
@@ -40,6 +40,7 @@ pub use item::Status;
 use item::{Address, Described};
 use watcher::Watcher;
 
+use crate::backoff::Backoff;
 use crate::island::service::IslandService;
 use crate::{raster, supervise};
 
@@ -305,24 +306,18 @@ static SERIALS: AtomicU64 = AtomicU64::new(0);
 // runs for good, connecting again after a run fails to start or loses the bus
 pub fn follow() {
     supervise::spawn("tray", || {
-        let mut wait = FIRST_RETRY;
+        let mut backoff = Backoff::new(FIRST_RETRY, LAST_RETRY);
 
         loop {
             let started = Instant::now();
             let Err(error) = run();
 
-            wait = retry(wait, started.elapsed());
+            let wait = backoff.after(started.elapsed(), HEALTHY);
             eprintln!("kanade: tray ended ({error}), connecting again in {wait:?}");
 
             thread::sleep(wait);
-            wait = (wait * 2).min(LAST_RETRY);
         }
     });
-}
-
-// how long until a run that lasted `ran` connects again, `wait` if it ended soon
-fn retry(wait: Duration, ran: Duration) -> Duration {
-    if ran >= HEALTHY { FIRST_RETRY } else { wait }
 }
 
 // hosts items until the connection ends

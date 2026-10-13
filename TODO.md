@@ -35,6 +35,17 @@ Not worth changing, by this review:
 - The lock thread's backdrop, wallpaper and faces kept while unlocked (ADR 0025): the first lock frame needs them.
 - A PAM check that never returns blocks the next: PAM cannot be cancelled, and checks run one at a time by design (ADR 0025).
 
+## Architecture (whole-codebase review, second)
+
+- [x] One atomic file write: `atomic::write` with `Mode::{Shared, Private, Exactly}` (settings, reminders, recents, appearance adapters, calendar mirror)
+  - Not folded in: `raster::store` (a cache of hundreds of pictures; the fsync would cost startup) and the glass shader (it locks the file before naming it).
+- [x] One `Backoff` (`backoff.rs`) for logind, seat, sleep, tray, wake, night light, battery, weather, CalDAV and Google. Google now retries a failed sync after 1 min, doubling to 15 min, not a flat 15 min.
+- [x] `sources/json.rs` is `serde_json::Value` with `parse`, `array` and `quote`; the hand-rolled parser is gone.
+- [x] `sources/mirror.rs` is the calendar-sync file mirror for Google and CalDAV; `clock::unix_seconds` replaces four copies.
+- [x] A Service's panic reaches `kanade status` (`service::on_panic`, set by `supervise::follow_services`); the restart delay is one constant.
+- [ ] About 80 comment blocks run over four lines (worst: `shadow.rs:1`, `dock.rs:1344`, `view/mod.rs:729`, `calendar.rs:1087`). Each states real constraints, so cut them one by one, not in bulk.
+- [ ] ADR 0003 still says "std-only JSON parser"; history, left as written.
+
 ## Architecture (#208 review)
 
 - [x] Input and invalidation (ADR 0034, 0035; a copy redraws only its pane's readers)

@@ -1,7 +1,7 @@
 /*
  * the island's icons, drawn from the svgs in icons/ on a 20 unit grid. Each is rasterized
  * once per (icon, size, scale) and ink, then drawn as an image: a body morphing under its
- * rounded clip only moves a texture, where paths re-rendered the whole canvas every frame (#36)
+ * rounded clip only moves a texture, where paths re-rendered the whole canvas every frame
  */
 
 use std::collections::HashMap;

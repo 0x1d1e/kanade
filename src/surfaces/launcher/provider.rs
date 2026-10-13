@@ -1,4 +1,4 @@
-//! The Launcher's providers (#138): each answers a query with what it finds, how well each answer
+//! The Launcher's providers: each answers a query with what it finds, how well each answer
 //! fits, what its row shows and what pressing it does. The seam is Kanade's own; there is no
 //! plugin API (design.md, Launcher).
 

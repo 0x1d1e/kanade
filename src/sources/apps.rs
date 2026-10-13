@@ -1,4 +1,4 @@
-//! The apps the Launcher lists (#30, #183): the desktop entries no menu is told to hide, with how
+//! The apps the Launcher lists: the desktop entries no menu is told to hide, with how
 //! each starts (`launch`), the same entries and launch as the Dock's. Read off the view thread when
 //! the Launcher's Module starts and again each time the Launcher opens, so an app installed since
 //! shows without polling; the Service is written only when the list changed.

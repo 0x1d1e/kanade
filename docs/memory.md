@@ -55,7 +55,7 @@ unlocked         437.8   427.8   319.0   108.7   531.0   529.0 |   947.6   980.1
 - GPU buffers more than doubled from 225 to 495 MiB at Rest, and RSS from 150 to 312 MiB. Both come from GPU glass: the build before the vello and wgpu upgrade (`03245ec`) measured 487 MiB of GPU buffers and 275 MiB of RSS at Rest.
 - The upgrade itself costs about 26 MiB of PSS at Rest: 15 MiB of heap and 10 MiB for `libnvidia-rtcore`, which the new build loads and the old did not. Compare Rest: the later samples depend on what each Surface allocated, and this baseline is one run.
 - The lock screen costs about 15-20 MiB of RSS and no GPU buffers now (ADR 0025); the Settings window 47 MiB of GPU buffers, 22 of them kept once it closes.
-- `docs/design.md` targets an RSS under 80 MB; Rest RSS is 312 MiB and leaves out the GPU buffers.
+- `docs/design.md` once capped RSS at 80 MB and no longer does; Rest RSS is 312 MiB and leaves out the GPU buffers.
 
 ## Baseline before GPU glass
 
@@ -99,4 +99,4 @@ What dominates:
 - Mapped files, 73 MiB of PSS, stay flat. NVIDIA's driver libraries (`libnvidia-gpucomp`, `-glcore`, `-eglcore` and others) cost 35 MiB of PSS, 29 MiB of it mapped files and the rest anonymous, plus 3 MiB for `/dev/nvidiactl`. Mesa's `libLLVM` and `libgallium` cost 17 MiB, 15 MiB of it mapped files. The shell draws on the Intel GPU, whose i915 client holds its buffers and render time, while `nvidia-smi` shows it holding 1 MiB on the NVIDIA one. So the NVIDIA libraries are loaded but barely used. Why either set loads was not traced; one guess, untested, is wgpu probing every Vulkan and EGL driver.
 - The peak is above every sample twice. It is 46 MiB over Rest from startup, and 18 MiB over the lock screen during the password check and unlock.
 
-`docs/design.md` targets an RSS under 80 MB. The shell's RSS is 150 MiB at Rest and 214 MiB after every Surface, and RSS leaves out the 225 MiB of GPU buffers.
+`docs/design.md` once capped RSS at 80 MB and no longer does. The shell's RSS is 150 MiB at Rest and 214 MiB after every Surface, and RSS leaves out the 225 MiB of GPU buffers.

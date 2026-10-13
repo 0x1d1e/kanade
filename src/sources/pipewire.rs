@@ -4,7 +4,7 @@
 
 use std::io::{self, BufRead};
 
-use super::json::Json;
+use super::json::{self, Json};
 
 // prints the PipeWire graph, and each change to it
 pub const DUMP: &str = "pw-dump";
@@ -40,14 +40,14 @@ pub fn prints(lines: impl BufRead, mut print: impl FnMut(&[Json])) -> io::Error 
         }
 
         // a print this reader cannot follow is skipped, the next one still counts
-        let Some(objects) = Json::parse(&text) else {
+        let Some(objects) = json::parse(&text) else {
             eprintln!("kanade: skipped a pw-dump print that is not JSON");
             text.clear();
             continue;
         };
 
         text.clear();
-        print(objects.as_array().unwrap_or_default());
+        print(json::array(&objects).unwrap_or_default());
     }
 
     io::ErrorKind::UnexpectedEof.into()
@@ -134,8 +134,8 @@ mod tests {
 
     #[test]
     fn only_a_null_info_is_a_removal() {
-        let removed = Json::parse(r#"{"id": 4, "info": null}"#).unwrap();
-        let metadata = Json::parse(r#"{"id": 4, "type": "x", "metadata": []}"#).unwrap();
+        let removed = json::parse(r#"{"id": 4, "info": null}"#).unwrap();
+        let metadata = json::parse(r#"{"id": 4, "type": "x", "metadata": []}"#).unwrap();
 
         assert!(Object(&removed).removed());
         assert!(!Object(&metadata).removed());

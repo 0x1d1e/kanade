@@ -304,7 +304,7 @@ References, not dependencies: Suzuha = panels as one liquid shape; Noctalia v5 =
 - source thread or Service listener panic → logged, restarted after 5 s (the runtime restarts Services, `src/supervise.rs` sources); view panic may kill shell.
 - feature deps scoped: PipeWire audio/privacy; NM/BlueZ/PPD controls; logind/PAM session; awww/matugen/hypridle/wlsunset optional; network only for enabled remote-backed features.
 
-Targets: idle CPU <0.1%; idle frames 0; RSS <80 MB; Island morph mean frame gap = refresh interval (`scripts/frames`); source→visible <100 ms; Launcher→first key <100 ms; cold start <500 ms.
+Targets: idle CPU <0.1%; idle frames 0; memory tracked by `scripts/memory` (`docs/memory.md`), no cap before 1.0; Island morph mean frame gap = refresh interval (`scripts/frames`); source→visible <100 ms; Launcher→first key <100 ms; cold start <500 ms.
 
 Nested-niri E2E checks idle/morph each release.
 

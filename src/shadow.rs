@@ -3,7 +3,7 @@
  * body: four corners at their own size and four edges stretched along it. A corner reaches a blur
  * along the body's long sides, so a body standing upright, as on a side edge, takes corners turned
  * to reach down it rather than across, which on a narrow pill would overlap. The runtime's own shadow
- * goes through Vello, which on every morphing frame cost enough gpu time to drop frames (#45);
+ * goes through Vello, which on every morphing frame cost enough gpu time to drop frames;
  * images only move textures. The body is see-through glass, so every piece is cut out where the
  * body covers it, and there is no piece for its middle. Each piece is
  * a draw of its own, which on an integrated gpu costs more than the pixels it fills, so the
@@ -131,7 +131,7 @@ fn prepare_radius(radius: u32, upright: bool, style: ShadowStyle) {
 /*
  * the shadow of a body with this corner radius, to go under it. Mid-morph the nearest resting
  * radius stands in, a few pixels off under a blur in motion: every radius drawn is a set of
- * textures the runtime decodes and uploads again, which mid-morph costs more than the pixels (#45).
+ * textures the runtime decodes and uploads again, which mid-morph costs more than the pixels.
  * Pieces still decoding are stood in for by the nearest radius that is ready, so the shadow
  * never blinks out
  */

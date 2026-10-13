@@ -3,7 +3,7 @@
 //! Parsed with syn, so aliases (`use kanade_runtime as ui`), nesting, and test code are all covered.
 //! And `wayland_client` stays in `doctor/`: the runtime owns Kanade's Wayland, doctor only inspects it;
 //! `crates/lock`, outside `src/`, has its own connection, for the lock screen (ADR 0025).
-//! And no color literal outside `theme.rs` (#106): components draw theme tokens. Test code may.
+//! And no color literal outside `theme.rs`: components draw theme tokens. Test code may.
 
 use std::collections::HashSet;
 use std::fs;

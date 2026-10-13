@@ -1,4 +1,4 @@
-//! Mailboxes that outlive the thread reading them. A thread that panics is run again (#95), and
+//! Mailboxes that outlive the thread reading them. A thread that panics is run again, and
 //! what was sent while it was down is still there for the next one, since both ends sit in a static.
 
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -80,7 +80,7 @@ mod tests {
 
     use super::*;
 
-    // a thread that panics holding the reading end, as a listener does before it is run again (#95)
+    // a thread that panics holding the reading end, as a listener does before it is run again
     #[test]
     fn a_message_sent_after_a_panic_reaches_the_next_reader() {
         let queue = Arc::new(Queue::new());
