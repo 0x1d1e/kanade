@@ -1,5 +1,5 @@
 //! The Launcher Surface: a search over its providers, the apps `sources::apps`
-//! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, Settings and
+//! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, the Calendar, Settings and
 //! each setting), with the `wallpaper` Module on, wallpapers after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
@@ -385,6 +385,7 @@ fn destinations() -> Destinations {
         wifi: controls && radios.wifi,
         bluetooth: controls && radios.bluetooth,
         clipboard: modules::on("clipboard-surface"),
+        calendar: modules::on("calendar-surface"),
         wallpapers: modules::on("wallpaper-surface"),
         keys: modules::on("keys-surface"),
         settings: modules::on("settings"),
@@ -944,6 +945,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
             .ok_or("Controls did not open"),
         Destination::Clipboard => {
             IslandService::write().open(monitor, Surface::Clipboard, Instant::now());
+            Ok(())
+        }
+        Destination::Calendar => {
+            IslandService::write().open(monitor, Surface::Calendar, Instant::now());
             Ok(())
         }
         Destination::Wallpapers => {
