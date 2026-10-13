@@ -102,23 +102,44 @@ fn frost(uv: vec2<f32>) -> vec4<f32> {
         let direction = vec2<f32>(cos(angle), sin(angle));
         let along = vec2<f32>(-direction.y, direction.x);
 
-        // sphere-traced out to the outline
+        /*
+         * out to the outline: the steps grow with the reach, as plain sphere tracing crawls along
+         * a wall near it and ran out of steps well short of the sides, leaving the far ray alone to
+         * color a wedge at the top; then the last step is bisected back to the outline
+         */
         var reach = 0.0;
+        var inside = 0.0;
+        var met = false;
 
-        for (var step = 0; step < 12; step++) {
+        for (var step = 0; step < 16; step++) {
             let gap = rim_outline(p + direction * reach, first, second, low);
 
             if gap > -0.25 {
+                met = true;
                 break;
             }
 
-            reach += max(-gap, 0.5);
+            inside = reach;
+            reach += max(-gap, 1.0 + 0.5 * reach);
         }
 
-        // a ray that ran out of steps along a wall never reached the outline
-        if rim_outline(p + direction * reach, first, second, low) < -0.5 {
+        if !met {
             continue;
         }
+
+        var outside = reach;
+
+        for (var step = 0; step < 8; step++) {
+            let middle = 0.5 * (inside + outside);
+
+            if rim_outline(p + direction * middle, first, second, low) > -0.25 {
+                outside = middle;
+            } else {
+                inside = middle;
+            }
+        }
+
+        reach = outside;
 
         var got = vec3<f32>(0.0);
         var kept = 0.0;
