@@ -310,11 +310,11 @@ fn connect(
 
 /*
  * the worker: decodes wallpapers and faces and works out each output's backdrop, only the newest
- * asked of each output when several wait. The last wallpaper stays decoded, for the next output
- * showing it
+ * asked of each output when several wait. A wallpaper stays decoded for the outputs of one batch of
+ * jobs, then goes: a lock draws from the backdrops, so keeping it would only hold a full size picture
  */
 fn prepare(jobs: &mpsc::Receiver<Job>, done: &channel::Sender<Done>, decode: Decode) {
-    // the last wallpaper decoded, from the file as it was then written
+    // the wallpaper decoded for this batch, from the file as it was then written
     let mut decoded: Option<(Image, Option<Pixmap>)> = None;
 
     while let Ok(first) = jobs.recv() {
@@ -373,6 +373,8 @@ fn prepare(jobs: &mpsc::Receiver<Job>, done: &channel::Sender<Done>, decode: Dec
                 return;
             }
         }
+
+        decoded = None;
     }
 }
 

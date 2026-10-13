@@ -32,7 +32,7 @@ Not worth changing, by this review:
 - `island/service.rs` size: most of it is tests.
 - On a side edge the Satellites travel with the body's height as a Compact peeks: they hang from the body's end.
 - On a side edge, while a Peek holds the pill it grew from in the input region, a click beside the Peek on the pill's old place expands: the pill is still where the pointer rested.
-- The lock thread's backdrop, wallpaper and faces kept while unlocked (ADR 0025): the first lock frame needs them.
+- The lock thread's backdrops and faces kept while unlocked (ADR 0025): the first lock frame needs them. The decoded wallpaper is not kept.
 - A PAM check that never returns blocks the next: PAM cannot be cancelled, and checks run one at a time by design (ADR 0025).
 
 ## Architecture (whole-codebase review, second)
