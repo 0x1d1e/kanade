@@ -83,6 +83,8 @@ Not worth changing, by this review:
 - [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
 - [ ] Satellites shift; the first ~80 ms of the liquid reveal are plain (ADR 0037: a copy is asked for after the first draw and lands about 3 frames on; the shift is their pixels bent by the rim still lagging).
 - [ ] A write of any Service but `Backdrops` and `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
+- [ ] Skip or defer a backdrop resample while the copy is stale, as hyprglass does (a damage-covered check, a cached sample reused during fade-out; `GlassLayerSurface.cpp`): the glass would not read pixels of a body that has moved on.
+- [ ] Zero-copy backdrop: import niri's `linux_dmabuf` copy into wgpu instead of wlr-screencopy into SHM plus CPU `light()` and mips. Not the cause of the Dock smear; the round trip is about 3 ms. Needs unsafe Vulkan dmabuf import (LINEAR modifier), GPU mips, light and dedupe, an SHM fallback and an ADR. No reference in `acknowledgements` does it from a client.
 
 ## Island sizes (ADR 0030)
 
