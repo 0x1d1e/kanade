@@ -16,6 +16,7 @@ use super::slider::Slider;
 use crate::icon::Icon;
 use crate::island::activity::Track;
 use crate::island::geometry;
+use crate::island::presentation::Surface;
 use crate::modules;
 use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
@@ -42,7 +43,7 @@ const PLAY: f32 = 44.0;
  * `open` says the Surface is open rather than fading out, so only then does it ask the follower
  * to keep it fed
  */
-pub fn surface(open: bool, now: Instant) -> Rectangle {
+pub fn surface(monitor: &str, open: bool, now: Instant) -> Rectangle {
     if open {
         media::watch();
     }
@@ -78,7 +79,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
             Column::new(children![
                 header(track, &playback.players, deck, playback.page, width, now),
                 timeline(deck, accent, width, now),
-                controls(deck, accent, width),
+                controls(monitor, deck, accent, width),
             ])
             .width(width)
             .gap(12.0),
@@ -328,8 +329,8 @@ fn clock(time: Duration) -> String {
     }
 }
 
-// previous, play or pause, next; then the speaker, pressed to mute, and its level
-fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
+// previous, play or pause, next; then the speaker, pressed to mute, its level, and Controls
+fn controls(monitor: &str, deck: Option<&Deck>, accent: Color, width: f32) -> Row {
     let able = |can: fn(&Deck) -> bool| deck.filter(|deck| can(deck)).map(|deck| deck.name.clone());
 
     let transport = Row::new(children![
@@ -357,10 +358,35 @@ fn controls(deck: Option<&Deck>, accent: Color, width: f32) -> Row {
     let gap = 24.0;
     let level = width - (2.0 * BUTTON + PLAY + 2.0 * 8.0) - gap - TARGET - 10.0;
 
-    Row::new(children![transport, volume(level, accent)])
-        .width(width)
-        .gap(gap)
-        .align(Center)
+    // Controls is where the rest of the machine is, one press from the player
+    let controls = modules::on("controls");
+    let level = if controls {
+        level - TARGET - 10.0
+    } else {
+        level
+    };
+
+    let mut row: Vec<Box<dyn Widget>> = vec![Box::new(transport), Box::new(volume(level, accent))];
+    if controls {
+        row.push(Box::new(to_controls(monitor)));
+    }
+
+    Row::new(row).width(width).gap(gap).align(Center)
+}
+
+// opens Controls in place of the player
+fn to_controls(monitor: &str) -> Rectangle {
+    let monitor = monitor.to_owned();
+
+    Rectangle::new()
+        .width(TARGET)
+        .height(TARGET)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(move || {
+            crate::view::open(&monitor, Surface::Controls, false);
+        }))
+        .child(Icon::Sliders.on(20.0, theme::island().on_surface_variant))
 }
 
 // a playing player pauses, any other plays; each only when the player says it can
