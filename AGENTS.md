@@ -24,7 +24,7 @@ scripts/dev               # cargo build, restart the shell on each save; a faile
 - Only one Kanade per session. Stop any other (`failed to listen: kanade is already running`) first.
 - Zero idle frames check: `KANADE_FRAMES=1 scripts/dev` prints frames only when something draws.
 - Idle wakeups (#40): diff `voluntary_ctxt_switches` of each `/proc/$(pgrep -x kanade)/task/*/status` over 30 s at rest; expected numbers in `docs/adr/0004-wake-sources-on-announcements.md`.
-- Morph smoothness (#36): with `KANADE_FRAMES=1 scripts/dev > LOG 2>&1` running, `scripts/frames LOG` prints frame gaps per Surface transition; mean gap should match the refresh interval.
+- Morph smoothness (#36): with `KANADE_FRAMES=1 scripts/dev > LOG 2>&1` running, `scripts/frames LOG` prints frame gaps per window and Surface transition (each window's first frame, which holds the idle time before it, is left out); the island's mean gap should match the refresh interval.
   For the Calendar's worst case, give the shell a temporary `XDG_DATA_HOME` whose `calendars/` holds an `RRULE:FREQ=SECONDLY` event from years ago: no frame is slow; on opening or turning the month, the agenda says it is loading until the month is expanded.
 - Memory (#198): before and after a memory change, take a baseline with `scripts/memory` as `docs/memory.md` says; RSS misses the GPU buffers.
 - Privacy E2E: `pw-record` for the mic, `wf-recorder` for a niri cast. Webcam: `gst-launch-1.0 pipewiresrc autoconnect=false client-name=camtest ! fakesink`, then `pw-link -L <v4l2 node>:capture_1 camtest:input_1` (plain `pipewiresrc` fails with `target not found`).

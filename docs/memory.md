@@ -32,6 +32,33 @@ What the Surfaces show changes the numbers, so record it with each baseline: the
 
 ## Baseline
 
+2026-10-13, `main` at 51d9f6b, release build, files cached. The same machine and setup as the baselines below (one monitor, no config, calendars, weather location, media player or tray items), NVIDIA 615.78.08. One run, after the Island, Dock and Banners went solid black (ADR 0049) and the image blur path was dropped. Run with `KANADE_FRAMES=1` in the unit, which only prints to a file.
+
+```
+                   rss     pss    anon    file     gpu gpu-res |  cgroup    peak    anon   cache   shmem  slab-r  others
+rest             212.8   175.9   127.3    48.5   106.5   104.5 |   250.3   289.1   132.7     0.0   112.2     0.2    11.9
+controls         239.2   202.3   153.8    48.5   118.5   116.5 |   291.4   292.2   159.1     0.0   124.2     0.2    11.9
+media            256.4   219.5   170.9    48.5   120.5   118.5 |   310.3   310.7   176.3     0.0   126.2     0.2    11.9
+notifications    261.9   225.0   176.4    48.5   120.5   118.5 |   316.1   316.1   181.8     0.0   126.2     0.2    11.9
+launcher         264.0   227.1   178.5    48.5   122.6   120.6 |   320.6   322.0   183.9     0.0   128.2     0.2    11.9
+tray             266.1   229.2   180.6    48.5   122.6   120.6 |   322.4   322.8   186.0     0.0   128.2     0.2    11.9
+clipboard        264.6   227.7   179.2    48.5   122.6   120.6 |   322.1   322.9   184.6     0.0   128.3     0.2    11.9
+calendar         266.0   229.1   180.5    48.5   122.6   120.6 |   323.0   323.1   185.9     0.0   128.3     0.2    11.9
+weather          275.8   238.9   190.3    48.5   122.6   120.6 |   332.6   333.0   195.7     0.0   128.3     0.2    11.9
+collapse         277.3   240.5   191.9    48.5   126.6   124.6 |   338.4   338.6   197.3     0.0   132.3     0.2    11.9
+settings         287.1   250.2   201.6    48.5   217.2   215.2 |   439.1   440.2   207.0     0.0   222.8     0.2    11.9
+closed           287.6   250.7   202.1    48.5   184.7   182.7 |   407.2   440.2   207.5     0.0   190.3     0.2    11.9
+locked           311.6   266.8   210.2    48.7   184.7   182.7 |   431.0   440.2   215.5     0.0   206.2     0.2    11.9
+unlocked         293.2   255.5   206.6    48.9   186.7   184.7 |   414.0   455.4   212.0     0.0   192.3     0.2    11.9
+```
+
+- Against the 2026-10-11 baseline below: GPU buffers at Rest fell from 495 to 107 MiB, RSS from 312 to 213 MiB, the cgroup from 765 to 250 MiB, and the peak after unlock from 980 to 455 MiB.
+- The Settings window costs 91 MiB of GPU buffers, 58 MiB of them kept once it closes; the lock screen about 24 MiB of RSS and no GPU buffers.
+- Frames (`scripts/frames`, 144 Hz, 3 rounds): the island's mean gap is 7.2 ms (refresh interval 6.9 ms), the busiest frame 9.5 ms of view, draw and GPU. The dock's mean gap is 8.4 ms: about 20% of its frames during a morph miss a refresh (gap near 13.9 ms). Not traced.
+- Zero frames over 15 s at Rest.
+
+## Baseline after GPU glass
+
 2026-10-11, `main` at 39313b7, release build, files cached. The same machine and setup as the 2026-10-09 baseline below (one monitor, no config, calendars, weather location, media player or tray items), with NVIDIA 615.78.08. One run, after GPU glass (ADR 0037), ADR 0025's CPU lock screen, and vello 0.11 with wgpu 30:
 
 ```

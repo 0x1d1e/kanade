@@ -11,16 +11,25 @@ measure() {
     start=$(wc -l < "$log")
     "${KANADE:-target/debug/kanade}" "$@" > /dev/null
     sleep 1
+    # per window: its first frame's gap is the idle time since its last, so skip it
     tail -n +$((start + 1)) "$log" | awk -v label="$label" '
         $1 == "frame" {
-            n++
-            if (n > 1) { sum += $5; if ($5 > most) most = $5 }
+            name = $2
+            if (!(name in seen)) { seen[name] = 1; order[++windows] = name; next }
+            n[name]++
+            sum[name] += $5
+            if ($5 > most[name]) most[name] = $5
             work = $7 + $9 + $11
             if (work > busiest) busiest = work
         }
         END {
-            printf "%-10s frames %3d  mean gap %5.1f ms  max gap %5.1f ms  max view+draw+gpu %4.1f ms\n",
-                label, n, (n > 1 ? sum / (n - 1) : 0), most, busiest
+            printf "%-13s", label
+            for (i = 1; i <= windows; i++) {
+                name = order[i]
+                if (n[name] > 0)
+                    printf "  %s %3d frames mean %4.1f max %5.1f ms;", name, n[name], sum[name] / n[name], most[name]
+            }
+            printf "  busiest view+draw+gpu %4.1f ms\n", busiest
         }'
 }
 
