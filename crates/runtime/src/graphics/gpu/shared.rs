@@ -4,8 +4,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use vello::wgpu::{
-    Adapter, Device, DeviceDescriptor, DeviceLostReason, Instance, InstanceDescriptor, Queue,
-    RequestAdapterOptions, Surface,
+    Adapter, Backends, Device, DeviceDescriptor, DeviceLostReason, Instance, InstanceDescriptor,
+    MemoryHints, Queue, RequestAdapterOptions, Surface,
 };
 use vello::{AaSupport, RendererOptions};
 
@@ -33,7 +33,11 @@ pub struct Shared {
 
 // every window draws on the main thread, so thread locals are enough
 thread_local! {
-    static INSTANCE: Instance = Instance::new(InstanceDescriptor::new_without_display_handle_from_env());
+    // vulkan only: probing opengl too loaded EGL, mesa's llvm and the nvidia gl libraries, about 17 MiB
+    static INSTANCE: Instance = Instance::new(InstanceDescriptor {
+        backends: Backends::VULKAN,
+        ..InstanceDescriptor::new_without_display_handle_from_env()
+    });
 
     static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
 }
@@ -65,8 +69,12 @@ fn open(surface: &Surface) -> Shared {
         info.name, info.backend, info.device_type
     );
 
-    let (device, queue) =
-        wait(adapter.request_device(&DeviceDescriptor::default())).expect("failed to open gpu");
+    // the default reserves memory in blocks of up to 256 MiB, 263 MiB of them unused here
+    let (device, queue) = wait(adapter.request_device(&DeviceDescriptor {
+        memory_hints: MemoryHints::MemoryUsage,
+        ..DeviceDescriptor::default()
+    }))
+    .expect("failed to open gpu");
 
     // one bad command only loses its frame, the default handler would panic and end the shell
     device.on_uncaptured_error(Arc::new(|error| eprintln!("kanade: gpu error: {error}")));
