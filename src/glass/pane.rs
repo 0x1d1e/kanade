@@ -1,10 +1,9 @@
-//! A pane's glass as one layer: the tint by material, tone and the backdrop's light, and the
-//! shader's values.
+//! A pane of glass as one layer: its tone-aware tint, the backdrop's light and the shader's values.
 
 use kanade_runtime::{Color, Rectangle};
 
 use crate::config;
-use crate::look::{Material, Tone};
+use crate::look::Tone;
 use crate::theme;
 
 use super::Body;
@@ -12,9 +11,8 @@ use super::Spot;
 use super::shader;
 
 /*
- * how much of what is behind a pane shows, as Apple's glass variants: `Clear` lets it through, for
- * the Island and the Dock, whose few glyphs read over anything; `Regular` tints it enough for lines
- * of text, as on the Banners
+ * how strongly a pane is tinted: `Clear` for the Island and Dock, whose few glyphs read over
+ * anything; `Regular` for the Banners, with more tint under lines of text
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
@@ -36,7 +34,7 @@ pub struct Pane {
     // the pointer over it, from its top left corner, which the highlight follows
     pub light: Option<(f32, f32)>,
 
-    // what is behind it, for liquid glass; none draws the transparent look
+    // the captured area around it, used to frost the body
     pub backdrop: Option<Seen>,
 
     /*
@@ -47,7 +45,7 @@ pub struct Pane {
     pub united: Option<Body>,
 }
 
-// what liquid glass shows of what is behind a body
+// the captured area around a body's outline
 #[derive(Debug, Clone, PartialEq)]
 pub struct Seen {
     pub(super) spot: Spot,
@@ -56,50 +54,36 @@ pub struct Seen {
     pub(super) light: f32,
 
     // the copy's place, as it was asked for, where a copy is there at all
-    pub(super) place: Option<[[f32; 4]; RIM_ROWS]>,
-
-    // whether the copy's body fits this one, close enough for the rim; if not, it is a way off
-    pub(super) near: bool,
+    pub(super) place: Option<[[f32; 4]; COPY_ROWS]>,
 }
 
 // the rows of values a copy's place takes: its body's three and where it lies in the copy
-pub(super) const RIM_ROWS: usize = 4;
+pub(super) const COPY_ROWS: usize = 4;
 
 // the shader's values, by row
 const BODY_ROW: usize = 2;
 const TINT_ROW: usize = 5;
-const RIM_ROW: usize = 6;
-const OPACITY_ROW: usize = RIM_ROW + RIM_ROWS;
+const COPY_ROW: usize = 6;
+const FROST_ROW: usize = COPY_ROW + COPY_ROWS;
 
-// the tint over what is behind, by material and tone, and how bright that is for liquid glass
-fn tint(material: Material, tone: Tone, variant: Variant, light: Option<f32>) -> Color {
-    let opacity = match (material, light) {
-        (Material::Monochrome, _) => 1.0,
-
-        // the brighter the backdrop, the more tint light text needs over it, and dark text less
-        (Material::LiquidGlass, Some(light)) => match tone {
-            Tone::Dark => 0.10 + 0.25 * light,
-            Tone::Light => 0.62 - 0.30 * light,
-        },
-
-        (Material::LiquidGlass, None) => 0.30,
+// the tint over the frosted backdrop, with stronger coverage where text needs it
+fn tint(tone: Tone, variant: Variant, light: Option<f32>) -> Color {
+    let opacity = match (tone, light) {
+        (Tone::Dark, Some(light)) => 0.32 + 0.16 * light,
+        (Tone::Light, Some(light)) => 0.72 - 0.16 * light,
+        (Tone::Dark, None) => 0.50,
+        (Tone::Light, None) => 0.72,
     };
 
-    // text over a busy backdrop needs most of it hidden, whatever the material
     let opacity = match (variant, tone) {
         (Variant::Clear, _) => opacity,
         (Variant::Regular, Tone::Dark) => opacity.max(0.58 + 0.08 * light.unwrap_or(0.5)),
         (Variant::Regular, Tone::Light) => opacity.max(0.72 - 0.04 * light.unwrap_or(0.5)),
     };
 
-    let (base, opacity) = match (tone, light) {
-        (Tone::Dark, _) => (theme::GLASS_DARK, opacity),
-
-        // liquid glass sets its own light tint by the backdrop, under the floor over a bright one
-        (Tone::Light, Some(_)) => (theme::GLASS_LIGHT, opacity),
-
-        // dark text needs more of a light tint under it to read
-        (Tone::Light, _) => (theme::GLASS_LIGHT, f32::max(opacity, 0.5)),
+    let base = match tone {
+        Tone::Dark => theme::GLASS_DARK,
+        Tone::Light => theme::GLASS_LIGHT,
     };
 
     Color::rgba(
@@ -110,28 +94,20 @@ fn tint(material: Material, tone: Tone, variant: Variant, light: Option<f32>) ->
     )
 }
 
-// a material's tint in a tone over nothing behind it, for Settings' material picker
-pub fn swatch(material: Material, tone: Tone) -> Color {
-    tint(material, tone, Variant::Clear, None)
+// the tint over nothing behind it, for Settings' material preview
+pub fn swatch(tone: Tone) -> Color {
+    tint(tone, Variant::Clear, None)
 }
 
-/*
- * the tint of the lock screen's field and disc as `appearance.material` makes them, under light
- * text if `dark`; none for liquid glass, which `kanade-lock` tints by its backdrop (ADR 0025)
- */
-pub fn lock_tint(dark: bool) -> Option<Color> {
-    let material = config::get().appearance.material;
+// the lock screen's tint under light text if `dark`; the lock crate frosts its own backdrop
+pub fn lock_tint(dark: bool) -> Color {
     let tone = if dark { Tone::Dark } else { Tone::Light };
-
-    (material != Material::LiquidGlass).then(|| tint(material, tone, Variant::Clear, None))
+    tint(tone, Variant::Clear, None)
 }
 
-/*
- * whether a normal window, as Settings, is glass: the compositor blurs what is behind it and its
- * fills let that through, for liquid glass where the compositor can blur (ADR 0024)
- */
+// Settings asks the compositor to blur its window when the protocol is available
 pub fn blurred() -> bool {
-    config::get().appearance.material == Material::LiquidGlass && kanade_runtime::blur_available()
+    kanade_runtime::blur_available()
 }
 
 // a window's fill when it is glass (`blurred`): mostly opaque, for the text on it to read
@@ -150,12 +126,9 @@ pub fn see_through(color: Color) -> Color {
     )
 }
 
-// how much a body's rim catches the light, by `appearance.material`
+// a quiet rim highlight for frosted glass
 pub fn highlight() -> f32 {
-    match config::get().appearance.material {
-        Material::Monochrome => 0.45,
-        Material::LiquidGlass => 1.0,
-    }
+    0.45
 }
 
 /*
@@ -165,7 +138,6 @@ pub fn highlight() -> f32 {
  */
 pub fn layer(pane: Pane) -> Rectangle {
     let config = config::get();
-    let material = config.appearance.material;
     let tone = pane.tone.unwrap_or(config.appearance.tone);
 
     let (light_x, light_y, light_share) = match pane.light {
@@ -179,13 +151,12 @@ pub fn layer(pane: Pane) -> Rectangle {
     };
 
     let tint = tint(
-        material,
         tone,
         pane.variant,
         pane.backdrop.as_ref().map(|seen| seen.light),
     );
 
-    let mut values = vec![[0.0; 4]; OPACITY_ROW + 1];
+    let mut values = vec![[0.0; 4]; FROST_ROW + 1];
 
     values[0] = [
         pane.radius,
@@ -229,18 +200,11 @@ pub fn layer(pane: Pane) -> Rectangle {
         .height(pane.height)
         .shader(shader().clone());
 
-    // only where `place` said liquid glass is there, whatever the config says by now
+    // frost only where a captured copy has its placement values
     if let Some(seen) = pane.backdrop {
         if let Some(place) = seen.place {
-            values[RIM_ROW..OPACITY_ROW].copy_from_slice(&place);
-
-            // the rim bends the copy only where its body fits this one; the frost is a blur, so it
-            // stays up while the body moves off its copy, not to switch to the plain tint
-            values[OPACITY_ROW][0] = if seen.near { 1.0 } else { 0.0 };
-            values[OPACITY_ROW][1] = match pane.variant {
-                Variant::Clear => 0.0,
-                Variant::Regular => 1.0,
-            };
+            values[COPY_ROW..FROST_ROW].copy_from_slice(&place);
+            values[FROST_ROW][0] = 1.0;
         }
 
         layer = layer.backdrop(seen.spot);

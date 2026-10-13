@@ -11,7 +11,7 @@ Status: accepted. Amends ADR 0031, whose shell `view::island` laid out and then 
 `src/scene.rs` holds the placement as pure data, tested without a Wayland connection or a Service:
 
 - `Stand`: the Island's canvas and the edge it hangs from. `Stand::pose(shape, out)` bounds a shape by the canvas; `body`, `area` and `liquid` place a `Pose` in the canvas.
-- `Scene`: a `Stand`, the merged shell if any, and the Dock's strip (`scene::Dock`, from `dock::Laid::fit`) once the Dock is laid out around the body. It answers the window's size, where the canvas lies in it, the plate, the body joined to the plate for liquid glass (`glass`), and the input region (`reach`) for any pose.
+- `Scene`: a `Stand`, the merged shell if any, and the Dock's strip (`scene::Dock`, from `dock::Laid::fit`) once the Dock is laid out around the body. It answers the window's size, where the canvas lies in it, the plate, the body joined to the plate for the pane (`glass`), and the input region (`reach`) for any pose.
 
 `view::island` reads the Services and the instants, builds the poses, and draws and hit-tests from the `Scene`. Banners place their cards by `Stand::body`.
 

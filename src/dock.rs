@@ -53,7 +53,7 @@ const BELOW: f32 = 4.0;
 // under the icon at rest: from the icon to the strip's edge, the dot between
 const DOT_ROOM: f32 = BELOW + DOT + BELOW;
 
-// the Dock's pane of liquid glass on its output
+// the Dock's Frosted Glass pane on its output
 const PANE: &str = "dock";
 
 // from the monitor's edge
@@ -1056,13 +1056,13 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     };
 
     /*
-     * liquid glass knows the window's place with its margins as part of it; it captures nothing
+     * Frosted Glass needs the window's place with its margins as part of it; it captures nothing
      * while the Dock is out of sight, empty, under a fullscreen window, slid past its edge or
      * stepped aside
      */
     let spot = glass::Spot::new(&monitor.name, PANE);
     let fullscreen = view::covered(monitor, || IslandService::read().overview());
-    let liquid = glass::place(
+    glass::place(
         monitor,
         PANE,
         place.anchor,
@@ -1072,7 +1072,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         ),
         (items && shown > 0.0 && aside < 1.0 && !fullscreen).then_some(glass_body),
     );
-    let backdrop = glass::shown(&spot, glass_body);
+    let backdrop = glass::shown(&spot);
 
     let roles = theme::island();
     let mut strip = Rectangle::new()
@@ -1093,10 +1093,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             united: None,
         }));
 
-    // the glass's own rim is its edge
-    if !liquid {
-        strip = strip.border(1.0, roles.outline);
-    }
+    strip = strip.border(1.0, roles.outline);
 
     let (target, icons) = laid.drawn(None);
     let hover = Rectangle::new()

@@ -38,15 +38,7 @@ macro_rules! choice {
 choice! {
     // what the Island's body, the Dock and the Banners are made of, `appearance.material` (ADR 0024)
     Material {
-        /*
-         * Apple's clear liquid glass: what is under it seen sharp, bent into the rim, under a tint
-         * that follows how bright it is, lit at the rim (ADR 0037); the transparent look where the
-         * screen cannot be captured
-         */
-        LiquidGlass = "liquid-glass",
-
-        // one flat tone, the glass tone's, with nothing seen through it, nothing bent or lit
-        Monochrome = "monochrome",
+        FrostedGlass = "frosted-glass",
     }
 }
 

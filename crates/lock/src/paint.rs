@@ -1,7 +1,6 @@
 //! A lock screen drawn, as macOS's: the date over a large time near the top; who is signed in, a
-//! pill of liquid glass to type the password in and what became of the last one near the bottom.
-//! The glass is the shell's, worked out on the CPU: the backdrop frosted, its rim bent as
-//! `src/glass.wgsl` bends the Island's, see `refract`, a tint and the highlight of `src/glass.wgsl`.
+//! frosted-glass pill to type the password in and what became of the last one near the bottom.
+//! The wallpaper is frosted, then tinted and edged with the highlight used by the shell.
 
 use std::borrow::Cow;
 use std::f32::consts::TAU;
@@ -11,8 +10,7 @@ use tiny_skia::{
     SpreadMode, Transform,
 };
 
-use crate::picture::{self, Picture, Prepared};
-use crate::refract::{self, Body, Capture, MARGIN};
+use crate::picture::{self, Prepared};
 use crate::text::{Font, Line};
 use crate::{Backdrop, Color, Palette, Scene};
 
@@ -74,6 +72,16 @@ pub(crate) struct Field {
     pub caps_lock: bool,
 }
 
+// a rounded field or avatar, in logical pixels
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Body {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+}
+
 // all a lock surface is drawn from
 pub(crate) struct Look<'a> {
     pub scene: &'a Scene,
@@ -123,7 +131,6 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
     };
     let mut pixmap = backdrop.clone();
     let glass = Glass {
-        backdrop,
         frost: frost.unwrap_or(backdrop),
         size: (width, height),
         palette: look.scene.palette,
@@ -468,9 +475,8 @@ pub(crate) fn shaken(since: f32) -> Option<f32> {
     })
 }
 
-// a pane of the shell's liquid glass, over a backdrop
+// a pane of the shell's Frosted Glass, over a backdrop
 struct Glass<'a> {
-    backdrop: &'a Pixmap,
     frost: &'a Pixmap,
 
     // the backdrop's size, which the frost is stretched to
@@ -480,7 +486,7 @@ struct Glass<'a> {
 }
 
 impl Glass<'_> {
-    // the glass over `body`, in logical pixels: frost, bent rim, tint and highlight
+    // the glass over `body`: frost, tint and a restrained highlight
     fn draw(&self, pixmap: &mut Pixmap, body: Body) {
         let scale = self.scale;
         let Some(shape) = rounded(body, scale) else {
@@ -489,14 +495,6 @@ impl Glass<'_> {
 
         shadow(pixmap, body, scale);
 
-        // a material but liquid glass: its tint over the backdrop, as the shell lays it
-        if let Some(tint) = self.palette.tint {
-            fill(pixmap, &shape, tint);
-            self.highlight(pixmap, body);
-            return;
-        }
-
-        // what is behind it, frosted
         let stretched = Transform::from_scale(
             self.size.0 as f32 / self.frost.width() as f32,
             self.size.1 as f32 / self.frost.height() as f32,
@@ -520,21 +518,7 @@ impl Glass<'_> {
             None,
         );
 
-        // its rim, what is just outside bent in, and how bright that is
-        let light = self.rim(pixmap, body);
-
-        // as `src/glass/pane.rs` tints liquid glass: brighter behind, more tint under light text
-        let opacity = if self.palette.dark {
-            0.10 + 0.25 * light
-        } else {
-            0.62 - 0.30 * light
-        };
-        let tint = if self.palette.dark {
-            Color::rgba(18, 18, 24, 255)
-        } else {
-            Color::rgba(246, 246, 250, 255)
-        };
-        paint.shader = tiny_skia::Shader::SolidColor(tint.faded(opacity).skia());
+        paint.shader = tiny_skia::Shader::SolidColor(self.palette.tint.skia());
         pixmap.fill_path(
             &shape,
             &paint,
@@ -544,57 +528,6 @@ impl Glass<'_> {
         );
 
         self.highlight(pixmap, body);
-    }
-
-    // the rim bent from the sharp backdrop around `body`, drawn; the backdrop's light around it
-    fn rim(&self, pixmap: &mut Pixmap, body: Body) -> f32 {
-        let scale = self.scale;
-        let (width, height) = (self.backdrop.width() as i64, self.backdrop.height() as i64);
-
-        // the captured area: the body and `MARGIN` around it, within the output
-        let left = (((body.x - MARGIN) * scale).floor() as i64).clamp(0, width);
-        let top = (((body.y - MARGIN) * scale).floor() as i64).clamp(0, height);
-        let right = (((body.x + body.width + MARGIN) * scale).ceil() as i64).clamp(0, width);
-        let bottom = (((body.y + body.height + MARGIN) * scale).ceil() as i64).clamp(0, height);
-        if right <= left || bottom <= top {
-            return 0.0;
-        }
-
-        let (across, down) = ((right - left) as usize, (bottom - top) as usize);
-        let stride = width as usize * 4;
-        let mut pixels = Vec::with_capacity(across * down * 4);
-        for row in top as usize..bottom as usize {
-            let start = row * stride + left as usize * 4;
-            pixels.extend_from_slice(&self.backdrop.data()[start..start + across * 4]);
-        }
-
-        let capture = Capture {
-            pixels: &pixels,
-            width: across,
-            height: down,
-            body_x: body.x - left as f32 / scale,
-            body_y: body.y - top as f32 / scale,
-            scale: (scale, scale),
-        };
-        let (rim_width, rim_height, rgba, light) = refract::rim(&capture, body);
-
-        let rim = Picture {
-            width: rim_width,
-            height: rim_height,
-            rgba,
-        };
-        if let Some(rim) = rim.pixmap() {
-            pixmap.draw_pixmap(
-                (body.x * scale).round() as i32,
-                (body.y * scale).round() as i32,
-                rim.as_ref(),
-                &PixmapPaint::default(),
-                Transform::identity(),
-                None,
-            );
-        }
-
-        light
     }
 
     // `src/glass.wgsl` at rest, with no pointer light: the glare, Fresnel lift, bevel and sheen

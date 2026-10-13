@@ -327,7 +327,7 @@ fn tile(layout: &Json) -> Option<(f64, f64)> {
     }
 }
 
-// a cast's stream; none for Kanade's own, liquid glass capturing what is behind the Island (ADR 0037)
+// a cast's stream; none for Kanade's own Frosted Glass backdrop capture
 fn stream(cast: &Json) -> Option<u64> {
     let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
 
@@ -898,7 +898,7 @@ mod tests {
         assert_eq!(casting(&posts), [true, false]);
     }
 
-    // liquid glass's capture is Kanade's own, and records nothing
+    // Frosted Glass captures its own backdrop, and records nothing
     #[test]
     fn kanade_s_own_capture_is_no_cast() {
         let own = format!(

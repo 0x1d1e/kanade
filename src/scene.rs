@@ -1,8 +1,8 @@
 //! Where the parts of one output's Island window stand: the body, what takes the pointer, the
 //! glass behind it and, merged with the Dock (ADR 0031), the Dock's plate under one pane. A pure
 //! function of the Island's pose, the shell and the Dock's strip: `view::island` draws from it,
-//! hit-tests with it, hands its input region to the runtime and its body to liquid glass at the
-//! instants the capture covers, so each reads one answer. What reads Services, as the pose at an
+//! hit-tests with it, hands its input region to the runtime and its pane body to Frosted Glass at
+//! the instants the capture covers, so each reads one answer. What reads Services, as the pose at an
 //! instant, stays with its caller.
 
 use crate::autohide;
@@ -68,8 +68,8 @@ impl Stand {
         )
     }
 
-    // the body as liquid glass knows it, in the canvas
-    pub fn liquid(self, pose: Pose) -> glass::Body {
+    // the pane's body in the canvas
+    pub fn pane(self, pose: Pose) -> glass::Body {
         let rect = self.body(pose);
 
         glass::Body {
@@ -156,12 +156,12 @@ impl Scene {
     }
 
     /*
-     * the body as liquid glass knows it, in the window: merged, joined to the Dock's plate, which
+     * the pane's body in the window: merged, joined to the Dock's plate, which
      * among the icons is the plate around this very body, unfolded as far as the pointer holds
      * the icons out
      */
     pub fn glass(&self, pose: Pose) -> glass::Body {
-        let body = self.stand.liquid(pose);
+        let body = self.stand.pane(pose);
         let origin = self.origin();
 
         match (&self.shell, &self.dock, self.plate()) {

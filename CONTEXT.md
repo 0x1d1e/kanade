@@ -143,9 +143,9 @@ Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pin
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One piece of liquid glass: the Island's body, the Dock, or one Banner, named by a `Spot`, its output and `island`, `dock` or `banner-<i>` there (ADR 0024). Each is captured and lit apart: the runtime copies what is behind it and its shader bends the rim from the copy (ADR 0037).
+One piece of Frosted Glass: the Island's body, the Dock, or one Banner, named by a `Spot`, its output and `island`, `dock` or `banner-<i>` there (ADR 0024). The runtime captures around each pane apart; its shader samples outside the outline to frost the body (ADR 0048).
 - **Invariant:** a pane nothing draws in captures nothing; nothing captures while Kanade holds the lock, from niri saying it locked until the lock ends (ADR 0025).
-- **Avoid:** layer (a `glass::layer` widget), surface (a Surface is the Island's), rim picture
+- **Avoid:** layer (a `glass::layer` widget), surface (a Surface is the Island's)
 
 ## Idle stage
 What the `idle` Module does after the user has been idle for so long (ADR 0047): `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`, each optional. The Dim grace comes first: a click-through Overlay layer on every output fading toward dark until the lock, taken away at once by any input.

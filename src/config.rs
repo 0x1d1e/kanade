@@ -1275,7 +1275,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.material",
         label: "Material",
-        help: "what the Island, Dock and Banners are made of, with the lock screen's field: \"liquid-glass\" bends what is under it into its rim, \"monochrome\" is one flat tone with nothing seen through it",
+        help: "what the Island, Dock, Banners and lock-screen glass are made of: Frosted Glass softens the captured backdrop beneath them",
         kind: Kind::Choice(
             Choices::named(Material::NAMES),
             Field {
@@ -2747,6 +2747,19 @@ const MIGRATIONS: &[Migration] = &[
             privacy.remove("style");
         }
     },
+    // 4: the old material names now select Frosted Glass
+    |table| {
+        if let Some(Node::Table(appearance)) =
+            table.get_mut("appearance").map(|entry| &mut entry.node)
+            && let Some(Entry {
+                node: Node::Value(Value::String(material)),
+                ..
+            }) = appearance.get_mut("material")
+            && matches!(material.as_str(), "liquid-glass" | "monochrome")
+        {
+            *material = String::from("frosted-glass");
+        }
+    },
 ];
 
 // the `schema_version` this build writes and reads up to
@@ -3041,6 +3054,22 @@ mod tests {
     fn an_empty_file_is_the_defaults() {
         assert_eq!(one(""), (Config::default(), vec![]));
         assert_eq!(one("\n  # nothing\n"), (Config::default(), vec![]));
+    }
+
+    #[test]
+    fn removed_materials_migrate_to_frosted_glass() {
+        for material in ["liquid-glass", "monochrome"] {
+            for version in [None, Some(SCHEMA_VERSION - 1)] {
+                let version = version.map_or(String::new(), |version| {
+                    format!("schema_version = {version}\n")
+                });
+                let text = format!("{version}[appearance]\nmaterial = \"{material}\"");
+                let (config, problems) = one(&text);
+
+                assert!(problems.is_empty(), "{material}: {problems:?}");
+                assert_eq!(config.appearance.material, Material::FrostedGlass);
+            }
+        }
     }
 
     #[test]
