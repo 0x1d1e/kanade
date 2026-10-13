@@ -40,8 +40,6 @@ impl Widget for Rectangle {
 fn draw_in_place(rectangle: &Rectangle, renderer: &mut Renderer, area: Area) {
     let radius = rectangle.radius.resolve(area.width, area.height);
 
-    renderer.blur(area, radius, rectangle.blur);
-
     // the rectangle holding a mask is still drawing into this renderer, so the cut lands in it
     if let Fill::Mask = rectangle.fill {
         renderer.cut(area, radius, rectangle.opacity);
@@ -68,13 +66,7 @@ fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: f32
     }
 
     if let Some(shader) = &rectangle.shader {
-        renderer.shader(
-            area,
-            shader,
-            radius,
-            &rectangle.shader_values,
-            rectangle.backdrop.as_ref(),
-        );
+        renderer.shader(area, shader, radius, &rectangle.shader_values);
 
         // the shader's time moves on, so the window keeps drawing new frames
         if reads_time(shader) {

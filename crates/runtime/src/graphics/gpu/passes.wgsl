@@ -21,27 +21,3 @@ fn composite(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 
     return color * settings.x;
 }
-
-/*
- * averages a pixel with its neighbours along one direction,
- * settings xy is one step towards a neighbour, z is how many steps each pixel reaches
- */
-@fragment
-fn box_blur(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let pixel = vec2<i32>(position.xy);
-    let step = vec2<i32>(settings.xy);
-    let reach = i32(settings.z);
-
-    let last = vec2<i32>(textureDimensions(source)) - 1;
-
-    var total = vec4<f32>(0.0);
-
-    for (var offset = -reach; offset <= reach; offset++) {
-        // past the edge, the edge pixel repeats
-        let neighbour = clamp(pixel + step * offset, vec2<i32>(0), last);
-
-        total += textureLoad(source, neighbour, 0);
-    }
-
-    return total / f32(reach * 2 + 1);
-}

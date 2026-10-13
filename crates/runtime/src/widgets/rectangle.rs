@@ -5,7 +5,6 @@ mod transform;
 
 use std::path::PathBuf;
 
-use crate::backdrop::Spot;
 use crate::graphics::{Color, VALUE_ROWS};
 use crate::input::Handlers;
 use crate::{Align, Fill, Padding, Radius, Shadow, Size};
@@ -19,12 +18,10 @@ pub struct Rectangle {
     pub(crate) radius: Radius,
     pub(crate) border_thickness: f32,
     pub(crate) border_color: Color,
-    pub(crate) blur: f32,
     pub(crate) opacity: f32,
     pub(crate) shadow: Option<Shadow>,
     pub(crate) shader: Option<PathBuf>,
     pub(crate) shader_values: Vec<[f32; 4]>,
-    pub(crate) backdrop: Option<Spot>,
     pub(crate) child: Option<Box<dyn Widget>>,
     pub(crate) clip: bool,
     pub(crate) rotation: f32,
@@ -70,12 +67,6 @@ impl Rectangle {
         self
     }
 
-    pub fn blur(mut self, amount: f32) -> Self {
-        self.blur = amount;
-
-        self
-    }
-
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
 
@@ -109,16 +100,6 @@ impl Rectangle {
         );
 
         self.shader_values = values;
-
-        self
-    }
-
-    /*
-     * the newest copy of what is behind a pane (`backdrop::watch`), handed to the shader as
-     * `backdrop` and `backdrop_sampler` in wgsl, transparent while there is none
-     */
-    pub fn backdrop(mut self, spot: Spot) -> Self {
-        self.backdrop = Some(spot);
 
         self
     }
@@ -169,12 +150,10 @@ impl RectangleNeedsHeight {
             fill: Fill::Color(Color::TRANSPARENT),
             border_thickness: 0.0,
             border_color: Color::TRANSPARENT,
-            blur: 0.0,
             opacity: 1.0,
             shadow: None,
             shader: None,
             shader_values: Vec::new(),
-            backdrop: None,
             child: None,
             clip: false,
             rotation: 0.0,

@@ -25,7 +25,7 @@ pub struct SemanticColors {
     // critical, like a battery about to die or a critical notification
     pub critical: Color,
 
-    // the Island's body; opaque, as its shadow has no piece under its middle
+    // the Island's body, the Dock's and the Banners' (ADR 0049)
     pub island_surface: Color,
 
     // text and glyphs on the Island
@@ -37,11 +37,11 @@ pub const SEMANTIC: SemanticColors = SemanticColors {
     capture: Color::rgb(255, 176, 32),
     warning: Color::rgb(255, 176, 32),
     critical: Color::rgb(255, 69, 58),
-    island_surface: Color::rgb(12, 12, 14),
+    island_surface: Color::rgb(0, 0, 0),
     on_island_surface: Color::rgb(242, 242, 247),
 };
 
-// the signal colors on light glass, where the bright ones fall under 3:1 (dots, glyphs) or 4.5:1 (text)
+// the signal colors on a light window, where the bright ones fall under 3:1 (dots, glyphs) or 4.5:1 (text)
 const SIGNALS_LIGHT: SemanticColors = SemanticColors {
     privacy: Color::rgb(14, 122, 46),
     capture: Color::rgb(143, 82, 0),
@@ -50,11 +50,13 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
     ..SEMANTIC
 };
 
-/*
- * the colors that mean something, in the Island's tone: `SEMANTIC` on dark glass, darker hues of
- * the same meaning on light glass
- */
+// the colors that mean something on the Island, which is black whatever the tone
 pub fn signals() -> SemanticColors {
+    SEMANTIC
+}
+
+// the same in a shell-owned window's tone: darker hues of the same meaning on a light one
+pub fn window_signals() -> SemanticColors {
     match crate::config::get().appearance.tone {
         crate::look::Tone::Dark => SEMANTIC,
         crate::look::Tone::Light => SIGNALS_LIGHT,
@@ -89,7 +91,7 @@ pub struct ThemeRoles {
     pub outline: Color,
 }
 
-// the Island's roles on dark glass: white text, and containers that let the glass show through
+// the roles on a dark surface: white text, and containers a step above it
 pub const ISLAND_DARK: ThemeRoles = ThemeRoles {
     primary: SEMANTIC.on_island_surface,
     on_primary: SEMANTIC.island_surface,
@@ -101,7 +103,7 @@ pub const ISLAND_DARK: ThemeRoles = ThemeRoles {
     outline: Color::rgba(255, 255, 255, 64),
 };
 
-// the Island's roles on light glass: black text
+// the roles on a light surface: black text
 pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
     primary: Color::rgb(28, 28, 30),
     on_primary: Color::rgb(250, 250, 252),
@@ -113,19 +115,12 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
     outline: Color::rgba(0, 0, 0, 46),
 };
 
-// the Island's roles in the tone `appearance.tone` sets
+// the Island's roles, dark whatever `appearance.tone` is, as its body is black
 pub fn island() -> ThemeRoles {
-    crate::appearance::roles(crate::config::get().appearance.tone)
+    crate::appearance::roles(crate::look::Tone::Dark)
 }
 
-// what tints glass, by tone; `glass` sets how much
-pub const GLASS_DARK: Color = Color::rgb(18, 18, 24);
-pub const GLASS_LIGHT: Color = Color::rgb(246, 246, 250);
-
-/*
- * a bright scene, as a wallpaper would be, that Settings shows glass over: its material tiles and
- * its mark, from top left to bottom right
- */
+// Settings' mark, from top left to bottom right
 pub const SCENE: [Color; 3] = [
     Color::rgb(255, 154, 98),
     Color::rgb(214, 86, 146),
@@ -149,8 +144,8 @@ pub const TERMINAL_HUES: [(&str, &str); 6] = [
 pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
 
 /*
- * the glass's shadows: an ambient one lifting it off what is under it, and a contact one along its
- * edge. Faint, so they reinforce its elevation over a bright backdrop and all but vanish on a dark one
+ * the pane's shadows: an ambient one lifting it off what is under it, and a contact one along its
+ * edge. Faint, so they reinforce its elevation over a bright desktop and all but vanish on a dark one
  */
 pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
 pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
@@ -292,9 +287,9 @@ pub mod space {
     pub const TARGET: f32 = 24.0;
 }
 
-// roles used by the Settings window and other shell-owned windows
+// roles used by the Settings window and other shell-owned windows, in the tone `appearance.tone` sets
 pub fn roles() -> ThemeRoles {
-    island()
+    crate::appearance::roles(crate::config::get().appearance.tone)
 }
 
 impl ThemeRoles {

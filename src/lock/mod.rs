@@ -25,7 +25,6 @@ use kanade_lock::{Locker, News};
 use kanade_runtime::{MutexExt, service::Service};
 
 use crate::cli::Reply;
-use crate::glass;
 use crate::later::{LATER, Later};
 use crate::sources::sleep;
 
@@ -572,9 +571,6 @@ fn request_lock(requests: &mut Requests, locker: &Locker) -> u64 {
     // only spawns, so nothing waits on it under the requests
     look_up();
 
-    // nothing is captured from now: niri may lock before `kanade-lock` hears of it; a refusal or an end lifts this
-    glass::locked(true);
-
     // the scenes read the clock only while locked, so say so and hand them over first: the lock's
     // first frame has them. One that fails to build must not keep the lock
     say(requests);
@@ -596,18 +592,6 @@ fn heard(news: News) {
     }
 
     let mut requests = requests();
-
-    /*
-     * nothing captures the lock screen: the panes under it draw nothing. News of an older request
-     * does not end the pause, as the newest one's lock is on its way
-     */
-    match news {
-        News::Locked(_) => glass::locked(true),
-        News::Unlocked(request) | News::Finished(request) if request == requests.newest => {
-            glass::locked(false);
-        }
-        _ => {}
-    }
 
     requests.heard(news);
     say(&requests);

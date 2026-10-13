@@ -26,7 +26,6 @@ mod wayland;
 mod widgets;
 mod window;
 
-pub mod backdrop;
 pub mod idle;
 pub mod queue;
 pub mod service;
@@ -62,5 +61,4 @@ pub use widgets::{
 pub use placement::Justify::{SpaceAround, SpaceBetween, SpaceEvenly};
 pub use placement::Size::Parent;
 pub use toplevels::{FullscreenWindow, Toplevels};
-pub use wayland::blur_available;
 pub use window::{Window, close_window, open_window, window_open, window_size};

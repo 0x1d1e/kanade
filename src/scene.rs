@@ -1,14 +1,13 @@
 //! Where the parts of one output's Island window stand: the body, what takes the pointer, the
-//! glass behind it and, merged with the Dock (ADR 0031), the Dock's plate under one pane. A pure
+//! pane under it and, merged with the Dock (ADR 0031), the Dock's plate under one pane. A pure
 //! function of the Island's pose, the shell and the Dock's strip: `view::island` draws from it,
-//! hit-tests with it, hands its input region to the runtime and its pane body to Frosted Glass at
-//! the instants the capture covers, so each reads one answer. What reads Services, as the pose at an
-//! instant, stays with its caller.
+//! hit-tests with it and hands its input region to the runtime, so each reads one answer. What
+//! reads Services, as the pose at an instant, stays with its caller.
 
 use crate::autohide;
-use crate::glass;
 use crate::island::geometry::{self, Canvas, Hang, Rect, Shape};
 use crate::merge::{self, Plate, Shell};
+use crate::pane;
 
 /*
  * where the Island's canvas stands on its output: its size, and which edge and side it hangs
@@ -69,10 +68,10 @@ impl Stand {
     }
 
     // the pane's body in the canvas
-    pub fn pane(self, pose: Pose) -> glass::Body {
+    pub fn pane(self, pose: Pose) -> pane::Body {
         let rect = self.body(pose);
 
-        glass::Body {
+        pane::Body {
             x: rect.x,
             y: rect.y,
             width: rect.width,
@@ -86,7 +85,7 @@ impl Stand {
 // what the merged shell needs of the Dock's layout, in the Dock's own coordinates
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dock {
-    // the strip now, where the glass goes, and its corners' radius
+    // the strip now, and its corners' radius
     pub strip: Rect,
     pub radius: f32,
 
@@ -160,7 +159,7 @@ impl Scene {
      * among the icons is the plate around this very body, unfolded as far as the pointer holds
      * the icons out
      */
-    pub fn glass(&self, pose: Pose) -> glass::Body {
+    pub fn pane(&self, pose: Pose) -> pane::Body {
         let body = self.stand.pane(pose);
         let origin = self.origin();
 
@@ -211,11 +210,11 @@ fn moved_by(rect: Rect, origin: (f32, f32)) -> Rect {
 }
 
 // the body, from the Island's canvas at `origin` in the window, united with the Dock's `plate` there
-fn united(body: glass::Body, origin: (f32, f32), plate: Plate) -> glass::Body {
-    glass::Body {
+fn united(body: pane::Body, origin: (f32, f32), plate: Plate) -> pane::Body {
+    pane::Body {
         x: body.x + origin.0,
         y: body.y + origin.1,
-        join: Some(glass::Join {
+        join: Some(pane::Join {
             x: plate.rect.x,
             y: plate.rect.y,
             width: plate.rect.width,
@@ -228,11 +227,11 @@ fn united(body: glass::Body, origin: (f32, f32), plate: Plate) -> glass::Body {
 }
 
 // a united body from the point `origin` of its window, as a pane that begins there sees it
-pub fn within(body: glass::Body, origin: (f32, f32)) -> glass::Body {
-    glass::Body {
+pub fn within(body: pane::Body, origin: (f32, f32)) -> pane::Body {
+    pane::Body {
         x: body.x - origin.0,
         y: body.y - origin.1,
-        join: body.join.map(|join| glass::Join {
+        join: body.join.map(|join| pane::Join {
             x: join.x - origin.0,
             y: join.y - origin.1,
             ..join

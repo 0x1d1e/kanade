@@ -48,7 +48,7 @@ use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use zeroize::Zeroize;
 
 use crate::paint::{self, Faces, Field, Look};
-use crate::picture::{self, Prepared};
+use crate::picture;
 use crate::stage::{Stage, Step};
 use crate::text::Font;
 use crate::{Ask, Backdrop, Decode, Fonts, Image, News, Report, Scene, Submit};
@@ -107,7 +107,7 @@ enum Done {
     Backdrop {
         output: String,
         key: Key,
-        prepared: Option<Prepared>,
+        prepared: Option<Pixmap>,
     },
     Face(Image, Option<Pixmap>),
 }
@@ -163,7 +163,7 @@ struct State {
     font_files: HashMap<PathBuf, Arc<[u8]>>,
 
     // each output's backdrop worked out, and the one the worker was last asked for or failed on
-    prepared: HashMap<String, (Key, Prepared)>,
+    prepared: HashMap<String, (Key, Pixmap)>,
     asked: HashMap<String, Key>,
     faces: HashMap<Image, Option<Pixmap>>,
 

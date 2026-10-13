@@ -1,6 +1,6 @@
 # 48. Frosted Glass is the only material
 
-Status: accepted.
+Status: superseded by ADR 0049.
 
 ## Context
 

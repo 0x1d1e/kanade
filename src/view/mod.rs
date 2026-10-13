@@ -2,7 +2,6 @@
 //! (in the modules below), the Satellites, the cluster and the Dock merged into it.
 
 use std::collections::HashMap;
-use std::iter;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
@@ -19,7 +18,6 @@ use crate::banners;
 use crate::cluster::{self, Cluster};
 use crate::config;
 use crate::dock;
-use crate::glass;
 use crate::island::activity::{Lifetime, Priority};
 use crate::island::arbiter::SATELLITES;
 use crate::island::geometry::{self, Rect};
@@ -27,6 +25,7 @@ use crate::island::presentation::{Content, Input, Presentation};
 use crate::island::service::IslandService;
 use crate::look::{Anchor, Merge};
 use crate::merge;
+use crate::pane;
 use crate::scene::{self, Scene, Stand};
 use crate::shadow;
 use crate::surfaces;
@@ -71,9 +70,6 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
     }
 }
 
-// the Island's pane name for backdrop capture
-const ISLAND: &str = "island";
-
 // where each output's body last stood on it, and the output's size, in logical pixels
 struct Placed {
     body: (f32, f32),
@@ -85,7 +81,7 @@ static PLACED: LazyLock<Mutex<HashMap<String, Placed>>> = LazyLock::new(Mutex::d
 // as drawn: the body's corner on the output, from the window's corner there and the body in it
 fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
     let screen = (monitor.width, monitor.height);
-    let corner = glass::origin(anchor, (window.0.round(), window.1.round()), screen);
+    let corner = canvas_origin(anchor, (window.0.round(), window.1.round()), screen);
     let placed = Placed {
         body: (corner.0 + body.x, corner.1 + body.y),
         screen: (screen.0 as f32, screen.1 as f32),
@@ -99,6 +95,25 @@ fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
             all.insert(monitor.name.clone(), placed);
         }
     }
+}
+
+// the canvas's top left corner on its output, anchored as the window is
+fn canvas_origin(anchor: Anchor, canvas: (f32, f32), screen: (u32, u32)) -> (f32, f32) {
+    let (screen_width, screen_height) = (screen.0 as f32, screen.1 as f32);
+
+    let x = match anchor.horizontal() {
+        Horizontal::Left => 0.0,
+        Horizontal::Middle => ((screen_width - canvas.0) / 2.0).floor(),
+        Horizontal::Right => screen_width - canvas.0,
+    };
+
+    let y = match anchor.vertical() {
+        Vertical::Top => 0.0,
+        Vertical::Middle => ((screen_height - canvas.1) / 2.0).floor(),
+        Vertical::Bottom => screen_height - canvas.1,
+    };
+
+    (x, y)
 }
 
 /*
@@ -221,7 +236,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     /*
      * merged with the Dock (ADR 0031), this window draws both: the Island's canvas lies at
-     * `shell.island` in it and the Dock's at `shell.dock`, under one pane of glass
+     * `shell.island` in it and the Dock's at `shell.dock`, under one pane
      */
     let shell = merge::shell(monitor);
     let origin = shell.as_ref().map_or((0.0, 0.0), |shell| shell.island);
@@ -312,25 +327,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         area,
     );
     let plate = scene.plate();
-    let glass_body = scene.glass(pose);
-
-    let spot = glass::Spot::new(&monitor.name, ISLAND);
-    let captured = capture(&island, &monitor.name, stand, &scene, glass_body, now);
-
-    // hidden past its edge, it captures nothing there
-    let merged_dock_visible = shell
-        .as_ref()
-        .zip(laid.as_ref())
-        .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
-    let captured = glass::place(
-        monitor,
-        ISLAND,
-        place.anchor,
-        scene.window(),
-        capture_visible(out, sliding, merged_dock_visible, covered, raised).then_some(captured),
-    );
-
-    let backdrop = glass::shown(&spot);
+    let pane_body = scene.pane(pose);
 
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
@@ -338,18 +335,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     // a layer that is not there takes its place all the same, so the targets after keep theirs
     let nothing = || Box::new(Rectangle::new().width(0.0).height(0.0)) as Box<dyn Widget>;
 
-    match glass_pane(
-        glass_body,
-        body_rect,
-        shape.radius,
-        backdrop,
-        plate.is_some(),
-    ) {
-        Glass::United(united) => {
+    match body_pane(pane_body, body_rect, shape.radius, plate.is_some()) {
+        Pane::United(united) => {
             pane = Some(united);
             layers.push(nothing());
         }
-        Glass::Under(under) => layers.push(under),
+        Pane::Under(under) => layers.push(under),
     }
 
     layers.push(Box::new(holder));
@@ -378,7 +369,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let (hover, track) = hover_target(&monitor.name, area, room, hang, canvas, peeks);
 
-    let shadow = shadows(body_rect, shape.radius, plate, origin, captured, out);
+    let shadow = shadows(body_rect, shape.radius, plate, origin, out);
 
     // fading as the body slides out of the way, so it never pops at the edge
     let mut under: Vec<Box<dyn Widget>> = vec![Box::new(
@@ -458,7 +449,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 }
 
 /*
- * the Dock, now the body's place is known: its plate in the window, and for the glass the plate a
+ * the Dock, now the body's place is known: its plate in the window, and for the pane the plate a
  * body of any shape would have, as the icons go out to meet it; none unless merged
  */
 fn dock_in(
@@ -599,9 +590,8 @@ fn marks(cluster: Option<Cluster>, body: Rect, sideways: bool) -> Option<Box<dyn
 }
 
 /*
- * A captured frosted pane casts no shadow: it would darken the colors sampled around it. Nor
- * does a body hidden past its edge, where the shadow would still reach onto the screen. Cast or
- * not, it takes as many layers, so the body's buttons and sliders keep their place among targets
+ * A body hidden past its edge casts no shadow, where it would still reach onto the screen. Cast
+ * or not, it takes as many layers, so the body's buttons and sliders keep their place among targets
  * mid-press or mid-drag; a merged Dock's plate is cast in this canvas's coordinates.
  */
 fn shadows(
@@ -609,70 +599,31 @@ fn shadows(
     radius: f32,
     plate: Option<merge::Plate>,
     origin: (f32, f32),
-    captured: bool,
     out: f32,
 ) -> Vec<Box<dyn Widget>> {
     let mut shadow = Vec::new();
 
-    if !captured && out > 0.0 {
+    if out > 0.0 {
         shadow::draw(&mut shadow, body, radius);
     } else {
         shadow::none(&mut shadow);
     }
 
     if let Some(plate) = plate {
-        if captured {
-            shadow::none(&mut shadow);
-        } else {
-            let rect = Rect {
-                x: plate.rect.x - origin.0,
-                y: plate.rect.y - origin.1,
-                ..plate.rect
-            };
+        let rect = Rect {
+            x: plate.rect.x - origin.0,
+            y: plate.rect.y - origin.1,
+            ..plate.rect
+        };
 
-            shadow::draw(&mut shadow, rect, plate.radius);
-        }
+        shadow::draw(&mut shadow, rect, plate.radius);
     }
 
     shadow
 }
 
-fn capture_visible(
-    out: f32,
-    sliding: bool,
-    merged_dock_visible: bool,
-    covered: bool,
-    raised: bool,
-) -> bool {
-    (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised)
-}
-
-/*
- * captured out to everywhere the body goes until its rim is shown, so it fits as the body
- * grows, and never samples the Island where the spring overshoots on the way; and to where it
- * was a quarter of that before, as the screen it is captured from lags this frame
- */
-fn capture(
-    island: &IslandService,
-    monitor: &str,
-    stand: Stand,
-    scene: &Scene,
-    body: glass::Body,
-    now: Instant,
-) -> glass::Body {
-    let since = now.checked_sub(glass::LEAD / 4).unwrap_or(now);
-
-    iter::once(since)
-        .chain((1..=4).map(|step| now + glass::LEAD * step / 4))
-        .fold(body, |captured, at| {
-            let ahead = stand.pose(island.shape(monitor, at), autohide::at(monitor, at));
-
-            glass::ahead(captured, scene.glass(ahead))
-        })
-}
-
-// the glass under the Island's body
-enum Glass {
+// the pane under the Island's body
+enum Pane {
     // its own layer under the body's content
     Under(Box<dyn Widget>),
 
@@ -682,46 +633,31 @@ enum Glass {
 
 /*
  * merged, one pane under both the Island's body and the Dock's plate, in the window's
- * coordinates, which cuts its tint and highlights to the two united; the body then has none
- * of its own
+ * coordinates, which cuts its fill to the two united; the body then has none of its own
  */
-fn glass_pane(
-    glass_body: glass::Body,
-    body: Rect,
-    radius: f32,
-    backdrop: Option<glass::Seen>,
-    merged: bool,
-) -> Glass {
+fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pane {
     if !merged {
-        return Glass::Under(Box::new(glass::layer(glass::Pane {
+        return Pane::Under(Box::new(pane::layer(pane::Pane {
             width: body.width,
             height: body.height,
             radius,
-            variant: glass::Variant::Clear,
-            tone: None,
-            light: None,
-            backdrop,
             united: None,
         })));
     }
 
-    let (x, y, width, height) = glass_body.bounds();
+    let (x, y, width, height) = pane_body.bounds();
 
-    Glass::United(Box::new(
+    Pane::United(Box::new(
         Rectangle::new()
             .width(width)
             .height(height)
             .align_child(Start, Start)
             .translate(x, y)
-            .child(glass::layer(glass::Pane {
+            .child(pane::layer(pane::Pane {
                 width,
                 height,
                 radius,
-                variant: glass::Variant::Clear,
-                tone: None,
-                light: None,
-                backdrop,
-                united: Some(scene::within(glass_body, (x, y))),
+                united: Some(scene::within(pane_body, (x, y))),
             })),
     ))
 }
@@ -802,13 +738,5 @@ mod tests {
         assert_eq!(reservation_depth(true, true, false, 80.0, 0.0, 0.0), 80.0);
         assert_eq!(reservation_depth(false, false, false, 90.0, 0.0, 12.0), 0.0);
         assert_eq!(reservation_depth(true, false, false, 80.0, 0.0, 12.0), 0.0);
-    }
-
-    #[test]
-    fn visible_merged_dock_keeps_glass_capturing_after_island_hides() {
-        assert!(capture_visible(0.0, false, true, false, false));
-        assert!(!capture_visible(0.0, false, false, false, false));
-        assert!(!capture_visible(0.0, false, true, true, false));
-        assert!(capture_visible(0.0, false, true, true, true));
     }
 }

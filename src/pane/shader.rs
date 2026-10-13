@@ -21,18 +21,18 @@ pub fn shader() -> &'static PathBuf {
         let dir = env::var_os("XDG_RUNTIME_DIR")
             .map_or_else(env::temp_dir, PathBuf::from)
             .join("kanade");
-        let path = dir.join(format!("glass-{}.wgsl", std::process::id()));
+        let path = dir.join(format!("pane-{}.wgsl", std::process::id()));
 
         // the runtime reads it whenever it builds a pipeline, so each shell keeps its own while it runs
         sweep(&dir);
 
         // locked under a name no sweep takes, then named, so none sweeps it before it is held
         let written = fs::create_dir_all(&dir).and_then(|()| {
-            let writing = dir.join(format!(".glass-{}.writing", std::process::id()));
+            let writing = dir.join(format!(".pane-{}.writing", std::process::id()));
             let mut file = File::create(&writing)?;
 
             file.lock()?;
-            file.write_all(include_str!("../glass.wgsl").as_bytes())?;
+            file.write_all(include_str!("../pane.wgsl").as_bytes())?;
             fs::rename(&writing, &path)?;
             let _ = HELD.set(file);
 
@@ -40,7 +40,7 @@ pub fn shader() -> &'static PathBuf {
         });
 
         if let Err(error) = written {
-            eprintln!("kanade: cannot write the glass shader ({error}), glass has no rim");
+            eprintln!("kanade: cannot write the pane shader ({error}), panes are not drawn");
         }
 
         path
@@ -56,12 +56,12 @@ fn sweep(dir: &Path) {
         let name = entry.file_name();
         let shader = name
             .to_str()
-            .is_some_and(|name| name.starts_with("glass-") && name.ends_with(".wgsl"));
+            .is_some_and(|name| name.starts_with("pane-") && name.ends_with(".wgsl"));
 
         // one being written may not be locked yet, while one left behind is long untouched
         let left = name
             .to_str()
-            .is_some_and(|name| name.starts_with(".glass-") && name.ends_with(".writing"))
+            .is_some_and(|name| name.starts_with(".pane-") && name.ends_with(".writing"))
             && entry
                 .metadata()
                 .and_then(|metadata| metadata.modified())

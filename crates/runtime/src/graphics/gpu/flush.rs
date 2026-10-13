@@ -1,4 +1,4 @@
-use vello::peniko::{self, ImageData};
+use vello::peniko;
 use vello::wgpu::Texture;
 use vello::{AaConfig, RenderParams, Scene};
 
@@ -6,12 +6,7 @@ use super::{Gpu, texture};
 
 impl Gpu {
     // vello always clears what it draws into, so it draws apart and the result is laid on top
-    pub(super) fn paint(
-        &mut self,
-        scene: &mut Scene,
-        canvas: &Texture,
-        borrowed: &mut Vec<ImageData>,
-    ) {
+    pub(super) fn paint(&mut self, scene: &mut Scene, canvas: &Texture) {
         if scene.encoding().is_empty() {
             return;
         }
@@ -32,10 +27,6 @@ impl Gpu {
         }
 
         scene.reset();
-
-        for image in borrowed.drain(..) {
-            self.vello.borrow_mut().unregister_texture(image);
-        }
     }
 
     // the scene alone, on its own texture the size of the canvas, given back by the caller

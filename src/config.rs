@@ -43,8 +43,8 @@ use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
-    Along, Anchor, Bounce, DockSize, Edge, Entrance, Highlight, LockBackdrop, Magnify, Material,
-    Merge, Placement, ShellMode, Tone, Visualizer,
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, LockBackdrop, Magnify, Merge, Placement,
+    ShellMode, Tone, Visualizer,
 };
 use crate::modules;
 use crate::sources::notifications::rules::Rule;
@@ -164,9 +164,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Appearance {
-    pub material: Material,
+    // Settings' and apps' tone; the Island, Dock and Banners are black whatever it is
     pub tone: Tone,
-    pub highlight: Highlight,
 
     // share the tone with supported desktop, GTK, Qt and Zen appearance adapters
     pub sync: bool,
@@ -1171,44 +1170,14 @@ pub const ISLAND: &[Setting] = &[
         per_output: false,
     },
     Setting {
-        key: "appearance.material",
-        label: "Material",
-        help: "what the Island, Dock, Banners and lock-screen glass are made of: Frosted Glass softens the captured backdrop beneath them",
-        kind: Kind::Choice(
-            Choices::named(Material::NAMES),
-            Field {
-                get: |config| config.appearance.material.name(),
-                set: |config, name| config.appearance.material = Material::named(name),
-            },
-        ),
-        example: None,
-        restart: false,
-        per_output: false,
-    },
-    Setting {
         key: "appearance.tone",
         label: "Color tone",
-        help: "selects light or dark; Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
+        help: "selects light or dark for Settings and apps; the Island, Dock and Banners stay black. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
         kind: Kind::Choice(
             Choices::named(Tone::NAMES),
             Field {
                 get: |config| config.appearance.tone.name(),
                 set: |config, name| config.appearance.tone = Tone::named(name),
-            },
-        ),
-        example: None,
-        restart: false,
-        per_output: false,
-    },
-    Setting {
-        key: "appearance.highlight",
-        label: "Rim lighting",
-        help: "how bright the light on the Island's rim and under the pointer is, whatever it is made of: \"subtle\", \"standard\", \"bright\" or \"off\"",
-        kind: Kind::Choice(
-            Choices::named(Highlight::NAMES),
-            Field {
-                get: |config| config.appearance.highlight.name(),
-                set: |config, name| config.appearance.highlight = Highlight::named(name),
             },
         ),
         example: None,
@@ -2629,17 +2598,16 @@ const MIGRATIONS: &[Migration] = &[
             privacy.remove("style");
         }
     },
-    // 4: the old material names now select Frosted Glass
+    // 4: the old material names select Frosted Glass; 5 drops the key
+    |_| {},
+    // 5: the Island, Dock and Banners are solid black, with no `appearance.material` or
+    // `appearance.highlight` (ADR 0049)
     |table| {
         if let Some(Node::Table(appearance)) =
             table.get_mut("appearance").map(|entry| &mut entry.node)
-            && let Some(Entry {
-                node: Node::Value(Value::String(material)),
-                ..
-            }) = appearance.get_mut("material")
-            && matches!(material.as_str(), "liquid-glass" | "monochrome")
         {
-            *material = String::from("frosted-glass");
+            appearance.remove("material");
+            appearance.remove("highlight");
         }
     },
 ];
@@ -2939,18 +2907,18 @@ mod tests {
     }
 
     #[test]
-    fn removed_materials_migrate_to_frosted_glass() {
-        for material in ["liquid-glass", "monochrome"] {
-            for version in [None, Some(SCHEMA_VERSION - 1)] {
-                let version = version.map_or(String::new(), |version| {
-                    format!("schema_version = {version}\n")
-                });
-                let text = format!("{version}[appearance]\nmaterial = \"{material}\"");
-                let (config, problems) = one(&text);
+    fn removed_material_and_highlight_keys_are_dropped_silently() {
+        for version in [None, Some(SCHEMA_VERSION - 1)] {
+            let version = version.map_or(String::new(), |version| {
+                format!("schema_version = {version}\n")
+            });
+            let text = format!(
+                "{version}[appearance]\nmaterial = \"liquid-glass\"\nhighlight = \"bright\"\ntone = \"light\""
+            );
+            let (config, problems) = one(&text);
 
-                assert!(problems.is_empty(), "{material}: {problems:?}");
-                assert_eq!(config.appearance.material, Material::FrostedGlass);
-            }
+            assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(config.appearance.tone, Tone::Light);
         }
     }
 
@@ -3075,9 +3043,7 @@ mod tests {
                 "shell.mode",
                 "shell.edge",
                 "shell.align",
-                "appearance.material",
                 "appearance.tone",
-                "appearance.highlight",
                 "appearance.sync",
                 "animation.speed",
                 "appearance.motion",

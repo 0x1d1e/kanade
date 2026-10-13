@@ -1,6 +1,6 @@
 # 24. Glass on every surface
 
-Status: accepted. Amended by ADR 0037: a pane's copy is a GPU texture the runtime captures, not a rim picture. Amended by ADR 0025: the lock screen is drawn by `kanade-lock`, and nothing captures under it. ADR 0048 supersedes this ADR's selectable materials and pane rendering; pane identity, variants, capture ownership and lock isolation remain.
+Status: superseded by ADR 0049. Amended by ADR 0037: a pane's copy is a GPU texture the runtime captures, not a rim picture. Amended by ADR 0025: the lock screen is drawn by `kanade-lock`, and nothing captures under it. ADR 0048 supersedes this ADR's selectable materials and pane rendering; pane identity, variants, capture ownership and lock isolation remain.
 
 ## Context
 

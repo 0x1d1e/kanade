@@ -80,7 +80,7 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
-# paints the lock screen on the CPU and bends its glass's rim, too slow unoptimised for niri's second
+# paints the lock screen on the CPU, too slow unoptimised for niri's second
 [profile.dev.package.kanade-lock]
 opt-level = 3
 debug = false

@@ -1,5 +1,5 @@
 //! The Island and the Dock where they share an edge and a side (ADR 0031, `dock.merge`): the
-//! Island's window then draws both, as one shell with one pane of glass. This lays the shell out;
+//! Island's window then draws both, as one shell with one pane. This lays the shell out;
 //! `view::island` draws it and `dock::window` steps out of the way.
 
 use kanade_runtime::Monitor;
@@ -12,7 +12,7 @@ use crate::modules;
 use crate::theme::radius;
 use crate::view;
 
-// how far the Island's body reaches into the Dock's plate under a Crown, where their glass flows together
+// how far the Island's body reaches into the Dock's plate under a Crown, where their panes flow together
 pub const OVERLAP: f32 = 6.0;
 
 // how far the two edges pull toward each other where they meet, in logical pixels

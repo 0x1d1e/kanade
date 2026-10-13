@@ -57,7 +57,6 @@ impl OutputHandler for WaylandState {
         self.windows
             .retain(|window| window.output.as_ref() != Some(&output));
 
-        self.backdrops_gone(&output);
         self.publish(Some(&output));
         self.publish_toplevels();
     }

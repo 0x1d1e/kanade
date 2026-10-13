@@ -30,9 +30,6 @@ pub enum Row {
     // a key, drawn by its Kind
     Key(&'static str),
 
-    // `appearance.material` as tiles of each material
-    Material,
-
     // an edge and a side, as a grid of the eight places they make: three on the top and bottom,
     // the middle of each side
     Position {
@@ -45,13 +42,10 @@ impl Row {
     pub fn keys(&self) -> Vec<&'static str> {
         match self {
             Row::Key(key) => vec![key],
-            Row::Material => vec![MATERIAL],
             Row::Position { edge, align } => vec![edge, align],
         }
     }
 }
-
-pub const MATERIAL: &str = "appearance.material";
 
 // the Modules page's groups, each Module but the core once
 pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
@@ -122,21 +116,13 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "appearance",
         title: "Appearance",
-        summary: "Choose shell colors, material, highlight and type",
+        summary: "Choose the color tone of Settings and apps, and type",
         group: "Shell",
         icon: Icon::Palette,
         sections: &[
             Section {
-                title: "",
-                rows: &[Row::Material],
-            },
-            Section {
-                title: "Tone & light",
-                rows: &[
-                    Row::Key("appearance.tone"),
-                    Row::Key("appearance.highlight"),
-                    Row::Key("appearance.sync"),
-                ],
+                title: "Tone",
+                rows: &[Row::Key("appearance.tone"), Row::Key("appearance.sync")],
             },
             Section {
                 title: "Type",

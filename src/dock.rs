@@ -15,7 +15,6 @@
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
-use std::iter;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
@@ -29,7 +28,6 @@ use kanade_runtime::{MutexExt, service::Service};
 
 use crate::autohide::{DELAY, HIDE, SHOW, TRIGGER};
 use crate::config;
-use crate::glass;
 use crate::island::arbiter::SATELLITES;
 use crate::island::geometry::{self, Hang, Rect, Shape};
 use crate::island::motion::{CRITICAL, Mode, Spring};
@@ -37,6 +35,7 @@ use crate::island::service::IslandService;
 use crate::look::{Along, Anchor, DockSize, Edge, Magnify, Merge, Placement};
 use crate::merge;
 use crate::modules;
+use crate::pane;
 use crate::scene;
 use crate::sources::launch::Launch;
 use crate::sources::niri::{self, Acted, Window, WindowId};
@@ -53,9 +52,6 @@ const BELOW: f32 = 4.0;
 
 // under the icon at rest: from the icon to the strip's edge, the dot between
 const DOT_ROOM: f32 = BELOW + DOT + BELOW;
-
-// the Dock's Frosted Glass pane on its output
-const PANE: &str = "dock";
 
 // from the monitor's edge
 const EDGE_GAP: f32 = 4.0;
@@ -320,12 +316,9 @@ pub(crate) struct Laid {
     pub(crate) canvas: (f32, f32),
     margin: Margin,
 
-    // the strip now, where the glass goes, behind the icons, and its corners' radius
+    // the strip now, where the pane goes, behind the icons, and its corners' radius
     pub(crate) strip: Rect,
     pub(crate) radius: f32,
-
-    // what the glass is captured out to besides the strip: where it slides, a little before and until the glass's lead on, and the icons' rise past it; none at rest
-    gone: Vec<Rect>,
 
     // how far the pointer holds the Dock out of the Island it is folded into, 0 to 1; 1 otherwise
     pub(crate) held: f32,
@@ -334,7 +327,6 @@ pub(crate) struct Laid {
     pub(crate) swelled: (f32, f32),
 
     // how far, 0 to 1, it is out, and aside for the Island
-    shown: f32,
     aside: f32,
 
     // the icons and the dividers between, over the strip
@@ -494,7 +486,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let size = Size::of(config.dock_size);
     let now = Instant::now();
 
-    // by tone, as the glass under them is tinted, not the palette's background
+    // dark, as the pane under them is black, not the palette's background
     let roles = theme::island();
     let pieces = pieces(&items);
 
@@ -595,43 +587,6 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         height: size.body(),
     });
     let (window_width, window_height) = axes.size(canvas.width, canvas.height);
-
-    /*
-     * the copy the glass is frosted from holds the Dock's own pixels outside the strip: its icons
-     * rising past it as they grow, and, as the copy lags the slide, the strip where it was. Both
-     * are captured inside, so the frost never samples them
-     */
-    let lifted = pointer.is_some_and(|pointer| pointer.inside || moving(&pointer.grow, now));
-    let slid = autohide && pointer.is_some_and(|pointer| moving(&pointer.shown, now));
-
-    let gone = if merged || !(lifted || slid) {
-        Vec::new()
-    } else {
-        let since = now.checked_sub(glass::LEAD / 4).unwrap_or(now);
-        let rise = if lifted {
-            size.icon * (most - 1.0)
-        } else {
-            0.0
-        };
-
-        iter::once(since)
-            .chain((0..=4).map(|step| now + glass::LEAD * step / 4))
-            .map(|at| {
-                let y = self::strip_y(
-                    far,
-                    size,
-                    canvas.height,
-                    pointer.map_or(shown, |pointer| pointer.shown(at)),
-                );
-                axes.rect(Rect {
-                    x: left,
-                    y: if far { y - rise } else { y },
-                    width: row.width,
-                    height: size.body() + rise,
-                })
-            })
-            .collect()
-    };
 
     let context_origin = if merged {
         merge::shell(monitor).map_or((0.0, 0.0), |shell| {
@@ -748,10 +703,8 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         margin: margin(place.anchor),
         strip,
         radius: radius::CARD,
-        gone,
         held: 1.0,
         swelled: (0.0, 0.0),
-        shown,
         aside,
         layers,
         area: area.filter(|_| !items.is_empty()),
@@ -994,10 +947,8 @@ pub(crate) fn between(
         margin: margin(place.anchor),
         strip: plate.rect,
         radius: plate.radius,
-        gone: Vec::new(),
         held,
         swelled,
-        shown: 1.0,
         aside: 0.0,
         layers,
         area: (!items.is_empty()).then_some(area),
@@ -1018,7 +969,7 @@ impl Laid {
 
     /*
      * what the pointer tells the Dock: a target as big as `area`, and the icons and dividers over
-     * the glass, each drawn in the window's coordinates. The target takes the pointer where the
+     * the pane, each drawn in the window's coordinates. The target takes the pointer where the
      * Dock does and no more. In the Island's window, which it overlaps, it takes the Island's moves
      * too, which it passes on to `island` as they are over the Dock's window
      */
@@ -1054,14 +1005,9 @@ impl Laid {
     }
 }
 
-/*
- * the window of a Dock the Island's window draws, merged with it: nothing, but for stopping the
- * capture behind the plate it had before
- */
-fn merged(monitor: &Monitor) -> LayerWindow {
+// the window of a Dock the Island's window draws, merged with it: nothing
+fn merged() -> LayerWindow {
     let place = config::get().dock_placement();
-
-    glass::place(monitor, PANE, place.anchor, (1.0, 1.0), None);
 
     LayerWindow::new()
         .width(1.0)
@@ -1079,7 +1025,7 @@ fn merged(monitor: &Monitor) -> LayerWindow {
 // one window per monitor, hidden while there are no items, or while the Island's window draws it
 pub fn window(monitor: &Monitor) -> LayerWindow {
     if merge::form().is_some() {
-        return merged(monitor);
+        return merged();
     }
 
     let laid = lay(monitor, false);
@@ -1088,38 +1034,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let (window_width, window_height) = laid.canvas;
     let margin = laid.margin;
     let strip_at = laid.strip;
-    let (shown, aside, items, area) = (laid.shown, laid.aside, laid.items, laid.area);
-
-    let body = |at: Rect| glass::Body {
-        x: at.x + margin.left as f32,
-        y: at.y + margin.top as f32,
-        width: at.width,
-        height: at.height,
-        radius: radius::CARD,
-        join: None,
-    };
-    let glass_body = laid.gone.iter().fold(body(strip_at), |captured, at| {
-        glass::ahead(captured, body(*at))
-    });
-
-    /*
-     * Frosted Glass needs the window's place with its margins as part of it; it captures nothing
-     * while the Dock is out of sight, empty, under a fullscreen window, slid past its edge or
-     * stepped aside
-     */
-    let spot = glass::Spot::new(&monitor.name, PANE);
-    let fullscreen = view::covered(monitor, || IslandService::read().overview());
-    glass::place(
-        monitor,
-        PANE,
-        place.anchor,
-        (
-            window_width + (margin.left + margin.right) as f32,
-            window_height + (margin.top + margin.bottom) as f32,
-        ),
-        (items && shown > 0.0 && aside < 1.0 && !fullscreen).then_some(glass_body),
-    );
-    let backdrop = glass::shown(&spot);
+    let (aside, items, area) = (laid.aside, laid.items, laid.area);
 
     let roles = theme::island();
     let mut strip = Rectangle::new()
@@ -1129,14 +1044,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .clip()
         .align_child(Start, Start)
         .translate(strip_at.x, strip_at.y)
-        .child(glass::layer(glass::Pane {
+        .child(pane::layer(pane::Pane {
             width: strip_at.width,
             height: strip_at.height,
             radius: radius::CARD,
-            variant: glass::Variant::Clear,
-            tone: None,
-            light: None,
-            backdrop,
             united: None,
         }));
 

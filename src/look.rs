@@ -36,40 +36,7 @@ macro_rules! choice {
 }
 
 choice! {
-    // what the Island's body, the Dock and the Banners are made of, `appearance.material` (ADR 0024)
-    Material {
-        FrostedGlass = "frosted-glass",
-    }
-}
-
-choice! {
-    // how bright the light on the Island's body is, its rim's and the pointer's,
-    // `appearance.highlight`
-    Highlight {
-        // a glint on the corner facing the light, quiet enough never to outshine the time
-        Subtle = "subtle",
-        Standard = "standard",
-        Bright = "bright",
-
-        // unlit: what the glass bends, its tint, and light glass's faint outline
-        Off = "off",
-    }
-}
-
-impl Highlight {
-    // how much of the shader's standard light the rim catches
-    pub fn share(self) -> f32 {
-        match self {
-            Highlight::Subtle => 0.7,
-            Highlight::Standard => 1.0,
-            Highlight::Bright => 1.35,
-            Highlight::Off => 0.0,
-        }
-    }
-}
-
-choice! {
-    // dark glass under light text, or light glass under dark text, `appearance.tone`
+    // light text on dark surfaces, or dark text on light ones, in Settings and apps: `appearance.tone`
     Tone {
         Dark = "dark",
         Light = "light",

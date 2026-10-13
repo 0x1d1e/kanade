@@ -6,9 +6,8 @@ use vello::wgpu::naga::ShaderStage;
 use vello::wgpu::{
     BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingType, BlendState,
     BufferBindingType, ColorTargetState, ColorWrites, Device, FragmentState,
-    PipelineLayoutDescriptor, RenderPipeline, RenderPipelineDescriptor, SamplerBindingType,
-    ShaderModule, ShaderModuleDescriptor, ShaderSource, ShaderStages, TextureFormat,
-    TextureSampleType, TextureViewDimension, VertexState,
+    PipelineLayoutDescriptor, RenderPipeline, RenderPipelineDescriptor, ShaderModule,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages, TextureFormat, VertexState,
 };
 
 // the runtime's vertex half, which also gives wgsl shaders their inputs
@@ -18,8 +17,6 @@ const WGSL_INPUTS: &str = "
 @group(0) @binding(0) var<uniform> size: vec2<f32>;
 @group(0) @binding(1) var<uniform> time: f32;
 @group(0) @binding(3) var<uniform> values: array<vec4<f32>, 16>;
-@group(0) @binding(4) var backdrop: texture_2d<f32>;
-@group(0) @binding(5) var backdrop_sampler: sampler;
 ";
 
 const GLSL_INPUTS: &str = "#version 450
@@ -32,8 +29,7 @@ layout(set = 0, binding = 3) uniform Values { vec4 values[16]; };
 
 /*
  * a user's fragment shader over a rectangle: it gets uv from 0 to 1 across the rectangle,
- * size in logical pixels, time in seconds, the rectangle's values (16 is VALUE_ROWS) and, in wgsl,
- * the rectangle's backdrop as a texture and its sampler (transparent where it has none),
+ * size in logical pixels, time in seconds and the rectangle's values (16 is VALUE_ROWS),
  * and returns a plain, not premultiplied, color
  */
 pub struct Shader {
@@ -77,8 +73,6 @@ impl Shader {
                 uniform(1, ShaderStages::FRAGMENT),
                 uniform(2, ShaderStages::VERTEX),
                 uniform(3, ShaderStages::FRAGMENT),
-                texture(4),
-                sampler(5),
             ],
         });
 
@@ -135,28 +129,6 @@ fn pipeline(
         multiview_mask: None,
         cache: None,
     })
-}
-
-fn texture(binding: u32) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility: ShaderStages::FRAGMENT,
-        ty: BindingType::Texture {
-            sample_type: TextureSampleType::Float { filterable: true },
-            view_dimension: TextureViewDimension::D2,
-            multisampled: false,
-        },
-        count: None,
-    }
-}
-
-fn sampler(binding: u32) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility: ShaderStages::FRAGMENT,
-        ty: BindingType::Sampler(SamplerBindingType::Filtering),
-        count: None,
-    }
 }
 
 fn uniform(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {

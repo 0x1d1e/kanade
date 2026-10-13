@@ -2,7 +2,7 @@
 //! output and shows red where none came. So this crate holds `ext-session-lock` over its own
 //! Wayland connection, and draws each lock surface on the CPU the moment niri sizes it: the
 //! backdrop, worked out ahead from the scene the shell hands it, the clock, who is signed in and a
-//! frosted-glass pill for the password.
+//! black pill for the password.
 //!
 //! The shell keeps what the lock means: it hands a scene per output, gets the password typed, and
 //! asks to unlock once PAM accepts it.
@@ -101,21 +101,18 @@ pub struct Fonts {
     pub fallback: Option<FontFile>,
 }
 
-// what the text and the glass are drawn in
+// what the text and the pill are drawn in
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub text: Color,
     pub muted: Color,
     pub critical: Color,
 
-    // dark glass under light text, else light glass under dark text
-    pub dark: bool,
+    // the pill the password is typed in, and the avatar when there is no picture
+    pub pill: Color,
 
-    // how much the glass's rim catches the light, 0 to 1
-    pub highlight: f32,
-
-    // the tint over the frosted wallpaper under the field and avatar
-    pub tint: Color,
+    // its hairline edge, so it shows on a backdrop as dark as it is
+    pub rim: Color,
 }
 
 // what one output's lock screen shows
@@ -125,7 +122,7 @@ pub struct Scene {
     pub date: String,
     pub time: String,
 
-    // who is signed in, and their picture, else their initial on glass
+    // who is signed in, and their picture, else their initial on the pill
     pub name: String,
     pub face: Option<Image>,
 

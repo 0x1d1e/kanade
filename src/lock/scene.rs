@@ -9,15 +9,15 @@ use kanade_lock::{Backdrop, FontFile, Fonts, Image, Locker, Palette, Picture, Sc
 use kanade_runtime::{Color, LayerWindow, Monitor, Monitors, Rectangle};
 use kanade_runtime::{MutexExt, service::Service};
 
-use crate::look::{LockBackdrop, Tone};
+use crate::look::LockBackdrop;
 use crate::sources::wallpaper;
-use crate::{clock, config, glass, theme};
+use crate::{clock, config, theme};
 
 use super::who::Who;
 use super::{Said, Status, locker};
 
 /*
- * as macOS's: the date over a large time near the top, who is signed in and a pill of glass to
+ * as macOS's: the date over a large time near the top, who is signed in and a black pill to
  * type the password in near the bottom, over the output's wallpaper as `lock.backdrop` says. A
  * hidden window that only hands `kanade-lock` the scene of its monitor, unlocked too, so a lock
  * shows it from its first frame; it runs again as anything it reads changes, as the minute turns
@@ -51,10 +51,10 @@ fn scened(monitor: &Monitor) -> Scene {
         .then(|| wallpaper::Shown::read().on(&monitor.name).cloned())
         .flatten();
 
-    // light text on dark glass over a wallpaper, as macOS's; the island's own over a solid color
-    let (roles, dark) = match &wallpaper {
-        Some(_) => (theme::ISLAND_DARK, true),
-        None => (theme::island(), config::get().appearance.tone == Tone::Dark),
+    // light text over a wallpaper, as macOS's; the island's own over a solid color
+    let roles = match &wallpaper {
+        Some(_) => theme::ISLAND_DARK,
+        None => theme::island(),
     };
 
     let backdrop = match wallpaper {
@@ -108,9 +108,8 @@ fn scened(monitor: &Monitor) -> Scene {
             text: color(roles.on_surface),
             muted: color(roles.on_surface_variant),
             critical: color(theme::SEMANTIC.critical),
-            dark,
-            highlight: glass::highlight(),
-            tint: color(glass::lock_tint(dark)),
+            pill: color(theme::SEMANTIC.island_surface),
+            rim: color(theme::ISLAND_DARK.outline),
         },
         fonts,
     }

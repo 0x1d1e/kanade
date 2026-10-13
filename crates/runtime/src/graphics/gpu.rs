@@ -1,6 +1,4 @@
 mod atlas;
-mod backdrops;
-mod blur;
 mod clip;
 mod convert;
 mod cut;
@@ -75,9 +73,6 @@ pub struct Gpu {
     atlas_drops: Rc<Cell<u64>>,
     atlas_seen: u64,
 
-    // the copies of what is behind each pane, for the shaders that read them, see backdrops.rs
-    backdrops: Rc<RefCell<backdrops::Backdrops>>,
-
     // custom shaders, compiled once and kept by the path they were read from
     shaders: HashMap<PathBuf, Shader>,
 
@@ -90,7 +85,6 @@ pub struct Gpu {
 
     composite: Pass,
     present: Pass,
-    box_blur: Pass,
     erase: Pass,
 }
 
@@ -105,7 +99,6 @@ impl Gpu {
             queue,
             vello,
             atlas_drops,
-            backdrops,
         } = shared::get(&surface);
 
         let config = target::configure(&surface, &adapter);
@@ -115,7 +108,6 @@ impl Gpu {
 
         let composite = Pass::new(&device, "composite", TextureFormat::Rgba8Unorm, over);
         let present = Pass::new(&device, "composite", config.format, None);
-        let box_blur = Pass::new(&device, "box_blur", TextureFormat::Rgba8Unorm, None);
         let erase = cut::erase(&device);
 
         let quads = quads::Quads::new(&device, &queue);
@@ -137,7 +129,6 @@ impl Gpu {
             atlas_drops,
             atlas_seen: 0,
 
-            backdrops,
             shaders: HashMap::new(),
             spare: Vec::new(),
 
@@ -146,7 +137,6 @@ impl Gpu {
 
             composite,
             present,
-            box_blur,
             erase,
         }
     }

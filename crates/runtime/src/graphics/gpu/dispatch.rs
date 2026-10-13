@@ -88,8 +88,8 @@ impl Gpu {
                 commands,
             } => self.clip(scene, area, radius, transform, commands, canvas),
 
-            // blurs, cuts and shaders split the drawing, so run handles them before they get here
-            Command::Blur { .. } | Command::Cut { .. } | Command::Shader { .. } => {}
+            // cuts and shaders split the drawing, so run handles them before they get here
+            Command::Cut { .. } | Command::Shader { .. } => {}
         }
     }
 }

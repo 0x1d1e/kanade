@@ -1,6 +1,6 @@
 # 37. Liquid glass from GPU textures
 
-Status: accepted. Supersedes ADR 0020's transport (its own Wayland connection, CPU refraction, PNG on disk and decode). ADR 0048 supersedes the pane rendering and material; GPU backdrop capture, per-`Spot` ownership and lock-time pause stand. Amends ADR 0024 (a pane's copy is a texture, not a rim picture) and ADR 0034 (the runtime now also captures). Amends ADR 0021 and ADR 0033: nothing raises the Island over fullscreen windows.
+Status: superseded by ADR 0049, which removes the capture. Supersedes ADR 0020's transport (its own Wayland connection, CPU refraction, PNG on disk and decode). ADR 0048 supersedes the pane rendering and material; GPU backdrop capture, per-`Spot` ownership and lock-time pause stand. Amends ADR 0024 (a pane's copy is a texture, not a rim picture) and ADR 0034 (the runtime now also captures). Amends ADR 0021 and ADR 0033: nothing raises the Island over fullscreen windows.
 
 ## Context
 

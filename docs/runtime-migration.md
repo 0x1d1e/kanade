@@ -30,7 +30,7 @@ Runtime work, done when wanted.
       layer surface per output (ADR 0027 step 3.4); the Privacy cluster's dots
       are inside the Island's body (ADR 0033).
 - [x] Liquid glass from GPU textures, without the capture to PNG to decode
-      round trip (ADR 0037); `crates/glass` is gone.
+      round trip (ADR 0037); `crates/glass` is gone. ADR 0049 then removed the capture.
 
 ## Glue to delete
 
@@ -49,6 +49,5 @@ keyboard focus on fullscreen and locked sessions. Neither input-group nor
 rfkill-group membership should be required just for ordinary keyboard input.
 
 **Upstream protocol limit:** sampling what the compositor draws behind a
-layer surface is not a general Wayland right. Any capture is optional and must
-fail closed to transparent material without turning off independent privacy
-indicators.
+layer surface is not a general Wayland right. The shell reads nothing behind its
+panes (ADR 0049).

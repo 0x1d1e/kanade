@@ -12,7 +12,6 @@ use crate::{frame, service};
 
 use super::{
     WaylandState,
-    effect::Blur,
     layer::{self, Settings},
     surface::{Content, OpenWindow, Role, View},
 };
@@ -87,8 +86,6 @@ impl WaylandState {
             gpu,
 
             fractional,
-
-            blur: Blur::new(self.background_effect.clone()),
 
             role,
 

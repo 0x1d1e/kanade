@@ -1,6 +1,5 @@
 //! The pictures behind the lock screen: the wallpaper scaled to cover an output, blurred or not and
-//! shaded, and the frost the glass shows of it, worked out once per output and size, off the
-//! client's thread; and the face, cut round.
+//! shaded, worked out once per output and size, off the client's thread; and the face, cut round.
 
 use tiny_skia::{
     FillRule, FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Transform,
@@ -48,19 +47,9 @@ impl Picture {
     }
 }
 
-// what the glass of the lock screen shows of the backdrop, as blurred as the shell's glass
-const FROST: f32 = 24.0;
-
-// how much smaller `lock.backdrop` blurred is worked out a logical pixel, and blurred there, as the
-// shell's was
+// how much smaller `lock.backdrop` blurred is worked out a logical pixel, and blurred there
 const BLURRED_BY: f32 = 8.0;
 const BLURRED: u32 = 4;
-
-// an output's backdrop, as shown, and its frost, a quarter the size, stretched as it is drawn
-pub(crate) struct Prepared {
-    pub shown: Pixmap,
-    pub frost: Pixmap,
-}
 
 /*
  * the backdrop of an output `width` by `height` pixels at `scale`: the wallpaper, if it decoded,
@@ -71,7 +60,7 @@ pub(crate) fn prepare(
     wallpaper: Option<&Pixmap>,
     (width, height): (u32, u32),
     scale: f32,
-) -> Option<Prepared> {
+) -> Option<Pixmap> {
     let mut shown = Pixmap::new(width, height)?;
 
     match (backdrop, wallpaper) {
@@ -105,18 +94,7 @@ pub(crate) fn prepare(
         }
     }
 
-    // a quarter the size, blurred so as much as the shell's glass blurs at this scale
-    let by = 4;
-    let mut small = shrink(&shown, by)?;
-    blur(
-        &mut small,
-        ((FROST * scale / by as f32) / 3.0).round().max(1.0) as u32,
-    );
-
-    Some(Prepared {
-        shown,
-        frost: small,
-    })
+    Some(shown)
 }
 
 // `picture` scaled to cover `width` by `height`, its middle kept
@@ -355,13 +333,7 @@ mod tests {
             };
 
             let prepared = prepare(&backdrop, Some(&wallpaper), (16, 16), 1.0).unwrap();
-            assert!(
-                prepared
-                    .shown
-                    .pixels()
-                    .iter()
-                    .all(|pixel| pixel.alpha() == 255)
-            );
+            assert!(prepared.pixels().iter().all(|pixel| pixel.alpha() == 255));
         }
     }
 }

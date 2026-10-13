@@ -20,16 +20,6 @@ pub fn scratch(device: &Device, width: u32, height: u32) -> Texture {
     create(device, width, height, SCRATCH)
 }
 
-// vello copies the finished blur into its image atlas, so it has to be a copy source
-pub fn blur(device: &Device, width: u32, height: u32) -> Texture {
-    let usage = TextureUsages::RENDER_ATTACHMENT
-        | TextureUsages::TEXTURE_BINDING
-        | TextureUsages::COPY_SRC
-        | TextureUsages::COPY_DST;
-
-    create(device, width, height, usage)
-}
-
 pub fn view(texture: &Texture) -> TextureView {
     texture.create_view(&Default::default())
 }

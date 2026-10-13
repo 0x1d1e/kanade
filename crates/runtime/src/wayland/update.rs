@@ -18,19 +18,7 @@ impl OpenWindow {
         let window = match content {
             Content::Layer(window) => window,
 
-            Content::Normal(window) => {
-                let surface = self.role.wl_surface();
-
-                self.blur.set(
-                    window.blur,
-                    surface,
-                    (self.width, self.height),
-                    &self.compositor,
-                    &self.qh,
-                );
-
-                return;
-            }
+            Content::Normal(_) => return,
         };
 
         self.update_input_region(window);

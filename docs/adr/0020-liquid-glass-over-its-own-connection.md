@@ -1,6 +1,6 @@
 # 20. Liquid glass over its own Wayland connection
 
-Status: transport superseded by ADR 0037, which captures in the runtime; the liquid-glass material is superseded by ADR 0048. Amends ADR 0011 ("Never a Wayland or render crate") and the `wayland-client` rule in `AGENTS.md` for one crate, `crates/glass`. Amended by ADR 0024, which puts the material on every surface.
+Status: superseded by ADR 0049 (no glass remains); transport superseded by ADR 0037, which captures in the runtime; the liquid-glass material is superseded by ADR 0048. Amends ADR 0011 ("Never a Wayland or render crate") and the `wayland-client` rule in `AGENTS.md` for one crate, `crates/glass`. Amended by ADR 0024, which puts the material on every surface.
 
 Validated on niri 26.04: the Island's rim bends a striped window behind it, the backdrop stays sharp through the tint, and over a still picture with a still Island the glass captures nothing.
 

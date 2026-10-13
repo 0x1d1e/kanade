@@ -1,18 +1,14 @@
 //! A lock screen drawn, as macOS's: the date over a large time near the top; who is signed in, a
-//! frosted-glass pill to type the password in and what became of the last one near the bottom.
-//! The wallpaper is frosted, then tinted and edged with the highlight used by the shell.
+//! black pill to type the password in and what became of the last one near the bottom.
 
 use std::borrow::Cow;
 use std::f32::consts::TAU;
 
-use tiny_skia::{
-    FillRule, FilterQuality, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapPaint, Rect,
-    SpreadMode, Transform,
-};
+use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 
-use crate::picture::{self, Prepared};
+use crate::picture;
 use crate::text::{Font, Line};
-use crate::{Backdrop, Color, Palette, Scene};
+use crate::{Backdrop, Color, Scene};
 
 // the field, and the status under it, in logical pixels
 const WIDTH: f32 = 240.0;
@@ -35,7 +31,7 @@ const BELOW: f32 = 0.08;
 const DOT: f32 = 3.5;
 const PITCH: f32 = 11.0;
 
-// the soft shadow under the glass, as the shell's panes cast, in logical pixels, and how dark
+// the soft shadow under the pill, as the shell's panes cast, in logical pixels, and how dark
 const SHADOW_BLUR: f32 = 12.0;
 const SHADOW_DROP: f32 = 4.0;
 const SHADOW: u8 = 56;
@@ -88,7 +84,7 @@ pub(crate) struct Look<'a> {
 
     // none when they do not read: the lock screen still takes a password, with no text
     pub faces: Option<&'a Faces>,
-    pub prepared: Option<&'a Prepared>,
+    pub prepared: Option<&'a Pixmap>,
 
     // their picture, cut round at `avatar` across
     pub face: Option<&'a Pixmap>,
@@ -113,12 +109,12 @@ pub(crate) fn avatar(scale: f32) -> u32 {
  */
 pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> {
     let fits = |pixmap: &Pixmap| pixmap.width() == width && pixmap.height() == height;
-    let prepared = look.prepared.filter(|prepared| fits(&prepared.shown));
+    let prepared = look.prepared.filter(|prepared| fits(prepared));
 
-    // the backdrop, and as seen through glass: its frost, or the flat color it is
+    // the backdrop, or the flat color it is
     let solid;
-    let (backdrop, frost) = match prepared {
-        Some(prepared) => (&prepared.shown, Some(&prepared.frost)),
+    let backdrop = match prepared {
+        Some(prepared) => prepared,
         None => {
             let mut pixmap = Pixmap::new(width.max(1), height.max(1))?;
             let color = match &look.scene.backdrop {
@@ -126,14 +122,13 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
             };
             pixmap.fill(color.skia());
             solid = pixmap;
-            (&solid, None)
+            &solid
         }
     };
     let mut pixmap = backdrop.clone();
-    let glass = Glass {
-        frost: frost.unwrap_or(backdrop),
-        size: (width, height),
-        palette: look.scene.palette,
+    let pill = Pill {
+        fill: look.scene.palette.pill,
+        rim: look.scene.palette.rim,
         scale: look.scale,
     };
 
@@ -210,7 +205,7 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
     let name_top = field_top - GAP - name_height;
     let avatar_top = name_top - GAP - AVATAR;
 
-    // their picture in a circle, else their initial on glass
+    // their picture in a circle, else their initial on the pill
     let avatar = Body {
         x: middle - AVATAR / 2.0,
         y: avatar_top,
@@ -228,7 +223,7 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
             None,
         ),
         None => {
-            glass.draw(&mut pixmap, avatar);
+            pill.draw(&mut pixmap, avatar);
 
             let initial: String = look
                 .scene
@@ -261,7 +256,7 @@ pub(crate) fn paint(look: &Look, (width, height): (u32, u32)) -> Option<Pixmap> 
 
     // the field, shaken aside after a password is refused
     let field = field(look);
-    glass.draw(&mut pixmap, field);
+    pill.draw(&mut pixmap, field);
     typed(&mut pixmap, look, field);
 
     // what became of the last password
@@ -426,7 +421,7 @@ fn fill(pixmap: &mut Pixmap, path: &Path, color: Color) {
 }
 
 /*
- * the shadow `body` casts, in logical pixels, blurred on a layer of its own; the glass over it
+ * the shadow `body` casts, in logical pixels, blurred on a layer of its own; the pill over it
  * hides its middle
  */
 fn shadow(pixmap: &mut Pixmap, body: Body, scale: f32) {
@@ -475,158 +470,30 @@ pub(crate) fn shaken(since: f32) -> Option<f32> {
     })
 }
 
-// a pane of the shell's Frosted Glass, over a backdrop
-struct Glass<'a> {
-    frost: &'a Pixmap,
-
-    // the backdrop's size, which the frost is stretched to
-    size: (u32, u32),
-    palette: Palette,
+// a pill of the shell's black, with the soft shadow its panes cast
+struct Pill {
+    fill: Color,
+    rim: Color,
     scale: f32,
 }
 
-impl Glass<'_> {
-    // the glass over `body`: frost, tint and a restrained highlight
+impl Pill {
     fn draw(&self, pixmap: &mut Pixmap, body: Body) {
-        let scale = self.scale;
-        let Some(shape) = rounded(body, scale) else {
+        let Some(shape) = rounded(body, self.scale) else {
             return;
         };
 
-        shadow(pixmap, body, scale);
+        shadow(pixmap, body, self.scale);
+        fill(pixmap, &shape, self.fill);
 
-        let stretched = Transform::from_scale(
-            self.size.0 as f32 / self.frost.width() as f32,
-            self.size.1 as f32 / self.frost.height() as f32,
-        );
-        let mut paint = Paint {
-            shader: Pattern::new(
-                self.frost.as_ref(),
-                SpreadMode::Pad,
-                FilterQuality::Bilinear,
-                1.0,
-                stretched,
-            ),
-            anti_alias: true,
-            ..Paint::default()
+        let mut paint = Paint::default();
+        paint.set_color(self.rim.skia());
+        paint.anti_alias = true;
+        let stroke = Stroke {
+            width: self.scale,
+            ..Stroke::default()
         };
-        pixmap.fill_path(
-            &shape,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-
-        paint.shader = tiny_skia::Shader::SolidColor(self.palette.tint.skia());
-        pixmap.fill_path(
-            &shape,
-            &paint,
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-
-        self.highlight(pixmap, body);
-    }
-
-    // `src/glass.wgsl` at rest, with no pointer light: the glare, Fresnel lift, bevel and sheen
-    fn highlight(&self, pixmap: &mut Pixmap, body: Body) {
-        let scale = self.scale;
-        let dark = if self.palette.dark { 1.0 } else { 0.0 };
-        let highlight = self.palette.highlight;
-        let (width, height) = (pixmap.width() as i64, pixmap.height() as i64);
-
-        let left = ((body.x * scale).floor() as i64).clamp(0, width);
-        let top = ((body.y * scale).floor() as i64).clamp(0, height);
-        let right = (((body.x + body.width) * scale).ceil() as i64).clamp(0, width);
-        let bottom = (((body.y + body.height) * scale).ceil() as i64).clamp(0, height);
-
-        let half = (body.width / 2.0, body.height / 2.0);
-        let radius = body.radius.min(half.0).min(half.1);
-        let sun = normalize((-0.5, -0.85));
-        let small = mix(0.6, 1.0, smoothstep(32.0, 120.0, body.height));
-        let band = 14.0f32.min(half.0.min(half.1) * 0.6);
-        let stride = width as usize * 4;
-        let data = pixmap.data_mut();
-
-        for row in top..bottom {
-            for column in left..right {
-                // the point in the body, from its middle, in logical pixels
-                let x = (column as f32 + 0.5) / scale - body.x;
-                let y = (row as f32 + 0.5) / scale - body.y;
-                let p = (x - half.0, y - half.1);
-                let d = rounded_distance(p, half, radius);
-
-                // outside, but for the edge's antialiasing
-                let coverage = (0.5 - d * scale).clamp(0.0, 1.0);
-                if coverage <= 0.0 {
-                    continue;
-                }
-
-                let inside = (-d).max(0.0);
-                let e = 0.75;
-                let n = normalize((
-                    rounded_distance((p.0 + e, p.1), half, radius)
-                        - rounded_distance((p.0 - e, p.1), half, radius)
-                        + 1e-5,
-                    rounded_distance((p.0, p.1 + e), half, radius)
-                        - rounded_distance((p.0, p.1 - e), half, radius)
-                        + 1e-5,
-                ));
-                let facing = n.0 * sun.0 + n.1 * sun.1;
-
-                let near = (facing.max(0.0) * 1.2).clamp(0.0, 1.0).powf(1.1);
-                let far = ((-facing).max(0.0) * 1.2).clamp(0.0, 1.0).powf(1.1)
-                    * mix(0.3, 0.4, 1.0 - dark);
-                let lit = 0.12 + 0.88 * (near + far).clamp(0.0, 1.0);
-
-                let geo = (1.2 - 0.185 * inside).max(0.0).powi(5).clamp(0.0, 1.0);
-                let hairline = (1.0 - smoothstep(0.0, 1.0, inside)) * lit;
-                let glare = geo * (near + far) * mix(0.70, 0.45, dark);
-                let fresnel = geo * mix(0.08, 0.05, dark);
-
-                let edge = 1.0 - (inside / band).clamp(0.0, 1.0);
-                let concave = 1.0 - (1.0 - smoothstep(0.0, 1.0, edge).powi(3)).max(0.0).sqrt();
-                let bevel = concave * facing * 0.10;
-
-                let (u, v) = (x / body.width, y / body.height);
-                let top_sheen = 1.0 - smoothstep(0.03, 0.42, v);
-                let slant = u + (1.0 - v) * 0.65;
-                let diagonal =
-                    smoothstep(0.18, 0.64, slant) * (1.0 - smoothstep(0.64, 1.16, slant));
-                let sheen = top_sheen * mix(0.07, 0.03, dark) + diagonal * 0.025;
-
-                let white =
-                    ((glare + fresnel + bevel.max(0.0) + sheen + hairline * mix(0.45, 0.20, dark))
-                        * highlight
-                        * small)
-                        .clamp(0.0, 1.0);
-                let black = ((-bevel).max(0.0) * 0.4 * highlight * small
-                    + (1.0 - dark) * (1.0 - smoothstep(0.0, 0.5, inside)) * 0.08)
-                    .clamp(0.0, 1.0);
-
-                let alpha = (white + black).clamp(0.0, 1.0) * coverage;
-                if alpha <= 0.0 {
-                    continue;
-                }
-                let shade = if white + black > 1e-4 {
-                    white / (white + black)
-                } else {
-                    0.0
-                };
-
-                // over, premultiplied
-                let at = row as usize * stride + column as usize * 4;
-                for channel in 0..3 {
-                    let under = f32::from(data[at + channel]);
-                    data[at + channel] =
-                        (shade * 255.0 * alpha + under * (1.0 - alpha)).round() as u8;
-                }
-                let under = f32::from(data[at + 3]);
-                data[at + 3] = (255.0 * alpha + under * (1.0 - alpha)).round() as u8;
-            }
-        }
+        pixmap.stroke_path(&shape, &paint, &stroke, Transform::identity(), None);
     }
 }
 
@@ -677,26 +544,4 @@ fn rounded(body: Body, scale: f32) -> Option<Path> {
     path.close();
 
     path.finish()
-}
-
-// signed distance to a rounded rectangle centered on 0, negative inside, as the shader's
-fn rounded_distance(p: (f32, f32), half: (f32, f32), radius: f32) -> f32 {
-    let q = (p.0.abs() - half.0 + radius, p.1.abs() - half.1 + radius);
-    let outside = (q.0.max(0.0).powi(2) + q.1.max(0.0).powi(2)).sqrt();
-
-    outside + q.0.max(q.1).min(0.0) - radius
-}
-
-fn normalize((x, y): (f32, f32)) -> (f32, f32) {
-    let length = (x * x + y * y).sqrt().max(1e-6);
-    (x / length, y / length)
-}
-
-fn mix(from: f32, to: f32, by: f32) -> f32 {
-    from + (to - from) * by
-}
-
-fn smoothstep(low: f32, high: f32, value: f32) -> f32 {
-    let t = ((value - low) / (high - low)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }

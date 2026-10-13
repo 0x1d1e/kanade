@@ -14,14 +14,13 @@ use kanade_runtime::{
 use toml::Value;
 
 use crate::config::{self, Choices, DayTime, Kind, Location, Setting};
-use crate::glass;
 use crate::icon::Icon;
 use crate::look::{Along, Edge, ShellMode};
 use crate::modules::{self, CORE, Module};
 use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
 
-use super::layout::{self, MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
+use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
 use super::{
     FONT_SEARCH, SEARCH, Settings, change, change_all, font_search, input, inspect, path, search,
     select_font, turn_to, undo,
@@ -109,15 +108,13 @@ pub fn window() -> Window {
         .title("Kanade Settings")
         .size(WIDTH, HEIGHT)
         .min_size(MIN_WIDTH, MIN_HEIGHT)
-        .blur(glass::blurred())
         .child(
             Row::new(children![
                 sidebar(&settings, &roles),
-                // each fill is flat, so the sidebar and the page show the same one layer of glass over the blur
                 Rectangle::new()
                     .width(Parent)
                     .height(Parent)
-                    .fill(glass::see_through(roles.surface))
+                    .fill(roles.surface)
                     .child(main(&settings, &roles)),
             ])
             .width(Parent)
@@ -159,10 +156,7 @@ fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     Rectangle::new()
         .width(SIDEBAR)
         .height(Parent)
-        .fill(glass::see_through(theme::over(
-            roles.surface_container,
-            roles.surface,
-        )))
+        .fill(theme::over(roles.surface_container, roles.surface))
         .padding(SIDE_INSET)
         .align_child(Start, Start)
         .child(
@@ -371,14 +365,14 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let waiting = settings.pending.len();
     let (status, ink) = if let Some(refused) = &settings.refused {
-        (refused.clone(), theme::signals().warning)
+        (refused.clone(), theme::window_signals().warning)
     } else if settings.unreadable.is_some()
         || settings.error.is_some()
         || !settings.skipped.is_empty()
     {
         (
             String::from("The config has problems, shown above"),
-            theme::signals().warning,
+            theme::window_signals().warning,
         )
     } else if waiting > 0 {
         let changes = if waiting == 1 {
@@ -567,7 +561,9 @@ fn notices(settings: &Settings) -> Vec<Box<dyn Widget>> {
     problems
         .into_iter()
         .flatten()
-        .map(|problem| Box::new(notice(&problem, theme::signals().warning)) as Box<dyn Widget>)
+        .map(|problem| {
+            Box::new(notice(&problem, theme::window_signals().warning)) as Box<dyn Widget>
+        })
         .collect()
 }
 
@@ -658,16 +654,6 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
                 label(settings, &[setting], setting.label, &help(setting), roles),
                 control,
                 beside,
-                roles,
-            )
-        }
-        Line::Material => {
-            let setting = setting(layout::MATERIAL).expect("material is in the schema");
-
-            labeled(
-                label(settings, &[setting], setting.label, &help(setting), roles),
-                Box::new(materials(settings, setting, roles)),
-                false,
                 roles,
             )
         }
@@ -820,7 +806,7 @@ fn labeled(
         lines.push(Box::new(wrapped(
             Text::new(off)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::signals().warning)
+                .color(theme::window_signals().warning)
                 .weight(theme::text::MEDIUM),
             text_width,
         )));
@@ -1360,82 +1346,6 @@ fn module_line(
         )
 }
 
-// a tile for each available material over a bright backdrop
-fn materials(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles) -> Row {
-    const GAP: f32 = 10.0;
-
-    let Kind::Choice(options, field) = &setting.kind else {
-        return Row::new(Vec::new());
-    };
-    let chosen = (field.get)(&settings.read);
-    let tone = settings.read.appearance.tone;
-    let count = options.names.len().max(1);
-    let tile = ((inner() - GAP * count.saturating_sub(1) as f32) / count as f32).min(200.0);
-    let key = setting.key;
-
-    let tiles = options
-        .names
-        .iter()
-        .map(|&option| {
-            let here = option == chosen;
-
-            let scene = Rectangle::new()
-                .width(tile)
-                .height(72.0)
-                .radius(radius::ROW)
-                .fill(backdrop())
-                .align_child(Center, Center)
-                .child(
-                    Rectangle::new()
-                        .width(64.0)
-                        .height(22.0)
-                        .radius(11.0)
-                        .fill(glass::swatch(tone))
-                        .border(1.0, theme::faded(theme::ON_SCENE, 0.3)),
-                );
-            let scene = if here {
-                scene.border(2.0, roles.primary)
-            } else {
-                scene
-            };
-
-            let (ink, weight) = if here {
-                (roles.on_surface, theme::text::SEMIBOLD)
-            } else {
-                (roles.on_surface_variant, theme::text::MEDIUM)
-            };
-
-            Box::new(
-                Rectangle::new()
-                    .width(tile)
-                    .height(98.0)
-                    .cursor(Cursor::Pointer)
-                    .on_click(left(move || {
-                        change(path(key, None), Some(Value::String(option.to_owned())));
-                    }))
-                    .child(
-                        Column::new(children![
-                            scene,
-                            Rectangle::new()
-                                .width(tile)
-                                .height(20.0)
-                                .align_child(Center, Center)
-                                .child(
-                                    Text::new(humanize(options, option))
-                                        .size(theme::text::LABEL)
-                                        .color(ink)
-                                        .weight(weight),
-                                ),
-                        ])
-                        .gap(6.0),
-                    ),
-            ) as Box<dyn Widget>
-        })
-        .collect();
-
-    Row::new(tiles).width(inner()).gap(GAP).justify(Center)
-}
-
 // a small screen with the six places an edge and a side make, the chosen one filled
 fn position(
     settings: &Settings,
@@ -1903,7 +1813,7 @@ fn owner(key: &str) -> Option<&'static Module> {
         .find(|module| module.settings.iter().any(|setting| setting.key == key))
 }
 
-// the scene glass shows over
+// the gradient of Settings' mark
 fn backdrop() -> Gradient {
     let [from, middle, to] = theme::SCENE;
 

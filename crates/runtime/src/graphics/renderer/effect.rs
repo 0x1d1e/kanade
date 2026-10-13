@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use crate::backdrop::Spot;
 use crate::graphics::{Area, Color, Renderer};
 
 use super::Command;
@@ -35,23 +34,6 @@ impl Renderer {
         });
     }
 
-    pub fn blur(&mut self, area: Area, radius: f32, amount: f32) {
-        // most rectangles ask for no blur, so they skip copying pixels
-        if amount == 0.0 {
-            return;
-        }
-
-        let Some(path) = area.trace(radius) else {
-            return;
-        };
-
-        self.commands.push(Command::Blur {
-            path,
-            transform: self.transform,
-            amount,
-        });
-    }
-
     pub fn cut(&mut self, area: Area, radius: f32, strength: f32) {
         let Some(path) = area.trace(radius) else {
             return;
@@ -65,14 +47,7 @@ impl Renderer {
     }
 
     // runs the shader file over the rounded rectangle, handing it the values
-    pub fn shader(
-        &mut self,
-        area: Area,
-        shader: &Path,
-        radius: f32,
-        values: &[[f32; 4]],
-        backdrop: Option<&Spot>,
-    ) {
+    pub fn shader(&mut self, area: Area, shader: &Path, radius: f32, values: &[[f32; 4]]) {
         let Some(outline) = area.trace(radius) else {
             return;
         };
@@ -83,7 +58,6 @@ impl Renderer {
         self.commands.push(Command::Shader {
             shader: shader.to_path_buf(),
             values: values.to_vec(),
-            backdrop: backdrop.cloned(),
             area,
             path,
             transform: self.transform,

@@ -24,7 +24,7 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
 ## Privacy cluster
-The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; tone-aware, `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
+The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
 - **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show. A Tray strip shows them past its last slot.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
@@ -138,14 +138,14 @@ One app's open windows, as `windows` groups them for the Dock: those whose `app_
 - **Avoid:** client, toplevel, task, program
 
 ## Dock
-Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pinned apps (`dock.pinned`), then Running apps not pinned, a dot between each running one and the edge. A click launches an app without windows, else focuses its window, cycling while it has the focus. Icons sized by `dock.size` grow near the pointer (`dock.magnification`); an autohidden Dock comes out when the pointer touches the edge under it. It steps aside while the Island grows over it, as with a Surface open beside it. Where it shares the Island's edge and side, `dock.merge` joins them instead (ADR 0031): one window, one pane of glass: the Dock a plate on the edge with the Island crowning it (`crown`), the Island the middle piece of its row (`keystone`), or the Dock folded into the Island and out under the pointer (`fold`).
+Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pinned apps (`dock.pinned`), then Running apps not pinned, a dot between each running one and the edge. A click launches an app without windows, else focuses its window, cycling while it has the focus. Icons sized by `dock.size` grow near the pointer (`dock.magnification`); an autohidden Dock comes out when the pointer touches the edge under it. It steps aside while the Island grows over it, as with a Surface open beside it. Where it shares the Island's edge and side, `dock.merge` joins them instead (ADR 0031): one window, one pane: the Dock a plate on the edge with the Island crowning it (`crown`), the Island the middle piece of its row (`keystone`), or the Dock folded into the Island and out under the pointer (`fold`).
 - **Invariant:** app data only from `windows`; never reads `workspace` or raw niri objects, the niri source hands it the output names.
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One piece of Frosted Glass: the Island's body, the Dock, or one Banner, named by a `Spot`, its output and `island`, `dock` or `banner-<i>` there (ADR 0024). The runtime captures around each pane apart; its shader samples outside the outline to frost the body (ADR 0048).
-- **Invariant:** a pane nothing draws in captures nothing; nothing captures while Kanade holds the lock, from niri saying it locked until the lock ends (ADR 0025).
-- **Avoid:** layer (a `glass::layer` widget), surface (a Surface is the Island's)
+One solid black piece of the shell: the Island's body, the Dock, or one Banner (ADR 0049). A merged Island and Dock are one pane with one outline (ADR 0031).
+- **Invariant:** always black with light text, whatever `appearance.tone` says; nothing behind it is read.
+- **Avoid:** glass, frost, material, layer (a `pane::layer` widget), surface (a Surface is the Island's)
 
 ## Idle stage
 What the `idle` Module does after the user has been idle for so long (ADR 0047): `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`, each optional. The Dim grace comes first: a click-through Overlay layer on every output fading toward dark until the lock, taken away at once by any input.

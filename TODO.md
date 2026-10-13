@@ -27,7 +27,6 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
 
 Not worth changing, by this review:
 
-- `crates/lock/src/refract.rs` duplicates the glass math on the CPU by design (ADR 0025); folding it in is on `docs/runtime-migration.md`.
 - A flat `Config` with per-module `Setting` consts: the registry already defines each key once.
 - `island/service.rs` size: most of it is tests.
 - On a side edge the Satellites travel with the body's height as a Compact peeks: they hang from the body's end.
@@ -38,7 +37,7 @@ Not worth changing, by this review:
 ## Architecture (whole-codebase review, second)
 
 - [x] One atomic file write: `atomic::write` with `Mode::{Shared, Private, Exactly}` (settings, reminders, recents, appearance adapters, calendar mirror)
-  - Not folded in: `raster::store` (a cache of hundreds of pictures; the fsync would cost startup) and the glass shader (it locks the file before naming it).
+  - Not folded in: `raster::store` (a cache of hundreds of pictures; the fsync would cost startup) and the pane shader (it locks the file before naming it).
 - [x] One `Backoff` (`backoff.rs`) for logind, seat, sleep, tray, wake, night light, battery, weather and Google. Google now retries a failed sync after 1 min, doubling to 15 min, not a flat 15 min.
 - [x] `sources/json.rs` is `serde_json::Value` with `parse`, `array` and `quote`; the hand-rolled parser is gone.
 - [x] `sources/mirror.rs` is the calendar-sync file mirror for Google; `clock::unix_seconds` replaces four copies.
@@ -57,34 +56,32 @@ Not worth changing, by this review:
 - [x] "plan N" references in code comments now say the fact; `docs/archived/plan.md` stays history.
 - Not taken: a shared remote-sync loop for Google and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ, so a helper would need as many parameters as it saves lines.
 - Not taken: a `Target` table for the appearance adapters' `apply` and `disable`; their sequencing differs per target (Zen's marker block, GTK's restore state).
+- [ ] Dead after ADR 0049: the runtime's `Image::blurred` and `graphics/image/soften.rs` (no caller); `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
+- [ ] A plain (unmerged) pane needs no shader: a `Rectangle` fill would drop the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
+- [ ] Retake the memory and frame baselines (`docs/memory.md`) now the capture is gone.
 - [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
 
 ## Architecture (#208 review)
 
 - [x] Input and invalidation (ADR 0034, 0035; a copy redraws only its pane's readers)
 - [x] The Island's scene (ADR 0036)
-- [x] GPU glass (ADR 0037)
+- [x] GPU glass (ADR 0037; removed by ADR 0049)
 - [x] The layers in `docs/design.md`
-- [x] `view.rs`, `modules.rs`, `lock.rs` and `glass.rs` split by responsibility, `view::island` into its layers
+- [x] `view.rs`, `modules.rs`, `lock.rs` and `glass.rs` (now `pane/`) split by responsibility, `view::island` into its layers
 - [x] Scene: the largest body is per output (#212)
 - [ ] Invalidation: `service.rs` and `changes.rs` still use process-global state.
-  - `Backdrops` is scoped by pane and `Pointers` by output; no other Service is, so a write of any other draws every window that read it (see Glass).
+  - `Pointers` is scoped by output; no other Service is, so a write of any other draws every window that read it.
   - `IslandService` is the one that matters, but scoping it is a resource saving (not a gate before 1.0) and not a safe one: 62 `Island::write()` sites would each have to prove they change only one output's state, as `Sizes`, the Arbiter and the overview are read by every window.
   - A write naming no part stays safe (it draws everyone), so sites can be moved over one at a time.
 - [x] Baselines retaken 2026-10-11 (`docs/memory.md`, #198; idle wakeups 7.1/s against ADR 0004's 7.5/s, 0 idle frames, island morph gap 7.7 ms against a 6.94 ms refresh interval)
-  - Memory grew with GPU glass: 495 MiB of GPU buffers and 312 MiB of RSS at Rest, against 225 and 150 before. The vello and wgpu upgrade adds about 26 MiB of PSS (heap, and `libnvidia-rtcore`).
+  - Memory grew with GPU glass (removed by ADR 0049; retake the baseline): 495 MiB of GPU buffers and 312 MiB of RSS at Rest, against 225 and 150 before. The vello and wgpu upgrade adds about 26 MiB of PSS (heap, and `libnvidia-rtcore`).
   - 8% of the island window's frames came later than 1.5 refresh intervals while morphing, and the slowest took 48 ms of view, draw and gpu.
   - Not taken: more than one monitor. Not run (they unplug the output or restart niri): #214's unplug and replug with the Dock, a Banner and autohide active, and #216's lost niri stream.
 
-## Glass
+## Panes (glass removed, ADR 0049)
 
-- [x] Settings windows are glass as niri's blur allows (ADR 0024): niri blurs only the wallpaper behind it, with no rim or frost.
-- [x] Regular glass is frosted from the capture around the body (ADR 0024); faint wedge seams show in the fill where the nearest side changes, and a thing wholly inside the card is not seen.
 - [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
-- [ ] Satellites shift; the first ~80 ms of the liquid reveal are plain (ADR 0037: a copy is asked for after the first draw and lands about 3 frames on; the shift is their pixels bent by the rim still lagging).
-- [ ] A write of any Service but `Backdrops` and `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
-- [ ] Skip or defer a backdrop resample while the copy is stale, as hyprglass does (a damage-covered check, a cached sample reused during fade-out; `GlassLayerSurface.cpp`): the glass would not read pixels of a body that has moved on.
-- [ ] Zero-copy backdrop: import niri's `linux_dmabuf` copy into wgpu instead of wlr-screencopy into SHM plus CPU `light()` and mips. Not the cause of the Dock smear; the round trip is about 3 ms. Needs unsafe Vulkan dmabuf import (LINEAR modifier), GPU mips, light and dedupe, an SHM fallback and an ADR. No reference in `acknowledgements` does it from a client.
+- [ ] A write of any Service but `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
 
 ## Island sizes (ADR 0030)
 

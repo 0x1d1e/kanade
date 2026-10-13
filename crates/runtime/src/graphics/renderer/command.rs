@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use ttf_parser::Face;
 
-use crate::backdrop::Spot;
 use crate::graphics::{Area, BezierPath, Cap, Color, Gradient, Transform};
 
 pub enum Command {
@@ -90,17 +89,9 @@ pub enum Command {
     Shader {
         shader: PathBuf,
         values: Vec<[f32; 4]>,
-        backdrop: Option<Spot>,
         area: Area,
         path: Option<BezierPath>,
         transform: Transform,
-    },
-
-    // blurs what the commands before it drew inside the path, amount is in logical pixels
-    Blur {
-        path: BezierPath,
-        transform: Transform,
-        amount: f32,
     },
 
     // erases the inside of the path from what the commands before it drew, strength 1 erases fully

@@ -4,11 +4,10 @@ use std::time::Instant;
 
 use vello::wgpu::util::{BufferInitDescriptor, DeviceExt};
 use vello::wgpu::{
-    BindGroupDescriptor, BindGroupEntry, BindingResource, Buffer, BufferUsages, LoadOp, Operations,
+    BindGroupDescriptor, BindGroupEntry, Buffer, BufferUsages, LoadOp, Operations,
     RenderPassColorAttachment, RenderPassDescriptor, StoreOp, Texture,
 };
 
-use crate::backdrop::Spot;
 use crate::graphics::{self, Area, Transform, VALUE_ROWS};
 
 use super::shader::Shader;
@@ -21,7 +20,6 @@ static START: LazyLock<Instant> = LazyLock::new(Instant::now);
 pub(super) struct Material<'a> {
     pub shader: &'a Path,
     pub values: &'a [[f32; 4]],
-    pub backdrop: Option<&'a Spot>,
 }
 
 impl Gpu {
@@ -63,11 +61,7 @@ impl Gpu {
         area: Area,
         transform: Transform,
     ) {
-        let Material {
-            shader,
-            values,
-            backdrop,
-        } = material;
+        let Material { shader, values } = material;
 
         // compiled the first time a path is drawn, then kept
         if !self.shaders.contains_key(shader) {
@@ -99,10 +93,6 @@ impl Gpu {
 
         let values = self.uniform_rows(rows);
 
-        let backdrops = self.backdrops.clone();
-        let mut backdrops = backdrops.borrow_mut();
-        let behind = backdrops.view(&self.device, &self.queue, backdrop);
-
         let inputs = self.device.create_bind_group(&BindGroupDescriptor {
             label: None,
             layout: &shader.inputs,
@@ -122,14 +112,6 @@ impl Gpu {
                 BindGroupEntry {
                     binding: 3,
                     resource: values.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 4,
-                    resource: BindingResource::TextureView(&behind),
-                },
-                BindGroupEntry {
-                    binding: 5,
-                    resource: BindingResource::Sampler(backdrops.sampler()),
                 },
             ],
         });
