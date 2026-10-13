@@ -7,7 +7,8 @@
 //!
 //! niri hands a recorder a frame only once the screen changes, and on a still screen that is often
 //! the island the draw thread, which answers IPC, would draw, so neither `start` nor `stop` waits on
-//! the recorder: each answers at once, and `kanade` waits on `status`.
+//! the recorder: each is answered later (`Later`), `start` once the file has its first frame and
+//! `stop` once it is saved.
 //!
 //! wf-recorder is a holder (ADR 0011): one recording runs while it does. Ending on its own, it ended
 //! the recording, which is never started again.
@@ -33,6 +34,7 @@ use crate::island::activity::{
     Action, Activity, Clip, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
+use crate::later::{LATER, Later};
 
 pub const RECORDER: &str = "wf-recorder";
 
@@ -44,6 +46,9 @@ const CODEC: &str = "h264_vaapi";
 
 // the last lines the recorder printed, which say why it ended
 const SAID: usize = 4;
+
+// how often a `start` looks for the first frame, which niri sends only when the screen changes
+const LOOK: Duration = Duration::from_millis(50);
 
 static RECORDER_STATE: Mutex<Recorder> = Mutex::new(Recorder {
     running: None,
@@ -75,6 +80,9 @@ struct Running {
 
     // asked to finish, so its end is no surprise
     stopping: bool,
+
+    // the `kanade` calls waiting on its first frame or its file, answered when it ends at the latest
+    waiting: Vec<Later>,
 }
 
 struct Ended {
@@ -103,10 +111,8 @@ impl Request {
     }
 }
 
-/*
- * how the recording stands, as `status` says it: a line a person reads, and `kanade` parses back
- * to wait on `start` and `stop`. An output's name holds no space
- */
+// how the recording stands, as `status` says it
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
     // none since Kanade started
@@ -138,111 +144,28 @@ impl fmt::Display for Status {
     }
 }
 
-impl Status {
-    pub fn parse(text: &str) -> Option<Status> {
-        let recording = |rest: &str| {
-            rest.split_once(" to ")
-                .map(|(output, path)| (output.to_owned(), path.to_owned()))
-        };
-
-        if text == "not recording" {
-            Some(Status::Idle)
-        } else if let Some(rest) = text.strip_prefix("starting to record ") {
-            recording(rest).map(|(output, path)| Status::Starting { output, path })
-        } else if let Some(rest) = text.strip_prefix("recording ") {
-            recording(rest).map(|(output, path)| Status::Recording { output, path })
-        } else if let Some(path) = text.strip_prefix("finishing ") {
-            Some(Status::Finishing {
-                path: path.to_owned(),
-            })
-        } else if let Some(path) = text.strip_prefix("saved ") {
-            Some(Status::Saved {
-                path: path.to_owned(),
-            })
-        } else {
-            let (path, why) = text
-                .strip_prefix("failed to record to ")?
-                .split_once('\n')?;
-
-            Some(Status::Failed {
-                path: path.to_owned(),
-                why: why.to_owned(),
-            })
-        }
-    }
-}
-
-// where a request has left the recording at its path, as `status` says
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Settled {
-    // not there yet
-    Waiting,
-
-    Done,
-
-    // the recording failed, as the recorder said
-    Failed(String),
-
-    // the shell says how another recording stands, or none, so what became of this one is unknown
-    Lost(String),
-}
-
-impl Request {
-    /*
-     * whether the recording at `path` is where this request leaves it: started once its first
-     * frame is written, stopped once its file is saved. Only a status of `path` settles it
-     */
-    pub fn settled(self, path: &str, status: &Status) -> Settled {
-        match (self, status) {
-            (Request::Status, _) => Settled::Done,
-            (_, Status::Failed { path: failed, why }) if failed == path => {
-                Settled::Failed(why.clone())
-            }
-            (
-                Request::Start,
-                Status::Starting { path: mine, .. } | Status::Finishing { path: mine },
-            )
-            | (Request::Stop, Status::Finishing { path: mine })
-                if mine == path =>
-            {
-                Settled::Waiting
-            }
-            (
-                Request::Start,
-                Status::Recording { path: mine, .. } | Status::Saved { path: mine },
-            )
-            | (Request::Stop, Status::Saved { path: mine })
-                if mine == path =>
-            {
-                Settled::Done
-            }
-            _ => Settled::Lost(format!(
-                "the shell no longer follows {path}; it says \"{status}\""
-            )),
-        }
-    }
-
-    // why a request was not settled after waiting `waited` on it
-    pub fn unsettled(self, path: &str, waited: Duration) -> String {
-        let waited = waited.as_secs();
-
-        match self {
-            Request::Stop => format!(
-                "{RECORDER} did not finish within {waited}s; the recording may still be saved at {path}"
-            ),
-            _ => {
-                format!("{RECORDER} wrote no frame within {waited}s; it may still record to {path}")
-            }
-        }
-    }
-}
-
 /*
- * starts recording the focused output, to the path returned; `status` says once the first frame
- * is written. Call it from the draw thread, which lives as long as Kanade: the recorder is told to
- * finish when the thread that started it ends
+ * does what `request` asks. A start answers `later` with the path once the first frame is written,
+ * a stop once the file is saved. Call it from the draw thread, which lives as long as Kanade: the
+ * recorder is told to finish when the thread that started it ends
  */
-pub fn start() -> Result<String, String> {
+pub fn request(request: Request, later: Later) {
+    let asked = match request {
+        Request::Start => start(&later),
+        Request::Stop => stop(&later),
+        Request::Status => {
+            later.done(status().to_string());
+            return;
+        }
+    };
+
+    if let Err(why) = asked {
+        later.refused(why);
+    }
+}
+
+// starts recording the focused output, to a path `later` is answered with
+fn start(later: &Later) -> Result<(), String> {
     let mut recorder = RECORDER_STATE.locked();
 
     if let Some(running) = &recorder.running {
@@ -304,19 +227,52 @@ pub fn start() -> Result<String, String> {
         output,
         child,
         stopping: false,
+        waiting: vec![later.clone()],
     });
 
-    Ok(path)
+    later.unsettled(format!(
+        "{RECORDER} wrote no frame within {}s; it may still record to {path}",
+        LATER.as_secs()
+    ));
+
+    let (watching, frame) = (later.clone(), path.clone());
+    let watched = thread::Builder::new()
+        .name(String::from("capture-record frame"))
+        .spawn(move || {
+            while watching.open() {
+                if Path::new(&frame).exists() {
+                    watching.done(frame);
+                    return;
+                }
+
+                thread::sleep(LOOK);
+            }
+        });
+
+    if let Err(error) = watched {
+        later.unknown(format!(
+            "cannot watch for the first frame: {error}; it may still record to {path}"
+        ));
+    }
+
+    Ok(())
 }
 
-// asks the recorder to finish the file, at the path returned; `status` says once it is saved
-pub fn stop() -> Result<String, String> {
+// asks the recorder to finish the file, which answers `later` once it is saved
+fn stop(later: &Later) -> Result<(), String> {
     let mut recorder = RECORDER_STATE.locked();
     let running = recorder.running.as_mut().ok_or("not recording")?;
 
     interrupt(running)?;
 
-    Ok(running.path.clone())
+    running.waiting.push(later.clone());
+    later.unsettled(format!(
+        "{RECORDER} did not finish within {}s; the recording may still be saved at {}",
+        LATER.as_secs(),
+        running.path
+    ));
+
+    Ok(())
 }
 
 // once, so a second stop does not cut the recorder's finishing short
@@ -442,6 +398,13 @@ fn end(recorder: &mut Recorder, path: &str, said: VecDeque<String>) -> Option<Cl
             "capture: the recording ended on its own: {}",
             lost.as_deref().unwrap_or("saved")
         );
+    }
+
+    for later in running.waiting.drain(..) {
+        match &lost {
+            None => later.done(path),
+            Some(why) => later.refused(why.clone()),
+        }
     }
 
     let clip = match &lost {

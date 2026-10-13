@@ -18,13 +18,15 @@ use std::panic::{self, AssertUnwindSafe};
 use std::process;
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::bus::{Argument, Bus, Value};
 use kanade_lock::{Locker, News};
 use kanade_runtime::{MutexExt, service::Service};
 
+use crate::cli::Reply;
 use crate::glass;
+use crate::later::{LATER, Later};
 use crate::sources::sleep;
 
 mod password;
@@ -46,7 +48,7 @@ const LOGIND: &str = "org.freedesktop.login1";
 const AUTO: &str = "/org/freedesktop/login1/session/auto";
 
 /*
- * the requests of `kanade lock` and of sleep (`hold`), numbered from 1 in this process (`instance`);
+ * the requests of `kanade lock` and of sleep (`hold`), numbered from 1 in this process;
  * each waits until `confirmed` reaches its own while the lock still holds. A request, a password
  * typed and what niri says of the lock are each taken under it, so they never interleave
  */
@@ -263,7 +265,7 @@ impl Requests {
         }
     }
 
-    fn status(&self, instance: &str) -> String {
+    fn status(&self) -> String {
         let holding = match self.holding() {
             Holding::Held => format!("confirmed #{}", self.confirmed),
             Holding::Checking => String::from("checking a password"),
@@ -271,7 +273,21 @@ impl Requests {
             Holding::Denied => String::from("denied"),
         };
 
-        format!("instance {instance}\nrequested #{}\n{holding}", self.newest)
+        format!("requested #{}\n{holding}", self.newest)
+    }
+
+    // where the request `number` stands
+    fn settled(&self, number: u64) -> Settled {
+        match self.holding() {
+            Holding::Checking => Settled::Waiting,
+            Holding::Unlocked => Settled::Unlocked,
+            // only the newest is denied; an older one's lock is gone with it
+            Holding::Denied if self.newest == number => Settled::Denied,
+            Holding::Denied => Settled::Unlocked,
+            // a later request confirmed is a lock after this one too
+            Holding::Held if self.confirmed >= number => Settled::Locked,
+            Holding::Held => Settled::Waiting,
+        }
     }
 
     // what `hold`, having asked `asked`, does next
@@ -445,21 +461,14 @@ pub fn relock() {
             eprintln!("kanade: no PAM service {PAM}, so no password will unlock");
         }
         if let Ok(locker) = started {
-            request(&mut requests(), locker);
+            request_lock(&mut requests(), locker);
         }
     }
 }
 
-// a request `start` named: the shell process it went to, and its number there
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Request {
-    instance: String,
-    number: u64,
-}
-
-// where a request stands by `status`
+// where a request stands
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Settled {
+enum Settled {
     // niri holds the lock asked for, and it still holds
     Locked,
     Waiting,
@@ -469,18 +478,29 @@ pub enum Settled {
 
     // niri refused it, as while another locker holds the session
     Denied,
-
-    // the shell does not know it, as it restarted since
-    Lost,
 }
 
 /*
- * `kanade lock`, which answers before niri locks, naming the request (`requested`); the client
- * waits until niri holds it (`status`). While locked it keeps the lock, so a second one keeps
- * what is being typed, unless it was sent: an unlock asked locks again, and a password being
- * checked has to be typed again
+ * `kanade lock`, which asks niri for the lock and answers `later` once niri holds it, with no
+ * password typed since. While locked it keeps the lock, so a second one keeps what is being typed,
+ * unless it was sent: an unlock asked locks again, and a password being checked has to be typed
+ * again
  */
-pub fn start() -> Result<String, String> {
+pub fn request(later: Later) {
+    later.unsettled(format!(
+        "niri did not hold the lock within {}s, and a password typed meanwhile may have unlocked it; \
+         the session may still lock",
+        LATER.as_secs()
+    ));
+
+    match start() {
+        Ok(number) => wait(number, later),
+        Err(why) => later.refused(why),
+    }
+}
+
+// asks niri for a lock, and gives the request's number; the lock may not hold yet
+pub fn start() -> Result<u64, String> {
     if pam().is_none() {
         return Err(format!(
             "no PAM service {PAM} in {}, so no password would unlock",
@@ -489,9 +509,52 @@ pub fn start() -> Result<String, String> {
     }
 
     let locker = locker()?;
-    let newest = request(&mut requests(), locker);
 
-    Ok(format!("requested #{newest} in {}", instance()))
+    Ok(request_lock(&mut requests(), locker))
+}
+
+// answers `later` once the request `number` settles, on a thread of its own as niri may take a while
+fn wait(number: u64, later: Later) {
+    let spawned = thread::Builder::new()
+        .name(String::from("lock wait"))
+        .spawn({
+            let later = later.clone();
+
+            move || {
+                let mut requests = requests();
+
+                while later.open() {
+                    let reply = match requests.settled(number) {
+                        Settled::Waiting => None,
+                        Settled::Locked => Some(Reply::Done(String::new())),
+                        Settled::Unlocked => Some(Reply::Unknown(String::from(
+                            "a password typed on the lock screen unlocks the session",
+                        ))),
+                        Settled::Denied => Some(Reply::Refused(String::from(
+                            "niri refused the lock: another locker holds the session, or its VT is \
+                             not shown",
+                        ))),
+                    };
+
+                    if let Some(reply) = reply {
+                        drop(requests);
+                        later.answer(&reply);
+                        return;
+                    }
+
+                    requests = HEARD
+                        .wait_timeout(requests, later.left())
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
+                }
+            }
+        });
+
+    if let Err(error) = spawned {
+        later.unknown(format!(
+            "cannot wait for niri: {error}; the session may still lock"
+        ));
+    }
 }
 
 fn locker() -> Result<&'static Locker, String> {
@@ -503,7 +566,7 @@ fn locker() -> Result<&'static Locker, String> {
 }
 
 // asks niri for a lock, or keeps the one held, and hands back the request's number
-fn request(requests: &mut Requests, locker: &Locker) -> u64 {
+fn request_lock(requests: &mut Requests, locker: &Locker) -> u64 {
     let newest = requests.request();
 
     // only spawns, so nothing waits on it under the requests
@@ -577,7 +640,7 @@ pub fn hold(patience: Duration) -> Result<(), String> {
         match requests.next(asked) {
             Next::Done => return Ok(()),
             Next::Ask => {
-                asked = Some(request(&mut requests, locker));
+                asked = Some(request_lock(&mut requests, locker));
                 continue;
             }
             Next::Denied => {
@@ -650,69 +713,12 @@ fn awake(asking: &mut Requests) {
     }
 }
 
-// the request `start` names
-pub fn requested(text: &str) -> Option<Request> {
-    let (number, instance) = text.strip_prefix("requested #")?.split_once(" in ")?;
-
-    Some(Request {
-        instance: String::from(instance),
-        number: number.parse().ok()?,
-    })
-}
-
 /*
- * `kanade lock status`: this process, the newest request, and the newest confirmed one while the
- * lock still holds, else what ended it or may, a line each
+ * `kanade lock status`: the newest request, and the newest confirmed one while the lock still
+ * holds, else what ended it or may, a line each
  */
 pub fn status() -> String {
-    requests().status(instance())
-}
-
-// where `request` stands by `status`, if it parses
-pub fn settled(status: &str, request: &Request) -> Option<Settled> {
-    let mut lines = status.lines();
-    let instance = lines.next()?.strip_prefix("instance ")?;
-    let newest = lines
-        .next()?
-        .strip_prefix("requested #")?
-        .parse::<u64>()
-        .ok()?;
-    let holding = lines.next()?;
-
-    // a restarted shell numbers from 1 again
-    if instance != request.instance {
-        return Some(Settled::Lost);
-    }
-    if newest < request.number {
-        return None;
-    }
-
-    Some(match holding {
-        "checking a password" => Settled::Waiting,
-        "unlocked" => Settled::Unlocked,
-        // only the newest is denied; an older one's lock is gone with it
-        "denied" if newest == request.number => Settled::Denied,
-        "denied" => Settled::Unlocked,
-        // a later request confirmed is a lock after this one too
-        confirmed => match confirmed.strip_prefix("confirmed #")?.parse::<u64>().ok()? {
-            confirmed if confirmed >= request.number => Settled::Locked,
-            _ => Settled::Waiting,
-        },
-    })
-}
-
-// this shell process, unlike any before it, even one with the same pid
-fn instance() -> &'static str {
-    static INSTANCE: OnceLock<String> = OnceLock::new();
-
-    INSTANCE.get_or_init(|| {
-        let started = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-
-        format!("{}.{started}", process::id())
-    })
+    requests().status()
 }
 
 fn requests() -> MutexGuard<'static, Requests> {
@@ -789,17 +795,10 @@ mod tests {
         assert_eq!(requests.next(asked), Next::Wait);
         requests.heard(News::Unlocked(1));
         assert_eq!(requests.next(asked), Next::Wait);
-        let request = requested(&format!("requested #{number} in 42.7")).unwrap();
-        assert_eq!(
-            settled(&requests.status("42.7"), &request),
-            Some(Settled::Waiting)
-        );
+        assert_eq!(requests.settled(number), Settled::Waiting);
         requests.heard(News::Locked(2));
         assert_eq!(requests.next(asked), Next::Done);
-        assert_eq!(
-            settled(&requests.status("42.7"), &request),
-            Some(Settled::Locked)
-        );
+        assert_eq!(requests.settled(number), Settled::Locked);
 
         // niri ends that lock itself before `kanade-lock` takes the unlock: the next is still on
         // its way
@@ -826,11 +825,7 @@ mod tests {
         requests.heard(News::Finished(1));
         assert_eq!(requests.next(asked), Next::Denied);
 
-        let request = requested("requested #1 in 42.7").unwrap();
-        assert_eq!(
-            settled(&requests.status("42.7"), &request),
-            Some(Settled::Denied)
-        );
+        assert_eq!(requests.settled(1), Settled::Denied);
 
         // held, then ended by niri
         let asked = Some(requests.request());
@@ -919,10 +914,7 @@ mod tests {
     fn nothing_asked_is_unlocked() {
         let requests = Requests::new();
         assert_eq!(requests.holding(), Holding::Unlocked);
-        assert_eq!(
-            requests.status("1.2"),
-            "instance 1.2\nrequested #0\nunlocked"
-        );
+        assert_eq!(requests.status(), "requested #0\nunlocked");
     }
 
     // a request after another that asked over an unlock waits for the next lock too
@@ -1041,28 +1033,27 @@ mod tests {
     #[test]
     fn a_lock_is_confirmed_only_while_no_unlock_is_pending() {
         let mut requests = Requests::new();
-        let first = requested("requested #1 in 42.7").unwrap();
-        let settled = |requests: &Requests| settled(&requests.status("42.7"), &first);
+        let settled = |requests: &Requests| requests.settled(1);
 
         assert_eq!(requests.request(), 1);
-        assert_eq!(settled(&requests), Some(Settled::Waiting));
+        assert_eq!(settled(&requests), Settled::Waiting);
         requests.heard(News::Locked(1));
-        assert_eq!(settled(&requests), Some(Settled::Locked));
+        assert_eq!(settled(&requests), Settled::Locked);
 
         // accepted: #1 no longer holds, though niri has not unlocked yet
         let check = requests.check().unwrap();
-        assert_eq!(settled(&requests), Some(Settled::Waiting));
+        assert_eq!(settled(&requests), Settled::Waiting);
         assert!(requests.checked(check, true));
-        assert_eq!(settled(&requests), Some(Settled::Unlocked));
+        assert_eq!(settled(&requests), Settled::Unlocked);
         requests.heard(News::Unlocked(1));
-        assert_eq!(settled(&requests), Some(Settled::Unlocked));
+        assert_eq!(settled(&requests), Settled::Unlocked);
 
         // asked again while unlocked; niri has not locked yet, so the last confirmation stays gone
         assert_eq!(requests.request(), 2);
-        assert_eq!(settled(&requests), Some(Settled::Waiting));
+        assert_eq!(settled(&requests), Settled::Waiting);
         requests.heard(News::Locked(2));
         assert_eq!(requests.confirmed, 2);
-        assert_eq!(settled(&requests), Some(Settled::Locked));
+        assert_eq!(settled(&requests), Settled::Locked);
 
         // asked while held: confirmed as `kanade-lock` says it holds the lock for it too
         assert_eq!(requests.request(), 3);
@@ -1091,55 +1082,28 @@ mod tests {
         assert!(!requests.locked);
     }
 
+    // a request is settled by what holds the lock now, and an older one is not denied for a newer
     #[test]
-    fn a_request_settles_while_its_lock_holds_and_is_lost_to_a_restart() {
-        let request = requested("requested #3 in 42.7").unwrap();
-        assert_eq!(
-            request,
-            Request {
-                instance: String::from("42.7"),
-                number: 3
-            }
-        );
-        assert_eq!(requested("requested #3"), None);
-        assert_eq!(requested("locked"), None);
+    fn a_request_settles_while_its_lock_holds() {
+        let mut requests = Requests::new();
 
-        let settled = |status: &str| settled(status, &request);
-        assert_eq!(
-            settled("instance 42.7\nrequested #3\nconfirmed #2"),
-            Some(Settled::Waiting)
-        );
-        assert_eq!(
-            settled("instance 42.7\nrequested #3\nconfirmed #3"),
-            Some(Settled::Locked)
-        );
-        assert_eq!(
-            settled("instance 42.7\nrequested #4\nconfirmed #4"),
-            Some(Settled::Locked)
-        );
-        assert_eq!(
-            settled("instance 42.7\nrequested #3\nchecking a password"),
-            Some(Settled::Waiting)
-        );
-        assert_eq!(
-            settled("instance 42.7\nrequested #3\nunlocked"),
-            Some(Settled::Unlocked)
-        );
-        assert_eq!(
-            settled("instance 42.7\nrequested #3\ndenied"),
-            Some(Settled::Denied)
-        );
-        assert_eq!(
-            settled("instance 42.7\nrequested #4\ndenied"),
-            Some(Settled::Unlocked)
-        );
-        // another process's #3, confirmed or not, is not this one
-        assert_eq!(
-            settled("instance 42.9\nrequested #3\nconfirmed #3"),
-            Some(Settled::Lost)
-        );
-        assert_eq!(settled("instance 42.7\nrequested #2\nconfirmed #2"), None);
-        assert_eq!(settled("requested #3\nconfirmed #3"), None);
+        requests.request();
+        requests.request();
+        requests.request();
+        requests.heard(News::Locked(3));
+        assert_eq!(requests.settled(3), Settled::Locked);
+        assert_eq!(requests.settled(2), Settled::Locked);
+
+        let check = requests.check().unwrap();
+        assert_eq!(requests.settled(3), Settled::Waiting);
+        assert!(requests.checked(check, true));
+        assert_eq!(requests.settled(3), Settled::Unlocked);
+        requests.heard(News::Unlocked(3));
+
+        requests.request();
+        requests.heard(News::Finished(4));
+        assert_eq!(requests.settled(4), Settled::Denied);
+        assert_eq!(requests.settled(3), Settled::Unlocked);
     }
 
     // the shell and `kanade-lock`'s stage, as the asks between them queue and niri answers

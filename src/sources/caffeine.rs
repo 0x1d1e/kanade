@@ -13,10 +13,9 @@
 //!
 //! `on` only starts a holder, answered at once so the draw thread never waits on logind. The
 //! holder's command says when logind gave it the inhibitor, and only then does caffeine turn on,
-//! letting go of the holder before it, so it never lapses. `kanade` waits on `status` for that.
+//! letting go of the holder before it, so it never lapses. The call is answered then (`Later`).
 
 use std::collections::VecDeque;
-use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, ChildStderr, ChildStdout, ExitStatus};
 use std::sync::Mutex;
@@ -32,6 +31,7 @@ use crate::island::activity::{
     Action, Activity, Awake, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
+use crate::later::Later;
 
 pub const INHIBIT: &str = "systemd-inhibit";
 
@@ -50,7 +50,6 @@ pub const READY: Duration = Duration::from_secs(2);
 static CAFFEINE: Mutex<Caffeine> = Mutex::new(Caffeine {
     holding: None,
     starting: None,
-    failed: None,
     issued: 0,
 });
 
@@ -62,9 +61,6 @@ struct Caffeine {
     // the newest `on`'s holder, until it holds the inhibitor and takes over from `holding`
     starting: Option<Holding>,
 
-    // the newest `on` that failed and why, until the next request; for `status`
-    failed: Option<(u64, String)>,
-
     /*
      * the serials given out since Kanade started, never given again, so a serial names one
      * holder: a stale Turn off or end never mistakes a newer one
@@ -75,6 +71,9 @@ struct Caffeine {
 struct Holding {
     serial: u64,
     length: Option<Duration>,
+
+    // the `kanade` call waiting for it to hold the inhibitor, while it starts
+    later: Option<Later>,
 
     // reaped only once taken out of `holding` or `starting`, so while there its pid is its own
     child: Child,
@@ -105,113 +104,12 @@ impl Request {
     }
 }
 
-/*
- * how caffeine stands, as `status` says it: a line a person reads, then one for an `on` still
- * starting and one for the newest that failed; `kanade` parses it back to wait on `on`
- */
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Status {
-    // the serial holding the inhibitor and for how long, none while off
-    pub on: Option<(u64, Option<Duration>)>,
-
-    pub starting: Option<u64>,
-    pub failed: Option<(u64, String)>,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.on {
-            Some((serial, Some(length))) => write!(f, "on #{serial} for {}", self::length(length))?,
-            Some((serial, None)) => write!(f, "on #{serial} until turned off")?,
-            None => write!(f, "off")?,
-        }
-
-        if let Some(serial) = self.starting {
-            write!(f, "\nstarting #{serial}")?;
-        }
-
-        if let Some((serial, why)) = &self.failed {
-            write!(f, "\n#{serial} failed: {}", why.replace('\n', "; "))?;
-        }
-
-        Ok(())
+// the length caffeine holds for, as `kanade` prints it
+fn held_for(length: Option<Duration>) -> String {
+    match length {
+        Some(length) => format!("on for {}", self::length(length)),
+        None => String::from("on until turned off"),
     }
-}
-
-impl Status {
-    pub fn parse(text: &str) -> Option<Status> {
-        let serial = |text: &str| text.strip_prefix('#')?.parse::<u64>().ok();
-        let mut lines = text.lines();
-
-        let on = match lines.next()? {
-            "off" => None,
-            line => {
-                let (number, held) = line.strip_prefix("on ")?.split_once(' ')?;
-                let length = match held {
-                    "until turned off" => None,
-                    held => Some(timer::duration(held.strip_prefix("for ")?)?),
-                };
-
-                Some((serial(number)?, length))
-            }
-        };
-
-        let mut status = Status {
-            on,
-            starting: None,
-            failed: None,
-        };
-
-        for line in lines {
-            if let Some(number) = line.strip_prefix("starting ") {
-                status.starting = Some(serial(number)?);
-            } else {
-                let (number, why) = line.split_once(" failed: ")?;
-                status.failed = Some((serial(number)?, why.to_owned()));
-            }
-        }
-
-        Some(status)
-    }
-
-    // where the `on` that `serial` names stands
-    pub fn settled(&self, serial: u64) -> Settled {
-        match self {
-            Status {
-                on: Some((on, length)),
-                ..
-            } if *on == serial => Settled::On(match length {
-                Some(length) => format!("on for {}", self::length(*length)),
-                None => String::from("on until turned off"),
-            }),
-            Status {
-                starting: Some(starting),
-                ..
-            } if *starting == serial => Settled::Waiting,
-            Status {
-                failed: Some((failed, why)),
-                ..
-            } if *failed == serial => Settled::Failed(why.clone()),
-            _ => Settled::Lost(format!(
-                "the shell no longer follows caffeine #{serial}; it says \"{}\"",
-                self.to_string().replace('\n', "; ")
-            )),
-        }
-    }
-}
-
-// where an `on` stands, as `status` says
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Settled {
-    Waiting,
-
-    // its holder holds the inhibitor, said as `kanade` prints it
-    On(String),
-
-    Failed(String),
-
-    // turned off, or another `on` took its place, before it held the inhibitor
-    Lost(String),
 }
 
 // whether caffeine holds its inhibitor now
@@ -219,31 +117,29 @@ pub fn holding() -> bool {
     CAFFEINE.locked().holding.is_some()
 }
 
-// what the shell answers an `on`: its serial, to wait on through `status`
-pub fn starting(reply: &str) -> Option<u64> {
-    reply.strip_prefix("starting #")?.parse().ok()
-}
-
 /*
- * does what `request` asks and says how caffeine is left, an `on` as starting. Call it from the
- * draw thread, which lives as long as Kanade: systemd-inhibit dies with the thread that started it
+ * does what `request` asks and answers `later` with how caffeine is left, an `on` once its holder
+ * holds the inhibitor. Call it from the draw thread, which lives as long as Kanade: systemd-inhibit
+ * dies with the thread that started it
  */
-pub fn request(request: Request) -> Result<String, String> {
+pub fn request(request: Request, later: Later) {
     let mut caffeine = CAFFEINE.locked();
 
     match request {
-        Request::Status => Ok(caffeine.status().to_string()),
+        Request::Status => later.done(caffeine.status()),
         Request::Off => {
             caffeine.turn_off();
-            Ok(String::from("off"))
+            later.done("off");
         }
         Request::Toggle(_) if caffeine.holding.is_some() || caffeine.starting.is_some() => {
             caffeine.turn_off();
-            Ok(String::from("off"))
+            later.done("off");
         }
-        Request::On(length) | Request::Toggle(length) => caffeine
-            .turn_on(length)
-            .map(|serial| format!("starting #{serial}")),
+        Request::On(length) | Request::Toggle(length) => {
+            if let Err(why) = caffeine.turn_on(length, &later) {
+                later.refused(why);
+            }
+        }
     }
 }
 
@@ -263,28 +159,30 @@ pub fn act(key: &str, serial: &str) {
 }
 
 impl Caffeine {
-    fn status(&self) -> Status {
-        Status {
-            on: self
-                .holding
-                .as_ref()
-                .map(|holding| (holding.serial, holding.length)),
-            starting: self.starting.as_ref().map(|starting| starting.serial),
-            failed: self.failed.clone(),
+    // like "on for 1h", "off", and a line more while an `on` still starts
+    fn status(&self) -> String {
+        let mut lines = vec![match &self.holding {
+            Some(holding) => held_for(holding.length),
+            None => String::from("off"),
+        }];
+
+        if self.starting.is_some() {
+            lines.push(String::from("starting"));
         }
+
+        lines.join("\n")
     }
 
     /*
-     * starts a holder for a new inhibitor, in place of any still starting, and hands back its
-     * serial; it turns caffeine on once it holds (`follow`), or is given up on after `READY`
+     * starts a holder for a new inhibitor, in place of any still starting, which answers `later`
+     * once it holds (`follow`), or is given up on after `READY`
      */
-    fn turn_on(&mut self, length: Option<Duration>) -> Result<u64, String> {
-        self.failed = None;
-
-        self.start(length).inspect_err(|why| self.refused(why))
+    fn turn_on(&mut self, length: Option<Duration>, later: &Later) -> Result<(), String> {
+        self.start(length, later)
+            .inspect_err(|why| self.refused(why))
     }
 
-    fn start(&mut self, length: Option<Duration>) -> Result<u64, String> {
+    fn start(&mut self, length: Option<Duration>, later: &Later) -> Result<(), String> {
         // setpriv says a missing program only once running, which is too late to refuse `on`
         if !wake::found(INHIBIT) {
             return Err(format!("{INHIBIT} not found"));
@@ -304,9 +202,7 @@ impl Caffeine {
             .map_err(|error| format!("cannot run {INHIBIT}: {error}"))?;
 
         self.issued += 1;
-        self.wait_on(&CAFFEINE, child, self.issued, length, READY)?;
-
-        Ok(self.issued)
+        self.wait_on(&CAFFEINE, child, self.issued, length, later, READY)
     }
 
     /*
@@ -319,6 +215,7 @@ impl Caffeine {
         mut child: Child,
         serial: u64,
         length: Option<Duration>,
+        later: &Later,
         patience: Duration,
     ) -> Result<(), String> {
         let (held, said) = (child.stdout.take(), child.stderr.take());
@@ -346,6 +243,7 @@ impl Caffeine {
         release(self.starting.replace(Holding {
             serial,
             length,
+            later: Some(later.clone()),
             child,
         }));
 
@@ -354,11 +252,16 @@ impl Caffeine {
 
     // the holder `serial` names holds the inhibitor: caffeine is on, the holder before let go of
     fn held(&mut self, serial: u64) {
-        let Some(holding) = self.starting.take_if(|starting| starting.serial == serial) else {
+        let Some(mut holding) = self.starting.take_if(|starting| starting.serial == serial) else {
             return;
         };
 
         let length = holding.length;
+
+        if let Some(later) = holding.later.take() {
+            later.done(held_for(length));
+        }
+
         release(self.holding.replace(holding));
         crate::idle::look();
 
@@ -377,24 +280,30 @@ impl Caffeine {
             .err()
             .unwrap_or_else(|| format!("{INHIBIT} ended before it held the inhibitor"));
 
-        self.failed_start(serial, why);
+        self.failed_start(starting.later.take(), why);
     }
 
     // the holder `serial` names did not hold the inhibitor within `patience`
     fn give_up(&mut self, serial: u64, patience: Duration) {
-        if let Some(starting) = self.starting.take_if(|starting| starting.serial == serial) {
+        if let Some(mut starting) = self.starting.take_if(|starting| starting.serial == serial) {
+            let later = starting.later.take();
+
             release(Some(starting));
             self.failed_start(
-                serial,
+                later,
                 format!("{INHIBIT} did not hold the inhibitor within {patience:?}"),
             );
         }
     }
 
-    fn failed_start(&mut self, serial: u64, why: String) {
+    // the `on` waited on is refused, and shown so as a keybind has no reply to read
+    fn failed_start(&self, later: Option<Later>, why: String) {
         eprintln!("caffeine: did not turn on: {why}");
         self.refused(&why);
-        self.failed = Some((serial, why));
+
+        if let Some(later) = later {
+            later.refused(why);
+        }
     }
 
     // an `on` that failed shows why, as a keybind has no reply to read; one already on stays on
@@ -405,7 +314,6 @@ impl Caffeine {
     }
 
     fn turn_off(&mut self) {
-        self.failed = None;
         release(self.starting.take());
 
         if self.holding.is_some() {
@@ -433,11 +341,20 @@ impl Caffeine {
     }
 }
 
-// logind lets go of the inhibitor once its holder dies, and the holder's command dies with it
+/*
+ * logind lets go of the inhibitor once its holder dies, and the holder's command dies with it; a
+ * call still waiting on it is left not knowing, as it was turned off or another `on` took its place
+ */
 fn release(holding: Option<Holding>) {
     if let Some(mut holding) = holding {
         drop(holding.child.kill());
         drop(holding.child.wait());
+
+        if let Some(later) = holding.later {
+            later.unknown(format!(
+                "caffeine was turned off, or another on took its place, before {INHIBIT} held the inhibitor"
+            ));
+        }
     }
 }
 

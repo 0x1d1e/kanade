@@ -62,7 +62,7 @@ Test Wi-Fi network (`mac80211_hwsim`): `scripts/test-network up`, then `down` to
 
 ## Git
 
-Commit locally during a phase; push nothing until it ends. Then squash the PR branch to one commit over `main` and force-push it (`--force-with-lease`), keeping a local backup branch of the old history.
+Commit locally during a phase; push nothing until it ends.
 
 ## Runtime
 

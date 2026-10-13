@@ -551,7 +551,7 @@ fn run(press: Press) {
         Press::NightLight(on) => night_light::switch(on),
         // refused at once only when it is no longer supported, which the switch then stops showing
         Press::ChargeLimit(on) => {
-            let _ = charge_limit::ask(on);
+            let _ = charge_limit::ask(on, None);
         }
     }
 }

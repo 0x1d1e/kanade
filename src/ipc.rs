@@ -13,6 +13,7 @@ use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::{Effect, IslandService};
+use crate::later::Later;
 use crate::lock;
 use crate::modules;
 use crate::reload::{self, Outcome};
@@ -50,6 +51,13 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
     match call {
         // answered once the user chooses or dismisses it, so the client waits on the user
         Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
+        // answered when the source is done, or unknown once `LATER` passes (`crate::later`)
+        Ok(Call::Record(request)) => recording::request(request, Later::new(reply)),
+        // on the draw thread, which systemd-inhibit dies with
+        Ok(Call::Caffeine(request)) => caffeine::request(request, Later::new(reply)),
+        Ok(Call::Battery(request)) => charge_limit::request(request, Later::new(reply)),
+        Ok(Call::Wallpaper(request)) => wallpaper::request(request, Later::new(reply)),
+        Ok(Call::Lock) => lock::request(Later::new(reply)),
         Ok(call) => reply.send(&run(call).encode()),
         Err(refused) => reply.send(&refused.encode()),
     }
@@ -65,8 +73,13 @@ fn run(call: Call) -> Reply {
             Reply::Done(String::new())
         }
         Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
-        // `answer` keeps it waiting
-        Call::Dmenu(_) => Reply::Refused(String::from("dmenu waits on the Launcher")),
+        // `answer` keeps these waiting
+        Call::Dmenu(_)
+        | Call::Record(_)
+        | Call::Caffeine(_)
+        | Call::Battery(_)
+        | Call::Wallpaper(_)
+        | Call::Lock => Reply::Refused(String::from("answered later, not by `run`")),
         Call::ClearNotifications => {
             Notifications::clear();
             Reply::Done(String::new())
@@ -81,23 +94,9 @@ fn run(call: Call) -> Reply {
             Ok(Asked::Unknown(why)) => Reply::Unknown(why),
             Err(error) => Reply::Refused(error),
         },
-        // on the draw thread, which the recorder ends with (`recording::start`); `kanade` waits on it
-        Call::Record(request) => record(request),
-        // on the draw thread, which systemd-inhibit dies with (`caffeine::request`)
-        Call::Caffeine(request) => {
-            caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
-        }
         // through the settings file's writes, which the Settings window shares
         Call::NightLight(request) => {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
-        }
-        // UPower is asked on a thread of its own, answered by serial (`charge_limit::request`)
-        Call::Battery(request) => {
-            charge_limit::request(request).map_or_else(Reply::Refused, Reply::Done)
-        }
-        // handed to the wallpaper's thread, as awww takes a while; `kanade` waits on it
-        Call::Wallpaper(request) => {
-            wallpaper::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
@@ -111,8 +110,6 @@ fn run(call: Call) -> Reply {
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
-        // returns before niri locks, which the client waits for (`lock status`)
-        Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),
         // logind is asked on a thread of its own
@@ -136,17 +133,6 @@ fn run(call: Call) -> Reply {
         // through the settings file's writes, which the Settings window shares
         Call::Turn(name, on) => modules::turn(name, on).map_or_else(Reply::Refused, Reply::Done),
     }
-}
-
-// answered at once, as niri gives the recorder no frame while the draw thread waits
-fn record(request: recording::Request) -> Reply {
-    let reply = match request {
-        recording::Request::Start => recording::start(),
-        recording::Request::Stop => recording::stop(),
-        recording::Request::Status => Ok(recording::status().to_string()),
-    };
-
-    reply.map_or_else(Reply::Refused, Reply::Done)
 }
 
 // the versions, then the config, the Modules and what went wrong with the sources, a line each

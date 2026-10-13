@@ -8,9 +8,7 @@ use std::env;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::process::ExitCode;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{IpcCall, ipc_socket};
@@ -18,20 +16,19 @@ use kanade_runtime::{IpcCall, ipc_socket};
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
-use crate::sources::recording::Settled;
 use crate::sources::{
     caffeine, caldav, capture, charge_limit, google, live, night_light, osd, recording, reminders,
     timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
-use crate::{config, doctor, lock};
+use crate::{config, doctor};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
 
 // the words a call and its reply are made of; another number means a client and shell that may
 // misread each other
-pub const PROTOCOL: u32 = 4;
+pub const PROTOCOL: u32 = 5;
 
 /*
  * the first word after `kanade`, with the arguments a Module owns; Modules may share a name, each
@@ -358,8 +355,8 @@ fn mistake(words: &[&str], style: Style) -> String {
     }
 }
 
-// how long the shell may take to answer before it counts as stuck
-const PATIENCE: Duration = Duration::from_secs(5);
+// how long the shell may take to answer before it counts as stuck; over its own `LATER`, so what it says of a late answer arrives
+const PATIENCE: Duration = Duration::from_secs(6);
 
 /*
  * `kanade <verb> [args]`: 2 for words that are no verb, 1 for a refusal, no shell to ask or a failed
@@ -483,55 +480,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
         _ => arguments.to_vec(),
     };
 
-    let reply = match (asked, call(&arguments)) {
-        (
-            Call::Record(request @ (recording::Request::Start | recording::Request::Stop)),
-            Ok(Reply::Done(path)),
-        ) => Ok(settle_recording(request, path, PATIENCE, |deadline| {
-            call_until(&status_call(), deadline)
-        })),
-        (
-            Call::Caffeine(caffeine::Request::On(_) | caffeine::Request::Toggle(_)),
-            Ok(Reply::Done(text)),
-        ) if let Some(serial) = caffeine::starting(&text) => {
-            Ok(settle_caffeine(serial, PATIENCE, |deadline| {
-                call_until(&caffeine_status_call(), deadline)
-            }))
-        }
-        (
-            Call::Battery(charge_limit::Request::On | charge_limit::Request::Off),
-            Ok(Reply::Done(text)),
-        ) if let Some(serial) = charge_limit::asking(&text) => {
-            Ok(settle_charge_limit(serial, PATIENCE, |deadline| {
-                call_until(&charge_limit_status_call(), deadline)
-            }))
-        }
-        (Call::Wallpaper(wallpaper::Request::Set(path)), Ok(Reply::Done(text)))
-            if let Some(serial) = wallpaper::setting(&text) =>
-        {
-            Ok(settle_wallpaper(serial, &path, PATIENCE, |deadline| {
-                call_until(&wallpaper_status_call(), deadline)
-            }))
-        }
-        (Call::Wallpaper(wallpaper::Request::Shuffle), Ok(Reply::Done(text)))
-            if let Some((serial, path)) = wallpaper::shuffled(&text) =>
-        {
-            Ok(settle_wallpaper(serial, &path, PATIENCE, |deadline| {
-                call_until(&wallpaper_status_call(), deadline)
-            }))
-        }
-        (Call::Lock, Ok(Reply::Done(text))) if let Some(request) = lock::requested(&text) => {
-            Ok(settle_lock(&request, PATIENCE, |deadline| {
-                call_until(&lock_status_call(), deadline)
-            }))
-        }
-        // an older shell, or any answer naming no request to wait on
-        (Call::Lock, Ok(Reply::Done(_))) => Ok(Reply::Unknown(String::from(
-            "the shell names no lock request to wait on, as it is older than this kanade; restart \
-             it. The session may still lock",
-        ))),
-        (_, reply) => reply,
-    };
+    let reply = call(&arguments);
 
     match reply {
         Ok(Reply::Done(text)) if text.is_empty() => ExitCode::SUCCESS,
@@ -574,261 +523,11 @@ fn complain(text: &str) {
     drop(writeln!(io::stderr().lock(), "{text}"));
 }
 
-// where a call the shell answered at once stands, by the status it says
-enum Settling {
-    Waiting,
-    Settled(Reply),
-}
-
-/*
- * waits on a call the shell answers at once and does after: asks its status through `ask` by the
- * deadline it is given, until `settling` says it settled. All of it within `patience`, a slow
- * answer included; then it is `unsettled`. `aside` says what is left of it when that is not known
- */
-fn settle(
-    patience: Duration,
-    unsettled: impl FnOnce() -> String,
-    aside: &str,
-    mut ask: impl FnMut(Instant) -> Result<Reply, String>,
-    mut settling: impl FnMut(&str) -> Option<Settling>,
-) -> Reply {
-    let deadline = Instant::now() + patience;
-
-    loop {
-        if Instant::now() >= deadline {
-            return Reply::Unknown(unsettled());
-        }
-
-        let status = match ask(deadline) {
-            Ok(Reply::Done(status)) => status,
-            _ if Instant::now() >= deadline => return Reply::Unknown(unsettled()),
-            Ok(Reply::Refused(why) | Reply::Unknown(why)) | Err(why) => {
-                return Reply::Unknown(format!("{why}; {aside}"));
-            }
-        };
-
-        match settling(&status) {
-            Some(Settling::Settled(reply)) => return reply,
-            Some(Settling::Waiting) => {
-                thread::sleep(LOOK.min(deadline.saturating_duration_since(Instant::now())));
-            }
-            None => return Reply::Unknown(format!("the shell says {status:?}; {aside}")),
-        }
-    }
-}
-
-/*
- * the shell answers a recording's start or stop at once (`ipc::record`), so this waits until the
- * first frame is written or the file saved, done at its path
- */
-fn settle_recording(
-    request: recording::Request,
-    path: String,
-    patience: Duration,
-    ask: impl FnMut(Instant) -> Result<Reply, String>,
-) -> Reply {
-    settle(
-        patience,
-        || request.unsettled(&path, patience),
-        &format!("the recording is at {path}"),
-        ask,
-        |status| {
-            Some(
-                match request.settled(&path, &recording::Status::parse(status)?) {
-                    Settled::Done => Settling::Settled(Reply::Done(path.clone())),
-                    Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
-                    Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
-                    Settled::Waiting => Settling::Waiting,
-                },
-            )
-        },
-    )
-}
-
-/*
- * the shell answers a lock at once, as it only asks niri for it (`lock::start`), so this waits
- * until niri says it holds the lock for `request`, which no lock before it can, and the lock still
- * holds when asked
- */
-fn settle_lock(
-    request: &lock::Request,
-    patience: Duration,
-    ask: impl FnMut(Instant) -> Result<Reply, String>,
-) -> Reply {
-    settle(
-        patience,
-        || {
-            format!(
-                "niri did not hold the lock within {}s, and a password typed meanwhile may \
-                 have unlocked it; the session may still lock",
-                patience.as_secs()
-            )
-        },
-        "the session may still lock",
-        ask,
-        |status| {
-            Some(match lock::settled(status, request)? {
-                lock::Settled::Locked => Settling::Settled(Reply::Done(String::new())),
-                lock::Settled::Waiting => Settling::Waiting,
-                lock::Settled::Unlocked => Settling::Settled(Reply::Unknown(String::from(
-                    "a password typed on the lock screen unlocks the session",
-                ))),
-                lock::Settled::Denied => Settling::Settled(Reply::Refused(String::from(
-                    "niri refused the lock: another locker holds the session, or its VT is not \
-                     shown",
-                ))),
-                lock::Settled::Lost => Settling::Settled(Reply::Unknown(String::from(
-                    "the shell restarted, which lost the lock it was asked for; the session may \
-                     still lock",
-                ))),
-            })
-        },
-    )
-}
-
-/*
- * the shell answers caffeine's `on` at once, as starting (`caffeine::request`), so this waits
- * until its inhibitor is held
- */
-fn settle_caffeine(
-    serial: u64,
-    patience: Duration,
-    ask: impl FnMut(Instant) -> Result<Reply, String>,
-) -> Reply {
-    settle(
-        patience,
-        || {
-            format!(
-                "{} did not hold the inhibitor within {}s; caffeine may still turn on",
-                caffeine::INHIBIT,
-                patience.as_secs()
-            )
-        },
-        "caffeine may still turn on",
-        ask,
-        |status| {
-            Some(match caffeine::Status::parse(status)?.settled(serial) {
-                caffeine::Settled::On(text) => Settling::Settled(Reply::Done(text)),
-                caffeine::Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
-                caffeine::Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
-                caffeine::Settled::Waiting => Settling::Waiting,
-            })
-        },
-    )
-}
-
-/*
- * the shell answers the charge limit's `on` and `off` at once, as asking (`charge_limit::request`),
- * so this waits until UPower answered
- */
-fn settle_charge_limit(
-    serial: u64,
-    patience: Duration,
-    ask: impl FnMut(Instant) -> Result<Reply, String>,
-) -> Reply {
-    settle(
-        patience,
-        || {
-            format!(
-                "UPower did not answer within {}s; the charge limit may still change",
-                patience.as_secs()
-            )
-        },
-        "the charge limit may still change",
-        ask,
-        |status| {
-            Some(match charge_limit::settled(status, serial)? {
-                charge_limit::Settled::Done(text) => Settling::Settled(Reply::Done(text)),
-                charge_limit::Settled::Refused(why) => Settling::Settled(Reply::Refused(why)),
-                charge_limit::Settled::Waiting => Settling::Waiting,
-            })
-        },
-    )
-}
-
-/*
- * the shell answers a wallpaper's set at once, as setting (`wallpaper::request`), so this waits
- * until awww showed it, done at the path it shows
- */
-fn settle_wallpaper(
-    serial: u64,
-    path: &Path,
-    patience: Duration,
-    ask: impl FnMut(Instant) -> Result<Reply, String>,
-) -> Reply {
-    settle(
-        patience,
-        || {
-            format!(
-                "{} did not show the wallpaper within {}s; it may still",
-                wallpaper::AWWW,
-                patience.as_secs()
-            )
-        },
-        "the wallpaper may still change",
-        ask,
-        |status| {
-            let status = wallpaper::Status::parse(status)?;
-
-            Some(match status.settled(serial) {
-                // its own path: the current one may be from a set done after it
-                wallpaper::Settled::Set => {
-                    Settling::Settled(Reply::Done(path.display().to_string()))
-                }
-                wallpaper::Settled::Failed(why) => Settling::Settled(Reply::Refused(why)),
-                wallpaper::Settled::Lost(why) => Settling::Settled(Reply::Unknown(why)),
-                wallpaper::Settled::Waiting => Settling::Waiting,
-            })
-        },
-    )
-}
-
-fn status_call() -> Vec<String> {
-    ["capture", "record", "status"]
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
-
-fn wallpaper_status_call() -> Vec<String> {
-    ["wallpaper", "status"]
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
-
-fn caffeine_status_call() -> Vec<String> {
-    ["caffeine", "status"]
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
-
-fn charge_limit_status_call() -> Vec<String> {
-    ["battery", "limit", "status"]
-        .into_iter()
-        .map(String::from)
-        .collect()
-}
-
-fn lock_status_call() -> Vec<String> {
-    ["lock", "status"].into_iter().map(String::from).collect()
-}
-
-// how often `settle` asks
-const LOOK: Duration = Duration::from_millis(50);
-
 // what the running shell answers, or why there is none to ask
 pub fn call(arguments: &[String]) -> Result<Reply, String> {
-    call_until(arguments, Instant::now() + PATIENCE)
-}
-
-// as `call`, answered by `deadline`
-fn call_until(arguments: &[String], deadline: Instant) -> Result<Reply, String> {
     let stream = connect(arguments)?;
-    let patience = deadline.saturating_duration_since(Instant::now());
 
-    send(stream, &IpcCall::new(HANDLER, arguments), Some(patience))
+    send(stream, &IpcCall::new(HANDLER, arguments), Some(PATIENCE))
 }
 
 // as `call`, waiting as long as the shell takes, as on the user

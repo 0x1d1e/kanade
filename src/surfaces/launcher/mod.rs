@@ -922,7 +922,6 @@ fn press(monitor: &str, visit: u64, action: Action) {
                 done(set.map_err(|unset| String::from(unset.brief())))
             })),
         )
-        .map(drop)
         .map_err(|unset| String::from(unset.brief())),
         Action::Paste(id) => paste(*id, done),
         Action::Launch(..) | Action::Open(_) | Action::Choose(_) => Ok(()),

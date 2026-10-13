@@ -165,7 +165,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 
 Idle inhibitor toggle/activity. Prevent idle/lock/suspend only while explicitly active; visible state; optional timeout.
 
-A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. The shell answers `on` at once as starting and a worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; `kanade` waits on `caffeine status` within one 5 s patience. Off, toggle and a newer on supersede a start by serial. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
+A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. A worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; the shell holds the call's answer (`Later`) until the holder is up, or answers unknown after 5 s. Off, toggle and a newer on supersede a start by serial, and the superseded call is answered unknown. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
 
 ### Live Activities
 
@@ -177,7 +177,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Battery
 
-A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker by serial, so the draw thread never waits, and a refusal shows on the switch.
+A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker, so the draw thread never waits; the call is answered when UPower does, and a refusal shows on the switch.
 
 ### Presentation migration
 

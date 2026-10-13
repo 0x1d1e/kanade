@@ -8,10 +8,10 @@
 //!
 //! `awww img` decodes and scales the image itself, which takes up to a tenth of a second, so it runs
 //! on a thread of its own, one image at a time in the order asked, never on the draw thread, and is
-//! killed after `LIMIT` so one that hangs holds up no set after it. `set` answers at once with a
-//! serial; `kanade` waits on `status` for how it went.
+//! killed after `LIMIT` so one that hangs holds up no set after it. `set` answers at once; `kanade`
+//! is answered once awww showed the image (`Later`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
@@ -30,6 +30,7 @@ use kanade_runtime::{MOST_PIXELS, MutexExt, queue::Queue, service::Service};
 pub use kanade_runtime::{ImageFormat as Format, image_format as format};
 
 use super::wake;
+use crate::later::{LATER, Later};
 use crate::{appearance, config, modules, supervise};
 
 pub const AWWW: &str = "awww";
@@ -53,9 +54,6 @@ const AGAIN: Duration = Duration::from_secs(1);
 
 // for awww to write the cache of every output, so one external set is one look
 const SETTLE: Duration = Duration::from_millis(150);
-
-// how many sets `status` says how they went, so a `kanade` waiting on one finds it after others
-const RECENT: usize = 16;
 
 // what is told how a set went, like the Launcher, which closes or says it was not set
 pub type Done = Box<dyn FnOnce(Result<(), Unset>) + Send>;
@@ -104,7 +102,6 @@ impl fmt::Display for Unset {
 }
 
 struct Job {
-    serial: u64,
     path: PathBuf,
     from: Option<From>,
     done: Option<Done>,
@@ -124,23 +121,9 @@ pub struct From {
 struct Wallpaper {
     // the image Kanade last set, none until one is
     current: Option<PathBuf>,
-
-    // the serials given out since Kanade started, never given again
-    issued: u64,
-
-    // asked and not yet done, oldest first
-    pending: Vec<u64>,
-
-    // how the newest sets went, newest last
-    done: VecDeque<(u64, Result<(), Unset>)>,
 }
 
-static WALLPAPER: Mutex<Wallpaper> = Mutex::new(Wallpaper {
-    current: None,
-    issued: 0,
-    pending: Vec::new(),
-    done: VecDeque::new(),
-});
+static WALLPAPER: Mutex<Wallpaper> = Mutex::new(Wallpaper { current: None });
 
 // the sets waiting for `serve`, which outlive a restart of it
 static QUEUE: LazyLock<Queue<Job>> = LazyLock::new(Queue::new);
@@ -167,11 +150,11 @@ impl Request {
 }
 
 /*
- * asks awww to show the image at `path`, answering at once with its serial; `done` is told how it
- * went. A circle transition centers on `from`, else the middle. Refused at once when there is no
- * file there or no awww to ask
+ * asks awww to show the image at `path`, answering at once; `done` is told how it went. A circle
+ * transition centers on `from`, else the middle. Refused at once when there is no file there or no
+ * awww to ask
  */
-pub fn set(path: PathBuf, from: Option<From>, done: Option<Done>) -> Result<u64, Unset> {
+pub fn set(path: PathBuf, from: Option<From>, done: Option<Done>) -> Result<(), Unset> {
     if !path.is_file() {
         return Err(Unset::NoImage(path));
     }
@@ -180,66 +163,74 @@ pub fn set(path: PathBuf, from: Option<From>, done: Option<Done>) -> Result<u64,
         return Err(Unset::NoAwww);
     }
 
-    let serial = {
-        let mut wallpaper = WALLPAPER.locked();
-
-        wallpaper.issued += 1;
-        let serial = wallpaper.issued;
-        wallpaper.pending.push(serial);
-
-        serial
-    };
-
     // the receiver lives in the static, so sending never fails
-    QUEUE.send(Job {
-        serial,
-        path,
-        from,
-        done,
-    });
+    QUEUE.send(Job { path, from, done });
 
-    Ok(serial)
+    Ok(())
 }
 
 /*
- * does what `request` asks: a set answered as setting, its serial to wait on through `status`, a
- * shuffle the same and then the image it picked
+ * does what `request` asks: a set or a shuffle answers `later` with the image once awww showed it,
+ * or why it did not
  */
-pub fn request(request: Request) -> Result<String, String> {
-    match request {
+pub fn request(request: Request, later: Later) {
+    later.unsettled(format!(
+        "{AWWW} did not show the wallpaper within {}s; it may still",
+        LATER.as_secs()
+    ));
+
+    let set = |path: PathBuf| {
+        let answer = later.clone();
+        let shown = path.display().to_string();
+        let done: Done = Box::new(move |result| match result {
+            Ok(()) => answer.done(shown),
+            Err(unset) => answer.refused(unset.to_string()),
+        });
+
+        set(path, None, Some(done)).map_err(|unset| unset.to_string())
+    };
+
+    let asked = match request {
         Request::Set(path) if !path.is_absolute() => Err(format!(
             "{} is not an absolute path, which the shell needs",
             path.display()
         )),
-        Request::Set(path) => set(path, None, None)
-            .map(|serial| format!("setting #{serial}"))
-            .map_err(|unset| unset.to_string()),
-        Request::Shuffle => shuffle(None, None)
-            .map(|(serial, path)| format!("setting #{serial} {}", path.display())),
-        Request::Status => Ok(WALLPAPER.locked().status().to_string()),
+        Request::Set(path) => set(path),
+        Request::Shuffle => pick_other().and_then(set),
+        Request::Status => {
+            later.done(status());
+            return;
+        }
+    };
+
+    if let Err(why) = asked {
+        later.refused(why);
     }
 }
 
 /*
- * sets a wallpaper of the directory picked at random, none of those showing, as `set` does: its
- * serial and the image, or why there is none to set
+ * sets a wallpaper of the directory picked at random, none of those showing, as `set` does: the
+ * image, or why there is none to set
  */
-pub fn shuffle(from: Option<From>, done: Option<Done>) -> Result<(u64, PathBuf), String> {
+pub fn shuffle(from: Option<From>, done: Option<Done>) -> Result<PathBuf, String> {
+    let path = pick_other()?;
+
+    set(path.clone(), from, done).map_err(|unset| unset.to_string())?;
+
+    Ok(path)
+}
+
+// an image of the directory none of those showing, picked at random
+fn pick_other() -> Result<PathBuf, String> {
     let images = images();
-    let path =
-        pick(&images, &showing(), RandomState::new().hash_one(())).ok_or_else(
-            || match directory() {
-                Some(directory) if images.is_empty() => {
-                    format!("no wallpapers in {}", directory.display())
-                }
-                Some(directory) => format!("no other wallpaper in {}", directory.display()),
-                None => String::from("no wallpaper folder, as HOME is not set"),
-            },
-        )?;
 
-    let serial = set(path.clone(), from, done).map_err(|unset| unset.to_string())?;
-
-    Ok((serial, path))
+    pick(&images, &showing(), RandomState::new().hash_one(())).ok_or_else(|| match directory() {
+        Some(directory) if images.is_empty() => {
+            format!("no wallpapers in {}", directory.display())
+        }
+        Some(directory) => format!("no other wallpaper in {}", directory.display()),
+        None => String::from("no wallpaper folder, as HOME is not set"),
+    })
 }
 
 // one of `images` none of `showing`, the `random`th of those left
@@ -252,18 +243,6 @@ fn pick(images: &[PathBuf], showing: &[PathBuf], random: u64) -> Option<PathBuf>
     let at = usize::try_from(random % u64::try_from(left.len()).ok()?.max(1)).ok()?;
 
     left.get(at).map(|&image| image.clone())
-}
-
-// what the shell answers a set: its serial, to wait on through `status`
-pub fn setting(reply: &str) -> Option<u64> {
-    reply.strip_prefix("setting #")?.parse().ok()
-}
-
-// what the shell answers a shuffle: its serial, and the image it picked
-pub fn shuffled(reply: &str) -> Option<(u64, PathBuf)> {
-    let (serial, path) = reply.strip_prefix("setting #")?.split_once(' ')?;
-
-    Some((serial.parse().ok()?, PathBuf::from(path)))
 }
 
 // the image Kanade last set, none until it sets one
@@ -297,113 +276,6 @@ pub fn status() -> String {
     }
 }
 
-impl Wallpaper {
-    fn status(&self) -> Status {
-        Status {
-            current: self.current.clone(),
-            pending: self.pending.clone(),
-            done: self
-                .done
-                .iter()
-                .map(|(serial, done)| (*serial, done.as_ref().err().map(Unset::to_string)))
-                .collect(),
-        }
-    }
-}
-
-/*
- * how the sets stand, as `status` says it: the image Kanade last set, then a line for each set
- * still pending and for each of the newest done; `kanade` parses it back to wait on a set
- */
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Status {
-    pub current: Option<PathBuf>,
-    pub pending: Vec<u64>,
-
-    // each with why it failed, none when it was set
-    pub done: Vec<(u64, Option<String>)>,
-}
-
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.current {
-            Some(path) => write!(f, "current {}", path.display())?,
-            None => write!(f, "none")?,
-        }
-
-        for serial in &self.pending {
-            write!(f, "\nsetting #{serial}")?;
-        }
-
-        for (serial, failed) in &self.done {
-            match failed {
-                Some(why) => write!(f, "\n#{serial} failed: {}", why.replace('\n', "; "))?,
-                None => write!(f, "\n#{serial} set")?,
-            }
-        }
-
-        Ok(())
-    }
-}
-
-impl Status {
-    pub fn parse(text: &str) -> Option<Status> {
-        let serial = |text: &str| text.strip_prefix('#')?.parse::<u64>().ok();
-        let mut lines = text.lines();
-
-        let current = match lines.next()? {
-            "none" => None,
-            line => Some(PathBuf::from(line.strip_prefix("current ")?)),
-        };
-
-        let mut status = Status {
-            current,
-            pending: Vec::new(),
-            done: Vec::new(),
-        };
-
-        for line in lines {
-            if let Some(number) = line.strip_prefix("setting ") {
-                status.pending.push(serial(number)?);
-            } else if let Some(number) = line.strip_suffix(" set") {
-                status.done.push((serial(number)?, None));
-            } else {
-                let (number, why) = line.split_once(" failed: ")?;
-                status.done.push((serial(number)?, Some(why.to_owned())));
-            }
-        }
-
-        Some(status)
-    }
-
-    // where the set that `serial` names stands
-    pub fn settled(&self, serial: u64) -> Settled {
-        if self.pending.contains(&serial) {
-            return Settled::Waiting;
-        }
-
-        match self.done.iter().find(|(done, _)| *done == serial) {
-            Some((_, None)) => Settled::Set,
-            Some((_, Some(why))) => Settled::Failed(why.clone()),
-            None => Settled::Lost(format!(
-                "the shell no longer knows how wallpaper #{serial} went; it says \"{}\"",
-                self.to_string().replace('\n', "; ")
-            )),
-        }
-    }
-}
-
-// where a set stands, as `status` says
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Settled {
-    Waiting,
-    Set,
-    Failed(String),
-
-    // so many sets came after it that how it went is forgotten
-    Lost(String),
-}
-
 /*
  * shows each image asked of `set`, in order, through `awww img`; runs as long as Kanade, so each
  * awww dies with it
@@ -413,13 +285,7 @@ pub fn serve() {
         let job = QUEUE.receiver().recv();
 
         // the sender lives in the static, so the queue never closes
-        let Ok(Job {
-            serial,
-            path,
-            from,
-            done,
-        }) = job
-        else {
+        let Ok(Job { path, from, done }) = job else {
             return;
         };
 
@@ -435,8 +301,6 @@ pub fn serve() {
         {
             let mut wallpaper = WALLPAPER.locked();
 
-            wallpaper.pending.retain(|pending| *pending != serial);
-
             if shown.is_ok() {
                 wallpaper.current = Some(path.clone());
             }
@@ -445,11 +309,6 @@ pub fn serve() {
             if shown.is_ok() && modules::on("lock") {
                 look();
             }
-
-            if wallpaper.done.len() == RECENT {
-                wallpaper.done.pop_front();
-            }
-            wallpaper.done.push_back((serial, shown.clone()));
         }
 
         if shown.is_ok() {
@@ -1167,6 +1026,7 @@ fn shown(said: &str) -> HashMap<String, PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     struct TestFile(PathBuf);
@@ -1312,14 +1172,5 @@ mod tests {
 
         assert_eq!(pick(&images[1..2], &showing, 7), None);
         assert_eq!(pick(&[], &[], 7), None);
-    }
-
-    #[test]
-    fn shuffle_reply_keeps_a_path_with_spaces() {
-        assert_eq!(
-            shuffled("setting #12 /home/k/Pictures/Wallpapers/a lake.png"),
-            Some((12, PathBuf::from("/home/k/Pictures/Wallpapers/a lake.png")))
-        );
-        assert_eq!(shuffled("no other wallpaper in /tmp"), None);
     }
 }

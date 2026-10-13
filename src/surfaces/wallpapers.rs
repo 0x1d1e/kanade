@@ -745,9 +745,9 @@ fn run(monitor: &str, visit: u64, press: Press) {
 
     let started = match press {
         Press::Set(path, _) => wallpaper::set(path.clone(), from, Some(done))
-            .map(|_| path)
+            .map(|()| path)
             .map_err(|unset| String::from(unset.brief())),
-        Press::Shuffle => wallpaper::shuffle(from, Some(done)).map(|(_, path)| path),
+        Press::Shuffle => wallpaper::shuffle(from, Some(done)),
     };
 
     let mut pick = Pick::write();

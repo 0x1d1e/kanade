@@ -357,7 +357,7 @@ pub fn request(leave: Leave) -> Result<String, String> {
 // the lock Module's, as `kanade lock` asks it; a failure shows on the island too
 fn lock() -> Result<String, String> {
     let started = if modules::on("lock") {
-        lock::start()
+        lock::start().map(|_| String::new())
     } else {
         Err(String::from("module lock is off"))
     };
