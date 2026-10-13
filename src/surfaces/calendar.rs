@@ -100,6 +100,9 @@ pub struct Browse {
 
     // the first of the events the agenda shows
     first: usize,
+
+    // `d` was pressed on the ringed event, and another `d` removes it
+    removing: bool,
 }
 
 impl Service for Browse {
@@ -124,13 +127,16 @@ impl Visited for Browse {
 }
 
 /*
- * the event being typed, for one visit: none until `a` or the Add pill starts it. Written by input
- * only, never by the view
+ * the event being typed, for one visit: none until `a` or the Add pill starts it, or `e` starts
+ * changing an event added here. Written by input only, never by the view
  */
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Adding {
     visit: u64,
     text: Option<String>,
+
+    // the file of the event `text` replaces, none for a new one
+    replacing: Option<String>,
 
     // what the last Enter could not save
     problem: Option<String>,
@@ -850,6 +856,17 @@ fn agenda(
         Some(Pending::Failed) if !count.is_empty() => format!("{count}, not updated"),
         _ => count,
     };
+    // what the ring may do with the event it is on
+    let count = match events
+        .get(browse.selected)
+        .filter(|_| browse.agenda)
+        .map(|&at| &month.events.occurrences[at])
+    {
+        Some(event) if event.added.is_none() => String::from("Read-only here"),
+        Some(_) if browse.removing => String::from("d again removes, else keeps"),
+        Some(_) => String::from("e changes, d removes"),
+        None => count,
+    };
     let count = match account {
         Some(problem) if count.is_empty() => problem.to_owned(),
         Some(problem) => format!("{count} \u{b7} {problem}"),
@@ -1071,6 +1088,9 @@ pub fn key(monitor: &str, key: Key) -> bool {
         start(monitor);
         return true;
     }
+    if added(monitor, key) {
+        return true;
+    }
 
     pressed(monitor, key)
 }
@@ -1080,6 +1100,7 @@ fn typing(monitor: &str, adding: Adding, key: Key) -> bool {
     let next = match key {
         Key::Escape => Adding {
             text: None,
+            replacing: None,
             problem: None,
             ..adding
         },
@@ -1105,12 +1126,18 @@ fn save(adding: Adding) -> Adding {
     let day = Browse::read().of(adding.visit).day(clock::today());
     let text = adding.text.as_deref().unwrap_or_default();
 
-    let saved = add::parse(text, day)
-        .and_then(|event| add::save(&event).map_err(|error| format!("Could not save: {error}")));
+    let saved = add::parse(text, day).and_then(|event| {
+        match &adding.replacing {
+            Some(stem) => add::replace(stem, &event),
+            None => add::save(&event),
+        }
+        .map_err(|error| format!("Could not save: {error}"))
+    });
 
     match saved {
         Ok(()) => Adding {
             text: None,
+            replacing: None,
             problem: None,
             ..adding
         },
@@ -1123,12 +1150,77 @@ fn save(adding: Adding) -> Adding {
 
 // an empty event to type, on the visit open now
 fn start(monitor: &str) {
+    change(monitor, String::new(), None);
+}
+
+// `text` to type on the visit open now, in place of the event in file `replacing`, if any
+fn change(monitor: &str, text: String, replacing: Option<String>) {
     store(Adding {
         visit: IslandService::read().visit(),
-        text: Some(String::new()),
+        text: Some(text),
+        replacing,
         problem: None,
     });
     IslandService::write().attend(monitor, Instant::now());
+}
+
+/*
+ * `e` changes and `d` twice removes the event the ring is on, if it was added here (ADR 0045);
+ * false for any other key or event. Any other key takes the first `d` back
+ */
+fn added(monitor: &str, key: Key) -> bool {
+    let visit = IslandService::read().visit();
+    let browse = Browse::read().of(visit);
+
+    if browse.removing && key != Key::Character('d') {
+        store(Browse {
+            removing: false,
+            ..browse
+        });
+    }
+    if !browse.agenda {
+        return false;
+    }
+
+    let Some(event) = ringed(&browse) else {
+        return false;
+    };
+    let Some(stem) = event.added.clone() else {
+        return false;
+    };
+
+    match key {
+        Key::Character('e') => change(monitor, add::text(&event), Some(stem)),
+        Key::Character('d') if browse.removing => {
+            if let Err(error) = add::remove(&stem) {
+                eprintln!("kanade: calendar: could not remove the event ({error})");
+            }
+            store(Browse {
+                removing: false,
+                ..browse
+            });
+            IslandService::write().attend(monitor, Instant::now());
+        }
+        Key::Character('d') => {
+            store(Browse {
+                removing: true,
+                ..browse
+            });
+            IslandService::write().attend(monitor, Instant::now());
+        }
+        _ => return false,
+    }
+
+    true
+}
+
+// the event the ring is on, none outside the agenda
+fn ringed(browse: &Browse) -> Option<Occurrence> {
+    let day = browse.day(clock::today());
+    let shown = month_of(&Calendars::read().clone(), grid_start(day));
+    let at = *shown.month.on(day).get(browse.selected)?;
+
+    shown.month.events.occurrences.get(at).cloned()
 }
 
 // a key or the press that stands for one, on the visit open now

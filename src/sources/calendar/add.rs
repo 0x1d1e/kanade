@@ -3,6 +3,7 @@
 //! other. The text is `[start[-end] ]title`, a time as `14:30`: with none the event lasts the day,
 //! with a start alone it lasts an hour. Times are floating, so they keep their wall time.
 
+use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::process;
@@ -10,12 +11,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
 
-use super::data_home;
+use super::{Occurrence, data_home};
 use crate::atomic::{self, Mode};
 use crate::clock;
 use crate::sources::ical::{escape, line};
 
 const PRODID: &str = "-//Kanade//Calendar//EN";
+
+// ends the UID of every event typed here, ahead of which is the name of its file
+const DOMAIN: &str = "@kanade";
 
 // under the XDG data directory
 const DIRECTORY: &str = "kanade/events";
@@ -94,23 +98,70 @@ fn span(text: &str, day: NaiveDate) -> Result<When, String> {
     Ok(When::Span(start, end))
 }
 
+// the name of the file an event's UID points to, none for a UID not made here; a file elsewhere
+// may carry any UID, so only what this makes names a path
+pub fn stem(uid: &str) -> Option<&str> {
+    uid.strip_suffix(DOMAIN).filter(|stem| {
+        !stem.is_empty()
+            && stem.len() <= 64
+            && stem
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+    })
+}
+
+// the event as typed again, to change it
+pub fn text(event: &Occurrence) -> String {
+    match (event.all_day, event.moment()) {
+        (true, _) => event.title.clone(),
+        (false, true) => format!("{} {}", event.start.format("%H:%M"), event.title),
+        (false, false) => format!(
+            "{}-{} {}",
+            event.start.format("%H:%M"),
+            event.end.format("%H:%M"),
+            event.title
+        ),
+    }
+}
+
 // the event as a file of its own; the calendar sees it once the watch reads the directory again
 pub fn save(event: &Event) -> io::Result<()> {
-    let dir = directory().ok_or_else(|| io::Error::other("no data directory"))?;
     let uid = format!(
         "{:x}-{:x}-{:x}",
         clock::unix_seconds(),
         process::id(),
         ADDED.fetch_add(1, Ordering::Relaxed)
     );
-    let stamp = DateTime::from_timestamp(clock::unix_seconds(), 0).unwrap_or_default();
-    let text = vcalendar(event, &format!("{uid}@kanade"), stamp.naive_utc());
 
-    atomic::write(
-        &dir.join(format!("{uid}.ics")),
-        text.as_bytes(),
-        Mode::Private,
-    )
+    write(&uid, event)
+}
+
+// `event` in place of the one in file `stem`, which must still be there
+pub fn replace(stem: &str, event: &Event) -> io::Result<()> {
+    fs::metadata(file(stem)?)?;
+
+    write(stem, event)
+}
+
+pub fn remove(stem: &str) -> io::Result<()> {
+    fs::remove_file(file(stem)?)
+}
+
+fn file(stem: &str) -> io::Result<PathBuf> {
+    let dir = directory().ok_or_else(|| io::Error::other("no data directory"))?;
+
+    if self::stem(&format!("{stem}{DOMAIN}")) != Some(stem) {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+
+    Ok(dir.join(format!("{stem}.ics")))
+}
+
+fn write(stem: &str, event: &Event) -> io::Result<()> {
+    let stamp = DateTime::from_timestamp(clock::unix_seconds(), 0).unwrap_or_default();
+    let text = vcalendar(event, &format!("{stem}{DOMAIN}"), stamp.naive_utc());
+
+    atomic::write(&file(stem)?, text.as_bytes(), Mode::Private)
 }
 
 fn vcalendar(event: &Event, uid: &str, stamp: NaiveDateTime) -> String {
@@ -184,6 +235,22 @@ mod tests {
         assert!(parse(&"x".repeat(TITLE + 1), day()).is_err());
     }
 
+    // the one event a file holds, as the calendar's own reader finds it
+    fn read_back(text: &str) -> Occurrence {
+        let calendars: Vec<_> = super::super::parse(text)
+            .unwrap()
+            .into_iter()
+            .flat_map(super::super::series)
+            .collect();
+        let mut found =
+            super::super::occurrences(&calendars, day(), day().succ_opt().unwrap(), |seconds| {
+                DateTime::from_timestamp(seconds, 0).map(|at| at.naive_utc())
+            });
+
+        assert_eq!(found.occurrences.len(), 1);
+        found.occurrences.remove(0)
+    }
+
     // the file reads back through the calendar's own reader as the event typed
     #[test]
     fn the_file_is_an_event_the_calendar_reads() {
@@ -193,18 +260,32 @@ mod tests {
         assert!(text.contains("DTSTART:20261013T143000\r\n"));
         assert!(text.contains("SUMMARY:Plan\\; ship\\, repeat\r\n"));
 
-        let calendars: Vec<_> = super::super::parse(&text)
-            .unwrap()
-            .into_iter()
-            .flat_map(super::super::series)
-            .collect();
-        let found =
-            super::super::occurrences(&calendars, day(), day().succ_opt().unwrap(), |seconds| {
-                DateTime::from_timestamp(seconds, 0).map(|at| at.naive_utc())
-            });
+        let found = read_back(&text);
 
-        assert_eq!(found.occurrences.len(), 1);
-        assert_eq!(found.occurrences[0].title, "Plan; ship, repeat");
-        assert_eq!(found.occurrences[0].start, at(14, 30));
+        assert_eq!(found.title, "Plan; ship, repeat");
+        assert_eq!(found.start, at(14, 30));
+        assert_eq!(found.added.as_deref(), Some("a"));
+    }
+
+    // what the field shows to change an event types back as the same event
+    #[test]
+    fn an_event_typed_again_is_the_event() {
+        for typed in ["Dentist", "9:05-10:05 Standup", "14:30-15:45 Review"] {
+            let event = parse(typed, day()).unwrap();
+            let found = read_back(&vcalendar(&event, "a@kanade", at(8, 0)));
+
+            assert_eq!(parse(&text(&found), day()), Ok(event));
+        }
+    }
+
+    // a UID in a file from elsewhere never names a path
+    #[test]
+    fn only_a_uid_made_here_names_a_file() {
+        assert_eq!(stem("69e5ea0f-1f4a-0@kanade"), Some("69e5ea0f-1f4a-0"));
+        assert_eq!(stem("../../x@kanade"), None);
+        assert_eq!(stem("a/b@kanade"), None);
+        assert_eq!(stem("@kanade"), None);
+        assert_eq!(stem("abc@example.com"), None);
+        assert!(remove("../x").is_err());
     }
 }

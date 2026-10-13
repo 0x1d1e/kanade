@@ -156,6 +156,9 @@ pub struct Occurrence {
     // its start and end in seconds since the epoch, which order it and give its length
     pub span: (i64, i64),
     pub all_day: bool,
+
+    // the name of the file in `add::directory` it was typed into, so the Surface can change it
+    pub added: Option<String>,
 }
 
 impl Occurrence {
@@ -862,6 +865,10 @@ fn occurrence(
         end,
         span,
         all_day: !timed,
+        added: text(component, &ICalendarProperty::Uid)
+            .as_deref()
+            .and_then(add::stem)
+            .map(str::to_owned),
     })
 }
 
@@ -1933,6 +1940,7 @@ mod tests {
                 end: at(day(2026, 10, 8), 10, 30),
                 span: (1_791_446_400, 1_791_448_200),
                 all_day: false,
+                added: None,
             }]
         );
     }
@@ -2704,6 +2712,7 @@ mod tests {
             end: at(day(2026, 10, 9), 0, 0),
             span: (0, 0),
             all_day: false,
+            added: None,
         };
 
         assert!(midnight.on(day(2026, 10, 9)));

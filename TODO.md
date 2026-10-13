@@ -130,7 +130,7 @@ Not worth changing, by this review:
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 
-- Calendar Surface: events added with `a` cannot be edited or deleted there, only by deleting their file in `$XDG_DATA_HOME/kanade/events` (ADR 0045); recurrence, place and a reminder cannot be typed.
+- Calendar Surface: events added there are changed (`e`) and removed (`d` twice) by key only, with no click and no undo (ADR 0045); recurrence, place and a reminder cannot be typed.
 
 ## Design audit (not done)
 

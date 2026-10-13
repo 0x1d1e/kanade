@@ -506,6 +506,7 @@ mod tests {
             end: start + chrono::Duration::minutes(1),
             span: (1_000, 1_060),
             all_day: false,
+            added: None,
         };
 
         let before = agenda_widths(
