@@ -54,15 +54,13 @@ pub fn parse(text: &str, day: NaiveDate) -> Result<Event, String> {
     let text = text.trim();
     let (first, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
 
-    let (title, when) = if first.contains(':')
-        && first
-            .chars()
-            .all(|char| char.is_ascii_digit() || ":-".contains(char))
-    {
-        (rest.trim(), span(first, day)?)
-    } else {
-        (text, When::Day(day))
-    };
+    // a first word that starts like a time is meant as one, so a typo in it is said, not made a title
+    let (title, when) =
+        if first.starts_with(|char: char| char.is_ascii_digit()) && first.contains(':') {
+            (rest.trim(), span(first, day)?)
+        } else {
+            (text, When::Day(day))
+        };
 
     if title.is_empty() {
         return Err(String::from("Give it a title"));
@@ -232,6 +230,23 @@ mod tests {
         assert!(parse("15:00-14:00 Backwards", day()).is_err());
         assert!(parse("14:30", day()).is_err());
         assert!(parse("   ", day()).is_err());
+    }
+
+    // a first word that starts like a time never becomes the title of an all-day event
+    #[test]
+    fn a_malformed_time_is_not_a_title() {
+        for typed in [
+            "14:xx Dentist",
+            "3:30pm Dentist",
+            "14:30- Dentist",
+            "9:00-10:xx Standup",
+        ] {
+            assert!(parse(typed, day()).is_err(), "{typed}");
+        }
+        assert_eq!(
+            parse("Re: 14:30 plan", day()).map(|event| event.when),
+            Ok(When::Day(day()))
+        );
         assert!(parse(&"x".repeat(TITLE + 1), day()).is_err());
     }
 

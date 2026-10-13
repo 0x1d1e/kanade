@@ -140,6 +140,9 @@ pub struct Adding {
 
     // what the last Enter could not save
     problem: Option<String>,
+
+    // the file is being written, which keeps the text as it is until it says whether it is saved
+    saving: bool,
 }
 
 impl Service for Adding {
@@ -585,7 +588,13 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let account = account.as_deref();
 
     let agenda: Box<dyn Widget> = if let Some(text) = &adding.text {
-        Box::new(entry(day, today, text, adding.problem.as_deref()))
+        Box::new(entry(
+            day,
+            today,
+            text,
+            adding.problem.as_deref(),
+            adding.saving,
+        ))
     } else if calendars.files == 0 {
         Box::new(state(
             monitor,
@@ -916,7 +925,13 @@ fn add_pill(monitor: &str) -> Rectangle {
  * the agenda while an event is typed for `day`: the day's name, the field with what is typed, and
  * under it what the text can say, or what the last Enter could not save
  */
-fn entry(day: NaiveDate, today: NaiveDate, text: &str, problem: Option<&str>) -> Column {
+fn entry(
+    day: NaiveDate,
+    today: NaiveDate,
+    text: &str,
+    problem: Option<&str>,
+    saving: bool,
+) -> Column {
     let title = Text::new(named(day, today))
         .size(theme::text::TITLE)
         .color(theme::island().on_surface)
@@ -944,6 +959,7 @@ fn entry(day: NaiveDate, today: NaiveDate, text: &str, problem: Option<&str>) ->
         Box::new(search::field(Icon::Calendar, text, "14:30 Dentist", AGENDA)) as Box<dyn Widget>,
     ];
     lines.push(match problem {
+        _ if saving => hint("Saving", quiet),
         Some(problem) => hint(problem, theme::signals().warning),
         None => hint("Enter saves, Esc cancels", quiet),
     });
@@ -1098,6 +1114,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
 // the event typed so far takes the key, Enter saving it on the chosen day and Escape dropping it
 fn typing(monitor: &str, adding: Adding, key: Key) -> bool {
     let next = match key {
+        _ if adding.saving => adding,
         Key::Escape => Adding {
             text: None,
             replacing: None,
@@ -1121,30 +1138,67 @@ fn typing(monitor: &str, adding: Adding, key: Key) -> bool {
     true
 }
 
-// the typed event written to its file, else what to correct in it
+// the typed event on its way to its file, else what to correct in it
 fn save(adding: Adding) -> Adding {
     let day = Browse::read().of(adding.visit).day(clock::today());
     let text = adding.text.as_deref().unwrap_or_default();
 
-    let saved = add::parse(text, day).and_then(|event| {
-        match &adding.replacing {
-            Some(stem) => add::replace(stem, &event),
-            None => add::save(&event),
-        }
-        .map_err(|error| format!("Could not save: {error}"))
-    });
+    match add::parse(text, day) {
+        Ok(event) => {
+            write_off_thread(adding.visit, adding.replacing.clone(), event);
 
-    match saved {
-        Ok(()) => Adding {
-            text: None,
-            replacing: None,
-            problem: None,
-            ..adding
-        },
+            Adding {
+                problem: None,
+                saving: true,
+                ..adding
+            }
+        }
         Err(problem) => Adding {
             problem: Some(problem),
             ..adding
         },
+    }
+}
+
+/*
+ * writes the file on a thread of its own, as a slow disk must not stall the frames, nor the
+ * volume keys on the control worker; `settled` says how it went
+ */
+fn write_off_thread(visit: u64, replacing: Option<String>, event: add::Event) {
+    let write = move || {
+        let written = match &replacing {
+            Some(stem) => add::replace(stem, &event),
+            None => add::save(&event),
+        };
+
+        settled(
+            visit,
+            written.map_err(|error| format!("Could not save: {error}")),
+        );
+    };
+
+    if let Err(error) = thread::Builder::new()
+        .name(String::from("calendar-write"))
+        .spawn(write)
+    {
+        settled(visit, Err(format!("Could not save: {error}")));
+    }
+}
+
+// the text is dropped once it is saved, and kept with what went wrong otherwise
+fn settled(visit: u64, written: Result<(), String>) {
+    let mut adding = Adding::write();
+
+    if adding.visit != visit || !adding.saving {
+        return;
+    }
+
+    match written {
+        Ok(()) => *adding = Adding::begin(visit),
+        Err(problem) => {
+            adding.saving = false;
+            adding.problem = Some(problem);
+        }
     }
 }
 
@@ -1160,6 +1214,7 @@ fn change(monitor: &str, text: String, replacing: Option<String>) {
         text: Some(text),
         replacing,
         problem: None,
+        saving: false,
     });
     IslandService::write().attend(monitor, Instant::now());
 }
@@ -1192,9 +1247,11 @@ fn added(monitor: &str, key: Key) -> bool {
     match key {
         Key::Character('e') => change(monitor, add::text(&event), Some(stem)),
         Key::Character('d') if browse.removing => {
-            if let Err(error) = add::remove(&stem) {
-                eprintln!("kanade: calendar: could not remove the event ({error})");
-            }
+            thread::spawn(move || {
+                if let Err(error) = add::remove(&stem) {
+                    eprintln!("kanade: calendar: could not remove the event ({error})");
+                }
+            });
             store(Browse {
                 removing: false,
                 ..browse
