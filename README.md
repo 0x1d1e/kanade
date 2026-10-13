@@ -71,7 +71,7 @@ Kanade needs niri, a Rust toolchain and a few system libraries, and must be the 
 - [iNiR](https://github.com/snowarch/iNiR): an island on niri, one body in many contexts, satellites.
 - [Noctalia](https://github.com/noctalia-dev/noctalia): a native shell's config and architecture.
 - [Wayle](https://github.com/wayle-rs/wayle): a Rust Wayland shell with its settings, OSD and device controls built in.
-- [HyprGlass](https://github.com/hyprnux/hyprglass) and [Liquid Glass Studio](https://github.com/iyinchao/liquid-glass-studio): references for liquid glass: refraction at the rim, chromatic aberration, highlights.
+- [HyprGlass](https://github.com/hyprnux/hyprglass) and [Liquid Glass Studio](https://github.com/iyinchao/liquid-glass-studio): references for glass shading, edge frost and light.
 
 Besides Amane, they are references: Kanade holds none of their code.
 

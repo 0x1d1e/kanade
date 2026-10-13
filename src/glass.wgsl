@@ -1,26 +1,19 @@
-// Kanade's liquid glass over a pane's body, under its content (src/glass/, ADRs 0024, 0037): what
-// is behind the edge, bent into a rim, a tint over it, then the highlights.
-// the runtime gives uv (0 to 1 across the body), size in logical pixels, the `values` below and
+// Kanade's Frosted Glass, under a pane's content (src/glass/, ADR 0048): colors sampled around the
+// body, softened across it, under a tint and restrained edge highlights.
+// The runtime gives uv (0 to 1 across the body), size in logical pixels, `values` below and
 // `backdrop`: a copy of the screen around the body, transparent where there is none:
-//   values[0]: radius, highlight (0 none, 1 standard), tone (1 dark, 0 light), strength (0 to 1)
+//   values[0]: radius, highlight, tone (1 dark, 0 light), highlight strength
 //   values[1]: light x, y in body pixels (the pointer, or a resting light), its reach, its share
 //   values[2] to [4], only when values[4].z is 1, a body united with a second one, as the Island
-//   with the Dock (ADR 0031), the whole rect being the two's bounds:
-//     values[2]: the first rect's left, top, width, height, its radius in values[0].x
-//     values[3]: the second's, values[4].x its radius
-//     values[4]: its radius, how far the two pull together, 1 if united
-//   values[5]: the tint over what is behind, plain rgba. The shader draws it itself and cuts all
-//   of the pane to the outline, as the outline is no rounded rect to clip layers to
-//   values[6] to [9], when values[10].x is 1, the body the copy was captured around, which the rim
-//   is worked out for and then stretched to this one (captured ahead of a morphing body):
-//     values[6], [7], [8]: its rects and radii, as values[2], [3], [4] have them
-//     values[9]: its corner in the copy and the copy's size, in logical pixels
-//   values[10]: x is 1 where the rim shows, y how frosted the middle is (0 clear, 1 regular); rows 6 to 9 hold the copy's place for both
+//   with the Dock (ADR 0031), the whole rect being the two's bounds
+//   values[5]: the tint over the frost, plain rgba
+//   values[6] to [9]: the captured body's rects and radii, then its corner and copy size; captured
+//     ahead of a morphing body, these values place the frost samples
+//   values[10].x: 1 when a captured copy can frost this pane
 // It never reads the clock, so a body at rest draws no frames of its own.
 //
-// The terms follow liquid-glass-studio's glare and Fresnel, kwin-glass's concave bevel and
-// damascene's inner shadow; the frost is hyprglass's frosted center, with its saturation lift,
-// worked out from what lies around the body, as what is under the body is the body itself.
+// The edge light follows liquid-glass-studio's glare and Fresnel, kwin-glass's concave bevel and
+// damascene's inner shadow. Frost follows hyprglass's edge samples and saturation lift.
 
 // signed distance to a rounded rectangle centered on 0, negative inside
 fn rounded(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
@@ -50,14 +43,6 @@ fn outline(p: vec2<f32>, half: vec2<f32>, radius: f32) -> f32 {
     return united(a, b, values[4].y);
 }
 
-// the rim bends what lies outside the edge in along the edge's normal (src/glass/capture.rs, `MARGIN`
-// reaches as far out as the deepest sample): the edge itself shows furthest out, the inner side of
-// the band what is just outside, the right way round, blue a little further than red
-const BAND = 12.0;
-const REACH = 7.0;
-const GAP = 1.5;
-const SPREAD = vec3<f32>(1.0, 1.04, 1.08);
-
 // the copied body's outline at `p`, from the corner of the rect holding it
 fn rim_outline(p: vec2<f32>, first: vec4<f32>, second: vec4<f32>, corner: vec2<f32>) -> f32 {
     let shape = values[8];
@@ -74,93 +59,23 @@ fn rim_outline(p: vec2<f32>, first: vec4<f32>, second: vec4<f32>, corner: vec2<f
     return united(a, b, shape.z);
 }
 
-// how far a ray from `at` along `direction` goes in a copy `size` big before it leaves it
-fn room(at: vec2<f32>, direction: vec2<f32>, size: vec2<f32>) -> f32 {
-    var along = vec2<f32>(1e9, 1e9);
-
-    if direction.x > 1e-6 {
-        along.x = (size.x - at.x) / direction.x;
-    } else if direction.x < -1e-6 {
-        along.x = -at.x / direction.x;
-    }
-
-    if direction.y > 1e-6 {
-        along.y = (size.y - at.y) / direction.y;
-    } else if direction.y < -1e-6 {
-        along.y = -at.y / direction.y;
-    }
-
-    return min(along.x, along.y);
-}
-
-// the rim at `uv`: the bent colors and how much of them shows, plain rgba
-fn rim(uv: vec2<f32>) -> vec4<f32> {
-    let first = values[6];
-    let second = values[7];
-    let shape = values[8];
-    let place = values[9];
-    let joined = shape.w > 0.5;
-
-    let low = select(first.xy, min(first.xy, second.xy), joined);
-    let high = select(first.xy + first.zw, max(first.xy + first.zw, second.xy + second.zw), joined);
-    let extent = high - low;
-
-    let thin = select(
-        min(first.z, first.w),
-        min(min(first.z, first.w), min(second.z, second.w)),
-        joined,
-    ) * 0.5;
-    let band = max(min(BAND, thin * 0.6), 1.0);
-
-    // stretched from the copied body to this one
-    let p = uv * extent;
-    let d = rim_outline(p, first, second, low);
-    let inside = -d;
-
-    if inside < 0.0 || inside > band {
-        return vec4<f32>(0.0);
-    }
-
-    let e = 0.5;
-    let n = normalize(vec2<f32>(
-        rim_outline(p + vec2<f32>(e, 0.0), first, second, low) - rim_outline(p - vec2<f32>(e, 0.0), first, second, low),
-        rim_outline(p + vec2<f32>(0.0, e), first, second, low) - rim_outline(p - vec2<f32>(0.0, e), first, second, low),
-    ) + vec2<f32>(1e-6, 1e-6));
-
-    // squeezed into what the copy holds past the edge, where the screen ends close by
-    let at = place.xy + p;
-    let spare = room(at, n, place.zw) - inside;
-    let reach = REACH * clamp((spare - GAP) / (REACH * SPREAD.z), 0.0, 1.0);
-    let squeeze = (1.0 - inside / band) * (1.0 - inside / band);
-
-    var color = vec3<f32>(0.0);
-
-    for (var channel = 0; channel < 3; channel++) {
-        let depth = inside + GAP + reach * SPREAD[channel] * squeeze;
-        let texel = textureSampleLevel(backdrop, backdrop_sampler, (at + n * depth) / place.zw, 0.0);
-
-        color[channel] = texel[channel];
-    }
-
-    // with no room at all the rim fades rather than repeat the screen's edge
-    let deepest = at + n * (inside + GAP + reach * SPREAD.z * squeeze);
-    let beyond = max(max(-deepest.x, deepest.x - place.z), max(-deepest.y, deepest.y - place.w));
-    let kept = 1.0 - smoothstep(0.0, 3.0, max(beyond, 0.0));
-
-    // full at the edge, gone well before the band ends, into the frost or the backdrop seen through the middle
-    let fade = 1.0 - smoothstep(0.35, 1.0, inside / band);
-
-    return vec4<f32>(color, fade * kept);
-}
-
 // the frost: what lies under the body is the body in the copy, so the middle takes the colors
 // around the body instead, blurred and blended by how near each side is. From each pixel a ray goes
 // out along each of the four axes to the outline; there the copy is read just outside it, at a few
 // points along the edge, and the four reads are weighed by 1 over the squared distance, as a
-// smooth fill of the body from its edge
-const FROST_GAP = 3.0;
-const FROST_STEP = 3.0;
-const FROST_WIDEN = 0.45;
+// smooth fill of the body from its edge.
+// The copy comes with blurrier sizes of itself (runtime backdrops.rs), so each read is already a
+// blur, wider the further the ray went from the edge, and a hard edge behind the body, as a
+// window's top, fades in over its width as it passes the outline, not as a line
+const FROST_TAPS = 5;
+const FROST_SPREAD = 0.375;
+const FROST_BLUR = 4.0;
+const FROST_BLUR_MAX = 5.0;
+// A read at blur level n averages a bilinear 2 by 2 of texels 2 ^ n px wide, so it reaches 0.75 of
+// that around its center (the footprint, 24 px at most). The center keeps a footprint clear of the
+// outline, so nothing from inside the body is averaged in, and its farthest reach, 1 + 2 footprints
+// out or 2 taps of FROST_SPREAD plus a footprint along the edge, stays within the capture margin
+// in capture.rs; a read repeats the copy's last pixels only where the copy ends at the screen's edge
 const FROST_SATURATION = 1.18;
 
 // the frost at `uv`: plain rgba, nothing where the copy holds none of what lies around
@@ -204,29 +119,31 @@ fn frost(uv: vec2<f32>) -> vec4<f32> {
         var got = vec3<f32>(0.0);
         var kept = 0.0;
 
-        let step_along = FROST_STEP + reach * FROST_WIDEN;
+        // the blur grows with the reach; the copy holds the body's own pixels inside the outline
+        let blur = min(FROST_BLUR + log2(1.0 + reach / 10.0), FROST_BLUR_MAX);
+        let width = exp2(blur);
+        let footprint = 0.75 * exp2(ceil(blur));
 
-        for (var tap = -3; tap <= 3; tap++) {
-            let spot = p + direction * (reach + FROST_GAP) + along * (f32(tap) * step_along);
+        for (var tap = 0; tap < FROST_TAPS; tap++) {
+            let spot = p + direction * (reach + footprint + 1.0) + along * (f32(tap - FROST_TAPS / 2) * width * FROST_SPREAD);
             let at = place.xy + spot;
             let coord = at / place.zw;
 
-            // only outside the body, whose own pixels the copy holds inside it
+            // only outside the body
             if rim_outline(spot, first, second, low) < 0.5 {
                 continue;
             }
 
-            if coord.x >= 0.0 && coord.x <= 1.0 && coord.y >= 0.0 && coord.y <= 1.0 {
-                let texel = textureSampleLevel(backdrop, backdrop_sampler, coord, 0.0);
+            // past the copy, at the screen's edge, its last pixels go on
+            let texel = textureSampleLevel(backdrop, backdrop_sampler, clamp(coord, vec2<f32>(0.0), vec2<f32>(1.0)), blur);
 
-                got += texel.rgb * texel.a;
-                kept += texel.a;
-            }
+            got += texel.rgb * texel.a;
+            kept += texel.a;
         }
 
         if kept > 0.0 {
-            let near = 1.0 / ((reach + 4.0) * (reach + 4.0));
-            let share = kept / 7.0;
+            let near = 1.0 / ((reach + 8.0) * (reach + 8.0));
+            let share = kept / f32(FROST_TAPS);
 
             sum += got / kept * near * share;
             weight += near * share;
@@ -324,30 +241,15 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let alpha = clamp(white + black, 0.0, 1.0);
     let shade = select(0.0, white / (white + black), white + black > 0.0001);
 
-    // what is behind, bent, under the tint, under the highlights, all of it cut to the outline,
-    // antialiased
-    let placed = values[10].x > 0.5;
-    var rimmed = vec4<f32>(0.0);
-    if placed {
-        rimmed = rim(uv);
-    }
-
-    // select() runs both sides, and the frost costs a lot
+    // soften the captured colors beneath the pane's tint
     var frosted = vec4<f32>(0.0);
-    if values[10].y > 0.0 {
+    if values[10].x > 0.5 {
         frosted = frost(uv);
     }
 
-    // the rim over the frost
-    let bent_alpha = rimmed.a + frosted.a * (1.0 - rimmed.a);
-    let bent = vec4<f32>(
-        (rimmed.rgb * rimmed.a + frosted.rgb * frosted.a * (1.0 - rimmed.a)) / max(bent_alpha, 1e-4),
-        bent_alpha,
-    );
     let tint = values[5];
-
-    let under = tint.a + bent.a * (1.0 - tint.a);
-    let under_color = (tint.rgb * tint.a + bent.rgb * bent.a * (1.0 - tint.a)) / max(under, 1e-4);
+    let under = tint.a + frosted.a * (1.0 - tint.a);
+    let under_color = (tint.rgb * tint.a + frosted.rgb * frosted.a * (1.0 - tint.a)) / max(under, 1e-4);
 
     let covered = clamp(0.5 - d, 0.0, 1.0);
     let total = alpha + under * (1.0 - alpha);

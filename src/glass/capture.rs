@@ -4,16 +4,13 @@ use kanade_runtime::Monitor;
 use kanade_runtime::backdrop::{self, Region, Request};
 use kanade_runtime::{Horizontal, Vertical};
 
-use crate::config;
-use crate::look::{Anchor, Material};
+use crate::look::Anchor;
 
-use super::body::near;
-use super::pane::{RIM_ROWS, Seen};
+use super::pane::{COPY_ROWS, Seen};
 use super::{Body, Spot};
 
-// how much further out than its body a pane's copy reaches, enough for the deepest sample of the rim
-// (`REACH`, `SPREAD` and `GAP` in glass.wgsl)
-const MARGIN: f32 = 13.0;
+// how much further out than its body a pane's copy reaches for the frost samples
+const MARGIN: f32 = 50.0;
 
 // how far out from its body the light of the backdrop is read, in logical pixels
 const RING: f32 = 12.0;
@@ -84,9 +81,8 @@ fn request(body: Body, origin: (f32, f32), screen: (u32, u32)) -> Option<Request
 }
 
 /*
- * where liquid glass is under a pane: its body in its window, `canvas` big and anchored as
- * `anchor`, none while it shows none; called each time the pane draws. Says whether liquid glass
- * is there, to draw it, or the transparent look instead
+ * where a frosted pane lies: its body in the window, `canvas` big and anchored as `anchor`, none
+ * while it shows none; called each time the pane draws. Says whether the runtime can capture
  */
 pub fn place(
     monitor: &Monitor,
@@ -96,14 +92,6 @@ pub fn place(
     body: Option<Body>,
 ) -> bool {
     let spot = Spot::new(&monitor.name, pane);
-    let liquid = config::get().appearance.material == Material::LiquidGlass;
-
-    if !liquid {
-        // another material stops the glass, and what it saw is stale if liquid glass comes back
-        backdrop::release(&spot);
-
-        return false;
-    }
 
     // rounded, as the runtime sizes the window
     let canvas = (canvas.0.round(), canvas.1.round());
@@ -119,24 +107,18 @@ pub fn place(
 }
 
 /*
- * what liquid glass shows behind a pane's body, if it is there; reading it while liquid glass is the
- * material, even where it could not be placed yet, redraws the pane once a copy lands
+ * what a pane shows of the captured area, if it is there; reading it redraws the pane once a copy
+ * lands, even where it could not be placed yet
  */
-pub fn shown(spot: &Spot, body: Body) -> Option<Seen> {
-    if config::get().appearance.material != Material::LiquidGlass {
-        return None;
-    }
-
+pub fn shown(spot: &Spot) -> Option<Seen> {
     let seen = backdrop::seen(spot)?;
 
-    let place = <[[f32; 4]; RIM_ROWS]>::try_from(seen.values.as_slice()).ok();
-    let near = Body::of_rows(&seen.values).is_some_and(|rim| near(rim, body));
+    let place = <[[f32; 4]; COPY_ROWS]>::try_from(seen.values.as_slice()).ok();
 
     Some(Seen {
         spot: spot.clone(),
         light: seen.light,
         place,
-        near,
     })
 }
 

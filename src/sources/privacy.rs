@@ -25,7 +25,7 @@ pub struct Privacy {
     // none while no app captures from a microphone or a camera
     pub sensors: Option<Sensors>,
 
-    // niri has at least one screen cast besides liquid glass's own capture, paused ones included;
+    // niri has at least one screen cast besides Frosted Glass's own capture, paused ones included;
     // niri cannot say why, so it is never a "Recording" or "Sharing"
     pub casting: bool,
 }

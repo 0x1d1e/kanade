@@ -68,7 +68,7 @@ const FADE_SCALE: f32 = 0.92;
 // how each output's Banners move, kept between draws
 static MOTIONS: LazyLock<Mutex<HashMap<String, Motion>>> = LazyLock::new(Mutex::default);
 
-// per output, which pane of liquid glass each Banner draws in
+// per output, which captured pane each Banner uses
 static PANES: LazyLock<Mutex<HashMap<String, Panes>>> = LazyLock::new(Mutex::default);
 
 // the tallest a Banner gets, as its text lays out the same for good
@@ -384,7 +384,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         (placed, later, moving)
     };
 
-    // each Banner's pane of liquid glass, and those let go, which the next Banner takes afresh
+    // each Banner's captured pane, and those let go, which the next Banner takes afresh
     let (panes, freed) = {
         let mut all = PANES.locked();
         let panes = all.entry(monitor.name.clone()).or_default();
@@ -457,7 +457,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .unwrap_or_else(|| measured(&placed.banner));
             let now_look = look(placed, now);
             let at = now_look.at;
-            let body = liquid_body(at, now_look.radius);
+            let body = pane_body(at, now_look.radius);
 
             let spot = glass::Spot::new(&monitor.name, &pane(panes[&placed.banner.id]));
 
@@ -475,27 +475,27 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                         .find(|ahead| ahead.banner.id == placed.banner.id)?;
                     let look = look(&ahead, at);
 
-                    Some(liquid_body(look.at, look.radius))
+                    Some(pane_body(look.at, look.radius))
                 })
                 .fold(body, glass::ahead);
 
-            // another material stops the glass whole, so the pane is told only where it is
-            let liquid = glass::place(
+            // each live Banner watches its own copy; hidden cards stop capturing
+            let captured = glass::place(
                 monitor,
                 &spot.pane,
                 anchor,
                 (width, height),
                 (now_look.seen > 0.0 && !covered).then_some(captured),
             );
-            let backdrop = glass::shown(&spot, body);
+            let backdrop = glass::shown(&spot);
 
             /*
-             * liquid glass casts none, as it would gray what its rim bends; cast or not, it takes as
-             * many layers, so the targets of the cards after it keep their place
+             * A captured pane casts no shadow, which would darken its sampled colors; either
+             * way, it takes as many layers so the targets of later cards keep their place
              */
             let mut shadow = Vec::new();
 
-            if liquid {
+            if captured {
                 shadow::none(&mut shadow);
             } else {
                 shadow::draw(&mut shadow, at, now_look.radius);
@@ -543,7 +543,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         )
 }
 
-// a pane of liquid glass on an output, as a Banner draws in
+// a pane's capture spot on an output, as a Banner draws in
 fn pane(index: usize) -> String {
     format!("banner-{index}")
 }
@@ -612,7 +612,7 @@ fn measured(banner: &Banner) -> f32 {
     })
 }
 
-fn liquid_body(at: Rect, radius: f32) -> glass::Body {
+fn pane_body(at: Rect, radius: f32) -> glass::Body {
     glass::Body {
         x: at.x,
         y: at.y,
@@ -946,7 +946,7 @@ fn mix(from: f32, to: f32, amount: f32) -> f32 {
 
 /*
  * the card as `look` says, what it says laid out at its full `height`, clipped to where it is, of
- * the Island's glass, with what liquid glass sees behind it
+ * the Island's glass, with its captured backdrop
  */
 fn drawn(
     banner: &Banner,

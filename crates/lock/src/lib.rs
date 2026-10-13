@@ -2,7 +2,7 @@
 //! output and shows red where none came. So this crate holds `ext-session-lock` over its own
 //! Wayland connection, and draws each lock surface on the CPU the moment niri sizes it: the
 //! backdrop, worked out ahead from the scene the shell hands it, the clock, who is signed in and a
-//! pill of liquid glass for the password.
+//! frosted-glass pill for the password.
 //!
 //! The shell keeps what the lock means: it hands a scene per output, gets the password typed, and
 //! asks to unlock once PAM accepts it.
@@ -12,7 +12,6 @@
 mod client;
 mod paint;
 mod picture;
-mod refract;
 pub mod stage;
 mod text;
 
@@ -115,9 +114,8 @@ pub struct Palette {
     // how much the glass's rim catches the light, 0 to 1
     pub highlight: f32,
 
-    // the tint of glass that only lays a tint over the backdrop, as the shell's materials but
-    // liquid glass; none frosts the backdrop and bends it into the rim, tinted by its light
-    pub tint: Option<Color>,
+    // the tint over the frosted wallpaper under the field and avatar
+    pub tint: Color,
 }
 
 // what one output's lock screen shows

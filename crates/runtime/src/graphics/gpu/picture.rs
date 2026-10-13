@@ -85,32 +85,69 @@ fn premultiplied(image: &Bitmap) -> Vec<u8> {
     pixels
 }
 
-// each pixel of the half size image is the average of the two by two it covers
-fn halve(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
+// each pixel of the half size image is the average of the two by two it covers; on an odd side the
+// last one covers three, so no column or row of the image is left out
+pub(super) fn halve(pixels: &[u8], width: u32, height: u32) -> Vec<u8> {
     let half_width = (width / 2).max(1);
     let half_height = (height / 2).max(1);
 
     let mut half = Vec::with_capacity((half_width * half_height * 4) as usize);
 
     for y in 0..half_height {
+        let rows = covered(y, half_height, height);
+
         for x in 0..half_width {
+            let columns = covered(x, half_width, width);
+
             for channel in 0..4 {
                 let mut total = 0u32;
+                let mut count = 0u32;
 
-                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                    // an odd edge repeats its last pixel
-                    let source_x = (x * 2 + dx).min(width - 1);
-                    let source_y = (y * 2 + dy).min(height - 1);
+                for source_y in rows.clone() {
+                    for source_x in columns.clone() {
+                        let index = ((source_y * width + source_x) * 4 + channel) as usize;
 
-                    let index = ((source_y * width + source_x) * 4 + channel) as usize;
-
-                    total += u32::from(pixels[index]);
+                        total += u32::from(pixels[index]);
+                        count += 1;
+                    }
                 }
 
-                half.push((total / 4) as u8);
+                half.push((total / count) as u8);
             }
         }
     }
 
     half
+}
+
+// the source pixels along one side that the `at`th of `half` pixels covers, out of `side`
+fn covered(at: u32, half: u32, side: u32) -> std::ops::RangeInclusive<u32> {
+    let first = (at * 2).min(side - 1);
+    let last = if at + 1 == half && side % 2 == 1 {
+        at * 2 + 2
+    } else {
+        at * 2 + 1
+    };
+
+    first..=last.min(side - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::halve;
+
+    #[test]
+    fn an_odd_side_keeps_its_last_pixel_in_the_average() {
+        // three columns, one row: 0, 0, 255 in the red channel
+        let pixels = [0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0, 255];
+
+        assert_eq!(halve(&pixels, 3, 1), [85, 0, 0, 255]);
+    }
+
+    #[test]
+    fn an_even_side_averages_each_two() {
+        let pixels = [0, 0, 0, 255, 100, 0, 0, 255, 200, 0, 0, 255, 255, 0, 0, 255];
+
+        assert_eq!(halve(&pixels, 4, 1), [50, 0, 0, 255, 227, 0, 0, 255]);
+    }
 }

@@ -110,7 +110,7 @@ fn scened(monitor: &Monitor) -> Scene {
             critical: color(theme::SEMANTIC.critical),
             dark,
             highlight: glass::highlight(),
-            tint: glass::lock_tint(dark).map(color),
+            tint: color(glass::lock_tint(dark)),
         },
         fonts,
     }

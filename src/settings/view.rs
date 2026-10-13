@@ -16,7 +16,7 @@ use toml::Value;
 use crate::config::{self, CalDav, Choices, DayTime, Kind, Location, Setting};
 use crate::glass;
 use crate::icon::Icon;
-use crate::look::{Along, Edge, Material, ShellMode};
+use crate::look::{Along, Edge, ShellMode};
 use crate::modules::{self, CORE, Module};
 use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
@@ -1412,16 +1412,17 @@ fn module_line(
         )
 }
 
-// a tile of each material over a bright backdrop, in the glass tone set now
+// a tile for each available material over a bright backdrop
 fn materials(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles) -> Row {
     const GAP: f32 = 10.0;
-    let tile = (inner() - 4.0 * GAP) / 5.0;
 
     let Kind::Choice(options, field) = &setting.kind else {
         return Row::new(Vec::new());
     };
     let chosen = (field.get)(&settings.read);
     let tone = settings.read.appearance.tone;
+    let count = options.names.len().max(1);
+    let tile = ((inner() - GAP * count.saturating_sub(1) as f32) / count as f32).min(200.0);
     let key = setting.key;
 
     let tiles = options
@@ -1441,7 +1442,7 @@ fn materials(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles)
                         .width(64.0)
                         .height(22.0)
                         .radius(11.0)
-                        .fill(glass::swatch(Material::named(option), tone))
+                        .fill(glass::swatch(tone))
                         .border(1.0, theme::faded(theme::ON_SCENE, 0.3)),
                 );
             let scene = if here {
@@ -1484,7 +1485,7 @@ fn materials(settings: &Settings, setting: &'static Setting, roles: &ThemeRoles)
         })
         .collect();
 
-    Row::new(tiles).width(inner()).gap(GAP)
+    Row::new(tiles).width(inner()).gap(GAP).justify(Center)
 }
 
 // a small screen with the six places an edge and a side make, the chosen one filled

@@ -1,12 +1,6 @@
-//! Glass: the material the Island's body, the Dock and the Banners are made of (ADR 0024). One
-//! shader pass (`glass.wgsl`) over a pane draws, in order, what is behind its edge bent, a tint for
-//! the content to read, then the specular rim, the edge's depth, a sheen and the light that follows
-//! the pointer.
-//!
-//! Liquid glass adds what is behind each pane (ADR 0037): the runtime copies the screen around the
-//! body (`backdrop`), and the shader bends that copy into the rim, whose tint follows how bright
-//! it is. Each pane is a `Spot`: its output and a name of its own there, and everything the runtime
-//! keeps for it is kept by that.
+//! Frosted Glass: the material the Island's body, the Dock and the Banners are made of (ADR 0048).
+//! Each pane is a `Spot`, its output and a name there; the runtime captures the area around it and
+//! the shader softens those colors across the body, under a tint and a quiet edge highlight.
 
 mod body;
 mod capture;

@@ -42,8 +42,8 @@ edge = "top"
 align = "center"
 
 [appearance]
-# what the Island, Dock and Banners are made of, with the lock screen's field: "liquid-glass" bends what is under it into its rim, "monochrome" is one flat tone with nothing seen through it
-material = "liquid-glass"
+# what the Island, Dock, Banners and lock-screen glass are made of: Frosted Glass softens the captured backdrop beneath them
+material = "frosted-glass"
 # selects light or dark; Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets
 tone = "dark"
 # how bright the light on the Island's rim and under the pointer is, whatever it is made of: "subtle", "standard", "bright" or "off"

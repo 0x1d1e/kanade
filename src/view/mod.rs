@@ -71,7 +71,7 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
     }
 }
 
-// the Island's body, as liquid glass names its pane
+// the Island's pane name for backdrop capture
 const ISLAND: &str = "island";
 
 // where each output's body last stood on it, and the output's size, in logical pixels
@@ -322,7 +322,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .as_ref()
         .zip(laid.as_ref())
         .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
-    let liquid = glass::place(
+    let captured = glass::place(
         monitor,
         ISLAND,
         place.anchor,
@@ -330,7 +330,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         capture_visible(out, sliding, merged_dock_visible, covered, raised).then_some(captured),
     );
 
-    let backdrop = glass::shown(&spot, glass_body);
+    let backdrop = glass::shown(&spot);
 
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
@@ -378,7 +378,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let (hover, track) = hover_target(&monitor.name, area, room, hang, canvas, peeks);
 
-    let shadow = shadows(body_rect, shape.radius, plate, origin, liquid, out);
+    let shadow = shadows(body_rect, shape.radius, plate, origin, captured, out);
 
     // fading as the body slides out of the way, so it never pops at the edge
     let mut under: Vec<Box<dyn Widget>> = vec![Box::new(
@@ -599,30 +599,29 @@ fn marks(cluster: Option<Cluster>, body: Rect, sideways: bool) -> Option<Box<dyn
 }
 
 /*
- * liquid glass casts none: it would gray the backdrop around it, which its rim then bends in.
- * Nor does a body hidden past its edge, where the shadow would still reach onto the screen.
- * Cast or not, it takes as many layers, so the body's buttons and sliders keep their place
- * among the targets mid-press or mid-drag; the Dock's plate, if merged, is cast in this
- * canvas's coordinates, from the canvas's `origin` in the window
+ * A captured frosted pane casts no shadow: it would darken the colors sampled around it. Nor
+ * does a body hidden past its edge, where the shadow would still reach onto the screen. Cast or
+ * not, it takes as many layers, so the body's buttons and sliders keep their place among targets
+ * mid-press or mid-drag; a merged Dock's plate is cast in this canvas's coordinates.
  */
 fn shadows(
     body: Rect,
     radius: f32,
     plate: Option<merge::Plate>,
     origin: (f32, f32),
-    liquid: bool,
+    captured: bool,
     out: f32,
 ) -> Vec<Box<dyn Widget>> {
     let mut shadow = Vec::new();
 
-    if !liquid && out > 0.0 {
+    if !captured && out > 0.0 {
         shadow::draw(&mut shadow, body, radius);
     } else {
         shadow::none(&mut shadow);
     }
 
     if let Some(plate) = plate {
-        if liquid {
+        if captured {
             shadow::none(&mut shadow);
         } else {
             let rect = Rect {
