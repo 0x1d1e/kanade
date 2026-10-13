@@ -84,3 +84,7 @@ debug = false
 [profile.dev.package.kanade-lock]
 opt-level = 3
 debug = false
+
+# vello's fixed 166 MiB of buffers, sized to the target instead (vendor/vello_encoding/src/config.rs)
+[patch.crates-io]
+vello_encoding = { path = "vendor/vello_encoding" }
