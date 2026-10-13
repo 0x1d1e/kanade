@@ -39,6 +39,9 @@ pub struct Module {
     // the config keys it owns, which others may read too; a key no Module owns is unknown
     pub settings: &'static [config::Setting],
 
+    // what it adds to `kanade status` and does when the config reloads, while it is on
+    pub hooks: Hooks,
+
     // its CLI schema: the verbs of `kanade <verb>` it owns, which the shell refuses while it is off
     pub verbs: &'static [Verb],
 
@@ -47,6 +50,21 @@ pub struct Module {
      * every Module it requires
      */
     pub start: fn(App) -> App,
+}
+
+pub struct Hooks {
+    // its lines of `kanade status`
+    pub status: Option<fn() -> Vec<String>>,
+
+    // run on every reload, even one that changes nothing, to read again what lives outside the config
+    pub reload: Option<fn()>,
+}
+
+impl Hooks {
+    pub const NONE: Self = Self {
+        status: None,
+        reload: None,
+    };
 }
 
 // something outside Kanade a Module runs worse without, never refusing to start
@@ -432,6 +450,26 @@ pub fn on(name: &str) -> bool {
     MODULES.get().is_some_and(|modules| modules.on(name))
 }
 
+// the lines the Modules that run add to `kanade status`, in the order of `ALL`
+pub fn reports() -> Vec<String> {
+    ALL.iter()
+        .filter(|module| on(module.name))
+        .filter_map(|module| module.hooks.status)
+        .flat_map(|status| status())
+        .collect()
+}
+
+// lets the Modules that run read again what lives outside the config
+pub fn reread() {
+    for reread in ALL
+        .iter()
+        .filter(|module| on(module.name))
+        .filter_map(|module| module.hooks.reload)
+    {
+        reread();
+    }
+}
+
 // the levels the OSD reads: those of the `audio` and `brightness` Modules that are on
 pub fn osd_reads() -> osd::Reads {
     osd::Reads {
@@ -453,6 +491,7 @@ mod tests {
             warns: None,
             needs: &[],
             settings: &[],
+            hooks: Hooks::NONE,
             verbs: &[],
             start: |app| app,
         }

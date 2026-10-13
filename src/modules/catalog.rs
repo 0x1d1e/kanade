@@ -12,6 +12,10 @@ use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::sources::calendar::Calendars;
+use crate::sources::clipboard::Clipboard;
+use crate::sources::notifications::Daemon;
+use crate::sources::tray::Tray;
+use crate::sources::windows::Windows;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, caldav, calendar, capture, charge_limit, clipboard,
     fullscreen, google, keys, launch, live, media, network, night_light,
@@ -24,7 +28,7 @@ use crate::{
     settings, shadow, supervise, surfaces, view,
 };
 
-use super::{CORE, Module, Need, Provider, named, on, osd_reads, withheld};
+use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
 
 // what a source that waits on an announcer does without it (`sources::wake`)
 const POLLS: &str = "it polls instead, waking Kanade more often";
@@ -42,6 +46,7 @@ pub const ALL: &[Module] = &[
             without: "a helper program may outlive Kanade when it is killed",
         }],
         settings: config::ISLAND,
+        hooks: Hooks::NONE,
         verbs: &[
             Verb {
                 name: "island",
@@ -154,6 +159,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             service::watch::<Niri>(workspace::follow);
@@ -172,6 +178,10 @@ pub const ALL: &[Module] = &[
             without: "no running windows",
         }],
         settings: config::WINDOWS,
+        hooks: Hooks {
+            status: Some(|| vec![Windows::read().status()]),
+            reload: Some(windows::rematch),
+        },
         verbs: &[],
         start: |app| {
             niri::on_windows(windows::hear);
@@ -196,6 +206,10 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: config::DOCK,
+        hooks: Hooks {
+            status: Some(|| vec![dock::status()]),
+            reload: Some(dock::pin),
+        },
         verbs: &[],
         start: |app| {
             dock::pin();
@@ -219,6 +233,7 @@ pub const ALL: &[Module] = &[
             without: "microphone and camera indicators will not show",
         }],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             service::watch::<Niri>(privacy::follow_casts);
@@ -243,6 +258,7 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: config::BATTERY,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "battery",
             about: "Limit the battery's charge, through UPower",
@@ -267,6 +283,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::MEDIA,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "media",
             about: "Open or close the media Surface",
@@ -290,6 +307,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::TIMER,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "timer",
             about: "Start a timer or a pomodoro; pause, resume, skip or cancel it",
@@ -332,6 +350,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::LIVE,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "activity",
             about: "Show what a script or a command does as a live Activity",
@@ -371,6 +390,7 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             supervise::spawn("audio", audio::follow);
@@ -386,6 +406,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| app,
     },
@@ -419,6 +440,7 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: config::OSD,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "osd",
             about: "Show the volume or brightness OSD",
@@ -477,6 +499,10 @@ pub const ALL: &[Module] = &[
         settings: config::NOTIFICATIONS,
         // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
         // `notification-surface`'s
+        hooks: Hooks {
+            status: Some(|| vec![Daemon::read().status()]),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "notifications",
             about: "Clear, set do not disturb, open the list",
@@ -507,6 +533,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             service::watch::<Monitors>(banners::forget_gone);
@@ -527,6 +554,7 @@ pub const ALL: &[Module] = &[
             without: "no network state or Wi-Fi controls",
         }],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             system::spawn();
@@ -544,6 +572,7 @@ pub const ALL: &[Module] = &[
             without: "no Bluetooth state or controls",
         }],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             system::spawn();
@@ -559,6 +588,10 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks {
+            status: Some(|| vec![Tray::read().status()]),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "tray",
             about: "Open or close the tray Surface",
@@ -594,6 +627,10 @@ pub const ALL: &[Module] = &[
         ],
         settings: &[],
         // clearing is the history's own; opening its Surface is `clipboard-surface`'s
+        hooks: Hooks {
+            status: Some(|| vec![Clipboard::read().status()]),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "clipboard",
             about: "Clear the history, open its Surface",
@@ -620,6 +657,7 @@ pub const ALL: &[Module] = &[
             without: "no power profile in Controls",
         }],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
             system::spawn();
@@ -643,6 +681,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "controls",
             about: "Open or close the controls Surface",
@@ -681,6 +720,10 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: config::WALLPAPER,
+        hooks: Hooks {
+            status: Some(|| vec![wallpaper::status()]),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "wallpaper",
             about: "Set the wallpaper or one at random, show status, open its Surface",
@@ -709,6 +752,7 @@ pub const ALL: &[Module] = &[
             without: "no copying a calculator value or an emoji",
         }],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[
             Verb {
                 name: "launcher",
@@ -747,6 +791,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "notifications",
             about: "Clear, set do not disturb, open the list",
@@ -771,6 +816,10 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::CALENDAR,
+        hooks: Hooks {
+            reload: Some(calendar::reread),
+            ..Hooks::NONE
+        },
         verbs: &[],
         start: |app| {
             supervise::spawn("calendar", calendar::follow);
@@ -786,6 +835,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "calendar",
             about: "Open or close the calendar",
@@ -807,6 +857,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::REMINDERS,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "reminders",
             about: "Dismiss the reminders shown, or say when the next is",
@@ -844,6 +895,10 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
+        hooks: Hooks {
+            status: Some(|| vec![google::status()]),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "google-calendar",
             about: "Sign in to Google Calendar, sync, sign out",
@@ -879,6 +934,10 @@ pub const ALL: &[Module] = &[
             without: "no logging in, as nothing keeps the passwords",
         }],
         settings: config::CALDAV,
+        hooks: Hooks {
+            status: Some(caldav::status),
+            reload: Some(caldav::reread),
+        },
         verbs: &[Verb {
             name: "caldav",
             about: "Log in to a CalDAV account, sync, log out",
@@ -908,6 +967,10 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::WEATHER,
+        hooks: Hooks {
+            status: Some(|| vec![weather::status()]),
+            reload: Some(weather::reread),
+        },
         verbs: &[Verb {
             name: "weather",
             about: "Refresh the weather, show status, open its Surface",
@@ -932,6 +995,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "weather",
             about: "Refresh the weather, show status, open its Surface",
@@ -953,6 +1017,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "clipboard",
             about: "Clear the history, open its Surface",
@@ -977,6 +1042,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "wallpaper",
             about: "Set the wallpaper or one at random, show status, open its Surface",
@@ -998,6 +1064,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "keys",
             about: "Open the keybinds' Surface",
@@ -1039,6 +1106,7 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "capture",
             about: "Take a screenshot or record the screen",
@@ -1080,6 +1148,7 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "caffeine",
             about: "Keep the session from going idle",
@@ -1118,6 +1187,10 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: config::NIGHT_LIGHT,
+        hooks: Hooks {
+            reload: Some(night_light::reread),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "night-light",
             about: "Warm the screen at night",
@@ -1167,6 +1240,10 @@ pub const ALL: &[Module] = &[
             },
         ],
         settings: config::LOCK,
+        hooks: Hooks {
+            status: Some(|| vec![sleep::status()]),
+            ..Hooks::NONE
+        },
         verbs: &[Verb {
             name: "lock",
             about: "Lock the session",
@@ -1198,6 +1275,7 @@ pub const ALL: &[Module] = &[
             without: "no sleep, restart, power off or log out",
         }],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "session",
             about: "Open the session menu, suspend, reboot, power off, log out",
@@ -1231,6 +1309,7 @@ pub const ALL: &[Module] = &[
             without: "logind's idle inhibitors are not honored, caffeine's only directly, and nothing suspends",
         }],
         settings: config::IDLE,
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "idle",
             about: "Show the idle stages and what inhibits them",
@@ -1254,6 +1333,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: &[],
+        hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "settings",
             about: "Open or close the Settings window",

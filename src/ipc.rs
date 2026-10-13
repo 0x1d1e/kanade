@@ -8,7 +8,6 @@ use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
-use crate::dock;
 use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
@@ -19,16 +18,14 @@ use crate::modules;
 use crate::reload::{self, Outcome};
 use crate::settings;
 use crate::sources::capture::{self, Asked};
-use crate::sources::clipboard::{self, Clipboard};
-use crate::sources::notifications::{self, Daemon};
+use crate::sources::clipboard;
+use crate::sources::notifications;
 use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
-use crate::sources::tray::Tray;
-use crate::sources::windows::Windows;
 use crate::sources::{
     apps, caffeine, caldav, charge_limit, fullscreen, google, live, night_light, reminders,
-    session, sleep, wallpaper, weather,
+    session, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -148,37 +145,7 @@ fn status() -> Vec<String> {
     lines.extend(modules::status());
 
     // a Module that is off reads no Service
-    if modules::on("notifications") {
-        lines.push(Daemon::read().status());
-    }
-    if modules::on("tray") {
-        lines.push(Tray::read().status());
-    }
-    if modules::on("clipboard") {
-        lines.push(Clipboard::read().status());
-    }
-    if modules::on("windows") {
-        lines.push(Windows::read().status());
-    }
-    if modules::on("dock") {
-        lines.push(dock::status());
-    }
-    if modules::on("lock") {
-        lines.push(sleep::status());
-    }
-    if modules::on("wallpaper") {
-        lines.push(wallpaper::status());
-    }
-    if modules::on("google-calendar") {
-        lines.push(google::status());
-    }
-    if modules::on("caldav") {
-        lines.extend(caldav::status());
-    }
-    if modules::on("weather") {
-        lines.push(weather::status());
-    }
-
+    lines.extend(modules::reports());
     lines.extend(fullscreen::status());
     lines.extend(supervise::status());
     lines
