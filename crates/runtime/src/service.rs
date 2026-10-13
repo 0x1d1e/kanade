@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::panic;
-use std::sync::{LazyLock, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{LazyLock, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -204,7 +204,17 @@ type Store = HashMap<TypeId, &'static (dyn Any + Send + Sync)>;
 static SERVICES: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // how long a Service that panicked waits before it listens again
-const RESTART_DELAY: Duration = Duration::from_secs(5);
+pub const RESTART_DELAY: Duration = Duration::from_secs(5);
+
+type Report = fn(&str, &(dyn Any + Send));
+
+static REPORT: OnceLock<Report> = OnceLock::new();
+
+/// `report` hears each panic of a Service's `listen`, with the Service's name and the payload, so
+/// a program can say which Service went wrong. Set once, before the first Service is used.
+pub fn on_panic(report: Report) {
+    let _ = REPORT.set(report);
+}
 
 fn find<S: Service>() -> &'static RwLock<S> {
     let id = TypeId::of::<S>();
@@ -239,11 +249,14 @@ fn find<S: Service>() -> &'static RwLock<S> {
 // a listen that panics, like on a bus that went away, starts again after a
 // pause instead of leaving the Service frozen; one that returns is done
 fn keep_listening<S: Service>() {
-    while panic::catch_unwind(S::listen).is_err() {
-        eprintln!(
-            "kanade: {} stopped, starting it again",
-            any::type_name::<S>()
-        );
+    while let Err(payload) = panic::catch_unwind(S::listen) {
+        let name = any::type_name::<S>();
+
+        if let Some(report) = REPORT.get() {
+            report(name.rsplit("::").next().unwrap_or(name), &*payload);
+        }
+
+        eprintln!("kanade: {name} stopped, starting it again");
 
         thread::sleep(RESTART_DELAY);
     }
@@ -431,8 +444,16 @@ mod tests {
         }
     }
 
+    static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
     #[test]
     fn a_listen_that_panicked_starts_again() {
+        on_panic(|name, payload| {
+            let message = payload.downcast_ref::<&str>().copied().unwrap_or_default();
+
+            REPORTED.locked().push(format!("{name}: {message}"));
+        });
+
         let (done, wait) = mpsc::channel();
 
         thread::spawn(move || {
@@ -444,5 +465,6 @@ mod tests {
             .expect("listen did not start again");
 
         assert_eq!(*LISTENS.locked(), 2);
+        assert_eq!(*REPORTED.locked(), ["Flaky: a bus that went away"]);
     }
 }

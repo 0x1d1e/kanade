@@ -18,19 +18,19 @@ pub enum Surface {
     Controls,
     Launcher,
 
-    // the apps' tray items and their menus (#135)
+    // the apps' tray items and their menus
     Tray,
 
-    // the clipboard history (#137)
+    // the clipboard history
     Clipboard,
 
-    // a month and the agenda of a day, from local calendars (#150)
+    // a month and the agenda of a day, from local calendars
     Calendar,
 
-    // the weather now and the days ahead (#152)
+    // the weather now and the days ahead
     Weather,
 
-    // lock, sleep, restart, power off and log out, and the countdown to the last three (#156)
+    // lock, sleep, restart, power off and log out, and the countdown to the last three
     Session,
 
     // the wallpaper folder as a grid of pictures, one pressed to show it
@@ -176,7 +176,7 @@ pub enum Input {
      */
     RightClick(Segment),
 
-    // routed but meaning nothing yet: the wheel belongs to the Surface under it (#27); positive
+    // routed but meaning nothing yet: the wheel belongs to the Surface under it; positive
     // scrolls down
     Wheel(f32),
 
@@ -629,7 +629,7 @@ mod tests {
         presentations.get(MONITOR)
     }
 
-    // #135: the pointer on the island at Rest shows the time's form, a slot per tray item up to the cap
+    // the pointer on the island at Rest shows the time's form, a slot per tray item up to the cap
     #[test]
     fn hover_at_rest_shows_the_tray_strip() {
         let mut presentations = Presentations::default();

@@ -23,6 +23,7 @@ pub mod keys;
 pub mod launch;
 pub mod live;
 pub mod media;
+pub mod mirror;
 pub mod network;
 pub mod night_light;
 pub mod niri;

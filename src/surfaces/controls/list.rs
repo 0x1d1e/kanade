@@ -22,10 +22,25 @@ pub const GAP: f32 = 14.0;
 // where the rows go
 pub const LIST: f32 = geometry::CONTROLS.height - 2.0 * INSET - HEADER - GAP;
 
-pub const ROWS: usize = 5;
-pub const ROW_GAP: f32 = 6.0;
-pub const ROW: f32 = (LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 pub const ROW_INSET: f32 = 12.0;
+
+// five rows with two lines of room each, the listings of Wi-Fi, Bluetooth, Audio and the Tray
+pub const ROOMY: Rows = {
+    const GAP: f32 = 6.0;
+
+    Rows {
+        row: (LIST - 4.0 * GAP) / 5.0,
+        gap: GAP,
+        width: WIDTH,
+    }
+};
+
+// a menu's entries, one line each, close as a menu's are
+pub const COMPACT: Rows = Rows {
+    row: 34.0,
+    gap: 2.0,
+    width: WIDTH,
+};
 
 pub const ICON: f32 = 20.0;
 pub const ICON_GAP: f32 = 12.0;
@@ -42,57 +57,182 @@ const PILL_PADDING: f32 = 14.0;
 // pixels per wheel line
 const WHEEL: f32 = 40.0;
 
-// how far `count` rows can scroll: none while they fit
-pub fn most(count: usize) -> f32 {
-    (content(count) - LIST).max(0.0)
+// how tall a row is, how far apart they stand and how wide the list is, in a list `LIST` tall
+#[derive(Debug, Clone, Copy)]
+pub struct Rows {
+    pub row: f32,
+    pub gap: f32,
+    pub width: f32,
 }
 
-/*
- * how tall a list Surface of `count` rows under a header asks the body to be, a state for none; the
- * island caps it at the Controls' height (ADR 0030)
- */
-pub fn asks(count: usize) -> f32 {
-    let rows = if count == 0 { LIST } else { content(count) };
-
-    2.0 * INSET + HEADER + GAP + rows
-}
-
-fn content(count: usize) -> f32 {
-    count as f32 * ROW + count.saturating_sub(1) as f32 * ROW_GAP
-}
-
-fn top(row: usize) -> f32 {
-    row as f32 * (ROW + ROW_GAP)
-}
-
-// the least scroll from `offset` that shows `row` of `count` whole
-pub fn reveal(offset: f32, row: usize, count: usize) -> f32 {
-    let top = top(row);
-
-    offset
-        .clamp(0.0, most(count))
-        .min(top)
-        .max(top + ROW - LIST)
-}
-
-/*
- * where `count` rows show from: `offset`, moved just enough to show the `ringed` one whole, which
- * moves in the order as rows come, go and change while the ring stays on it
- */
-pub fn scrolled(offset: f32, count: usize, ringed: Option<usize>) -> f32 {
-    match ringed {
-        Some(row) if row < count => reveal(offset, row, count),
-        _ => offset.clamp(0.0, most(count)),
+impl Rows {
+    // the same rows in a list `width` wide, for a Surface narrower than Controls
+    pub const fn within(self, width: f32) -> Self {
+        Self { width, ..self }
     }
-}
 
-// the rows any part of shows at `offset`, as a range, so only these are built
-fn shown(offset: f32, count: usize) -> (usize, usize) {
-    let step = ROW + ROW_GAP;
-    let first = (offset / step).floor() as usize;
-    let end = ((offset + LIST) / step).ceil() as usize;
+    // how far `count` rows can scroll: none while they fit
+    pub fn most(self, count: usize) -> f32 {
+        (self.content(count) - LIST).max(0.0)
+    }
 
-    (first.min(count), end.min(count))
+    /*
+     * how tall a list Surface of `count` rows under a header asks the body to be, a state for none;
+     * the island caps it at the Controls' height (ADR 0030)
+     */
+    pub fn asks(self, count: usize) -> f32 {
+        let rows = if count == 0 {
+            LIST
+        } else {
+            self.content(count)
+        };
+
+        2.0 * INSET + HEADER + GAP + rows
+    }
+
+    fn content(self, count: usize) -> f32 {
+        count as f32 * self.row + count.saturating_sub(1) as f32 * self.gap
+    }
+
+    fn top(self, row: usize) -> f32 {
+        row as f32 * (self.row + self.gap)
+    }
+
+    // the least scroll from `offset` that shows `row` of `count` whole
+    pub fn reveal(self, offset: f32, row: usize, count: usize) -> f32 {
+        let top = self.top(row);
+
+        offset
+            .clamp(0.0, self.most(count))
+            .min(top)
+            .max(top + self.row - LIST)
+    }
+
+    /*
+     * where `count` rows show from: `offset`, moved just enough to show the `ringed` one whole,
+     * which moves in the order as rows come, go and change while the ring stays on it
+     */
+    pub fn scrolled(self, offset: f32, count: usize, ringed: Option<usize>) -> f32 {
+        match ringed {
+            Some(row) if row < count => self.reveal(offset, row, count),
+            _ => offset.clamp(0.0, self.most(count)),
+        }
+    }
+
+    // the rows any part of shows at `offset`, as a range, so only these are built
+    fn shown(self, offset: f32, count: usize) -> (usize, usize) {
+        let step = self.row + self.gap;
+        let first = (offset / step).floor() as usize;
+        let end = ((offset + LIST) / step).ceil() as usize;
+
+        (first.min(count), end.min(count))
+    }
+
+    /*
+     * `count` rows scrolled `offset` down, clipped to the list, each built by `row` only while it
+     * shows; a thumb in the inset says where while they do not all fit. The wheel scrolls them
+     */
+    pub fn list(self, count: usize, offset: f32, row: impl Fn(usize) -> Box<dyn Widget>) -> Stack {
+        self.scrolling(count, offset, super::scroll, row)
+    }
+
+    // `list`, the wheel scrolling them by `scroll`, in pixels, down further down
+    pub fn scrolling(
+        self,
+        count: usize,
+        offset: f32,
+        scroll: fn(f32),
+        row: impl Fn(usize) -> Box<dyn Widget>,
+    ) -> Stack {
+        let (first, end) = self.shown(offset, count);
+
+        let column = Column::new((first..end).map(row).collect())
+            .width(self.width)
+            .gap(self.gap);
+
+        let viewport = Rectangle::new()
+            .width(self.width)
+            .height(LIST)
+            .clip()
+            .align_child(Start, Start)
+            .on_scroll(move |Scroll { y, .. }| scroll(y * WHEEL))
+            .child(
+                Rectangle::new()
+                    .width(self.width)
+                    .height(self.content(end - first))
+                    .align_child(Start, Start)
+                    .translate(0.0, self.top(first) - offset)
+                    .child(column),
+            );
+
+        let mut layers = children![viewport];
+
+        let most = self.most(count);
+
+        if most > 0.0 {
+            let length = (LIST * LIST / self.content(count)).max(TARGET);
+            let at = (LIST - length) * offset / most;
+
+            layers.push(Box::new(
+                Rectangle::new()
+                    .width(3.0)
+                    .height(length)
+                    .radius(radius::HAIRLINE)
+                    .fill(theme::island().surface_container_high)
+                    .translate(self.width + 7.0, at),
+            ));
+        }
+
+        Stack::new(layers).width(self.width).height(LIST)
+    }
+
+    // a row's shape around `content`, filled while the ring is on it
+    pub fn frame(self, content: Row, ring: bool) -> Rectangle {
+        let row = Rectangle::new()
+            .width(self.width)
+            .height(self.row)
+            .radius(radius::ROW)
+            .padding(Padding {
+                top: 0.0,
+                right: ROW_INSET,
+                bottom: 0.0,
+                left: ROW_INSET,
+            })
+            .align_child(Start, Center)
+            .child(content);
+
+        if ring {
+            row.fill(theme::island().surface_container).border_if(true)
+        } else {
+            row
+        }
+    }
+
+    // what it means, in the middle of where the rows go
+    pub fn state(self, icon: Icon, title: &str, detail: &str) -> Rectangle {
+        let mut lines = children![
+            icon.on(28.0, theme::island().on_surface_variant),
+            Text::new(title)
+                .size(theme::text::BODY)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ];
+
+        if !detail.is_empty() {
+            lines.push(Box::new(
+                Text::new(detail)
+                    .size(theme::text::LABEL_SMALL)
+                    .color(theme::island().on_surface_variant)
+                    .weight(theme::text::MEDIUM),
+            ));
+        }
+
+        Rectangle::new()
+            .width(self.width)
+            .height(LIST)
+            .align_child(Center, Center)
+            .child(Column::new(lines).gap(6.0).align(Center))
+    }
 }
 
 /*
@@ -190,89 +330,6 @@ fn toggle(radio: Radio, ring: bool) -> Rectangle {
         }))
 }
 
-// what it means, in the middle of where the rows go
-pub fn state(icon: Icon, title: &str, detail: &str) -> Rectangle {
-    let mut lines = children![
-        icon.on(28.0, theme::island().on_surface_variant),
-        Text::new(title)
-            .size(theme::text::BODY)
-            .color(theme::island().on_surface)
-            .weight(theme::text::SEMIBOLD),
-    ];
-
-    if !detail.is_empty() {
-        lines.push(Box::new(
-            Text::new(detail)
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface_variant)
-                .weight(theme::text::MEDIUM),
-        ));
-    }
-
-    Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
-        .align_child(Center, Center)
-        .child(Column::new(lines).gap(6.0).align(Center))
-}
-
-/*
- * `count` rows scrolled `offset` down, clipped to the list, each built by `row` only while it
- * shows; a thumb in the inset says where while they do not all fit. The wheel scrolls them
- */
-pub fn list(count: usize, offset: f32, row: impl Fn(usize) -> Box<dyn Widget>) -> Stack {
-    scrolling(count, offset, super::scroll, row)
-}
-
-// `list`, the wheel scrolling them by `scroll`, in pixels, down further down
-pub fn scrolling(
-    count: usize,
-    offset: f32,
-    scroll: fn(f32),
-    row: impl Fn(usize) -> Box<dyn Widget>,
-) -> Stack {
-    let (first, end) = shown(offset, count);
-
-    let column = Column::new((first..end).map(row).collect())
-        .width(WIDTH)
-        .gap(ROW_GAP);
-
-    let viewport = Rectangle::new()
-        .width(WIDTH)
-        .height(LIST)
-        .clip()
-        .align_child(Start, Start)
-        .on_scroll(move |Scroll { y, .. }| scroll(y * WHEEL))
-        .child(
-            Rectangle::new()
-                .width(WIDTH)
-                .height(content(end - first))
-                .align_child(Start, Start)
-                .translate(0.0, top(first) - offset)
-                .child(column),
-        );
-
-    let mut layers = children![viewport];
-
-    let most = most(count);
-
-    if most > 0.0 {
-        let length = (LIST * LIST / content(count)).max(TARGET);
-        let at = (LIST - length) * offset / most;
-
-        layers.push(Box::new(
-            Rectangle::new()
-                .width(3.0)
-                .height(length)
-                .radius(radius::HAIRLINE)
-                .fill(theme::island().surface_container_high)
-                .translate(WIDTH + 7.0, at),
-        ));
-    }
-
-    Stack::new(layers).width(WIDTH).height(LIST)
-}
-
 /*
  * one row: `leading`, its name with `status` under it, red when it is an error, then `trailing`,
  * filled while the ring is on it. Pressing it presses `press`, none leaving it no target
@@ -307,7 +364,7 @@ pub fn row(
         ));
     }
 
-    let row = frame(
+    let row = ROOMY.frame(
         Row::new(vec![
             leading,
             Box::new(Column::new(lines).width(Parent).gap(1.0)),
@@ -327,28 +384,6 @@ pub fn row(
         .on_click(super::super::on_left(move || {
             super::click(Act::Press(at.clone()));
         }))
-}
-
-// a row's shape around `content`, filled while the ring is on it
-pub fn frame(content: Row, ring: bool) -> Rectangle {
-    let row = Rectangle::new()
-        .width(WIDTH)
-        .height(ROW)
-        .radius(radius::ROW)
-        .padding(Padding {
-            top: 0.0,
-            right: ROW_INSET,
-            bottom: 0.0,
-            left: ROW_INSET,
-        })
-        .align_child(Start, Center)
-        .child(content);
-
-    if ring {
-        row.fill(theme::island().surface_container).border_if(true)
-    } else {
-        row
-    }
 }
 
 // a pill's words

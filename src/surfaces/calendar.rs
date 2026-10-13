@@ -1,4 +1,4 @@
-//! The Calendar Surface (#150, docs/design.md Calendar): a month on the left and the agenda of the
+//! The Calendar Surface (docs/design.md Calendar): a month on the left and the agenda of the
 //! chosen day on the right, from the local calendars (`sources::calendar`). It opens only from IPC
 //! or a keybind, so it holds the keyboard: the arrow keys move the chosen day, by a day or a week,
 //! `n` and `p` turn to the next and the previous month, Home or `t` goes back to today, and Tab

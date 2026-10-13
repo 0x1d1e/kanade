@@ -1,4 +1,4 @@
-//! Local calendars (#150, ADR 0015, docs/design.md Calendar): the events of the iCalendar (`.ics`)
+//! Local calendars (ADR 0015, docs/design.md Calendar): the events of the iCalendar (`.ics`)
 //! files under `calendar.paths`, else `$XDG_DATA_HOME/calendars`, which is where vdirsyncer and
 //! khal keep theirs, a directory of `.ics` files for each calendar, and of the files
 //! `google-calendar` and `caldav` sync (ADR 0016, ADR 0044). Kanade only reads them; nothing here

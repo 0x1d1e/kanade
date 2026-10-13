@@ -23,13 +23,12 @@
 //! nothing touches the network or the keyring. A problem keeps the events synced before, and the
 //! Calendar Surface and `status` say it.
 
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -41,7 +40,8 @@ use ureq::Agent;
 use ureq::http::{self, Method, Uri};
 use zeroize::Zeroizing;
 
-use super::{calendar, secrets};
+use super::{calendar, mirror, secrets};
+use crate::backoff::Backoff;
 use crate::clock;
 use crate::config::{self, CalDav};
 
@@ -866,7 +866,7 @@ impl<'a> Dav<'a> {
 
     // each calendar's events near now, as the name of its file and the file
     fn fetch(&self) -> Result<Vec<(String, String)>, Problem> {
-        let now = now();
+        let now = clock::unix_seconds();
         let (Some(from), Some(to)) = (utc(now - PAST), utc(now + AHEAD)) else {
             return Err(Problem::Server(String::from("the clock is out of range")));
         };
@@ -906,21 +906,6 @@ fn unreached(error: ureq::Error) -> Problem {
     }
 }
 
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
-}
-
-// how long after `failures` failed syncs in a row the next is tried
-fn backoff(failures: u32) -> Duration {
-    RETRY
-        .saturating_mul(1 << failures.saturating_sub(1).min(16))
-        .min(INTERVAL)
-}
-
 /*
  * syncs the accounts configured, on its own thread: at start, again every `INTERVAL` and when
  * asked; with none, it waits on its queue
@@ -941,7 +926,7 @@ struct Synced {
     account: CalDav,
     password: Option<Zeroizing<String>>,
     due: Instant,
-    failures: u32,
+    backoff: Backoff,
     standing: Standing,
 }
 
@@ -1022,7 +1007,7 @@ impl Worker {
                         account,
                         password: None,
                         due: now,
-                        failures: 0,
+                        backoff: Backoff::new(RETRY, INTERVAL),
                     },
                 },
             )
@@ -1089,8 +1074,8 @@ impl Worker {
             };
 
             let files = Dav::new(&self.agent, &synced.account, password).fetch()?;
-            let created =
-                write(&account_dir, &files).map_err(|error| Problem::Disk(error.to_string()))?;
+            let created = mirror::sync(&account_dir, &files)
+                .map_err(|error| Problem::Disk(error.to_string()))?;
 
             Ok((files.len(), created))
         })();
@@ -1101,9 +1086,9 @@ impl Worker {
                 if created {
                     calendar::reread();
                 }
-                synced.standing.synced = Some((now(), calendars));
+                synced.standing.synced = Some((clock::unix_seconds(), calendars));
                 synced.standing.problem = None;
-                synced.failures = 0;
+                synced.backoff.reset();
                 synced.due = Instant::now() + INTERVAL;
             }
             Err(problem) => {
@@ -1127,13 +1112,13 @@ impl Worker {
                     synced.password = None;
                 }
 
-                synced.failures = synced.failures.saturating_add(1);
+                let wait = synced.backoff.failed();
                 synced.due = Instant::now()
                     + if waits {
                         // a day, far enough not to matter, as a login asks again
                         Duration::from_secs(24 * 60 * 60)
                     } else {
-                        backoff(synced.failures)
+                        wait
                     };
                 synced.standing.problem = Some(problem);
             }
@@ -1154,49 +1139,6 @@ impl Worker {
             *Accounts::write() = accounts;
         }
     }
-}
-
-/*
- * the synced files in `dir`, each written only when it changed, and the files of calendars gone
- * deleted; true when it made `dir`. Only Kanade reads them, as they hold the user's events
- */
-fn write(dir: &Path, files: &[(String, String)]) -> io::Result<bool> {
-    let created = !dir.is_dir();
-
-    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-
-    for (name, text) in files {
-        let path = dir.join(name);
-        if fs::read_to_string(&path).is_ok_and(|kept| kept == *text) {
-            continue;
-        }
-
-        // not `.ics`, so the calendar never reads one half written
-        let part = dir.join(format!(".{name}.part"));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&part)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-
-        fs::rename(&part, &path)?;
-    }
-
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        let kept = path
-            .file_name()
-            .is_some_and(|name| files.iter().any(|(kept, _)| name == kept.as_str()));
-
-        if !kept {
-            fs::remove_file(path)?;
-        }
-    }
-
-    Ok(created)
 }
 
 #[cfg(test)]

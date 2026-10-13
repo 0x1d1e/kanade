@@ -1,4 +1,4 @@
-//! The Session Surface (#156): lock, sleep, restart, power off and log out, each a tile. A restart,
+//! The Session Surface: lock, sleep, restart, power off and log out, each a tile. A restart,
 //! power off or log out counts down first (`sources::session`), and while one does the Surface
 //! says what is left, with Cancel and Now. The arrows move a ring between them, Enter or Space
 //! presses it.

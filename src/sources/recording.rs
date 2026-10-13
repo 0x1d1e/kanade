@@ -1,4 +1,4 @@
-//! Screen recording (#140, docs/design.md Capture, ADR 0013): `kanade capture record start` records
+//! Screen recording (docs/design.md Capture, ADR 0013): `kanade capture record start` records
 //! the focused output with wf-recorder, encoded on the GPU through VA-API, to `~/Videos/Screencasts`;
 //! `stop` finishes the file and `status` says how the recording stands. wf-recorder captures
 //! through niri's wlr-screencopy, which niri counts as a cast, so the privacy cluster shows it

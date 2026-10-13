@@ -1,4 +1,4 @@
-//! What wakes a source that reads a polled Service (#40). The runtime has no subscription between
+//! What wakes a source that reads a polled Service. The runtime has no subscription between
 //! services, so such a source reads the service again to learn what changed. Rather than read on a
 //! timer for good, it waits for the system to announce a change on a command's output, like
 //! `pactl subscribe`, then reads at its poll pace while the change settles: the service learns of
@@ -17,6 +17,7 @@ use std::{env, fs};
 
 use kanade_runtime::MutexExt;
 
+use crate::backoff::Backoff;
 use crate::{clock, supervise};
 
 // how long until a command runs again after it ended, doubling up to `LAST_RETRY` while it keeps
@@ -85,7 +86,7 @@ fn keep(
     mut follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
 ) -> Option<io::Error> {
     let command = [program, args.join(" ").as_str()].join(" ");
-    let mut wait = FIRST_RETRY;
+    let mut backoff = Backoff::new(FIRST_RETRY, LAST_RETRY);
 
     loop {
         // off the lock, so a stop need not wait for it; a stop meanwhile wins
@@ -135,7 +136,7 @@ fn keep(
             return None;
         }
 
-        wait = retry(wait, started.elapsed());
+        let wait = backoff.after(started.elapsed(), HEALTHY);
 
         // a panic, already printed by the panic hook, waits as long as any source's restart
         let (lost, pause) = match followed {
@@ -151,8 +152,6 @@ fn keep(
         if stop.pause(pause) {
             return None;
         }
-
-        wait = (wait * 2).min(LAST_RETRY);
     }
 }
 
@@ -448,13 +447,6 @@ impl Stop {
     fn lock(&self) -> MutexGuard<'_, Running> {
         self.0.0.locked()
     }
-}
-
-// how long to wait before running a command again: soon after a run long enough to have followed
-// what it follows, else as long as the backoff has grown, so one that dies right after its first
-// print still backs off
-fn retry(wait: Duration, ran: Duration) -> Duration {
-    if ran >= HEALTHY { FIRST_RETRY } else { wait }
 }
 
 // a command whose output announces changes, one line each

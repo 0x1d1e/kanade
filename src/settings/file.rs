@@ -4,8 +4,8 @@
 //! written whole to a temporary file beside it and renamed over it, so a reader never sees half of
 //! one; the reload watch follows the rename.
 
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -13,6 +13,7 @@ use kanade_runtime::MutexExt;
 
 use toml::Value;
 
+use crate::atomic::{self, Mode};
 use crate::config::{self, Config};
 
 // what the file starts with, as nobody should edit it by hand
@@ -277,28 +278,9 @@ fn edit(table: &mut toml::Table, path: &[String], value: Option<Value>) -> Resul
     Ok(())
 }
 
-// the whole text to a file beside it, flushed to disk, then renamed over it
+// the part is hidden, so it is never read as a layer
 fn write(file: &Path, text: &str) -> io::Result<()> {
-    let dir = file
-        .parent()
-        .ok_or_else(|| io::Error::other("the settings file has no directory"))?;
-    fs::create_dir_all(dir)?;
-
-    // hidden, so it is never read as a layer
-    let temporary = dir.join(format!(".settings.toml.{}", std::process::id()));
-
-    let written = File::create(&temporary).and_then(|mut out| {
-        out.write_all(text.as_bytes())?;
-        out.sync_all()
-    });
-
-    match written.and_then(|()| fs::rename(&temporary, file)) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::remove_file(&temporary);
-            Err(error)
-        }
-    }
+    atomic::write(file, text.as_bytes(), Mode::Shared)
 }
 
 #[cfg(test)]

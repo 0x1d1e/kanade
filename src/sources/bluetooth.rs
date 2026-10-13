@@ -1,5 +1,5 @@
 //! BlueZ for the Controls Surface: the adapter and its devices, for the Bluetooth switch and the
-//! Bluetooth sub-surface (#131), which pairs, connects, disconnects and forgets them.
+//! Bluetooth sub-surface, which pairs, connects, disconnects and forgets them.
 //!
 //! `system::follow` reads the adapter and every device again on each change BlueZ announces. The
 //! devices nearby are known only while the adapter discovers: `watch` has the scanner start

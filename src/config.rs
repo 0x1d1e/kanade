@@ -1,4 +1,4 @@
-//! The config (#39, #101, docs/design.md Config): TOML, read at start in layers, each over the
+//! The config (docs/design.md Config): TOML, read at start in layers, each over the
 //! ones before it: the defaults, then every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else
 //! `~/.config/kanade/`) in alphabetical order, then `$XDG_STATE_HOME/kanade/settings.toml` (else
 //! `~/.local/state/kanade/settings.toml`), the layer the Settings window owns (`crate::settings`),
@@ -7,7 +7,7 @@
 //! the settings file, never the config directory.
 //!
 //! A key the registry marks per output may also be set in `[output."<name>"]`, for the monitor of
-//! that name only (#147). An output's value wins over the global one from any layer, as the more
+//! that name only. An output's value wins over the global one from any layer, as the more
 //! specific; output values layer like global ones. `config::on` gives the config in effect on one
 //! output, resolved once per config, so a view never builds one while drawing.
 //!
@@ -2735,7 +2735,7 @@ type Migration = fn(&mut Table);
 
 // the current layout is the last one migrated to
 const MIGRATIONS: &[Migration] = &[
-    // 2: notifications show as Banners, with no `timings.toast` (#109)
+    // 2: notifications show as Banners, with no `timings.toast`
     |table| {
         if let Some(Node::Table(timings)) = table.get_mut("timings").map(|entry| &mut entry.node) {
             timings.remove("toast");
@@ -3974,7 +3974,7 @@ battery = false
         }
     }
 
-    // a valid v1 file with the key #109 dropped still applies, so live reload keeps working
+    // a valid v1 file with the key `timings.toast` dropped still applies, so live reload keeps working
     #[test]
     fn a_v1_toast_timing_migrates_away() {
         for text in [

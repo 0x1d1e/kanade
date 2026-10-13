@@ -114,7 +114,7 @@ fn reveal(offset: f32, row: usize) -> f32 {
     offset.min(top).max(top + tile_height() - room())
 }
 
-// the rows any part of shows at `offset`, as a range; only these are built (#36)
+// the rows any part of shows at `offset`, as a range; only these are built
 fn shown(offset: f32, count: usize) -> (usize, usize) {
     let rows = rows(count);
     let first = (offset / step()).floor() as usize;

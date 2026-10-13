@@ -1,4 +1,4 @@
-//! The shell's design tokens (#106): colors, type, radii and spacing; motion is the Island's own
+//! The shell's design tokens: colors, type, radii and spacing; motion is the Island's own
 //! `island::service::Timings` and `island::motion::REDUCED_FADE`, as `island/` cannot see this
 //! file. No component writes a color literal (`src/boundary.rs`).
 //!
@@ -25,7 +25,7 @@ pub struct SemanticColors {
     // critical, like a battery about to die or a critical notification
     pub critical: Color,
 
-    // the Island's body; opaque, as its shadow has no piece under its middle (#45)
+    // the Island's body; opaque, as its shadow has no piece under its middle
     pub island_surface: Color,
 
     // text and glyphs on the Island

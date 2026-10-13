@@ -324,6 +324,13 @@ pub const CONTROLS: Shape = Shape {
     radius: 32.0,
 };
 
+// the Tray Surface's body: items and menus are short lines, so it is narrower than Controls
+pub const TRAY_LIST: Shape = Shape {
+    width: 320.0,
+    height: CONTROLS.height,
+    radius: CONTROLS.radius,
+};
+
 // as wide as Controls, so the two Surfaces line up when one replaces the other
 pub const MEDIA: Shape = Shape {
     width: 440.0,
@@ -456,7 +463,7 @@ impl Sizes {
 }
 
 // every shape a body morphs between; a bouncy spring overshoots them, `bounded` keeps it in
-pub const SHAPES: [Shape; 9] = [
+pub const SHAPES: [Shape; 10] = [
     REST,
     COMPACT,
     SPLIT,
@@ -464,6 +471,7 @@ pub const SHAPES: [Shape; 9] = [
     TRAY,
     UPRIGHT_TRAY,
     CONTROLS,
+    TRAY_LIST,
     MEDIA,
     CALENDAR,
 ];
@@ -514,9 +522,8 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
                 tray(slots, peek)
             }
         }
-        Presentation::Expanded(
-            Surface::Controls | Surface::Tray | Surface::Weather | Surface::Session,
-        ) => CONTROLS,
+        Presentation::Expanded(Surface::Controls | Surface::Weather | Surface::Session) => CONTROLS,
+        Presentation::Expanded(Surface::Tray) => TRAY_LIST,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,
         Presentation::Expanded(
@@ -763,7 +770,7 @@ pub fn trailing(hang: Hang) -> Rect {
  * small form, between places while it slides: right of it, left of an island at the right, below
  * one standing along a side edge. Past a Peek, or the longest upright small form, a body that grows
  * on only covers them, so they stay inside the canvas while they fade out. At `presence` 0 it is
- * tucked under the body's end, as it comes out and goes back (#37)
+ * tucked under the body's end, as it comes out and goes back
  */
 pub fn satellite(body: Rect, hang: Hang, canvas: Canvas, slot: f32, presence: f32) -> Rect {
     let step = SATELLITE_GAP + slot * (SATELLITE + SATELLITE_GAP);

@@ -16,6 +16,7 @@ use kanade_runtime::service::Service;
 
 use super::session;
 use super::wake::{Announcer, Pace, Wakes};
+use crate::backoff::Backoff;
 use crate::config::{self, CriticalAction};
 use crate::island::activity::{
     Activity, Charge, Detail, Ending, Id, Interrupt, Kind, Lifetime, Priority, Scope,
@@ -232,8 +233,9 @@ struct Guard {
     // the countdown it started, by serial, while it may still be counting
     counting: Option<u64>,
 
-    // after a refusal: when to ask again, and how long the next wait is
-    again: Option<(Instant, Duration)>,
+    // after a refusal: when to ask again
+    again: Option<Instant>,
+    backoff: Backoff,
 }
 
 impl Guard {
@@ -242,6 +244,7 @@ impl Guard {
             armed: true,
             counting: None,
             again: None,
+            backoff: Backoff::new(SOONEST, LONGEST),
         }
     }
 
@@ -256,10 +259,11 @@ impl Guard {
         if !draining {
             self.armed = true;
             self.again = None;
+            self.backoff.reset();
             return self.counting.take().map(Ask::Cancel);
         }
 
-        let due = self.again.is_none_or(|(at, _)| at <= now);
+        let due = self.again.is_none_or(|at| at <= now);
         let end = end.filter(|_| critical && self.armed && due)?;
         self.armed = false;
 
@@ -269,14 +273,13 @@ impl Guard {
     fn started(&mut self, serial: u64) {
         self.counting = Some(serial);
         self.again = None;
+        self.backoff.reset();
     }
 
     // the session refused the countdown asked at `now`: asked again later
     fn refused(&mut self, now: Instant) {
-        let wait = self.again.map_or(SOONEST, |(_, wait)| wait);
-
         self.armed = true;
-        self.again = Some((now + wait, (wait * 2).min(LONGEST)));
+        self.again = Some(now + self.backoff.failed());
     }
 
     // a countdown not asked after all, asked again at the next reading

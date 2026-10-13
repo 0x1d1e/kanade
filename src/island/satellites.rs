@@ -1,4 +1,4 @@
-//! The Satellites as they come and go (#37): each grows out from under the body's end to its place
+//! The Satellites as they come and go: each grows out from under the body's end to its place
 //! beside it, fading in, and tucks back under it fading out, so none pops. One that changes place
 //! slides there. Driven by the Frame each sync, with time passed in.
 

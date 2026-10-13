@@ -45,15 +45,11 @@ pub fn networks(
     ring: Option<&At>,
 ) -> Column {
     let list: Box<dyn Widget> = if radio != Radio::On {
-        Box::new(list::state(
-            Icon::Wifi,
-            "Wi-Fi is off",
-            "Turn it on to see networks",
-        ))
+        Box::new(list::ROOMY.state(Icon::Wifi, "Wi-Fi is off", "Turn it on to see networks"))
     } else if networks.list.is_empty() {
-        Box::new(list::state(Icon::Wifi, "Looking for networks", ""))
+        Box::new(list::ROOMY.state(Icon::Wifi, "Looking for networks", ""))
     } else {
-        Box::new(list::list(networks.list.len(), offset, |index| {
+        Box::new(list::ROOMY.list(networks.list.len(), offset, |index| {
             let network = &networks.list[index];
             let ringed = matches!(ring, Some(At::Network(ssid)) if *ssid == network.ssid);
 

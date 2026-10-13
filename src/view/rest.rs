@@ -18,7 +18,7 @@ use crate::island::presentation::{Content, Presentation};
 use crate::modules;
 use crate::sources::battery::BatteryLevel;
 use crate::sources::calendar;
-use crate::sources::weather::{self, Weather};
+use crate::sources::weather::Weather;
 use crate::surfaces;
 use crate::theme;
 
@@ -246,7 +246,7 @@ pub(crate) fn time_peek(monitor: &str, slots: bool) -> Rectangle {
 
     if config.rest.agenda
         && modules::on("calendar")
-        && let Some(next) = next_event(today, weather::now(), config.clock)
+        && let Some(next) = next_event(today, clock::unix_seconds(), config.clock)
     {
         line.push(Box::new(agenda_line(next).color(island.on_surface).elide()));
     }
@@ -336,7 +336,7 @@ impl Service for Agenda {
  * output shows the agenda, even if no window draws the time, so an ended event stops taking room
  */
 pub(crate) fn measure_agenda(fits: &HashMap<String, Shape>) {
-    let now = weather::now();
+    let now = clock::unix_seconds();
     let config = config::get();
     let monitors = Monitors::read();
     let agenda_enabled = wants_agenda_clock(modules::on("calendar"), &config, monitors.all());
@@ -432,7 +432,7 @@ pub(crate) fn time_peek_upright(monitor: &str) -> Rectangle {
 }
 
 /*
- * stand-in content until the sources and the Surfaces draw their own (#21-#33): names the Activity
+ * stand-in content until the sources and the Surfaces draw their own: names the Activity
  * a small form shows, or the open Surface, so the crossfade and the clipping can be seen. Short,
  * so sized to its letters and centered
  */

@@ -1,4 +1,4 @@
-//! Weather (#152, ADR 0017, docs/design.md Weather): the current conditions and a short forecast
+//! Weather (ADR 0017, docs/design.md Weather): the current conditions and a short forecast
 //! for `weather.location`, from Open-Meteo, which needs no account or key. Only the location's
 //! coordinates leave the machine, and only while the Module is on and a location is set: with
 //! none, the thread waits on its queue and nothing is asked or timed.
@@ -16,13 +16,14 @@
 use std::fmt;
 use std::sync::LazyLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDate};
 use kanade_runtime::{queue::Queue, service::Service};
 use serde_json::Value;
 use ureq::Agent;
 
+use crate::backoff::Backoff;
 use crate::clock;
 use crate::config::{self, Location};
 
@@ -360,14 +361,6 @@ pub fn status() -> String {
     })
 }
 
-pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        })
-}
-
 // fetches the forecast on its own thread for as long as Kanade runs
 pub fn follow() {
     let queue = QUEUE.receiver();
@@ -404,7 +397,7 @@ impl Outside for OpenMeteo {
     }
 
     fn now(&self) -> i64 {
-        now()
+        clock::unix_seconds()
     }
 
     // written only on a change, as a write wakes every window
@@ -421,7 +414,7 @@ struct Worker<O> {
     weather: Weather,
 
     // failures in a row, which set how long until the next try
-    failures: u32,
+    backoff: Backoff,
 
     // when the last fetch was tried, in seconds since the epoch
     tried: Option<i64>,
@@ -449,7 +442,7 @@ impl<O: Outside> Worker<O> {
             outside,
             location,
             weather,
-            failures: 0,
+            backoff: Backoff::new(FIRST_RETRY, INTERVAL),
             tried: None,
             next: None,
         }
@@ -495,11 +488,10 @@ impl<O: Outside> Worker<O> {
     fn wait(&self) -> Option<Duration> {
         self.location?;
 
-        Some(match self.failures {
-            0 => INTERVAL,
-            failures => FIRST_RETRY
-                .saturating_mul(1 << (failures - 1).min(16))
-                .min(INTERVAL),
+        Some(if self.backoff.failing() {
+            self.backoff.wait()
+        } else {
+            INTERVAL
         })
     }
 
@@ -514,7 +506,7 @@ impl<O: Outside> Worker<O> {
 
                 // a forecast for somewhere else is not this one's, nor are its failures
                 self.location = location;
-                self.failures = 0;
+                self.backoff.reset();
                 self.tried = None;
                 self.next = None;
                 self.weather = Weather {
@@ -557,7 +549,7 @@ impl<O: Outside> Worker<O> {
 
         match self.outside.fetch(location) {
             Ok(forecast) => {
-                self.failures = 0;
+                self.backoff.reset();
                 self.weather = Weather {
                     state: State::Fetched,
                     forecast: Some(forecast),
@@ -569,7 +561,7 @@ impl<O: Outside> Worker<O> {
                     eprintln!("kanade: weather: {problem}");
                 }
 
-                self.failures = self.failures.saturating_add(1);
+                self.backoff.failed();
                 self.weather.state = State::Failed(problem);
             }
         }
@@ -616,7 +608,7 @@ fn fetch(agent: &Agent, location: Location) -> Result<Forecast, Problem> {
         ));
     }
 
-    forecast(&body, location, now())
+    forecast(&body, location, clock::unix_seconds())
         .ok_or_else(|| Problem::Refused(String::from("an answer that is not a forecast")))
 }
 

@@ -83,4 +83,4 @@ Commit locally during a phase; push nothing until it ends. Then squash the PR br
 - `crates/runtime` owns the Wayland and UI seam. `wayland-client` only in `src/doctor/` (diagnostics, no shell behavior), enforced by `src/boundary.rs`, `crates/lock` (the lock screen, ADR 0025) and `crates/runtime` (ADR 0028).
 - Never `write()` a Service in a view. Sources post via `Island::write()`.
 - Arbiter takes time as an input, never reads a clock.
-- `src/clock.rs` is the platform boundary: the only `unsafe` and hand-kept libc and kernel ABI (`tm`, `timespec`, timerfd, evdev, rfkill). Keep new FFI there. Exception: `crates/runtime` (glibc allocator tuning, the GPU's Wayland surface; see its `lib.rs`).
+- `src/clock.rs` is the platform boundary: the only `unsafe`. Prefer `rustix` (timerfd, signals, termios, ioctl opcodes) or the `libc` crate over declaring an ABI by hand; only Linux-PAM's types and the evdev and rfkill event layouts are hand-kept. Keep new FFI there. Exception: `crates/runtime` (glibc allocator tuning, the GPU's Wayland surface; see its `lib.rs`).

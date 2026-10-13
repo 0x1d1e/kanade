@@ -1,5 +1,5 @@
-//! How a desktop entry starts, as the Desktop Entry spec says, for the Dock (#144) and the Launcher
-//! (#183): over D-Bus for `DBusActivatable=true`, else `Exec` split into its arguments, its field
+//! How a desktop entry starts, as the Desktop Entry spec says, for the Dock and the Launcher:
+//! over D-Bus for `DBusActivatable=true`, else `Exec` split into its arguments, its field
 //! codes expanded for a launch with no file or URL, run in `Path` and, for `Terminal=true`, in a
 //! terminal through `xdg-terminal-exec`. niri runs the command, so the app gets niri's environment,
 //! not Kanade's. An activatable app runs `Exec` only when the bus could not deliver `Activate`: one

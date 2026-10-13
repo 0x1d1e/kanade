@@ -1,4 +1,4 @@
-//! Screenshots (#139, docs/design.md Capture): niri takes them, as its own screenshot actions are
+//! Screenshots (docs/design.md Capture): niri takes them, as its own screenshot actions are
 //! all an area, a window or an output needs, so there is no other backend to choose. `kanade
 //! capture screenshot` asks niri to save one under `~/Pictures/Screenshots`, named as niri names its
 //! own. niri announces each screenshot it saves, whoever asked for it, and each becomes a Transient

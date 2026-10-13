@@ -1,4 +1,4 @@
-//! The Weather Surface (#152, ADR 0017, docs/design.md Weather): the weather now on the left and
+//! The Weather Surface (ADR 0017, docs/design.md Weather): the weather now on the left and
 //! the days ahead on the right, from `sources::weather`. It opens only from IPC or a keybind and
 //! has no targets, so Escape or a typed character collapses it; without a location, Enter or the
 //! pill opens Settings. A forecast that is not the latest,
@@ -19,7 +19,7 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::sources::weather::{self, Condition, Day, Forecast, Problem, State, Units, Weather};
+use crate::sources::weather::{Condition, Day, Forecast, Problem, State, Units, Weather};
 use crate::theme::space::INSET;
 use crate::theme::{self, radius};
 
@@ -57,7 +57,9 @@ pub fn surface(monitor: &str) -> Rectangle {
     let content: Box<dyn Widget> = match forecast {
         Some(forecast) => {
             // the days are the location's, named by its own date, the update by the machine's
-            let there = forecast.today(weather::now()).unwrap_or_else(clock::today);
+            let there = forecast
+                .today(clock::unix_seconds())
+                .unwrap_or_else(clock::today);
 
             Box::new(
                 Row::new(children![
@@ -170,7 +172,7 @@ fn footer(forecast: &Forecast, weather: &Weather, config: &Config, today: NaiveD
 
     match weather.problem() {
         Some(problem) => format!("{} \u{b7} last updated {at}", problem.brief()),
-        None if weather.stale(weather::now()) => format!("Last updated {at}"),
+        None if weather.stale(clock::unix_seconds()) => format!("Last updated {at}"),
         None => format!("Updated {at}"),
     }
 }

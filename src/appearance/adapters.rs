@@ -2,20 +2,21 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::{self, Builder};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::atomic::{self, Mode};
 use crate::config::Config;
 use crate::look::Tone;
 
@@ -35,7 +36,6 @@ const ZEN_PREFS: [(&str, &str); 1] = [("browser.theme.toolbar-theme", "2")];
 const ZEN_RETIRED: [&str; 1] = ["ui.systemUsesDarkTheme"];
 const HELPER_RETRY: Duration = Duration::from_secs(2);
 const INTERFACE_SCHEMA: &str = "org.gnome.desktop.interface";
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Request {
@@ -1926,61 +1926,21 @@ fn save_state_at(path: &Path, state: &SyncState) -> Result<(), String> {
         .map_err(|error| format!("could not write {}: {error}", path.display()))
 }
 
+// replaces a file that keeps its mode; a symlink is never replaced
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    let existing = match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "refusing to replace a symlink",
-                ));
-            }
-            Some(metadata)
+    let mode = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to replace a symlink",
+            ));
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Ok(metadata) => Mode::Exactly(metadata.permissions().mode() & 0o777),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Mode::Exactly(0o600),
         Err(error) => return Err(error),
     };
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-    let mut temp = None;
-    let mut file = None;
-    for _ in 0..8 {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            ".{file_name}.kanade-{}-{sequence}",
-            std::process::id()
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(
-            existing
-                .as_ref()
-                .map(|metadata| metadata.permissions().mode() & 0o777)
-                .unwrap_or(0o600),
-        );
-        match options.open(&candidate) {
-            Ok(opened) => {
-                temp = Some(candidate);
-                file = Some(opened);
-                break;
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    let temp = temp.ok_or_else(|| io::Error::other("could not allocate temporary file"))?;
-    let result = (|| {
-        let mut file = file.expect("temporary file allocated with its path");
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
+
+    atomic::write(path, bytes, mode)
 }
 
 fn take_pending(requests: &Receiver<Request>) -> Option<Request> {
@@ -1993,7 +1953,11 @@ fn take_pending(requests: &Receiver<Request>) -> Option<Request> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn maps_tone_to_the_desktop_preference() {

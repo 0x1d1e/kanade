@@ -1,4 +1,4 @@
-//! The Launcher Surface (plan 7): a search over its providers (#138), the apps `sources::apps`
+//! The Launcher Surface (plan 7): a search over its providers, the apps `sources::apps`
 //! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, Settings and
 //! each setting), with the `wallpaper` Module on, wallpapers after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
@@ -310,7 +310,7 @@ fn reveal(offset: f32, row: usize) -> f32 {
 
 /*
  * the rows any part of shows at `offset`, as a range; only these are built, so a morph doesn't
- * lay out and draw every answer each frame (#36)
+ * lay out and draw every answer each frame
  */
 fn shown(offset: f32, count: usize) -> (usize, usize) {
     let step = ROW + ROW_GAP;

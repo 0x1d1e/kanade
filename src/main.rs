@@ -1,5 +1,7 @@
 mod appearance;
+mod atomic;
 mod autohide;
+mod backoff;
 mod banners;
 #[cfg(test)]
 mod boundary;
@@ -56,6 +58,7 @@ fn main() -> ExitCode {
         return cli::run(&arguments);
     }
 
+    supervise::follow_services();
     modules::start(theme::font(App::new())).run();
     ExitCode::SUCCESS
 }

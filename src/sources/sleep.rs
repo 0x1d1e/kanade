@@ -1,4 +1,4 @@
-//! Lock before sleep (#155, docs/design.md Idle/suspend): logind says `PrepareForSleep(true)` as the
+//! Lock before sleep (docs/design.md Idle/suspend): logind says `PrepareForSleep(true)` as the
 //! machine is about to suspend or hibernate, and waits on delay inhibitors, up to its
 //! `InhibitDelayMaxUSec`, before it sleeps. While awake Kanade holds one, asks for a lock as sleep
 //! comes, and lets go once a lock screen confirms it (`lock::hold`), so the session wakes locked
@@ -38,6 +38,7 @@ use zbus::zvariant::OwnedValue;
 
 use super::caffeine::{self, HELD, INHIBIT, READY};
 use super::wake::{self, SETPRIV};
+use crate::backoff::Backoff;
 use crate::{lock, supervise};
 
 const LOGIND: &str = "org.freedesktop.login1";
@@ -102,7 +103,7 @@ impl Drop for Delay {
 
 // when to take an inhibitor again: soon at first, then each failure waits twice as long
 struct Retry {
-    wait: Duration,
+    backoff: Backoff,
 
     // None while one is held, or while the machine sleeps
     at: Option<Instant>,
@@ -111,7 +112,7 @@ struct Retry {
 impl Retry {
     fn now(now: Instant) -> Self {
         Self {
-            wait: FIRST,
+            backoff: Backoff::new(FIRST, LONGEST),
             at: Some(now),
         }
     }
@@ -126,16 +127,15 @@ impl Retry {
 
     // taking one failed at `now`: when to try again
     fn failed(&mut self, now: Instant) -> Instant {
-        let at = now + self.wait;
+        let at = now + self.backoff.failed();
         self.at = Some(at);
-        self.wait = (self.wait * 2).min(LONGEST);
         at
     }
 
     // the one held for `lasted` ended at `now`; one that held long was no flapping one
     fn ended(&mut self, lasted: Duration, now: Instant) -> Instant {
         if lasted >= LASTED {
-            self.wait = FIRST;
+            self.backoff.reset();
         }
         self.failed(now)
     }

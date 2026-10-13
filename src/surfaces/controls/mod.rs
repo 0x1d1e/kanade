@@ -6,9 +6,9 @@
 //!
 //! The Wi-Fi and Bluetooth switches' tiles each open a sub-surface in its place, their knobs still
 //! switching them: the networks in range, to join or leave, and the password a secured one asks
-//! for; or the Bluetooth devices, to pair, connect, disconnect or forget (#131). The speaker's
+//! for; or the Bluetooth devices, to pair, connect, disconnect or forget. The speaker's
 //! level ends in a chevron to the Audio sub-surface: the devices to play on and record from, and
-//! each app's level (#133). A sub-surface goes back a level by its chevron or Escape. Every target
+//! each app's level. A sub-surface goes back a level by its chevron or Escape. Every target
 //! is a key away, a ring on the one the arrows reach (`focus`).
 
 use std::time::Instant;
@@ -941,7 +941,7 @@ fn scroll(pixels: f32) {
     let grid = focus.grid(rows(focus.sub.as_ref()));
     let mut focus = settled(focus, &grid);
 
-    let most = list::most(grid.len().saturating_sub(1));
+    let most = list::ROOMY.most(grid.len().saturating_sub(1));
 
     focus = focus.hidden();
     focus.offset = (focus.offset + pixels).clamp(0.0, most);
@@ -961,7 +961,7 @@ fn settled(mut focus: Focus, grid: &[Vec<(At, f32)>]) -> Focus {
     let count = grid.len().saturating_sub(1);
     let ringed = focus.row(grid).and_then(|row| row.checked_sub(1));
 
-    focus.offset = list::scrolled(focus.offset, count, ringed);
+    focus.offset = list::ROOMY.scrolled(focus.offset, count, ringed);
     focus
 }
 

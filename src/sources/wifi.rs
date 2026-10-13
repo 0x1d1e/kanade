@@ -1,4 +1,4 @@
-//! NetworkManager's Wi-Fi networks for the Controls Surface's Wi-Fi sub-surface (#130): the
+//! NetworkManager's Wi-Fi networks for the Controls Surface's Wi-Fi sub-surface: the
 //! networks in range, joining one, with a password when it needs one, and leaving it.
 //!
 //! Only the sub-surface reads them: `watch` asks for a scan as it opens, and `system::follow` asks

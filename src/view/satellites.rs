@@ -92,7 +92,7 @@ pub(super) fn dot(at: Rect, mark: Box<dyn Widget>) -> Rectangle {
         .child(Row::new(vec![mark]))
 }
 
-// stand-in for each Kind's glyph (#21-#33), distinct per Kind
+// stand-in for each Kind's glyph, distinct per Kind
 pub(super) fn abbreviation(kind: Kind) -> &'static str {
     match kind {
         Kind::Media => "M",

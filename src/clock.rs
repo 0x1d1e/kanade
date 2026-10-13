@@ -1,4 +1,4 @@
-//! The local time Rest shows (#89). A window that draws it subscribes to `WallClock` and arms one
+//! The local time Rest shows. A window that draws it subscribes to `WallClock` and arms one
 //! timer for the next minute; when it fires, only the windows that drew the time draw again, and
 //! they arm it for the minute after. A window that stops drawing it stops arming it, so with no
 //! island at Rest nothing wakes.
@@ -8,17 +8,19 @@
 //! for the minute. A monotonic deadline would fall behind across a suspend or a clock step; the
 //! timerfd fires at the wall minute after a resume, and a step cancels it, which redraws at once.
 //!
-//! This is Kanade's platform boundary: the only `unsafe` and the only hand-kept libc ABI. It also
-//! holds `interrupt`, which std lacks, for a child that must end cleanly, the one place a UTC
-//! moment becomes local time, which the calendar's events need too, `authenticate`, Linux-PAM's
+//! This is Kanade's platform boundary: the only `unsafe`, and the only hand-kept ABI, Linux-PAM's
+//! and the evdev event's. Everything else asks `rustix` (timerfd, signals, the terminal's mode,
+//! ioctl opcodes) or the `libc` crate (what rustix leaves out: local time and signal dispositions; only `tzset` is declared here).
+//! It also holds `interrupt`, which std lacks, for a child that must end cleanly, the one place a
+//! UTC moment becomes local time, which the calendar's events need too, `authenticate`, Linux-PAM's
 //! password check, which the lock screen runs itself so it can drop a result sleep made stale, and
 //! the kernel's input and rfkill ABI the OSD reads keys, lock lights and radios through (ADR 0021),
 //! and `WallTimer`, a wall-clock moment for a thread to wait for, like a calendar reminder.
 
-use std::ffi::{CString, c_char, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CString, c_char, c_int, c_void};
 use std::fs::File;
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 use std::sync::{Mutex, OnceLock};
@@ -26,84 +28,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use kanade_runtime::{MutexExt, service::Service};
+use rustix::io::Errno;
+use rustix::ioctl::{self, Setter, opcode};
+use rustix::process::{Pid, Signal, kill_process};
+use rustix::stdio;
+use rustix::termios::{
+    LocalModes, OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcsetattr,
+};
+use rustix::time::{
+    Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, timerfd_create,
+    timerfd_settime,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::supervise;
 
-// the hand-kept libc ABI below holds only here; another target must check it before building
-#[cfg(not(all(
-    target_os = "linux",
-    any(
-        target_arch = "x86_64",
-        target_arch = "aarch64",
-        target_arch = "riscv64"
-    )
-)))]
-compile_error!(
-    "src/clock.rs declares libc's Linux ABI by hand for x86_64, aarch64 and riscv64 only"
-);
-
-// <time.h> and <sys/timerfd.h>, asm-generic values, as on x86_64, aarch64 and riscv64
-const CLOCK_REALTIME: c_int = 0;
-const TFD_CLOEXEC: c_int = 0o2_000_000;
-const TFD_TIMER_ABSTIME: c_int = 1;
-const TFD_TIMER_CANCEL_ON_SET: c_int = 2;
-const ECANCELED: i32 = 125;
-
-// <signal.h>
-pub const SIGINT: c_int = 2;
-const SIGUSR1: c_int = 10;
-const SIG_DFL: usize = 0;
-const SIG_IGN: usize = 1;
+unsafe extern "C" {
+    // re-reads the time zone, which the libc crate does not declare
+    fn tzset();
+}
 
 // USER_HZ, the clock ticks /proc counts a process's start time in
 pub const USER_HZ: u64 = 100;
-
-#[repr(C)]
-struct Tm {
-    tm_sec: c_int,
-    tm_min: c_int,
-    tm_hour: c_int,
-    tm_mday: c_int,
-    tm_mon: c_int,
-    tm_year: c_int,
-    tm_wday: c_int,
-    tm_yday: c_int,
-    tm_isdst: c_int,
-    tm_gmtoff: c_long,
-    tm_zone: *const c_char,
-}
-
-#[repr(C)]
-struct Timespec {
-    tv_sec: c_long,
-    tv_nsec: c_long,
-}
-
-#[repr(C)]
-struct Itimerspec {
-    it_interval: Timespec,
-    it_value: Timespec,
-}
-
-unsafe extern "C" {
-    fn tzset();
-    fn localtime_r(time: *const c_long, tm: *mut Tm) -> *mut Tm;
-    fn timerfd_create(clock: c_int, flags: c_int) -> c_int;
-    fn timerfd_settime(
-        fd: c_int,
-        flags: c_int,
-        new: *const Itimerspec,
-        old: *mut Itimerspec,
-    ) -> c_int;
-    fn kill(pid: c_int, signal: c_int) -> c_int;
-    fn signal(signal: c_int, handler: usize) -> usize;
-    fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
-
-    // PAM frees a conversation's answers with free(), so they come from the C allocator
-    fn calloc(count: usize, size: usize) -> *mut c_void;
-    fn strdup(text: *const c_char) -> *mut c_char;
-}
 
 // <security/_pam_types.h>, as Linux-PAM has it on every target
 const PAM_SUCCESS: c_int = 0;
@@ -158,14 +104,9 @@ pub const KEY_BRIGHTNESSUP: u16 = 225;
 pub const LED_NUML: u16 = 0;
 pub const LED_CAPSL: u16 = 1;
 
-// EVIOCSMASK, _IOW('E', 0x93, struct input_mask)
-const EVIOCSMASK: c_ulong = 0x4010_4593;
-
-// EVIOCSCLOCKID, _IOW('E', 0xa0, int)
-const EVIOCSCLOCKID: c_ulong = 0x4004_45a0;
-
-// <time.h>
-const CLOCK_MONOTONIC: c_int = 1;
+// EVIOCSMASK and EVIOCSCLOCKID, _IOW('E', 0x93, struct input_mask) and _IOW('E', 0xa0, int)
+const EVIOCSMASK: ioctl::Opcode = opcode::write::<InputMask>(b'E', 0x93);
+const EVIOCSCLOCKID: ioctl::Opcode = opcode::write::<c_int>(b'E', 0xa0);
 
 // the mask of event types is the one EV_SYN's slot holds; EV_SYN itself is never masked
 const EV_TYPES: u32 = 0;
@@ -241,11 +182,10 @@ pub fn mask_input(device: &File, codes: &[(u16, &[u16])]) -> io::Result<()> {
             codes_ptr: words.as_ptr() as u64,
         };
 
-        // SAFETY: `mask` and the words it points at outlive the call, which only reads them
-        match unsafe { ioctl(device.as_raw_fd(), EVIOCSMASK, &raw const mask) } {
-            0 => Ok(()),
-            _ => Err(io::Error::last_os_error()),
-        }
+        // SAFETY: EVIOCSMASK takes a `struct input_mask`, and the words it points at outlive the
+        // call, which only reads them
+        unsafe { ioctl::ioctl(device, Setter::<EVIOCSMASK, InputMask>::new(mask)) }
+            .map_err(io::Error::from)
     };
 
     // the codes first: until the types are masked, every other type still comes through
@@ -255,13 +195,14 @@ pub fn mask_input(device: &File, codes: &[(u16, &[u16])]) -> io::Result<()> {
 
     set(EV_TYPES, &bitmap(&mut codes.iter().map(|&(kind, _)| kind)))?;
 
-    let clock = CLOCK_MONOTONIC;
-
-    // SAFETY: `clock` outlives the call, which only reads it
-    match unsafe { ioctl(device.as_raw_fd(), EVIOCSCLOCKID, &raw const clock) } {
-        0 => Ok(()),
-        _ => Err(io::Error::last_os_error()),
+    // SAFETY: EVIOCSCLOCKID takes an `int`
+    unsafe {
+        ioctl::ioctl(
+            device,
+            Setter::<EVIOCSCLOCKID, c_int>::new(libc::CLOCK_MONOTONIC),
+        )
     }
+    .map_err(io::Error::from)
 }
 
 // <linux/rfkill.h>, a struct rfkill_event as read in its first, fixed size
@@ -301,7 +242,7 @@ impl RfkillEvent {
 static TIMER: OnceLock<OwnedFd> = OnceLock::new();
 
 // the minute the timer is armed for, so a window drawing every frame of a morph arms it once
-static ARMED: Mutex<Option<c_long>> = Mutex::new(None);
+static ARMED: Mutex<Option<i64>> = Mutex::new(None);
 
 // how the time reads, `clock` in the config
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -330,16 +271,15 @@ impl Service for WallClock {
 
 // called before the windows draw; without a timer the time shows but never turns
 pub fn spawn() {
-    // SAFETY: plain call, the fd it returns is owned below
-    let fd = unsafe { timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC) };
+    let fd = match wall_timer() {
+        Ok(fd) => fd,
+        Err(error) => {
+            unturned(&format!("no clock timer ({error})"));
+            return;
+        }
+    };
 
-    if fd < 0 {
-        unturned(&format!("no clock timer ({})", io::Error::last_os_error()));
-        return;
-    }
-
-    // SAFETY: a fresh fd nothing else owns
-    let timer = TIMER.get_or_init(|| unsafe { OwnedFd::from_raw_fd(fd) });
+    let timer = TIMER.get_or_init(|| fd);
 
     match timer.try_clone() {
         Ok(timer) => {
@@ -348,6 +288,13 @@ pub fn spawn() {
         }
         Err(error) => unturned(&format!("no clock timer ({error})")),
     }
+}
+
+fn wall_timer() -> io::Result<OwnedFd> {
+    Ok(timerfd_create(
+        TimerfdClockId::Realtime,
+        TimerfdFlags::CLOEXEC,
+    )?)
 }
 
 /*
@@ -359,22 +306,13 @@ pub struct WallTimer(File);
 
 impl WallTimer {
     pub fn new() -> io::Result<WallTimer> {
-        // SAFETY: plain call, the fd it returns is owned below
-        let fd = unsafe { timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // SAFETY: a fresh fd nothing else owns
-        Ok(WallTimer(File::from(unsafe { OwnedFd::from_raw_fd(fd) })))
+        wall_timer().map(|fd| WallTimer(File::from(fd)))
     }
 
     // fires at `at` seconds since the epoch, at once for one past; replaces the moment set before
     pub fn set(&self, at: i64) -> io::Result<()> {
         // 0 would disarm it, and any moment before now fires at once
-        let at = c_long::try_from(at.max(1)).unwrap_or(c_long::MAX);
-
-        arm(self.0.as_raw_fd(), at)
+        arm(&self.0, at.max(1))
     }
 
     // asleep until the moment set passes or the clock is set
@@ -384,12 +322,17 @@ impl WallTimer {
         loop {
             match (&self.0).read_exact(&mut expirations) {
                 Ok(()) => return Ok(()),
-                Err(error) if error.raw_os_error() == Some(ECANCELED) => return Ok(()),
+                Err(error) if canceled(&error) => return Ok(()),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => return Err(error),
             }
         }
     }
+}
+
+// the timer's wait was cancelled because the clock was set
+fn canceled(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(Errno::CANCELED.raw_os_error())
 }
 
 // the time shows but never turns again, which stderr and `kanade status` say
@@ -408,7 +351,7 @@ fn follow(timer: &mut File) {
         loop {
             match timer.read_exact(&mut expirations) {
                 Ok(()) => {}
-                Err(error) if error.raw_os_error() == Some(ECANCELED) => {}
+                Err(error) if canceled(&error) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => {
                     unturned(&format!("lost the clock timer ({error})"));
@@ -430,6 +373,15 @@ pub fn now(hours: Hours) -> String {
     }
 }
 
+// the seconds since the epoch
+pub fn unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
 // the local date now, asking for a redraw when the minute turns, so a new day shows
 pub fn today() -> NaiveDate {
     minute().and_then(|local| date(&local)).unwrap_or_default()
@@ -437,7 +389,7 @@ pub fn today() -> NaiveDate {
 
 // the local time of `seconds` since the epoch, in the time zone the clock last read
 pub fn local_time(seconds: i64) -> Option<NaiveDateTime> {
-    let local = local(c_long::try_from(seconds).ok()?)?;
+    let local = local(seconds)?;
     let time = NaiveTime::from_hms_opt(
         u32::try_from(local.tm_hour).ok()?,
         u32::try_from(local.tm_min).ok()?,
@@ -457,10 +409,10 @@ pub fn time(at: NaiveTime, hours: Hours) -> String {
 }
 
 // the local time now, the timer armed for the next minute and a redraw asked for then
-fn minute() -> Option<Tm> {
+fn minute() -> Option<libc::tm> {
     drop(WallClock::read());
 
-    let seconds = seconds();
+    let seconds = unix_seconds();
 
     let mut armed = ARMED.locked();
 
@@ -471,11 +423,11 @@ fn minute() -> Option<Tm> {
     }
 
     let local = local(seconds)?;
-    let next = seconds - c_long::from(local.tm_sec) + 60;
+    let next = seconds - i64::from(local.tm_sec) + 60;
 
     if *armed != Some(next)
         && let Some(timer) = TIMER.get()
-        && arm(timer.as_raw_fd(), next).is_ok()
+        && arm(timer, next).is_ok()
     {
         *armed = Some(next);
     }
@@ -483,7 +435,7 @@ fn minute() -> Option<Tm> {
     Some(local)
 }
 
-fn date(local: &Tm) -> Option<NaiveDate> {
+fn date(local: &libc::tm) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(
         local.tm_year + 1900,
         u32::try_from(local.tm_mon + 1).ok()?,
@@ -493,7 +445,7 @@ fn date(local: &Tm) -> Option<NaiveDate> {
 
 // the local date and time now, like "2026-10-07 15-36-38", for a file name
 pub fn stamp() -> String {
-    let seconds = seconds();
+    let seconds = unix_seconds();
 
     // SAFETY: plain call
     unsafe { tzset() };
@@ -517,24 +469,21 @@ pub fn stamp() -> String {
  * reaped child's pid may be another process's by now, so the caller makes sure it is not reaped
  */
 pub fn interrupt(child: &Child) -> io::Result<()> {
-    let pid = c_int::try_from(child.id()).map_err(io::Error::other)?;
-
-    // SAFETY: plain call
-    match unsafe { kill(pid, SIGINT) } {
-        0 => Ok(()),
-        _ => Err(io::Error::last_os_error()),
-    }
+    signal_process(child.id(), Signal::INT)
 }
 
 // sends `pid` SIGUSR1, which a terminal like kitty takes as reloading its config
 pub fn user_signal(pid: u32) -> io::Result<()> {
-    let pid = c_int::try_from(pid).map_err(io::Error::other)?;
+    signal_process(pid, Signal::USR1)
+}
 
-    // SAFETY: plain call
-    match unsafe { kill(pid, SIGUSR1) } {
-        0 => Ok(()),
-        _ => Err(io::Error::last_os_error()),
-    }
+fn signal_process(pid: u32, signal: Signal) -> io::Result<()> {
+    let pid = i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .ok_or_else(|| io::Error::other("not a process id"))?;
+
+    Ok(kill_process(pid, signal)?)
 }
 
 /*
@@ -544,7 +493,7 @@ pub fn user_signal(pid: u32) -> io::Result<()> {
 pub fn ignore_sigint() {
     // SAFETY: plain call, setting a disposition, no handler
     unsafe {
-        signal(SIGINT, SIG_IGN);
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
     }
 }
 
@@ -556,45 +505,20 @@ pub fn default_sigint(command: &mut Command) -> &mut Command {
     // SAFETY: `signal` is async-signal-safe, and the only call between fork and exec
     unsafe {
         command.pre_exec(|| {
-            signal(SIGINT, SIG_DFL);
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
             Ok(())
         })
     }
 }
 
-// <asm-generic/termbits.h> and <asm-generic/ioctls.h>, as on x86_64, aarch64 and riscv64
-const TCGETS: c_ulong = 0x5401;
-const TCSETS: c_ulong = 0x5402;
-const ISIG: u32 = 0o1;
-const ICANON: u32 = 0o2;
-const ECHO: u32 = 0o10;
-const VTIME: usize = 5;
-const VMIN: usize = 6;
-
-// the kernel's `struct termios`, which TCGETS and TCSETS take, not glibc's larger one
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Termios {
-    c_iflag: u32,
-    c_oflag: u32,
-    c_cflag: u32,
-    c_lflag: u32,
-    c_line: u8,
-    c_cc: [u8; 19],
-}
-
-const _: () = assert!(size_of::<Termios>() == 36);
-
 // a terminal's mode as it was, put back when dropped, on every path out
 struct Restore {
-    fd: c_int,
     mode: Termios,
 }
 
 impl Drop for Restore {
     fn drop(&mut self) {
-        // SAFETY: TCSETS reads a `Termios` the kernel's size from a live pointer
-        unsafe { ioctl(self.fd, TCSETS, &raw const self.mode) };
+        let _ = tcsetattr(stdio::stdin(), OptionalActions::Now, &self.mode);
     }
 }
 
@@ -640,32 +564,20 @@ fn type_into(line: &mut Vec<u8>, byte: u8) -> Typed {
  * zeroed
  */
 pub fn hidden_line() -> io::Result<Option<Zeroizing<String>>> {
-    let fd = io::stdin().as_raw_fd();
-    let mut mode = Termios {
-        c_iflag: 0,
-        c_oflag: 0,
-        c_cflag: 0,
-        c_lflag: 0,
-        c_line: 0,
-        c_cc: [0; 19],
-    };
-
-    // SAFETY: TCGETS writes a `Termios` the kernel's size to a live pointer
-    let terminal = unsafe { ioctl(fd, TCGETS, &raw mut mode) } == 0;
+    let terminal = tcgetattr(stdio::stdin()).ok();
     // room enough that a typed line never moves, leaving a copy behind
     let mut line = Zeroizing::new(Vec::with_capacity(4096));
 
-    if terminal {
-        let restore = Restore { fd, mode };
+    if let Some(mode) = terminal {
+        let restore = Restore { mode: mode.clone() };
         let mut hidden = mode;
-        hidden.c_lflag &= !(ECHO | ICANON | ISIG);
-        hidden.c_cc[VMIN] = 1;
-        hidden.c_cc[VTIME] = 0;
+        hidden
+            .local_modes
+            .remove(LocalModes::ECHO | LocalModes::ICANON | LocalModes::ISIG);
+        hidden.special_codes[SpecialCodeIndex::VMIN] = 1;
+        hidden.special_codes[SpecialCodeIndex::VTIME] = 0;
 
-        // SAFETY: as above
-        if unsafe { ioctl(fd, TCSETS, &raw const hidden) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        tcsetattr(stdio::stdin(), OptionalActions::Now, &hidden)?;
 
         let mut stdin = io::stdin().lock();
         let mut byte = [0u8];
@@ -766,7 +678,7 @@ extern "C" fn converse(
     // SAFETY: Linux-PAM hands `count` messages, an array of pointers, and takes the answers,
     // which it frees
     unsafe {
-        let answers = calloc(count, size_of::<PamResponse>()).cast::<PamResponse>();
+        let answers = libc::calloc(count, size_of::<PamResponse>()).cast::<PamResponse>();
         if answers.is_null() {
             return PAM_CONV_ERR;
         }
@@ -775,7 +687,7 @@ extern "C" fn converse(
             let style = (**messages.add(index)).style;
 
             if style == PAM_PROMPT_ECHO_OFF || style == PAM_PROMPT_ECHO_ON {
-                (*answers.add(index)).text = strdup(password);
+                (*answers.add(index)).text = libc::strdup(password);
             }
         }
 
@@ -785,37 +697,18 @@ extern "C" fn converse(
     PAM_SUCCESS
 }
 
-fn seconds() -> c_long {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-
-    c_long::try_from(seconds).unwrap_or(c_long::MAX)
-}
-
-fn local(seconds: c_long) -> Option<Tm> {
-    let mut tm = Tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_gmtoff: 0,
-        tm_zone: std::ptr::null(),
-    };
+fn local(seconds: i64) -> Option<libc::tm> {
+    // SAFETY: `tm` is plain integers and a zone pointer, which zero makes null
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
 
     // SAFETY: both pointers are to live locals; tm_zone is never read
-    let done = unsafe { localtime_r(&raw const seconds, &raw mut tm) };
+    let done = unsafe { libc::localtime_r(&raw const seconds, &raw mut tm) };
 
     (!done.is_null()).then_some(tm)
 }
 
 // once, at `at` seconds since the epoch; cancelled if the clock is set
-fn arm(fd: RawFd, at: c_long) -> io::Result<()> {
+fn arm(timer: impl AsFd, at: i64) -> io::Result<()> {
     let when = Itimerspec {
         it_interval: Timespec {
             tv_sec: 0,
@@ -827,19 +720,11 @@ fn arm(fd: RawFd, at: c_long) -> io::Result<()> {
         },
     };
 
-    // SAFETY: `when` is live, and no old value is asked for
-    let set = unsafe {
-        timerfd_settime(
-            fd,
-            TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET,
-            &raw const when,
-            std::ptr::null_mut(),
-        )
-    };
-
-    if set < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    timerfd_settime(
+        timer,
+        TimerfdTimerFlags::ABSTIME | TimerfdTimerFlags::CANCEL_ON_SET,
+        &when,
+    )?;
 
     Ok(())
 }
@@ -935,7 +820,7 @@ mod tests {
 
         interrupt(&child).expect("signalled");
 
-        assert_eq!(child.wait().expect("reaped").signal(), Some(SIGINT));
+        assert_eq!(child.wait().expect("reaped").signal(), Some(libc::SIGINT));
     }
 
     #[test]
@@ -959,7 +844,7 @@ mod tests {
         let seconds = 1_700_000_000;
         let tm = local(seconds).expect("libc reads local time");
 
-        assert_eq!(c_long::from(tm.tm_sec), seconds % 60);
+        assert_eq!(i64::from(tm.tm_sec), seconds % 60);
         assert_eq!(tm.tm_gmtoff % 60, 0);
         assert!((0..24).contains(&tm.tm_hour));
     }
@@ -997,23 +882,12 @@ mod tests {
 
     #[test]
     fn an_armed_timer_fires_at_its_minute() {
-        // SAFETY: plain call, owned below
-        let fd = unsafe { timerfd_create(CLOCK_REALTIME, TFD_CLOEXEC) };
-        assert!(fd >= 0);
-        // SAFETY: a fresh fd nothing else owns
-        let mut timer = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let mut timer = File::from(wall_timer().unwrap());
 
         // a moment already past fires at once
-        let past = c_long::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap()
-            - 1;
+        let past = unix_seconds() - 1;
 
-        arm(timer.as_raw_fd(), past).unwrap();
+        arm(&timer, past).unwrap();
 
         let mut expirations = [0; 8];
         timer.read_exact(&mut expirations).unwrap();

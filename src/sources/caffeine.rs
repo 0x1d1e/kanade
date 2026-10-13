@@ -1,4 +1,4 @@
-//! Caffeine (#141, docs/design.md Caffeine, ADR 0011): `kanade caffeine on [duration]` keeps the
+//! Caffeine (docs/design.md Caffeine, ADR 0011): `kanade caffeine on [duration]` keeps the
 //! session from going idle, so nothing that waits on idle, like the idle Module or hypridle, locks
 //! or suspends it;
 //! `off` lets it go idle again and `toggle` does whichever it is not. While on, a Persistent Ongoing

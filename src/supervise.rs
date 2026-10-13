@@ -1,4 +1,4 @@
-//! Restarting a source thread that panicked (#95, docs/design.md Constraints + SLOs). The runtime does
+//! Restarting a source thread that panicked (docs/design.md Constraints + SLOs). The runtime does
 //! this for a Service's `listen()`; Kanade's own source threads come back the same way, so one bad
 //! reading costs a pause rather than the source for good. What a source has posted lives outside
 //! what restarts, so a restart neither posts it again nor forgets to withdraw it. A source's thread
@@ -12,10 +12,10 @@ use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use kanade_runtime::MutexExt;
+use kanade_runtime::{MutexExt, service};
 
 // how long a source that panicked waits before it runs again, as the runtime waits for a Service
-pub const RESTART: Duration = Duration::from_secs(5);
+pub const RESTART: Duration = service::RESTART_DELAY;
 
 /*
  * runs `run` until it returns; a panic, already printed by the panic hook, is logged and `run`
@@ -106,6 +106,11 @@ fn trouble(name: &str, change: impl FnOnce(&mut Trouble)) {
     };
 
     change(&mut troubles[at].1);
+}
+
+// a Service's panics, which the runtime restarts, are kept for `status` like a source's
+pub fn follow_services() {
+    service::on_panic(panicked);
 }
 
 // a source's panic, caught by whatever runs it again

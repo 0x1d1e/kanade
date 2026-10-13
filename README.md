@@ -48,7 +48,37 @@ cp dist/kanade.service ~/.config/systemd/user/
 systemctl --user enable --now kanade.service
 ```
 
-Kanade needs niri, a Rust toolchain and a few system libraries, and must be the only notification daemon. Requirements, the systemd unit and recovery are in [Installation](docs/wiki/Installation.md).
+Kanade must be the only notification daemon. The systemd unit and recovery are in [Installation](docs/wiki/Installation.md).
+
+## Dependencies
+
+On Arch Linux and derivatives, all from the official repositories unless marked AUR.
+
+Required, to build and run:
+
+```sh
+sudo pacman -S --needed niri rust base-devel pkgconf wayland libxkbcommon fontconfig freetype2 \
+  expat vulkan-icd-loader libpulse pam
+```
+
+Also a Vulkan driver for the GPU (`vulkan-intel`, `vulkan-radeon` or `nvidia-utils`). niri must run as a systemd session (`niri-session` or a display manager).
+
+Optional, each for the feature named; Kanade runs without them:
+
+| Feature | Packages |
+|---|---|
+| Audio, privacy dots (`pactl`, `pw-dump`), device events (`udevadm`, `dbus-monitor`), `setpriv` | `libpulse pipewire systemd dbus util-linux` |
+| Clipboard history (needs wl-clipboard 2.3 or later) | `wl-clipboard` |
+| Screen recording (plus a VA-API driver: `intel-media-driver` for Intel, `mesa` for AMD) | `wf-recorder` |
+| Wallpaper | `awww` |
+| Wallpaper-derived colors | `matugen` |
+| `appearance.sync` | `qt5ct qt6ct glib2 dconf`; AUR: Darkly (Qt6 style), Pywalfox and its browser extension |
+| Night light | `wlsunset` |
+| Caffeine, lock before sleep, idle inhibitors | `systemd util-linux` |
+| Google Calendar, CalDAV | `gnome-keyring` (or KWallet, KeePassXC) and `xdg-utils` |
+| Terminal apps in the Launcher | `xdg-terminal-exec` |
+
+Per-feature detail is in [Installation](docs/wiki/Installation.md).
 
 ## Documentation
 

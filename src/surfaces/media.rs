@@ -381,7 +381,7 @@ fn play_pause(deck: Option<&Deck>) -> (Transport, Option<Control>) {
 /*
  * a round button; filled ones carry their glyph in the body's color. None to do leaves it faded,
  * at the same place, not pressable. Faded part by part, not as a whole: a faded group costs the
- * gpu a canvas of its own every frame (#36). The body-colored glyph on a fill stays solid, it
+ * gpu a canvas of its own every frame. The body-colored glyph on a fill stays solid, it
  * shows the body through either way
  */
 fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Control>) -> Rectangle {
