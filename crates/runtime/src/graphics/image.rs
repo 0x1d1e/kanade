@@ -1,6 +1,5 @@
 mod decode;
 mod shrink;
-mod soften;
 mod svg;
 
 use std::any::TypeId;
@@ -83,8 +82,8 @@ pub enum ImageState {
  */
 struct Decoded;
 
-// a file, the size it is shrunk to cover (none for its own size), and how far it is blurred
-type Key = (PathBuf, Option<(u32, u32)>, u32);
+// a file and the size it is shrunk to cover (none for its own size)
+type Key = (PathBuf, Option<(u32, u32)>);
 
 enum Slot {
     Loading,
@@ -123,21 +122,21 @@ static WAITING: Condvar = Condvar::new();
  * on a worker; until it is done this gives none and the image is
  * left out, then the window is woken to draw it
  */
-pub fn load(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> Option<Arc<Bitmap>> {
-    ask(path, cover, blur).1
+pub fn load(path: &Path, cover: Option<(u32, u32)>) -> Option<Arc<Bitmap>> {
+    ask(path, cover).1
 }
 
 // how the image stands, asking for it if nothing did yet
-pub fn state(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> ImageState {
-    ask(path, cover, blur).0
+pub fn state(path: &Path, cover: Option<(u32, u32)>) -> ImageState {
+    ask(path, cover).0
 }
 
-fn ask(path: &Path, cover: Option<(u32, u32)>, blur: u32) -> (ImageState, Option<Arc<Bitmap>>) {
+fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap>>) {
     let mut loader = LOADER.locked();
 
     loader.tick += 1;
     let tick = loader.tick;
-    let key = (path.to_path_buf(), cover, blur);
+    let key = (path.to_path_buf(), cover);
 
     if let Some(entry) = loader.entries.get_mut(&key) {
         entry.used = tick;
@@ -199,18 +198,15 @@ fn work() {
 }
 
 fn read_key(key: &Key) -> Option<Bitmap> {
-    let (path, cover, blur) = key;
+    let (path, cover) = key;
 
     let image = read(path)?;
 
     // only the small copy is kept, the full size one is dropped here
-    let image = match cover {
+    Some(match cover {
         Some((width, height)) => shrink::to_cover(image, *width, *height),
         None => image,
-    };
-
-    // blurred after shrinking, where there are far fewer pixels to average
-    Some(soften::soften(image, *blur))
+    })
 }
 
 fn finish(key: Key, image: Option<Bitmap>) {
@@ -296,7 +292,7 @@ impl Loader {
 pub fn forget(image: &Arc<Bitmap>) {
     let mut loader = LOADER.locked();
 
-    loader.entries.retain(|(_, cover, _), entry| {
+    loader.entries.retain(|(_, cover), entry| {
         let same = matches!(&entry.slot, Slot::Ready(kept) if Arc::ptr_eq(kept, image));
 
         cover.is_some() || !same
