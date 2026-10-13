@@ -174,7 +174,7 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
     let note = Text::new(note)
         .size(theme::text::LABEL_SMALL)
         .color(if error {
-            theme::SEMANTIC.critical
+            theme::signals().critical
         } else {
             theme::island().on_surface_variant
         })

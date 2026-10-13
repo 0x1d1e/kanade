@@ -31,3 +31,4 @@ ADR 0032 drew the cluster as a pill beside the Island's body, with a glyph style
 - `geometry::cluster`, `cluster_room` and `CLUSTER_LONGEST` are gone. The canvas keeps its `ROOM` so nothing moves.
 - A bare Rest crowded by the dots drops its battery percent, then keeps the clock; the battery shows a bolt while it charges.
 - `privacy.style` in an older config is dropped by the schema 3 migration.
+- Each sensor has its own dot shape (round microphone, square camera, ring screen cast), so color is not the only cue; the green and amber follow the island tone (`theme::signals`) to stay above 4.5:1 on the light island.

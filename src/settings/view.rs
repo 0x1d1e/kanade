@@ -371,14 +371,14 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let waiting = settings.pending.len();
     let (status, ink) = if let Some(refused) = &settings.refused {
-        (refused.clone(), theme::SEMANTIC.warning)
+        (refused.clone(), theme::signals().warning)
     } else if settings.unreadable.is_some()
         || settings.error.is_some()
         || !settings.skipped.is_empty()
     {
         (
             String::from("The config has problems, shown above"),
-            theme::SEMANTIC.warning,
+            theme::signals().warning,
         )
     } else if waiting > 0 {
         let changes = if waiting == 1 {
@@ -567,7 +567,7 @@ fn notices(settings: &Settings) -> Vec<Box<dyn Widget>> {
     problems
         .into_iter()
         .flatten()
-        .map(|problem| Box::new(notice(&problem, theme::SEMANTIC.warning)) as Box<dyn Widget>)
+        .map(|problem| Box::new(notice(&problem, theme::signals().warning)) as Box<dyn Widget>)
         .collect()
 }
 
@@ -820,7 +820,7 @@ fn labeled(
         lines.push(Box::new(wrapped(
             Text::new(off)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::SEMANTIC.warning)
+                .color(theme::signals().warning)
                 .weight(theme::text::MEDIUM),
             text_width,
         )));

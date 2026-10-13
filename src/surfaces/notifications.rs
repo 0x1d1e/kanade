@@ -442,7 +442,11 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
         Daemon::Running if cards.is_empty() => Box::new(state(
             Icon::Bell.draw(28.0),
             "No notifications",
-            if dnd { "Do Not Disturb is on" } else { "" },
+            if dnd {
+                "Do Not Disturb is on"
+            } else {
+                "New ones show here"
+            },
         )),
         Daemon::Running => Box::new(list(monitor, &cards, &shapes, ring, offset)),
     };
@@ -604,7 +608,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
             Row::new(children![
                 Text::new("Critical")
                     .size(theme::text::LABEL_SMALL)
-                    .color(theme::SEMANTIC.critical)
+                    .color(theme::signals().critical)
                     .weight(theme::text::SEMIBOLD),
                 sender,
             ])

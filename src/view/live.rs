@@ -20,7 +20,7 @@ pub(super) fn mark(job: &Job) -> (Icon, Color) {
     match job.ended {
         None => (Icon::Pulse, theme::island().on_surface),
         Some(Ended::Done) => (Icon::Check, theme::island().on_surface),
-        Some(Ended::Failed) => (Icon::Dismiss, theme::SEMANTIC.critical),
+        Some(Ended::Failed) => (Icon::Dismiss, theme::signals().critical),
     }
 }
 

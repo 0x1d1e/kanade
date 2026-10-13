@@ -286,7 +286,7 @@ fn wifi(connectivity: &Connectivity) -> Switch {
     radio(Icon::Wifi, "Wi-Fi", connectivity.wifi, joined, Press::Wifi)
 }
 
-// the connected devices by name, as many as fit
+// the connected device by name, or the first and how many more
 fn bluetooth(adapter: &Adapter) -> Switch {
     let connected: Vec<&str> = adapter
         .devices
@@ -297,8 +297,10 @@ fn bluetooth(adapter: &Adapter) -> Switch {
 
     let status = if connected.is_empty() {
         String::from("On")
+    } else if let [only] = connected[..] {
+        only.to_owned()
     } else {
-        connected.join(", ")
+        format!("{} +{}", connected[0], connected.len() - 1)
     };
 
     let path = adapter.path.clone();
@@ -775,15 +777,16 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool, ring: bo
             Text::new(profile.label())
                 .size(theme::text::LABEL_SMALL)
                 .color(if active {
-                    theme::island().on_surface
+                    theme::island().on_primary
                 } else {
                     theme::island().on_surface_variant
                 })
                 .weight(theme::text::SEMIBOLD),
         );
 
+    // filled like a switch that is on
     if active {
-        segment.fill(theme::island().surface_container_high)
+        segment.fill(theme::island().primary)
     } else if available {
         segment
             .cursor(Cursor::Pointer)

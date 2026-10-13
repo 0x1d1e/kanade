@@ -2,7 +2,7 @@
 //! stands where nothing is listed. Drawn as the Clipboard and the Launcher draw their own.
 
 use kanade_runtime::{
-    Center, Column, Padding, Rectangle, Row, Size, Start, Text, Widget, children,
+    Center, Column, Cursor, Padding, Rectangle, Row, Size, Start, Text, Widget, children,
 };
 
 use crate::icon::Icon;
@@ -98,6 +98,18 @@ fn tail(query: &str, width: f32) -> Text {
 
 // what it means, `width` by `height` where the list goes: its icon, a title and a detail line
 pub fn state(icon: Icon, title: &str, detail: &str, width: f32, height: f32) -> Rectangle {
+    state_with(icon, title, detail, None, width, height)
+}
+
+// the same, with an action under the detail, like `settings_pill`
+pub fn state_with(
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    action: Option<Rectangle>,
+    width: f32,
+    height: f32,
+) -> Rectangle {
     let mut lines = children![
         icon.draw(28.0),
         Text::new(title)
@@ -120,9 +132,47 @@ pub fn state(icon: Icon, title: &str, detail: &str, width: f32, height: f32) -> 
         }));
     }
 
+    if let Some(action) = action {
+        lines.push(Box::new(action));
+    }
+
     Rectangle::new()
         .width(width)
         .height(height)
         .align_child(Center, Center)
         .child(Column::new(lines).gap(6.0).align(Center))
+}
+
+// the Settings page that holds the wallpaper folder, the calendars and the weather location
+pub const DATA: &str = "data";
+
+const PILL_WIDTH: f32 = 132.0;
+const PILL_HEIGHT: f32 = 28.0;
+
+/*
+ * an empty state's way out: a pill that opens Settings on `page` and puts the island away. The
+ * Surface presses it on Enter too, through `open_settings`
+ */
+pub fn settings_pill(monitor: &str, page: &'static str) -> Rectangle {
+    let monitor = monitor.to_owned();
+
+    Rectangle::new()
+        .width(PILL_WIDTH)
+        .height(PILL_HEIGHT)
+        .radius(PILL_HEIGHT / 2.0)
+        .border(1.0, theme::island().outline)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(move || open_settings(&monitor, page)))
+        .child(
+            Text::new("Open Settings")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
+
+pub fn open_settings(monitor: &str, page: &'static str) {
+    crate::settings::open(Some(page));
+    crate::view::collapse(monitor);
 }

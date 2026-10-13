@@ -61,6 +61,7 @@ pub fn surface(open: bool, now: Instant) -> Rectangle {
 
     let nothing = Track {
         title: String::from("Nothing playing"),
+        artist: String::from("Start playback in any media player"),
         ..Track::default()
     };
 
@@ -121,24 +122,27 @@ fn header(
 
     let shown = deck.map(|deck| deck.name.as_str());
 
+    // no player, no visualizer: a paused one would read as a player that is paused
+    let moving = Rectangle::new()
+        .width(words)
+        .height(ART)
+        .align_child(End, Start)
+        .padding(Padding {
+            top: 4.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        });
+    let moving = match deck {
+        Some(deck) => moving.child(state(deck.track.target().playing, now)),
+        None => moving,
+    };
+
     Row::new(children![
         track.art(ART, radius::ROW),
         Stack::new(children![
             Column::new(lines).width(words - MOVING).gap(3.0),
-            Rectangle::new()
-                .width(words)
-                .height(ART)
-                .align_child(End, Start)
-                .padding(Padding {
-                    top: 4.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                    left: 0.0,
-                })
-                .child(state(
-                    deck.is_some_and(|deck| deck.track.target().playing),
-                    now
-                )),
+            moving,
             Rectangle::new()
                 .width(words)
                 .height(ART)

@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::{env, fs};
 
 use super::launch::{Fields, Launch};
@@ -269,10 +270,53 @@ fn read(id: String, file: &Path, text: &str) -> Read {
         icon,
         description: field(&main, "Comment").or_else(|| field(&main, "GenericName")),
         wm_class: field(&main, "StartupWMClass"),
-        no_display: flag("NoDisplay"),
+        no_display: flag("NoDisplay")
+            || !shown_in(
+                &list(&main, "OnlyShowIn"),
+                &list(&main, "NotShowIn"),
+                desktops(),
+            ),
         launch,
         actions,
     }))
+}
+
+// a `;` separated list as written, `OnlyShowIn=GNOME;KDE;`
+fn list<'a>(fields: &BTreeMap<&str, &'a str>, key: &str) -> Vec<&'a str> {
+    fields
+        .get(key)
+        .map(|value| value.split(';').filter(|name| !name.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+// `XDG_CURRENT_DESKTOP`, colon separated: the desktops this session counts as
+fn desktops() -> &'static [String] {
+    static DESKTOPS: LazyLock<Vec<String>> = LazyLock::new(|| {
+        env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .split(':')
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect()
+    });
+
+    &DESKTOPS
+}
+
+/*
+ * whether an entry that names desktops it is for (`only`) or not for (`not`) belongs to one of
+ * `current`; names compare without case, and an unset desktop leaves an `only` entry out
+ */
+fn shown_in(only: &[&str], not: &[&str], current: &[String]) -> bool {
+    let named = |names: &[&str]| {
+        names.iter().any(|name| {
+            current
+                .iter()
+                .any(|desktop| desktop.eq_ignore_ascii_case(name))
+        })
+    };
+
+    (only.is_empty() || named(only)) && !named(not)
 }
 
 // a string value as written, with the spec's escapes decoded; another escape stays as it is
@@ -529,6 +573,17 @@ Name=New Window
         assert_eq!(entry.name, "Foo Bar\t\\s\\q");
         assert_eq!(entry.icon.as_deref(), Some("foo\\bar"));
         assert_eq!(entry.wm_class.as_deref(), Some("a b\\"));
+    }
+
+    #[test]
+    fn an_entry_follows_the_desktops_it_names() {
+        let niri = [String::from("niri")];
+
+        assert!(shown_in(&[], &[], &niri));
+        assert!(shown_in(&["GNOME", "Niri"], &[], &niri));
+        assert!(!shown_in(&["GNOME"], &[], &niri));
+        assert!(!shown_in(&[], &["niri"], &niri));
+        assert!(!shown_in(&["GNOME"], &[], &[]));
     }
 
     #[test]

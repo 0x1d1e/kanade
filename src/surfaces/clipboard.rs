@@ -5,7 +5,7 @@
 //! clipboard, or says it was not copied. It says when the history is empty and when nothing matches. Text shows as its first words; an image only as its
 //! kind and size, since the runtime draws images from files and the history never leaves memory.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
@@ -87,6 +87,9 @@ pub struct Search {
     // the ring is on Clear all, below the rows
     clear: bool,
 
+    // Clear all was pressed once and asks again; any other key or a new query takes it back
+    armed: bool,
+
     // how far the rows scrolled, in pixels
     offset: f32,
 
@@ -139,6 +142,10 @@ impl Search {
      */
     fn step(mut self, key: Key, count: usize, any: bool) -> Option<(Search, bool)> {
         let last = count.saturating_sub(1);
+
+        if key != Key::Enter {
+            self.armed = false;
+        }
 
         match key {
             Key::Character(letter) => return Some((self.typed(Some(letter)), false)),
@@ -229,15 +236,20 @@ impl Search {
         self.selected = self.selected.min(count.saturating_sub(1));
         self.delete = self.delete && count > 0;
         self.clear = self.clear && any;
+        self.armed = self.armed && any;
         self.offset = self.offset.clamp(0.0, most(count));
 
         self
     }
 
-    // what Enter presses, from the entries the query finds
-    fn press(&self, found: &[Entry], any: bool) -> Option<Press> {
+    // what Enter presses, from the entries the query finds; Clear all asks twice
+    fn press(&mut self, found: &[Entry], any: bool) -> Option<Press> {
         if self.clear {
-            return any.then_some(Press::Clear);
+            let armed = self.armed;
+
+            self.armed = any && !armed;
+
+            return (any && armed).then_some(Press::Clear);
         }
 
         let entry = found.get(self.selected)?;
@@ -335,7 +347,7 @@ fn whole(offset: f32, count: usize) -> (usize, usize) {
  * whether an entry answers the query: every word of it, in any case, somewhere in the text, or in
  * an image's kind ("image png"). A query of only spaces finds every entry
  */
-fn matches(content: &Content, query: &str) -> bool {
+pub(super) fn matches(content: &Content, query: &str) -> bool {
     match content {
         Content::Text(text) => query.split_whitespace().all(|term| contains(text, term)),
         Content::Image { mime, .. } => {
@@ -376,8 +388,23 @@ struct Memo {
 
 static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
 
+// tests that read the one memo take turns
+#[cfg(test)]
+pub(super) static MEMO_TURN: Mutex<()> = Mutex::new(());
+
 // the entries the query finds, newest first
 fn found(entries: &[Entry], query: &str) -> Vec<Entry> {
+    found_at(entries, query)
+        .into_iter()
+        .map(|at| entries[at].clone())
+        .collect()
+}
+
+/*
+ * where in `entries` the query finds them, scanned again only when the query or the history
+ * changed: the Launcher asks on every redraw, and a history holds up to 64 MiB
+ */
+pub(super) fn found_at(entries: &[Entry], query: &str) -> Vec<usize> {
     let mut memo = MEMO.locked();
 
     let same = memo.query == query
@@ -396,24 +423,24 @@ fn found(entries: &[Entry], query: &str) -> Vec<Entry> {
             .collect();
 
         // what the history forgot is never shown again
-        let ids = memo.ids.clone();
+        let ids: HashSet<u64> = memo.ids.iter().copied().collect();
         memo.rows.retain(|id, _| ids.contains(id));
     }
 
-    memo.found.iter().map(|&at| entries[at].clone()).collect()
+    memo.found.clone()
 }
 
 // what a row says about its entry
 #[derive(Debug, Clone, PartialEq)]
-struct Summary {
-    title: String,
-    detail: String,
+pub(super) struct Summary {
+    pub(super) title: String,
+    pub(super) detail: String,
 
     // the title says what the entry is rather than showing it, like "Image"
     named: bool,
 }
 
-fn summary(entry: &Entry) -> Summary {
+pub(super) fn summary(entry: &Entry) -> Summary {
     let mut memo = MEMO.locked();
 
     memo.rows
@@ -423,7 +450,8 @@ fn summary(entry: &Entry) -> Summary {
 }
 
 /*
- * text as its first words, its whitespace one space, and how many lines or characters it has; an
+ * text as its first words, its whitespace one space, and what it is: a link or file, else how many lines or
+ * characters it has; an
  * image as its kind and size
  */
 fn summarize(content: &Content) -> Summary {
@@ -444,8 +472,15 @@ fn summarize(content: &Content) -> Summary {
             }
 
             let lines = text.lines().count();
+            let trimmed = text.trim();
+            let one = !trimmed.contains(char::is_whitespace);
+
             let detail = if lines > 1 {
                 format!("{lines} lines")
+            } else if one && trimmed.starts_with("file://") {
+                String::from("File")
+            } else if one && (trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+                String::from("Link")
             } else {
                 plural(text.chars().count(), "character")
             };
@@ -790,15 +825,22 @@ fn delete(id: u64, ring: bool) -> Rectangle {
 fn footer(search: &Search, found: usize, all: usize) -> Row {
     let count = match all {
         _ if search.copying == Copying::Failed => String::from("The entry was not copied"),
+        _ if search.armed => format!("Clear all {all}? This cannot be undone"),
         0 => String::from("0 entries"),
         _ if !search.query.trim().is_empty() => format!("{found} of {all}"),
         1 => String::from("1 entry"),
         all => format!("{all} entries"),
     };
 
-    let label = Text::new("Clear all")
+    let (word, ink) = if search.armed {
+        ("Confirm", theme::signals().critical)
+    } else {
+        ("Clear all", theme::island().on_surface)
+    };
+
+    let label = Text::new(word)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::island().on_surface)
+        .color(ink)
         .weight(theme::text::SEMIBOLD);
 
     let pill = Rectangle::new()
@@ -808,15 +850,15 @@ fn footer(search: &Search, found: usize, all: usize) -> Row {
         .align_child(Center, Center)
         .child(label);
 
-    let pill = if search.clear {
-        pill.border(RING, theme::island().on_surface)
+    let pill = if search.clear || search.armed {
+        pill.border(RING, ink)
     } else {
         pill.border(1.0, theme::island().surface_container_high)
     };
 
     let pill = if all > 0 {
         pill.cursor(Cursor::Pointer)
-            .on_click(super::on_left(clipboard::clear))
+            .on_click(super::on_left(clear_pressed))
     } else {
         pill.opacity(DISABLED)
     };
@@ -933,6 +975,27 @@ fn copied(monitor: &str, visit: u64, done: bool) {
     });
 }
 
+// a click on Clear all: the first arms it, the second clears
+fn clear_pressed() {
+    let visit = IslandService::read().visit();
+    let search = Search::read().of(visit);
+
+    if search.armed {
+        store(Search {
+            armed: false,
+            ..search
+        });
+        clipboard::clear();
+    } else {
+        // the button the click arms is the one Enter confirms
+        store(Search {
+            armed: true,
+            clear: true,
+            ..search
+        });
+    }
+}
+
 // down scrolls further down the list
 fn wheel(lines: f32) {
     let visit = IslandService::read().visit();
@@ -946,4 +1009,56 @@ fn wheel(lines: f32) {
             .bounded(count, !entries.is_empty())
             .wheel(lines, count),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: u64, text: &str) -> Entry {
+        Entry {
+            id,
+            content: Content::Text(text.into()),
+        }
+    }
+
+    // a click arms Clear all and Enter then confirms it, though the ring was on an entry
+    #[test]
+    fn enter_confirms_a_clear_all_the_mouse_armed() {
+        let entries = [entry(1, "a")];
+
+        clear_pressed();
+
+        let (mut search, presses) = Search::read()
+            .clone()
+            .step(Key::Enter, entries.len(), true)
+            .unwrap();
+
+        assert!(presses);
+        assert!(matches!(search.press(&entries, true), Some(Press::Clear)));
+    }
+
+    // the Launcher asks on every redraw: an unchanged history and query are not scanned again, and
+    // what the history forgot loses its summary
+    #[test]
+    fn a_search_scans_only_when_the_query_or_history_changed() {
+        let _turn = MEMO_TURN.locked();
+        let entries = [entry(7, "gone soon"), entry(8, "stays")];
+
+        for entry in &entries {
+            summary(entry);
+        }
+
+        assert_eq!(found_at(&entries, "stays"), [1]);
+
+        // same ids and query: the answer comes from the memo, not from the text
+        let changed = [entry(7, "stays"), entry(8, "other")];
+        assert_eq!(found_at(&changed, "stays"), [1]);
+
+        assert_eq!(found_at(&entries[1..], "stays"), [0]);
+
+        let memo = MEMO.locked();
+        assert!(!memo.rows.contains_key(&7));
+        assert!(memo.rows.contains_key(&8));
+    }
 }

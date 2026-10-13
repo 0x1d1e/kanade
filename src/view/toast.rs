@@ -47,7 +47,7 @@ fn summary(toast: &Toast, critical: bool, size: f32, weight: u16) -> Box<dyn Wid
             Row::new(children![
                 Text::new("Critical")
                     .size(size)
-                    .color(theme::SEMANTIC.critical)
+                    .color(theme::signals().critical)
                     .weight(theme::text::SEMIBOLD),
                 summary,
             ])
@@ -74,7 +74,7 @@ pub(super) fn toast_compact(toast: &Toast, critical: bool) -> Rectangle {
             parts.push(Box::new(
                 Text::new("!")
                     .size(theme::text::LABEL)
-                    .color(theme::SEMANTIC.critical)
+                    .color(theme::signals().critical)
                     .weight(theme::text::SEMIBOLD),
             ));
         }

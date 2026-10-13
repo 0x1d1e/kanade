@@ -24,7 +24,7 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
 ## Privacy cluster
-The microphone, camera and screen capture in use, a dot of its color each at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
+The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; tone-aware, `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
 - **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show. A Tray strip shows them past its last slot.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 

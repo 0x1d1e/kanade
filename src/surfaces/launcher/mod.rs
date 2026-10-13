@@ -1,6 +1,6 @@
 //! The Launcher Surface (plan 7): a search over its providers (#138), the apps `sources::apps`
 //! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, Settings and
-//! each setting) and, with the `wallpaper` Module on, wallpapers, best answer first.
+//! each setting), with the `wallpaper` Module on, wallpapers after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
 //! starts and the island closes; a value or an emoji is copied, or a wallpaper set, and the island
@@ -40,6 +40,7 @@ mod calculator;
 pub mod choose;
 mod destinations;
 mod emoji;
+mod history;
 mod provider;
 mod wallpaper;
 
@@ -48,6 +49,7 @@ use calculator::Calculator;
 use choose::{Choices, Choosing};
 use destinations::{Destination, Destinations};
 use emoji::Emoji;
+use history::History;
 use provider::{Action, Answer, Mark};
 use wallpaper::Wallpapers;
 
@@ -152,9 +154,10 @@ impl Search {
 
         match action {
             Action::Copy(_) => Some(String::from("Not copied")),
+            Action::Paste(_) => Some(String::from("Not copied")),
             Action::Wallpaper(_) => Some(format!("Not set: {why}")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
-            Action::Launch(_) | Action::Choose(_) => None,
+            Action::Launch(..) | Action::Choose(_) => None,
         }
     }
 
@@ -329,6 +332,11 @@ fn whole(offset: f32, count: usize) -> (usize, usize) {
     )
 }
 
+// whether the query searches the clipboard history, which it does only with its Module on
+fn history(query: &str) -> bool {
+    query.trim().starts_with(history::PREFIX) && modules::on("clipboard")
+}
+
 // whether the query searches wallpapers, which it does only with their Module on
 fn wallpapers(query: &str) -> bool {
     query.trim().starts_with(wallpaper::PREFIX) && modules::on("wallpaper")
@@ -401,6 +409,13 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
         current: current.as_deref(),
     };
 
+    // read only for a history search, which also subscribes the view to the clipboard
+    let entries = if history(query) {
+        clipboard::Clipboard::read().entries().to_vec()
+    } else {
+        Vec::new()
+    };
+
     provider::ranked(
         &[
             &Calculator,
@@ -408,6 +423,7 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
             &destinations(),
             &Emoji,
             &wallpapers,
+            &History { entries: &entries },
         ],
         query,
     )
@@ -424,6 +440,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let query = search.query.trim();
     let emoji = query.starts_with(emoji::PREFIX);
     let wallpapers = wallpapers(query);
+    let history = history(query);
 
     let list: Box<dyn Widget> = if !found.is_empty() {
         Box::new(list(monitor, &found, &search))
@@ -436,6 +453,15 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         Box::new(state(
             "No wallpapers",
             &format!("Add images to {}", directory()),
+        ))
+    } else if history {
+        Box::new(state(
+            "Nothing copied",
+            &if query.len() > 1 {
+                format!("Nothing found for \u{201c}{}\u{201d}", query[1..].trim())
+            } else {
+                String::from("What you copy shows here")
+            },
         ))
     } else if !apps.found() && !emoji && !wallpapers {
         // read once the Module starts, so only a Launcher opened at once waits
@@ -551,10 +577,11 @@ fn field(query: &str, placeholder: &str) -> Rectangle {
 
 // what to type, wallpapers only with their Module on
 fn placeholder() -> &'static str {
-    if modules::on("wallpaper") {
-        "Search apps, settings, 2+2, :emoji or @wallpaper"
-    } else {
-        "Search apps, settings, 2+2 or :emoji"
+    match (modules::on("wallpaper"), modules::on("clipboard")) {
+        (true, true) => "Search apps, settings, 2+2, :emoji, @wallpaper or >clipboard",
+        (true, false) => "Search apps, settings, 2+2, :emoji or @wallpaper",
+        (false, true) => "Search apps, settings, 2+2, :emoji or >clipboard",
+        (false, false) => "Search apps, settings, 2+2 or :emoji",
     }
 }
 
@@ -846,8 +873,10 @@ fn press(monitor: &str, visit: u64, action: Action) {
         return;
     }
 
-    if let Action::Launch(launch) = &action {
+    if let Action::Launch(launch, id) = &action {
         let launch = launch.clone();
+
+        sources::recents::used(id);
 
         // off the view thread, as niri's or the bus's answer may take its patience
         thread::spawn(move || {
@@ -895,7 +924,8 @@ fn press(monitor: &str, visit: u64, action: Action) {
         )
         .map(drop)
         .map_err(|unset| String::from(unset.brief())),
-        Action::Launch(_) | Action::Open(_) | Action::Choose(_) => Ok(()),
+        Action::Paste(id) => paste(*id, done),
+        Action::Launch(..) | Action::Open(_) | Action::Choose(_) => Ok(()),
     };
 
     if let Err(why) = started {
@@ -954,6 +984,26 @@ fn copy(
             eprintln!("kanade: cannot copy a Launcher answer ({error})");
             error.to_string()
         })
+}
+
+// puts the history's entry back on the clipboard; it is gone if the history dropped it since the row was drawn
+fn paste(id: u64, done: impl FnOnce(Result<(), String>) + Send + 'static) -> Result<(), String> {
+    let entry = clipboard::Clipboard::read()
+        .entries()
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| String::from("The entry is gone"))?;
+
+    clipboard::restore(&entry, move |put| {
+        done(if put {
+            Ok(())
+        } else {
+            Err(String::from("The clipboard did not take it"))
+        })
+    });
+
+    Ok(())
 }
 
 /*

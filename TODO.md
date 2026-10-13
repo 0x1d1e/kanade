@@ -23,7 +23,7 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
   - A key is the place among siblings, so a container whose children come and go before another target must keep its own place (the Island's body takes a placeholder for each layer that is not there).
   - `Rectangle::identity` names a list item by what it is (notification cards and Banners by id, Dock icons by app or, with none, window, Controls rows by SSID, device path and node, Tray items and menu entries, Clipboard entries, Launcher results), so items that come and go above it do not hand it a neighbour's key. Two different widgets given one identity are one target.
   - Not taken: an old and a new form at the same place have the same key (a press begun on one and let go on the other is a click); hover is not re-evaluated after a redraw until the pointer moves.
-- [ ] `dock.rs` (2363 lines) holds the Island-aware geometry (about lines 1084-1480: `covered`, `island_room`, `reaches`, ...); move it to `merge.rs` only if churn there shows the cost.
+- [ ] `dock.rs` (2524 lines) holds the Island-aware geometry (about lines 1084-1480: `covered`, `island_room`, `reaches`, ...); move it to `merge.rs` only if churn there shows the cost.
 
 Not worth changing, by this review:
 
@@ -106,3 +106,11 @@ Not worth changing, by this review:
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 - CalDAV: a keyring that answers with no item counts as logged out and drops the account's synced events, as does `forget` after a config read that fell back to defaults; they are a cache, synced again on login.
+
+## Design audit (not done)
+
+- No screen reader support (AT-SPI tree); an architecture change, see `docs/wiki/Limitations.md`.
+- No UI text scale setting; type sizes are fixed tokens.
+- The lock screen shows no Caps Lock hint.
+- The Session Surface treats Lock and the counted-down Restart, Power off and Log out alike in weight; the countdown with Cancel is the guard.
+- ADR numbers skip 0045.

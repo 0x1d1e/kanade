@@ -188,7 +188,9 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
         Detail::Session(Leaving::Failed { leave, .. } | Leaving::Unanswered { leave, .. }) => {
             row.push(Box::new(surfaces::session::icon(*leave).draw(14.0)));
         }
-        Detail::Recording(_) => row.push(Box::new(Icon::Capture.on(14.0, theme::SEMANTIC.capture))),
+        Detail::Recording(_) => {
+            row.push(Box::new(Icon::Capture.on(14.0, theme::signals().capture)))
+        }
         Detail::Battery(charge) => row.push(Box::new(battery_icon(
             16.0,
             charge.percent,
@@ -325,7 +327,7 @@ pub(super) fn recording(
 
     titled(
         presentation,
-        Lead::Mark(Icon::Capture, theme::SEMANTIC.capture),
+        Lead::Mark(Icon::Capture, theme::signals().capture),
         title,
         line,
         Pills {

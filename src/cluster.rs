@@ -1,5 +1,5 @@
 //! The privacy cluster (ADRs 0005, 0033): a microphone, camera or screen capture in use, as a dot
-//! of its color each at the trailing end of the Island's body, inside it. Never an Activity: it
+//! of its color and shape each at the trailing end of the Island's body, inside it. Never an Activity: it
 //! shows whatever the island shows, and takes no pointer. Over a fullscreen window it does not
 //! show. `privacy.indicators` turns it off.
 
@@ -33,9 +33,28 @@ const FULL: f32 = DOT * SENSORS as f32 + DOT_GAP * (SENSORS - 1) as f32;
 // from the top of a body as large as Media, above its header and its controls
 const CORNER: f32 = 12.0;
 
+// the shape of a sensor's dot, so color is not the only thing that tells them apart
+#[derive(Clone, Copy)]
+enum Mark {
+    // a microphone
+    Round,
+
+    // a camera
+    Square,
+
+    // a screen cast
+    Ring,
+}
+
+// the corner of a camera's square dot
+const SQUARE_CORNER: f32 = 2.0;
+
+// the stroke of a screen cast's ring dot
+const RING: f32 = 1.5;
+
 // what captures, a dot each in the colors `glyphs` uses and in the same order, each with its opacity
 pub struct Cluster {
-    dots: Vec<(Color, f32)>,
+    dots: Vec<(Mark, Color, f32)>,
 
     // the dots still fade, so the view keeps asking for frames
     pub moving: bool,
@@ -115,7 +134,7 @@ pub fn read(monitor: &str, covered: bool, now: Instant) -> Option<Cluster> {
     let mut shown = Vec::new();
     let mut moving = false;
 
-    for ((dot, active), (_, ink)) in dots.iter_mut().zip(active).zip(sensors()) {
+    for ((dot, active), (_, mark, ink)) in dots.iter_mut().zip(active).zip(sensors()) {
         dot.follow(
             active,
             timings.for_motion(timings.expand),
@@ -125,7 +144,7 @@ pub fn read(monitor: &str, covered: bool, now: Instant) -> Option<Cluster> {
         moving |= dot.moving(now);
 
         if dot.shown || dot.moving(now) {
-            shown.push((ink, dot.opacity(now)));
+            shown.push((mark, ink, dot.opacity(now)));
         }
     }
 
@@ -171,13 +190,13 @@ impl Cluster {
     fn presence(&self) -> f32 {
         self.dots
             .iter()
-            .map(|&(_, opacity)| opacity)
+            .map(|&(_, _, opacity)| opacity)
             .fold(0.0, f32::max)
     }
 
     // each dot's room and its gap, as far as it shows, less the gap after the last
     fn length(&self) -> f32 {
-        let shown: f32 = self.dots.iter().map(|&(_, opacity)| opacity).sum();
+        let shown: f32 = self.dots.iter().map(|&(_, _, opacity)| opacity).sum();
 
         ((DOT + DOT_GAP) * shown - DOT_GAP * self.presence()).max(0.0)
     }
@@ -197,14 +216,14 @@ impl Cluster {
         let mut after = 0.0;
         let mut dots: Vec<Box<dyn Widget>> = Vec::new();
 
-        for &(ink, opacity) in self.dots.iter().rev() {
+        for &(mark, ink, opacity) in self.dots.iter().rev() {
             let at = FULL - DOT - after;
-            let dot = Rectangle::new()
-                .width(DOT)
-                .height(DOT)
-                .radius(DOT / 2.0)
-                .fill(ink)
-                .opacity(opacity);
+            let dot = Rectangle::new().width(DOT).height(DOT).opacity(opacity);
+            let dot = match mark {
+                Mark::Round => dot.radius(DOT / 2.0).fill(ink),
+                Mark::Square => dot.radius(SQUARE_CORNER).fill(ink),
+                Mark::Ring => dot.radius(DOT / 2.0).border(RING, ink),
+            };
 
             dots.push(Box::new(if sideways {
                 dot.translate(0.0, at)
@@ -251,16 +270,18 @@ pub fn glyphs(privacy: &Privacy) -> Vec<Box<dyn Widget>> {
         .into_iter()
         .zip(active(privacy))
         .filter(|(_, active)| *active)
-        .map(|((icon, ink), _)| Box::new(icon.on(GLYPH, ink)) as Box<dyn Widget>)
+        .map(|((icon, _, ink), _)| Box::new(icon.on(GLYPH, ink)) as Box<dyn Widget>)
         .collect()
 }
 
-// a microphone, a camera and a screen cast, each with its glyph and color
-fn sensors() -> [(Icon, Color); SENSORS] {
+// a microphone, a camera and a screen cast, each with its glyph, dot shape and color
+fn sensors() -> [(Icon, Mark, Color); SENSORS] {
+    let signals = theme::signals();
+
     [
-        (Icon::Microphone, theme::SEMANTIC.privacy),
-        (Icon::Camera, theme::SEMANTIC.privacy),
-        (Icon::Capture, theme::SEMANTIC.capture),
+        (Icon::Microphone, Mark::Round, signals.privacy),
+        (Icon::Camera, Mark::Square, signals.privacy),
+        (Icon::Capture, Mark::Ring, signals.capture),
     ]
 }
 

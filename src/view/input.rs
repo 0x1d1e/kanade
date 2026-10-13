@@ -101,6 +101,10 @@ pub fn key(monitor: &str, key: Key) {
         return;
     }
 
+    if modules::on("weather-surface") && surfaces::weather::key(monitor, key) {
+        return;
+    }
+
     if key == Key::Escape {
         collapse(monitor);
 
