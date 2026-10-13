@@ -46,6 +46,9 @@ const MONTH: f32 = 7.0 * CELL;
 const HEADER: f32 = 28.0;
 const WEEKDAYS: f32 = 18.0;
 const GAP: f32 = 8.0;
+
+// a week's height, the weeks filling what the header and weekdays leave of the content
+const WEEK: f32 = (HEIGHT - HEADER - GAP - WEEKDAYS) / WEEKS as f32;
 const DOT: f32 = 4.0;
 
 // the agenda, right of the month
@@ -761,7 +764,7 @@ fn cell(
 
     Rectangle::new()
         .width(CELL)
-        .height(CELL)
+        .height(WEEK)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
         .on_click(super::on_left(move || choose(&monitor, date)))
