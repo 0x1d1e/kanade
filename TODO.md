@@ -39,12 +39,25 @@ Not worth changing, by this review:
 
 - [x] One atomic file write: `atomic::write` with `Mode::{Shared, Private, Exactly}` (settings, reminders, recents, appearance adapters, calendar mirror)
   - Not folded in: `raster::store` (a cache of hundreds of pictures; the fsync would cost startup) and the glass shader (it locks the file before naming it).
-- [x] One `Backoff` (`backoff.rs`) for logind, seat, sleep, tray, wake, night light, battery, weather, CalDAV and Google. Google now retries a failed sync after 1 min, doubling to 15 min, not a flat 15 min.
+- [x] One `Backoff` (`backoff.rs`) for logind, seat, sleep, tray, wake, night light, battery, weather and Google. Google now retries a failed sync after 1 min, doubling to 15 min, not a flat 15 min.
 - [x] `sources/json.rs` is `serde_json::Value` with `parse`, `array` and `quote`; the hand-rolled parser is gone.
-- [x] `sources/mirror.rs` is the calendar-sync file mirror for Google and CalDAV; `clock::unix_seconds` replaces four copies.
+- [x] `sources/mirror.rs` is the calendar-sync file mirror for Google; `clock::unix_seconds` replaces four copies.
 - [x] A Service's panic reaches `kanade status` (`service::on_panic`, set by `supervise::follow_services`); the restart delay is one constant.
 - [ ] About 80 comment blocks run over four lines (worst: `shadow.rs:1`, `dock.rs:1344`, `view/mod.rs:729`, `calendar.rs:1087`). Each states real constraints, so cut them one by one, not in bulk.
 - [ ] ADR 0003 still says "std-only JSON parser"; history, left as written.
+
+## Architecture (whole-codebase review, third)
+
+- [x] Slow CLI calls (lock, caffeine, battery limit, wallpaper, recording) are answered by the shell when done, or unknown after 5 s (`later.rs`); the five serial-numbered `settle_*` protocols and the CLI's 50 ms status polling are gone.
+  - A shell that restarts mid-call now reads as "closed the connection without answering" (exit 3), not the old per-feature "lost" messages.
+  - `capture record start` still polls for the first frame's file every 50 ms for up to 5 s; wf-recorder has no event for it.
+- [x] One bounded-child runner for the appearance adapters and Matugen (`appearance/child.rs`); the adapters' output is now read as it is written and capped at 1 MiB.
+- [x] Modules carry `hooks.status` and `hooks.reload`; `kanade status` and a config reload walk the Modules that are on. `modules::on("<name>")` stays string-keyed at its other 60 call sites.
+  - Not done: replacing the central `Call` enum with a per-Verb `run`; `kanade status` lists the Modules' lines in catalog order, not the old hand-kept order.
+- [x] "plan N" references in code comments now say the fact; `docs/archived/plan.md` stays history.
+- Not taken: a shared remote-sync loop for Google and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ, so a helper would need as many parameters as it saves lines.
+- Not taken: a `Target` table for the appearance adapters' `apply` and `disable`; their sequencing differs per target (Zen's marker block, GTK's restore state).
+- [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
 
 ## Architecture (#208 review)
 
@@ -70,6 +83,8 @@ Not worth changing, by this review:
 - [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
 - [ ] Satellites shift; the first ~80 ms of the liquid reveal are plain (ADR 0037: a copy is asked for after the first draw and lands about 3 frames on; the shift is their pixels bent by the rim still lagging).
 - [ ] A write of any Service but `Backdrops` and `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
+- [ ] Skip or defer a backdrop resample while the copy is stale, as hyprglass does (a damage-covered check, a cached sample reused during fade-out; `GlassLayerSurface.cpp`): the glass would not read pixels of a body that has moved on.
+- [ ] Zero-copy backdrop: import niri's `linux_dmabuf` copy into wgpu instead of wlr-screencopy into SHM plus CPU `light()` and mips. Not the cause of the Dock smear; the round trip is about 3 ms. Needs unsafe Vulkan dmabuf import (LINEAR modifier), GPU mips, light and dedupe, an SHM fallback and an ADR. No reference in `acknowledgements` does it from a client.
 
 ## Island sizes (ADR 0030)
 
@@ -116,7 +131,8 @@ Not worth changing, by this review:
 - The critical battery countdown names no battery reason line.
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
-- CalDAV: a keyring that answers with no item counts as logged out and drops the account's synced events, as does `forget` after a config read that fell back to defaults; they are a cache, synced again on login.
+
+- Calendar Surface: events added there are changed (`e`) and removed (`d` twice) by key only, with no click and no undo (ADR 0045); recurrence, place and a reminder cannot be typed.
 
 ## Design audit (not done)
 

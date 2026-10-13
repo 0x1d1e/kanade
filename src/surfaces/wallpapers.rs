@@ -423,8 +423,12 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(search::field(&pick.query, "Search wallpapers", width()))
-                    as Box<dyn Widget>,
+                Box::new(search::field(
+                    Icon::Search,
+                    &pick.query,
+                    "Search wallpapers",
+                    width(),
+                )) as Box<dyn Widget>,
                 grid,
                 Box::new(footer(monitor, &pick, &found, all)),
             ])
@@ -745,9 +749,9 @@ fn run(monitor: &str, visit: u64, press: Press) {
 
     let started = match press {
         Press::Set(path, _) => wallpaper::set(path.clone(), from, Some(done))
-            .map(|_| path)
+            .map(|()| path)
             .map_err(|unset| String::from(unset.brief())),
-        Press::Shuffle => wallpaper::shuffle(from, Some(done)).map(|(_, path)| path),
+        Press::Shuffle => wallpaper::shuffle(from, Some(done)),
     };
 
     let mut pick = Pick::write();

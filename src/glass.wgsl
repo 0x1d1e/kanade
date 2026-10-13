@@ -75,8 +75,10 @@ const FROST_BLUR_MAX = 5.0;
 // that around its center (the footprint, 24 px at most). The center keeps a footprint clear of the
 // outline, so nothing from inside the body is averaged in, and its farthest reach, 1 + 2 footprints
 // out or 2 taps of FROST_SPREAD plus a footprint along the edge, stays within the capture margin
-// in capture.rs; a read repeats the copy's last pixels only where the copy ends at the screen's edge
+// in capture.rs; a read past the copy at the screen's edge is dropped within a footprint of the body
 const FROST_SATURATION = 1.18;
+// a body's half height over this, as a power of two, caps the blur: a 40 px capsule blurs to level 2
+const FROST_SCALE = 5.0;
 
 // the frost at `uv`: plain rgba, nothing where the copy holds none of what lies around
 fn frost(uv: vec2<f32>) -> vec4<f32> {
@@ -92,6 +94,8 @@ fn frost(uv: vec2<f32>) -> vec4<f32> {
 
     var sum = vec3<f32>(0.0);
     var weight = 0.0;
+
+    let small = max(log2(min(first.z, first.w) * 0.5 / FROST_SCALE), 1.0);
 
     for (var side = 0; side < 4; side++) {
         let angle = f32(side) * 1.5707963;
@@ -119,8 +123,10 @@ fn frost(uv: vec2<f32>) -> vec4<f32> {
         var got = vec3<f32>(0.0);
         var kept = 0.0;
 
-        // the blur grows with the reach; the copy holds the body's own pixels inside the outline
-        let blur = min(FROST_BLUR + log2(1.0 + reach / 10.0), FROST_BLUR_MAX);
+        // the blur grows with the reach, but never past the body's own scale: a small body reads
+        // only just outside its edge, so a window a few pixels off does not tint it; the copy
+        // holds the body's own pixels inside the outline
+        let blur = min(min(FROST_BLUR + log2(1.0 + reach / 10.0), FROST_BLUR_MAX), small);
         let width = exp2(blur);
         let footprint = 0.75 * exp2(ceil(blur));
 
@@ -134,8 +140,17 @@ fn frost(uv: vec2<f32>) -> vec4<f32> {
                 continue;
             }
 
-            // past the copy, at the screen's edge, its last pixels go on
-            let texel = textureSampleLevel(backdrop, backdrop_sampler, clamp(coord, vec2<f32>(0.0), vec2<f32>(1.0)), blur);
+            /*
+             * past the copy, at the screen's edge, its last pixels go on; but where the edge is
+             * within a footprint of the body, they are the body's own, so the read is dropped
+             */
+            let edge = clamp(coord, vec2<f32>(0.0), vec2<f32>(1.0));
+
+            if any(edge != coord) && rim_outline(edge * place.zw - place.xy, first, second, low) < footprint {
+                continue;
+            }
+
+            let texel = textureSampleLevel(backdrop, backdrop_sampler, edge, blur);
 
             got += texel.rgb * texel.a;
             kept += texel.a;

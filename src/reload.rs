@@ -21,8 +21,7 @@ use kanade_runtime::{MutexExt, service::Service};
 
 use crate::config::{self, Config, Place};
 use crate::island::service::IslandService;
-use crate::sources::{caldav, calendar, night_light, weather, windows};
-use crate::{appearance, dock, modules, settings, supervise, view};
+use crate::{appearance, modules, settings, supervise, view};
 
 // an editor's save is several events: a write, a rename over the old file, a backup removed
 const DEBOUNCE: Duration = Duration::from_millis(150);
@@ -108,24 +107,7 @@ pub fn reload() -> Outcome {
             }
 
             // even unchanged, so a reload also finds the `.desktop` files installed since
-            if modules::on("windows") {
-                windows::rematch();
-            }
-            if modules::on("dock") {
-                dock::pin();
-            }
-            if modules::on("calendar") {
-                calendar::reread();
-            }
-            if modules::on("caldav") {
-                caldav::reread();
-            }
-            if modules::on("weather") {
-                weather::reread();
-            }
-            if modules::on("night-light") {
-                night_light::reread();
-            }
+            modules::reread();
 
             state.generation += 1;
             state.error = None;

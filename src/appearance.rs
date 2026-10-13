@@ -1,6 +1,7 @@
 //! Appearance adapters and wallpaper-derived theme roles.
 
 mod adapters;
+mod child;
 mod matugen;
 pub mod pywalfox;
 

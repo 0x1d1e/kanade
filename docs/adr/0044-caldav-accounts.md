@@ -1,6 +1,6 @@
 # 44. CalDAV accounts
 
-Status: accepted. Builds on the local calendar (ADR 0015) and follows Google Calendar's account sync (ADR 0016).
+Status: removed by ADR 0045; kept as history. Was: accepted. Builds on the local calendar (ADR 0015) and follows Google Calendar's account sync (ADR 0016).
 
 ## Context
 

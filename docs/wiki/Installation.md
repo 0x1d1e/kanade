@@ -14,7 +14,6 @@ Kanade needs:
 - For caffeine, locking before sleep and the `idle` Module's inhibitors: `systemd-inhibit` (systemd) and `setpriv` (util-linux), which ties the inhibitor to Kanade so it never outlives it.
 - For the night light: [wlsunset](https://git.sr.ht/~kennylevinsen/wlsunset) and `setpriv` (util-linux), so it never outlives Kanade.
 - For Google Calendar: a Secret Service, like GNOME Keyring, KWallet or KeePassXC, and `xdg-open`. See [Google Calendar](Google-Calendar.md).
-- For CalDAV accounts: a Secret Service. See [CalDAV](CalDAV.md).
 
 ```sh
 cargo install --locked --path .

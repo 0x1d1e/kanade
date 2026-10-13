@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::iter;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
@@ -323,6 +324,9 @@ pub(crate) struct Laid {
     pub(crate) strip: Rect,
     pub(crate) radius: f32,
 
+    // what the glass is captured out to besides the strip: where it slides, a little before and until the glass's lead on, and the icons' rise past it; none at rest
+    gone: Vec<Rect>,
+
     // how far the pointer holds the Dock out of the Island it is folded into, 0 to 1; 1 otherwise
     pub(crate) held: f32,
 
@@ -591,6 +595,44 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         height: size.body(),
     });
     let (window_width, window_height) = axes.size(canvas.width, canvas.height);
+
+    /*
+     * the copy the glass is frosted from holds the Dock's own pixels outside the strip: its icons
+     * rising past it as they grow, and, as the copy lags the slide, the strip where it was. Both
+     * are captured inside, so the frost never samples them
+     */
+    let lifted = pointer.is_some_and(|pointer| pointer.inside || moving(&pointer.grow, now));
+    let slid = autohide && pointer.is_some_and(|pointer| moving(&pointer.shown, now));
+
+    let gone = if merged || !(lifted || slid) {
+        Vec::new()
+    } else {
+        let since = now.checked_sub(glass::LEAD / 4).unwrap_or(now);
+        let rise = if lifted {
+            size.icon * (most - 1.0)
+        } else {
+            0.0
+        };
+
+        iter::once(since)
+            .chain((0..=4).map(|step| now + glass::LEAD * step / 4))
+            .map(|at| {
+                let y = self::strip_y(
+                    far,
+                    size,
+                    canvas.height,
+                    pointer.map_or(shown, |pointer| pointer.shown(at)),
+                );
+                axes.rect(Rect {
+                    x: left,
+                    y: if far { y - rise } else { y },
+                    width: row.width,
+                    height: size.body() + rise,
+                })
+            })
+            .collect()
+    };
+
     let context_origin = if merged {
         merge::shell(monitor).map_or((0.0, 0.0), |shell| {
             let origin = surface_origin(
@@ -706,6 +748,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         margin: margin(place.anchor),
         strip,
         radius: radius::CARD,
+        gone,
         held: 1.0,
         swelled: (0.0, 0.0),
         shown,
@@ -951,6 +994,7 @@ pub(crate) fn between(
         margin: margin(place.anchor),
         strip: plate.rect,
         radius: plate.radius,
+        gone: Vec::new(),
         held,
         swelled,
         shown: 1.0,
@@ -1046,14 +1090,17 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let strip_at = laid.strip;
     let (shown, aside, items, area) = (laid.shown, laid.aside, laid.items, laid.area);
 
-    let glass_body = glass::Body {
-        x: strip_at.x + margin.left as f32,
-        y: strip_at.y + margin.top as f32,
-        width: strip_at.width,
-        height: strip_at.height,
+    let body = |at: Rect| glass::Body {
+        x: at.x + margin.left as f32,
+        y: at.y + margin.top as f32,
+        width: at.width,
+        height: at.height,
         radius: radius::CARD,
         join: None,
     };
+    let glass_body = laid.gone.iter().fold(body(strip_at), |captured, at| {
+        glass::ahead(captured, body(*at))
+    });
 
     /*
      * Frosted Glass needs the window's place with its margins as part of it; it captures nothing

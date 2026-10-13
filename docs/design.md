@@ -70,7 +70,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | --- | --- |
 | Core | `island` |
 | Activities | `media`, `timer`, `live`, `battery`, `workspace` |
-| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `google-calendar`, `caldav`, `calendar-reminders`, `weather` |
+| Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `google-calendar`, `calendar-reminders`, `weather` |
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface` |
@@ -87,7 +87,7 @@ Rules:
 - `osd` optionally reads `audio`/`brightness`, the keyboards' evdev devices (input group), `/dev/rfkill` and logind's `Active` (ADR 0021); typing and key repeat are the runtime's (ADR 0034).
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `privacy` default on; disable warns indicators disappear.
-- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` and `caldav` → `calendar`; `caldav` makes no request without an account in `calendar.caldav`, bounded refresh with backoff (ADR 0044). `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
+- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
 - module toggle requires restart while the runtime registers windows only at startup.
 
@@ -135,7 +135,7 @@ Rules:
 - **Notifications**: history, actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
 - **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.
-- **Calendar**: month/agenda; local iCalendar files, read-only (ADR 0015); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016); optional CalDAV accounts synced read-only the same way, passwords only in the Secret Service ([ADR 0044](adr/0044-caldav-accounts.md)). Reminders from events' `VALARM`s, or a default lead, as an Ongoing Activity counting down, each going off once across restarts ([ADR 0043](adr/0043-calendar-reminders.md)).
+- **Calendar**: month/agenda; local iCalendar files, read-only, plus the events the Calendar Surface adds, changes and removes, one file each in Kanade's own directory (ADR 0015, ADR 0045); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016). Reminders from events' `VALARM`s, or a default lead, as an Ongoing Activity counting down, each going off once across restarts ([ADR 0043](adr/0043-calendar-reminders.md)).
 - **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
 
 ### Tray
@@ -165,7 +165,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 
 Idle inhibitor toggle/activity. Prevent idle/lock/suspend only while explicitly active; visible state; optional timeout.
 
-A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. The shell answers `on` at once as starting and a worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; `kanade` waits on `caffeine status` within one 5 s patience. Off, toggle and a newer on supersede a start by serial. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
+A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv --pdeathsig`; its command says when logind granted the inhibitor, then `sleep`s the timeout. A worker turns it on once that is said, letting go of the old holder only then, so it never lapses and the draw thread never waits; the shell holds the call's answer (`Later`) until the holder is up, or answers unknown after 5 s. Off, toggle and a newer on supersede a start by serial, and the superseded call is answered unknown. A refused or failed on shows a Transient Failed Activity while off. A Persistent Ongoing Activity with Turn off while it holds; ending on its own any way but the timeout posts a Transient Failed Activity with the reason (done, #141).
 
 ### Live Activities
 
@@ -177,7 +177,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Battery
 
-A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker by serial, so the draw thread never waits, and a refusal shows on the switch.
+A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker, so the draw thread never waits; the call is answered when UPower does, and a refusal shows on the switch.
 
 ### Presentation migration
 
@@ -251,7 +251,6 @@ notifications dnd on|off|toggle
 clipboard open|close|toggle|clear
 calendar open|close|toggle
 reminders dismiss|status
-caldav login <name>|logout <name>|sync [<name>]|status
 weather open|close|toggle|refresh|status
 timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
 activity start <id> <title>|progress <id> <amount>|detail <id> [text]

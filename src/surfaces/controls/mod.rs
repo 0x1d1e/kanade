@@ -1,4 +1,4 @@
-//! The Controls Surface (plan 7): Wi-Fi, Bluetooth, the microphone, Do Not Disturb, the night
+//! The Controls Surface: Wi-Fi, Bluetooth, the microphone, Do Not Disturb, the night
 //! light and, where the battery supports it, its charge limit as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
@@ -551,7 +551,7 @@ fn run(press: Press) {
         Press::NightLight(on) => night_light::switch(on),
         // refused at once only when it is no longer supported, which the switch then stops showing
         Press::ChargeLimit(on) => {
-            let _ = charge_limit::ask(on);
+            let _ = charge_limit::ask(on, None);
         }
     }
 }

@@ -116,7 +116,7 @@ pub const fn upright(shape: Shape, hang: Hang) -> Shape {
 // the pointer counts as on the body this far outside it, so grazing an edge does not flicker
 pub const HOVER_PADDING: f32 = 8.0;
 
-// plan 6.1 starting values; the small forms are pills, radius half the height
+// starting values; the small forms are pills, radius half the height
 pub const REST: Shape = Shape {
     width: 150.0,
     height: 32.0,

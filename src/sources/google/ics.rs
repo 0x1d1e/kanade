@@ -6,10 +6,9 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde_json::Value;
 
-const PRODID: &str = "-//Kanade//Google Calendar//EN";
+use crate::sources::ical::{escape, line};
 
-// a content line's longest, in octets, before it folds (RFC 5545 3.1)
-const LINE: usize = 75;
+const PRODID: &str = "-//Kanade//Google Calendar//EN";
 
 // the file for `events`, each an item of Google's `events.list`
 pub fn calendar(events: &[Value]) -> String {
@@ -103,51 +102,13 @@ pub fn rfc3339(seconds: i64) -> Option<String> {
     )
 }
 
-// a TEXT value, its backslashes, separators and line breaks escaped
-fn escape(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-
-    for char in text.chars() {
-        match char {
-            '\\' => escaped.push_str("\\\\"),
-            ';' => escaped.push_str("\\;"),
-            ',' => escaped.push_str("\\,"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => {}
-            char if char.is_control() => {}
-            char => escaped.push(char),
-        }
-    }
-
-    escaped
-}
-
-// one content line, folded into lines of at most `LINE` octets, never inside a character
-fn line(text: &mut String, content: &str) {
-    let mut room = LINE;
-    let mut used = 0;
-
-    for char in content.chars() {
-        if used + char.len_utf8() > room {
-            text.push_str("\r\n ");
-            used = 0;
-            // the space that starts a folded line is one of its octets
-            room = LINE - 1;
-        }
-
-        text.push(char);
-        used += char.len_utf8();
-    }
-
-    text.push_str("\r\n");
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
 
     use super::*;
     use crate::sources::calendar;
+    use crate::sources::ical::LINE;
 
     fn events(json: &str) -> Vec<Value> {
         serde_json::from_str(json).unwrap_or_default()

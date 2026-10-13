@@ -1,4 +1,4 @@
-//! What the Media Surface draws (plan 7): every open player, and the one it shows with its
+//! What the Media Surface draws: every open player, and the one it shows with its
 //! timeline. Written by `media::follow` only while the Surface is watched, so a closed Surface
 //! costs nothing.
 
@@ -217,7 +217,7 @@ pub fn choices(open: impl IntoIterator<Item = (String, String)>) -> Vec<Choice> 
 
 /*
  * the most vivid of the artwork's colors, lightened until it stands out from the bar's track; none
- * when the artwork is grey, so the Surface keeps its neutral foreground (plan 7)
+ * when the artwork is grey, so the Surface keeps its neutral foreground
  */
 pub fn accent(colors: &[Color]) -> Option<Color> {
     let vivid = colors

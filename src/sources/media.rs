@@ -1,12 +1,12 @@
-//! The Media Activity (plan 3, 6.2): one Persistent Activity for the active MPRIS player, Media
-//! Priority, so it never interrupts (plan 7).
+//! The Media Activity: one Persistent Activity for the active MPRIS player, Media
+//! Priority, so it never interrupts.
 //!
 //! Follows MPRIS signals rather than polling, which would wake Kanade every second to learn
 //! nothing: a player announces every change the island shows, only the position
 //! goes unannounced. So nothing here runs until a player changes, or a pause runs out.
 //!
 //! While the Media Surface is open it also feeds its `Playback`: every player, the one it shows,
-//! and that one's position, asked once a second (plan 7). Its controls come back here as
+//! and that one's position, asked once a second. Its controls come back here as
 //! `Control`s, so the bus is only ever called from this thread.
 
 use std::collections::BTreeMap;
@@ -49,7 +49,7 @@ const DBUS: &str = "org.freedesktop.DBus";
 
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
-// plan 7: the shown player's position is asked this often at least while the Surface is open
+// the shown player's position is asked this often at least while the Surface is open
 const POLL: Duration = Duration::from_secs(1);
 
 /*

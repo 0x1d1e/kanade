@@ -6,7 +6,7 @@
 //! Its thread reads the device once, then again on each of the device's property changes. Turning
 //! it on or off is asked on a thread of its own, since UPower may take a moment, so neither the
 //! Controls switch nor `kanade battery limit` waits on the draw thread; a refusal shows on the
-//! switch and in `status`, with UPower's reason.
+//! switch, with UPower's reason, and `kanade` is answered once UPower has.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -16,6 +16,7 @@ use zbus::blocking::Connection;
 
 use super::osd::UPOWER;
 use crate::bus::{Bus, Value};
+use crate::later::Later;
 
 const DEVICE: &str = "org.freedesktop.UPower.Device";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
@@ -24,8 +25,11 @@ const ROOT: &str = "/org/freedesktop/UPower";
 // UPower's Type for a battery
 const BATTERY: f64 = 2.0;
 
-// the serials of the asks, so `kanade` waits on its own and not on one before it
+// the serials of the asks, so an older one's answer never takes a newer one's place
 static ISSUED: AtomicU64 = AtomicU64::new(0);
+
+// told how an ask went: the state UPower left, or why it refused
+pub type Done = Box<dyn FnOnce(Result<String, String>) + Send>;
 
 // the battery's charge limit as UPower last said; written only by this module's threads
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,46 +76,23 @@ impl Request {
     }
 }
 
-// how an ask of `kanade battery limit on|off` stands, as `status` says it
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Settled {
-    Waiting,
-    Done(String),
-    Refused(String),
-}
-
 /*
- * does what `request` asks: on or off answered at once as asking, by serial, which `status` then
- * says the outcome of
+ * does what `request` asks: the state for `status`; on and off are asked of UPower, which then
+ * answers `later` with the state it left, or its refusal
  */
-pub fn request(request: Request) -> Result<String, String> {
+pub fn request(request: Request, later: Later) {
     match request {
-        Request::Status => Ok(status(&ChargeLimit::read())),
-        Request::On => ask(true).map(|serial| format!("asking #{serial}")),
-        Request::Off => ask(false).map(|serial| format!("asking #{serial}")),
+        Request::Status => later.done(said(&ChargeLimit::read())),
+        Request::On | Request::Off => {
+            let on = request == Request::On;
+            let answer = later.clone();
+            let done: Done = Box::new(move |result| answer.result(result));
+
+            if let Err(why) = ask(on, Some(done)) {
+                later.refused(why);
+            }
+        }
     }
-}
-
-// the serial `request` answered with, for `kanade` to wait on
-pub fn asking(reply: &str) -> Option<u64> {
-    reply.strip_prefix("asking #")?.parse().ok()
-}
-
-/*
- * the limit's state, then the last ask's outcome, like "#3 done" or "#3 refused: why", so
- * `settled` can tell it
- */
-fn status(limit: &ChargeLimit) -> String {
-    let mut lines = vec![said(limit)];
-
-    match &limit.asked {
-        Some((serial, None)) => lines.push(format!("#{serial} waiting")),
-        Some((serial, Some(Ok(())))) => lines.push(format!("#{serial} done")),
-        Some((serial, Some(Err(why)))) => lines.push(format!("#{serial} refused: {why}")),
-        None => {}
-    }
-
-    lines.join("\n")
 }
 
 // like "on, charging stops at 80%", "off" or why it is unavailable
@@ -132,24 +113,11 @@ fn said(limit: &ChargeLimit) -> String {
     }
 }
 
-// how the ask `serial` stands in `status`, none while `status` does not say
-pub fn settled(status: &str, serial: u64) -> Option<Settled> {
-    let mut lines = status.lines();
-    let state = lines.next()?;
-    let outcome = lines.next()?.strip_prefix(&format!("#{serial} "))?;
-
-    Some(match outcome {
-        "waiting" => Settled::Waiting,
-        "done" => Settled::Done(state.to_owned()),
-        refused => Settled::Refused(refused.strip_prefix("refused: ")?.to_owned()),
-    })
-}
-
 /*
- * asks UPower to turn the limit on or off on a thread of its own, answered by serial; refused at
- * once while unsupported
+ * asks UPower to turn the limit on or off on a thread of its own; `done` is told the state it left,
+ * or UPower's reason for refusing. Refused at once while unsupported
  */
-pub fn ask(on: bool) -> Result<u64, String> {
+pub fn ask(on: bool, done: Option<Done>) -> Result<(), String> {
     let limit = ChargeLimit::read().clone();
 
     let Some(device) = limit.device.clone().filter(|_| limit.supported) else {
@@ -181,18 +149,23 @@ pub fn ask(on: bool) -> Result<u64, String> {
                 .as_ref()
                 .is_some_and(|(asked, _)| *asked == serial)
             {
-                limit.asked = Some((serial, Some(answer)));
+                limit.asked = Some((serial, Some(answer.clone())));
+            }
+
+            let state = said(&limit);
+
+            drop(limit);
+
+            if let Some(done) = done {
+                done(answer.map(|()| state));
             }
         });
 
-    match spawned {
-        Ok(_) => Ok(serial),
-        Err(error) => {
-            let why = format!("cannot start a thread: {error}");
-            ChargeLimit::write().asked = Some((serial, Some(Err(why.clone()))));
-            Err(why)
-        }
-    }
+    spawned.map(drop).map_err(|error| {
+        let why = format!("cannot start a thread: {error}");
+        ChargeLimit::write().asked = Some((serial, Some(Err(why.clone()))));
+        why
+    })
 }
 
 // over a connection of its own, which says why UPower refused, unlike `Bus`, which says nothing
@@ -301,38 +274,5 @@ pub fn follow() {
         if change.arguments().first().map(Value::text) == Some(DEVICE) {
             publish(read(&device));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // `kanade battery limit on` tells its own ask's outcome from `status`, never an older one's
-    #[test]
-    fn an_ask_settles_by_its_own_serial() {
-        let mut limit = ChargeLimit {
-            device: Some(String::from("/org/freedesktop/UPower/devices/battery_BAT0")),
-            supported: true,
-            enabled: true,
-            end: Some(80),
-            asked: Some((3, None)),
-        };
-
-        assert_eq!(settled(&status(&limit), 3), Some(Settled::Waiting));
-        assert_eq!(settled(&status(&limit), 4), None);
-
-        limit.asked = Some((3, Some(Ok(()))));
-        assert_eq!(
-            settled(&status(&limit), 3),
-            Some(Settled::Done(String::from("on, charging stops at 80%")))
-        );
-
-        limit.asked = Some((3, Some(Err(String::from("Not authorized")))));
-        assert_eq!(
-            settled(&status(&limit), 3),
-            Some(Settled::Refused(String::from("Not authorized")))
-        );
-        assert_eq!(settled(&status(&limit), 2), None);
     }
 }

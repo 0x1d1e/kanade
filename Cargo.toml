@@ -49,8 +49,6 @@ serde_json = "1"
 ring = "0.17"
 base64 = "0.23"
 percent-encoding = "2"
-# the runtime already builds it (usvg); CalDAV's WebDAV answers (ADR 0044)
-roxmltree = "0.21"
 # png already builds them; the checksums of the pictures Kanade writes, as fast as a rim
 # streaming behind a scrolling page needs
 crc32fast = "1"
@@ -60,7 +58,7 @@ png = "0.18"
 zune-jpeg = "0.5"
 # calloop already builds it; src/clock.rs's timerfd, signals, terminal mode and evdev ioctls, with no
 # hand-kept ABI
-rustix = { version = "1", default-features = false, features = ["std", "fs", "stdio", "termios", "time", "process"] }
+rustix = { version = "1", default-features = false, features = ["std", "fs", "time", "process"] }
 # rustix and std already build it; the C calls rustix leaves out: local time,
 # signal dispositions and PAM's allocator
 libc = "0.2"

@@ -21,8 +21,8 @@ use super::forms::{sized, stacked, stacked_tile};
 use super::shape::{shape, upright};
 
 /*
- * art, title, then whether it plays. The art's inset matches top, left and bottom, so it sits
- * concentric with the body's round end; the state mark keeps clear of the other end
+ * art, title, then whether it plays. The art is inset evenly top and bottom and further from the
+ * body's round end, which would crowd its corner; the state mark keeps clear of the other end
  */
 pub(super) fn media_compact(change: Change, now: Instant) -> Rectangle {
     if upright() {
@@ -34,13 +34,14 @@ pub(super) fn media_compact(change: Change, now: Instant) -> Rectangle {
 
     let shape = shape(Presentation::Compact);
     let inset = 7.0;
+    let lead = 11.0;
 
     sized(Presentation::Compact)
         .padding(Padding {
             top: 0.0,
             right: 15.0,
             bottom: 0.0,
-            left: inset,
+            left: lead,
         })
         .align_child(Start, Center)
         .child(
@@ -63,13 +64,14 @@ pub(super) fn media_compact(change: Change, now: Instant) -> Rectangle {
 pub(super) fn media_peek(change: Change, now: Instant) -> Rectangle {
     let shape = shape(Presentation::Peek);
     let inset = 7.0;
+    let lead = 13.0;
 
     sized(Presentation::Peek)
         .padding(Padding {
             top: 0.0,
             right: 20.0,
             bottom: 0.0,
-            left: inset,
+            left: lead,
         })
         .align_child(Start, Center)
         .child(

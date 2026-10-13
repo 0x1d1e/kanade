@@ -73,11 +73,12 @@ pub(super) fn hud(
     let edge = 10.0;
     let compact = shape(Presentation::Compact);
 
+    // solid, as what it floats over would otherwise show through it
     let capsule = Rectangle::new()
         .width(compact.width)
         .height(compact.height)
         .radius(compact.radius)
-        .fill(roles.surface_container_high)
+        .fill(roles.track())
         .border(1.0, roles.outline)
         .shadow(Shadow::drop(theme::SHADOW_HUD).blur(18.0).offset(0.0, 4.0))
         .scale(HUD_POP + (1.0 - HUD_POP) * come)

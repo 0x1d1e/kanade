@@ -8,26 +8,24 @@ use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
-use crate::dock;
 use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::{Effect, IslandService};
+use crate::later::Later;
 use crate::lock;
 use crate::modules;
 use crate::reload::{self, Outcome};
 use crate::settings;
 use crate::sources::capture::{self, Asked};
-use crate::sources::clipboard::{self, Clipboard};
-use crate::sources::notifications::{self, Daemon};
+use crate::sources::clipboard;
+use crate::sources::notifications;
 use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
-use crate::sources::tray::Tray;
-use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, caffeine, caldav, charge_limit, fullscreen, google, live, night_light, reminders,
-    session, sleep, wallpaper, weather,
+    apps, caffeine, charge_limit, fullscreen, google, live, night_light, reminders, session,
+    wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -50,6 +48,13 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
     match call {
         // answered once the user chooses or dismisses it, so the client waits on the user
         Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
+        // answered when the source is done, or unknown once `LATER` passes (`crate::later`)
+        Ok(Call::Record(request)) => recording::request(request, Later::new(reply)),
+        // on the draw thread, which systemd-inhibit dies with
+        Ok(Call::Caffeine(request)) => caffeine::request(request, Later::new(reply)),
+        Ok(Call::Battery(request)) => charge_limit::request(request, Later::new(reply)),
+        Ok(Call::Wallpaper(request)) => wallpaper::request(request, Later::new(reply)),
+        Ok(Call::Lock) => lock::request(Later::new(reply)),
         Ok(call) => reply.send(&run(call).encode()),
         Err(refused) => reply.send(&refused.encode()),
     }
@@ -65,8 +70,13 @@ fn run(call: Call) -> Reply {
             Reply::Done(String::new())
         }
         Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
-        // `answer` keeps it waiting
-        Call::Dmenu(_) => Reply::Refused(String::from("dmenu waits on the Launcher")),
+        // `answer` keeps these waiting
+        Call::Dmenu(_)
+        | Call::Record(_)
+        | Call::Caffeine(_)
+        | Call::Battery(_)
+        | Call::Wallpaper(_)
+        | Call::Lock => Reply::Refused(String::from("answered later, not by `run`")),
         Call::ClearNotifications => {
             Notifications::clear();
             Reply::Done(String::new())
@@ -81,23 +91,9 @@ fn run(call: Call) -> Reply {
             Ok(Asked::Unknown(why)) => Reply::Unknown(why),
             Err(error) => Reply::Refused(error),
         },
-        // on the draw thread, which the recorder ends with (`recording::start`); `kanade` waits on it
-        Call::Record(request) => record(request),
-        // on the draw thread, which systemd-inhibit dies with (`caffeine::request`)
-        Call::Caffeine(request) => {
-            caffeine::request(request).map_or_else(Reply::Refused, Reply::Done)
-        }
         // through the settings file's writes, which the Settings window shares
         Call::NightLight(request) => {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
-        }
-        // UPower is asked on a thread of its own, answered by serial (`charge_limit::request`)
-        Call::Battery(request) => {
-            charge_limit::request(request).map_or_else(Reply::Refused, Reply::Done)
-        }
-        // handed to the wallpaper's thread, as awww takes a while; `kanade` waits on it
-        Call::Wallpaper(request) => {
-            wallpaper::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
@@ -105,14 +101,10 @@ fn run(call: Call) -> Reply {
         Call::Reminders(request) => {
             reminders::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
-        // the sync is on the CalDAV thread, so this answers at once
-        Call::CalDav(request) => caldav::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the fetch is on the weather's thread, so this answers at once
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
-        // returns before niri locks, which the client waits for (`lock status`)
-        Call::Lock => lock::start().map_or_else(Reply::Refused, Reply::Done),
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),
         // logind is asked on a thread of its own
@@ -138,17 +130,6 @@ fn run(call: Call) -> Reply {
     }
 }
 
-// answered at once, as niri gives the recorder no frame while the draw thread waits
-fn record(request: recording::Request) -> Reply {
-    let reply = match request {
-        recording::Request::Start => recording::start(),
-        recording::Request::Stop => recording::stop(),
-        recording::Request::Status => Ok(recording::status().to_string()),
-    };
-
-    reply.map_or_else(Reply::Refused, Reply::Done)
-}
-
 // the versions, then the config, the Modules and what went wrong with the sources, a line each
 fn status() -> Vec<String> {
     let mut lines = vec![format!(
@@ -162,37 +143,7 @@ fn status() -> Vec<String> {
     lines.extend(modules::status());
 
     // a Module that is off reads no Service
-    if modules::on("notifications") {
-        lines.push(Daemon::read().status());
-    }
-    if modules::on("tray") {
-        lines.push(Tray::read().status());
-    }
-    if modules::on("clipboard") {
-        lines.push(Clipboard::read().status());
-    }
-    if modules::on("windows") {
-        lines.push(Windows::read().status());
-    }
-    if modules::on("dock") {
-        lines.push(dock::status());
-    }
-    if modules::on("lock") {
-        lines.push(sleep::status());
-    }
-    if modules::on("wallpaper") {
-        lines.push(wallpaper::status());
-    }
-    if modules::on("google-calendar") {
-        lines.push(google::status());
-    }
-    if modules::on("caldav") {
-        lines.extend(caldav::status());
-    }
-    if modules::on("weather") {
-        lines.push(weather::status());
-    }
-
+    lines.extend(modules::reports());
     lines.extend(fullscreen::status());
     lines.extend(supervise::status());
     lines

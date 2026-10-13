@@ -1,7 +1,7 @@
 //! Kanade's secrets in the Secret Service (`org.freedesktop.secrets`: GNOME Keyring, KWallet,
-//! KeePassXC), never in a file Kanade writes: the Google account's credentials (ADR 0016) and each
-//! CalDAV account's password (ADR 0044). An item is found by its attributes. A locked keyring asks
-//! the user through the keyring's own prompt, on the calling thread, which waits for it.
+//! KeePassXC), never in a file Kanade writes: the Google account's credentials (ADR 0016). An item is
+//! found by its attributes. A locked keyring asks the user through the keyring's own prompt, on
+//! the calling thread, which waits for it.
 //!
 //! A secret crosses the session bus unencrypted (the `plain` algorithm), as the bus is the user's
 //! own; it is never logged or printed, and none of the errors here hold it.

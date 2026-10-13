@@ -7,15 +7,16 @@ use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::thread::{self, Builder};
-use std::time::{Duration, Instant};
+use std::thread::Builder;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use super::child::{self, Interrupt, Ran};
 use crate::atomic::{self, Mode};
 use crate::config::Config;
 use crate::look::Tone;
@@ -25,7 +26,6 @@ mod colors;
 pub use colors::Scheme;
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(2);
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const ZEN_BEGIN: &str = "// Kanade appearance sync: begin";
 const ZEN_END: &str = "// Kanade appearance sync: end";
 const ZEN_PREFIX_NEWLINE: &str = "// Kanade appearance sync: prefix ended with newline";
@@ -44,10 +44,7 @@ enum Request {
     Colors(Box<Scheme>),
 }
 
-enum Helper<T> {
-    Done(Result<T, String>),
-    Superseded(Request),
-}
+type Helper<T> = Ran<Request, T>;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -496,7 +493,7 @@ fn read_setting(key: &str, requests: &Receiver<Request>) -> Helper<Option<String
     command.args(["get", INTERFACE_SCHEMA, key]);
 
     match run(command, HELPER_TIMEOUT, requests) {
-        Helper::Done(Ok(output)) => match parse_gsettings_string(&output.stdout) {
+        Helper::Done(Ok(output)) => match parse_gsettings_string(&output) {
             Some(value) => Helper::Done(Ok(Some(value))),
             None => Helper::Done(Err(format!(
                 "gsettings returned an invalid string for {key}"
@@ -559,71 +556,14 @@ fn restore_desktop(key: &str, value: Option<&str>, requests: &Receiver<Request>)
     }
 }
 
-fn run(mut command: Command, timeout: Duration, requests: &Receiver<Request>) -> Helper<Output> {
-    let mut child = match command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => return Helper::Done(Err(format!("could not run helper: {error}"))),
-    };
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        match requests.try_recv() {
-            Ok(newer) => {
-                kill_and_reap(child);
-                return Helper::Superseded(newer);
-            }
-            Err(TryRecvError::Disconnected) => {
-                kill_and_reap(child);
-                return Helper::Done(Err(String::from("appearance sync worker stopped")));
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-
-        match child.try_wait() {
-            Ok(Some(_)) => return Helper::Done(output(child)),
-            Ok(None) => {}
-            Err(error) => {
-                kill_and_reap(child);
-                return Helper::Done(Err(format!("could not wait for helper: {error}")));
-            }
-        }
-
-        if Instant::now() >= deadline {
-            kill_and_reap(child);
-            return Helper::Done(Err(format!(
-                "helper timed out after {} ms",
-                timeout.as_millis()
-            )));
-        }
-
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-fn output(child: Child) -> Result<Output, String> {
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("could not collect helper output: {error}"))?;
-
-    if output.status.success() {
-        return Ok(output);
-    }
-
-    let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if error.is_empty() {
-        Err(format!("helper exited with {}", output.status))
-    } else {
-        Err(error)
-    }
-}
-
-fn kill_and_reap(mut child: Child) {
-    let _ = child.kill();
-    let _ = child.wait_with_output();
+fn run(command: Command, timeout: Duration, requests: &Receiver<Request>) -> Helper<Vec<u8>> {
+    child::run(command, "helper", timeout, || match requests.try_recv() {
+        Ok(newer) => Some(Interrupt::Superseded(newer)),
+        Err(TryRecvError::Disconnected) => Some(Interrupt::Abort(String::from(
+            "appearance sync worker stopped",
+        ))),
+        Err(TryRecvError::Empty) => None,
+    })
 }
 
 fn preference(tone: Tone) -> &'static str {
@@ -1954,6 +1894,8 @@ fn take_pending(requests: &Receiver<Request>) -> Option<Request> {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::thread;
+    use std::time::Instant;
 
     use super::*;
 

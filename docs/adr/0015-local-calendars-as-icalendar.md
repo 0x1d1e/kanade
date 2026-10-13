@@ -1,6 +1,6 @@
 # 15. Local calendars as iCalendar files
 
-Status: accepted (roadmap 10 Desktop/data, #150). Decides the local source format for the `calendar` Module in `docs/design.md`.
+Status: accepted (roadmap 10 Desktop/data, #150). Decides the local source format for the `calendar` Module in `docs/design.md`. Amended by ADR 0045: the Calendar Surface writes the events it adds, in a directory of its own.
 
 ## Context
 

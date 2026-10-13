@@ -3,28 +3,27 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{LazyLock, Mutex, OnceLock};
-use std::thread::{self, Builder, JoinHandle};
-use std::time::{Duration, Instant};
+use std::thread::Builder;
+use std::time::Duration;
 
 use kanade_runtime::{Color, MutexExt, service::Service};
 use serde_json::Value as Json;
 use toml::Value as Toml;
 
 use super::adapters::Scheme;
+use super::child::{self, Interrupt, Ran};
 use crate::look::Tone;
 use crate::theme::{self, ThemeRoles};
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
-const OUTPUT_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Palettes {
@@ -52,10 +51,7 @@ struct Job {
     tone: Tone,
 }
 
-enum Run<T> {
-    Done(Result<T, String>),
-    Superseded(Job),
-}
+type Run<T> = Ran<Job, T>;
 
 #[derive(Debug, Default)]
 struct Requests {
@@ -546,147 +542,14 @@ fn empty_config() -> Toml {
     .expect("the built-in Matugen config is valid TOML")
 }
 
-fn run(
-    mut command: Command,
-    timeout: Duration,
-    serial: u64,
-    requests: &Receiver<Job>,
-) -> Run<Vec<u8>> {
-    let mut child = match command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            return Run::Done(Err(format!("could not run matugen: {error}")));
+fn run(command: Command, timeout: Duration, serial: u64, requests: &Receiver<Job>) -> Run<Vec<u8>> {
+    child::run(command, "matugen", timeout, || match requests.try_recv() {
+        Ok(newer) if newer.serial > serial => Some(Interrupt::Superseded(newer)),
+        Err(TryRecvError::Disconnected) => {
+            Some(Interrupt::Abort(String::from("Matugen worker stopped")))
         }
-    };
-
-    let stdout = match child
-        .stdout
-        .take()
-        .and_then(|output| capture(output, "stdout").ok())
-    {
-        Some(output) => output,
-        None => {
-            kill_and_reap(&mut child);
-            return Run::Done(Err(String::from("could not read Matugen output")));
-        }
-    };
-    let stderr = match child
-        .stderr
-        .take()
-        .and_then(|output| capture(output, "stderr").ok())
-    {
-        Some(output) => output,
-        None => {
-            kill_and_reap(&mut child);
-            let _ = stdout.join();
-            return Run::Done(Err(String::from("could not read Matugen errors")));
-        }
-    };
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        match requests.try_recv() {
-            Ok(newer) if newer.serial > serial => {
-                kill_and_reap(&mut child);
-                let _ = stdout.join();
-                let _ = stderr.join();
-                return Run::Superseded(newer);
-            }
-            Ok(_) => {}
-            Err(TryRecvError::Disconnected) => {
-                kill_and_reap(&mut child);
-                let _ = stdout.join();
-                let _ = stderr.join();
-                return Run::Done(Err(String::from("Matugen worker stopped")));
-            }
-            Err(TryRecvError::Empty) => {}
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Run::Done(finish(status, stdout, stderr));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                kill_and_reap(&mut child);
-                let _ = stdout.join();
-                let _ = stderr.join();
-                return Run::Done(Err(format!("could not wait for matugen: {error}")));
-            }
-        }
-
-        if Instant::now() >= deadline {
-            kill_and_reap(&mut child);
-            let _ = stdout.join();
-            let _ = stderr.join();
-            return Run::Done(Err(format!(
-                "matugen timed out after {} ms",
-                timeout.as_millis()
-            )));
-        }
-
-        thread::sleep(POLL_INTERVAL);
-    }
-}
-
-type Captured = (Vec<u8>, bool);
-type Reader = JoinHandle<io::Result<Captured>>;
-
-fn capture<R: Read + Send + 'static>(mut stream: R, name: &str) -> io::Result<Reader> {
-    Builder::new()
-        .name(format!("kanade-matugen-{name}"))
-        .spawn(move || {
-            let mut captured = Vec::new();
-            let mut over_limit = false;
-            let mut buffer = [0; 8192];
-
-            loop {
-                let count = stream.read(&mut buffer)?;
-                if count == 0 {
-                    return Ok((captured, over_limit));
-                }
-
-                let remaining = OUTPUT_LIMIT.saturating_sub(captured.len());
-                captured.extend_from_slice(&buffer[..count.min(remaining)]);
-                over_limit |= count > remaining;
-            }
-        })
-}
-
-fn finish(status: ExitStatus, stdout: Reader, stderr: Reader) -> Result<Vec<u8>, String> {
-    let (stdout, too_much_stdout) = reader(stdout, "stdout")?;
-    let (stderr, _) = reader(stderr, "stderr")?;
-
-    if !status.success() {
-        let error = String::from_utf8_lossy(&stderr).trim().to_owned();
-        return Err(if error.is_empty() {
-            format!("matugen exited with {status}")
-        } else {
-            error
-        });
-    }
-
-    if too_much_stdout {
-        return Err(format!("matugen output exceeded {OUTPUT_LIMIT} bytes"));
-    }
-
-    Ok(stdout)
-}
-
-fn reader(handle: Reader, name: &str) -> Result<Captured, String> {
-    handle
-        .join()
-        .map_err(|_| format!("Matugen {name} reader stopped unexpectedly"))?
-        .map_err(|error| format!("could not read Matugen {name}: {error}"))
-}
-
-fn kill_and_reap(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+        Ok(_) | Err(TryRecvError::Empty) => None,
+    })
 }
 
 fn parse(output: &[u8]) -> Result<Palettes, String> {
@@ -781,6 +644,8 @@ impl Palettes {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
+    use std::thread;
+    use std::time::Instant;
 
     use super::*;
 

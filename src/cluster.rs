@@ -263,7 +263,7 @@ impl Cluster {
 
 /*
  * what captures, as the Controls Surface draws it beside the apps: glyphs that differ by shape, not
- * color alone (plan 7), green for a microphone or camera, amber for a screen cast
+ * color alone, green for a microphone or camera, amber for a screen cast
  */
 pub fn glyphs(privacy: &Privacy) -> Vec<Box<dyn Widget>> {
     sensors()

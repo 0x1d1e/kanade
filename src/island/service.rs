@@ -16,15 +16,15 @@ use super::motion::{Mode, Spring};
 use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
 use super::satellites::{Mark, Satellites};
 
-// how long a morph takes, by what it changes, see `response`: 0.8 of plan 5.2's 180, 220 and 180 ms
+// how long a morph takes, by what it changes, see `response`: 0.8 of 180, 220 and 180 ms
 const EXPAND: Duration = Duration::from_millis(144);
 const SURFACE_CHANGE: Duration = Duration::from_millis(176);
 const COLLAPSE: Duration = Duration::from_millis(144);
 
-// plan 5.2: a pointer resting on a Compact island for 100-140 ms peeks
+// a pointer resting on a Compact island for 100-140 ms peeks
 const HOVER_DELAY: Duration = Duration::from_millis(120);
 
-// plan 5.2: pointer out collapses after 200-300 ms, back in before that keeps the island open
+// pointer out collapses after 200-300 ms, back in before that keeps the island open
 const GRACE: Duration = Duration::from_millis(250);
 
 // a little past the target and back, like macOS's island
@@ -339,7 +339,7 @@ impl IslandService {
         self.presentations.tray()
     }
 
-    // plan 5.3: niri's overview is open, so every island rests and passes the pointer through
+    // niri's overview is open, so every island rests and passes the pointer through
     pub fn overview(&self) -> bool {
         self.presentations.overview()
     }
@@ -601,7 +601,7 @@ impl IslandService {
     }
 
     /*
-     * a Preempt Activity arriving collapses the open Surface it shows on (plan 5.1 rule 4), an
+     * a Preempt Activity arriving collapses the open Surface it shows on, an
      * existing one turned Preempt included, unless that is its own Surface; a repost of one already
      * up does not, so a Surface reopened over it stays. A pending AutoExpand gives the islands back
      * first. An AutoExpand one arriving opens its own Surface, as `auto_expand`

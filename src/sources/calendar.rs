@@ -48,8 +48,10 @@ use chrono::{
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::{caldav, google};
+use super::google;
 use crate::{clock, config, modules, supervise};
+
+pub mod add;
 
 // where the calendars are without `calendar.paths`, under the XDG data directory
 const DIRECTORY: &str = "calendars";
@@ -84,7 +86,9 @@ pub struct Calendars {
     // today's events, for the time's Peek
     pub upcoming: Upcoming,
 
+    // the events Kanade keeps in files of its own (ADR 0045) first, `own` of them, then the rest
     calendars: Arc<[ICalendar]>,
+    own: usize,
 }
 
 /*
@@ -119,7 +123,19 @@ impl Service for Calendars {
 impl Calendars {
     // the events that fall on the days from `from` until `to`, in local time
     pub fn occurrences(&self, from: NaiveDate, to: NaiveDate) -> Events {
-        occurrences(&self.calendars, from, to, clock::local_time)
+        let (own, others) = self.calendars.split_at(self.own);
+        let mut events = occurrences(own, from, to, clock::local_time);
+        let mut others = occurrences(others, from, to, clock::local_time);
+
+        // a UID alone does not make an event Kanade's: a copy of its file elsewhere carries it too
+        for occurrence in &mut others.occurrences {
+            occurrence.added = None;
+        }
+
+        events.partial |= others.partial;
+        events.occurrences.append(&mut others.occurrences);
+        sort(&mut events.occurrences);
+        events
     }
 
     // the events from `range.0` until `range.1`, in seconds since the epoch, with their alarms
@@ -154,6 +170,9 @@ pub struct Occurrence {
     // its start and end in seconds since the epoch, which order it and give its length
     pub span: (i64, i64),
     pub all_day: bool,
+
+    // the name of the file in `add::directory` it was typed into, so the Surface can change it
+    pub added: Option<String>,
 }
 
 impl Occurrence {
@@ -274,10 +293,9 @@ pub fn reread() {
     if modules::on("google-calendar") {
         places.extend(google::vouched().filter(|dir| dir.is_dir()));
     }
-    // each configured CalDAV account's, once a sync made it (ADR 0044)
-    if modules::on("caldav") {
-        places.extend(caldav::places());
-    }
+
+    // the events added in the Calendar Surface, whatever `calendar.paths` names (ADR 0045)
+    places.extend(add::directory());
 
     let found = find(&places);
 
@@ -285,20 +303,41 @@ pub fn reread() {
         arm(watch, &found.targets);
     }
 
-    let mut calendars = Vec::new();
+    let (mut own, mut calendars) = (Vec::new(), Vec::new());
     for file in &found.files {
         match read(file) {
+            Ok(read) if kept_here(file, &read, add::directory().as_deref()) => own.extend(read),
             Ok(read) => calendars.extend(read),
             // only where and why: a calendar's contents are the user's own
             Err(why) => eprintln!("kanade: calendar {}: {why}", file.display()),
         }
     }
 
-    store(found.files.len(), calendars);
+    store(found.files.len(), own, calendars);
 }
 
-// the calendars read from `files` files, as a new generation
-fn store(files: usize, calendars: Vec<ICalendar>) {
+/*
+ * whether `file` is one Kanade wrote: in the events directory, named for the UID of the events it
+ * holds, which are only that one
+ */
+fn kept_here(file: &Path, calendars: &[ICalendar], events: Option<&Path>) -> bool {
+    let Some(stem) = add::named(file, events) else {
+        return false;
+    };
+    let uid = add::uid(stem);
+    let mut uids = calendars
+        .iter()
+        .flat_map(|calendar| &calendar.components)
+        .filter_map(|component| text(component, &ICalendarProperty::Uid))
+        .peekable();
+
+    uids.peek().is_some() && uids.all(|found| found == uid)
+}
+
+// the calendars read from `files` files, as a new generation; `own` are the ones Kanade wrote
+fn store(files: usize, own: Vec<ICalendar>, others: Vec<ICalendar>) {
+    let own_count = own.len();
+    let calendars: Vec<ICalendar> = own.into_iter().chain(others).collect();
     let upcoming = Upcoming::of(&calendars, clock::today());
     let mut service = Calendars::write();
 
@@ -309,6 +348,7 @@ fn store(files: usize, calendars: Vec<ICalendar>) {
     }
     service.files = files;
     service.calendars = calendars.into();
+    service.own = own_count;
 }
 
 fn watch() -> io::Result<()> {
@@ -861,6 +901,10 @@ fn occurrence(
         end,
         span,
         all_day: !timed,
+        added: text(component, &ICalendarProperty::Uid)
+            .as_deref()
+            .and_then(add::stem)
+            .map(str::to_owned),
     })
 }
 
@@ -1932,6 +1976,7 @@ mod tests {
                 end: at(day(2026, 10, 8), 10, 30),
                 span: (1_791_446_400, 1_791_448_200),
                 all_day: false,
+                added: None,
             }]
         );
     }
@@ -2650,6 +2695,36 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    // an event may be changed from the Surface only where Kanade wrote it, however its UID reads
+    #[test]
+    fn only_a_file_kanade_wrote_is_its_own() {
+        let events = Path::new("/data/kanade/events");
+        let event = |uid: &str| {
+            calendar(&format!(
+                "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:20261013T100000\r\nSUMMARY:x\r\nEND:VEVENT\r\n"
+            ))
+        };
+        let own = event("ab-1@kanade");
+
+        assert!(kept_here(&events.join("ab-1.ics"), &own, Some(events)));
+
+        // a copy in a vdir, a file of another name, another UID in it, none, or no events directory
+        assert!(!kept_here(Path::new("/vdir/ab-1.ics"), &own, Some(events)));
+        assert!(!kept_here(&events.join("copy.ics"), &own, Some(events)));
+        assert!(!kept_here(
+            &events.join("ab-1.ics"),
+            &event("cd-2@kanade"),
+            Some(events)
+        ));
+        assert!(!kept_here(
+            &events.join("ab-1.ics"),
+            &event("ab-1@example.com"),
+            Some(events)
+        ));
+        assert!(!kept_here(&events.join("ab-1.ics"), &[], Some(events)));
+        assert!(!kept_here(&events.join("ab-1.ics"), &own, None));
+    }
+
     #[test]
     fn only_calendar_entries_matter_in_a_calendar_directory() {
         let wants = [Want::Calendars];
@@ -2703,6 +2778,7 @@ mod tests {
             end: at(day(2026, 10, 9), 0, 0),
             span: (0, 0),
             all_day: false,
+            added: None,
         };
 
         assert!(midnight.on(day(2026, 10, 9)));
