@@ -46,6 +46,19 @@ Not worth changing, by this review:
 - [ ] About 80 comment blocks run over four lines (worst: `shadow.rs:1`, `dock.rs:1344`, `view/mod.rs:729`, `calendar.rs:1087`). Each states real constraints, so cut them one by one, not in bulk.
 - [ ] ADR 0003 still says "std-only JSON parser"; history, left as written.
 
+## Architecture (whole-codebase review, third)
+
+- [x] Slow CLI calls (lock, caffeine, battery limit, wallpaper, recording) are answered by the shell when done, or unknown after 5 s (`later.rs`); the five serial-numbered `settle_*` protocols and the CLI's 50 ms status polling are gone.
+  - A shell that restarts mid-call now reads as "closed the connection without answering" (exit 3), not the old per-feature "lost" messages.
+  - `capture record start` still polls for the first frame's file every 50 ms for up to 5 s; wf-recorder has no event for it.
+- [x] One bounded-child runner for the appearance adapters and Matugen (`appearance/child.rs`); the adapters' output is now read as it is written and capped at 1 MiB.
+- [x] Modules carry `hooks.status` and `hooks.reload`; `kanade status` and a config reload walk the Modules that are on. `modules::on("<name>")` stays string-keyed at its other 60 call sites.
+  - Not done: replacing the central `Call` enum with a per-Verb `run`; `kanade status` lists the Modules' lines in catalog order, not the old hand-kept order.
+- [x] "plan N" references in code comments now say the fact; `docs/archived/plan.md` stays history.
+- Not taken: a shared remote-sync loop for Google, CalDAV and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ (CalDAV is per account), so a helper would need as many parameters as it saves lines.
+- Not taken: a `Target` table for the appearance adapters' `apply` and `disable`; their sequencing differs per target (Zen's marker block, GTK's restore state).
+- [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
+
 ## Architecture (#208 review)
 
 - [x] Input and invalidation (ADR 0034, 0035; a copy redraws only its pane's readers)

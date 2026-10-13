@@ -10,7 +10,7 @@ use std::ffi::CString;
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
 use kanade_runtime::{App, Color};
 
-// colors that mean something, the same in every theme (plan 7)
+// colors that mean something, the same in every theme
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SemanticColors {
     // a microphone or camera in use
@@ -288,7 +288,7 @@ pub mod space {
     // a Surface's content from the body's edge, concentric with its corner
     pub const INSET: f32 = 20.0;
 
-    // a pressable target never smaller than plan 7's 24 px
+    // a pressable target is never smaller than 24 px
     pub const TARGET: f32 = 24.0;
 }
 

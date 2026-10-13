@@ -1,4 +1,4 @@
-//! The Notifications Surface (plan 7): the history, newest first, each with its actions and a
+//! The Notifications Surface: the history, newest first, each with its actions and a
 //! dismiss, then Do Not Disturb and Clear all. Arrow keys move a ring over every part of it and
 //! Enter presses what the ring is on, so it works without a pointer. It says when another daemon
 //! has the notifications, and when there are none.

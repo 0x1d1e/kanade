@@ -51,7 +51,7 @@ use crate::sources::caldav;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 
-// plan 5.2: a level change shows for 1000-1400 ms
+// a level change shows for 1000-1400 ms
 const OSD_TIME: Duration = Duration::from_millis(1200);
 
 // a timing outside this keeps its default: a spring needs some time, and a minute is no glance

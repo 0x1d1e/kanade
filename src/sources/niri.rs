@@ -1,4 +1,4 @@
-//! Kanade's own niri EventStream (plan 3, 5.3), tracking the overview and casts too. It writes what
+//! Kanade's own niri EventStream, tracking the overview and casts too. It writes what
 //! niri says as the `Niri` Service: a plain focused output, whether the overview is open and how
 //! many times it opened, the focused workspace, whether anything casts and the window each output
 //! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. A screenshot
@@ -547,7 +547,7 @@ fn run(
         Err(error) => error,
     };
 
-    // plan 5.3: logged, no toast
+    // logged, no toast
     eprintln!("kanade: niri event stream lost ({lost}), every monitor counts as focused");
 
     if *posted != Seen::default() {

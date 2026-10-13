@@ -1,4 +1,4 @@
-//! The Launcher Surface (plan 7): a search over its providers, the apps `sources::apps`
+//! The Launcher Surface: a search over its providers, the apps `sources::apps`
 //! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, Settings and
 //! each setting), with the `wallpaper` Module on, wallpapers after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow

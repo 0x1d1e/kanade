@@ -1,4 +1,4 @@
-//! Workspace switch Transients (plan 5.3, ADR 0007): a switch shows the workspace on the island of
+//! Workspace switch Transients (ADR 0007): a switch shows the workspace on the island of
 //! the output it happened on, as its primary until it expires, then the one before returns. It is
 //! hidden while niri's overview is open, which shows the workspaces itself.
 //!

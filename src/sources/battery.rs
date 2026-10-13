@@ -1,4 +1,4 @@
-//! Low and critical battery (plan 5.1, 7): one Persistent Activity while the battery drains to
+//! Low and critical battery: one Persistent Activity while the battery drains to
 //! `battery.low`, shown amber with its number. At `battery.critical` it turns Critical, red, and
 //! preempts an open Surface, and `battery.critical_action`, unless none, counts down through the
 //! session Module as a restart does, so Cancel stops it. Charging withdraws it and cancels the
@@ -171,7 +171,7 @@ impl Cell {
     }
 }
 
-// at or below, the battery shows amber (plan 7), and at or below `critical` red, preempting
+// at or below, the battery shows amber, and at or below `critical` red, preempting
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Thresholds {
     low: u8,

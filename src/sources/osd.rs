@@ -1,4 +1,4 @@
-//! The OSD (plan 3, 5.1, ADR 0021): a volume, brightness or microphone mute change, a press of a
+//! The OSD (ADR 0021): a volume, brightness or microphone mute change, a press of a
 //! level's key, or a mode turned on or off shows as a Transient on the focused output's Island, and
 //! a held key keeps posting it again, so it extends one OSD.
 //!
@@ -37,7 +37,7 @@ use crate::sources::xkb;
 use crate::supervise;
 
 const PACE: Pace = Pace {
-    // plan 3: 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other
+    // shown for 50-100 ms; a held key repeats every 40 ms or so, so the bar moves about every other
     // step
     poll: Duration::from_millis(80),
 

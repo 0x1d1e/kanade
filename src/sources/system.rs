@@ -1,4 +1,4 @@
-//! Network, Bluetooth and power profiles (plan 2, 5.1, 7): `follow` watches the system bus for
+//! Network, Bluetooth and power profiles: `follow` watches the system bus for
 //! all three. None of it shows on the island (ADR 0007), so there is never a permanent Wi-Fi
 //! indicator: the latest state is kept in `Connectivity`, `Adapter` and `Profiles` for the Controls
 //! Surface. Each daemon belongs to its own Module (`network`, `bluetooth`,
@@ -26,7 +26,7 @@ use crate::{modules, supervise};
 // the bus itself, the only sender of NameOwnerChanged
 const BUS: &str = "org.freedesktop.DBus";
 
-// a radio the Controls Surface can switch, or show disabled (plan 7)
+// a radio the Controls Surface can switch, or show disabled
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Radio {
     // no Wi-Fi device or Bluetooth adapter, or its daemon is not running

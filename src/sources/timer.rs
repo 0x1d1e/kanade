@@ -1,4 +1,4 @@
-//! The timer (plan 5.1, 7): `kanade timer start <duration>` counts down one Persistent Ongoing Timer
+//! The timer: `kanade timer start <duration>` counts down one Persistent Ongoing Timer
 //! Activity, `pause` and `resume` stop and restart its countdown, `cancel` takes it away, and
 //! running out takes it away and sends a notification, which toasts and stays in the history like
 //! any other. Starting it again restarts it.

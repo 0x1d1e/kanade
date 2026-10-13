@@ -1,4 +1,4 @@
-//! Damped spring, closed form (plan 6.4), so there is no integrator to jitter. Critically damped
+//! Damped spring, closed form, so there is no integrator to jitter. Critically damped
 //! by default, `x(t) = target - (A + B t) e^(-wt)` per dimension; with a damping below 1 it is
 //! underdamped, `x(t) = target - (A cos(dt) + B sin(dt)) e^(-zwt)` with `d = w sqrt(1 - z^2)`, and
 //! passes its target a little and comes back, like macOS's bouncy springs. Only the body's shape
@@ -23,7 +23,7 @@ const SETTLE_SPEED: f32 = 5.0;
 // and not before a move from rest would be this close, below one step of 8-bit opacity
 const SETTLE_SHARE: f32 = 1.0 / 256.0;
 
-// reduced motion: geometry snaps, only the derived opacity still fades (plan 6.4)
+// reduced motion: geometry snaps, only the derived opacity still fades
 pub const REDUCED_FADE: Duration = Duration::from_millis(80);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

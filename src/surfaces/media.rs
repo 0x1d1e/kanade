@@ -1,4 +1,4 @@
-//! The Media Surface (plan 7): art, title and artist, timeline, prev/play/next, the speaker volume,
+//! The Media Surface: art, title and artist, timeline, prev/play/next, the speaker volume,
 //! and which player it shows. Every part keeps its place in every state, so nothing moves when a
 //! player opens, art loads, or a title runs long.
 

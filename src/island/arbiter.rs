@@ -1,4 +1,4 @@
-//! The Arbiter (CONTEXT.md, plan 5.1 rules 1-5, 7). Pure: posts and now in, Frame out.
+//! The Arbiter (CONTEXT.md). Pure: posts and now in, Frame out.
 //!
 //! Activities compete for the primary: the highest Priority, tie by the newest post. The Ongoing
 //! and Critical Persistent ones that lose it become Satellites. Expired Activities stay registered
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use super::activity::{Activity, Frame, Id, Interrupt, Kind, Lifetime, Priority, Scope};
 
-// beside the primary at once; the rest only count (plan 5.1 rule 3)
+// beside the primary at once; the rest only count
 pub const SATELLITES: usize = 2;
 
 // how long a new primary stays before a newer one of its Priority replaces it

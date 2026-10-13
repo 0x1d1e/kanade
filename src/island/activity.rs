@@ -1,4 +1,4 @@
-//! Activities and the Frame the Arbiter makes of them (CONTEXT.md, plan 5.1). Pure data.
+//! Activities and the Frame the Arbiter makes of them (CONTEXT.md). Pure data.
 //!
 //! Lifetime, Priority, Scope and Interrupt are set apart and none follows from another (ADR 0009).
 //! `Activity::new` refuses only what cannot be carried out, never an unusual combination.
@@ -161,7 +161,7 @@ pub enum Interrupt {
     // takes its place by priority and interrupts nothing
     None,
 
-    // displaces a Surface the user opened (plan 5.1 rule 4)
+    // displaces a Surface the user opened
     Preempt,
 
     // opens the Activity's own Surface for this long, then the islands show what they did before

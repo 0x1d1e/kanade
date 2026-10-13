@@ -1,4 +1,4 @@
-//! Per-island Presentation (CONTEXT.md, plan 5.2). Pure: the Activities shown and input in,
+//! Per-island Presentation (CONTEXT.md). Pure: the Activities shown and input in,
 //! Presentation out.
 //!
 //! Each island keeps its primary and top Satellite and what the user raised it to: a Peek of one
@@ -190,7 +190,7 @@ pub enum Input {
     Hover(Segment),
     Unhover,
 
-    // a Critical Activity displaces an open Surface (plan 5.1 rule 4)
+    // a Critical Activity displaces an open Surface
     Preempt,
 }
 
@@ -276,7 +276,7 @@ pub struct Presentations {
     // every island no input reached yet: one Frame for all of them, never raised
     untouched: Island,
 
-    // niri's overview is open, every island rests and takes no input (plan 5.3)
+    // niri's overview is open, every island rests and takes no input
     overview: bool,
 
     // how many times a Surface opened, so state kept for one opening ends with it

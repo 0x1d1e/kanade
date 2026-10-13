@@ -1,4 +1,4 @@
-//! Notification toasts (plan 3, 5.1, 7, ADR 0007): a notification that arrives, or is replaced,
+//! Notification toasts (ADR 0007): a notification that arrives, or is replaced,
 //! shows as a Banner on the focused output, never on the island. The Banner goes away; the
 //! notification stays in the daemon's list, the history, until it is dismissed or its sender closes
 //! it, which also takes its Banner down.
@@ -59,7 +59,7 @@ pub const BUS: Announcer = Announcer {
 // the bus name a notification daemon owns
 pub const NAME: &str = "org.freedesktop.Notifications";
 
-// whether Kanade is the notification daemon, for the Notifications Surface's error state (plan 7)
+// whether Kanade is the notification daemon, for the Notifications Surface's error state
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Daemon {
     // the daemon has not got the bus name yet
