@@ -10,6 +10,7 @@
 //   values[10] and [11]: two other panes on the copy, x, y, width and height in its pixels, which
 //     are read as none of what lies around this one
 //   values[12].x: how far out the edge reads at most, in pixels; 0 when no copy can fill this pane
+//   values[13].x: how black the glass is under the body, 0 to 1, over a fairly bright page
 // It never reads the clock, so a body at rest draws no frames of its own.
 //
 // This is the final pass of liquid-glass-studio (src/shaders-wgsl/fragment-main.wgsl) at its default
@@ -284,10 +285,11 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     ) + vec2<f32>(1e-5, 1e-5));
     let up = vec2<f32>(n.x, -n.y);
 
-    var glass = vec4<f32>(0.0);
+    // the scrim under the edge, which the pane's light ink wants over a page growing bright
+    var glass = vec4<f32>(0.0, 0.0, 0.0, values[13].x);
 
     if values[12].x > 0.5 {
-        glass = lens(uv);
+        glass = over(lens(uv), glass);
     }
 
     // the Fresnel lift: the edge toward white, in the hue of what it reflects where it reflects any

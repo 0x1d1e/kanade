@@ -1,11 +1,12 @@
 //! A pane: what the Island's body, the Dock and the Banners are drawn on, as the finish says (ADRs
 //! 0050 to 0052). The solid finishes fill the body's outline, one rounded rect or two united, with
 //! the fill a hair lighter at the top, a top light edge and a rim, and nothing else; Liquid Glass
-//! draws clear glass over the screen, tinted by the light around it (`glass`).
+//! draws clear glass over the screen, its content's ink following the light around it (`glass`, `ink`).
 
 mod body;
 mod capture;
 mod glass;
+mod ink;
 mod shader;
 
 use std::time::Duration;
@@ -29,6 +30,15 @@ pub const LEAD: Duration = Duration::from_millis(33);
 // whether panes are Liquid Glass now, which is the only finish that captures the screen
 pub fn glass() -> bool {
     config::get().appearance.finish == Finish::LiquidGlass
+}
+
+/*
+ * the ink of what a window builds while the guard lives, as its pane's backdrop says: the finish's
+ * own, or paper's over a bright page (`ink`). Taken before the content is built, and held to the
+ * end of the window's view
+ */
+pub fn inked(seen: Option<&Seen>) -> theme::Inked {
+    theme::inked(seen.map_or(0.0, Seen::paper))
 }
 
 // a body's size and shape

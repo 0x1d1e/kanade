@@ -1108,7 +1108,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
      * while the Dock is out of sight, empty, under a fullscreen window, slid past its edge or
      * stepped aside
      */
-    let spot = pane::Spot::new(&monitor.name, PANE);
     let fullscreen = view::covered(monitor, || IslandService::read().overview());
     pane::place(
         monitor,
@@ -1120,7 +1119,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         ),
         (items && shown > 0.0 && aside < 1.0 && !fullscreen).then_some(pane_body),
     );
-    let backdrop = pane::shown(&spot);
+
+    // Liquid Glass's ink follows the page behind the pane, for all this window builds
+    let backdrop = pane::shown(&pane::Spot::new(&monitor.name, PANE), Instant::now());
+    let _ink = pane::inked(backdrop.as_ref());
 
     let roles = theme::island();
     let mut strip = Rectangle::new()

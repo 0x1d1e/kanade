@@ -224,6 +224,10 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let place = config::get().island_placement();
     let hang = place.anchor.hang();
 
+    // Liquid Glass's ink follows the page behind the pane, for all this window builds
+    let backdrop = pane::shown(&pane::Spot::new(&monitor.name, ISLAND), now);
+    let _ink = pane::inked(backdrop.as_ref());
+
     /*
      * merged with the Dock (ADR 0031), this window draws both: the Island's canvas lies at
      * `shell.island` in it and the Dock's at `shell.dock`, under one pane
@@ -319,7 +323,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let plate = scene.plate();
     let pane_body = scene.pane(pose);
 
-    let spot = pane::Spot::new(&monitor.name, ISLAND);
     let captured = capture(&island, &monitor.name, stand, &scene, pane_body, now);
 
     // hidden past its edge, it captures nothing there
@@ -334,8 +337,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         scene.window(),
         capture_visible(out, sliding, merged_dock_visible, covered, raised).then_some(captured),
     );
-
-    let backdrop = pane::shown(&spot);
 
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;

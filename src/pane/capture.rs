@@ -4,14 +4,16 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use std::time::Instant;
+
 use kanade_runtime::backdrop::{self, Region, Request};
 use kanade_runtime::{Horizontal, Vertical};
-use kanade_runtime::{Monitor, MutexExt};
+use kanade_runtime::{Monitor, MutexExt, request_frame};
 
 use crate::look::Anchor;
 
 use super::glass::{COPY_ROWS, NEAR, Seen};
-use super::{Body, Spot, glass};
+use super::{Body, Spot, glass, ink};
 
 // how far out the edge reads the screen at most, as a share of the output's height (the studio's
 // refraction distance), and the widest a channel of the dispersion stretches it
@@ -244,26 +246,39 @@ pub fn place(
 }
 
 /*
- * what a pane shows of the captured area, if it is there; reading it redraws the pane once a copy
- * lands, even where it could not be placed yet
+ * what a pane shows of the captured area, if it is there, `now`; reading it redraws the pane once a
+ * copy lands, even where it could not be placed yet. Called each time the pane draws, it asks for
+ * frames while the pane's ink turns, and says how dark that ink is (`Seen::paper`)
  */
-pub fn shown(spot: &Spot) -> Option<Seen> {
-    if !glass() {
-        return None;
-    }
+pub fn shown(spot: &Spot, now: Instant) -> Option<Seen> {
+    let seen = glass().then(|| backdrop::seen(spot)).flatten();
 
-    let seen = backdrop::seen(spot)?;
+    let Some(seen) = seen else {
+        ink::forget(spot);
+
+        return None;
+    };
 
     let place = <[[f32; 4]; COPY_ROWS]>::try_from(seen.values.as_slice()).ok();
+
+    let (paper, turning) = ink::read(spot, seen.light, now);
+
+    if turning {
+        request_frame();
+    }
 
     Some(Seen {
         spot: spot.clone(),
         place,
+        paper,
+        scrim: ink::scrim(seen.light, paper),
     })
 }
 
 // a pane let go, as a Banner's as it leaves: its copy is dropped, and nothing is captured until it is placed again
 pub fn forget(spot: &Spot) {
+    ink::forget(spot);
+
     if let Some(lying) = LYING.locked().as_mut() {
         lying.remove(spot);
     }

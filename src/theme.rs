@@ -6,6 +6,7 @@
 //! shows at startup or one Kanade sets; otherwise the shell uses its built-in roles. The Island,
 //! Dock and Banners take a tinted solid ramp from that wallpaper's hue (`tint`, ADR 0050).
 
+use std::cell::Cell;
 use std::ffi::CString;
 
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
@@ -58,8 +59,9 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
 // the colors that mean something on the Island: the bright ones on a dark finish, the darker hues on paper
 pub fn signals() -> SemanticColors {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass => SEMANTIC,
-        Finish::Paper => SIGNALS_LIGHT,
+        Finish::TintedSolid => SEMANTIC,
+        Finish::LiquidGlass if INK.get() < 0.5 => SEMANTIC,
+        Finish::LiquidGlass | Finish::Paper => SIGNALS_LIGHT,
     }
 }
 
@@ -130,7 +132,41 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
 // the Island's roles, the same whatever `appearance.tone` is: tinted by the wallpaper, dark or
 // light as `appearance.finish` says
 pub fn island() -> ThemeRoles {
-    crate::appearance::island_roles(finish())
+    let roles = crate::appearance::island_roles(finish());
+    let paper = INK.get();
+
+    if finish() != Finish::LiquidGlass || paper <= 0.0 {
+        return roles;
+    }
+
+    let inked = tint::veiled(crate::appearance::island_roles(Finish::Paper));
+
+    tint::fade(roles, inked, paper)
+}
+
+thread_local! {
+    // how dark the ink of the window being built is: 0 the finish's own, 1 paper's, over a bright page
+    static INK: Cell<f32> = const { Cell::new(0.0) };
+}
+
+// ends the window's ink when dropped, so what is built after it has the finish's own
+pub struct Inked(());
+
+impl Drop for Inked {
+    fn drop(&mut self) {
+        INK.set(0.0);
+    }
+}
+
+/*
+ * Liquid Glass's ink for what is built while the guard lives, `paper` from 0 to 1 turning the
+ * island's roles to paper's (ADR 0054). In eighths, as every ink in between is an icon file written
+ * and a raster cached once
+ */
+pub fn inked(paper: f32) -> Inked {
+    INK.set((paper.clamp(0.0, 1.0) * 8.0).round() / 8.0);
+
+    Inked(())
 }
 
 // Settings' mark, from top left to bottom right
@@ -167,6 +203,10 @@ pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
 // the glass finish's containers: light veils over the glass, not solid fills (`tint::clear`)
 const GLASS_CONTAINER: Color = Color::rgba(255, 255, 255, 28);
 const GLASS_CONTAINER_HIGH: Color = Color::rgba(255, 255, 255, 48);
+
+// the same under paper's ink, over a bright page: dark veils
+const GLASS_PAPER_CONTAINER: Color = Color::rgba(0, 0, 0, 14);
+const GLASS_PAPER_CONTAINER_HIGH: Color = Color::rgba(0, 0, 0, 26);
 
 pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
 

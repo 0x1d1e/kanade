@@ -82,8 +82,8 @@ Not worth changing, by this review:
 ## Panes (Liquid Glass finish, ADR 0052)
 
 - [ ] Retake the idle-frame, wakeup, frame-gap and memory baselines with `appearance.finish = "liquid-glass"`; no number is recorded for it yet.
-  - First finding: with a static screen behind it was not checked, and with a page animating behind it (a spinner in a terminal) both the Island and the Dock draw at the refresh rate, as their copies keep changing. Measure over a truly static page first (a plain window, cursor blink off); if it still draws at rest, find the loop (the glass drawn at a copy's edge reaching the next copy). With the shader no longer reading the copy, 5 s at rest with Controls closed drew 0 frames.
-- [ ] Over a bright page the light text on Liquid Glass is hard to read, by decision; adaptive dark ink would fix it if wanted.
+  - First finding: with a page animating behind it (a spinner in a terminal) both the Island and the Dock drew at the refresh rate, as their copies kept changing. A copy now counts as new only outside the body and the panes the shader skips (ADR 0054); check by eye over a spinner, and over a truly static page (a plain window, cursor blink off), that 5 s at rest draws 0 frames.
+- [x] Over a bright page the light text on Liquid Glass is hard to read: a scrim, then paper's ink (ADR 0054). Tune by eye; the ink follows the mean light of a ring 12 px outside the body, so a page half bright and half dark may keep the wrong ink on one side.
 
 ## Panes (glass removed, ADR 0049)
 
