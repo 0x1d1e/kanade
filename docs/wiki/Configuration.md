@@ -70,6 +70,8 @@ height = 400
 autohide = false
 # windows keep off the Island's strip of the screen, unless it autohides; off, it floats over them
 reserve = false
+# the wheel over the Island sets the volume while it shows Media or the volume; over anything else it does nothing
+wheel = true
 
 [rest]
 # an idle Island shows the time; with it and the battery off, the Island hides as it does with autohide, per output

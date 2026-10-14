@@ -123,6 +123,8 @@ Rules:
 
 **Split:** follows the Frame like Compact: Split while a Satellite exists, Compact without. Hover/click/right click act on the segment under the pointer; Peek shows one Activity by identity. [ADR 0010](adr/0010-split-and-rest-right-click.md).
 
+**Wheel:** over an island showing Media or the volume (the segment or Peek under the pointer) it sets the speaker's level, as the Surface's bar does; `island.wheel` turns it off. Over anything else it does nothing: stepping through Activities would let input change the Frame, which ADR 0010 rules out.
+
 ## UI
 
 ### Core Surfaces

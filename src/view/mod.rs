@@ -53,7 +53,7 @@ pub(crate) use self::entrance::rise;
 use self::forms::{small_form, split, surface};
 use self::hud::hud;
 pub(crate) use self::input::{claim, collapse, input_area, key, open, pin};
-use self::input::{expand, hover, moved_to, route, set_armed, set_segment};
+use self::input::{expand, hover, moved_to, route, set_armed, set_segment, wheel};
 pub(crate) use self::media::{Change, state, tile};
 pub(crate) use self::rest::time_peek;
 use self::rest::{bare, has_battery, placeholder, rest};
@@ -782,7 +782,10 @@ fn hover_target(
             }
             _ => {}
         })
-        .on_scroll(move |Scroll { y, .. }| route(&scrolled, Input::Wheel(y)));
+        .on_scroll(move |Scroll { y, .. }| {
+            wheel(&scrolled, y);
+            route(&scrolled, Input::Wheel(y));
+        });
 
     (target, track)
 }

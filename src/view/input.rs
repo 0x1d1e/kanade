@@ -5,11 +5,27 @@ use std::time::Instant;
 use kanade_runtime::service::Service;
 use kanade_runtime::{InputArea, Key};
 
+use crate::config;
+use crate::island::activity::Kind;
 use crate::island::geometry::{Canvas, Rect};
 use crate::island::presentation::{Input, Segment, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::surfaces;
+use crate::surfaces::{self, slider::Slider};
+
+/*
+ * the wheel over Media or the volume sets the speaker's level, as the Surface's own bar does: it
+ * changes no Presentation. Over anything else, or with `island.wheel` off, it does nothing
+ */
+pub(super) fn wheel(monitor: &str, lines: f32) {
+    let level = IslandService::read()
+        .pointed(monitor)
+        .is_some_and(|id| matches!(id.kind(), Kind::Media | Kind::Volume));
+
+    if level && config::get().island_wheel {
+        Slider::Speaker.wheel(lines);
+    }
+}
 
 // a write wakes the window even when nothing changed, so only write a real change
 pub(super) fn expand(monitor: &str) {

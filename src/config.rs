@@ -137,6 +137,9 @@ pub struct Config {
     // `privacy.indicators`
     pub privacy_indicators: bool,
 
+    // `island.wheel`
+    pub island_wheel: bool,
+
     // `idle.*`: after how long idle each stage fires (ADR 0047)
     pub idle: Stages,
 
@@ -448,6 +451,7 @@ impl Default for Config {
             visualizer: Visualizer::default(),
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
+            island_wheel: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
                 lock: Some(Duration::from_secs(300)),
@@ -1364,6 +1368,19 @@ pub const ISLAND: &[Setting] = &[
         kind: Kind::Switch(Field {
             get: |config| config.island_place.reserve,
             set: |config, on| config.island_place.reserve = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.wheel",
+        label: "Wheel sets the volume",
+        help: "the wheel over the Island sets the volume while it shows Media or the volume; over anything else it does nothing",
+        hint: Some("Scroll over the Island to set the volume"),
+        kind: Kind::Switch(Field {
+            get: |config| config.island_wheel,
+            set: |config, on| config.island_wheel = on,
         }),
         example: None,
         restart: false,
@@ -3145,6 +3162,7 @@ mod tests {
                 "island.height",
                 "island.autohide",
                 "island.reserve",
+                "island.wheel",
                 "rest.clock",
                 "rest.battery",
                 "rest.peek.battery",

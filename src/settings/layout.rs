@@ -179,6 +179,10 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("island.autohide"), Row::Key("island.reserve")],
             },
             Section {
+                title: "Pointer",
+                rows: &[Row::Key("island.wheel")],
+            },
+            Section {
                 title: "At Rest",
                 rows: &[
                     Row::Key("clock"),
