@@ -99,7 +99,7 @@ impl Hang {
 
 /*
  * a small form as it hangs: along a left or right edge it stands upright, as long as it is wide
- * across the top or bottom, its content stacked. A Peek, which carries a line of text, and the
+ * across the top or bottom, its content stacked (Compact and Split are shorter, below). A Peek, which carries a line of text, and the
  * Surfaces stay as they are, growing out of the edge
  */
 pub const fn upright(shape: Shape, hang: Hang) -> Shape {
@@ -110,6 +110,43 @@ pub const fn upright(shape: Shape, hang: Hang) -> Shape {
             radius: shape.radius,
         },
         Edge::Top | Edge::Bottom => shape,
+    }
+}
+
+/*
+ * Compact as it hangs. Standing upright it holds a lead tile and a mark, no words, so it is as
+ * long as they ask rather than as long as the horizontal one that holds a line of text
+ */
+const UPRIGHT_COMPACT_LENGTH: f32 = 128.0;
+
+pub const fn compact(hang: Hang) -> Shape {
+    match hang.edge {
+        Edge::Left | Edge::Right => Shape {
+            width: COMPACT.height,
+            height: UPRIGHT_COMPACT_LENGTH,
+            radius: COMPACT.radius,
+        },
+        Edge::Top | Edge::Bottom => COMPACT,
+    }
+}
+
+// Compact's length along the body, which the trailing segment of a Split starts after
+const fn compact_length(hang: Hang) -> f32 {
+    match hang.edge {
+        Edge::Left | Edge::Right => UPRIGHT_COMPACT_LENGTH,
+        Edge::Top | Edge::Bottom => COMPACT.width,
+    }
+}
+
+// Split as it hangs: Compact and the segment after it, which is as long standing as lying
+pub const fn split(hang: Hang) -> Shape {
+    match hang.edge {
+        Edge::Left | Edge::Right => Shape {
+            width: SPLIT.height,
+            height: compact_length(hang) + SPLIT.width - COMPACT.width,
+            radius: SPLIT.radius,
+        },
+        Edge::Top | Edge::Bottom => SPLIT,
     }
 }
 
@@ -519,8 +556,8 @@ pub fn tray_slots(slots: u8, largest: Shape, hang: Hang, peek: TimePeek) -> usiz
 pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimePeek) -> Shape {
     match presentation {
         Presentation::Rest => upright(REST, hang),
-        Presentation::Compact => upright(COMPACT, hang),
-        Presentation::Split => upright(SPLIT, hang),
+        Presentation::Compact => compact(hang),
+        Presentation::Split => split(hang),
         Presentation::Peek => PEEK,
         Presentation::Tray(slots) => {
             let slots = tray_slots(slots, largest, hang, peek);
@@ -662,7 +699,7 @@ pub fn fitted(largest: Shape, outputs: impl Iterator<Item = (f32, f32)>) -> Shap
  */
 pub fn rest_reach(hang: Hang, slots: usize) -> f32 {
     let canvas = Canvas::around(DEFAULT_LARGEST, hang);
-    let body = body(upright(SPLIT, hang), hang, canvas);
+    let body = body(split(hang), hang, canvas);
     let far = (0..slots)
         .map(|slot| satellite(body, hang, canvas, slot as f32, 1.0))
         .fold(body, |far, dot| {
@@ -740,10 +777,10 @@ pub fn holding(area: Rect, under: Option<Shape>, hang: Hang, canvas: Canvas) -> 
  * the privacy cluster takes from the trailing end, which moves the segments' boundary back by it
  */
 pub fn segment(x: f32, y: f32, room: f32, hang: Hang, canvas: Canvas) -> Segment {
-    let split = body(upright(SPLIT, hang), hang, canvas);
+    let split = body(split(hang), hang, canvas);
     let primary = match hang.sideways() {
-        true => y < split.y + COMPACT.width - room,
-        false => x < split.x + COMPACT.width - room,
+        true => y < split.y + compact_length(hang) - room,
+        false => x < split.x + compact_length(hang) - room,
     };
 
     if primary {
@@ -757,17 +794,18 @@ pub fn segment(x: f32, y: f32, room: f32, hang: Hang, canvas: Canvas) -> Segment
 pub fn trailing(hang: Hang) -> Rect {
     let thickness = SPLIT.height - 2.0 * SEGMENT_INSET;
     let length = SPLIT.width - SEGMENT_INSET - COMPACT.width;
+    let lead = compact_length(hang);
 
     if hang.sideways() {
         Rect {
             x: SEGMENT_INSET,
-            y: COMPACT.width,
+            y: lead,
             width: thickness,
             height: length,
         }
     } else {
         Rect {
-            x: COMPACT.width,
+            x: lead,
             y: SEGMENT_INSET,
             width: length,
             height: thickness,

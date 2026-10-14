@@ -96,6 +96,13 @@ pub(super) fn surface(
  * across it, a lead tile concentric with the end. Its words wait for the Peek
  */
 pub(super) fn stacked(parts: Vec<Box<dyn Widget>>) -> Rectangle {
+    // a lone part sits in the middle of the pill rather than leaving the rest of it empty
+    let justify = if parts.len() == 1 {
+        Justify::Center
+    } else {
+        Justify::SpaceBetween
+    };
+
     sized(Presentation::Compact)
         .padding(Padding {
             top: STACK_INSET,
@@ -106,7 +113,7 @@ pub(super) fn stacked(parts: Vec<Box<dyn Widget>>) -> Rectangle {
         .child(
             Column::new(parts)
                 .height(Parent)
-                .justify(Justify::SpaceBetween)
+                .justify(justify)
                 .align(Center),
         )
 }
