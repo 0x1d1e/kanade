@@ -16,9 +16,10 @@ use kanade_runtime::{IpcCall, ipc_socket};
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
+use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, google, live, night_light, osd, recording, reminders, timer,
-    wallpaper, weather,
+    caffeine, capture, charge_limit, google, live, media, night_light, osd, power, recording,
+    reminders, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -61,6 +62,10 @@ pub enum Call {
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
     Battery(charge_limit::Request),
+    Media(media::Transport),
+    Wifi(Switch),
+    Bluetooth(Switch),
+    PowerProfile(power::Request),
     Wallpaper(wallpaper::Request),
     Google(google::Request),
     Reminders(reminders::Request),
@@ -744,6 +749,26 @@ mod tests {
             [b"one".to_vec(), b"\xff two".to_vec(), b"three".to_vec()]
         );
         assert!(choices(&b"\n\n"[..]).is_err());
+    }
+
+    // a verb that acts on a daemon or player is its Module's, which the shell refuses it for while off
+    #[test]
+    fn verbs_that_act_on_the_system_belong_to_their_module() {
+        for (words, owner) in [
+            (&["media", "play-pause"][..], "media"),
+            (&["media", "next"], "media"),
+            (&["wifi", "toggle"], "network"),
+            (&["bluetooth", "off"], "bluetooth"),
+            (&["power-profile", "set", "balanced"], "power"),
+            (&["power-profile", "cycle"], "power"),
+        ] {
+            let (module, _) = parse(words).expect("parses");
+            assert_eq!(module.name, owner, "{words:?}");
+        }
+
+        assert!(parse(&["wifi", "maybe"]).is_err());
+        assert!(parse(&["power-profile", "set", "turbo"]).is_err());
+        assert!(parse(&["media", "stop"]).is_err());
     }
 
     #[test]

@@ -245,6 +245,10 @@ launcher open|close|toggle
 dmenu [--prompt <text>]
 controls open|close|toggle
 media open|close|toggle
+media play-pause|next|previous
+wifi on|off|toggle|status
+bluetooth on|off|toggle|status
+power-profile set <profile>|cycle|status
 island collapse
 notifications open|close|toggle|clear
 notifications dnd on|off|toggle

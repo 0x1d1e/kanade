@@ -4,8 +4,9 @@ use crate::bus::{Argument, Bus, Value};
 use kanade_runtime::service::Service;
 use kanade_runtime::worker;
 
-use super::system::Radio;
+use super::system::{self, Radio, Switch};
 use crate::island::activity::Uplink;
+use crate::later::Later;
 
 pub const NAME: &str = "org.freedesktop.NetworkManager";
 
@@ -47,19 +48,40 @@ pub fn read() -> Connectivity {
     let bus = Bus::system();
 
     let primary = bus.property(NAME, ROOT, NAME, "PrimaryConnection");
-    let enabled = bus.property(NAME, ROOT, NAME, "WirelessEnabled").bool();
 
     Connectivity {
         uplink: uplink(primary.text()),
-        wifi: Radio::of(has_wifi(), enabled),
+        wifi: Radio::of(has_wifi(), enabled()),
     }
+}
+
+fn enabled() -> bool {
+    Bus::system()
+        .property(NAME, ROOT, NAME, "WirelessEnabled")
+        .bool()
+}
+
+fn write(on: bool) {
+    Bus::system().set_property(NAME, ROOT, NAME, "WirelessEnabled", Argument::from(on));
 }
 
 // turns the Wi-Fi radio on or off off the view thread; `read` shows it once NetworkManager says so
 pub fn set_wifi(enabled: bool) {
-    worker::run(move || {
-        Bus::system().set_property(NAME, ROOT, NAME, "WirelessEnabled", Argument::from(enabled));
-    });
+    worker::run(move || write(enabled));
+}
+
+// `kanade wifi`, answered once NetworkManager has the switch as asked
+pub fn request(switch: Switch, later: Later) {
+    later.unsettled("NetworkManager got the call; Wi-Fi may still have changed");
+
+    system::flip(
+        "no Wi-Fi device, or NetworkManager is not running",
+        switch,
+        Connectivity::read().wifi,
+        write,
+        enabled,
+        later,
+    );
 }
 
 // the connection that carries the default route, "/" while there is none
