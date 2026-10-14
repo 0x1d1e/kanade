@@ -16,6 +16,7 @@ pub mod charge_limit;
 pub mod clipboard;
 pub mod desktop;
 pub mod devices;
+pub mod focus;
 pub mod fullscreen;
 pub mod google;
 pub mod ical;

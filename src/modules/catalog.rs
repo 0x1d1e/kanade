@@ -23,7 +23,7 @@ use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
-    fullscreen, google, keys, launch, live, media, network, night_light,
+    focus, fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -1267,6 +1267,31 @@ pub const ALL: &[Module] = &[
             supervise::spawn("night-light", night_light::follow);
             app
         },
+    },
+    /*
+     * one switch for do not disturb, caffeine and the night light (ADR 0060), through the Modules
+     * that own them; each is optional, so Focus runs with whichever are on
+     */
+    Module {
+        name: "focus",
+        about: "Quiets the session with one switch",
+        requires: &[CORE],
+        optional: &["notifications", "caffeine", "night-light"],
+        warns: None,
+        needs: &[],
+        settings: config::FOCUS,
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "focus",
+            about: "Quiet the session",
+            usage: || String::from("focus on|off|toggle|status"),
+            parse: |arguments| {
+                focus::Request::parse(arguments)
+                    .map(Call::Focus)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
     },
     /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at

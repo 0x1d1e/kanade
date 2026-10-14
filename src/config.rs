@@ -168,6 +168,9 @@ pub struct Config {
 
     // `night-light.*`: when and how warm the screen turns (ADR 0046)
     pub night_light: NightLight,
+
+    // `focus.*`: what Focus turns on
+    pub focus: Focus,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
     pub pomodoro: Pomodoro,
 
@@ -480,6 +483,7 @@ impl Default for Config {
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
+            focus: Focus::default(),
             pomodoro: Pomodoro::default(),
             hooks: Commands::default(),
             outputs: BTreeMap::new(),
@@ -547,6 +551,24 @@ impl CriticalAction {
             "hibernate" => CriticalAction::Hibernate,
             "poweroff" => CriticalAction::PowerOff,
             _ => CriticalAction::None,
+        }
+    }
+}
+
+// `focus.*`: the pieces `kanade focus on` turns on, each restored by `off`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Focus {
+    pub dnd: bool,
+    pub caffeine: bool,
+    pub night_light: bool,
+}
+
+impl Default for Focus {
+    fn default() -> Self {
+        Focus {
+            dnd: true,
+            caffeine: true,
+            night_light: false,
         }
     }
 }
@@ -2213,6 +2235,48 @@ pub const NIGHT_LIGHT: &[Setting] = &[
     },
 ];
 
+pub const FOCUS: &[Setting] = &[
+    Setting {
+        key: "focus.dnd",
+        label: "Do Not Disturb",
+        help: "Focus turns Do Not Disturb on, and off again if it was off before",
+        hint: Some("Focus quiets the Banners"),
+        kind: Kind::Switch(Field {
+            get: |config| config.focus.dnd,
+            set: |config, on| config.focus.dnd = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "focus.caffeine",
+        label: "Caffeine",
+        help: "Focus keeps the session awake, and releases it again if it was not held before",
+        hint: Some("Focus keeps the session awake"),
+        kind: Kind::Switch(Field {
+            get: |config| config.focus.caffeine,
+            set: |config, on| config.focus.caffeine = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "focus.night_light",
+        label: "Night light",
+        help: "Focus warms the screen, and turns the night light off again if it was off before",
+        hint: Some("Focus warms the screen"),
+        kind: Kind::Switch(Field {
+            get: |config| config.focus.night_light,
+            set: |config, on| config.focus.night_light = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
     match id.strip_suffix(".desktop") {
@@ -3382,6 +3446,9 @@ mod tests {
                 "night-light.temperature",
                 "night-light.sunset",
                 "night-light.sunrise",
+                "focus.dnd",
+                "focus.caffeine",
+                "focus.night_light",
                 "lock.backdrop",
                 "idle.dim",
                 "idle.lock",

@@ -74,7 +74,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
-| Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
+| Utilities | `capture`, `caffeine`, `night-light`, `focus`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `idle`, `session`, `settings`, `hooks` |
 
@@ -179,6 +179,10 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 `night-light.mode` off, on or on a schedule, at `night-light.temperature` K, through a `wlsunset` held under `setpriv --pdeathsig` while not off; a schedule is `night-light.sunset`/`sunrise`, else the sun at `weather.location`. A config change restarts it; one that ends restarts with a backoff and shows once as a Transient Failed Activity. The Controls switch and `kanade night-light` write the mode to the settings file ([ADR 0046](adr/0046-night-light-through-wlsunset.md)).
 
+### Focus
+
+`kanade focus on|off|toggle|status` and the round button at the end of the Controls switches turn on Do Not Disturb (`focus.dnd`), caffeine (`focus.caffeine`) and the night light (`focus.night_light`, off by default) through the calls their own verbs make, and `off` turns off only what Focus turned on, so a session that had caffeine on keeps it. A piece whose Module is off is skipped; `focus` lists the three as optional. It has no Activity: caffeine's, when on, already shows, and Do Not Disturb and the night light have none. What it turned on is kept in memory only (ADR 0060).
+
 ### Battery
 
 A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker, so the draw thread never waits; the call is answered when UPower does, and a refusal shows on the switch. The Controls header ends with UPower's estimate for the machine's batteries as one (`TimeToEmpty` while draining, `TimeToFull` while charging, asked of its DisplayDevice every 30 s and on each change of the reading, whole minutes, "2 h 5 min left", nothing while UPower says 0): text only, no graph, written without a redraw as only Controls shows it.
@@ -270,6 +274,7 @@ capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
 night-light on|off|toggle|status
+focus on|off|toggle|status
 battery limit on|off|status
 wallpaper set <path>|shuffle|status
 wallpaper open|close|toggle

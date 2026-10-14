@@ -21,8 +21,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, google, live, media, night_light, osd, power, recording,
-    reminders, timer, wallpaper, weather,
+    caffeine, capture, charge_limit, focus, google, live, media, night_light, osd, power,
+    recording, reminders, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -64,6 +64,7 @@ pub enum Call {
     Record(recording::Request),
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
+    Focus(focus::Request),
     Battery(charge_limit::Request),
     Media(media::Transport),
     Wifi(Switch),

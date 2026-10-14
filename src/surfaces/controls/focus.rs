@@ -46,6 +46,7 @@ pub enum At {
     Dnd,
     NightLight,
     ChargeLimit,
+    Focus,
     Speaker,
 
     // the chevron at the end of the speaker's level, which opens the Audio sub-surface

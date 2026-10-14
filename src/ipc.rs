@@ -24,8 +24,8 @@ use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
-    apps, bluetooth, caffeine, charge_limit, fullscreen, google, live, media, network, night_light,
-    power, reminders, session, wallpaper, weather,
+    apps, bluetooth, caffeine, charge_limit, focus, fullscreen, google, live, media, network,
+    night_light, power, reminders, session, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -103,6 +103,8 @@ fn run(call: Call) -> Reply {
         Call::NightLight(request) => {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        // through the same: it is the Controls tile's press as well
+        Call::Focus(request) => focus::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
         // handed to the reminders' thread, so this answers at once

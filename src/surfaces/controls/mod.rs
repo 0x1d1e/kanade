@@ -37,6 +37,7 @@ use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::battery::Remaining;
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::charge_limit::{self, ChargeLimit};
+use crate::sources::focus as quiet;
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
 use crate::sources::niri::Target;
@@ -153,13 +154,24 @@ fn sharing() -> Option<BTreeSet<u64>> {
         .filter(|sessions| !sessions.is_empty())
 }
 
+// the targets of the switches' third row, at the middle of where `switches` draws each
+fn third(limit: bool, focus: bool) -> Vec<(At, f32)> {
+    match (limit, focus) {
+        (true, true) => vec![
+            (At::NightLight, 0.21),
+            (At::ChargeLimit, 0.65),
+            (At::Focus, 0.94),
+        ],
+        (true, false) => vec![(At::NightLight, 0.25), (At::ChargeLimit, 0.75)],
+        (false, true) => vec![(At::NightLight, 0.25), (At::Focus, 0.57)],
+        (false, false) => vec![(At::NightLight, 0.25)],
+    }
+}
+
 // the targets a listing sub-surface lists under its header, or the switches' third row, read now
 fn rows(sub: Option<&Subsurface>) -> Vec<Vec<(At, f32)>> {
     match sub {
-        None if charge_limit().is_some() => {
-            vec![vec![(At::NightLight, 0.25), (At::ChargeLimit, 0.75)]]
-        }
-        None => vec![vec![(At::NightLight, 0.25)]],
+        None => vec![third(charge_limit().is_some(), modules::on("focus"))],
         Some(Subsurface::Wifi) => wifi::rows(Connectivity::read().wifi, &Networks::read()),
         Some(Subsurface::Bluetooth) => bluetooth::rows(&Adapter::read(), &Prompt::read()),
         Some(Subsurface::Audio) => audio::rows(&mixer()),
@@ -274,7 +286,10 @@ fn stop(ring: bool) -> Rectangle {
         )
 }
 
-// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge limit
+/*
+ * Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge
+ * limit, with Focus's round button at the end of the row, which takes its room from them
+ */
 fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
@@ -303,17 +318,30 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     );
     let microphone = switch(microphone, width, false, on(At::Microphone), None);
     let dnd = switch(dnd, width, false, on(At::Dnd), None);
-    let night = switch(self::night_light(), width, false, on(At::NightLight), None);
+    let focus = modules::on("focus");
+    let limit = self::charge_limit();
+
+    // two tiles and the button share a row, else the night light keeps its half
+    let narrow = if limit.is_some() && focus {
+        (WIDTH - 2.0 * SWITCH_GAP - SWITCH) / 2.0
+    } else {
+        width
+    };
+    let night = switch(self::night_light(), narrow, false, on(At::NightLight), None);
     let mut third = children![night];
 
-    if let Some(limit) = self::charge_limit() {
+    if let Some(limit) = limit {
         third.push(Box::new(switch(
             limit,
-            width,
+            narrow,
             false,
             on(At::ChargeLimit),
             None,
         )));
+    }
+
+    if focus {
+        third.push(Box::new(focus_button(on(At::Focus))));
     }
 
     Column::new(children![
@@ -348,6 +376,7 @@ enum Press {
     Dnd(bool),
     NightLight(bool),
     ChargeLimit(bool),
+    Focus,
 }
 
 fn wifi(connectivity: &Connectivity) -> Switch {
@@ -475,6 +504,29 @@ fn night_light() -> Switch {
             .filter(|shade| !shade.missing)
             .map(|_| Press::NightLight(!on)),
     }
+}
+
+// Focus, icon only so it fits the third row: filled while on
+fn focus_button(ring: bool) -> Rectangle {
+    let (fill, ink) = if quiet::on() {
+        (theme::island().primary, theme::island().on_primary)
+    } else {
+        (
+            theme::island().surface_container,
+            theme::island().on_surface,
+        )
+    };
+
+    Rectangle::new()
+        .width(SWITCH)
+        .height(SWITCH)
+        .radius(SWITCH / 2.0)
+        .fill(fill)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(|| click_switch(Press::Focus)))
+        .child(Icon::Focus.on(18.0, ink))
 }
 
 /*
@@ -622,6 +674,7 @@ fn run(press: Press) {
         Press::Microphone => Audio::toggle_microphone_mute(),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
         Press::NightLight(on) => night_light::switch(on),
+        Press::Focus => quiet::toggle(),
         // refused at once only when it is no longer supported, which the switch then stops showing
         Press::ChargeLimit(on) => {
             let _ = charge_limit::ask(on, None);
@@ -1086,6 +1139,7 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         }
         At::NightLight => night_light().press,
         At::ChargeLimit => charge_limit().and_then(|limit| limit.press),
+        At::Focus => modules::on("focus").then_some(Press::Focus),
         At::Wifi => {
             if Connectivity::read().wifi == Radio::Missing {
                 return focus;
