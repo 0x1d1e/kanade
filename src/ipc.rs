@@ -25,7 +25,7 @@ use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
     apps, bluetooth, caffeine, charge_limit, fullscreen, google, live, media, network, night_light,
-    power, reminders, session, wallpaper, weather,
+    power, reminders, session, subscriptions, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -112,6 +112,10 @@ fn run(call: Call) -> Reply {
         // the fetch is on the weather's thread, so this answers at once
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // likewise on the subscriptions' thread
+        Call::Subscriptions(request) => {
+            subscriptions::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),

@@ -22,7 +22,7 @@ use crate::modules::{self, Module};
 use crate::sources::system::Switch;
 use crate::sources::{
     caffeine, capture, charge_limit, google, live, media, night_light, osd, power, recording,
-    reminders, timer, wallpaper, weather,
+    reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -73,6 +73,7 @@ pub enum Call {
     Google(google::Request),
     Reminders(reminders::Request),
     Weather(weather::Request),
+    Subscriptions(subscriptions::Request),
     Osd(osd::Asked),
     Lock,
     LockStatus,

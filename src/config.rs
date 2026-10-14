@@ -98,6 +98,13 @@ pub struct Config {
     // of, 0 for none (ADR 0043)
     pub reminder: u32,
 
+    // `calendar.subscriptions`: the https:// addresses of public iCalendar feeds, `webcal://` read
+    // as `https://` (ADR 0062). One may hold a secret: never logged, nor shown in `status`
+    pub subscriptions: Vec<String>,
+
+    // `calendar.subscription_interval`: minutes between fetches of each feed
+    pub subscription_interval: u32,
+
     // `weather.location`: where the weather is for; none fetches nothing (ADR 0017)
     pub location: Option<Location>,
 
@@ -440,6 +447,8 @@ impl Default for Config {
             transition: Transition::default(),
             calendars: Vec::new(),
             reminder: 0,
+            subscriptions: Vec::new(),
+            subscription_interval: 60,
             location: None,
             place: None,
             units: Units::default(),
@@ -821,6 +830,10 @@ pub enum Kind {
     // replaces the list below
     Paths(Field<Vec<String>>),
 
+    // a list of public calendar feeds, `https://` or `webcal://` addresses (`feed`), each kept once;
+    // a layer replaces the list below. An error never repeats an address, which may hold a secret
+    Urls(Field<Vec<String>>),
+
     // a table of app id = `.desktop` file id, merged over the layers below by app id
     AppIds(Field<BTreeMap<String, String>>),
 
@@ -922,6 +935,28 @@ impl Kind {
 
                 (field.set)(config, paths);
             }
+            Kind::Urls(field) => {
+                let list = value.as_array().ok_or(FEEDS_EXPECTED)?;
+                let mut urls: Vec<String> = Vec::new();
+
+                for (at, url) in list.iter().enumerate() {
+                    let url = url
+                        .as_str()
+                        .ok_or(FEEDS_EXPECTED)
+                        .and_then(feed)
+                        .map_err(|why| format!("entry {}: {why}", at + 1))?;
+
+                    if !urls.contains(&url) {
+                        urls.push(url);
+                    }
+                }
+
+                if urls.len() > FEEDS {
+                    return Err(format!("at most {FEEDS} addresses"));
+                }
+
+                (field.set)(config, urls);
+            }
             Kind::AppIds(field) => {
                 let table = value
                     .as_table()
@@ -987,7 +1022,10 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
             Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
-            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Argv(field) => {
+            Kind::DesktopIds(field)
+            | Kind::Paths(field)
+            | Kind::Urls(field)
+            | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
             Kind::AppIds(field) => Value::Table(
@@ -1029,7 +1067,9 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
             Kind::DayTime(field) => field.copy(from, to),
-            Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
+            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Urls(field) => {
+                field.copy(from, to)
+            }
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
@@ -1876,6 +1916,53 @@ pub const REMINDERS: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+// how many feeds `calendar.subscriptions` takes
+pub const FEEDS: usize = 16;
+
+const FEEDS_EXPECTED: &str = "expected a list of https:// or webcal:// addresses";
+
+// how often a feed is fetched: from half an hour to a day
+pub const SUBSCRIPTION_INTERVAL: Range = Range {
+    least: 30,
+    most: 24 * 60,
+};
+
+pub const SUBSCRIPTIONS: &[Setting] = &[
+    Setting {
+        key: "calendar.subscriptions",
+        label: "Subscriptions",
+        help: "https:// (or webcal://) addresses of public iCalendar feeds, fetched into read-only \
+               calendars; an address may hold a secret, so none is logged or shown",
+        hint: Some("Add a calendar feed address, then Enter"),
+        kind: Kind::Urls(Field {
+            get: |config| config.subscriptions.clone(),
+            set: |config, urls| config.subscriptions = urls,
+        }),
+        example: Some("[\"https://example.org/holidays.ics\", \"webcal://example.org/team.ics\"]"),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "calendar.subscription_interval",
+        label: "Subscription interval",
+        help: "minutes between fetches of each subscription, at least 30",
+        hint: Some("Minutes between fetches of a feed"),
+        kind: Kind::Minutes(
+            SUBSCRIPTION_INTERVAL,
+            Field {
+                get: |config| Duration::from_secs(u64::from(config.subscription_interval) * 60),
+                set: |config, every| {
+                    config.subscription_interval =
+                        u32::try_from(every.as_secs() / 60).unwrap_or(u32::MAX)
+                },
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 pub const WEATHER: &[Setting] = &[
     Setting {
         key: "weather.location",
@@ -2261,6 +2348,51 @@ fn minutes(value: &Value, range: Range) -> Result<Duration, String> {
         .filter(|minutes| (range.least..=range.most).contains(minutes))
         .map(|minutes| Duration::from_secs(u64::from(minutes) * 60))
         .ok_or_else(|| format!("{minutes} is outside {}-{} min", range.least, range.most))
+}
+
+/*
+ * a feed address as the calendar fetches it: `webcal://` is `https://`, `http://` is refused, and
+ * nothing else is taken. The reasons never repeat the address, which may hold a secret
+ */
+pub fn feed(text: &str) -> Result<String, &'static str> {
+    const LONGEST: usize = 2048;
+
+    let text = text.trim();
+    let scheme = |name: &str| {
+        text.get(..name.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(name))
+    };
+
+    let rest = if scheme("https://") {
+        &text["https://".len()..]
+    } else if scheme("webcal://") {
+        &text["webcal://".len()..]
+    } else if scheme("http://") {
+        return Err("http:// is refused, as the feed would be read in the clear; use https://");
+    } else {
+        return Err("expected an https:// or webcal:// address");
+    };
+
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+
+    if text.len() > LONGEST {
+        return Err("the address is over 2048 bytes");
+    }
+    if host.is_empty() || host.starts_with(':') {
+        return Err("the address has no host");
+    }
+
+    let url = format!("https://{rest}");
+    if url
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b' ')
+        || url.parse::<ureq::http::Uri>().is_err()
+    {
+        return Err("not a valid address");
+    }
+
+    Ok(url)
 }
 
 fn kelvin(value: &Value, range: Range) -> Result<u32, String> {
@@ -3375,6 +3507,8 @@ mod tests {
                 "launcher.actions",
                 "calendar.paths",
                 "calendar.reminder",
+                "calendar.subscriptions",
+                "calendar.subscription_interval",
                 "weather.location",
                 "weather.place",
                 "weather.units",
@@ -3881,6 +4015,47 @@ battery = false
         assert_eq!(
             one("calendar.paths = \"~/cal\"").1,
             said(&[(1, "calendar.paths: expected a list of \"path\"s")])
+        );
+    }
+
+    // a feed is https, `webcal://` read as it, and a refusal never repeats the address, which may
+    // hold a secret (ADR 0062)
+    #[test]
+    fn a_subscription_is_https_and_a_refusal_names_no_address() {
+        let (config, problems) = one(
+            "calendar.subscriptions = [\"webcal://example.org/a.ics?token=s3cret\", \"HTTPS://example.org/b.ics\", \"https://example.org/b.ics\"]\ncalendar.subscription_interval = 45",
+        );
+
+        assert_eq!(problems, vec![]);
+        assert_eq!(
+            config.subscriptions,
+            [
+                "https://example.org/a.ics?token=s3cret",
+                "https://example.org/b.ics"
+            ]
+        );
+        assert_eq!(config.subscription_interval, 45);
+
+        for bad in [
+            "http://example.org/s3cret.ics",
+            "ftp://example.org/s3cret.ics",
+            "https:///s3cret",
+            "https://exa mple.org/s3cret",
+            "s3cret",
+        ] {
+            let (config, problems) = one(&format!("calendar.subscriptions = [\"{bad}\"]"));
+
+            assert!(config.subscriptions.is_empty(), "{bad}");
+            assert_eq!(problems.len(), 1, "{bad}");
+            assert!(!problems[0].1.contains("s3cret"), "{}", problems[0].1);
+        }
+
+        assert_eq!(
+            one("calendar.subscription_interval = 10").1,
+            said(&[(
+                1,
+                "calendar.subscription_interval: 10 is outside 30-1440 min"
+            )])
         );
     }
 

@@ -1213,6 +1213,15 @@ fn control(
             )),
             false,
         ),
+        Kind::Urls(field) => (
+            Box::new(list(
+                setting,
+                (field.get)(read),
+                "Add a feed address, then Enter",
+                roles,
+            )),
+            false,
+        ),
         Kind::AppIds(field) => {
             let mut rows: Vec<Box<dyn Widget>> = (field.get)(read)
                 .into_iter()

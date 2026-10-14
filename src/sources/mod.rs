@@ -46,6 +46,7 @@ pub mod secrets;
 pub mod session;
 pub mod sleep;
 pub mod sound;
+pub mod subscriptions;
 pub mod system;
 pub mod timer;
 pub mod tray;

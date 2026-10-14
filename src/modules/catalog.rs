@@ -26,7 +26,7 @@ use crate::sources::{
     fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
-    sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
+    sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
@@ -976,6 +976,37 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("google-calendar", google::follow);
+            app
+        },
+    },
+    /*
+     * public iCalendar feeds, fetched into read-only files `calendar` reads (ADR 0062); fetches
+     * nothing without a `calendar.subscriptions`
+     */
+    Module {
+        name: "calendar-subscriptions",
+        about: "Public iCalendar feeds fetched into read-only calendars",
+        requires: &[CORE, "calendar"],
+        optional: &["calendar-surface"],
+        warns: None,
+        needs: &[],
+        settings: config::SUBSCRIPTIONS,
+        hooks: Hooks {
+            status: Some(subscriptions::status),
+            reload: Some(subscriptions::reread),
+        },
+        verbs: &[Verb {
+            name: "calendar-subscriptions",
+            about: "Fetch the calendar subscriptions now, or show how they stand",
+            usage: || String::from("calendar-subscriptions sync|status"),
+            parse: |arguments| {
+                subscriptions::Request::parse(arguments)
+                    .map(Call::Subscriptions)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("calendar-subscriptions", subscriptions::follow);
             app
         },
     },

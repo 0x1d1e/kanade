@@ -48,7 +48,7 @@ use chrono::{
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::google;
+use super::{google, subscriptions};
 use crate::{clock, config, modules, supervise};
 
 pub mod add;
@@ -292,6 +292,11 @@ pub fn reread() {
     // to read again (ADR 0016)
     if modules::on("google-calendar") {
         places.extend(google::vouched().filter(|dir| dir.is_dir()));
+    }
+
+    // the feeds `calendar.subscriptions` names, mirrored by their thread (ADR 0062)
+    if modules::on("calendar-subscriptions") {
+        places.extend(subscriptions::directory().filter(|dir| dir.is_dir()));
     }
 
     // the events added in the Calendar Surface, whatever `calendar.paths` names (ADR 0045)
