@@ -21,8 +21,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, google, live, media, night_light, osd, power, recording,
-    reminders, timer, wallpaper, weather,
+    caffeine, capture, charge_limit, focus, google, live, media, night_light, osd, power,
+    recording, reminders, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -64,6 +64,7 @@ pub enum Call {
     Record(recording::Request),
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
+    Focus(focus::Request),
     Battery(charge_limit::Request),
     Media(media::Transport),
     Wifi(Switch),
@@ -445,6 +446,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return live::run(id, title, command);
     }
 
+    // the agent's event comes on stdin, never the arguments
+    if let Call::Live(live::Request::Hook(agent)) = asked {
+        return live::hook(agent);
+    }
+
     // the lines come from stdin, never the arguments
     if let Call::Dmenu(asked) = asked {
         if !asked.choices.is_empty() {
@@ -555,9 +561,22 @@ fn complain(text: &str) {
 
 // what the running shell answers, or why there is none to ask
 pub fn call(arguments: &[String]) -> Result<Reply, String> {
+    call_within(arguments, PATIENCE)
+}
+
+// as `call`, for a caller that cannot wait as long, like an agent's hook
+pub fn call_within(arguments: &[String], patience: Duration) -> Result<Reply, String> {
     let stream = connect(arguments)?;
 
-    send(stream, &IpcCall::new(HANDLER, arguments), Some(PATIENCE))
+    send(stream, &IpcCall::new(HANDLER, arguments), Some(patience))
+}
+
+// what `call` says when no shell listens
+pub const NO_SHELL: &str = "no shell is running; start one with `kanade`";
+
+// what the shell refuses the verbs of a Module that is off with
+pub fn module_off(name: &str) -> String {
+    format!("module {name} is off")
 }
 
 // as `call`, waiting as long as the shell takes, as on the user
@@ -581,8 +600,7 @@ fn connect(arguments: &[String]) -> Result<UnixStream, String> {
         ));
     }
 
-    UnixStream::connect(ipc_socket())
-        .map_err(|_| String::from("no shell is running; start one with `kanade`"))
+    UnixStream::connect(ipc_socket()).map_err(|_| String::from(NO_SHELL))
 }
 
 /*

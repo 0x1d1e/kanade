@@ -84,6 +84,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "launcher",
             "caffeine",
             "night-light",
+            "focus",
             "clipboard",
             "clipboard-surface",
             "keys-surface",
@@ -366,7 +367,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "power",
         title: "Power & night light",
-        summary: "When the battery warns and what it does when critical; how warm the screen turns at night",
+        summary: "When the battery warns and what it does when critical; how warm the screen turns at night; what Focus turns on",
         group: "System",
         icon: Icon::Sunset,
         sections: &[
@@ -385,6 +386,14 @@ pub const PAGES: &[Page] = &[
                     Row::Key("night-light.temperature"),
                     Row::Key("night-light.sunset"),
                     Row::Key("night-light.sunrise"),
+                ],
+            },
+            Section {
+                title: "Focus",
+                rows: &[
+                    Row::Key("focus.dnd"),
+                    Row::Key("focus.caffeine"),
+                    Row::Key("focus.night_light"),
                 ],
             },
         ],

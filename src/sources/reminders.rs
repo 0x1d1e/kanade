@@ -1,6 +1,7 @@
 //! Calendar reminders (ADR 0043): an event's own alarms, DISPLAY and AUDIO alike, or for a timed
 //! event with none `calendar.reminder` minutes before it, each go off as a Reminder Activity that
-//! counts down to the event, with Open, which opens the Calendar Surface, and Dismiss.
+//! counts down to the event, with Open, which opens the Calendar Surface, and Dismiss, and Join
+//! while the event links to a video meeting (`meeting`), which opens the link with `xdg-open`.
 //!
 //! `plan` is pure: the occurrences near now, what already went off and the time in, what goes off
 //! now and when the next one does out. `follow` is the monitor around it, on its own thread: it
@@ -17,8 +18,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::{self, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::Instant;
 
 use chrono::{Days, NaiveDateTime};
@@ -63,8 +66,12 @@ const REEXPAND: i64 = DAY;
 pub const MORE: &str = "more";
 
 // the Activity's actions
+pub const JOIN: &str = "join";
 pub const OPEN: &str = "open";
 pub const DISMISS: &str = "dismiss";
+
+// what opens a meeting link
+const OPENER: &str = "xdg-open";
 
 // where the reminders that went off are kept, under the state directory
 const FILE: &str = "kanade/reminders";
@@ -83,6 +90,9 @@ pub struct Candidate {
 
     // the event's own alarms that show, none for the default lead
     pub triggers: Vec<Trigger>,
+
+    // the meeting it links to, an allowed https link
+    pub link: Option<String>,
 }
 
 // one reminder that goes off now
@@ -98,6 +108,9 @@ pub struct Due {
 
     // when it was due
     pub due: i64,
+
+    // its event's meeting link, never logged
+    pub link: Option<String>,
 }
 
 // what goes off now and when next
@@ -216,6 +229,7 @@ pub fn plan(candidates: &[Candidate], fired: &Fired, lead: Option<i64>, now: i64
                         to: lead.to,
                         ends: lead.ends,
                         due: lead.due,
+                        link: candidate.link.clone(),
                     },
                 );
             }
@@ -323,6 +337,9 @@ enum Event {
 
     // the reminder of this Activity key, none for every one, goes
     Dismiss(Option<String>),
+
+    // the meeting of the reminder of this Activity key is joined, and the reminder goes
+    Join(String),
 }
 
 // where the rest of the shell reaches the thread, set before IPC can take a command
@@ -381,10 +398,14 @@ pub fn request(request: Request) -> Result<String, String> {
 
 /*
  * runs an action of the reminder keyed `key`, from its pill on the draw thread: Open opens the
- * Calendar Surface there and then, so it is open before the click is done, and both take the
- * reminder away
+ * Calendar Surface there and then, so it is open before the click is done, and Join leaves the
+ * link to the monitor's thread; each takes the reminder away
  */
 pub fn act(action: &str, key: &str) {
+    if action == JOIN {
+        send(Event::Join(key.to_owned()));
+    }
+
     if action == OPEN {
         let effect = IslandService::read().resolve(Command::Open(Surface::Calendar));
 
@@ -449,6 +470,9 @@ struct Shown {
     // the titles a MORE stands for
     of: Vec<String>,
 
+    // the meeting it joins, none for a MORE
+    link: Option<String>,
+
     said: Option<Reminder>,
 }
 
@@ -493,16 +517,13 @@ fn follow(events: &Receiver<Event>, timer: &WallTimer) {
             }
 
             match events.recv() {
-                Ok(Event::Changed | Event::Timer) => {}
-                Ok(Event::Dismiss(key)) => monitor.dismiss(key.as_deref()),
+                Ok(event) => monitor.hear(event),
                 Err(_) => return,
             }
 
             // whatever came meanwhile is folded into the next step
             while let Ok(event) = events.try_recv() {
-                if let Event::Dismiss(key) = event {
-                    monitor.dismiss(key.as_deref());
-                }
+                monitor.hear(event);
             }
         }
     });
@@ -560,6 +581,7 @@ impl Monitor {
                 ends: due.ends,
                 until,
                 of: Vec::new(),
+                link: due.link.clone(),
                 said: None,
             });
         }
@@ -585,6 +607,7 @@ impl Monitor {
                 ends: false,
                 until,
                 of,
+                link: None,
                 said: None,
             });
         }
@@ -606,7 +629,9 @@ impl Monitor {
             let reads = reads(shown, now);
 
             if shown.said.as_ref() != Some(&reads) {
-                IslandService::write().post(activity(&shown.key, reads.clone()), Instant::now());
+                let post = activity(&shown.key, reads.clone(), shown.link.is_some());
+
+                IslandService::write().post(post, Instant::now());
                 shown.said = Some(reads);
             }
         }
@@ -628,6 +653,26 @@ impl Monitor {
         };
 
         next
+    }
+
+    fn hear(&mut self, event: Event) {
+        match event {
+            Event::Changed | Event::Timer => {}
+            Event::Dismiss(key) => self.dismiss(key.as_deref()),
+            Event::Join(key) => {
+                let link = self
+                    .shown
+                    .iter()
+                    .find(|shown| shown.key == key)
+                    .and_then(|shown| shown.link.clone());
+
+                if let Some(link) = link {
+                    join(link);
+                }
+
+                self.dismiss(Some(&key));
+            }
+        }
     }
 
     fn dismiss(&mut self, key: Option<&str>) {
@@ -657,6 +702,35 @@ fn candidate(reminded: Reminded) -> Candidate {
         end: reminded.occurrence.span.1,
         all_day: reminded.occurrence.all_day,
         triggers: reminded.triggers,
+        link: reminded.link,
+    }
+}
+
+// opens `link` in the user's browser or meeting app on a thread of its own, which only reaps it;
+// argv, no shell, and the link is never logged
+fn join(link: String) {
+    let spawned = thread::Builder::new()
+        .name(String::from("reminder-join"))
+        .spawn(move || {
+            let opened = process::Command::new(OPENER)
+                .arg(link)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .and_then(|mut child| child.wait());
+
+            match opened {
+                Ok(status) if !status.success() => {
+                    eprintln!("kanade: reminders: {OPENER} failed ({status})")
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("kanade: reminders: {OPENER}: {error}"),
+            }
+        });
+
+    if let Err(error) = spawned {
+        eprintln!("kanade: reminders: cannot join ({error})");
     }
 }
 
@@ -752,16 +826,18 @@ fn id(key: &str) -> Id {
  * Ongoing and Persistent, as a timer is: something on its way the user keeps in view, a Satellite
  * when another Activity outranks it, never pushing in front of a Surface the user opened
  */
-fn activity(key: &str, reminder: Reminder) -> Activity {
-    Activity::new(
-        id(key),
-        Priority::Ongoing,
-        Lifetime::Persistent,
-        Scope::Global,
-        Interrupt::None,
-    )
-    .expect("a Persistent that does not auto-expand is valid")
-    .with_actions(vec![
+fn activity(key: &str, reminder: Reminder, joinable: bool) -> Activity {
+    // Join first, as what the user came to do
+    let mut actions = Vec::new();
+
+    if joinable {
+        actions.push(Action {
+            key: String::from(JOIN),
+            label: String::from("Join"),
+        });
+    }
+
+    actions.extend([
         Action {
             key: String::from(OPEN),
             label: String::from("Open"),
@@ -770,7 +846,17 @@ fn activity(key: &str, reminder: Reminder) -> Activity {
             key: String::from(DISMISS),
             label: String::from("Dismiss"),
         },
-    ])
+    ]);
+
+    Activity::new(
+        id(key),
+        Priority::Ongoing,
+        Lifetime::Persistent,
+        Scope::Global,
+        Interrupt::None,
+    )
+    .expect("a Persistent that does not auto-expand is valid")
+    .with_actions(actions)
     .with_detail(Detail::Reminder(reminder))
 }
 
@@ -792,6 +878,7 @@ mod tests {
             end: start + HOUR,
             all_day: false,
             triggers: triggers.to_vec(),
+            link: None,
         }
     }
 

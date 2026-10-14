@@ -11,12 +11,17 @@
 //!
 //! With `notifications.sound` on, a new notification plays a sound (`sound`), never under DND.
 //!
+//! A notification with a `value` hint under 100 is also a progress Live Activity (`live`, ADR 0059),
+//! while its rule lets a Banner show and, under DND, only a loud one: it ends when the value reaches
+//! 100 and goes when the notification closes or is replaced with no value.
+//!
 //! `Notifications` has no subscription, so this reads it again when the bus carries a
 //! notification arriving or closing (`wake`), and polls while that settles or the bus cannot be
 //! watched; a read that finds the same notifications shows nothing. Kanade is the daemon only if no
 //! other one, like mako, got the bus name first. Then nothing arrives, and `Daemon` says who has it
 //! for the Notifications Surface.
 
+use std::collections::HashMap;
 use std::process;
 use std::time::{Duration, Instant};
 
@@ -26,6 +31,7 @@ use kanade_runtime::service::Service;
 use super::apps::Apps;
 use super::bus;
 use super::icons;
+use super::live;
 use super::sound::{self, Hints};
 use super::wake::{Announcer, Pace, Wakes};
 use crate::banners::{Banner, Banners};
@@ -134,6 +140,76 @@ fn changes(before: &[Version], now: &[Version]) -> (Vec<Version>, Vec<u32>) {
         .collect();
 
     (posted, gone)
+}
+
+// what a notification's `value` hint does to its progress Live Activity (ADR 0059)
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    // shows it, started when it is not live
+    Show {
+        id: String,
+        title: String,
+        detail: String,
+        percent: u8,
+        lasts: Option<Duration>,
+    },
+
+    // the value reached 100: ends as done
+    Finish(String),
+
+    // the notification no longer shows progress: takes it away
+    Withdraw(String),
+}
+
+/*
+ * the live id of a notification's progress: its app and its id, which is the sender's replaces_id
+ * for every version of it. The app is cut to letters and digits, so the id fits `live`'s alphabet
+ */
+fn live_id(notification: &Notification) -> String {
+    let app: String = notification
+        .app_name()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(32)
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    format!("notification.{app}.{}", notification.id())
+}
+
+/*
+ * the step for a notification that arrived or was replaced: `allowed` says its rule, Do Not
+ * Disturb and the `live` Module let it show, `tracked` that its progress is live. A value under 100
+ * shows while allowed; 100 ends it; none, or no longer allowed, takes it away
+ */
+fn progress(notification: &Notification, allowed: bool, tracked: bool) -> Option<Step> {
+    let id = live_id(notification);
+
+    match notification.value() {
+        Some(percent @ 0..100) if allowed => {
+            let (summary, body) = (plain(notification.summary()), plain(notification.body()));
+            let app = notification.app_name();
+
+            Some(Step::Show {
+                id,
+                title: if summary.is_empty() {
+                    app.to_owned()
+                } else {
+                    summary
+                },
+                detail: if body.is_empty() {
+                    app.to_owned()
+                } else {
+                    body
+                },
+                percent,
+                lasts: notification.timeout(),
+            })
+        }
+        Some(100..) if tracked => Some(Step::Finish(id)),
+        _ if tracked => Some(Step::Withdraw(id)),
+        _ => None,
+    }
 }
 
 pub(crate) fn toast(notification: &Notification) -> Toast {
@@ -248,9 +324,15 @@ pub fn follow() {
     let mut before: Vec<Version> = Vec::new();
     let mut daemon = Daemon::Starting;
     let shows_banners = modules::on("banners");
+    let shows_progress = modules::on("live");
+
+    // the progress Live Activities, by notification id, as the live ids they are
+    let mut tracked: HashMap<u32, String> = HashMap::new();
 
     supervise::run("notifications", || {
         loop {
+            let dnd = IslandService::read().dnd();
+
             // the first read starts the daemon
             let notifications = Notifications::read();
             let running = notifications.running();
@@ -309,7 +391,57 @@ pub fn follow() {
                 Vec::new()
             };
 
+            // a progress shows as its rule lets a Banner show, and under DND only a loud one
+            let steps: Vec<(u32, Step)> = if shows_progress {
+                arrived
+                    .iter()
+                    .filter_map(|notification| {
+                        let loud = notification.urgency() == Urgency::Critical
+                            || notification.effects().bypass_dnd;
+                        let allowed = notification.effects().banner && (!dnd || loud);
+                        let tracked = tracked.contains_key(&notification.id());
+
+                        progress(notification, allowed, tracked)
+                            .map(|step| (notification.id(), step))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             drop(notifications);
+
+            for (id, step) in steps {
+                match step {
+                    Step::Show {
+                        id: live_id,
+                        title,
+                        detail,
+                        percent,
+                        lasts,
+                    } => {
+                        // refused past the bound on what is live, which is no reason to stop
+                        if live::show(&live_id, &title, &detail, percent, lasts).is_ok() {
+                            tracked.insert(id, live_id);
+                        }
+                    }
+                    Step::Finish(live_id) => {
+                        tracked.remove(&id);
+                        live::finish(&live_id);
+                    }
+                    Step::Withdraw(live_id) => {
+                        tracked.remove(&id);
+                        live::withdraw(&live_id);
+                    }
+                }
+            }
+
+            // closed by its sender or dismissed, or replaced and gone from the list
+            for id in &gone {
+                if let Some(live_id) = tracked.remove(id) {
+                    live::withdraw(&live_id);
+                }
+            }
 
             // Running and Conflict are for good, so only Starting asks again
             if daemon == Daemon::Starting {
@@ -326,8 +458,6 @@ pub fn follow() {
                     daemon = next;
                 }
             }
-
-            let dnd = IslandService::read().dnd();
 
             // never under DND, which quiets what the Banners show
             if !dnd {
@@ -387,4 +517,64 @@ pub fn follow() {
             wakes.wait(busy);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use super::*;
+    use crate::sources::notifications::rules::Effects;
+
+    fn notification(app: &str, id: u32, value: Option<u8>) -> Notification {
+        Notification {
+            id,
+            app_name: app.to_owned(),
+            desktop_entry: String::new(),
+            category: String::new(),
+            summary: String::from("Copying"),
+            body: String::new(),
+            icon: String::new(),
+            image: String::new(),
+            urgency: Urgency::Normal,
+            actions: Vec::new(),
+            has_default: false,
+            resident: false,
+            sound: Hints::default(),
+            value,
+            timeout: None,
+            received: SystemTime::UNIX_EPOCH,
+            version: 1,
+            effects: Effects::default(),
+        }
+    }
+
+    // the id and the steps come from another program's words, so the id always fits `live`
+    #[test]
+    fn a_progress_lives_by_value_and_its_id_fits_live() {
+        for app in ["", "Files", "my app/ünï \t<b>", &"x".repeat(500)] {
+            let id = live_id(&notification(app, u32::MAX, None));
+
+            assert!(live::valid_id(&id), "{id}");
+        }
+
+        let step =
+            |value, allowed, tracked| progress(&notification("Files", 7, value), allowed, tracked);
+        let id = || String::from("notification.files.7");
+
+        assert!(matches!(
+            step(Some(40), true, false),
+            Some(Step::Show { percent: 40, .. })
+        ));
+        assert!(matches!(
+            step(Some(0), true, true),
+            Some(Step::Show { percent: 0, .. })
+        ));
+        assert_eq!(step(Some(100), true, true), Some(Step::Finish(id())));
+        assert_eq!(step(Some(100), true, false), None);
+        assert_eq!(step(None, true, true), Some(Step::Withdraw(id())));
+        assert_eq!(step(Some(40), false, true), Some(Step::Withdraw(id())));
+        assert_eq!(step(Some(40), false, false), None);
+        assert_eq!(step(None, true, false), None);
+    }
 }

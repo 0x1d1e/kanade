@@ -1,13 +1,15 @@
 //! Live Activities from outside (ADR 0042): `kanade activity` lets a script, a build or a download
 //! show what it does on the Island. `start` posts a Persistent Ongoing Live Activity, `progress`
 //! and `detail` repost it, and `end` or `fail` turn it into a short Transient done or failed form,
-//! as a saved recording's. `run` wraps a command in all of it, on the client's side.
+//! as a saved recording's. `run` wraps a command in all of it, on the client's side, and `hook`
+//! turns an agent's hook events into the same verbs (`hook.rs`, ADR 0058).
 //!
 //! What comes in is another program's, so it is bounded: at most `MOST` live at once, ids from a
 //! small alphabet, titles and details one line of plain text cut to a length, a verb for an id that
 //! is not live refused. A live Activity its program stops talking to is withdrawn after `live.stale`
-//! (`config::LIVE`); `run` keeps its own alive while its command runs. Titles and details are never
-//! logged.
+//! (`config::LIVE`); `run` keeps its own alive while its command runs. A change sooner than
+//! `REPOST` after the last post is held and posted as it falls due, one that changes nothing is not
+//! posted. Titles and details are never logged.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -29,6 +31,9 @@ use crate::island::activity::{
     Activity, Detail, Ended, Id, Interrupt, Job, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
+pub use hook::{Agent, run as hook};
+
+mod hook;
 
 // how many may be live at once; another is refused until one ends
 pub const MOST: usize = 8;
@@ -37,6 +42,10 @@ pub const MOST: usize = 8;
 pub const ID: usize = 64;
 pub const TITLE: usize = 80;
 pub const DETAIL: usize = 160;
+
+// the least between two posts of one live Activity's changes: a client reposting in a loop redraws
+// the Island a few times a second, and what it said last is posted when the time is up
+const REPOST: Duration = Duration::from_millis(250);
 
 // how often `run` tells the shell its command still runs, well inside the least `live.stale`
 const TOUCH: Duration = Duration::from_secs(20);
@@ -81,6 +90,9 @@ pub enum Request {
         title: String,
         command: Vec<String>,
     },
+
+    // the client's own: one hook event of an agent on stdin, told as the verbs above
+    Hook(Agent),
 }
 
 impl Request {
@@ -126,6 +138,7 @@ impl Request {
                     command: command.iter().map(|word| (*word).to_owned()).collect(),
                 })
             }
+            ["hook", agent] => Some(Request::Hook(Agent::parse(agent)?)),
             _ => None,
         }
     }
@@ -140,17 +153,20 @@ activity end|fail <id> [<text>]
 activity touch <id>
 activity list
 activity run <id> <title> -- <command>...
+activity hook claude
   <id>: 1 to {ID} letters, digits, '.', '_' or '-'; it names one live Activity until it ends
   <title>: what it is, one line, cut to {TITLE} characters
   <amount>: a percent like 40 or 40%, or a fraction like 0.4
   <text>: a line under the title, cut to {DETAIL} characters; detail with none clears it
   <command>: run with the Activity live, ended as done on exit status 0 and failed on any other, \
-which kanade exits with"
+which kanade exits with
+  hook: reads one Claude Code hook event as JSON on stdin and shows the session as a live Activity \
+(`docs/wiki/Agent-hooks.md`); it exits 0 or 1, never 2, which Claude Code takes as a block"
     )
 }
 
 // letters, digits, '.', '_' and '-', so an id never carries markup, spaces or control characters
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     (1..=ID).contains(&id.len())
         && id
             .chars()
@@ -221,6 +237,13 @@ struct Entry {
 
     // when its program last said anything of it
     heard: Instant,
+
+    // how long it may go unheard instead of `live.stale`, as a notification asks to show for
+    lasts: Option<Duration>,
+
+    // when it was last posted to the Island, and whether a change since waits to be
+    posted: Instant,
+    held: bool,
 }
 
 // the live Activities by id. Pure: time is given, never read
@@ -254,25 +277,67 @@ impl Board {
             Entry {
                 job: job.clone(),
                 heard: now,
+                lasts: None,
+                posted: now,
+                held: false,
             },
         );
 
         Ok(job)
     }
 
-    // the live one named `id`, changed by `change` and heard from now
+    /*
+     * the live one named `id`, changed by `change` and heard from now. Its new form to post now: none
+     * when nothing changed, and none within `REPOST` of the last post, which `flush` posts when due
+     */
     pub fn change(
         &mut self,
         id: &str,
         now: Instant,
         change: impl FnOnce(&mut Job),
-    ) -> Result<Job, String> {
+    ) -> Result<Option<Job>, String> {
         let entry = self.live.get_mut(id).ok_or_else(|| unknown(id))?;
+        let before = entry.job.clone();
 
         change(&mut entry.job);
         entry.heard = now;
 
-        Ok(entry.job.clone())
+        if entry.job == before {
+            return Ok(None);
+        }
+
+        if now.saturating_duration_since(entry.posted) < REPOST {
+            entry.held = true;
+            return Ok(None);
+        }
+
+        entry.posted = now;
+        entry.held = false;
+
+        Ok(Some(entry.job.clone()))
+    }
+
+    // the held changes whose time is up, now posted
+    pub fn flush(&mut self, now: Instant) -> Vec<(String, Job)> {
+        self.live
+            .iter_mut()
+            .filter(|(_, entry)| entry.held && now >= entry.posted + REPOST)
+            .map(|(id, entry)| {
+                entry.posted = now;
+                entry.held = false;
+
+                (id.clone(), entry.job.clone())
+            })
+            .collect()
+    }
+
+    // when the first held change may be posted, none while nothing is held
+    pub fn held_until(&self) -> Option<Instant> {
+        self.live
+            .values()
+            .filter(|entry| entry.held)
+            .map(|entry| entry.posted + REPOST)
+            .min()
     }
 
     // no longer live, as it ended; its last form, done or failed
@@ -293,7 +358,9 @@ impl Board {
         let gone: Vec<String> = self
             .live
             .iter()
-            .filter(|(_, entry)| now.saturating_duration_since(entry.heard) >= stale)
+            .filter(|(_, entry)| {
+                now.saturating_duration_since(entry.heard) >= entry.lasts.unwrap_or(stale)
+            })
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -306,7 +373,10 @@ impl Board {
 
     // when the next goes stale, none while nothing is live
     pub fn due(&self, stale: Duration) -> Option<Instant> {
-        self.live.values().map(|entry| entry.heard + stale).min()
+        self.live
+            .values()
+            .map(|entry| entry.heard + entry.lasts.unwrap_or(stale))
+            .min()
     }
 
     // a line each, by id: the id, how far along, the title, tab-separated
@@ -325,8 +395,11 @@ impl Board {
     }
 }
 
+// how a refusal for an id that is not live begins, which `hook` tells from any other
+const NOT_LIVE: &str = "no live Activity named ";
+
 fn unknown(id: &str) -> String {
-    format!("no live Activity named {id}; start it first")
+    format!("{NOT_LIVE}{id}; start it first")
 }
 
 static BOARD: Mutex<Board> = Mutex::new(Board::new());
@@ -342,7 +415,7 @@ pub fn request(request: Request) -> Result<String, String> {
     let (id, job) = match request {
         Request::Start { id, title } => {
             let job = board.start(&id, title, now)?;
-            (id, job)
+            (id, Some(job))
         }
         Request::Progress { id, progress } => {
             let job = board.change(&id, now, |job| job.progress = Some(progress))?;
@@ -354,29 +427,99 @@ pub fn request(request: Request) -> Result<String, String> {
         }
         Request::End { id, ended, detail } => {
             let job = board.end(&id, ended, detail)?;
-            (id, job)
+            (id, Some(job))
         }
         Request::Touch { id } => {
-            board.change(&id, now, |_| {})?;
-            CHANGED.notify_one();
-            return Ok(String::new());
+            let job = board.change(&id, now, |_| {})?;
+            (id, job)
         }
         Request::List => return Ok(board.list().join("\n")),
-        Request::Run { .. } => {
-            return Err(String::from(
-                "`activity run` runs its command in the client",
-            ));
+        Request::Run { .. } | Request::Hook(_) => {
+            return Err(String::from("`activity run` and `hook` run in the client"));
         }
     };
 
     // under the lock, so the thread withdrawing a stale one never comes between
-    IslandService::write().post(activity(&id, job), now);
+    if let Some(job) = job {
+        IslandService::write().post(activity(&id, job), now);
+    }
+
+    // it may hold a change, or end the one the thread waits on
     CHANGED.notify_one();
 
     Ok(String::new())
 }
 
-// the `live` Module's thread: withdraws each live Activity once it is stale; asleep while none is
+/*
+ * a progress from this process rather than a client, a notification's `value` hint (ADR 0059):
+ * starts the live Activity `id` unless it is live, then shows `title`, `detail` and `percent`.
+ * Unheard from for `lasts`, else `live.stale`, it is withdrawn. Refused past `MOST`, as a client is
+ */
+pub fn show(
+    id: &str,
+    title: &str,
+    detail: &str,
+    percent: u8,
+    lasts: Option<Duration>,
+) -> Result<(), String> {
+    let now = Instant::now();
+    let title = line(&[title], TITLE);
+    let detail = line(&[detail], DETAIL);
+    let mut board = BOARD.locked();
+
+    let fresh = !board.live.contains_key(id);
+
+    if fresh {
+        board.start(id, title.clone(), now)?;
+    }
+
+    let changed = board.change(id, now, |job| {
+        job.title = title;
+        job.detail = detail;
+        job.progress = Some(u16::from(percent) * 10);
+    })?;
+
+    let entry = board.live.get_mut(id);
+
+    // a new one is posted whole at once, not held back as a change within `REPOST` of its start
+    let job = entry.map(|entry| {
+        entry.lasts = lasts;
+        entry.held = entry.held && !fresh;
+
+        entry.job.clone()
+    });
+
+    if let Some(job) = job.filter(|_| fresh || changed.is_some()) {
+        IslandService::write().post(activity(id, job), now);
+    }
+
+    CHANGED.notify_one();
+
+    Ok(())
+}
+
+// ends the live Activity `id` as done, if it is live
+pub fn finish(id: &str) {
+    let _ = request(Request::End {
+        id: id.to_owned(),
+        ended: Ended::Done,
+        detail: None,
+    });
+}
+
+// takes the live Activity `id` away at once, with no ended form, if it is live
+pub fn withdraw(id: &str) {
+    let now = Instant::now();
+    let mut board = BOARD.locked();
+
+    if board.live.remove(id).is_some() {
+        IslandService::write().withdraw(&Id::new(Kind::Live, id), now);
+        CHANGED.notify_one();
+    }
+}
+
+// the `live` Module's thread: withdraws each live Activity once it is stale and posts the changes
+// held back; asleep while none is live or held
 pub fn follow() {
     let mut board = BOARD.locked();
 
@@ -384,16 +527,25 @@ pub fn follow() {
         let stale = config::get().live_stale;
         let now = Instant::now();
         let gone = board.expire(now, stale);
+        let held = board.flush(now);
 
-        if !gone.is_empty() {
+        if !gone.is_empty() || !held.is_empty() {
             let mut island = IslandService::write();
 
             for id in gone {
                 island.withdraw(&Id::new(Kind::Live, id), now);
             }
+
+            for (id, job) in held {
+                island.post(activity(&id, job), now);
+            }
         }
 
-        board = match board.due(stale) {
+        board = match [board.due(stale), board.held_until()]
+            .into_iter()
+            .flatten()
+            .min()
+        {
             Some(due) => {
                 CHANGED
                     .wait_timeout(board, due.saturating_duration_since(now))
@@ -656,6 +808,40 @@ mod tests {
         board.start("a", String::from("t"), now).expect("room");
 
         assert_eq!(board.end("a", Ended::Done, None).expect("live").detail, "");
+    }
+
+    #[test]
+    fn a_change_within_the_repost_time_is_held_and_one_that_changes_nothing_is_not_posted() {
+        let start = Instant::now();
+        let mut board = Board::new();
+        let progress = |thousandths| move |job: &mut Job| job.progress = Some(thousandths);
+
+        board.start("a", String::from("t"), start).expect("room");
+
+        // soon after the start: held, and nothing to post until the time is up
+        let soon = start + REPOST / 5;
+
+        assert_eq!(board.change("a", soon, progress(100)), Ok(None));
+        assert_eq!(board.change("a", soon, progress(200)), Ok(None));
+        assert_eq!(board.held_until(), Some(start + REPOST));
+        assert!(board.flush(soon).is_empty());
+
+        // the newest of the held is what is posted
+        let due = board.flush(start + REPOST);
+
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].1.progress, Some(200));
+        assert_eq!(board.held_until(), None);
+
+        // a repost of what shows is not posted, and one after the time is posted at once
+        let later = start + REPOST * 3;
+
+        assert_eq!(board.change("a", later, progress(200)), Ok(None));
+        assert_eq!(board.held_until(), None);
+        assert!(matches!(
+            board.change("a", later, progress(300)),
+            Ok(Some(_))
+        ));
     }
 
     #[test]

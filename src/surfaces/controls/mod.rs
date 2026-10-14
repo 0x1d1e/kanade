@@ -2,7 +2,7 @@
 //! light and, where the battery supports it, its charge limit as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
-//! header names the apps the privacy cluster stands for.
+//! header names the apps the privacy cluster stands for, and ends a PipeWire screen cast with Stop sharing.
 //!
 //! The Wi-Fi and Bluetooth switches' tiles each open a sub-surface in its place, their knobs still
 //! switching them: the networks in range, to join or leave, and the password a secured one asks
@@ -11,6 +11,7 @@
 //! each app's level. A sub-surface goes back a level by its chevron or Escape. Every target
 //! is a key away, a ring on the one the arrows reach (`focus`).
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::sources::brightness::Brightness;
@@ -36,12 +37,13 @@ use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::battery::Remaining;
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::charge_limit::{self, ChargeLimit};
+use crate::sources::focus as quiet;
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
 use crate::sources::niri::Target;
 use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
-use crate::sources::privacy::Privacy;
+use crate::sources::privacy::{self, Privacy};
 use crate::sources::system::Radio;
 use crate::sources::wifi::{self as wireless, Failure, Join, Link, Networks, Security};
 use crate::theme::space::{INSET, TARGET};
@@ -59,6 +61,9 @@ const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
 
 const HEADER: f32 = 20.0;
 const GAP: f32 = 8.0;
+
+// the Stop sharing pill
+const STOP: f32 = 96.0;
 
 // a switch, round ends concentric with its knob
 const SWITCH: f32 = 48.0;
@@ -89,13 +94,13 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
     let shape = geometry::CONTROLS;
     let focus = Focus::read().of(visit, held);
 
-    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let grid = targets(&focus);
     let focus = settled(focus, &grid);
     let ring = open.then(|| focus.ring(&grid)).flatten();
 
     let content = match &focus.sub {
         None => Column::new(children![
-            rise(0, header()),
+            rise(0, header(ring.as_ref())),
             rise(1, switches(dnd, ring.as_ref())),
             rise(2, levels(ring.as_ref())),
             rise(3, profiles(ring.as_ref()))
@@ -132,13 +137,41 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
         .child(content)
 }
 
+// every target of `focus`'s level, read now
+fn targets(focus: &Focus) -> Vec<Vec<(At, f32)>> {
+    focus.grid(rows(focus.sub.as_ref()), sharing().is_some())
+}
+
+/*
+ * the sessions of the casts the header can stop, none while it does not name casts or no PipeWire
+ * one runs; a wlr-screencopy cast, like a recording or Kanade's own capture, cannot be stopped
+ */
+fn sharing() -> Option<BTreeSet<u64>> {
+    let named = modules::on("privacy") && cluster::on();
+
+    named
+        .then(|| Privacy::read().sessions.clone())
+        .filter(|sessions| !sessions.is_empty())
+}
+
+// the targets of the switches' third row, at the middle of where `switches` draws each
+fn third(limit: bool, focus: bool) -> Vec<(At, f32)> {
+    match (limit, focus) {
+        (true, true) => vec![
+            (At::NightLight, 0.21),
+            (At::ChargeLimit, 0.65),
+            (At::Focus, 0.94),
+        ],
+        (true, false) => vec![(At::NightLight, 0.25), (At::ChargeLimit, 0.75)],
+        (false, true) => vec![(At::NightLight, 0.25), (At::Focus, 0.57)],
+        (false, false) => vec![(At::NightLight, 0.25)],
+    }
+}
+
 // the targets a listing sub-surface lists under its header, or the switches' third row, read now
 fn rows(sub: Option<&Subsurface>) -> Vec<Vec<(At, f32)>> {
     match sub {
-        None if charge_limit().is_some() => {
-            vec![vec![(At::NightLight, 0.25), (At::ChargeLimit, 0.75)]]
-        }
-        None => vec![vec![(At::NightLight, 0.25)]],
+        None => vec![third(charge_limit().is_some(), modules::on("focus"))],
         Some(Subsurface::Wifi) => wifi::rows(Connectivity::read().wifi, &Networks::read()),
         Some(Subsurface::Bluetooth) => bluetooth::rows(&Adapter::read(), &Prompt::read()),
         Some(Subsurface::Audio) => audio::rows(&mixer()),
@@ -155,7 +188,7 @@ fn mixer() -> Mixer {
     }
 }
 
-fn header() -> Row {
+fn header(ring: Option<&At>) -> Row {
     let mut header = children![
         Text::new("Controls")
             .size(theme::text::TITLE)
@@ -165,7 +198,7 @@ fn header() -> Row {
 
     // the dots only mark a capture, so the apps behind them are named here
     if modules::on("privacy") && cluster::on() {
-        header.extend(capturing(&Privacy::read()));
+        header.extend(capturing(&Privacy::read(), ring == Some(&At::Stop)));
     }
 
     // the time left at the header's end, over whatever room the capture leaves
@@ -194,9 +227,10 @@ fn header() -> Row {
 
 /*
  * the cluster's glyphs, then the apps using a microphone or camera and what the screen casts
- * capture; niri cannot say who casts, so a cast is a window's or a screen's and no app's
+ * capture; niri cannot say who casts, so a cast is a window's or a screen's and no app's. At the
+ * end Stop sharing, only while a PipeWire cast runs, `ring` saying the ring is on it
  */
-fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
+fn capturing(privacy: &Privacy, ring: bool) -> Option<Box<dyn Widget>> {
     if !privacy.any() {
         return None;
     }
@@ -223,10 +257,39 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
         ));
     }
 
+    if sharing().is_some() {
+        row.push(Box::new(Rectangle::new().width(Parent).height(HEADER)));
+        row.push(Box::new(stop(ring)));
+    }
+
     Some(Box::new(Row::new(row).width(Parent).gap(6.0).align(Center)))
 }
 
-// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge limit
+// the pill that stops the PipeWire casts
+fn stop(ring: bool) -> Rectangle {
+    Rectangle::new()
+        .width(STOP)
+        .height(HEADER)
+        .radius(HEADER / 2.0)
+        .fill(theme::island().surface_container_high)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(|| {
+            click(Act::Press(At::Stop));
+        }))
+        .child(
+            Text::new("Stop sharing")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
+
+/*
+ * Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge
+ * limit, with Focus's round button at the end of the row, which takes its room from them
+ */
 fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
@@ -255,17 +318,30 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     );
     let microphone = switch(microphone, width, false, on(At::Microphone), None);
     let dnd = switch(dnd, width, false, on(At::Dnd), None);
-    let night = switch(self::night_light(), width, false, on(At::NightLight), None);
+    let focus = modules::on("focus");
+    let limit = self::charge_limit();
+
+    // two tiles and the button share a row, else the night light keeps its half
+    let narrow = if limit.is_some() && focus {
+        (WIDTH - 2.0 * SWITCH_GAP - SWITCH) / 2.0
+    } else {
+        width
+    };
+    let night = switch(self::night_light(), narrow, false, on(At::NightLight), None);
     let mut third = children![night];
 
-    if let Some(limit) = self::charge_limit() {
+    if let Some(limit) = limit {
         third.push(Box::new(switch(
             limit,
-            width,
+            narrow,
             false,
             on(At::ChargeLimit),
             None,
         )));
+    }
+
+    if focus {
+        third.push(Box::new(focus_button(on(At::Focus))));
     }
 
     Column::new(children![
@@ -300,6 +376,7 @@ enum Press {
     Dnd(bool),
     NightLight(bool),
     ChargeLimit(bool),
+    Focus,
 }
 
 fn wifi(connectivity: &Connectivity) -> Switch {
@@ -427,6 +504,29 @@ fn night_light() -> Switch {
             .filter(|shade| !shade.missing)
             .map(|_| Press::NightLight(!on)),
     }
+}
+
+// Focus, icon only so it fits the third row: filled while on
+fn focus_button(ring: bool) -> Rectangle {
+    let (fill, ink) = if quiet::on() {
+        (theme::island().primary, theme::island().on_primary)
+    } else {
+        (
+            theme::island().surface_container,
+            theme::island().on_surface,
+        )
+    };
+
+    Rectangle::new()
+        .width(SWITCH)
+        .height(SWITCH)
+        .radius(SWITCH / 2.0)
+        .fill(fill)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(|| click_switch(Press::Focus)))
+        .child(Icon::Focus.on(18.0, ink))
 }
 
 /*
@@ -574,6 +674,7 @@ fn run(press: Press) {
         Press::Microphone => Audio::toggle_microphone_mute(),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
         Press::NightLight(on) => night_light::switch(on),
+        Press::Focus => quiet::toggle(),
         // refused at once only when it is no longer supported, which the switch then stops showing
         Press::ChargeLimit(on) => {
             let _ = charge_limit::ask(on, None);
@@ -840,7 +941,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let focus = Focus::read().of(visit, held);
-    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let grid = targets(&focus);
 
     // read apart, as typing writes it
     let pin = matches!(*Prompt::read(), Prompt::Pin { .. });
@@ -963,7 +1064,7 @@ fn hide() -> u64 {
 fn scroll(pixels: f32) {
     let visit = IslandService::read().visit();
     let focus = Focus::read().of(visit, false);
-    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let grid = targets(&focus);
     let mut focus = settled(focus, &grid);
 
     let most = list::ROOMY.most(grid.len().saturating_sub(1));
@@ -1019,6 +1120,13 @@ fn act(focus: Focus, act: Act, visit: u64) -> Focus {
  */
 fn press(focus: Focus, at: At, visit: u64) -> Focus {
     let switched = match at {
+        At::Stop => {
+            if let Some(sessions) = sharing() {
+                privacy::stop_sharing(&sessions);
+            }
+
+            None
+        }
         At::WifiSwitch => self::wifi(&Connectivity::read()).press,
         At::BluetoothSwitch => self::bluetooth(&Adapter::read()).press,
         At::Microphone => {
@@ -1031,6 +1139,7 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         }
         At::NightLight => night_light().press,
         At::ChargeLimit => charge_limit().and_then(|limit| limit.press),
+        At::Focus => modules::on("focus").then_some(Press::Focus),
         At::Wifi => {
             if Connectivity::read().wifi == Radio::Missing {
                 return focus;

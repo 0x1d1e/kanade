@@ -35,7 +35,9 @@ pub enum Subsurface {
 // what the ring can be on, by what it is rather than where, so a network moving keeps it
 #[derive(Debug, Clone, PartialEq)]
 pub enum At {
-    // the top level: a radio's switch's knob, then the rest of its tile, which opens its sub-surface
+    // the top level: the header's Stop sharing while a PipeWire cast runs, then a radio's switch's
+    // knob and the rest of its tile, which opens its sub-surface
+    Stop,
     WifiSwitch,
     Wifi,
     BluetoothSwitch,
@@ -44,6 +46,7 @@ pub enum At {
     Dnd,
     NightLight,
     ChargeLimit,
+    Focus,
     Speaker,
 
     // the chevron at the end of the speaker's level, which opens the Audio sub-surface
@@ -121,13 +124,20 @@ impl Service for Focus {
 /*
  * a level's targets, row by row, each with where its middle is across the Surface from 0 to 1, so
  * Up and Down go to the nearest one. `rows` are a listing sub-surface's, top first, under its header,
- * or at the top level the switches' third row
+ * or at the top level the switches' third row; `stop` says a cast can be stopped
  */
-fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
+fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>, stop: bool) -> Vec<Vec<(At, f32)>> {
     match sub {
         // `rows` are the switches' third row, which has the charge limit only where it is supported
         None => {
-            let mut grid = vec![
+            let mut grid = Vec::new();
+
+            // the header's, above the rest and apart from where the ring starts
+            if stop {
+                grid.push(vec![(At::Stop, 0.9)]);
+            }
+
+            grid.extend([
                 vec![
                     (At::WifiSwitch, 0.08),
                     (At::Wifi, 0.3),
@@ -135,7 +145,7 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32
                     (At::Bluetooth, 0.8),
                 ],
                 vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
-            ];
+            ]);
 
             grid.extend(rows);
             grid.extend([
@@ -176,8 +186,8 @@ impl Focus {
      * the targets of the level this focus is on. Taken from the focus itself, never a stored one,
      * which may be an earlier visit's sub-surface while this visit starts at the top level
      */
-    pub fn grid(&self, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
-        grid(self.sub.as_ref(), rows)
+    pub fn grid(&self, rows: Vec<Vec<(At, f32)>>, stop: bool) -> Vec<Vec<(At, f32)>> {
+        grid(self.sub.as_ref(), rows, stop)
     }
 
     // a listing sub-surface: its header, then rows that scroll
@@ -200,14 +210,18 @@ impl Focus {
         }
     }
 
-    // the rows above a listing sub-surface's, its header
-    fn header(&self) -> usize {
-        usize::from(self.listing())
+    // the rows above where the ring starts: a listing sub-surface's header, or the top level's Stop
+    fn header(&self, grid: &[Vec<(At, f32)>]) -> usize {
+        let stop = grid
+            .first()
+            .is_some_and(|row| row.iter().any(|(at, _)| *at == At::Stop));
+
+        usize::from(self.listing() || stop)
     }
 
     // what the ring shows on in `grid`, none while it hides
     pub fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        self.ring.on(grid, self.header())
+        self.ring.on(grid, self.header(grid))
     }
 
     /*
@@ -215,7 +229,7 @@ impl Focus {
      * listing scrolls to show it
      */
     pub fn row(&self, grid: &[Vec<(At, f32)>]) -> Option<usize> {
-        self.ring.row(grid, self.header())
+        self.ring.row(grid, self.header(grid))
     }
 
     // the ring hides, the pointer being what moves now
@@ -288,7 +302,7 @@ impl Focus {
             return self.sub.is_some().then(|| (self.out(), None));
         }
 
-        let place = self.ring.place(grid, self.header())?;
+        let place = self.ring.place(grid, self.header(grid))?;
         let at = grid[place.row][place.column].0.clone();
         let level = at.level();
 
@@ -309,7 +323,7 @@ impl Focus {
             return None;
         }
 
-        if let Some(ring) = self.ring.revealed(grid, self.header()) {
+        if let Some(ring) = self.ring.revealed(grid, self.header(grid)) {
             return Some((Focus { ring, ..self }, None));
         }
 

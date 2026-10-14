@@ -24,7 +24,7 @@ Every Activity came from a Kanade source. A build, a download, a backup or any s
 ## Consequences
 
 - A script that dies before `end` leaves its Activity up to `live.stale`; `activity run` avoids that for a command it wraps.
-- A program can repost as fast as it likes; each repost redraws the island. Nothing throttles it yet.
+- A program can repost as fast as it likes; each repost redraws the island. Nothing throttles it yet. (ADR 0058 coalesces reposts.)
 - A changed `live.stale` applies from the next `kanade activity` call or withdrawal.
 - The Kind has a short Satellite form (a percent, else the pulse) and no own Surface; a Surface listing them is left until one is asked for.
 - Any local process of the user can post one, as it can call any other verb; the bounds keep it from flooding the Island or drawing misleading text over other lines.

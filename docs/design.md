@@ -26,7 +26,7 @@ Sources of truth: tracker = work/status; `CONTEXT.md` = domain; ADRs = durable r
 - **Satellite**: Persistent Ongoing/Critical Activity that is not the primary, or Media beside such a primary; cap `SATELLITES`, rest a count.
 - **Arbiter**: Island selection policy.
 - **Surface**: interactive content of an Expanded Island.
-- **Privacy cluster**: dots at the Island body's trailing end (a Tray strip's too), or its top corner in a Surface, fading in and out; never Activity.
+- **Privacy cluster**: dots at the Island body's trailing end (a Tray strip's too), or its top corner in a Surface, fading in and out; never Activity. A PipeWire cast (a screen share through the portal) ends with Stop sharing in the Controls header.
 - **Module**: user-disableable feature/interface.
 - **Service**: `kanade_runtime::service::Service`; lazy shared state/integration source.
 - **LauncherProvider**: query → ranked launcher results/actions.
@@ -74,7 +74,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
-| Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
+| Utilities | `capture`, `caffeine`, `night-light`, `focus`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `idle`, `session`, `settings`, `hooks` |
 
@@ -88,7 +88,7 @@ Rules:
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `media.visualizer = audio` runs `cava` over the default sink's monitor, on demand only while a playing track's visualizer draws, so a paused or hidden one costs no process and no frame; without cava it draws the synthetic bars ([ADR 0056](adr/0056-audio-visualizer-through-cava.md)).
 - `privacy` default on; disable warns indicators disappear.
-- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
+- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043); Join opens an allowlisted meeting link from the event with `xdg-open`.
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
 - module toggle requires restart while the runtime registers windows only at startup.
 
@@ -136,7 +136,7 @@ Rules:
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
-- **Notifications**: history, actions, dismiss, clear, DND, empty/error.
+- **Notifications**: history (20 per app, 100 in all), an app's notifications as a stack (newest and a count; opened and closed by click or keyboard, closed again at each opening), actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
 - **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.
 - **Calendar**: month/agenda; local iCalendar files, read-only, plus the events the Calendar Surface adds, changes and removes, one file each in Kanade's own directory (ADR 0015, ADR 0045); optional Google Calendar account sync into files the calendar reads, OAuth with the user's own client, secrets in the Secret Service (ADR 0016). Reminders from events' `VALARM`s, or a default lead, as an Ongoing Activity counting down, each going off once across restarts ([ADR 0043](adr/0043-calendar-reminders.md)).
@@ -173,11 +173,15 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Live Activities
 
-`kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word; a thread sleeps until the next one is due, none while none is live. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with.
+`kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word. A change within 250 ms of the last post of that Activity is held and posted as it falls due, and one that changes nothing is not posted; one thread sleeps until the next withdrawal or held post is due, none while none is live or held. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with. `activity hook claude` runs in the client too: one Claude Code hook event on stdin becomes the same verbs, a session as one Activity, bounded to exit 0 or 1 within a short wait and never 2, which Claude Code takes as a block ([ADR 0058](adr/0058-agent-hooks-and-coalesced-reposts.md), [wiki](wiki/Agent-hooks.md)). A notification with a `value` hint (a de facto, non-standard hint, a percent) is also a Live Activity of the `notifications` Module under the same policy and the same 8, ended as done at 100 and withdrawn when the notification closes, expires or is replaced without it ([ADR 0059](adr/0059-notification-progress-as-a-live-activity.md)).
 
 ### Night light
 
 `night-light.mode` off, on or on a schedule, at `night-light.temperature` K, through a `wlsunset` held under `setpriv --pdeathsig` while not off; a schedule is `night-light.sunset`/`sunrise`, else the sun at `weather.location`. A config change restarts it; one that ends restarts with a backoff and shows once as a Transient Failed Activity. The Controls switch and `kanade night-light` write the mode to the settings file ([ADR 0046](adr/0046-night-light-through-wlsunset.md)).
+
+### Focus
+
+`kanade focus on|off|toggle|status` and the round button at the end of the Controls switches turn on Do Not Disturb (`focus.dnd`), caffeine (`focus.caffeine`) and the night light (`focus.night_light`, off by default) through the calls their own verbs make, and `off` turns off only what Focus turned on, so a session that had caffeine on keeps it. A piece whose Module is off is skipped; `focus` lists the three as optional. It has no Activity: caffeine's, when on, already shows, and Do Not Disturb and the night light have none. What it turned on is kept in memory only (ADR 0060).
 
 ### Battery
 
@@ -265,10 +269,12 @@ weather open|close|toggle|refresh|status
 timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
 activity start <id> <title>|progress <id> <amount>|detail <id> [text]
 activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
+activity hook claude
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
 night-light on|off|toggle|status
+focus on|off|toggle|status
 battery limit on|off|status
 wallpaper set <path>|shuffle|status
 wallpaper open|close|toggle
