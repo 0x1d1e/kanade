@@ -1,6 +1,6 @@
 //! The Media forms, and the tiles, art and visualizer other forms borrow.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use kanade_runtime::service::Service;
@@ -12,6 +12,7 @@ use kanade_runtime::{
 use crate::config;
 use crate::island::activity::Track;
 use crate::island::fade::{Dissolve, InPlace, swap};
+use crate::island::motion::Mode;
 use crate::island::presentation::Presentation;
 use crate::look::Visualizer;
 use crate::sources::playback::Playback;
@@ -217,6 +218,42 @@ pub(crate) fn tile(
     }
 
     Stack::new(layers).width(side).height(side)
+}
+
+// seconds a playing track's disc takes to turn once, slow as a record
+const TURN: f32 = 8.0;
+
+// the longest step the disc turns by between two draws, so one after a long rest does not spin on
+const STEP: f32 = 0.1;
+
+// where the disc stands, in degrees, and when it last turned
+static DISC: Mutex<Option<(Instant, f32)>> = Mutex::new(None);
+
+/*
+ * the cover as a disc in a Satellite: it turns clockwise while the track plays and keeps its angle
+ * while paused, so pausing never snaps it back. Reduced motion holds it still
+ */
+pub(crate) fn disc(track: &Track, side: f32, now: Instant) -> Rectangle {
+    let mut disc = DISC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (last, angle) = disc.unwrap_or((now, 0.0));
+
+    let angle = if track.playing && config::get().island.motion != Mode::Reduced {
+        request_frame();
+
+        let step = now.saturating_duration_since(last).as_secs_f32().min(STEP);
+
+        (angle + step * 360.0 / TURN) % 360.0
+    } else {
+        angle
+    };
+
+    *disc = Some((now.max(last), angle));
+
+    Rectangle::new()
+        .width(side)
+        .height(side)
+        .rotate(angle)
+        .child(art(track, side, side / 2.0))
 }
 
 /*

@@ -1,7 +1,8 @@
 //! The Arbiter (CONTEXT.md). Pure: posts and now in, Frame out.
 //!
 //! Activities compete for the primary: the highest Priority, tie by the newest post. The Ongoing
-//! and Critical Persistent ones that lose it become Satellites. Expired Activities stay registered
+//! and Critical Persistent ones that lose it become Satellites, and Media joins them beside a
+//! Persistent primary of those Priorities, as a timer's. Expired Activities stay registered
 //! until `expire`, but never reach a Frame, so the primary they displaced returns on its own.
 //!
 //! A new primary dwells: for `DWELL` a newer Activity of its Priority waits behind it. Higher
@@ -199,6 +200,14 @@ impl Arbiter {
         let primary = self.primary(ranked, focused, now);
         let feedback =
             primary.is_some_and(|index| ranked[index].activity.priority() == Priority::Feedback);
+
+        // what is playing keeps a place beside a timer or a low battery, which it would only hide
+        let media_beside = primary.is_some_and(|index| {
+            let activity = &ranked[index].activity;
+
+            activity.lifetime() == Lifetime::Persistent
+                && matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
+        });
         let mut satellites: Vec<Activity> = ranked
             .iter()
             .enumerate()
@@ -206,7 +215,8 @@ impl Arbiter {
             .map(|(_, entry)| entry.activity.clone())
             .filter(|activity| {
                 activity.lifetime() == Lifetime::Persistent
-                    && matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
+                    && (matches!(activity.priority(), Priority::Ongoing | Priority::Critical)
+                        || media_beside && activity.priority() == Priority::Media)
             })
             .collect();
         let overflow = satellites.len().saturating_sub(SATELLITES);
@@ -738,12 +748,41 @@ mod tests {
         arbiter.post(media("spotify"), t0);
         arbiter.post(wifi, t0);
 
-        // the primary is not repeated, Media and Passive never become Satellites
+        // the primary is not repeated, Passive never becomes a Satellite, Media beside a Critical
+        // or Ongoing primary does, after the Ongoing ones
         assert_eq!(primary(&arbiter, t0), Some(battery.id().clone()));
         assert_eq!(
             satellites(&arbiter, t0),
-            (vec![countdown().id().clone()], 0)
+            (
+                vec![countdown().id().clone(), Id::new(Kind::Media, "spotify")],
+                0
+            )
         );
+    }
+
+    #[test]
+    fn media_is_a_satellite_only_beside_a_persistent_ongoing_primary() {
+        let t0 = Instant::now();
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        assert_eq!(satellites(&arbiter, t0), (vec![], 0));
+
+        // a timer takes the primary and the song keeps a place beside it
+        arbiter.post(countdown(), t0);
+        assert_eq!(primary(&arbiter, t0), Some(countdown().id().clone()));
+        assert_eq!(
+            satellites(&arbiter, t0),
+            (vec![Id::new(Kind::Media, "spotify")], 0)
+        );
+
+        // a workspace switch is a glance, not an Ongoing primary: no Split for a moment
+        let mut arbiter = Arbiter::default();
+
+        arbiter.post(media("spotify"), t0);
+        arbiter.post(workspace(), t0);
+        assert_eq!(primary(&arbiter, t0), Some(workspace().id().clone()));
+        assert_eq!(satellites(&arbiter, t0), (vec![], 0));
     }
 
     #[test]
@@ -779,13 +818,14 @@ mod tests {
             arbiter.post(ongoing(key), t0);
         }
 
-        // "a" outranked the media, so is the primary dwelling; three left for two places
+        // "a" outranked the media, so is the primary dwelling; three Ongoing and the media left
+        // beside it for two places
         let (shown, overflow) = satellites(&arbiter, t0);
         assert_eq!(shown.len(), SATELLITES);
-        assert_eq!(overflow, 1);
+        assert_eq!(overflow, 2);
 
         assert!(arbiter.withdraw(ongoing("a").id(), t0));
-        assert_eq!(satellites(&arbiter, t0).1, 0);
+        assert_eq!(satellites(&arbiter, t0).1, 1);
     }
 
     #[test]
@@ -860,9 +900,9 @@ mod tests {
         let focused = arbiter.frame(now, FOCUSED);
         let unfocused = arbiter.frame(now, OTHER);
 
-        // the countdown outranks the switch, which is no Satellite
+        // the countdown outranks the switch, which is no Satellite; the song is beside the countdown
         assert_eq!(focused.primary, Some(countdown()));
-        assert_eq!(focused.satellites, []);
+        assert_eq!(focused.satellites, [media("spotify")]);
 
         // once the countdown goes, the switch is the focused island's primary only
         arbiter.withdraw(countdown().id(), now);

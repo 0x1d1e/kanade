@@ -45,7 +45,7 @@ pub(super) fn satellites(
 
 /*
  * a battery shows its number in its tone, a timer, countdown or reminder what is left, a
- * recording that it records in the capture tone, caffeine its cup, a live Activity how far along
+ * recording that it records in the capture tone, caffeine its cup, media its cover as a disc, turning while it plays, a live Activity how far along
  * or its mark, the night light its sunset, a refusal or no answer a mark in the critical tone, the
  * rest their Kind
  */
@@ -53,6 +53,7 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
     match activity.detail() {
         Detail::Recording(_) => label(String::from("Rec"), theme::signals().capture),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
+        Detail::Media(track) => Box::new(super::media::disc(track, 20.0, now)),
         Detail::Live(job) => super::live::satellite(job),
         Detail::NightLight(_) => Box::new(Icon::Sunset.draw(14.0)),
         Detail::Reminder(reminder) => label(reminder.short.clone(), theme::island().on_surface),

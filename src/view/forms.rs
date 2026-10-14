@@ -190,6 +190,7 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
         .height(at.height)
         .radius(at.width.min(at.height) / 2.0)
         .fill(theme::island().surface_container_high)
+        .border(1.0, theme::island().outline)
         .align_child(Center, Center);
 
     if upright() {
@@ -530,9 +531,24 @@ fn lead_tile((icon, ink): Lead, side: f32, radius: f32) -> Box<dyn Widget> {
 
 // an action, run on a left click before the click reaches the island
 pub(super) fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
+    pill(action, pills, false)
+}
+
+// the one action among several the form is for, filled in the island's ink
+pub(super) fn main_pill(action: &Action, pills: &Pills) -> Rectangle {
+    pill(action, pills, true)
+}
+
+fn pill(action: &Action, pills: &Pills, main: bool) -> Rectangle {
+    let island = theme::island();
+    let (fill, ink) = if main {
+        (island.primary, island.on_primary)
+    } else {
+        (island.surface_container_high, island.on_surface)
+    };
     let label = Text::new(&action.label)
         .size(theme::text::LABEL_SMALL)
-        .color(theme::island().on_surface)
+        .color(ink)
         .weight(theme::text::SEMIBOLD);
     let width = match label.width() {
         Size::Fixed(natural) => natural + 20.0,
@@ -544,7 +560,7 @@ pub(super) fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
         .width(width.ceil())
         .height(theme::space::TARGET)
         .radius(theme::space::TARGET / 2.0)
-        .fill(theme::island().surface_container_high)
+        .fill(fill)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
         .on_click(move |button| {

@@ -526,6 +526,11 @@ pub fn act(key: &str, _subject: &str) {
     }
 }
 
+// whether an Action's key is the one a timer is mostly there for, to pause it or go on
+pub fn is_main(key: &str) -> bool {
+    key == PAUSE || key == RESUME
+}
+
 // what the phase is, like Focus or Long break
 pub fn phase(phase: Phase) -> &'static str {
     match phase {
@@ -560,12 +565,12 @@ fn notify(countdown: &Countdown) {
     );
 }
 
-// how long the timer was started for, like 25:00
+// how long the timer was started for, like 25:00 or 05:00
 pub fn length(countdown: &Countdown) -> String {
     clock_at(countdown.length.as_secs()).0
 }
 
-// what is left as a clock, like 4:59 or 1:04:59, asking for a redraw when it next changes
+// what is left as a clock, like 04:59 or 01:04:59, every part two digits, asking for a redraw when it next changes
 pub fn clock(countdown: &Countdown, now: Instant) -> String {
     read(&CLOCK, countdown, now)
 }
@@ -614,7 +619,7 @@ fn redraw_at(form: &Form, at: Instant) {
     send(Event::Wake);
 }
 
-// whole seconds left, rounded up, so it reads 0:01 through its last second and 0:00 once run out
+// whole seconds left, rounded up, so it reads 00:01 through its last second and 00:00 once run out
 fn left(countdown: &Countdown, now: Instant) -> u64 {
     let left = countdown.left(now);
 
@@ -679,9 +684,9 @@ fn clock_at(seconds: u64) -> (String, Option<u64>) {
     let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
 
     let text = if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
+        format!("{h:02}:{m:02}:{s:02}")
     } else {
-        format!("{m}:{s:02}")
+        format!("{m:02}:{s:02}")
     };
 
     (text, seconds.checked_sub(1))

@@ -3149,7 +3149,8 @@ mod tests {
         island.open(MONITOR, Surface::Media, now);
         island.post(battery(), now + ms(100));
 
-        assert_eq!(island.presentation(MONITOR), Presentation::Compact);
+        // the song is beside the battery now
+        assert_eq!(island.presentation(MONITOR), Presentation::Split);
         assert_eq!(island.keyboard(MONITOR), Keyboard::None);
         assert_eq!(shown(&island, MONITOR, now + ms(100)), Some(battery()));
 

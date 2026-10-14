@@ -15,7 +15,7 @@ use crate::island::presentation::Presentation;
 use crate::sources::timer;
 use crate::theme::{self, ThemeRoles};
 
-use super::forms::{Pills, action_pill, sized};
+use super::forms::{Pills, action_pill, main_pill, sized};
 use super::shape::{shape, upright};
 use super::standing;
 
@@ -43,14 +43,14 @@ pub(super) fn timer(
         return Some(standing::timer(countdown, now));
     }
 
-    // h:mm:ss once the timer was started for an hour or more, m:ss below
+    // hh:mm:ss once the timer was started for an hour or more, mm:ss below
     let hours = countdown.length.as_secs() >= 3600;
 
     let (icon, size, inset, clock) = match (presentation, hours) {
         (Presentation::Compact, false) => (18.0, theme::text::LABEL, 15.0, 40.0),
-        (Presentation::Compact, true) => (18.0, theme::text::LABEL, 15.0, 56.0),
+        (Presentation::Compact, true) => (18.0, theme::text::LABEL, 15.0, 64.0),
         (Presentation::Peek, false) => (24.0, theme::text::TITLE_LARGE, 16.0, 52.0),
-        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 16.0, 72.0),
+        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 16.0, 84.0),
         _ => return None,
     };
 
@@ -59,14 +59,17 @@ pub(super) fn timer(
         Presentation::Peek => actions
             .iter()
             .map(|action| {
-                action_pill(
-                    action,
-                    &Pills {
-                        actions,
-                        subject: "",
-                        act: timer::act,
-                    },
-                )
+                let pills = Pills {
+                    actions,
+                    subject: "",
+                    act: timer::act,
+                };
+
+                if timer::is_main(&action.key) {
+                    main_pill(action, &pills)
+                } else {
+                    action_pill(action, &pills)
+                }
             })
             .collect(),
         _ => Vec::new(),

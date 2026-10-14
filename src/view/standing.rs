@@ -241,14 +241,14 @@ fn battery_stack(charge: Charge) -> Column {
     Column::new(parts).gap(3.0).align(Center)
 }
 
-// the local time a part a line, the hours over the minutes and any AM or PM
+// the local time a part a line, the hours over the minutes and any AM or PM; a digit alone gets a 0
 fn stacked_time(monitor: &str, size: f32) -> Column {
     let time = clock::now(config::on(monitor).clock);
     let parts = time
         .split([':', ' '])
         .map(|part| {
             Box::new(
-                Text::new(part)
+                Text::new(format!("{part:0>2}"))
                     .size(size)
                     .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
