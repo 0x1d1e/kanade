@@ -99,7 +99,6 @@ overview {
 binds {
     Mod+T { spawn "kitty"; }
     Mod+L { spawn-sh "kanade lock"; }
-    Mod+E { spawn "nautilus"; }
 
     Mod+comma { spawn-sh "kanade settings open"; }
     Mod+Space { spawn-sh "kanade launcher toggle"; }

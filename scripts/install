@@ -18,15 +18,16 @@ if ! command -v pacman > /dev/null; then
     exit 1
 fi
 
-# the Vulkan driver of each GPU, by PCI vendor; a virtual GPU gets the virtio one, a plain
-# VGA adapter the CPU rasterizer. Proprietary NVIDIA is left to the user.
+# the Vulkan driver of each GPU, by PCI vendor; a virtual GPU gets the virtio one and the CPU
+# rasterizer, a plain VGA adapter the rasterizer alone. Proprietary NVIDIA is left to the user.
 gpu=""
 for vendor in /sys/class/drm/card*/device/vendor; do
     [ -r "$vendor" ] || continue
     case "$(cat "$vendor")" in
         0x8086) gpu="$gpu vulkan-intel" ;;
         0x1002) gpu="$gpu vulkan-radeon" ;;
-        0x1af4) gpu="$gpu vulkan-virtio" ;;
+        # virgl gives the guest OpenGL only, so Kanade's Vulkan needs the CPU rasterizer there
+        0x1af4) gpu="$gpu vulkan-virtio vulkan-swrast" ;;
         0x1234 | 0x15ad) gpu="$gpu vulkan-swrast" ;;
         0x10de) echo "note: install nvidia-utils or vulkan-nouveau yourself for the NVIDIA GPU" >&2 ;;
     esac
@@ -36,11 +37,13 @@ if [ -z "$gpu" ]; then
 fi
 
 # a fresh TTY install has no session pieces: niri with its portal and polkit, audio, fonts (Noto
-# Color Emoji for the Launcher's emoji), and kitty, which the default niri config binds to Mod+T.
+# Color Emoji for the Launcher's emoji, Inter for its labels), and what the default niri config
+# binds: kitty, brightnessctl and playerctl. xwayland-satellite gives niri X11 apps.
 # rust only when there is no cargo, so rustup keeps working.
 packages="niri xdg-desktop-portal-gnome gnome-keyring polkit pipewire pipewire-pulse wireplumber
-    noto-fonts noto-fonts-emoji kitty base-devel pkgconf wayland libxkbcommon fontconfig freetype2
-    expat vulkan-icd-loader libpulse pam systemd dbus util-linux $gpu"
+    noto-fonts noto-fonts-emoji inter-font kitty brightnessctl playerctl xwayland-satellite
+    base-devel pkgconf wayland libxkbcommon fontconfig freetype2 expat vulkan-icd-loader libpulse
+    pam systemd dbus util-linux $gpu"
 if ! command -v cargo > /dev/null; then
     packages="$packages rust"
 fi
@@ -48,8 +51,7 @@ fi
 sudo pacman -S --needed $packages
 if [ "$optional" = 1 ]; then
     sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf \
-        wlsunset xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon \
-        brightnessctl playerctl nautilus
+        wlsunset xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
     # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
     # replaces whatever manages the network now
     sudo systemctl enable --now bluetooth upower power-profiles-daemon
@@ -79,8 +81,8 @@ fi
 systemctl --user daemon-reload
 systemctl --user enable kanade.service
 
-# the unit needs niri's graphical session; from a TTY it starts with niri
-if systemctl --user is-active --quiet graphical-session.target; then
+# the unit runs with niri; with niri up it restarts, from a TTY it starts with niri
+if systemctl --user is-active --quiet niri.service; then
     systemctl --user restart kanade.service
 else
     echo "installed; start niri from this TTY with: niri-session"
