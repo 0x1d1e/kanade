@@ -39,9 +39,15 @@ pub(super) fn timer(
     now: Instant,
 ) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
+        // the countdown alone, m:ss; an hour or more would be wider than the pill, so it reads 1h
+        let left = if countdown.length.as_secs() >= 3600 {
+            timer::short(countdown, now)
+        } else {
+            timer::clock(countdown, now)
+        };
+
         return Some(stacked(children![
-            Icon::Stopwatch.draw(18.0),
-            Text::new(timer::short(countdown, now))
+            Text::new(left)
                 .size(theme::text::LABEL_SMALL)
                 .color(timer_tone(countdown))
                 .weight(theme::text::SEMIBOLD),

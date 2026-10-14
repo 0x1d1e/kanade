@@ -76,13 +76,10 @@ pub struct Fields<'a> {
 const MATCHES: [&str; 4] = ["app", "desktop_entry", "category", "summary"];
 const EFFECTS: [&str; 5] = ["banner", "history", "bypass_dnd", "timeout", "urgency"];
 
-/*
- * what the first rule matching does; with none, what is built in for it, else the defaults. niri's
- * own "Screenshot captured" is left to the Island's Screenshot Activity, which shows the picture
- */
+// what the first rule matching does, the defaults for none
 pub fn resolve(rules: &[Rule], fields: Fields) -> Effects {
     let Some(rule) = rules.iter().find(|rule| rule.matches(fields)) else {
-        return built_in(fields);
+        return Effects::default();
     };
     let default = Effects::default();
 
@@ -93,18 +90,6 @@ pub fn resolve(rules: &[Rule], fields: Fields) -> Effects {
         timeout: rule.timeout,
         urgency: rule.urgency,
     }
-}
-
-fn built_in(fields: Fields) -> Effects {
-    if fields.app.eq_ignore_ascii_case("niri") && fields.summary == "Screenshot captured" {
-        return Effects {
-            banner: false,
-            history: false,
-            ..Effects::default()
-        };
-    }
-
-    Effects::default()
 }
 
 impl Rule {

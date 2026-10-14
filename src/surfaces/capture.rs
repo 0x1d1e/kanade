@@ -1,8 +1,8 @@
 //! The Capture Surface: a screenshot of an area, the focused window or the focused output, and the
 //! screen recording, each a tile; while one records, the last tile is Stop. It asks what
-//! `kanade capture` asks, so the result shows on the island as any capture does. A screenshot waits
-//! for the island to leave the screen first, or it would be in it. The arrows move a ring between
-//! the tiles, Enter or Space presses it.
+//! `kanade capture` asks, so a recording shows on the island and a screenshot by niri's
+//! notification. A screenshot waits for the island to leave the screen first, or it would be in it.
+//! The arrows move a ring between the tiles, Enter or Space presses it.
 
 use std::thread;
 use std::time::Duration;

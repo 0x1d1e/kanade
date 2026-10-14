@@ -752,7 +752,7 @@ fn entering(
          * what the body shows, and what it says, laid out at its full size, once it is nearly out
          */
         Entrance::Morph => Look {
-            at: morph(body, card, out),
+            at: morph(from_body(body, card, hang), card, out),
             radius: mix(body_radius, radius::CARD, shown),
             says: ((out - TAKES) / (1.0 - TAKES)).clamp(0.0, 1.0),
             seen: (out / PARTS).clamp(0.0, 1.0),
@@ -811,6 +811,24 @@ fn entering(
                 shadow: shown,
             }
         }
+    }
+}
+
+/*
+ * where a Banner's card starts morphing out of the Island's `body`: all of it, and beside an upright
+ * body on a side edge, which is taller than a card, its middle, as tall as the card
+ */
+fn from_body(body: Rect, card: Rect, hang: Hang) -> Rect {
+    if !hang.sideways() {
+        return body;
+    }
+
+    let height = body.height.min(card.height);
+
+    Rect {
+        y: body.y + (body.height - height) / 2.0,
+        height,
+        ..body
     }
 }
 

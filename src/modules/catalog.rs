@@ -1061,7 +1061,7 @@ pub const ALL: &[Module] = &[
         start: |app| app,
     },
     /*
-     * screenshots, by niri; its stream, which the core follows, says when each is saved. Screen
+     * screenshots, by niri, whose own notification says when each is saved. Screen
      * recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
      */
     Module {
@@ -1108,10 +1108,7 @@ pub const ALL: &[Module] = &[
                 _ => Err(Unparsed::Usage),
             },
         }],
-        start: |app| {
-            niri::on_screenshot(capture::captured);
-            app
-        },
+        start: |app| app,
     },
     // screenshots and the screen recording from the island
     Module {

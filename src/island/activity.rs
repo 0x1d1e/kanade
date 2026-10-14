@@ -20,7 +20,6 @@ pub enum Kind {
     Network,
     Bluetooth,
     Timer,
-    Screenshot,
     Recording,
     Caffeine,
     Session,
@@ -36,7 +35,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 17] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -46,7 +45,6 @@ impl Kind {
         Kind::Network,
         Kind::Bluetooth,
         Kind::Timer,
-        Kind::Screenshot,
         Kind::Recording,
         Kind::Caffeine,
         Kind::Session,
@@ -68,7 +66,6 @@ impl Kind {
             Kind::Network => "network",
             Kind::Bluetooth => "bluetooth",
             Kind::Timer => "timer",
-            Kind::Screenshot => "screenshot",
             Kind::Recording => "recording",
             Kind::Caffeine => "caffeine",
             Kind::Session => "session",
@@ -253,8 +250,6 @@ pub enum Detail {
     // a pomodoro's when it is one
     Timer(Countdown, Option<Round>),
 
-    Screenshot(Shot),
-
     Recording(Clip),
 
     Caffeine(Awake),
@@ -283,7 +278,6 @@ impl Detail {
             Detail::Workspace(_) => Some(Kind::Workspace),
             Detail::Notification(_) => Some(Kind::Notification),
             Detail::Timer(..) => Some(Kind::Timer),
-            Detail::Screenshot(_) => Some(Kind::Screenshot),
             Detail::Recording(_) => Some(Kind::Recording),
             Detail::Caffeine(_) => Some(Kind::Caffeine),
             Detail::Session(_) => Some(Kind::Session),
@@ -435,16 +429,6 @@ pub struct Toast {
 
     // a local file, like a sender's avatar
     pub image: Option<String>,
-}
-
-// a screenshot niri saved
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shot {
-    // absolute
-    pub path: String,
-
-    // its path is on the clipboard, by the Activity's action
-    pub copied: bool,
 }
 
 // a screen recording Kanade started, at its file's absolute path

@@ -104,7 +104,6 @@ pub(super) fn abbreviation(kind: Kind) -> &'static str {
         Kind::Network => "Nw",
         Kind::Bluetooth => "Bt",
         Kind::Timer => "T",
-        Kind::Screenshot => "Sc",
         Kind::Recording => "Rec",
         Kind::Caffeine => "Cf",
         Kind::Session => "Ss",

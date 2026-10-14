@@ -10,7 +10,7 @@ use kanade_runtime::{
 
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Awake, Clip, Detail, Leave, Leaving, Reminder, Shot, Track,
+    Action, Activity, Awake, Clip, Detail, Leave, Leaving, Reminder, Track,
 };
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
@@ -21,7 +21,7 @@ use crate::sources::{caffeine, capture, recording, reminders, session};
 use crate::surfaces;
 use crate::theme;
 
-use super::media::{Change, media_compact, media_peek, tile};
+use super::media::{Change, media_compact, media_peek};
 use super::rest::placeholder;
 use super::satellites::satellite_mark;
 use super::shape::{Room, hang, shape, upright};
@@ -273,11 +273,6 @@ pub(super) fn small_form(
             self::timer(presentation, countdown, round.as_ref(), actions, now)
         }
         (presentation, Some(Detail::Live(job))) => super::live::live(presentation, job),
-        (presentation, Some(Detail::Screenshot(shot))) => {
-            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
-
-            screenshot(presentation, shot, actions)
-        }
         (presentation, Some(Detail::Recording(clip))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 
@@ -305,26 +300,6 @@ pub(super) fn small_form(
     }
 }
 
-// the picture, then what it is
-fn screenshot(presentation: Presentation, shot: &Shot, actions: &[Action]) -> Option<Rectangle> {
-    let title = match shot.copied {
-        true => "Path copied",
-        false => "Screenshot",
-    };
-
-    titled(
-        presentation,
-        Lead::Picture(&shot.path),
-        title,
-        file_name(&shot.path),
-        Pills {
-            actions,
-            subject: &shot.path,
-            act: capture::act,
-        },
-    )
-}
-
 // the capture mark, then what it is: recording the output named, saved to the file named, or why not
 pub(super) fn recording(
     presentation: Presentation,
@@ -345,7 +320,7 @@ pub(super) fn recording(
 
     titled(
         presentation,
-        Lead::Mark(Icon::Capture, theme::signals().capture),
+        (Icon::Capture, theme::signals().capture),
         title,
         line,
         Pills {
@@ -384,7 +359,7 @@ pub(super) fn caffeine(
 
     titled(
         presentation,
-        Lead::Mark(Icon::Cup, theme::island().on_surface),
+        (Icon::Cup, theme::island().on_surface),
         title,
         &line,
         Pills {
@@ -399,7 +374,7 @@ pub(super) fn caffeine(
 fn night_light(presentation: Presentation, why: &str) -> Option<Rectangle> {
     titled(
         presentation,
-        Lead::Mark(Icon::Sunset, theme::island().on_surface),
+        (Icon::Sunset, theme::island().on_surface),
         "Night light failed",
         why,
         Pills {
@@ -419,7 +394,7 @@ fn reminder(
 ) -> Option<Rectangle> {
     titled(
         presentation,
-        Lead::Mark(Icon::Calendar, theme::island().on_surface),
+        (Icon::Calendar, theme::island().on_surface),
         &reminder.title,
         &reminder.when,
         Pills {
@@ -468,7 +443,7 @@ pub(super) fn session(
 
     titled(
         presentation,
-        Lead::Mark(surfaces::session::icon(leave), theme::island().on_surface),
+        (surfaces::session::icon(leave), theme::island().on_surface),
         &title,
         line,
         Pills {
@@ -486,14 +461,8 @@ fn file_name(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-// what leads a titled small form
-enum Lead<'a> {
-    // the saved picture itself
-    Picture(&'a str),
-
-    // an icon in its ink, like the capture mark as the privacy cluster shows it
-    Mark(Icon, Color),
-}
+// what leads a titled small form: an icon in its ink, like the capture mark as the privacy cluster shows it
+type Lead = (Icon, Color);
 
 // an Activity's actions, each run by its source's `act` with the key and what it acts on
 pub(super) struct Pills<'a> {
@@ -580,20 +549,17 @@ fn titled(
     )
 }
 
-// the picture or the mark that leads a titled small form
-fn lead_tile(lead: Lead, side: f32, radius: f32) -> Box<dyn Widget> {
-    match lead {
-        Lead::Picture(picture) => Box::new(tile(Some(picture), "", side, radius, &theme::island())),
-        Lead::Mark(icon, ink) => Box::new(
-            Rectangle::new()
-                .width(side)
-                .height(side)
-                .radius(radius)
-                .fill(theme::island().surface_container_high)
-                .align_child(Center, Center)
-                .child(icon.on((side * 0.55).round(), ink)),
-        ),
-    }
+// the mark that leads a titled small form
+fn lead_tile((icon, ink): Lead, side: f32, radius: f32) -> Box<dyn Widget> {
+    Box::new(
+        Rectangle::new()
+            .width(side)
+            .height(side)
+            .radius(radius)
+            .fill(theme::island().surface_container_high)
+            .align_child(Center, Center)
+            .child(icon.on((side * 0.55).round(), ink)),
+    )
 }
 
 // an action, run on a left click before the click reaches the island

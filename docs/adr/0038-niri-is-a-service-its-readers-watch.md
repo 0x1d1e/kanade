@@ -10,7 +10,7 @@ Status: accepted. Amends ADR 0014, whose `windows` was handed niri's window even
 
 - niri's state is the `Niri` Service: the focused output, the overview, the focused workspace, whether anything casts, and the window each output shows. The niri thread writes it only when it changes, and writes the default again when the stream is lost.
 - Each reader `watch`es `Niri` in its own start (ADR 0035) and derives a narrow value of its own: `Fullscreen`, `Privacy::casting`, the Banners' focus, the workspace switch. A watcher that finds nothing changed calls `quiet`, so a write of `Niri` redraws only what changed.
-- A screenshot niri saves and a window it opens, closes or focuses are events, not state. A Module takes them with `niri::on_screenshot` and `niri::on_windows` in its start. `modules::start` runs the stream after every start, so no first event is missed.
+- A window niri opens, closes or focuses is an event, not state. A Module takes it with `niri::on_windows` in its start (`niri::on_screenshot` went when the Island stopped showing screenshots). `modules::start` runs the stream after every start, so no first event is missed.
 - The types niri's state and events are made of (`Showing`, `Window`, `WindowId`, `Heard`) live in `sources/niri.rs`; readers import them from it, so the dependency runs one way.
 - The source names no reader, and `Posts` is gone.
 

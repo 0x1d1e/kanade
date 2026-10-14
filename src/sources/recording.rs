@@ -3,7 +3,7 @@
 //! `stop` finishes the file and `status` says how the recording stands. wf-recorder captures
 //! through niri's wlr-screencopy, which niri counts as a cast, so the privacy cluster shows it
 //! without asking this Module. While it records, a Persistent Ongoing Recording Activity offers
-//! Stop; once saved, a Transient one copies its path or opens it, as a screenshot's does.
+//! Stop; once saved, a Transient one copies its path or opens it.
 //!
 //! niri hands a recorder a frame only once the screen changes, and on a still screen that is often
 //! the island the draw thread, which answers IPC, would draw, so neither `start` nor `stop` waits on
@@ -500,7 +500,7 @@ fn running(path: &str, output: &str) -> Activity {
     }))
 }
 
-// as a screenshot shows, on the output the user is looking at; a saved one copied or opened
+// on the output the user is looking at; a saved one copied or opened
 fn ended(clip: Clip) -> Activity {
     let actions = match clip {
         Clip::Saved { .. } => vec![

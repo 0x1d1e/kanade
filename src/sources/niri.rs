@@ -1,9 +1,9 @@
 //! Kanade's own niri EventStream, tracking the overview and casts too. It writes what
 //! niri says as the `Niri` Service: a plain focused output, whether the overview is open and how
 //! many times it opened, the focused workspace, whether anything casts and the window each output
-//! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. A screenshot
-//! niri saves, each window it opens, closes or focuses and each keyboard layout switch are events,
-//! not state, so a Module takes those by `on_screenshot`, `on_windows` and `on_layout`. `ask` sends
+//! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. Each window
+//! niri opens, closes or focuses and each keyboard layout switch are events, not state, so a
+//! Module takes those by `on_windows` and `on_layout`. `ask` sends
 //! niri one request on a connection of its own.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -332,15 +332,6 @@ fn stream(cast: &Json) -> Option<u64> {
     cast.get("stream_id").and_then(Json::as_u64)
 }
 
-// where niri saved a screenshot; none for another event, or one it only put on the clipboard
-fn captured(event: &Json) -> Option<String> {
-    event
-        .get("ScreenshotCaptured")?
-        .get("path")?
-        .as_str()
-        .map(String::from)
-}
-
 // what a window event says; none for another event, and for those `windows` ignores, like layouts
 fn windowed(event: &Json) -> Option<Heard> {
     if let Some(changed) = event.get("WindowsChanged") {
@@ -444,7 +435,6 @@ impl Layouts {
 
 // what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
 static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
-static SCREENSHOTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
 static LAYOUTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
 
 // set once `follow` runs, after which a Module can no longer ask to hear
@@ -459,16 +449,6 @@ pub fn on_windows(then: fn(Heard)) {
     );
 
     WINDOWS.locked().push(then);
-}
-
-// `then` hears the path of each screenshot niri saves, on the niri thread, so it must not block
-pub fn on_screenshot(then: fn(String)) {
-    assert!(
-        !FOLLOWING.load(Ordering::Relaxed),
-        "niri is already followed"
-    );
-
-    SCREENSHOTS.locked().push(then);
 }
 
 /*
@@ -496,13 +476,6 @@ pub fn follow() {
             connect().map(BufReader::new),
             &mut posted,
             |_, seen| Niri::write().seen = seen.clone(),
-            |path| {
-                let heard = SCREENSHOTS.locked().clone();
-
-                for then in heard {
-                    then(path.clone());
-                }
-            },
             |heard| {
                 let hearing = WINDOWS.locked().clone();
 
@@ -525,19 +498,11 @@ fn run(
     stream: io::Result<impl BufRead>,
     posted: &mut Seen,
     mut post: impl FnMut(&Seen, &Seen),
-    mut shot: impl FnMut(String),
     mut hear: impl FnMut(Heard),
     mut switched: impl FnMut(String),
 ) {
     let lost = match stream {
-        Ok(stream) => watch(
-            stream,
-            posted,
-            &mut post,
-            &mut shot,
-            &mut hear,
-            &mut switched,
-        ),
+        Ok(stream) => watch(stream, posted, &mut post, &mut hear, &mut switched),
         Err(error) => error,
     };
 
@@ -684,7 +649,6 @@ fn watch(
     lines: impl BufRead,
     posted: &mut Seen,
     post: &mut impl FnMut(&Seen, &Seen),
-    shot: &mut impl FnMut(String),
     hear: &mut impl FnMut(Heard),
     switched: &mut impl FnMut(String),
 ) -> io::Error {
@@ -713,10 +677,6 @@ fn watch(
             eprintln!("kanade: skipped a niri event that is not JSON: {line}");
             continue;
         };
-
-        if let Some(path) = captured(&event) {
-            shot(path);
-        }
 
         if let Some(heard) = windowed(&event) {
             hear(heard);
@@ -769,7 +729,6 @@ mod tests {
                 assert_eq!(before, posts.last().unwrap_or(&Seen::default()));
                 posts.push(seen.clone())
             },
-            &mut |path| panic!("no screenshot was taken, yet {path}"),
             &mut drop,
             &mut drop,
         );
@@ -805,7 +764,6 @@ mod tests {
             "not json",
             &activated(9, true),
             r#"{"CastsChanged":{"casts":[]}}"#,
-            r#"{"ScreenshotCaptured":{"path":null}}"#,
         ]);
 
         // workspace 9 is unknown, so its output is too, which is the default
@@ -821,7 +779,6 @@ mod tests {
             text.as_bytes(),
             &mut Seen::default(),
             &mut |_, _| {},
-            &mut drop,
             &mut |told| heard.push(told),
             &mut drop,
         );
@@ -926,7 +883,6 @@ mod tests {
             &mut Seen::default(),
             &mut |_, _| {},
             &mut drop,
-            &mut drop,
             &mut |name| switches.push(name),
         );
 
@@ -1002,7 +958,6 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
-            drop,
         );
 
         // nobody can say a cast still runs, so its capture goes too
@@ -1018,13 +973,11 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
-            drop,
         );
         run(
             Ok(OK.as_bytes()),
             &mut Seen::default(),
             |_, seen| posts.push(seen.clone()),
-            drop,
             drop,
             drop,
         );

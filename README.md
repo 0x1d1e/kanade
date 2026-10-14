@@ -30,7 +30,7 @@ It is also the session's notification daemon, a Dock, and a lock screen.
 - **Dock**: on each monitor, at the edge and side set in `dock.edge` and `dock.align`, it launches and focuses apps.
 - **Appearance**: with Matugen installed, Kanade derives light and dark shell colors from the wallpaper awww shows, however it was set, then renders configured app targets for the selected tone; `appearance.sync` carries them to GTK, Qt, KDE apps, niri's window borders, kitty, and Firefox or Zen live through Pywalfox.
 - **Lock screen**: `kanade lock` shows the date, the time, who is signed in and a password field over the wallpaper, and no notification. The session also locks before the machine sleeps, and, with the `idle` Module on, after a dim grace when idle.
-- **Capture**: screenshots through niri and screen recording through `wf-recorder`, each saved one shown on the Island.
+- **Capture**: screenshots through niri and screen recording through `wf-recorder`, a saved recording shown on the Island, a saved screenshot by niri's notification.
 - **Calendar and weather**: local iCalendar files and events you add, Google Calendar, and the forecast from Open-Meteo.
 - **Settings window**: task-based pages with search, Inspect and Undo; changes apply live unless marked Restart.
 - **Idle cost**: at rest the Island draws one frame a minute, for the clock, and nothing else.

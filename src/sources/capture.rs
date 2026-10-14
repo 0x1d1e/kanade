@@ -1,8 +1,8 @@
 //! Screenshots (docs/design.md Capture): niri takes them, as its own screenshot actions are
 //! all an area, a window or an output needs, so there is no other backend to choose. `kanade
 //! capture screenshot` asks niri to save one under `~/Pictures/Screenshots`, named as niri names its
-//! own. niri announces each screenshot it saves, whoever asked for it, and each becomes a Transient
-//! Activity whose actions copy its path or open it.
+//! own. niri announces each screenshot it saves by its own notification, whoever asked for it; the
+//! Island shows none. The actions here copy a recording's path or open it.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -11,28 +11,23 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use kanade_runtime::{MutexExt, service::Service};
+use kanade_runtime::MutexExt;
 
 use super::clipboard;
 use super::json::{self, Json};
 use super::niri::{self, Acted};
 use super::recording;
 use crate::clock;
-use crate::island::activity::{
-    Action, Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Shot,
-};
-use crate::island::service::IslandService;
 
-// what opens a screenshot or a recording, in the user's viewer
+// what opens a recording, in the user's viewer
 pub const OPEN: &str = "xdg-open";
 
 pub const COPY: &str = "copy";
 pub const SHOW: &str = "open";
 
-// how long a screenshot's or a recording's Activity stays after it was saved, long enough to reach
-// its actions
+// how long a recording's Activity stays after it was saved, long enough to reach its actions
 pub const SHOWN: Duration = Duration::from_secs(10);
 
 /*
@@ -41,9 +36,6 @@ pub const SHOWN: Duration = Duration::from_secs(10);
  * second's stamp names other paths, so the last second's are let go
  */
 static NAMED: Mutex<(String, BTreeSet<PathBuf>)> = Mutex::new((String::new(), BTreeSet::new()));
-
-// the screenshot the Activity shows, so a copy finishing after a newer one leaves that one alone
-static LAST: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -187,46 +179,9 @@ fn action(mode: Mode, path: &str, window: Option<u64>) -> String {
     format!(r#"{{"Action":{{{action}}}}}"#)
 }
 
-// niri saved a screenshot at `path`
-pub fn captured(path: String) {
-    *LAST.locked() = Some(path.clone());
-
-    show(Shot {
-        path,
-        copied: false,
-    });
-}
-
-fn show(shot: Shot) {
-    IslandService::write().post(activity(shot), Instant::now());
-}
-
-// one at a time, so a new screenshot replaces the last; on the output the user is looking at
-fn activity(shot: Shot) -> Activity {
-    Activity::new(
-        Id::new(Kind::Screenshot, "screenshot"),
-        Priority::Actionable,
-        Lifetime::Transient(SHOWN),
-        Scope::FocusedOutput,
-        Interrupt::None,
-    )
-    .expect("a Transient that does not auto-expand is valid")
-    .with_actions(vec![
-        Action {
-            key: String::from(COPY),
-            label: String::from("Copy path"),
-        },
-        Action {
-            key: String::from(SHOW),
-            label: String::from("Open"),
-        },
-    ])
-    .with_detail(Detail::Screenshot(shot))
-}
-
 /*
- * runs an action of the screenshot or recording at `path`, off the draw thread: a copy says it is
- * done in the Activity, unless a newer one took its place
+ * runs an action of the recording at `path`, off the draw thread: a copy says it is done in the
+ * Activity, unless a newer recording took its place
  */
 pub fn act(key: &str, path: &str) {
     let path = path.to_owned();
@@ -250,19 +205,9 @@ pub fn act(key: &str, path: &str) {
 }
 
 fn copy(path: String) {
-    if let Err(error) = clipboard::put(&path) {
-        eprintln!("capture: copying the path: {error}");
-        return;
-    }
-
-    let last = LAST.locked();
-
-    if last.as_deref() == Some(path.as_str()) {
-        drop(last);
-        show(Shot { path, copied: true });
-    } else {
-        drop(last);
-        recording::copied(&path);
+    match clipboard::put(&path) {
+        Ok(()) => recording::copied(&path),
+        Err(error) => eprintln!("capture: copying the path: {error}"),
     }
 }
 
