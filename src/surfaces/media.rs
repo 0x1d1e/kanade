@@ -135,7 +135,7 @@ fn header(
             left: 0.0,
         });
     let moving = match deck {
-        Some(deck) => moving.child(state(deck.track.target().playing, now)),
+        Some(deck) => moving.child(state(deck.track.target().playing, deck.accent.at(now), now)),
         None => moving,
     };
 

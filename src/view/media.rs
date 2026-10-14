@@ -3,7 +3,6 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use kanade_runtime::service::Service;
 use kanade_runtime::{
     Center, Color, Column, End, Image, Padding, Parent, Rectangle, Row, Stack, Start, Text, Widget,
     children, request_frame,
@@ -15,7 +14,6 @@ use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::motion::Mode;
 use crate::island::presentation::Presentation;
 use crate::look::Visualizer;
-use crate::sources::playback::Playback;
 use crate::theme::{self, ThemeRoles};
 
 use super::forms::sized;
@@ -30,7 +28,7 @@ pub(super) fn media_compact(change: Change, now: Instant) -> Rectangle {
     if upright() {
         return stacked(children![
             change.art(stacked_tile(), theme::radius::ART_COMPACT),
-            state(change.to.playing, now),
+            state(change.to.playing, accent(change.to), now),
         ]);
     }
 
@@ -54,7 +52,7 @@ pub(super) fn media_compact(change: Change, now: Instant) -> Rectangle {
                     .size(theme::text::LABEL)
                     .weight(theme::text::MEDIUM)
                     .elide(),
-                state(change.to.playing, now),
+                state(change.to.playing, accent(change.to), now),
             ])
             .width(Parent)
             .gap(9.0)
@@ -80,7 +78,7 @@ pub(super) fn media_peek(change: Change, now: Instant) -> Rectangle {
             Row::new(children![
                 change.art(shape.height - 2.0 * inset, theme::radius::ART_PEEK),
                 peek_lines(change),
-                state(change.to.playing, now),
+                state(change.to.playing, accent(change.to), now),
             ])
             .width(Parent)
             .gap(11.0)
@@ -256,12 +254,19 @@ pub(crate) fn disc(track: &Track, side: f32, now: Instant) -> Rectangle {
         .child(art(track, side, side / 2.0))
 }
 
+// the track's accent, or the neutral foreground for grey art and none
+pub(crate) fn accent(track: &Track) -> Color {
+    track
+        .accent
+        .map_or(theme::island().on_surface, |(r, g, b)| Color::rgb(r, g, b))
+}
+
 /*
- * what moves beside a playing track, as `media.visualizer` says, in the artwork's accent: the
+ * what moves beside a playing track, as `media.visualizer` says, in `ink`, the artwork's accent: the
  * motion is drawn, not heard, as the Dynamic Island's. A pause mark while it does not play, and
  * three still bars with `off`, so only a moving one draws frames
  */
-pub(crate) fn state(playing: bool, now: Instant) -> Row {
+pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
     const TALL: f32 = 14.0;
 
     let style = config::get().visualizer;
@@ -278,10 +283,6 @@ pub(crate) fn state(playing: bool, now: Instant) -> Row {
 
     request_frame();
 
-    let ink = Playback::read()
-        .shown
-        .as_ref()
-        .map_or(theme::island().on_surface, |deck| deck.accent.at(now));
     let time = now
         .duration_since(*VISUALIZER_START.get_or_init(|| now))
         .as_secs_f32();

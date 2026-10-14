@@ -2689,6 +2689,7 @@ mod tests {
                 title: title.into(),
                 artist: "Artist".into(),
                 art: None,
+                accent: None,
                 playing,
             }))
         };

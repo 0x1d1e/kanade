@@ -337,6 +337,10 @@ pub struct Track {
     // a local file, the only art the runtime can draw
     pub art: Option<String>,
 
+    // the art's accent as red, green, blue, for what moves beside the track; none for grey art or
+    // none at all. Not part of `in_place`: it follows the art, which `in_place` already compares
+    pub accent: Option<(u8, u8, u8)>,
+
     pub playing: bool,
 }
 
@@ -788,6 +792,7 @@ mod tests {
             title: "a".into(),
             artist: "x".into(),
             art: Some("/a.png".into()),
+            accent: None,
             playing: true,
         };
         let paused = Track {

@@ -230,13 +230,16 @@ impl Seen {
             title => title,
         };
 
+        let art = art(&player.art_url);
+
         Seen {
             key: name.to_owned(),
             status: player.status,
             track: Track {
                 title: title.to_owned(),
                 artist: player.artist.clone(),
-                art: art(&player.art_url),
+                accent: art.as_deref().and_then(accent),
+                art,
                 playing: player.status == Status::Playing,
             },
         }
@@ -420,9 +423,6 @@ struct Watcher {
     // the chip page turned to, until it closes
     page: Option<usize>,
 
-    // the artwork last read, and the accent it gave
-    accent: Option<(String, Option<Color>)>,
-
     // what Playback holds, so a tick that changes nothing does not write
     published: Option<Playback>,
 
@@ -458,8 +458,10 @@ impl Watcher {
 
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
-            let accent = seen.track.art.as_deref().and_then(|art| self.accent(art));
-            let accent = accent.unwrap_or(theme::island().on_surface);
+            let accent = seen
+                .track
+                .accent
+                .map_or(theme::island().on_surface, |(r, g, b)| Color::rgb(r, g, b));
 
             // a track shown before dissolves to this one, a Surface just opened shows it at once
             let (track, tint) = match last {
@@ -512,26 +514,6 @@ impl Watcher {
             *Playback::write() = playback.clone();
             self.published = Some(playback);
         }
-    }
-
-    // read once per artwork; a file not there yet is read again next time
-    fn accent(&mut self, art: &str) -> Option<Color> {
-        if let Some((read, accent)) = &self.accent
-            && read == art
-        {
-            return *accent;
-        }
-
-        let mut palette = Palette::default();
-        palette.open(art, COLORS);
-
-        let accent = playback::accent(palette.colors());
-
-        if !palette.colors().is_empty() {
-            self.accent = Some((art.to_owned(), accent));
-        }
-
-        accent
     }
 
     /*
@@ -836,6 +818,34 @@ fn art(url: &str) -> Option<String> {
     let path = path.strip_prefix("localhost").unwrap_or(path);
 
     path.starts_with('/').then(|| unescape(path))?
+}
+
+/*
+ * the accent of an artwork, read once per file: the island's visualizer wears it from the first
+ * play, not only once the Media Surface has been open. A file not there yet is read again next time
+ */
+fn accent(art: &str) -> Option<(u8, u8, u8)> {
+    type Read = Option<(String, Option<(u8, u8, u8)>)>;
+    static READ: Mutex<Read> = Mutex::new(None);
+
+    let mut read = READ.locked();
+
+    if let Some((path, accent)) = read.as_ref()
+        && path == art
+    {
+        return *accent;
+    }
+
+    let mut palette = Palette::default();
+    palette.open(art, COLORS);
+
+    let accent = playback::accent(palette.colors()).map(|c| (c.red(), c.green(), c.blue()));
+
+    if !palette.colors().is_empty() {
+        *read = Some((art.to_owned(), accent));
+    }
+
+    accent
 }
 
 // a link escapes bytes as %XX; one that does not decode to UTF-8 is not a path the runtime can open
