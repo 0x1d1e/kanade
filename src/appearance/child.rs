@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 
+// how long a reader may outlast its child: a grandchild that kept the pipe open holds it past that
+const READER_GRACE: Duration = Duration::from_millis(250);
+
 // how a helper ended: its stdout, or why not, unless a newer request `N` cut it short
 pub enum Ran<N, T> {
     Done(Result<T, String>),
@@ -111,15 +114,30 @@ fn capture<R: Read + Send + 'static>(mut stream: R, name: &str, which: &str) -> 
         })
 }
 
-// kills the child, which ends the readers
+// kills the child, which ends the readers unless a grandchild holds the pipes, which are left behind
 fn abandon(mut child: Child, readers: Option<(Reader, Reader)>) {
     let _ = child.kill();
     let _ = child.wait();
 
     if let Some((stdout, stderr)) = readers {
-        let _ = stdout.join();
-        let _ = stderr.join();
+        let _ = settle(stdout);
+        let _ = settle(stderr);
     }
+}
+
+// a reader's result, or nothing when a grandchild still holds the pipe after `READER_GRACE`
+fn settle(handle: Reader) -> Option<thread::Result<io::Result<Captured>>> {
+    let end = Instant::now() + READER_GRACE;
+
+    while !handle.is_finished() {
+        if Instant::now() >= end {
+            return None;
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    Some(handle.join())
 }
 
 fn finish(
@@ -148,8 +166,8 @@ fn finish(
 }
 
 fn reader(name: &str, handle: Reader, which: &str) -> Result<Captured, String> {
-    handle
-        .join()
+    settle(handle)
+        .unwrap_or_else(|| Ok(Ok((Vec::new(), false))))
         .map_err(|_| format!("{name} {which} reader stopped unexpectedly"))?
         .map_err(|error| format!("could not read {name} {which}: {error}"))
 }

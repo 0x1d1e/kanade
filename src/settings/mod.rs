@@ -346,6 +346,16 @@ fn written(refused: Option<String>, change: Option<Vec<file::Replaced>>) {
 
 // writes the key at `path` to the settings file, as a change in the window does, for `kanade module`
 pub fn set(path: &[&str], value: Option<Value>) -> Result<(), String> {
+    // a command runs as the user: only a file the user writes holds one, whoever asks here
+    if let Ok(setting) = config::setting(&path.join("."))
+        && matches!(setting.kind, Kind::Argv(_))
+    {
+        return Err(format!(
+            "{} runs a command, so it is not set here",
+            setting.key
+        ));
+    }
+
     let path: Vec<String> = path.iter().map(|&key| key.to_owned()).collect();
 
     file::set(&path, value)

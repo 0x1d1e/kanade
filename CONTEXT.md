@@ -117,7 +117,7 @@ One kind of answer the Launcher finds for a query: apps, an app's own Desktop Ac
 ## Hook
 A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume. The Module that owns the fact fires it.
 - **Invariant:** a hook never blocks a Service, a watcher or the draw thread; it runs as a bounded child that dies with Kanade, at most one per event at a time, and a fire while it runs is dropped.
-- **Invariant:** hooks are set in files under the config directory; `kanade config set` and Settings refuse them. The payload is environment variables only, and only event names are logged.
+- **Invariant:** hooks are set in files, never through `kanade config set` or Settings. The payload is environment variables only; a failure logs the first line of the command's own error.
 - **Invariant:** a failing hook shows in `kanade status`, never as an Activity.
 - Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
 - **Avoid:** plugin, script event soup, subscription

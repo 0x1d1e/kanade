@@ -1,8 +1,8 @@
 //! The audio-reactive visualizer (`media.visualizer = "audio"`, ADR 0056): the bars of what the
 //! default sink plays, read from `cava`'s raw output. It is drawn, not heard, so Kanade never
-//! records: cava reads the sink's monitor, which PipeWire marks `stream.monitor` and links from a
-//! sink node, so the privacy indicator, which counts a stream capturing a microphone or camera,
-//! never lights for it (`privacy.rs`).
+//! records: cava reads the default sink, its stream linked from an `Audio/Sink` node, so the privacy
+//! indicator, which counts a stream linked from a microphone or camera, never lights for it
+//! (`privacy.rs`).
 //!
 //! Cava runs only on demand. The visualizer asks for it (`want`) each time it draws; a frame that
 //! finds the last ask older than `LAPSE` ends it, so it stops once the media is paused, the
@@ -11,6 +11,7 @@
 //! view falls back to the synthetic bars, and a missing cava is looked for again after `RETRY`.
 //! It runs through setpriv, so it dies with Kanade.
 
+use std::cell::Cell;
 use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
@@ -170,7 +171,14 @@ fn run() -> Result<(), String> {
     let path = path.to_string_lossy().into_owned();
 
     let stop = Stop::default();
-    let failed = wake::run(CAVA, &["-p", &path], &stop, |output| read(output, &stop));
+    let silent = Cell::new(false);
+    let failed = wake::run(CAVA, &["-p", &path], &stop, |output| {
+        read(output, &stop, &silent)
+    });
+
+    if silent.get() {
+        return Err(format!("{CAVA} ran but gave no bars"));
+    }
 
     match failed {
         Some(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -185,7 +193,9 @@ fn run() -> Result<(), String> {
  * reads bars until cava ends or the asks lapse, which stops it. Each line is posted, which draws
  * the windows that show them
  */
-fn read(output: BufReader<ChildStdout>, stop: &Stop) -> io::Error {
+fn read(output: BufReader<ChildStdout>, stop: &Stop, silent: &Cell<bool>) -> io::Error {
+    let mut framed = false;
+
     for line in output.lines() {
         if !wanted(&DEMAND.locked()) {
             stop.stop();
@@ -196,11 +206,21 @@ fn read(output: BufReader<ChildStdout>, stop: &Stop) -> io::Error {
         match line {
             Ok(line) => {
                 if let Some(bars) = parse(&line) {
+                    framed = true;
                     Spectrum::write().bars = Some(bars);
                 }
             }
             Err(error) => return error,
         }
+    }
+
+    // the bars of a cava that ended freeze if kept, and one that never gave any would be run again
+    // for good, as no line arrives to find the asks lapsed
+    Spectrum::write().bars = None;
+
+    if !framed {
+        silent.set(true);
+        stop.stop();
     }
 
     io::Error::other("ended")
@@ -218,11 +238,13 @@ fn parse(line: &str) -> Option<[u8; BARS]> {
     values.next().is_none().then_some(bars)
 }
 
-// the config cava reads, under the runtime directory only the user reads
+// the config cava reads, under the runtime directory only the user reads. Without one, no shared
+// directory is trusted, and the synthetic bars draw
 fn config_file() -> io::Result<PathBuf> {
-    let directory = std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(std::env::temp_dir, PathBuf::from)
-        .join("kanade");
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|directory| !directory.is_empty())
+        .ok_or_else(|| io::Error::other("no XDG_RUNTIME_DIR"))?;
+    let directory = PathBuf::from(runtime).join("kanade");
 
     fs::create_dir_all(&directory)?;
 

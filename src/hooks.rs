@@ -60,7 +60,7 @@ pub enum Event {
     // the charger went in or out, `KANADE_CHARGER` "plugged" or "unplugged"
     Charger,
 
-    // the machine is about to sleep, after its lock is asked
+    // the machine is about to sleep, started before its lock is asked
     Suspend,
 
     // the machine woke, or a sleep failed
@@ -219,7 +219,7 @@ pub const SETTINGS: &[Setting] = &[
         "hooks.suspend",
         "On suspend",
         Suspend,
-        "a command run as the machine goes to sleep, after the lock is asked; sleep waits for it only until logind's delay ends"
+        "a command run as the machine goes to sleep, before the lock is asked; sleep waits for it only until logind's delay ends"
     ),
     hook!(
         "hooks.resume",
@@ -318,7 +318,7 @@ impl Done {
     }
 }
 
-// the first line of what failed, cut short: the run's own words, never the event's payload
+// the first line of what failed, cut short: the command's own words, which may name what it was given
 fn brief(why: &str) -> String {
     let line = why.lines().next().unwrap_or_default().trim();
 
@@ -652,6 +652,27 @@ mod tests {
 
         assert!(why.contains("timed out"), "{why}");
         assert!(started.elapsed() < 10 * SECOND);
+    }
+
+    // a hook that leaves a background process holding its pipes still ends with it, not with that process
+    #[test]
+    fn a_hook_that_leaves_a_background_process_does_not_hold_its_slot() {
+        let started = std::time::Instant::now();
+
+        Process
+            .run(
+                Event::Lock,
+                &[
+                    String::from("sh"),
+                    String::from("-c"),
+                    String::from("sleep 5 & exit 0"),
+                ],
+                None,
+                5 * SECOND,
+            )
+            .unwrap();
+
+        assert!(started.elapsed() < 3 * SECOND);
     }
 
     #[test]

@@ -241,6 +241,23 @@ pub fn validate(file: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
 
+    // a command runs as the user, so no call through the shell or the settings file sets one
+    #[test]
+    fn a_command_is_refused_before_anything_is_written() {
+        let commands: Vec<_> = config::settings()
+            .filter(|setting| matches!(setting.kind, Kind::Argv(_)))
+            .collect();
+
+        assert!(!commands.is_empty());
+
+        for setting in commands {
+            let path: Vec<_> = setting.key.split('.').collect();
+
+            assert!(set(setting.key, "[\"true\"]").is_err(), "{}", setting.key);
+            assert!(settings::set(&path, None).is_err(), "{}", setting.key);
+        }
+    }
+
     // the schema at a dotted key under `root`
     fn at<'a>(root: &'a Json, key: &str) -> Option<&'a Json> {
         key.split('.')
