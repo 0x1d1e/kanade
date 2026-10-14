@@ -48,36 +48,50 @@ fn strips(body: Body, origin: (f32, f32)) -> Vec<InputArea> {
     let mut areas = Vec::new();
 
     // consecutive rows with the same spans are one rect: the straight sides are a few big ones
-    let mut band: Option<(Vec<(i32, i32)>, i32, i32)> = None;
+    let mut band: Option<Band> = None;
 
     for row in top..bottom {
         let spans = spans(&outline, left, right, row as f32 + 0.5);
 
         match &mut band {
-            Some((held, _, rows)) if *held == spans => *rows += 1,
+            Some(band) if band.spans == spans => band.rows += 1,
             _ => {
-                flush(band.take(), &mut areas);
-                band = Some((spans, row, 1));
+                if let Some(band) = band.take() {
+                    band.flush(&mut areas);
+                }
+
+                band = Some(Band {
+                    spans,
+                    y: row,
+                    rows: 1,
+                });
             }
         }
     }
 
-    flush(band, &mut areas);
+    if let Some(band) = band {
+        band.flush(&mut areas);
+    }
 
     areas
 }
 
-fn flush(band: Option<(Vec<(i32, i32)>, i32, i32)>, areas: &mut Vec<InputArea>) {
-    let Some((spans, y, rows)) = band else {
-        return;
-    };
+// rows from `y` on that hold the same runs of pixels, each from and to
+struct Band {
+    spans: Vec<(i32, i32)>,
+    y: i32,
+    rows: i32,
+}
 
-    areas.extend(spans.into_iter().map(|(from, to)| InputArea {
-        x: from,
-        y,
-        width: to - from,
-        height: rows,
-    }));
+impl Band {
+    fn flush(self, areas: &mut Vec<InputArea>) {
+        areas.extend(self.spans.into_iter().map(|(from, to)| InputArea {
+            x: from,
+            y: self.y,
+            width: to - from,
+            height: self.rows,
+        }));
+    }
 }
 
 /*
