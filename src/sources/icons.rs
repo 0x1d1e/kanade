@@ -339,7 +339,7 @@ fn theme() -> Option<String> {
 }
 
 // the user's data folder, then the system's, as the XDG spec has them
-fn data_dirs() -> Vec<PathBuf> {
+pub(crate) fn data_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
     match env::var_os("XDG_DATA_HOME") {

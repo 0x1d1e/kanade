@@ -21,7 +21,7 @@ use crate::config::{self, Config};
 use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{binds, bus, clipboard, keys, niri, pipewire, radios, wallpaper};
+use crate::sources::{binds, bus, clipboard, keys, niri, pipewire, radios, sound, wallpaper};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -99,6 +99,7 @@ pub fn run() -> ExitCode {
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
     checks.extend(backdrop(&config));
+    checks.extend(sounds(&config));
 
     let report: String = checks
         .iter()
@@ -523,6 +524,28 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
 
 // idle daemons that would act beside the idle Module
 const IDLE_DAEMONS: &[&str] = &["hypridle", "swayidle"];
+
+// notification sounds play through a helper, so say whether one is found; Kanade works without
+fn sounds(config: &Config) -> Option<Check> {
+    if !modules::resolve(modules::ALL, |name| config.off(name)).on("notifications") {
+        return None;
+    }
+
+    Some(match (sound::player(), config.notification_sound) {
+        (Some(player), true) => Check::ok(format!("notifications.sound: {player} plays them")),
+        (Some(player), false) => Check::ok(format!(
+            "notifications.sound is off; {player} would play them"
+        )),
+        (None, true) => Check::warn(format!(
+            "notifications.sound is on, but none of {} is on PATH: no sound plays",
+            sound::PLAYERS.join(", ")
+        )),
+        (None, false) => Check::ok(format!(
+            "notifications.sound is off; none of {} is on PATH",
+            sound::PLAYERS.join(", ")
+        )),
+    })
+}
 
 // whether a process of this name runs, as `/proc/<pid>/comm` names it
 fn process_running(name: &str) -> bool {
