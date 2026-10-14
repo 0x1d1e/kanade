@@ -13,6 +13,9 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 
 use kanade_runtime::MutexExt;
 
+use crate::raster;
+use crate::theme;
+
 // how deep an item's own folder is searched: a theme in it, like hicolor/22x22/apps
 const DEPTH: usize = 3;
 
@@ -106,6 +109,52 @@ fn look(name: &str, own: Option<&Path>) -> Option<PathBuf> {
 
             best(name, &pixmaps)
         })
+}
+
+/*
+ * `path` made legible on the dark island: a theme's symbolic svg draws in the text color of its
+ * `.ColorScheme-Text` style, near black in a light theme, so that color becomes light. Any other
+ * file is as it is.
+ */
+pub fn lit(path: PathBuf) -> PathBuf {
+    let is_svg = path.extension().is_some_and(|extension| extension == "svg");
+
+    if !is_svg || fs::metadata(&path).map_or(true, |meta| meta.len() > SVG_MOST) {
+        return path;
+    }
+
+    match fs::read_to_string(&path)
+        .ok()
+        .and_then(|svg| lighten(&svg, &theme::island().on_surface.hex()))
+    {
+        Some(svg) => raster::write("tray", "svg", svg.as_bytes()),
+        None => path,
+    }
+}
+
+// the most bytes an svg is read from to be lightened
+const SVG_MOST: u64 = 1 << 20;
+
+// `svg` with a dark `.ColorScheme-Text` color made `ink`; none when it has none or is light
+fn lighten(svg: &str, ink: &str) -> Option<String> {
+    let style = svg.find(".ColorScheme-Text")?;
+    let value = style + svg[style..].find("color:")? + "color:".len();
+    let end = value + svg[value..].find([';', '}'])?;
+    let dark = svg[value..end].trim().strip_prefix('#')?;
+
+    if dark.len() != 6 {
+        return None;
+    }
+
+    let [red, green, blue] = [0, 2, 4].map(|at| u8::from_str_radix(&dark[at..at + 2], 16));
+    let (red, green, blue) = (red.ok()?, green.ok()?, blue.ok()?);
+
+    // dark enough to vanish on black
+    if u32::from(red) + u32::from(green) + u32::from(blue) > 3 * 128 {
+        return None;
+    }
+
+    Some(format!("{}{ink}{}", &svg[..value], &svg[end..]))
 }
 
 // the best file named `name` in any of `folders`
@@ -291,4 +340,20 @@ fn data_dirs() -> Vec<PathBuf> {
     );
 
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lighten;
+
+    const DARK: &str = "<style>.ColorScheme-Text { color:#232629; }</style><path/>";
+
+    #[test]
+    fn a_dark_symbolic_color_becomes_light_and_a_light_one_stays() {
+        let lit = lighten(DARK, "#f2f2f2").unwrap();
+
+        assert!(lit.contains("color:#f2f2f2;") && lit.ends_with("<path/>"));
+        assert_eq!(lighten(&DARK.replace("232629", "dfdfdf"), "#f2f2f2"), None);
+        assert_eq!(lighten("<path fill=\"#000\"/>", "#f2f2f2"), None);
+    }
 }
