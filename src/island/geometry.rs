@@ -324,6 +324,14 @@ pub const CONTROLS: Shape = Shape {
     radius: 32.0,
 };
 
+// the Surfaces of one row of tiles or a reading with pills (Session, Timer, Capture): as wide as
+// Controls, as tall as `surfaces/pad.rs` needs
+pub const PAD: Shape = Shape {
+    width: CONTROLS.width,
+    height: 236.0,
+    radius: CONTROLS.radius,
+};
+
 // the Tray Surface's body: items and menus are short lines, so it is narrower than Controls
 pub const TRAY_LIST: Shape = Shape {
     width: 320.0,
@@ -463,7 +471,7 @@ impl Sizes {
 }
 
 // every shape a body morphs between; a bouncy spring overshoots them, `bounded` keeps it in
-pub const SHAPES: [Shape; 10] = [
+pub const SHAPES: [Shape; 11] = [
     REST,
     COMPACT,
     SPLIT,
@@ -471,6 +479,7 @@ pub const SHAPES: [Shape; 10] = [
     TRAY,
     UPRIGHT_TRAY,
     CONTROLS,
+    PAD,
     TRAY_LIST,
     MEDIA,
     CALENDAR,
@@ -522,13 +531,8 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
                 tray(slots, peek)
             }
         }
-        Presentation::Expanded(
-            Surface::Controls
-            | Surface::Weather
-            | Surface::Session
-            | Surface::Timer
-            | Surface::Capture,
-        ) => CONTROLS,
+        Presentation::Expanded(Surface::Controls | Surface::Weather) => CONTROLS,
+        Presentation::Expanded(Surface::Session | Surface::Timer | Surface::Capture) => PAD,
         Presentation::Expanded(Surface::Tray) => TRAY_LIST,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,

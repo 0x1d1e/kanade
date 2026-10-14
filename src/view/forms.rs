@@ -329,7 +329,7 @@ pub(super) fn recording(
         Clip::Saved { path, copied } => (
             match copied {
                 true => "Path copied",
-                false => "Recording saved",
+                false => "Saved",
             },
             file_name(path),
         ),
@@ -535,6 +535,7 @@ fn titled(
             .size(size)
             .color(theme::island().on_surface)
             .weight(weight)
+            .elide()
     ];
     let mut row = vec![lead_tile(lead, side, radius)];
 

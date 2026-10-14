@@ -19,12 +19,12 @@ use crate::island::service::IslandService;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 
-pub const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
+pub const WIDTH: f32 = geometry::PAD.width - 2.0 * INSET;
 const HEADER: f32 = TARGET;
 const GAP: f32 = 14.0;
 
 // where the tiles or the reading go
-pub const BODY: f32 = geometry::CONTROLS.height - 2.0 * INSET - HEADER - GAP;
+pub const BODY: f32 = geometry::PAD.height - 2.0 * INSET - HEADER - GAP;
 
 const TILE: f32 = 92.0;
 const TILE_GAP: f32 = 8.0;
@@ -176,7 +176,7 @@ pub fn close() {
 
 // the title over `body`, which is `BODY` tall
 pub fn frame(title: &str, body: impl Widget + 'static) -> Rectangle {
-    let shape = geometry::CONTROLS;
+    let shape = geometry::PAD;
 
     let header = Row::new(children![
         Text::new(title)
