@@ -218,8 +218,9 @@ Precedence: binary defaults → `~/.config/kanade/*.toml` alphabetical → `~/.l
 - never rewrite user/Nix config; only GUI state auto-migrates/writes.
 - GUI value == lower layer → remove override.
 - tables deep-merge; lists replace; output overrides global: `[output."<name>"]` sets per-output keys only, and wins over a global value from any layer.
-- unknown key → warning with file/line.
+- unknown key → warning with file/line, naming the nearest registry key when one is close.
 - writes = temp + rename.
+- `kanade config get|set|reset|schema|validate <file>` run in the CLI process from the registry, shell or none; `set` and `reset` write the settings file through the Settings writer, and the schema is derived, never kept by hand.
 - export = merged current schema.
 
 ### Hot reload
@@ -271,7 +272,7 @@ timer open|close|toggle
 capture open|close|toggle
 osd volume|brightness
 settings open [page]|close
-config reload|validate|defaults
+config reload|validate [file]|defaults|schema|get <key>|set <key> <value>|reset <key>
 completions bash|fish|zsh
 status
 doctor

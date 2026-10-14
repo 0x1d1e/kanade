@@ -2821,8 +2821,107 @@ fn migrate(table: &mut Table, migrations: &[Migration]) -> Result<(), (usize, St
     Ok(())
 }
 
-fn settings() -> impl Iterator<Item = &'static Setting> {
+pub fn settings() -> impl Iterator<Item = &'static Setting> {
     modules::ALL.iter().flat_map(|module| module.settings)
+}
+
+// the setting a dotted key names, or why none does
+pub fn setting(key: &str) -> Result<&'static Setting, String> {
+    settings()
+        .find(|setting| setting.key == key)
+        .ok_or_else(|| unknown(key, key, false))
+}
+
+// `unknown key`, with the nearest key or section when one is close, as `shown` names it
+fn unknown(shown: &str, path: &str, per_output: bool) -> String {
+    let known = settings().filter(|setting| !per_output || setting.per_output);
+    let candidates = known.flat_map(|setting| {
+        setting
+            .key
+            .match_indices('.')
+            .map(|(at, _)| &setting.key[..at])
+            .chain([setting.key])
+    });
+    let limit = (path.len() / 4).clamp(1, 2);
+
+    match candidates
+        .map(|candidate| (distance(path, candidate), candidate))
+        .filter(|&(distance, _)| (1..=limit).contains(&distance))
+        .min_by_key(|&(distance, _)| distance)
+    {
+        Some((_, near)) => format!("unknown key {shown}, did you mean {near}?"),
+        None => format!("unknown key {shown}"),
+    }
+}
+
+// how many single-character edits turn `from` into `to`
+fn distance(from: &str, to: &str) -> usize {
+    let to: Vec<char> = to.chars().collect();
+    let mut row: Vec<usize> = (0..=to.len()).collect();
+
+    for (at, from) in from.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = at + 1;
+
+        for (to_at, &to) in to.iter().enumerate() {
+            let above = row[to_at + 1];
+
+            row[to_at + 1] = (diagonal + usize::from(from != to))
+                .min(above + 1)
+                .min(row[to_at] + 1);
+            diagonal = above;
+        }
+    }
+
+    row[to.len()]
+}
+
+/*
+ * the files that set a key and apply, in layer order, the last of which gives its value; none when
+ * the defaults do. A file that does not read whole is `layers`' to report
+ */
+pub fn origin(setting: &Setting) -> Vec<PathBuf> {
+    let home = env::var("HOME").ok();
+    let mut config = Config::default();
+    let mut origin = Vec::new();
+
+    for path in files(home.as_deref(), true, &mut Vec::new()) {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+
+        if let Ok(table) = settings_table(&text)
+            && let Some(value) = setting
+                .key
+                .split('.')
+                .try_fold(&Value::Table(table), |value, key| value.get(key))
+        {
+            let nested = setting
+                .key
+                .split('.')
+                .rev()
+                .fold(value.clone(), |inner, key| {
+                    Value::Table(toml::Table::from_iter([(key.to_owned(), inner)]))
+                });
+
+            if let Value::Table(nested) = nested
+                && apply_table(&mut config.clone(), &nested).is_empty()
+            {
+                origin.push(path.clone());
+            }
+        }
+
+        layer(&mut config, &text, MIGRATIONS, home.as_deref());
+    }
+
+    origin
+}
+
+// what a file alone would not apply, as `(line, what)`; the file is no layer, so it is read over the defaults
+pub fn check(text: &str) -> Vec<(usize, String)> {
+    let home = env::var("HOME").ok();
+
+    layer(&mut Config::default(), text, MIGRATIONS, home.as_deref())
 }
 
 // the keys a table may set: any, or for an output the keys marked per output, noting each it sets
@@ -2910,7 +3009,10 @@ fn apply(
                     problems.push((entry.line, format!("{shown}: expected a table")));
                 }
             },
-            None => problems.push((entry.line, format!("unknown key {shown}"))),
+            None => problems.push((
+                entry.line,
+                unknown(&shown, &path, matches!(scope, Scope::Output { .. })),
+            )),
         }
     }
 }
@@ -3526,6 +3628,23 @@ battery = false
                 (14, "modules.island: the core module cannot be turned off"),
                 (15, "unknown module modules.teleport"),
                 (16, "modules.media: expected true or false"),
+            ])
+        );
+    }
+
+    // a typo names the key it is close to, in a section or per output; one far from any names none
+    #[test]
+    fn an_unknown_key_names_the_nearest() {
+        let text = "clok = \"12h\"\n[timings]\nhovr = 300\n[output.\"eDP-1\"]\nclok = \"12h\"\nteleport = 1";
+        let (_, problems) = one(text);
+
+        assert_eq!(
+            problems,
+            said(&[
+                (1, "unknown key clok, did you mean clock?"),
+                (3, "unknown key timings.hovr, did you mean timings.hover?"),
+                (5, "unknown key output.eDP-1.clok, did you mean clock?"),
+                (6, "unknown key output.eDP-1.teleport"),
             ])
         );
     }

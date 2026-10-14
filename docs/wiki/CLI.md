@@ -39,6 +39,12 @@
 | `activity run <id> <title> -- <command>...` | runs the command with a live Activity for it, ended as done on exit status 0 and failed otherwise, and exits as the command did (127 when it cannot start, 128 + the signal when one ended it). Ctrl+C reaches only the command. Without a shell, or with `live` off, the command still runs and stderr says why it shows nothing |
 | `config reload` | reads the config again now |
 | `config validate` | says what a reload would find, without applying it |
+| `config validate <file>` | says what a file alone would not apply, as `file:line: what`, exit 1 if anything; works without a shell |
+| `config defaults` | prints every key with its default and help, as the wiki's Configuration page holds them; works without a shell |
+| `config schema` | prints a JSON Schema of every key (type, range, choices, default, help; an `output` table for per output keys), for an editor; works without a shell |
+| `config get <key>` | prints `key = value` as in effect, then `# from` the file that set it or `default`; a table lists every file that adds to it |
+| `config set <key> <value>` | writes the key to the settings file as the Settings window does and prints what it comes to; never touches your own files. A key that takes text takes it as typed, any other a TOML value like `300`, `true` or `[1, 2]`. An unknown key or a value out of range is refused with the reason, exit 1, and nothing is written. The shell, if running, reloads it |
+| `config reset <key>` | removes the key from the settings file, so your files and the defaults give it again |
 | `status` | the config generation, the last reload error and the keys pending restart |
 | `module list` | each Module: whether it runs, why not, and what a restart would change |
 | `module enable\|disable <name>` | turns a Module on or off in the settings file, applied at the next restart; prints what the restart will change, the Modules that turn off with it included. `island` cannot be turned off |

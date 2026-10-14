@@ -60,7 +60,7 @@ pub const ALL: &[Module] = &[
             },
             Verb {
                 name: "config",
-                about: "Reload, validate or print the config",
+                about: "Reload, validate, print or change the config",
                 usage: || String::from("config reload|validate"),
                 parse: |arguments| match arguments {
                     ["reload"] => Ok(Call::Reload),

@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use kanade_runtime::{IpcCall, ipc_socket};
 
 mod completions;
+mod keys;
 
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
@@ -163,7 +164,20 @@ const OWN: &[(&str, &str, &str)] = &[
         "Print shell completions, from the commands in this list",
         "completions bash|fish|zsh",
     ),
-    ("config", "", "config defaults"),
+    (
+        "config",
+        "",
+        "config defaults|schema
+config get <key>
+config set <key> <value>
+config reset <key>
+config validate <file>
+  <key>: a dotted key of `kanade config defaults`, like timings.hover
+  <value>: text as it is for a key that takes text, else a TOML value, like 300, true or [1, 2]
+  set: writes the settings file, as the Settings window does, never your own files
+  reset: removes the key from the settings file, so your files and the defaults give it again
+  validate: says what a file alone would not apply, without a shell",
+    ),
     (
         "doctor",
         "Check what Kanade runs on, without a shell",
@@ -406,6 +420,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         }
         ["doctor"] => return doctor::run(),
         ["config", "defaults"] => return print(&config::defaults(), ExitCode::SUCCESS),
+        ["config", "schema"] => return print(&keys::schema(), ExitCode::SUCCESS),
+        ["config", "get", key] => return keyed(keys::get(key)),
+        ["config", "set", key, value] => return keyed(keys::set(key, value)),
+        ["config", "reset", key] => return keyed(keys::reset(key)),
+        ["config", "validate", file] => return validated(file),
         _ => {}
     }
 
@@ -488,6 +507,29 @@ pub fn run(arguments: &[String]) -> ExitCode {
  * writes `text` to stdout and gives back `code` as the exit code. A closed pipe is no failure, as its
  * reader, like `head`, wanted no more; any other error is said on stderr and fails
  */
+// what a key's verb says, or 1 for why it refused
+fn keyed(said: Result<String, String>) -> ExitCode {
+    match said {
+        Ok(said) => print(&said, ExitCode::SUCCESS),
+        Err(why) => {
+            complain(&format!("kanade: {why}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// `config validate <file>`: 1 for a problem in it, or for a file that does not read
+fn validated(file: &str) -> ExitCode {
+    match keys::validate(file.as_ref()) {
+        Ok(problems) if problems.is_empty() => print("valid\n", ExitCode::SUCCESS),
+        Ok(problems) => {
+            complain(&problems.join("\n"));
+            ExitCode::FAILURE
+        }
+        Err(why) => keyed(Err(why)),
+    }
+}
+
 pub fn print(text: &str, code: ExitCode) -> ExitCode {
     match written(io::stdout().lock(), text.as_bytes()) {
         Ok(()) => code,
