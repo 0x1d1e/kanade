@@ -37,11 +37,22 @@ const GLARE_CONVERGENCE = 0.5;
 const GLARE_OPPOSITE = 0.8;
 const GLARE_ANGLE = -0.78539816339;
 
-// signed distance to a rounded rectangle centered on 0, negative inside
+// how squarely a corner is drawn: the exponent of its norm, 2 being a circle's arc. A corner is a
+// squircle's, as the system's rounded shapes are, until its radius takes the short side, when it is
+// a pill's round cap
+const SQUIRCLE = 4.0;
+
+// distance, not exact, to a rounded rectangle centered on 0, negative inside. The corners are
+// squircles, so a body is a hair fuller there than a circle of the same radius (content clipped to
+// the circle stays inside)
 fn rounded(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
     let q = abs(p) - half + vec2<f32>(r, r);
+    let out = max(q, vec2<f32>(0.0, 0.0));
 
-    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+    let n = mix(SQUIRCLE, 2.0, smoothstep(0.6, 1.0, r / max(min(half.x, half.y), 1e-4)));
+    let norm = pow(pow(out.x, n) + pow(out.y, n), 1.0 / n);
+
+    return norm + min(max(q.x, q.y), 0.0) - r;
 }
 
 // the pull of the smooth minimum of two distances: the edges meet in a fillet, not a crease
