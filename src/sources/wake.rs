@@ -434,7 +434,7 @@ impl Stop {
     }
 
     // waits `pause` unless stopped first; says whether it was
-    fn pause(&self, pause: Duration) -> bool {
+    pub fn pause(&self, pause: Duration) -> bool {
         let (running, _) = self
             .0
             .1

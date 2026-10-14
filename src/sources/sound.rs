@@ -55,6 +55,20 @@ pub fn player() -> Option<&'static str> {
     PLAYERS.into_iter().find(|player| wake::found(player))
 }
 
+/*
+ * the first of `players` that can play the cue, with its arguments: pw-play cannot look up a name
+ * the freedesktop theme lacks, which canberra-gtk-play can, in the theme in use
+ */
+fn playing<'a>(
+    players: impl IntoIterator<Item = &'a str>,
+    cue: &Cue,
+    themed: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<(&'a str, Vec<OsString>)> {
+    players
+        .into_iter()
+        .find_map(|player| Some((player, arguments(player, cue, &themed)?)))
+}
+
 static PLAYING: AtomicBool = AtomicBool::new(false);
 
 // frees the one place when the sound ends, however it does
@@ -68,13 +82,11 @@ impl Drop for Playing {
 
 // plays the sound the hints ask for unless one plays already or there is no player; never blocks
 pub fn play(hints: &Hints) {
-    let Some(player) = player() else {
-        return;
-    };
     let Some(cue) = cue(hints, regular) else {
         return;
     };
-    let Some(arguments) = arguments(player, &cue, themed) else {
+    let installed = PLAYERS.into_iter().filter(|player| wake::found(player));
+    let Some((player, arguments)) = playing(installed, &cue, themed) else {
         return;
     };
 
@@ -265,6 +277,24 @@ mod tests {
             Some(vec!["-i".into(), "bell".into()])
         );
         assert_eq!(arguments("pw-play", &bell, |_| None), None);
+    }
+
+    // with both players installed and no theme file for a name, pw-play could not play it and the
+    // notification stayed silent
+    #[test]
+    fn a_name_pw_play_cannot_find_goes_to_canberra() {
+        let bell = Cue::Name(String::from("bell"));
+        let none = |_: &str| None;
+
+        assert_eq!(
+            playing(PLAYERS, &bell, none),
+            Some(("canberra-gtk-play", vec!["-i".into(), "bell".into()]))
+        );
+        assert_eq!(playing(["pw-play"], &bell, none), None);
+        assert_eq!(
+            playing(PLAYERS, &bell, |_| Some(PathBuf::from("/bell.oga"))),
+            Some(("pw-play", vec!["/bell.oga".into()]))
+        );
     }
 
     // a path from a hint never reaches a shell: it is one argument, however it is spelled

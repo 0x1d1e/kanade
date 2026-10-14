@@ -6,7 +6,8 @@
 //!
 //! Cava runs only on demand. The visualizer asks for it (`want`) each time it draws; a frame that
 //! finds the last ask older than `LAPSE` ends it, so it stops once the media is paused, the
-//! visualizer is not on screen or the setting changed, and a still island draws no frame. Its thread
+//! visualizer is not on screen or the setting changed, and a still island draws no frame. A watch
+//! of its own ends it, so a cava that gives no lines is ended as well. Its thread
 //! starts on the first ask, so Kanade holds none while the setting is not `audio`. Without cava the
 //! view falls back to the synthetic bars, and a missing cava is looked for again after `RETRY`.
 //! It runs through setpriv, so it dies with Kanade.
@@ -17,6 +18,7 @@ use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::ChildStdout;
 use std::sync::{Condvar, Mutex, Once};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
@@ -25,6 +27,9 @@ use super::wake::{self, Stop};
 use crate::supervise;
 
 pub const CAVA: &str = "cava";
+
+// how often the watch looks at the asks
+const WATCH: Duration = Duration::from_millis(500);
 
 // how many bars it gives, so how many the visualizer draws
 pub const BARS: usize = 4;
@@ -172,9 +177,14 @@ fn run() -> Result<(), String> {
 
     let stop = Stop::default();
     let silent = Cell::new(false);
-    let failed = wake::run(CAVA, &["-p", &path], &stop, |output| {
-        read(output, &stop, &silent)
-    });
+    let failed = watched(
+        CAVA,
+        &["-p", &path],
+        &stop,
+        || wanted(&DEMAND.locked()),
+        WATCH,
+        |output| read(output, &stop, &silent),
+    );
 
     if silent.get() {
         return Err(format!("{CAVA} ran but gave no bars"));
@@ -190,19 +200,44 @@ fn run() -> Result<(), String> {
 }
 
 /*
- * reads bars until cava ends or the asks lapse, which stops it. Each line is posted, which draws
- * the windows that show them
+ * `wake::run`, with a watch that stops the program once `wanted` says no. It looks every `every`
+ * on a thread of its own, as the reader is blocked in a read while the program gives no line, so
+ * it cannot look itself
+ */
+fn watched(
+    program: &str,
+    args: &[&str],
+    stop: &Stop,
+    wanted: impl Fn() -> bool + Sync,
+    every: Duration,
+    follow: impl FnMut(BufReader<ChildStdout>) -> io::Error,
+) -> Option<io::Error> {
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            while !stop.pause(every) {
+                if !wanted() {
+                    stop.stop();
+                }
+            }
+        });
+
+        let failed = wake::run(program, args, stop, follow);
+
+        // ends the watch too, as `run` may return with the program not stopped
+        stop.stop();
+
+        failed
+    })
+}
+
+/*
+ * reads bars until cava ends, which the watch does once the asks lapse. Each line is posted, which
+ * draws the windows that show them
  */
 fn read(output: BufReader<ChildStdout>, stop: &Stop, silent: &Cell<bool>) -> io::Error {
     let mut framed = false;
 
     for line in output.lines() {
-        if !wanted(&DEMAND.locked()) {
-            stop.stop();
-
-            return io::Error::other("not wanted");
-        }
-
         match line {
             Ok(line) => {
                 if let Some(bars) = parse(&line) {
@@ -215,10 +250,10 @@ fn read(output: BufReader<ChildStdout>, stop: &Stop, silent: &Cell<bool>) -> io:
     }
 
     // the bars of a cava that ended freeze if kept, and one that never gave any would be run again
-    // for good, as no line arrives to find the asks lapsed
+    // for good; not one the watch ended, as the asks lapsed before its first frame
     Spectrum::write().bars = None;
 
-    if !framed {
+    if !framed && wanted(&DEMAND.locked()) {
         silent.set(true);
         stop.stop();
     }
@@ -277,6 +312,33 @@ mod tests {
         assert_eq!(parse("1;2;x;4;"), None);
         assert_eq!(parse("1;2;-3;4;"), None);
         assert_eq!(parse(""), None);
+    }
+
+    // a program that stays alive and gives no line left the reader blocked, which no one asked about
+    // the asks again, so it outlived the visualizer
+    #[test]
+    fn a_program_that_gives_no_lines_is_ended_when_no_longer_wanted() {
+        let (done, ended) = std::sync::mpsc::channel();
+
+        thread::spawn(move || {
+            let stop = Stop::default();
+            let failed = watched(
+                "sleep",
+                &["30"],
+                &stop,
+                || false,
+                Duration::from_millis(20),
+                |output| {
+                    output.lines().for_each(drop);
+
+                    io::Error::other("ended")
+                },
+            );
+
+            let _ = done.send(failed.is_none());
+        });
+
+        assert_eq!(ended.recv_timeout(Duration::from_secs(5)), Ok(true));
     }
 
     // the config's bars, and the heights it caps at, are what the parser reads

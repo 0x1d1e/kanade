@@ -3,14 +3,14 @@
  * lists it, and pressing it focuses it. niri's titles are not kept by the `windows` Service, which
  * holds window ids only; they are asked of niri off the view thread each time the Launcher opens
  * (`refresh`) and held here, in memory, for the providers to read, so a title changed since shows
- * from the next opening
+ * from the next opening. They are a Service, so a search made before niri answered shows them when
+ * they arrive
  */
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
-use kanade_runtime::MutexExt;
 use kanade_runtime::service::Service;
 
 use crate::modules;
@@ -37,7 +37,22 @@ pub struct Entry {
     pub icon: Option<PathBuf>,
 }
 
-static TITLES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+// the titles niri gave last, none before the first answer
+#[derive(Debug, Default)]
+pub struct Held {
+    entries: Vec<Entry>,
+}
+
+impl Service for Held {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn listen() {}
+}
+
+// the newest refresh asked of niri: an answer that is not its own is dropped, as it may come last
+static ASKED: AtomicU64 = AtomicU64::new(0);
 
 // asks niri for the windows again on a thread of its own, when the `windows` Module runs
 pub fn refresh() {
@@ -45,17 +60,33 @@ pub fn refresh() {
         return;
     }
 
-    thread::spawn(|| match niri::ask("\"Windows\"") {
+    let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+
+    thread::spawn(move || match niri::ask("\"Windows\"") {
         Ok(reply) => {
+            // its own statement, so the read is released before the write
             let entries = entries(&reply, Windows::read().running());
-            *TITLES.locked() = entries;
+
+            hold(ticket, entries);
         }
         Err(error) => eprintln!("launcher: windows: {error}"),
     });
 }
 
+// keeps what the refresh asked for, unless a newer one was asked since or nothing changed
+fn hold(ticket: u64, entries: Vec<Entry>) {
+    let mut held = Held::write();
+
+    if ASKED.load(Ordering::SeqCst) == ticket && held.entries != entries {
+        held.entries = entries;
+    } else {
+        held.quiet();
+    }
+}
+
+// read in the view, so it is drawn again when the titles arrive
 pub fn titles() -> Vec<Entry> {
-    TITLES.locked().clone()
+    Held::read().entries.clone()
 }
 
 // the windows of niri's `Windows` reply, by title, each with its app as the Dock knows it
@@ -188,5 +219,26 @@ mod tests {
             [(3, "", ""), (7, "b Notes", "notes")]
         );
         assert!(super::entries(&json::parse("{}").unwrap(), &[]).is_empty());
+    }
+
+    fn entry(id: u64) -> Entry {
+        Entry {
+            id,
+            title: format!("window {id}"),
+            app: String::new(),
+            icon: None,
+        }
+    }
+
+    // a slow answer to an earlier refresh came last and replaced the newer titles
+    #[test]
+    fn an_answer_to_an_older_refresh_does_not_replace_a_newer_one() {
+        let older = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        let newer = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+
+        hold(newer, vec![entry(2)]);
+        hold(older, vec![entry(1)]);
+
+        assert_eq!(titles(), [entry(2)]);
     }
 }

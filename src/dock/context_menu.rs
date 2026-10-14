@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use crate::island::geometry::Rect;
@@ -23,6 +24,9 @@ const SEPARATOR: f32 = 1.0;
 
 // the close target at the end of a window's row
 const CLOSE: f32 = 26.0;
+
+// the newest open that asked for its titles: closing, or another open, supersedes the ones before it
+static ASKED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct Menu {
@@ -57,6 +61,7 @@ pub fn open(monitor: &str, item: &Item, at: Rect, edge: Edge) {
     }
 
     let (monitor, item) = (monitor.to_owned(), item.clone());
+    let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
 
     // off the view thread: niri is asked for the titles first, so the list is there as the menu is
     thread::spawn(move || {
@@ -76,20 +81,43 @@ pub fn open(monitor: &str, item: &Item, at: Rect, edge: Edge) {
             })
         };
 
-        Menu::write().open = Some(Open {
-            monitor,
-            item,
-            windows,
-            at,
-            edge,
-            selected: None,
-            offset: 0,
-            scroll: 0.0,
-        });
+        publish(
+            ticket,
+            Open {
+                monitor,
+                item,
+                windows,
+                at,
+                edge,
+                selected: None,
+                offset: 0,
+                scroll: 0.0,
+            },
+        );
     });
 }
 
+// shows the menu its titles were asked for, unless it was closed or another was asked since
+fn publish(ticket: u64, open: Open) {
+    let mut menu = Menu::write();
+
+    // under the write, so a close that follows clears what this shows
+    if ASKED.load(Ordering::SeqCst) == ticket {
+        menu.open = Some(open);
+    } else {
+        menu.quiet();
+    }
+}
+
+// what asked for titles and has not shown yet is not wanted any more
+fn supersede() {
+    ASKED.fetch_add(1, Ordering::SeqCst);
+}
+
 pub fn forget_gone(monitors: &Monitors) {
+    // a menu asked for on an output that has left must not show, and this runs on a change of outputs only
+    supersede();
+
     let mut menu = Menu::write();
 
     if menu
@@ -564,6 +592,8 @@ fn close_window(monitor: &str, index: usize) {
 
 // the open menu, closed, if it is this monitor's
 fn take(monitor: &str) -> Option<Open> {
+    supersede();
+
     let mut menu = Menu::write();
 
     match menu.open.take_if(|open| open.monitor == monitor) {
@@ -576,6 +606,8 @@ fn take(monitor: &str) -> Option<Open> {
 }
 
 fn close() {
+    supersede();
+
     let mut menu = Menu::write();
 
     if menu.open.take().is_none() {
@@ -606,5 +638,48 @@ mod tests {
     fn scrolling_past_a_menu_edge_does_not_save_whole_rows() {
         assert_eq!(scrolled(0, 0.0, -1.2, 10, 3), (0, 0.0));
         assert_eq!(scrolled(7, 0.0, 1.2, 10, 3), (7, 0.0));
+    }
+
+    fn menu_of(monitor: &str) -> Open {
+        Open {
+            monitor: monitor.to_owned(),
+            item: Item {
+                app: crate::sources::windows::App::Unmatched(None),
+                windows: Vec::new(),
+                pin: Some("test.desktop".to_owned()),
+            },
+            windows: Vec::new(),
+            at: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            edge: Edge::default(),
+            selected: None,
+            offset: 0,
+            scroll: 0.0,
+        }
+    }
+
+    // a menu dismissed while niri was asked for its titles came back when they arrived, and an older
+    // one replaced a newer
+    #[test]
+    fn a_menu_closed_or_overtaken_before_its_titles_arrive_does_not_show() {
+        let closed = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        close();
+        publish(closed, menu_of("closed"));
+        assert!(Menu::read().open.is_none());
+
+        let older = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        let newer = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(newer, menu_of("newer"));
+        publish(older, menu_of("older"));
+        assert_eq!(
+            Menu::read().open.as_ref().map(|open| open.monitor.as_str()),
+            Some("newer")
+        );
+
+        close();
     }
 }

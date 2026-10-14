@@ -291,6 +291,7 @@ pub fn start() {
     service::watch::<Apps>(fit);
     service::watch::<Search>(fit);
     service::watch::<Choosing>(fit);
+    service::watch::<windows::Held>(fit);
     service::watch::<IslandService>(choose::follow);
     fit();
 }
