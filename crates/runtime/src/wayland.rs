@@ -1,5 +1,6 @@
 mod backdrop;
 mod compositor;
+mod data_device;
 mod idle;
 mod keyboard;
 mod layer;
@@ -12,6 +13,7 @@ mod seat;
 mod socket;
 mod surface;
 mod toplevels;
+mod transfer;
 mod update;
 mod wake;
 mod windows;
@@ -28,6 +30,7 @@ use smithay_client_toolkit::reexports::protocols::wp::{
 };
 use smithay_client_toolkit::{
     compositor::CompositorState,
+    data_device_manager::{DataDeviceManagerState, data_device::DataDevice},
     delegate_dispatch2, delegate_registry,
     output::OutputState,
     reexports::{
@@ -50,7 +53,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_m
 
 use crate::ipc::IpcHandlers;
 use crate::window::Named;
-use crate::{Cursor, LayerWindow, Monitor};
+use crate::{Cursor, LayerWindow, Modifiers, Monitor};
 use backdrop::Captures;
 use toplevels::Toplevel;
 
@@ -66,6 +69,9 @@ struct WaylandState {
     // keys do not say which window they are for, so the window that has focus is kept
     keyboard_focus: Option<WlSurface>,
 
+    // the modifier keys held, which a key event does not say
+    modifiers: Modifiers,
+
     registry: RegistryState,
     output: OutputState,
     seat: SeatState,
@@ -75,6 +81,10 @@ struct WaylandState {
     layer_shell: LayerShell,
     xdg_shell: XdgShell,
     shm: Shm,
+
+    // text from the clipboard, none when the compositor has no data device manager
+    data_device_manager: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
 
     // both are needed for fractional scales like 1.25, none when the compositor lacks one
     fractional_scale: Option<WpFractionalScaleManagerV1>,
@@ -148,6 +158,8 @@ impl WaylandApp {
         let captures = backdrop::bind(&globals, &qh);
         let capable = captures.is_some();
 
+        let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
+
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
 
@@ -158,6 +170,7 @@ impl WaylandApp {
             per_monitor,
 
             keyboard_focus: None,
+            modifiers: Modifiers::default(),
 
             registry: RegistryState::new(&globals),
             output: OutputState::new(&globals, &qh),
@@ -167,6 +180,9 @@ impl WaylandApp {
             layer_shell,
             xdg_shell,
             shm,
+
+            data_device_manager,
+            data_device: None,
 
             fractional_scale,
             viewporter,
