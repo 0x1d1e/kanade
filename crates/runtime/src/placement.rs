@@ -91,20 +91,23 @@ impl Justify {
     pub(crate) fn spread(self, free: f32, count: usize) -> (f32, f32) {
         let count = count as f32;
 
+        // only center and end move back for an overflow, spacing never goes below none
+        let spacing = free.max(0.0);
+
         match self {
             Justify::Start => (0.0, 0.0),
             Justify::Center => (free / 2.0, 0.0),
             Justify::End => (free, 0.0),
-            Justify::SpaceBetween => Self::between(free, count),
+            Justify::SpaceBetween => Self::between(spacing, count),
 
             Justify::SpaceAround => {
-                let gap = free / count;
+                let gap = spacing / count;
 
                 (gap / 2.0, gap)
             }
 
             Justify::SpaceEvenly => {
-                let gap = free / (count + 1.0);
+                let gap = spacing / (count + 1.0);
 
                 (gap, gap)
             }
