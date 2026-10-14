@@ -556,9 +556,9 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(field(&search.query)) as Box<dyn Widget>,
-                list,
-                Box::new(footer(&search, found.len(), entries.len())),
+                Box::new(view::rise(0, field(&search.query))) as Box<dyn Widget>,
+                Box::new(view::rise(1, list)),
+                Box::new(view::rise(2, footer(&search, found.len(), entries.len()))),
             ])
             .width(width())
             .gap(GAP),

@@ -33,6 +33,7 @@ use crate::surfaces;
 use crate::theme;
 
 mod covered;
+mod entrance;
 mod forms;
 mod hud;
 mod input;
@@ -47,6 +48,8 @@ mod toast;
 
 pub(crate) use self::covered::covered;
 use self::covered::raise;
+use self::entrance::Entrance;
+pub(crate) use self::entrance::rise;
 use self::forms::{small_form, split, surface};
 use self::hud::hud;
 pub(crate) use self::input::{claim, collapse, input_area, key, open, pin};
@@ -574,8 +577,16 @@ fn form_holder(
         let _room = Room::take(room);
         // `Crossfade::shown` never shows both, so the first is the one leaving
         let leaving = content[0].is_some();
+        let shown = content.into_iter().flatten().next();
 
-        if let Some((content, opacity)) = content.into_iter().flatten().next()
+        // a Surface coming in arrives a section at a time, one going out leaves as a whole
+        let _entrance = Entrance::take(
+            shown
+                .as_ref()
+                .map_or(1.0, |&(_, opacity)| if leaving { 1.0 } else { opacity }),
+        );
+
+        if let Some((content, opacity)) = shown
             && let Some(form) = split(
                 &content,
                 island.track(&monitor.name),

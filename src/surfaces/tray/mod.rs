@@ -297,9 +297,12 @@ fn listing(items: &[Item], focus: &Focus, ring: Option<&At>) -> Column {
         )
     };
 
-    Column::new(vec![Box::new(header), body])
-        .width(WIDTH)
-        .gap(list::GAP)
+    Column::new(vec![
+        Box::new(view::rise(0, header)),
+        Box::new(view::rise(1, body)),
+    ])
+    .width(WIDTH)
+    .gap(list::GAP)
 }
 
 // an item: its icon and title, pressed to activate it, then the chevron to its menu

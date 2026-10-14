@@ -44,7 +44,7 @@ use crate::sources::system::Radio;
 use crate::sources::wifi::{self as wireless, Failure, Join, Link, Networks, Security};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED};
-use crate::view::bar;
+use crate::view::{bar, rise};
 
 mod audio;
 mod bluetooth;
@@ -93,10 +93,10 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
 
     let content = match &focus.sub {
         None => Column::new(children![
-            header(),
-            switches(dnd, ring.as_ref()),
-            levels(ring.as_ref()),
-            profiles(ring.as_ref())
+            rise(0, header()),
+            rise(1, switches(dnd, ring.as_ref())),
+            rise(2, levels(ring.as_ref())),
+            rise(3, profiles(ring.as_ref()))
         ])
         .width(WIDTH)
         .gap(GAP),

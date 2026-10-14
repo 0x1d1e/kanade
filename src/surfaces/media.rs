@@ -22,7 +22,7 @@ use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
-use crate::view::{Change, bar, state};
+use crate::view::{Change, bar, rise, state};
 
 // with INSET, concentric with the body's corner
 const ART: f32 = 80.0;
@@ -77,9 +77,12 @@ pub fn surface(monitor: &str, open: bool, now: Instant) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(children![
-                header(track, &playback.players, deck, playback.page, width, now),
-                timeline(deck, accent, width, now),
-                controls(monitor, deck, accent, width),
+                rise(
+                    0,
+                    header(track, &playback.players, deck, playback.page, width, now)
+                ),
+                rise(1, timeline(deck, accent, width, now)),
+                rise(2, controls(monitor, deck, accent, width)),
             ])
             .width(width)
             .gap(12.0),

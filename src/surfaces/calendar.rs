@@ -30,6 +30,7 @@ use crate::sources::calendar::{Calendars, Events, Occurrence, add};
 use crate::sources::google;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
+use crate::view::rise;
 
 use super::search;
 use super::visit::Visited;
@@ -621,8 +622,8 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Row::new(vec![
-                Box::new(grid(monitor, day, today, &month, &browse)) as Box<dyn Widget>,
-                agenda,
+                Box::new(rise(0, grid(monitor, day, today, &month, &browse))) as Box<dyn Widget>,
+                Box::new(rise(1, agenda)),
             ])
             .gap(SIDE_GAP),
         )

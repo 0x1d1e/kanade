@@ -464,9 +464,12 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(header(cards.len())) as Box<dyn Widget>,
-                list,
-                Box::new(footer(monitor, dnd, !cards.is_empty(), footer_ring)),
+                Box::new(view::rise(0, header(cards.len()))) as Box<dyn Widget>,
+                Box::new(view::rise(1, list)),
+                Box::new(view::rise(
+                    2,
+                    footer(monitor, dnd, !cards.is_empty(), footer_ring),
+                )),
             ])
             .width(width())
             .gap(GAP),

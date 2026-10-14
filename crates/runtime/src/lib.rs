@@ -55,7 +55,7 @@ pub use placement::{Align, Center, End, Justify, Padding, Size, Start};
 pub use style::{Fill, Image, Mask, Radius, Shadow};
 pub use unpoisoned::{MutexExt, RwLockExt};
 pub use widgets::{
-    Arc, Canvas, Circle, Column, Line, Path, Rectangle, Row, ScrollArea, Shape, Stack, Text,
+    Arc, Canvas, Circle, Column, Line, Path, Rectangle, Rise, Row, ScrollArea, Shape, Stack, Text,
     TextInput, Widget,
 };
 

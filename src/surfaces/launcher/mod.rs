@@ -467,15 +467,18 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(field(
-                    &search.query,
-                    match &choosing {
-                        Some((Some(prompt), _)) => prompt,
-                        Some((None, _)) => "Search choices",
-                        None => placeholder(),
-                    },
+                Box::new(view::rise(
+                    0,
+                    field(
+                        &search.query,
+                        match &choosing {
+                            Some((Some(prompt), _)) => prompt,
+                            Some((None, _)) => "Search choices",
+                            None => placeholder(),
+                        },
+                    ),
                 )) as Box<dyn Widget>,
-                list,
+                Box::new(view::rise(1, list)),
             ])
             .width(width())
             .gap(GAP),

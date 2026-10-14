@@ -22,6 +22,7 @@ use crate::island::service::IslandService;
 use crate::sources::weather::{Condition, Day, Forecast, Problem, State, Units, Weather};
 use crate::theme::space::INSET;
 use crate::theme::{self, radius};
+use crate::view::rise;
 
 // the content's height, which both sides fill
 const HEIGHT: f32 = geometry::CONTROLS.height - 2.0 * INSET;
@@ -63,8 +64,8 @@ pub fn surface(monitor: &str) -> Rectangle {
 
             Box::new(
                 Row::new(children![
-                    now(forecast, &weather, &config, clock::today()),
-                    days(forecast, config.units, there),
+                    rise(0, now(forecast, &weather, &config, clock::today())),
+                    rise(1, days(forecast, config.units, there)),
                 ])
                 .gap(SIDE_GAP),
             )

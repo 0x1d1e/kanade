@@ -18,6 +18,7 @@ use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
+use crate::view::rise;
 
 pub const WIDTH: f32 = geometry::PAD.width - 2.0 * INSET;
 const HEADER: f32 = TARGET;
@@ -194,7 +195,7 @@ pub fn frame(title: &str, body: impl Widget + 'static) -> Rectangle {
         .padding(INSET)
         .align_child(Start, Start)
         .child(
-            Column::new(vec![Box::new(header), Box::new(body)])
+            Column::new(vec![Box::new(rise(0, header)), Box::new(rise(1, body))])
                 .width(WIDTH)
                 .gap(GAP),
         )
