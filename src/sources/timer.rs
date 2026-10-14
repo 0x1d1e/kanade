@@ -79,6 +79,11 @@ const ANNOUNCE: Duration = Duration::from_secs(6);
 // the Skip pill's Action key, before the serial of the phase it skips
 const SKIP: &str = "skip";
 
+// the Pause or Resume pill's Action key, and the Stop pill's
+const PAUSE: &str = "pause";
+const RESUME: &str = "resume";
+const STOP: &str = "stop";
+
 // what `kanade timer` asks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
@@ -474,6 +479,20 @@ fn activity(running: Running) -> Activity {
         key: format!("{SKIP} {}", pomodoro.serial),
         label: String::from("Skip"),
     });
+    let (pause, label) = match running.countdown.paused {
+        Some(_) => (RESUME, "Resume"),
+        None => (PAUSE, "Pause"),
+    };
+    let actions = skip.into_iter().chain([
+        Action {
+            key: String::from(pause),
+            label: String::from(label),
+        },
+        Action {
+            key: String::from(STOP),
+            label: String::from("Stop"),
+        },
+    ]);
 
     Activity::new(
         id(),
@@ -483,7 +502,7 @@ fn activity(running: Running) -> Activity {
         interrupt,
     )
     .expect("a Persistent that does not auto-expand is valid")
-    .with_actions(skip.into_iter().collect())
+    .with_actions(actions.collect())
     .with_detail(Detail::Timer(
         running.countdown,
         pomodoro.map(|pomodoro| pomodoro.round),
@@ -492,6 +511,13 @@ fn activity(running: Running) -> Activity {
 
 // an Action pill pressed: Skip moves the pomodoro on, if the phase it was drawn for still runs
 pub fn act(key: &str, _subject: &str) {
+    match key {
+        PAUSE => return request(Request::Pause),
+        RESUME => return request(Request::Resume),
+        STOP => return request(Request::Cancel),
+        _ => {}
+    }
+
     if let Some(serial) = key
         .strip_prefix(SKIP)
         .and_then(|serial| serial.trim().parse().ok())

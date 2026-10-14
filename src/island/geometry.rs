@@ -117,7 +117,7 @@ pub const fn upright(shape: Shape, hang: Hang) -> Shape {
  * Rest and Compact as they hang. Standing upright they hold a stacked time or a lead tile and a
  * mark, no words, so they are as long as that asks rather than as long as the horizontal ones
  */
-const UPRIGHT_REST_LENGTH: f32 = 104.0;
+const UPRIGHT_REST_LENGTH: f32 = 116.0;
 const UPRIGHT_COMPACT_LENGTH: f32 = 160.0;
 
 pub const fn rest(hang: Hang) -> Shape {

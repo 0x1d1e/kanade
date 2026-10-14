@@ -151,7 +151,7 @@ fn rest_upright(monitor: &str, level: Option<Charge>) -> Rectangle {
             items.push(Box::new(battery_stacked(charge)));
         }
 
-        Column::new(items).gap(10.0).align(Center)
+        Column::new(items).gap(8.0).align(Center)
     };
 
     // as along the top: the battery goes first where the dots leave the rest no room

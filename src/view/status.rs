@@ -3,8 +3,8 @@
 use std::time::Instant;
 
 use kanade_runtime::{
-    Center, Color, Column, End, Padding, Parent, Rectangle, Row, Size, Stack, Start, Text, Widget,
-    children,
+    Center, Color, Column, End, Justify, Padding, Parent, Rectangle, Row, Size, Stack, Start, Text,
+    Widget, children,
 };
 
 use crate::icon::Icon;
@@ -28,7 +28,7 @@ pub(super) fn timer_tone(countdown: &Countdown) -> Color {
 
 /*
  * the stopwatch, what it is, then what is left; Peek also says how long it was started for, or a
- * pomodoro's round, and has its Skip pill. The clock has a fixed width, so a second ticking by
+ * pomodoro's round, and has its pills: Skip for a pomodoro, Pause or Resume, Stop. The clock has a fixed width, so a second ticking by
  * redraws it in place
  */
 pub(super) fn timer(
@@ -39,11 +39,12 @@ pub(super) fn timer(
     now: Instant,
 ) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
-        // the stopwatch over the countdown a part a line, the minutes over the seconds, as the clock
-        let mut parts = children![Icon::Stopwatch.draw(18.0)];
+        // the stopwatch at the round end, the countdown at the other, a part a line, the minutes over
+        // the seconds, as the clock; held in from both ends
+        let mut clock: Vec<Box<dyn Widget>> = Vec::new();
 
         for part in timer::clock(countdown, now).split(':') {
-            parts.push(Box::new(
+            clock.push(Box::new(
                 Text::new(part)
                     .size(theme::text::LABEL)
                     .color(timer_tone(countdown))
@@ -52,7 +53,23 @@ pub(super) fn timer(
         }
 
         return Some(stacked(vec![Box::new(
-            Column::new(parts).gap(3.0).align(Center),
+            Rectangle::new()
+                .width(Parent)
+                .height(Parent)
+                .padding(Padding {
+                    top: 8.0,
+                    bottom: 8.0,
+                    ..Padding::default()
+                })
+                .child(
+                    Column::new(children![
+                        Icon::Stopwatch.draw(18.0),
+                        Column::new(clock).gap(3.0).align(Center)
+                    ])
+                    .height(Parent)
+                    .justify(Justify::SpaceBetween)
+                    .align(Center),
+                ),
         )]));
     }
 
@@ -62,12 +79,12 @@ pub(super) fn timer(
     let (icon, size, inset, clock) = match (presentation, hours) {
         (Presentation::Compact, false) => (18.0, theme::text::LABEL, 15.0, 40.0),
         (Presentation::Compact, true) => (18.0, theme::text::LABEL, 15.0, 56.0),
-        (Presentation::Peek, false) => (24.0, theme::text::TITLE_LARGE, 20.0, 52.0),
-        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 20.0, 72.0),
+        (Presentation::Peek, false) => (24.0, theme::text::TITLE_LARGE, 16.0, 52.0),
+        (Presentation::Peek, true) => (24.0, theme::text::TITLE_LARGE, 16.0, 72.0),
         _ => return None,
     };
 
-    let gap = 11.0;
+    let gap = 6.0;
     let pills: Vec<Rectangle> = match presentation {
         Presentation::Peek => actions
             .iter()
@@ -91,13 +108,23 @@ pub(super) fn timer(
             _ => 0.0,
         })
         .sum();
-    let width = shape(presentation).width - 2.0 * inset - icon - clock - 2.0 * gap - taken;
 
-    let title = match (countdown.paused, round) {
-        (Some(_), Some(round)) => format!("{} paused", timer::phase(round.phase)),
-        (Some(_), None) => String::from("Paused"),
-        (None, Some(round)) => String::from(timer::phase(round.phase)),
-        (None, None) => String::from("Timer"),
+    // a pomodoro's three pills leave the words no room beside the stopwatch, so it gives way
+    let (icon, gaps) = if pills.len() > 2 {
+        (0.0, 1.0)
+    } else {
+        (icon, 2.0)
+    };
+    let width = shape(presentation).width - 2.0 * inset - icon - clock - gaps * gap - taken;
+
+    // the Peek says Paused on its second line, where its Resume pill leaves the first no room
+    let title = match (countdown.paused, round, presentation) {
+        (Some(_), Some(round), Presentation::Compact) => {
+            format!("{} paused", timer::phase(round.phase))
+        }
+        (Some(_), None, Presentation::Compact) => String::from("Paused"),
+        (_, Some(round), _) => String::from(timer::phase(round.phase)),
+        (_, None, _) => String::from("Timer"),
     };
     let mut words = children![
         Text::new(title)
@@ -108,9 +135,10 @@ pub(super) fn timer(
     ];
 
     if presentation == Presentation::Peek {
-        let line = match round {
-            Some(round) => format!("Round {} of {}", round.round, round.rounds),
-            None => format!("{} timer", timer::length(countdown)),
+        let line = match (countdown.paused, round) {
+            (Some(_), _) => String::from("Paused"),
+            (None, Some(round)) => format!("{} of {}", round.round, round.rounds),
+            (None, None) => format!("of {}", timer::length(countdown)),
         };
 
         words.push(Box::new(
@@ -122,8 +150,13 @@ pub(super) fn timer(
         ));
     }
 
-    let mut row = children![
-        Icon::Stopwatch.draw(icon),
+    let mut row: Vec<Box<dyn Widget>> = Vec::new();
+
+    if icon > 0.0 {
+        row.push(Box::new(Icon::Stopwatch.draw(icon)));
+    }
+
+    row.extend(children![
         Column::new(words).width(width).gap(3.0),
         Rectangle::new()
             .width(clock)
@@ -135,7 +168,7 @@ pub(super) fn timer(
                     .color(timer_tone(countdown))
                     .weight(theme::text::SEMIBOLD),
             ),
-    ];
+    ]);
     row.extend(
         pills
             .into_iter()
