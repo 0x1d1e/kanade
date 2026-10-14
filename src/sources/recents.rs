@@ -59,7 +59,13 @@ impl Usage {
 
     // one more start of `id`, the newest
     pub(crate) fn start(&mut self, id: &str) {
-        let last = self.0.values().map(|used| used.last).max().unwrap_or(0) + 1;
+        let last = self
+            .0
+            .values()
+            .map(|used| used.last)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         let used = self
             .0
             .entry(id.to_owned())
@@ -78,12 +84,14 @@ impl Usage {
         self.keep();
     }
 
-    // the most used `KEPT`, the later start breaking a tie
+    // the most used `KEPT`, the later start breaking a tie; the newest start always stays
     fn keep(&mut self) {
         while self.0.len() > KEPT {
+            let newest = self.0.values().map(|used| used.last).max();
             let least = self
                 .0
                 .iter()
+                .filter(|(_, used)| Some(used.last) != newest)
                 .min_by_key(|(_, used)| (used.count, used.last))
                 .map(|(id, _)| id.clone());
 

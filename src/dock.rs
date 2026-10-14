@@ -1947,8 +1947,11 @@ fn slot(
             Button::Middle => {}
         });
 
-    // only an app with a command takes files, so a drag over any other is turned down
-    match desktop(&item.app).and_then(|entry| entry.launch.clone()) {
+    // only an app whose `Exec` has a file code takes files, so a drag over any other is turned down
+    match desktop(&item.app)
+        .and_then(|entry| entry.launch.clone())
+        .filter(Launch::takes_files)
+    {
         Some(launch) => slot.on_drop(move |files| {
             carry_out(Press::Open {
                 launch: launch.clone(),

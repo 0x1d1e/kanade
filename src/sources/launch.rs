@@ -130,6 +130,13 @@ pub struct Fields<'a> {
 }
 
 impl Launch {
+    // whether the entry's `Exec` has a file code, so a drop on it starts something
+    pub fn takes_files(&self) -> bool {
+        self.command
+            .as_ref()
+            .is_some_and(|command| command.files.is_some())
+    }
+
     // none for an entry that cannot start: no `Exec` that parses, nor a bus name to activate
     pub fn of(fields: &Fields) -> Option<Launch> {
         let activate = fields

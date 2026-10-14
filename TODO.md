@@ -85,6 +85,8 @@ Not worth changing, by this review:
   - First finding: with a page animating behind it (a spinner in a terminal) both the Island and the Dock drew at the refresh rate, as their copies kept changing. A copy now counts as new only outside the body and the panes the shader skips (ADR 0054); check by eye over a spinner, and over a truly static page (a plain window, cursor blink off), that 5 s at rest draws 0 frames.
 - [x] Over a bright page the light text on Liquid Glass is hard to read: a scrim, then paper's ink (ADR 0054). Tune by eye; the ink follows the mean light of a ring 12 px outside the body, so a page half bright and half dark may keep the wrong ink on one side.
 
+- [ ] The `unread` regions (`src/pane/capture.rs`) rest on the shader's read geometry (`glass.wgsl`), with no test tying the two; a merged outline's concave notch is the case to check by eye or by a test that samples the shader's offsets.
+
 ## Panes (glass removed, ADR 0049)
 
 - [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
