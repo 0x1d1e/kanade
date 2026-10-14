@@ -199,6 +199,9 @@ fn desktop(app: &App) -> Option<&DesktopEntry> {
 enum Press {
     Focus(WindowId),
 
+    // asks the app to close that window, as its own close button does
+    Close(WindowId),
+
     Launch(Launch),
 
     DesktopAction { launch: Launch, id: String },
@@ -248,16 +251,8 @@ fn press(item: &Item) -> Option<Press> {
 fn carry_out(press: Press) {
     thread::spawn(move || {
         let done = match &press {
-            Press::Focus(id) => {
-                match niri::act(&format!(
-                    r#"{{"Action":{{"FocusWindow":{{"id":{}}}}}}}"#,
-                    id.0
-                )) {
-                    Ok(Acted::Done) => Ok(()),
-                    Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
-                    Err(error) => Err(error.to_string()),
-                }
-            }
+            Press::Focus(id) => window_action("FocusWindow", *id),
+            Press::Close(id) => window_action("CloseWindow", *id),
             Press::Launch(launch) => launch.run(),
             Press::DesktopAction { launch, id } => launch.run_action(id),
         };
@@ -266,6 +261,15 @@ fn carry_out(press: Press) {
             eprintln!("dock: {press:?}: {error}");
         }
     });
+}
+
+// niri's action on one window, by id
+fn window_action(action: &str, id: WindowId) -> Result<(), String> {
+    match niri::act(&format!(r#"{{"Action":{{"{action}":{{"id":{}}}}}}}"#, id.0)) {
+        Ok(Acted::Done) => Ok(()),
+        Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 // pins the configured apps, at start and after a reload

@@ -141,12 +141,12 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 
 ## Running app
 One app's open windows, as `windows` groups them for the Dock: those whose `app_id` matches one desktop entry (ADR 0014). Windows that match none group by `app_id`; a window without one stands alone.
-- **Invariant:** nothing of niri leaves `windows` but window ids.
+- **Invariant:** nothing of niri leaves `windows` but window ids. A window's title is asked of niri each time the Dock's menu opens and lives only as long as the menu.
 - **Invariant:** an override in `windows.apps` is final: one naming a missing entry leaves the app unmatched, never guessed.
 - **Avoid:** client, toplevel, task, program
 
 ## Dock
-Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pinned apps (`dock.pinned`), then Running apps not pinned, a dot between each running one and the edge. A click launches an app without windows, else focuses its window, cycling while it has the focus. Icons sized by `dock.size` grow near the pointer (`dock.magnification`); an autohidden Dock comes out when the pointer touches the edge under it. It steps aside while the Island grows over it, as with a Surface open beside it. Where it shares the Island's edge and side, `dock.merge` joins them instead (ADR 0031): one window, one pane: the Dock a plate on the edge with the Island crowning it (`crown`), the Island the middle piece of its row (`keystone`), or the Dock folded into the Island and out under the pointer (`fold`).
+Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pinned apps (`dock.pinned`), then Running apps not pinned, a dot between each running one and the edge. A click launches an app without windows, else focuses its window, cycling while it has the focus. A right click opens the app's menu: pin or unpin, one row per open window (its title, most recently focused first where niri says when; Enter focuses it, its close target or Delete closes it), then the app's own actions. Icons sized by `dock.size` grow near the pointer (`dock.magnification`); an autohidden Dock comes out when the pointer touches the edge under it. It steps aside while the Island grows over it, as with a Surface open beside it. Where it shares the Island's edge and side, `dock.merge` joins them instead (ADR 0031): one window, one pane: the Dock a plate on the edge with the Island crowning it (`crown`), the Island the middle piece of its row (`keystone`), or the Dock folded into the Island and out under the pointer (`fold`).
 - **Invariant:** app data only from `windows`; never reads `workspace` or raw niri objects, the niri source hands it the output names.
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
