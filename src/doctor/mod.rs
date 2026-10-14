@@ -21,7 +21,7 @@ use crate::config::{self, Config};
 use crate::lock;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{bus, clipboard, keys, niri, pipewire, radios};
+use crate::sources::{binds, bus, clipboard, keys, niri, pipewire, radios, wallpaper};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -98,6 +98,7 @@ pub fn run() -> ExitCode {
     checks.extend(sockets());
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
+    checks.extend(backdrop(&config));
 
     let report: String = checks
         .iter()
@@ -576,6 +577,51 @@ fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
     match file {
         Some(file) => Found::Present(format!("PAM service {service} at {}", file.display())),
         None => Found::Absent(format!("no PAM service {service}")),
+    }
+}
+
+/*
+ * whether niri's overview shows the wallpaper: it draws a Background layer in the overview only
+ * under a layer rule with `place-within-backdrop`, in the config Kanade never edits. Asked only
+ * while the `wallpaper` Module runs awww, whose layers are named `awww-daemon`. Kanade's own
+ * layers are Top, Bottom or Overlay, which the rule does not apply to
+ */
+fn backdrop(config: &Config) -> Option<Check> {
+    if modules::resolve(modules::ALL, |name| config.off(name)).on("wallpaper") {
+        let path = binds::config()?;
+        let found = binds::places_within_backdrop(&path, wallpaper::DAEMON, &mut |file| {
+            fs::read_to_string(file)
+        });
+
+        Some(backdrop_check(found))
+    } else {
+        None
+    }
+}
+
+fn backdrop_check(found: Result<bool, binds::Unread>) -> Check {
+    match found {
+        Ok(true) => Check::ok(String::from(
+            "niri: a layer rule places the wallpaper in the overview backdrop",
+        )),
+        Ok(false) => Check {
+            detail: vec![
+                String::from("add to niri's config.kdl, see docs/wiki/Installation.md:"),
+                format!(
+                    "layer-rule {{ match namespace=\"^{}\"; place-within-backdrop true; }}",
+                    wallpaper::DAEMON
+                ),
+            ],
+            ..Check::warn(String::from(
+                "niri: no layer rule places the wallpaper in the overview backdrop, so the \
+                 overview shows niri's background color behind the windows",
+            ))
+        },
+        Err(unread) => Check::warn(format!(
+            "niri: cannot tell whether the wallpaper is in the overview backdrop: {}: {}",
+            unread.file.display(),
+            unread.why
+        )),
     }
 }
 

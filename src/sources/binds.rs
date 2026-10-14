@@ -131,22 +131,15 @@ pub fn load(
     path: &Path,
     read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
 ) -> Result<Vec<Bind>, Unread> {
-    let mut binds: Vec<(String, Option<Bind>)> = Vec::new();
-    let mut modifier = None;
+    let mut found = Found::default();
 
-    walk(
-        path,
-        false,
-        &mut Vec::new(),
-        read,
-        &mut binds,
-        &mut modifier,
-    )?;
+    walk(path, false, &mut Vec::new(), read, &mut found)?;
 
     // `Mod` is Super unless `input { mod-key }` says otherwise, as niri runs on a TTY
-    let modifier = modifier.unwrap_or_else(|| String::from("Super"));
+    let modifier = found.modifier.unwrap_or_else(|| String::from("Super"));
 
-    Ok(binds
+    Ok(found
+        .binds
         .into_iter()
         .filter_map(|(_, bind)| bind)
         .map(|bind| Bind {
@@ -156,13 +149,72 @@ pub fn load(
         .collect())
 }
 
+// what the walk gathers from the files
+#[derive(Default)]
+struct Found {
+    binds: Vec<(String, Option<Bind>)>,
+    modifier: Option<String>,
+
+    // the namespace pattern of each layer rule that places a layer in the overview backdrop; none
+    // is a rule that matches every layer
+    backdrops: Vec<Option<String>>,
+}
+
+/*
+ * whether a layer rule of the config at `path`, or a file it includes, places the layer of
+ * `namespace` in niri's overview backdrop (`place-within-backdrop`), as a wallpaper must be to
+ * show there
+ */
+pub fn places_within_backdrop(
+    path: &Path,
+    namespace: &str,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+) -> Result<bool, Unread> {
+    let mut found = Found::default();
+
+    walk(path, false, &mut Vec::new(), read, &mut found)?;
+
+    Ok(found.backdrops.iter().any(|pattern| {
+        pattern
+            .as_deref()
+            .is_none_or(|pattern| matches(pattern, namespace))
+    }))
+}
+
+/*
+ * niri matches a regex, which Kanade has no engine for: a pattern of only literals and anchors is
+ * tried as written, any other is taken to match, so that doctor never warns wrongly
+ */
+fn matches(pattern: &str, namespace: &str) -> bool {
+    let (start, rest) = match pattern.strip_prefix('^') {
+        Some(rest) => (true, rest),
+        None => (false, pattern),
+    };
+    let (end, literal) = match rest.strip_suffix('$') {
+        Some(rest) => (true, rest),
+        None => (false, rest),
+    };
+
+    if literal.contains([
+        '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\', '^', '$',
+    ]) {
+        return true;
+    }
+
+    match (start, end) {
+        (true, true) => namespace == literal,
+        (true, false) => namespace.starts_with(literal),
+        (false, true) => namespace.ends_with(literal),
+        (false, false) => namespace.contains(literal),
+    }
+}
+
 fn walk(
     path: &Path,
     optional: bool,
     walking: &mut Vec<PathBuf>,
     read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
-    binds: &mut Vec<(String, Option<Bind>)>,
-    modifier: &mut Option<String>,
+    found: &mut Found,
 ) -> Result<(), Unread> {
     let unread = |why: String| Unread {
         file: path.to_owned(),
@@ -196,9 +248,33 @@ fn walk(
                     let key = same(bind.name().value());
                     let bind = read_bind(bind);
 
-                    match binds.iter_mut().find(|(earlier, _)| *earlier == key) {
+                    match found.binds.iter_mut().find(|(earlier, _)| *earlier == key) {
                         Some((_, earlier)) => *earlier = bind,
-                        None => binds.push((key, bind)),
+                        None => found.binds.push((key, bind)),
+                    }
+                }
+            }
+            "layer-rule" => {
+                let rule = node.children().map(KdlDocument::nodes).unwrap_or_default();
+                let named = |name| {
+                    rule.iter()
+                        .filter(move |child| child.name().value() == name)
+                };
+                let placed = named("place-within-backdrop")
+                    .next_back()
+                    .and_then(|child| child.get(0))
+                    .and_then(KdlValue::as_bool);
+
+                if placed == Some(true) {
+                    let before = found.backdrops.len();
+
+                    found.backdrops.extend(named("match").map(|child| {
+                        let namespace = child.get("namespace");
+                        namespace.and_then(KdlValue::as_string).map(str::to_owned)
+                    }));
+
+                    if found.backdrops.len() == before {
+                        found.backdrops.push(None);
                     }
                 }
             }
@@ -212,14 +288,7 @@ fn walk(
                     .unwrap_or(false);
 
                 walking.push(here.clone());
-                let walked = walk(
-                    &beside(path, file),
-                    optional,
-                    walking,
-                    read,
-                    binds,
-                    modifier,
-                );
+                let walked = walk(&beside(path, file), optional, walking, read, found);
                 walking.pop();
                 walked?;
             }
@@ -231,7 +300,7 @@ fn walk(
                     .and_then(KdlValue::as_string);
 
                 if let Some(set) = set {
-                    *modifier = Some(set.to_owned());
+                    found.modifier = Some(set.to_owned());
                 }
             }
             _ => {}
@@ -583,6 +652,53 @@ mod tests {
 
     fn titles(binds: &[Bind]) -> Vec<&str> {
         binds.iter().map(|bind| bind.title.as_str()).collect()
+    }
+
+    // a layer rule, in the config or a file it includes, that puts the layer in the backdrop
+    #[test]
+    fn a_layer_rule_places_a_namespace_within_the_backdrop() {
+        let placed = |text: &str| {
+            let config = files(&[
+                ("/c/config.kdl", text),
+                ("/c/rules.kdl", "layer-rule { place-within-backdrop true; }"),
+            ]);
+
+            places_within_backdrop(Path::new("/c/config.kdl"), "awww-daemon", &mut |file| {
+                config
+                    .get(file)
+                    .cloned()
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+            })
+        };
+
+        assert_eq!(placed("binds { }"), Ok(false));
+        assert_eq!(
+            placed("layer-rule { match namespace=\"^waybar$\"; }"),
+            Ok(false)
+        );
+        assert_eq!(
+            placed("layer-rule { match namespace=\"^waybar$\"; place-within-backdrop true; }"),
+            Ok(false)
+        );
+        assert_eq!(
+            placed("layer-rule { match namespace=\"^awww-daemon\"; place-within-backdrop false; }"),
+            Ok(false)
+        );
+        assert_eq!(
+            placed("layer-rule { match namespace=\"^awww-daemon\"; place-within-backdrop true; }"),
+            Ok(true)
+        );
+        assert_eq!(
+            placed(
+                "layer-rule { match namespace=\"wallpaper|awww\"; place-within-backdrop true; }"
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            placed("layer-rule { place-within-backdrop true; }"),
+            Ok(true)
+        );
+        assert_eq!(placed("include \"rules.kdl\""), Ok(true));
     }
 
     #[test]

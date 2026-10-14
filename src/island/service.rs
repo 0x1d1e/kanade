@@ -506,6 +506,11 @@ impl IslandService {
         self.get(monitor).segment
     }
 
+    // the Activity the pointer is over on `monitor`'s island, if any (`Presentations::under`)
+    pub fn pointed(&self, monitor: &str) -> Option<&Id> {
+        self.presentations.under(monitor, self.segment(monitor))
+    }
+
     pub fn satellites(&self, monitor: &str) -> &Satellites {
         &self.get(monitor).satellites
     }

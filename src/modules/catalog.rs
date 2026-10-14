@@ -11,13 +11,17 @@ use crate::island::activity::{Ending, Leave};
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
+use crate::sources::audio::Mixer;
+use crate::sources::battery::BatteryLevel;
+use crate::sources::bluetooth::Adapter;
 use crate::sources::calendar::Calendars;
 use crate::sources::clipboard::Clipboard;
+use crate::sources::network::Connectivity;
 use crate::sources::notifications::Daemon;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard,
+    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
     fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
@@ -270,6 +274,7 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| {
+            service::watch::<BatteryLevel>(devices::follow_charger);
             supervise::spawn("battery", battery::follow);
             supervise::spawn("charge-limit", charge_limit::follow);
             app
@@ -393,6 +398,7 @@ pub const ALL: &[Module] = &[
         hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
+            service::watch::<Mixer>(devices::follow_output);
             supervise::spawn("audio", audio::follow);
             app
         },
@@ -557,6 +563,7 @@ pub const ALL: &[Module] = &[
         hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
+            service::watch::<Connectivity>(devices::follow_wifi);
             system::spawn();
             app
         },
@@ -575,6 +582,7 @@ pub const ALL: &[Module] = &[
         hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
+            service::watch::<Adapter>(devices::follow_bluetooth);
             system::spawn();
             app
         },

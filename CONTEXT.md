@@ -23,8 +23,14 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
+## Device event
+A Bluetooth device connecting or going, the charger plugged in or out, the default sound output changing, or a Wi-Fi network joined, shown as a Transient Glance Activity on the focused output (the Detail is `Hardware`, posted under the Kind of its source: Bluetooth, Battery, Volume or Network). It shows a short title for Compact and a line for Peek, and nothing to press. `island.device_events` turns them off.
+- **Invariant:** each is told from a change a Module's own Service shows, so a Module that is off shows none. What a watcher first sees is a baseline, never an event, so starting the shell, a daemon or an adapter, or a battery or Wi-Fi device turning up, shows nothing; an adapter turned off disconnects its devices without news.
+- **Invariant:** one Activity per class, so a burst takes one place; the same event again within 10 s shows nothing.
+- **Avoid:** notification, toast
+
 ## Privacy cluster
-The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
+The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps and says whether a screen cast captures a window or a screen, never whose; `privacy.indicators` turns it off.
 - **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show. A Tray strip shows them past its last slot.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
@@ -72,6 +78,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - Tray is Rest's own small form: the time's Peek (the time, with the battery as set, over the date, and the weather and next event as set), then the apps' tray items, raised by the hover delay and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it (an item that is only a menu shows its menu instead), middle is its secondary activation, the wheel scrolls it, right opens its menu.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
+- The wheel over an island showing Media or the volume (the Compact or Split segment, or the Peek, under the pointer) sets the speaker's level, 5% a line as the Surface's own bar does, and changes no Presentation. It does nothing for any other Activity or when `island.wheel` is off; at Rest, on the Tray or on a Surface it stays with what is there.
 - **Invariant:** a body is never larger than the largest (`island.width` by `island.height`), made smaller on an output with no room for it. A list Surface is as tall as its content asks, down to the Peek, never shrinking from under the pointer; the canvas never resizes during a morph (ADR 0030).
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
 - **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request, the Surfaces withheld). No remembered last-used Surface: a click at Rest opens Controls.

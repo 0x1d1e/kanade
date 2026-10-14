@@ -6,7 +6,7 @@
 //! Module takes those by `on_windows` and `on_layout`. `ask` sends
 //! niri one request on a connection of its own.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -34,11 +34,21 @@ pub struct Seen {
     // none while unknown, like focus
     pub workspace: Option<Focused>,
 
-    // niri has at least one cast, paused ones included
-    pub casting: bool,
+    // what the casts niri has capture, paused ones included, each once; empty while none cast
+    pub casts: BTreeSet<Target>,
 
     // the window each output shows, by output; empty while unknown
     pub shown: BTreeMap<String, Showing>,
+}
+
+// what a cast captures; a window is no more than that here, whose title and app stay with niri
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Target {
+    Screen,
+    Window,
+
+    // not set yet or cleared, or one niri has since added
+    Unknown,
 }
 
 // what niri last said, written only when it changes; a lost stream writes the default again
@@ -143,7 +153,7 @@ struct Known {
     overviews: u32,
 
     // every cast by stream id
-    casts: HashSet<u64>,
+    casts: HashMap<u64, Target>,
 
     // every window by id: which app's, and its tile
     windows: HashMap<u64, Showing>,
@@ -246,13 +256,9 @@ impl Known {
         } else if let Some(changed) = event.get("CastsChanged") {
             let casts = changed.get("casts").and_then(json::array);
 
-            self.casts = casts
-                .unwrap_or_default()
-                .iter()
-                .filter_map(stream)
-                .collect();
+            self.casts = casts.unwrap_or_default().iter().filter_map(cast).collect();
         } else if let Some(started) = event.get("CastStartedOrChanged") {
-            self.casts.extend(started.get("cast").and_then(stream));
+            self.casts.extend(started.get("cast").and_then(cast));
         } else if let Some(stopped) = event.get("CastStopped")
             && let Some(id) = stopped.get("stream_id").and_then(Json::as_u64)
         {
@@ -291,7 +297,7 @@ impl Known {
             overview: self.overview,
             overviews: self.overviews,
             workspace,
-            casting: !self.casts.is_empty(),
+            casts: self.casts.values().copied().collect(),
             shown,
         }
     }
@@ -327,15 +333,22 @@ fn tile(layout: &Json) -> Option<(f64, f64)> {
     }
 }
 
-// a cast's stream; none for Kanade's own Liquid Glass backdrop capture
-fn stream(cast: &Json) -> Option<u64> {
+// a cast's stream and what it captures; none for Kanade's own Liquid Glass backdrop capture
+fn cast(cast: &Json) -> Option<(u64, Target)> {
     let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
 
     if own {
         return None;
     }
 
-    cast.get("stream_id").and_then(Json::as_u64)
+    // `{"Window": {"id": 1}}`, `{"Output": {"name": "eDP-1"}}` or `{"Nothing": {}}`
+    let target = match cast.get("target") {
+        Some(target) if target.get("Window").is_some() => Target::Window,
+        Some(target) if target.get("Output").is_some() => Target::Screen,
+        _ => Target::Unknown,
+    };
+
+    Some((cast.get("stream_id").and_then(Json::as_u64)?, target))
 }
 
 // what a window event says; none for another event, and for those `windows` ignores, like layouts
@@ -844,7 +857,40 @@ mod tests {
 
     // whether each post says something casts
     fn casting(posts: &[Seen]) -> Vec<bool> {
-        posts.iter().map(|seen| seen.casting).collect()
+        posts.iter().map(|seen| !seen.casts.is_empty()).collect()
+    }
+
+    // a cast that retargets, or has a target niri may add later, posts what it captures now
+    #[test]
+    fn a_cast_says_what_it_captures() {
+        let with = |stream: u64, target: &str| {
+            format!(
+                r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":{stream},"kind":"Future","target":{target},"extra":1}}}}}}"#
+            )
+        };
+        let (posts, _) = posts(&[
+            OK,
+            &with(1, r#"{"Nothing":{}}"#),
+            &with(1, r#"{"Window":{"id":4}}"#),
+            &with(2, r#"{"Output":{"name":"eDP-1"}}"#),
+            &with(3, r#"{"Region":{}}"#),
+            &stopped(1),
+        ]);
+        let casts: Vec<Vec<Target>> = posts
+            .iter()
+            .map(|seen| seen.casts.iter().copied().collect())
+            .collect();
+
+        assert_eq!(
+            casts,
+            [
+                vec![Target::Unknown],
+                vec![Target::Window],
+                vec![Target::Screen, Target::Window],
+                vec![Target::Screen, Target::Window, Target::Unknown],
+                vec![Target::Screen, Target::Unknown],
+            ]
+        );
     }
 
     // a share and a recording at once are one capture, until both stop
@@ -883,7 +929,11 @@ mod tests {
                 streams
                     .split(',')
                     .filter(|stream| !stream.is_empty())
-                    .map(|stream| format!(r#"{{"stream_id":{stream}}}"#))
+                    .map(|stream| {
+                        format!(
+                            r#"{{"stream_id":{stream},"target":{{"Output":{{"name":"eDP-1"}}}}}}"#
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(",")
             )

@@ -33,10 +33,12 @@ use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
+use crate::sources::battery::Remaining;
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::charge_limit::{self, ChargeLimit};
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
+use crate::sources::niri::Target;
 use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::Privacy;
@@ -166,6 +168,23 @@ fn header() -> Row {
         header.extend(capturing(&Privacy::read()));
     }
 
+    // the time left at the header's end, over whatever room the capture leaves
+    if let Some(left) = modules::on("battery")
+        .then(|| Remaining::read().said())
+        .flatten()
+    {
+        if header.len() == 1 {
+            header.push(Box::new(Rectangle::new().width(Parent).height(HEADER)));
+        }
+
+        header.push(Box::new(
+            Text::new(left)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        ));
+    }
+
     Row::new(header)
         .width(WIDTH)
         .height(HEADER)
@@ -174,8 +193,8 @@ fn header() -> Row {
 }
 
 /*
- * the cluster's glyphs, then the apps using a microphone or camera; niri cannot say who casts the
- * screen, so a cast is its glyph alone
+ * the cluster's glyphs, then the apps using a microphone or camera and what the screen casts
+ * capture; niri cannot say who casts, so a cast is a window's or a screen's and no app's
  */
 fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
     if !privacy.any() {
@@ -183,14 +202,20 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
     }
 
     let mut row = cluster::glyphs(privacy);
-
-    if let Some(sensors) = privacy
+    let apps = privacy
         .sensors
-        .as_ref()
-        .filter(|sensors| !sensors.apps.is_empty())
-    {
+        .iter()
+        .flat_map(|sensors| sensors.apps.clone());
+    let casts = privacy.casts.iter().filter_map(|target| match target {
+        Target::Screen => Some(String::from("Screen cast")),
+        Target::Window => Some(String::from("Window cast")),
+        Target::Unknown => None,
+    });
+    let named: Vec<String> = apps.chain(casts).collect();
+
+    if !named.is_empty() {
         row.push(Box::new(
-            Text::new(sensors.apps.join(", "))
+            Text::new(named.join(", "))
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::island().on_surface_variant)
                 .weight(theme::text::MEDIUM)
