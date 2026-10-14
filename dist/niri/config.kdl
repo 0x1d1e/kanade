@@ -91,6 +91,16 @@ layer-rule {
     place-within-backdrop true
 }
 
+// Kanade's finish "blur" blurs what lies behind the Island, Dock and Banners; niri blurs only the
+// wallpaper there (xray) unless told otherwise, so windows behind them would show through sharp
+layer-rule {
+    match namespace="^kanade(-dock|-banners)?$"
+
+    background-effect {
+        xray false
+    }
+}
+
 overview {
     workspace-shadow {
         off

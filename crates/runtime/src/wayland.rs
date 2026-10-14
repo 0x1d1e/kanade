@@ -1,6 +1,7 @@
 mod backdrop;
 mod compositor;
 mod data_device;
+mod effect;
 mod idle;
 mod keyboard;
 mod layer;
@@ -21,6 +22,7 @@ mod windows;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use smithay_client_toolkit::reexports::protocols::ext::background_effect::v1::client::ext_background_effect_manager_v1::ExtBackgroundEffectManagerV1;
 use smithay_client_toolkit::reexports::protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1::ExtIdleNotificationV1, ext_idle_notifier_v1::ExtIdleNotifierV1,
 };
@@ -55,6 +57,7 @@ use crate::ipc::IpcHandlers;
 use crate::window::Named;
 use crate::{Cursor, LayerWindow, Modifiers, Monitor};
 use backdrop::Captures;
+pub use effect::blur_available;
 use toplevels::Toplevel;
 
 use surface::{OpenWindow, View};
@@ -89,6 +92,9 @@ struct WaylandState {
     // both are needed for fractional scales like 1.25, none when the compositor lacks one
     fractional_scale: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
+
+    // blur behind the panes of a layer window, none when the compositor has no `ext-background-effect`
+    background_effect: Option<ExtBackgroundEffectManagerV1>,
 
     // the windows the compositor lists, none without its toplevel management
     toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
@@ -162,6 +168,7 @@ impl WaylandApp {
 
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
+        let background_effect = globals.bind(&qh, 1..=1, ()).ok();
 
         // windows per monitor are opened once the compositor describes each monitor
         let mut state = WaylandState {
@@ -186,6 +193,8 @@ impl WaylandApp {
 
             fractional_scale,
             viewporter,
+
+            background_effect,
 
             toplevel_manager,
             toplevels: HashMap::new(),

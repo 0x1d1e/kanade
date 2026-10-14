@@ -59,7 +59,7 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
 // the colors that mean something on the Island: the bright ones on a dark finish, the darker hues on paper
 pub fn signals() -> SemanticColors {
     match finish() {
-        Finish::TintedSolid => SEMANTIC,
+        Finish::TintedSolid | Finish::Blur => SEMANTIC,
         Finish::LiquidGlass if INK.get() < 0.5 => SEMANTIC,
         Finish::LiquidGlass | Finish::Paper => SIGNALS_LIGHT,
     }
@@ -225,14 +225,14 @@ pub const PAPER_OUTLINE: Color = Color::rgba(30, 30, 50, 89);
 // the pane's top light edge and rim in the finish
 pub fn pane_edge() -> Color {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass => PANE_EDGE,
+        Finish::TintedSolid | Finish::LiquidGlass | Finish::Blur => PANE_EDGE,
         Finish::Paper => PAPER_EDGE,
     }
 }
 
 pub fn pane_rim() -> Color {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass => PANE_RIM,
+        Finish::TintedSolid | Finish::LiquidGlass | Finish::Blur => PANE_RIM,
         Finish::Paper => PAPER_RIM,
     }
 }

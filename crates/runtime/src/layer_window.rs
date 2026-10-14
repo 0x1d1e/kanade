@@ -22,6 +22,9 @@ pub struct LayerWindow {
     // none means the whole window takes the pointer
     pub(crate) input_region: Option<Vec<InputArea>>,
 
+    // where the compositor blurs what lies behind the window, none blurs nothing
+    pub(crate) blur: Vec<InputArea>,
+
     pub(crate) root: Option<Box<dyn Widget>>,
 
     pub(crate) on_key: Option<KeyHandler>,
@@ -109,7 +112,7 @@ pub enum Zone {
     Ignore,
 }
 
-// a part of the window that takes pointer input, from its top left corner
+// a rect of the window, from its top left corner: where it takes pointer input, or is blurred behind
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputArea {
     pub x: i32,
@@ -186,6 +189,16 @@ impl LayerWindow {
         self.input_region(Vec::new())
     }
 
+    /*
+     * what lies behind these areas is blurred by the compositor, if it has `ext-background-effect`
+     * (see `blur_available`); the window draws them translucent. A region sent once is not sent again
+     */
+    pub fn blur(mut self, areas: Vec<InputArea>) -> Self {
+        self.blur = areas;
+
+        self
+    }
+
     // keys only arrive while the window has keyboard focus, see Keyboard
     pub fn on_key(mut self, handler: impl Fn(Key) + 'static) -> Self {
         self.on_key = Some(Rc::new(handler));
@@ -227,6 +240,8 @@ impl LayerWindowNeedsHeight {
             visible: true,
 
             input_region: None,
+
+            blur: Vec::new(),
 
             root: None,
 

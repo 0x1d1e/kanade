@@ -158,6 +158,9 @@ struct Found {
     // the namespace pattern of each layer rule that places a layer in the overview backdrop; none
     // is a rule that matches every layer
     backdrops: Vec<Option<String>>,
+
+    // each layer rule's say on xray, in file order, with its namespace pattern as above
+    xrays: Vec<(Option<String>, bool)>,
 }
 
 /*
@@ -207,6 +210,39 @@ fn matches(pattern: &str, namespace: &str) -> bool {
         (false, true) => namespace.ends_with(literal),
         (false, false) => namespace.contains(literal),
     }
+}
+
+/*
+ * the layers among `namespaces` that niri blurs xray, which is the wallpaper only, not the windows
+ * behind them: those no layer rule of the config at `path`, or a file it includes, sets
+ * `background-effect { xray false }` on, as a layer that blurs what lies behind it must. Blur a
+ * surface asks for is xray unless a rule says otherwise; the last rule matching a layer decides
+ */
+pub fn xrayed<'a>(
+    path: &Path,
+    namespaces: &[&'a str],
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+) -> Result<Vec<&'a str>, Unread> {
+    let mut found = Found::default();
+
+    walk(path, false, &mut Vec::new(), read, &mut found)?;
+
+    Ok(namespaces
+        .iter()
+        .copied()
+        .filter(|namespace| {
+            found
+                .xrays
+                .iter()
+                .rev()
+                .find(|(pattern, _)| {
+                    pattern
+                        .as_deref()
+                        .is_none_or(|pattern| matches(pattern, namespace))
+                })
+                .is_none_or(|(_, xray)| *xray)
+        })
+        .collect())
 }
 
 fn walk(
@@ -265,17 +301,40 @@ fn walk(
                     .and_then(|child| child.get(0))
                     .and_then(KdlValue::as_bool);
 
-                if placed == Some(true) {
-                    let before = found.backdrops.len();
+                // the namespace of each match, none for a rule that matches every layer
+                let patterns = || {
+                    let mut patterns: Vec<_> = named("match")
+                        .map(|child| {
+                            let namespace = child.get("namespace");
+                            namespace.and_then(KdlValue::as_string).map(str::to_owned)
+                        })
+                        .collect();
 
-                    found.backdrops.extend(named("match").map(|child| {
-                        let namespace = child.get("namespace");
-                        namespace.and_then(KdlValue::as_string).map(str::to_owned)
-                    }));
-
-                    if found.backdrops.len() == before {
-                        found.backdrops.push(None);
+                    if patterns.is_empty() {
+                        patterns.push(None);
                     }
+
+                    patterns
+                };
+
+                if placed == Some(true) {
+                    found.backdrops.extend(patterns());
+                }
+
+                let xray = named("background-effect")
+                    .next_back()
+                    .and_then(|child| child.children())
+                    .map(KdlDocument::nodes)
+                    .unwrap_or_default()
+                    .iter()
+                    .rfind(|child| child.name().value() == "xray")
+                    .and_then(|child| child.get(0))
+                    .and_then(KdlValue::as_bool);
+
+                if let Some(xray) = xray {
+                    found
+                        .xrays
+                        .extend(patterns().into_iter().map(|pattern| (pattern, xray)));
                 }
             }
             "include" => {
@@ -699,6 +758,45 @@ mod tests {
             Ok(true)
         );
         assert_eq!(placed("include \"rules.kdl\""), Ok(true));
+    }
+
+    // blur is xray, the wallpaper only, until a layer rule turns it off for the layer
+    #[test]
+    fn a_layer_rule_unxrays_the_layers_it_matches() {
+        let xrayed = |text: &str| {
+            let config = files(&[("/c/config.kdl", text)]);
+
+            xrayed(
+                Path::new("/c/config.kdl"),
+                &["kanade", "kanade-dock"],
+                &mut |file| {
+                    config
+                        .get(file)
+                        .cloned()
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+                },
+            )
+        };
+        let rule = |pattern: &str, xray: bool| {
+            format!(
+                "layer-rule {{ match namespace=\"{pattern}\"; background-effect {{ xray {xray}; }}; }}\n"
+            )
+        };
+
+        assert_eq!(xrayed("binds { }"), Ok(vec!["kanade", "kanade-dock"]));
+        assert_eq!(xrayed(&rule("^kanade$", false)), Ok(vec!["kanade-dock"]));
+        assert_eq!(
+            xrayed(&rule("^kanade$", true)),
+            Ok(vec!["kanade", "kanade-dock"])
+        );
+        assert_eq!(
+            xrayed(&format!(
+                "layer-rule {{ background-effect {{ xray false; }}; }}\n{}",
+                rule("^kanade-dock$", true)
+            )),
+            Ok(vec!["kanade-dock"])
+        );
+        assert_eq!(xrayed(&rule("^kanade(-dock)?$", false)), Ok(vec![]));
     }
 
     #[test]
