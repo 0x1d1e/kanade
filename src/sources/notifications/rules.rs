@@ -1,6 +1,6 @@
 //! Per-app notification rules (`[[notifications.rules]]`): each matches a notification by the app,
 //! desktop entry or category its sender gives, or a piece of its summary, and says what it does: a
-//! Banner or none, kept in the history or not, shown under DND, how long its Banner stays and
+//! Banner or none, kept in the history or not, with a sound or none, shown under DND, how long its Banner stays and
 //! which urgency it counts as. Matching ignores case; every match field a rule gives must match,
 //! and the first rule that matches wins. With none matching, a notification does what it always
 //! did. A rule applies once, as its notification arrives.
@@ -28,6 +28,7 @@ pub struct Rule {
     // what it does; none leaves that as it would be
     pub banner: Option<bool>,
     pub history: Option<bool>,
+    pub sound: Option<bool>,
     pub bypass_dnd: Option<bool>,
     pub timeout: Option<Duration>,
     pub urgency: Option<Urgency>,
@@ -41,6 +42,9 @@ pub struct Effects {
 
     // stays in the history once its Banner is gone; without, it closes as expired then
     pub history: bool,
+
+    // plays the sound `notifications.sound` gives, which it never does with that off
+    pub sound: bool,
 
     // its Banner shows under DND, as a Critical one does
     pub bypass_dnd: bool,
@@ -57,6 +61,7 @@ impl Default for Effects {
         Effects {
             banner: true,
             history: true,
+            sound: true,
             bypass_dnd: false,
             timeout: None,
             urgency: None,
@@ -74,7 +79,14 @@ pub struct Fields<'a> {
 }
 
 const MATCHES: [&str; 4] = ["app", "desktop_entry", "category", "summary"];
-const EFFECTS: [&str; 5] = ["banner", "history", "bypass_dnd", "timeout", "urgency"];
+const EFFECTS: [&str; 6] = [
+    "banner",
+    "history",
+    "sound",
+    "bypass_dnd",
+    "timeout",
+    "urgency",
+];
 
 // what the first rule matching does, the defaults for none
 pub fn resolve(rules: &[Rule], fields: Fields) -> Effects {
@@ -86,6 +98,7 @@ pub fn resolve(rules: &[Rule], fields: Fields) -> Effects {
     Effects {
         banner: rule.banner.unwrap_or(default.banner),
         history: rule.history.unwrap_or(default.history),
+        sound: rule.sound.unwrap_or(default.sound),
         bypass_dnd: rule.bypass_dnd.unwrap_or(default.bypass_dnd),
         timeout: rule.timeout,
         urgency: rule.urgency,
@@ -167,6 +180,7 @@ impl Rule {
                 "summary" => rule.summary = Some(text()?),
                 "banner" => rule.banner = Some(flag()?),
                 "history" => rule.history = Some(flag()?),
+                "sound" => rule.sound = Some(flag()?),
                 "bypass_dnd" => rule.bypass_dnd = Some(flag()?),
                 "timeout" => rule.timeout = Some(timeout(value)?),
                 "urgency" => rule.urgency = Some(urgency(value)?),
@@ -204,6 +218,7 @@ impl Rule {
         for (key, flag) in [
             ("banner", self.banner),
             ("history", self.history),
+            ("sound", self.sound),
             ("bypass_dnd", self.bypass_dnd),
         ] {
             if let Some(flag) = flag {
@@ -296,6 +311,7 @@ mod tests {
             Effects {
                 banner: true,
                 history: true,
+                sound: true,
                 bypass_dnd: false,
                 timeout: None,
                 urgency: None,
@@ -421,6 +437,7 @@ mod tests {
             summary = "invoice"
             banner = false
             history = true
+            sound = false
             bypass_dnd = true
             timeout = 1500
             urgency = "low"

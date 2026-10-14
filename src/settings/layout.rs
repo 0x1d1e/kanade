@@ -283,6 +283,10 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("banners.entrance")],
             },
             Section {
+                title: "Sound",
+                rows: &[Row::Key("notifications.sound")],
+            },
+            Section {
                 title: "Privacy",
                 rows: &[Row::Key("privacy.indicators")],
             },

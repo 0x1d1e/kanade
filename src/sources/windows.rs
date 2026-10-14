@@ -2,12 +2,14 @@
 //! the app each belongs to, for the Dock. niri.rs reads them off its stream and hands them here as
 //! `Heard`, which it defines; this keeps them, matches each `app_id` to a `.desktop` entry and
 //! publishes the result as the `Windows` Service, which holds nothing of niri's but its window ids.
+//! A window's title is asked of niri when the Dock's menu opens (`titled`) and kept nowhere here.
 //!
 //! The `.desktop` entries are read once, when the first window comes or the Dock pins an app, and
 //! read again only when an `app_id` or pinned id comes that none of them matches, or the config is
 //! reloaded, so nothing polls.
 
 use std::collections::BTreeMap;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -15,8 +17,9 @@ use kanade_runtime::{MutexExt, service::Service};
 
 use super::desktop::{self, Action, Entry};
 use super::icons;
+use super::json::{self, Json};
 use super::launch::Launch;
-use super::niri::{Heard, Window, WindowId};
+use super::niri::{self, Heard, Window, WindowId};
 use crate::config;
 
 // the `.desktop` entry an app matched, as the Dock shows and launches it
@@ -339,6 +342,58 @@ impl Tracked {
     }
 }
 
+// a window's title as niri gives it at the time of asking
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Titled {
+    pub id: WindowId,
+
+    // empty for a window with no title
+    pub title: String,
+}
+
+/*
+ * the titles of `ids`, asked of niri now and handed to the caller, never kept in the `Windows`
+ * Service: nothing of niri's leaves `windows` but window ids. Most recently focused first where
+ * niri says when (a field newer niri has); windows it does not date, and every window on one that
+ * does not, keep the order of `ids`. A window niri no longer lists is left out
+ */
+pub fn titled(ids: &[WindowId]) -> io::Result<Vec<Titled>> {
+    Ok(titles(&niri::ask("\"Windows\"")?, ids))
+}
+
+fn titles(reply: &Json, ids: &[WindowId]) -> Vec<Titled> {
+    let listed = reply
+        .get("Windows")
+        .and_then(json::array)
+        .unwrap_or_default();
+
+    let mut found: Vec<(Titled, Option<(u64, u64)>)> = ids
+        .iter()
+        .filter_map(|id| {
+            let window = listed
+                .iter()
+                .find(|window| window.get("id").and_then(Json::as_u64) == Some(id.0))?;
+            let title = window
+                .get("title")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let stamp = window.get("focus_timestamp").and_then(|stamp| {
+                Some((stamp.get("secs")?.as_u64()?, stamp.get("nanos")?.as_u64()?))
+            });
+
+            Some((Titled { id: *id, title }, stamp))
+        })
+        .collect();
+
+    // stable, so an undated window and a tie stay where `ids` had them
+    found.sort_by(|(_, a), (_, b)| b.cmp(a));
+
+    found.into_iter().map(|(titled, _)| titled).collect()
+}
+
 // the entry as published, its icon found; each name is looked up once a run
 fn shown(entry: &Entry) -> DesktopEntry {
     DesktopEntry {
@@ -394,4 +449,53 @@ fn matched<'a>(
     rules
         .iter()
         .find_map(|rule| entries.iter().find(|entry| rule(entry)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(ids: &[u64]) -> Vec<WindowId> {
+        ids.iter().copied().map(WindowId).collect()
+    }
+
+    fn order(titled: &[Titled]) -> Vec<u64> {
+        titled.iter().map(|titled| titled.id.0).collect()
+    }
+
+    // niri 26.04 sends no focus_timestamp: the order stays, and a title may be null or hold newlines
+    #[test]
+    fn windows_without_a_focus_time_keep_their_order() {
+        let reply = json::parse(
+            r#"{"Windows":[{"id":3,"title":"c"},{"id":1,"title":"a\nb  c"},{"id":2,"title":null,"focus_timestamp":null}]}"#,
+        )
+        .unwrap();
+        let titled = titles(&reply, &ids(&[1, 2, 3, 9]));
+
+        assert_eq!(order(&titled), [1, 2, 3]);
+        assert_eq!(titled[0].title, "a b c");
+        assert_eq!(titled[1].title, "");
+    }
+
+    // the most recently focused first, a window never focused last
+    #[test]
+    fn a_focus_time_puts_the_most_recent_window_first() {
+        let reply = json::parse(
+            r#"{"Windows":[
+                {"id":1,"title":"a","focus_timestamp":{"secs":5,"nanos":0}},
+                {"id":2,"title":"b","focus_timestamp":null},
+                {"id":3,"title":"c","focus_timestamp":{"secs":5,"nanos":9}}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(order(&titles(&reply, &ids(&[1, 2, 3]))), [3, 1, 2]);
+    }
+
+    // an answer that is not a window list is no list, not a panic
+    #[test]
+    fn an_unexpected_answer_lists_nothing() {
+        let reply = json::parse(r#"{"Version":"26.4"}"#).unwrap();
+
+        assert!(titles(&reply, &ids(&[1])).is_empty());
+    }
 }

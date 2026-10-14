@@ -48,7 +48,13 @@ pub(super) fn surface(
     let open = island.surface() == Some(surface);
 
     match surface {
-        Surface::Media => Some(surfaces::media::surface(monitor, open, now)),
+        Surface::Media => Some(surfaces::media::surface(
+            monitor,
+            open,
+            island.visit(),
+            island.held(monitor),
+            now,
+        )),
         Surface::Notifications => Some(surfaces::notifications::surface(
             monitor,
             open,
