@@ -292,7 +292,7 @@ fn active(privacy: &Privacy) -> [bool; SENSORS] {
     [
         sensors.is_some_and(|sensors| sensors.microphone),
         sensors.is_some_and(|sensors| sensors.camera),
-        privacy.casting,
+        privacy.casting(),
     ]
 }
 

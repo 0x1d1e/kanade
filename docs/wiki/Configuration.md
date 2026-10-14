@@ -86,7 +86,7 @@ weather = true
 agenda = true
 
 [privacy]
-# dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls; not shown over a fullscreen window
+# dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls, with whether a cast captures a window or a screen; not shown over a fullscreen window
 indicators = true
 
 [banners]

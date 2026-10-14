@@ -1437,7 +1437,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "privacy.indicators",
         label: "Capture indicators",
-        help: "dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls; not shown over a fullscreen window",
+        help: "dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls, with whether a cast captures a window or a screen; not shown over a fullscreen window",
         hint: Some("Mark a microphone, camera or screen cast in use"),
         kind: Kind::Switch(Field {
             get: |config| config.privacy_indicators,
