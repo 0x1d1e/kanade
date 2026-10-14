@@ -96,8 +96,10 @@ A level inside a Surface, entered from one of its targets and left by a back con
 - **Avoid:** detail (an Activity's Detail), page, view
 
 ## LauncherProvider
-One kind of answer the Launcher finds for a query: apps, the calculator, emoji, destinations (Wi-Fi, Bluetooth, each Surface, Settings; anything after `@` is the Wallpapers destination). Each answer has a Fit, what its row shows, and its action: start an app, copy text, or open a Surface or Settings.
-- **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, emoji), then each provider's own.
+One kind of answer the Launcher finds for a query: apps, an app's own Desktop Actions (like New Private Window, from two letters, while `launcher.actions` is on), open windows (by title or app, from two letters, with the `windows` Module on), the calculator, emoji, destinations (Wi-Fi, Bluetooth, each Surface, Settings; anything after `@` is the Wallpapers destination). Each answer has a Fit, what its row shows, and its action: start an app or one of its actions, focus a window, copy text, or open a Surface or Settings.
+- **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, app actions, windows, destinations, emoji, clipboard history), then each provider's own.
+- **Invariant:** how often an app started (`launcher-usage`, bounded, counts halving at a cap) orders only apps that fit a query alike; it never lifts one over a better Fit, so an exact name always leads. With nothing typed, the last six started list first.
+- Window titles are asked of niri off the view thread each time the Launcher opens and held in the Launcher's memory; `windows` still holds ids only.
 - Emoji answer only a query starting with `:`, and apps answer none of those.
 - Kanade's own seam; no plugin API.
 - In a visit opened by `kanade dmenu`, the lines read from stdin are the only provider (choose mode); a press answers the waiting client instead of acting.

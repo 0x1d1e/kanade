@@ -796,13 +796,13 @@ pub const ALL: &[Module] = &[
         name: "launcher",
         about: "Apps, calculations, emoji and wallpapers",
         requires: &[CORE],
-        optional: &["wallpaper"],
+        optional: &["wallpaper", "windows"],
         warns: None,
         needs: &[Need {
             on: Provider::Program(clipboard::COPY),
             without: "no copying a calculator value or an emoji",
         }],
-        settings: &[],
+        settings: config::LAUNCHER,
         hooks: Hooks::NONE,
         verbs: &[
             Verb {

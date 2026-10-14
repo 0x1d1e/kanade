@@ -62,6 +62,12 @@ pub enum Action {
     // an app's way to start, and its id for the recents
     Launch(Launch, String),
 
+    // one of its Desktop Actions: the app's way to start, its id for the recents, then the action's id
+    Perform(Launch, String, String),
+
+    // focuses the open window of this niri id
+    Focus(u64),
+
     // puts the text on the clipboard
     Copy(String),
 

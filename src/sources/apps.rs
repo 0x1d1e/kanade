@@ -29,6 +29,9 @@ pub struct App {
     pub icon_file: Option<PathBuf>,
 
     pub launch: Launch,
+
+    // its Desktop Actions, which the Launcher lists as rows of their own
+    pub actions: Vec<desktop::Action>,
 }
 
 impl App {
@@ -99,6 +102,7 @@ fn listed(entries: Vec<Entry>) -> Vec<App> {
                     .and_then(|icon| icons::find(icon, None)),
                 icon: entry.icon,
                 launch: entry.launch?,
+                actions: entry.actions,
                 name: entry.name,
                 description: entry.description,
             })

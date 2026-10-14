@@ -137,6 +137,9 @@ pub struct Config {
     // `privacy.indicators`
     pub privacy_indicators: bool,
 
+    // `launcher.actions`: the apps' Desktop Actions are rows of the Launcher
+    pub launcher_actions: bool,
+
     // `idle.*`: after how long idle each stage fires (ADR 0047)
     pub idle: Stages,
 
@@ -448,6 +451,7 @@ impl Default for Config {
             visualizer: Visualizer::default(),
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
+            launcher_actions: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
                 lock: Some(Duration::from_secs(300)),
@@ -1876,6 +1880,20 @@ pub const MEDIA: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+pub const LAUNCHER: &[Setting] = &[Setting {
+    key: "launcher.actions",
+    label: "App actions",
+    help: "an app's own actions, like a browser's New Private Window, are rows of the Launcher once two letters are typed",
+    hint: Some("List an app's own actions in the Launcher"),
+    kind: Kind::Switch(Field {
+        get: |config| config.launcher_actions,
+        set: |config, on| config.launcher_actions = on,
+    }),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 pub const LIVE_STALE: Range = Range {
     least: 1,
     most: 1440,
@@ -3278,6 +3296,7 @@ mod tests {
                 "wallpaper.directory",
                 "wallpaper.transition",
                 "wallpaper.transition_duration",
+                "launcher.actions",
                 "calendar.paths",
                 "calendar.reminder",
                 "weather.location",

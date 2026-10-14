@@ -176,6 +176,7 @@ fn island(command: Command) -> Reply {
             // way to open the Launcher must refresh as well
             if let Effect::Open(_, Surface::Launcher) = &effect {
                 apps::refresh();
+                launcher::windows::refresh();
             }
 
             IslandService::write().apply(effect, Instant::now());
