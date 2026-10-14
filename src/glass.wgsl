@@ -13,7 +13,7 @@
 // It never reads the clock, so a body at rest draws no frames of its own.
 //
 // This is the final pass of liquid-glass-studio (src/shaders-wgsl/fragment-main.wgsl) at its default
-// values: the Snell edge profile over 20 px, per-channel dispersion, Fresnel and glare in LCH, no
+// values: the Snell edge profile over 20 px (less on a small body), per-channel dispersion, Fresnel and glare in LCH, no
 // tint, and a refraction distance of 2% of the output's height. A copy of the screen holds the
 // pane itself, so what lies under the body cannot be read: where the studio reads inward, the edge
 // here reads the screen just outside the outline, along the same profile. The middle is not drawn:
@@ -21,8 +21,10 @@
 
 const PI = 3.14159265359;
 
-// the studio's defaults
+// the studio's defaults, but for the edge's thickness, which is its at most
 const THICKNESS = 20.0;
+const THIN = 8.0;
+const THIN_SHARE = 0.35;
 const FACTOR = 1.4;
 const DISPERSION = 1.0;
 const N_R = 0.98;
@@ -171,13 +173,21 @@ fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(rgb, a);
 }
 
-// the studio's Snell edge profile: how far the edge reads, 0 to 1 at the edge, 0 from `THICKNESS` in
+// how thick the edge is: the studio's 20 px, less on a body too small to carry it, as the Island at
+// rest, so its middle is not all edge
+fn thickness() -> f32 {
+    return clamp(THIN_SHARE * min(size.x, size.y), THIN, THICKNESS);
+}
+
+// the studio's Snell edge profile: how far the edge reads, 0 to 1 at the edge, 0 from `thickness()` in
 fn profile(depth: f32) -> f32 {
-    if depth >= THICKNESS {
+    let thick = thickness();
+
+    if depth >= thick {
         return 0.0;
     }
 
-    let x = clamp(1.0 - depth / THICKNESS, 0.0, 1.0);
+    let x = clamp(1.0 - depth / thick, 0.0, 1.0);
     let incident = asin(clamp(x * x, -1.0, 1.0));
     let transmitted = asin(clamp(sin(incident) / FACTOR, -1.0, 1.0));
 
