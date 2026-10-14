@@ -327,8 +327,14 @@ fn tile(layout: &Json) -> Option<(f64, f64)> {
     }
 }
 
-// a cast's stream
+// a cast's stream; none for Kanade's own Liquid Glass backdrop capture
 fn stream(cast: &Json) -> Option<u64> {
+    let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
+
+    if own {
+        return None;
+    }
+
     cast.get("stream_id").and_then(Json::as_u64)
 }
 
@@ -847,6 +853,26 @@ mod tests {
         let (posts, _) = posts(&[OK, &cast(1), &cast(2), &stopped(1), &cast(2), &stopped(2)]);
 
         assert_eq!(casting(&posts), [true, false]);
+    }
+
+    // Liquid Glass captures its own backdrop, and records nothing
+    #[test]
+    fn kanade_s_own_capture_is_no_cast() {
+        let own = format!(
+            r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":7,"session_id":7,"kind":"WlrScreencopy","target":{{"Output":{{"name":"eDP-1"}}}},"is_dynamic_target":false,"is_active":true,"pid":{},"pw_node_id":null}}}}}}"#,
+            std::process::id()
+        );
+        let list = format!(
+            r#"{{"CastsChanged":{{"casts":[{{"stream_id":8,"pid":{}}}]}}}}"#,
+            std::process::id()
+        );
+
+        let (own_only, _) = posts(&[OK, &own, &list]);
+        assert!(!casting(&own_only).contains(&true));
+
+        // and hides no other
+        let (beside, _) = posts(&[OK, &own, &cast(1)]);
+        assert_eq!(casting(&beside), [true]);
     }
 
     #[test]

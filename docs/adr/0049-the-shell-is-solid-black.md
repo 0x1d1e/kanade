@@ -1,6 +1,6 @@
 # 49. The shell is solid black
 
-Status: accepted; the Island, Dock and Banners' black fill is superseded by ADR 0050 (the tinted solid), the rest stands. Supersedes ADR 0048, ADR 0037 and ADR 0024's glass (its pane identity, variants and capture ownership go with them), and ADR 0020. Amends ADR 0025 (the lock screen's pill and disc are solid), ADR 0031 (one pane per merged shell stays, drawn solid) and ADR 0034 (the runtime no longer captures).
+Status: accepted; the Island, Dock and Banners' black fill is superseded by ADR 0050 (the tinted solid), the rest stands, but ADR 0052 brings the capture back for one opt-in finish (Liquid Glass). Supersedes ADR 0048, ADR 0037 and ADR 0024's glass (its pane identity, variants and capture ownership go with them), and ADR 0020. Amends ADR 0025 (the lock screen's pill and disc are solid), ADR 0031 (one pane per merged shell stays, drawn solid) and ADR 0034 (the runtime no longer captures).
 
 ## Context
 

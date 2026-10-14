@@ -9,6 +9,7 @@ mod stack;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::iter;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -66,6 +67,9 @@ const FADE_SCALE: f32 = 0.92;
 
 // how each output's Banners move, kept between draws
 static MOTIONS: LazyLock<Mutex<HashMap<String, Motion>>> = LazyLock::new(Mutex::default);
+
+// per output, which captured pane each Banner uses
+static PANES: LazyLock<Mutex<HashMap<String, Panes>>> = LazyLock::new(Mutex::default);
 
 // the tallest a Banner gets, as its text lays out the same for good
 static TALLEST: OnceLock<f32> = OnceLock::new();
@@ -202,6 +206,7 @@ pub fn forget_gone() {
     let monitors = Monitors::read();
 
     MOTIONS.locked().retain(|monitor, _| monitors.has(monitor));
+    PANES.locked().retain(|monitor, _| monitors.has(monitor));
 }
 
 fn nudge() {
@@ -348,7 +353,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     };
     let shown = fitting(shown, &heights, from, lane.end, hang);
 
-    let (placed, moving) = {
+    let (placed, later, moving) = {
         let mut motions = MOTIONS.locked();
         let motion = motions.entry(monitor.name.clone()).or_default();
 
@@ -361,6 +366,9 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         );
 
         let mut placed = motion.placed(now);
+
+        // as it heads now, to place each card ahead by its own pane's lead
+        let later = motion.clone();
         let moving = motion.moving(now);
 
         if motion.is_empty() {
@@ -373,8 +381,22 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
          */
         placed.sort_by_key(|placed| placed.banner.id);
 
-        (placed, moving)
+        (placed, later, moving)
     };
+
+    // each Banner's captured pane, and those let go, which the next Banner takes afresh
+    let (panes, freed) = {
+        let mut all = PANES.locked();
+        let panes = all.entry(monitor.name.clone()).or_default();
+        let ids: Vec<u32> = placed.iter().map(|placed| placed.banner.id).collect();
+        let freed = panes.follow(&ids);
+
+        (panes.by.clone(), freed)
+    };
+
+    for pane in freed {
+        pane::forget(&pane::Spot::new(&monitor.name, &self::pane(pane)));
+    }
 
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
     let mut areas = Vec::new();
@@ -384,16 +406,19 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         let island = IslandService::read();
         drop(autohide::Wakes::read());
 
+        // under a fullscreen window the cards are not seen, so capture nothing
+        let covered = view::covered(monitor, || island.overview());
+
         // the body moving, they follow it
         if moving || !island.settled(&monitor.name, now) || autohide::moving(&monitor.name, now) {
             request_frame();
         }
 
-        // how a Banner draws now
-        let look = |placed: &motion::Placed| {
+        // how a Banner draws `at` a time, as far as it is heading now
+        let look = |placed: &motion::Placed, at: Instant| {
             let pose = stand.pose(
-                island.shape(&monitor.name, now),
-                autohide::at(&monitor.name, now),
+                island.shape(&monitor.name, at),
+                autohide::at(&monitor.name, at),
             );
             let body = shift.of(stand.body(pose));
             let (x, base) = lane.from(body, hang);
@@ -430,12 +455,51 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .get(&placed.banner.id)
                 .copied()
                 .unwrap_or_else(|| measured(&placed.banner));
-            let now_look = look(placed);
+            let now_look = look(placed, now);
             let at = now_look.at;
+            let body = pane_body(at, now_look.radius);
 
+            let spot = pane::Spot::new(&monitor.name, &self::pane(panes[&placed.banner.id]));
+
+            /*
+             * out to everywhere the card goes until its rim shows, and to where it was a quarter of
+             * that before, as the Island's body is
+             */
+            let since = now.checked_sub(pane::LEAD / 4).unwrap_or(now);
+            let captured = iter::once(since)
+                .chain((1..=4).map(|step| now + pane::LEAD * step / 4))
+                .filter_map(|at| {
+                    let ahead = later
+                        .placed(at)
+                        .into_iter()
+                        .find(|ahead| ahead.banner.id == placed.banner.id)?;
+                    let look = look(&ahead, at);
+
+                    Some(pane_body(look.at, look.radius))
+                })
+                .fold(body, pane::ahead);
+
+            // each live Banner watches its own copy; hidden cards stop capturing
+            let captured = pane::place(
+                monitor,
+                &spot.pane,
+                anchor,
+                (width, height),
+                (now_look.seen > 0.0 && !covered).then_some(captured),
+            );
+            let backdrop = pane::shown(&spot);
+
+            /*
+             * A captured pane casts no shadow, which would darken its sampled colors; either
+             * way, it takes as many layers so the targets of later cards keep their place
+             */
             let mut shadow = Vec::new();
 
-            shadow::draw(&mut shadow, at, now_look.radius);
+            if captured {
+                shadow::none(&mut shadow);
+            } else {
+                shadow::draw(&mut shadow, at, now_look.radius);
+            }
 
             cards.push(Box::new(
                 Layers::new(children![
@@ -445,7 +509,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                         .align_child(Start, Start)
                         .opacity(now_look.shadow)
                         .child(Layers::new(shadow)),
-                    drawn(&placed.banner, &now_look, card_height, &roles),
+                    drawn(&placed.banner, &now_look, backdrop, card_height, &roles),
                 ])
                 .width(width)
                 .height(height),
@@ -479,6 +543,47 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         )
 }
 
+// a pane's capture spot on an output, as a Banner draws in
+fn pane(index: usize) -> String {
+    format!("banner-{index}")
+}
+
+/*
+ * which pane each Banner on an output draws in: its own while it shows, so one going never hands
+ * its rims to another, and the lowest free one for one new
+ */
+#[derive(Debug, Default)]
+struct Panes {
+    by: HashMap<u32, usize>,
+}
+
+impl Panes {
+    // follows the Banners `ids` drawn now; says the panes let go, even one another Banner took
+    fn follow(&mut self, ids: &[u32]) -> Vec<usize> {
+        let mut freed: Vec<usize> = self
+            .by
+            .iter()
+            .filter(|(id, _)| !ids.contains(id))
+            .map(|(_, pane)| *pane)
+            .collect();
+
+        self.by.retain(|id, _| ids.contains(id));
+
+        for id in ids {
+            if !self.by.contains_key(id) {
+                let free = (0..)
+                    .find(|pane| !self.by.values().any(|taken| taken == pane))
+                    .unwrap_or_default();
+
+                self.by.insert(*id, free);
+            }
+        }
+
+        freed.sort_unstable();
+        freed
+    }
+}
+
 /*
  * how tall a Banner lays out, kept while it shows as it was, so a frame lays out none of the text
  * again
@@ -505,6 +610,17 @@ fn measured(banner: &Banner) -> f32 {
 
         height
     })
+}
+
+fn pane_body(at: Rect, radius: f32) -> pane::Body {
+    pane::Body {
+        x: at.x,
+        y: at.y,
+        width: at.width,
+        height: at.height,
+        radius,
+        join: None,
+    }
 }
 
 // what takes the pointer for a card mid-way: whole pixels out to its edge, as it draws
@@ -848,9 +964,15 @@ fn mix(from: f32, to: f32, amount: f32) -> f32 {
 
 /*
  * the card as `look` says, what it says laid out at its full `height`, clipped to where it is, on
- * the Island's tinted solid
+ * the Island's pane, with its captured backdrop under Liquid Glass
  */
-fn drawn(banner: &Banner, look: &Look, height: f32, roles: &ThemeRoles) -> Rectangle {
+fn drawn(
+    banner: &Banner,
+    look: &Look,
+    backdrop: Option<pane::Seen>,
+    height: f32,
+    roles: &ThemeRoles,
+) -> Rectangle {
     let at = look.at;
 
     let layers: Vec<Box<dyn Widget>> = vec![
@@ -859,6 +981,7 @@ fn drawn(banner: &Banner, look: &Look, height: f32, roles: &ThemeRoles) -> Recta
             height: at.height,
             radius: look.radius,
             united: None,
+            backdrop,
         })),
         Box::new(card(banner, height, roles).opacity(look.says)),
     ];

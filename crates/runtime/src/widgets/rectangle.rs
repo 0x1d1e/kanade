@@ -5,6 +5,7 @@ mod transform;
 
 use std::path::PathBuf;
 
+use crate::backdrop::Spot;
 use crate::graphics::{Color, VALUE_ROWS};
 use crate::input::Handlers;
 use crate::{Align, Fill, Padding, Radius, Shadow, Size};
@@ -22,6 +23,7 @@ pub struct Rectangle {
     pub(crate) shadow: Option<Shadow>,
     pub(crate) shader: Option<PathBuf>,
     pub(crate) shader_values: Vec<[f32; 4]>,
+    pub(crate) backdrop: Option<Spot>,
     pub(crate) child: Option<Box<dyn Widget>>,
     pub(crate) clip: bool,
     pub(crate) rotation: f32,
@@ -104,6 +106,16 @@ impl Rectangle {
         self
     }
 
+    /*
+     * the newest copy of what is behind a pane (`backdrop::watch`), handed to the shader as
+     * `backdrop` and `backdrop_sampler` in wgsl, transparent while there is none
+     */
+    pub fn backdrop(mut self, spot: Spot) -> Self {
+        self.backdrop = Some(spot);
+
+        self
+    }
+
     pub fn child(mut self, child: impl Widget + 'static) -> Self {
         self.child = Some(Box::new(child));
 
@@ -154,6 +166,7 @@ impl RectangleNeedsHeight {
             shadow: None,
             shader: None,
             shader_values: Vec::new(),
+            backdrop: None,
             child: None,
             clip: false,
             rotation: 0.0,

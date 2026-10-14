@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::backdrop::Spot;
 use crate::graphics::{Area, Color, Renderer};
 
 use super::Command;
@@ -47,7 +48,14 @@ impl Renderer {
     }
 
     // runs the shader file over the rounded rectangle, handing it the values
-    pub fn shader(&mut self, area: Area, shader: &Path, radius: f32, values: &[[f32; 4]]) {
+    pub fn shader(
+        &mut self,
+        area: Area,
+        shader: &Path,
+        radius: f32,
+        values: &[[f32; 4]],
+        backdrop: Option<&Spot>,
+    ) {
         let Some(outline) = area.trace(radius) else {
             return;
         };
@@ -58,6 +66,7 @@ impl Renderer {
         self.commands.push(Command::Shader {
             shader: shader.to_path_buf(),
             values: values.to_vec(),
+            backdrop: backdrop.cloned(),
             area,
             path,
             transform: self.transform,

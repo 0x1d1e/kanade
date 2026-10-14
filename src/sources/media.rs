@@ -27,7 +27,7 @@ use crate::island::activity::{
 use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
-use crate::{supervise, theme};
+use crate::supervise;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
 const PAUSED: Duration = Duration::from_secs(30);
@@ -458,10 +458,7 @@ impl Watcher {
 
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
-            let accent = seen
-                .track
-                .accent
-                .map_or(theme::island().on_surface, |(r, g, b)| Color::rgb(r, g, b));
+            let accent = seen.track.accent.map(|(r, g, b)| Color::rgb(r, g, b));
 
             // a track shown before dissolves to this one, a Surface just opened shows it at once
             let (track, tint) = match last {

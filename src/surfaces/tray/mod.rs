@@ -19,6 +19,7 @@ use crate::icon::Icon;
 use crate::island::geometry::{self, TRAY_SLOT};
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::sources::icons;
 use crate::sources::tray::menu::{self, Entry, Menu, Toggle};
 use crate::sources::tray::{self, Item, Orientation, Press, Status, Tray};
 use crate::theme::space::INSET;
@@ -206,7 +207,14 @@ fn open(monitor: &str, item: &Item, pinned: bool) {
 
 // the icon an item gives: its file, else its own pixels, else its title's initial
 fn icon(item: &Item, side: f32) -> Box<dyn Widget> {
-    let Some(path) = item.icon.file.as_ref().or(item.icon.pixmap.as_ref()) else {
+    let drawn = item
+        .icon
+        .file
+        .as_deref()
+        .map(icons::inked)
+        .or_else(|| item.icon.pixmap.clone());
+
+    let Some(path) = drawn else {
         let initial = item
             .title
             .chars()
@@ -229,7 +237,7 @@ fn icon(item: &Item, side: f32) -> Box<dyn Widget> {
         Rectangle::new()
             .width(side)
             .height(side)
-            .fill(Image::contain(path.clone()).thumbnail(pixels, pixels)),
+            .fill(Image::contain(path).thumbnail(pixels, pixels)),
     )
 }
 

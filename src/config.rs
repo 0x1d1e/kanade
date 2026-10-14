@@ -1190,7 +1190,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.finish",
         label: "Finish",
-        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue either way: \"tinted-solid\", dark with light text, or \"paper\", light with dark ink",
+        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around",
         kind: Kind::Choice(
             Choices::named(Finish::NAMES),
             Field {

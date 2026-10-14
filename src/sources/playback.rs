@@ -72,65 +72,93 @@ pub struct Deck {
  * the accent as it changes, on its own spring: with the track, and again whenever the artwork's
  * accent turns up late, since a file not there yet is read again on a later tick. A change of
  * mind goes on from where it is and how fast it moves, so it never jumps; under reduced motion it
- * fades from where it is over the configured reduced-motion response
+ * fades from where it is over the configured reduced-motion response.
+ *
+ * It holds the artwork's raw color and how vivid it shows, and is fitted to the island's ramp only
+ * when read, so a finish switched meanwhile recolors it with no new publish
  */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tint {
     // what showed when the current leg began, for the reduced motion fade
-    from: Color,
+    from: [f32; 4],
 
-    to: Color,
+    to: [f32; 4],
 
-    // 0 to 255 per channel
-    rgb: Spring<3>,
+    // red, green, blue 0 to 255, then 255 for the accent and 0 for the neutral foreground
+    value: Spring<4>,
 }
 
 impl Tint {
-    // at rest on `color`
-    pub fn new(color: Color, mode: Mode) -> Self {
+    // at rest on `color`, the neutral foreground for none
+    pub fn new(color: Option<Color>, mode: Mode) -> Self {
+        let target = target(color, None);
+
         Self {
-            from: color,
-            to: color,
-            rgb: Spring::new(rgb(color), mode),
+            from: target,
+            to: target,
+            value: Spring::new(target, mode),
         }
     }
 
     // a new leg toward `color` unless it already heads there
-    pub fn to(&mut self, color: Color, response: Duration, now: Instant) {
-        if self.to == color {
+    pub fn to(&mut self, color: Option<Color>, response: Duration, now: Instant) {
+        let target = target(color, Some(self.to));
+        if self.to == target {
             return;
         }
 
-        self.from = self.at(now);
-        self.to = color;
-        self.rgb.to(rgb(color), response, now);
+        self.from = self.value_at(now);
+        self.to = target;
+        self.value.to(target, response, now);
     }
 
+    // fitted to the island's ramp as it is now
     pub fn at(&self, now: Instant) -> Color {
-        if self.rgb.settled(now) {
-            return self.to;
-        }
+        let [r, g, b, vivid] = self.value_at(now);
+        let accent = fit(Some(Color::rgb(
+            r.round().clamp(0.0, 255.0) as u8,
+            g.round().clamp(0.0, 255.0) as u8,
+            b.round().clamp(0.0, 255.0) as u8,
+        )));
 
-        match self.rgb.mode() {
-            Mode::Spring => {
-                let [r, g, b] = self
-                    .rgb
-                    .at(now)
-                    .map(|channel| channel.round().clamp(0.0, 255.0) as u8);
-
-                Color::rgb(r, g, b)
-            }
-            Mode::Reduced => mix(self.from, self.to, self.rgb.progress(now)),
-        }
+        mix(
+            theme::island().on_surface,
+            accent,
+            (vivid / 255.0).clamp(0.0, 1.0),
+        )
     }
 
     pub fn settled(&self, now: Instant) -> bool {
-        self.rgb.settled(now)
+        self.value.settled(now)
+    }
+
+    fn value_at(&self, now: Instant) -> [f32; 4] {
+        if self.value.settled(now) {
+            return self.to;
+        }
+
+        match self.value.mode() {
+            Mode::Spring => self.value.at(now),
+            Mode::Reduced => {
+                let progress = self.value.progress(now);
+
+                std::array::from_fn(|i| self.from[i] + (self.to[i] - self.from[i]) * progress)
+            }
+        }
     }
 }
 
-fn rgb(color: Color) -> [f32; 3] {
-    channels(color).map(|channel| channel * 255.0)
+// none keeps the color it had, so fading to neutral does not drift through another hue
+fn target(color: Option<Color>, before: Option<[f32; 4]>) -> [f32; 4] {
+    match (color, before) {
+        (Some(color), _) => {
+            let [r, g, b] = channels(color).map(|channel| channel * 255.0);
+
+            [r, g, b, 255.0]
+        }
+        (None, Some([r, g, b, _])) => [r, g, b, 0.0],
+        (None, None) => [128.0, 128.0, 128.0, 0.0],
+    }
 }
 
 /*
@@ -215,18 +243,26 @@ pub fn choices(open: impl IntoIterator<Item = (String, String)>) -> Vec<Choice> 
         .collect()
 }
 
-/*
- * the most vivid of the artwork's colors, lightened until it stands out from the bar's track; none
- * when the artwork is grey, so the Surface keeps its neutral foreground
- */
+// the most vivid of the artwork's colors; none when the artwork is grey, so the Surface keeps its
+// neutral foreground
 pub fn accent(colors: &[Color]) -> Option<Color> {
-    let vivid = colors
+    colors
         .iter()
         .copied()
         .max_by(|a, b| saturation(*a).total_cmp(&saturation(*b)))
-        .filter(|&color| saturation(color) >= VIVID)?;
+        .filter(|&color| saturation(color) >= VIVID)
+}
 
-    (0..=10)
-        .map(|step| mix(vivid, theme::island().on_surface, step as f32 / 10.0))
-        .find(|&color| contrast(color, theme::island().track()) >= CONTRAST)
+// an accent lightened until it stands out from the island's bar track, as the finish has it now;
+// the neutral foreground for none, or for one no lightening gets there
+pub fn fit(accent: Option<Color>) -> Color {
+    let island = theme::island();
+
+    accent
+        .and_then(|vivid| {
+            (0..=10)
+                .map(|step| mix(vivid, island.on_surface, step as f32 / 10.0))
+                .find(|&color| contrast(color, island.track()) >= CONTRAST)
+        })
+        .unwrap_or(island.on_surface)
 }

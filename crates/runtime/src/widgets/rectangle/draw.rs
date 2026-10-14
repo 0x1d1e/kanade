@@ -66,7 +66,13 @@ fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: f32
     }
 
     if let Some(shader) = &rectangle.shader {
-        renderer.shader(area, shader, radius, &rectangle.shader_values);
+        renderer.shader(
+            area,
+            shader,
+            radius,
+            &rectangle.shader_values,
+            rectangle.backdrop.as_ref(),
+        );
 
         // the shader's time moves on, so the window keeps drawing new frames
         if reads_time(shader) {

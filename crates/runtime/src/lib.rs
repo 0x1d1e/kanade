@@ -26,6 +26,7 @@ mod wayland;
 mod widgets;
 mod window;
 
+pub mod backdrop;
 pub mod idle;
 pub mod queue;
 pub mod service;

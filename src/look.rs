@@ -51,6 +51,9 @@ choice! {
 
         // opaque and light, tinted toward the wallpaper's hue, with dark ink (ADR 0051)
         Paper = "paper",
+
+        // clear glass over the screen, its edge reflecting what lies around it, light text (ADR 0052)
+        LiquidGlass = "liquid-glass",
     }
 }
 

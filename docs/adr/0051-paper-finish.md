@@ -1,6 +1,6 @@
 # 51. Paper, a second finish
 
-Status: accepted. Amends ADR 0050: the tinted solid stays the default and the Pane's one look is now `appearance.finish`. ADR 0049 (no capture, no blur) stands.
+Status: accepted. Amends ADR 0050: the tinted solid stays the default and the Pane's one look is now `appearance.finish`. ADR 0049 (no capture, no blur) stands for these two finishes; ADR 0052 adds a third that captures.
 
 ## Context
 
@@ -18,5 +18,5 @@ ADR 0050 gave the shell one look, a dark tinted solid. A shell on a light deskto
 ## Consequences
 
 - A second ramp is built with the first from each Matugen run (`Palettes::paper`), at no extra process or frame; a finish change redraws every window that reads the config.
-- Values computed once from the finish stay as they were until their source updates: a Media track's accent and a tray item's symbolic icon, which `sources::icons::lit` only lightens (a light symbolic icon can vanish on paper). They follow on the next track or tray refresh.
-- Next finishes (a bezel, say) are new `Finish` values with a ramp or shader values, not a new setting.
+- A Media track's accent and a tray item's symbolic icon are fitted to the finish when drawn (`playback::fit`, `icons::inked`), not when read, so a switch recolors them at once (ADR 0052).
+- Next finishes are new `Finish` values with a ramp or shader values, not a new setting: ADR 0052 is the first.

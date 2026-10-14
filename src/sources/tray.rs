@@ -919,8 +919,7 @@ fn read(connection: &Connection, address: &Address) -> Outcome {
             let file = icons::find(
                 &described.picture.name,
                 described.themes.as_deref().map(Path::new),
-            )
-            .map(icons::lit);
+            );
 
             Outcome::Read(owner, described, file)
         }

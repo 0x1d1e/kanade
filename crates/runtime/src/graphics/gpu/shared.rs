@@ -9,6 +9,7 @@ use vello::wgpu::{
 };
 use vello::{AaSupport, RendererOptions};
 
+use super::backdrops::Backdrops;
 use super::wait::wait;
 
 /*
@@ -25,6 +26,9 @@ pub struct Shared {
 
     // how many times vello dropped its image atlas, which every window's images were in
     pub atlas_drops: Rc<Cell<u64>>,
+
+    // the textures of the panes' backdrops, which every window's shaders read
+    pub backdrops: Rc<RefCell<Backdrops>>,
 }
 
 // every window draws on the main thread, so thread locals are enough
@@ -98,11 +102,14 @@ fn open(surface: &Surface) -> Shared {
 
     let vello = vello::Renderer::new(&device, vello_options).expect("failed to start vello");
 
+    let backdrops = Rc::new(RefCell::new(Backdrops::new(&device, &queue)));
+
     Shared {
         adapter,
         device,
         queue,
         vello: Rc::new(RefCell::new(vello)),
         atlas_drops: Rc::new(Cell::new(0)),
+        backdrops,
     }
 }

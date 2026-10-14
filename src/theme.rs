@@ -58,7 +58,7 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
 // the colors that mean something on the Island: the bright ones on a dark finish, the darker hues on paper
 pub fn signals() -> SemanticColors {
     match finish() {
-        Finish::TintedSolid => SEMANTIC,
+        Finish::TintedSolid | Finish::LiquidGlass => SEMANTIC,
         Finish::Paper => SIGNALS_LIGHT,
     }
 }
@@ -164,6 +164,10 @@ pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
 pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
 
 // the ring of a pinned Island on the tinted ramp: white, so it reads on every hue (ADR 0050)
+// the glass finish's containers: light veils over the glass, not solid fills (`tint::clear`)
+const GLASS_CONTAINER: Color = Color::rgba(255, 255, 255, 28);
+const GLASS_CONTAINER_HIGH: Color = Color::rgba(255, 255, 255, 48);
+
 pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
 
 /*
@@ -181,14 +185,14 @@ pub const PAPER_OUTLINE: Color = Color::rgba(30, 30, 50, 89);
 // the pane's top light edge and rim in the finish
 pub fn pane_edge() -> Color {
     match finish() {
-        Finish::TintedSolid => PANE_EDGE,
+        Finish::TintedSolid | Finish::LiquidGlass => PANE_EDGE,
         Finish::Paper => PAPER_EDGE,
     }
 }
 
 pub fn pane_rim() -> Color {
     match finish() {
-        Finish::TintedSolid => PANE_RIM,
+        Finish::TintedSolid | Finish::LiquidGlass => PANE_RIM,
         Finish::Paper => PAPER_RIM,
     }
 }

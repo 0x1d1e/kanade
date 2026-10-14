@@ -90,6 +90,16 @@ pub fn paper(source: Source) -> ThemeRoles {
     }
 }
 
+// the tinted solid's ramp for glass: its containers are light veils, not solid fills, so a tile on
+// the glass is more glass and shows the page through it
+pub fn clear(roles: ThemeRoles) -> ThemeRoles {
+    ThemeRoles {
+        surface_container: super::GLASS_CONTAINER,
+        surface_container_high: super::GLASS_CONTAINER_HIGH,
+        ..roles
+    }
+}
+
 // a hair lighter than the surface, which the pane's fill is at its top edge
 pub fn lit(surface: Color) -> Color {
     let [lightness, a, b] = oklab(surface);

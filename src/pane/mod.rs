@@ -1,16 +1,35 @@
-//! A pane: the opaque tinted finish the Island's body, the Dock and the Banners are drawn on (ADRs 0050, 0051).
-//! Its shader fills the body's outline, one rounded rect or two united, with the fill a hair
-//! lighter at the top, a top light edge and a rim, and nothing else.
+//! A pane: what the Island's body, the Dock and the Banners are drawn on, as the finish says (ADRs
+//! 0050 to 0052). The solid finishes fill the body's outline, one rounded rect or two united, with
+//! the fill a hair lighter at the top, a top light edge and a rim, and nothing else; Liquid Glass
+//! draws clear glass over the screen, tinted by the light around it (`glass`).
 
 mod body;
+mod capture;
+mod glass;
 mod shader;
 
-pub use self::body::{Body, Join};
+use std::time::Duration;
+
+pub use self::body::{Body, Join, ahead};
+pub use self::capture::{forget, locked, origin, place, shown};
+pub use self::glass::Seen;
 pub use self::shader::shader;
+pub use kanade_runtime::backdrop::Spot;
 
 use kanade_runtime::{Color, Rectangle};
 
+use crate::config;
+use crate::look::Finish;
 use crate::theme;
+
+// how far ahead of its body a pane captures, so the copy fits once it lands as the body morphs:
+// about how long one takes, a couple of frames at 60 Hz
+pub const LEAD: Duration = Duration::from_millis(33);
+
+// whether panes are Liquid Glass now, which is the only finish that captures the screen
+pub fn glass() -> bool {
+    config::get().appearance.finish == Finish::LiquidGlass
+}
 
 // a body's size and shape
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +44,9 @@ pub struct Pane {
      * rect clips it. None for one rounded rect
      */
     pub united: Option<Body>,
+
+    // Liquid Glass only: the copy of the screen around the body, where the runtime has landed one
+    pub backdrop: Option<Seen>,
 }
 
 // the shader's values, by row
@@ -40,6 +62,10 @@ const RIM_ROW: usize = 7;
  * content over it keep their place mid-press or mid-drag
  */
 pub fn layer(pane: Pane) -> Rectangle {
+    if glass() {
+        return glass::layer(pane);
+    }
+
     let mut values = vec![[0.0; 4]; RIM_ROW + 1];
 
     values[0] = [pane.radius, 0.0, 0.0, 0.0];

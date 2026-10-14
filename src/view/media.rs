@@ -14,6 +14,7 @@ use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::motion::Mode;
 use crate::island::presentation::Presentation;
 use crate::look::Visualizer;
+use crate::sources::playback;
 use crate::theme::{self, ThemeRoles};
 
 use super::forms::sized;
@@ -254,11 +255,9 @@ pub(crate) fn disc(track: &Track, side: f32, now: Instant) -> Rectangle {
         .child(art(track, side, side / 2.0))
 }
 
-// the track's accent, or the neutral foreground for grey art and none
+// the track's accent fitted to the island, or the neutral foreground for grey art and none
 pub(crate) fn accent(track: &Track) -> Color {
-    track
-        .accent
-        .map_or(theme::island().on_surface, |(r, g, b)| Color::rgb(r, g, b))
+    playback::fit(track.accent.map(|(r, g, b)| Color::rgb(r, g, b)))
 }
 
 /*

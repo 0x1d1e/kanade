@@ -16,4 +16,6 @@
 - The clipboard history leaves out only a copy its app marks sensitive with `x-kde-passwordManagerHint`, as `wl-copy --sensitive` does. A password copied without it is kept like any other copy until removed or cleared. See [ADR 0019](../adr/0019-clipboard-sensitive-content.md).
 - The privacy cluster's microphone and camera see only capture that goes through PipeWire, using `pw-dump` from the `pipewire` package. An app that opens `/dev/video*` or ALSA directly, like `ffmpeg -f v4l2`, does not show. See [ADR 0003](../adr/0003-privacy-from-pipewire-graph.md).
 
+- The `liquid-glass` finish copies the screen around each pane through niri's `wlr-screencopy`, for each pane's reflective edge, so it costs some GPU and CPU on every frame the screen behind changes. The glass is clear, with no tint or blur, and the edge reflects the screen around the pane rather than bending what lies under it, so text behind a pane shows through it; readability is not a goal of this finish: over a bright page the light text is hard to read. The lock screen stays solid. See [ADR 0052](../adr/0052-liquid-glass-finish.md).
+
 - The Settings window is a normal window, so niri tiles it. To float it, add a niri window rule: `window-rule { match app-id="kanade" title="Kanade Settings"; open-floating true; }`.

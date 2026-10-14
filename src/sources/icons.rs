@@ -112,45 +112,69 @@ fn look(name: &str, own: Option<&Path>) -> Option<PathBuf> {
 }
 
 /*
- * `path` made legible on the dark island: a theme's symbolic svg draws in the text color of its
- * `.ColorScheme-Text` style, near black in a light theme, so that color becomes light. Any other
- * file is as it is.
+ * `path` made legible on the island as its finish makes it: a theme's symbolic svg draws in the
+ * text color of its `.ColorScheme-Text` style, near black in a light theme, so that color becomes
+ * the island's ink when it would vanish on the pane. Any other file is as it is. Asked at draw, so
+ * a finish changed while Kanade runs applies; each file and ink is written once
  */
-pub fn lit(path: PathBuf) -> PathBuf {
+pub fn inked(path: &Path) -> PathBuf {
+    static MADE: LazyLock<Mutex<HashMap<(PathBuf, String), PathBuf>>> =
+        LazyLock::new(Mutex::default);
+
+    let ink = theme::island().on_surface.hex();
+
+    MADE.locked()
+        .entry((path.to_path_buf(), ink.clone()))
+        .or_insert_with(|| ink_file(path, &ink))
+        .clone()
+}
+
+fn ink_file(path: &Path, ink: &str) -> PathBuf {
     let is_svg = path.extension().is_some_and(|extension| extension == "svg");
 
-    if !is_svg || fs::metadata(&path).map_or(true, |meta| meta.len() > SVG_MOST) {
-        return path;
+    if !is_svg || fs::metadata(path).map_or(true, |meta| meta.len() > SVG_MOST) {
+        return path.to_path_buf();
     }
 
-    match fs::read_to_string(&path)
+    match fs::read_to_string(path)
         .ok()
-        .and_then(|svg| lighten(&svg, &theme::island().on_surface.hex()))
+        .and_then(|svg| inked_svg(&svg, ink))
     {
         Some(svg) => raster::write("tray", "svg", svg.as_bytes()),
-        None => path,
+        None => path.to_path_buf(),
     }
 }
 
-// the most bytes an svg is read from to be lightened
+// the most bytes an svg is read from to be inked
 const SVG_MOST: u64 = 1 << 20;
 
-// `svg` with a dark `.ColorScheme-Text` color made `ink`; none when it has none or is light
-fn lighten(svg: &str, ink: &str) -> Option<String> {
+// whether a color's channels sum to more than a mid grey's
+fn light(red: u8, green: u8, blue: u8) -> bool {
+    u32::from(red) + u32::from(green) + u32::from(blue) > 3 * 128
+}
+
+// `svg` with a `.ColorScheme-Text` color that would vanish on a pane with `ink` made `ink`; none when it has none or is fine
+fn inked_svg(svg: &str, ink: &str) -> Option<String> {
     let style = svg.find(".ColorScheme-Text")?;
     let value = style + svg[style..].find("color:")? + "color:".len();
     let end = value + svg[value..].find([';', '}'])?;
-    let dark = svg[value..end].trim().strip_prefix('#')?;
+    let current = svg[value..end].trim().strip_prefix('#')?;
 
-    if dark.len() != 6 {
-        return None;
-    }
+    let channels = |hex: &str| -> Option<(u8, u8, u8)> {
+        if hex.len() != 6 {
+            return None;
+        }
 
-    let [red, green, blue] = [0, 2, 4].map(|at| u8::from_str_radix(&dark[at..at + 2], 16));
-    let (red, green, blue) = (red.ok()?, green.ok()?, blue.ok()?);
+        let [red, green, blue] = [0, 2, 4].map(|at| u8::from_str_radix(&hex[at..at + 2], 16));
 
-    // dark enough to vanish on black
-    if u32::from(red) + u32::from(green) + u32::from(blue) > 3 * 128 {
+        Some((red.ok()?, green.ok()?, blue.ok()?))
+    };
+
+    let (red, green, blue) = channels(current)?;
+    let (ink_red, ink_green, ink_blue) = channels(ink.strip_prefix('#')?)?;
+
+    // as light as the ink already: it stands out from the pane as the ink does
+    if light(red, green, blue) == light(ink_red, ink_green, ink_blue) {
         return None;
     }
 
@@ -344,16 +368,25 @@ fn data_dirs() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::lighten;
+    use super::inked_svg;
 
     const DARK: &str = "<style>.ColorScheme-Text { color:#232629; }</style><path/>";
 
     #[test]
-    fn a_dark_symbolic_color_becomes_light_and_a_light_one_stays() {
-        let lit = lighten(DARK, "#f2f2f2").unwrap();
+    fn a_symbolic_color_that_would_vanish_takes_the_ink_and_one_that_stands_out_stays() {
+        let on_dark = inked_svg(DARK, "#f2f2f2").unwrap();
 
-        assert!(lit.contains("color:#f2f2f2;") && lit.ends_with("<path/>"));
-        assert_eq!(lighten(&DARK.replace("232629", "dfdfdf"), "#f2f2f2"), None);
-        assert_eq!(lighten("<path fill=\"#000\"/>", "#f2f2f2"), None);
+        assert!(on_dark.contains("color:#f2f2f2;") && on_dark.ends_with("<path/>"));
+        assert_eq!(
+            inked_svg(&DARK.replace("232629", "dfdfdf"), "#f2f2f2"),
+            None
+        );
+        assert_eq!(inked_svg("<path fill=\"#000\"/>", "#f2f2f2"), None);
+
+        // on a light pane, the light color is the one that vanishes
+        let on_light = inked_svg(&DARK.replace("232629", "dfdfdf"), "#1a1c1e").unwrap();
+
+        assert!(on_light.contains("color:#1a1c1e;"));
+        assert_eq!(inked_svg(DARK, "#1a1c1e"), None);
     }
 }

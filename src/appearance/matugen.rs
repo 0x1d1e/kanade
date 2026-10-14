@@ -127,8 +127,10 @@ pub fn island_roles(finish: Finish) -> ThemeRoles {
 
     match (Generated::read().palettes, finish) {
         (Some(palettes), Finish::TintedSolid) => palettes.island,
+        (Some(palettes), Finish::LiquidGlass) => tint::clear(palettes.island),
         (Some(palettes), Finish::Paper) => palettes.paper,
         (None, Finish::TintedSolid) => SLATE[0],
+        (None, Finish::LiquidGlass) => tint::clear(SLATE[0]),
         (None, Finish::Paper) => SLATE[1],
     }
 }

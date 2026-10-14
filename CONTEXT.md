@@ -143,9 +143,9 @@ Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pin
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text) or paper (light, dark ink) (ADR 0051). A merged Island and Dock are one pane with one outline (ADR 0031).
-- **Invariant:** always opaque and tinted from the wallpaper's hue (a cool slate until Matugen answers), with text that suits its finish, whatever `appearance.tone` says; nothing behind it is read.
-- **Avoid:** glass, frost, material (the choice is the finish), layer (a `pane::layer` widget), surface (a Surface is the Island's)
+One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text), paper (light, dark ink) (ADR 0051) or Liquid Glass (clear glass, the screen showing through, its edge reflecting what lies around it, light text) (ADR 0052). A merged Island and Dock are one pane with one outline (ADR 0031).
+- **Invariant:** tinted from the wallpaper's hue (a cool slate until Matugen answers), with text that suits its finish, whatever `appearance.tone` says; opaque, and nothing behind it read, except under Liquid Glass, the only finish that captures the screen, which stops when the finish changes or the session locks.
+- **Avoid:** frost, material (the choice is the finish), glass for anything but the Liquid Glass finish, layer (a `pane::layer` widget), surface (a Surface is the Island's)
 
 ## Idle stage
 What the `idle` Module does after the user has been idle for so long (ADR 0047): `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`, each optional. The Dim grace comes first: a click-through Overlay layer on every output fading toward dark until the lock, taken away at once by any input.

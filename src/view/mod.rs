@@ -2,6 +2,7 @@
 //! (in the modules below), the Satellites, the cluster and the Dock merged into it.
 
 use std::collections::HashMap;
+use std::iter;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
@@ -72,6 +73,9 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
     }
 }
 
+// the Island's pane name for backdrop capture
+const ISLAND: &str = "island";
+
 // where each output's body last stood on it, and the output's size, in logical pixels
 struct Placed {
     body: (f32, f32),
@@ -83,7 +87,7 @@ static PLACED: LazyLock<Mutex<HashMap<String, Placed>>> = LazyLock::new(Mutex::d
 // as drawn: the body's corner on the output, from the window's corner there and the body in it
 fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
     let screen = (monitor.width, monitor.height);
-    let corner = canvas_origin(anchor, (window.0.round(), window.1.round()), screen);
+    let corner = pane::origin(anchor, (window.0.round(), window.1.round()), screen);
     let placed = Placed {
         body: (corner.0 + body.x, corner.1 + body.y),
         screen: (screen.0 as f32, screen.1 as f32),
@@ -97,25 +101,6 @@ fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
             all.insert(monitor.name.clone(), placed);
         }
     }
-}
-
-// the canvas's top left corner on its output, anchored as the window is
-fn canvas_origin(anchor: Anchor, canvas: (f32, f32), screen: (u32, u32)) -> (f32, f32) {
-    let (screen_width, screen_height) = (screen.0 as f32, screen.1 as f32);
-
-    let x = match anchor.horizontal() {
-        Horizontal::Left => 0.0,
-        Horizontal::Middle => ((screen_width - canvas.0) / 2.0).floor(),
-        Horizontal::Right => screen_width - canvas.0,
-    };
-
-    let y = match anchor.vertical() {
-        Vertical::Top => 0.0,
-        Vertical::Middle => ((screen_height - canvas.1) / 2.0).floor(),
-        Vertical::Bottom => screen_height - canvas.1,
-    };
-
-    (x, y)
 }
 
 /*
@@ -331,13 +316,37 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let plate = scene.plate();
     let pane_body = scene.pane(pose);
 
+    let spot = pane::Spot::new(&monitor.name, ISLAND);
+    let captured = capture(&island, &monitor.name, stand, &scene, pane_body, now);
+
+    // hidden past its edge, it captures nothing there
+    let merged_dock_visible = shell
+        .as_ref()
+        .zip(laid.as_ref())
+        .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
+    let captured = pane::place(
+        monitor,
+        ISLAND,
+        place.anchor,
+        scene.window(),
+        capture_visible(out, sliding, merged_dock_visible, covered, raised).then_some(captured),
+    );
+
+    let backdrop = pane::shown(&spot);
+
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
 
     // a layer that is not there takes its place all the same, so the targets after keep theirs
     let nothing = || Box::new(Rectangle::new().width(0.0).height(0.0)) as Box<dyn Widget>;
 
-    match body_pane(pane_body, body_rect, shape.radius, plate.is_some()) {
+    match body_pane(
+        pane_body,
+        body_rect,
+        shape.radius,
+        backdrop,
+        plate.is_some(),
+    ) {
         Pane::United(united) => {
             pane = Some(united);
             layers.push(nothing());
@@ -371,7 +380,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let (hover, track) = hover_target(&monitor.name, area, room, hang, canvas, peeks);
 
-    let shadow = shadows(body_rect, shape.radius, plate, origin, out);
+    let shadow = shadows(body_rect, shape.radius, plate, origin, captured, out);
 
     // fading as the body slides out of the way, so it never pops at the edge
     let mut under: Vec<Box<dyn Widget>> = vec![Box::new(
@@ -592,8 +601,9 @@ fn marks(cluster: Option<Cluster>, body: Rect, sideways: bool) -> Option<Box<dyn
 }
 
 /*
- * A body hidden past its edge casts no shadow, where it would still reach onto the screen. Cast
- * or not, it takes as many layers, so the body's buttons and sliders keep their place among targets
+ * A captured Liquid Glass pane casts no shadow: it would darken the colors sampled around it. Nor
+ * does a body hidden past its edge, where the shadow would still reach onto the screen. Cast or
+ * not, it takes as many layers, so the body's buttons and sliders keep their place among targets
  * mid-press or mid-drag; a merged Dock's plate is cast in this canvas's coordinates.
  */
 fn shadows(
@@ -601,27 +611,66 @@ fn shadows(
     radius: f32,
     plate: Option<merge::Plate>,
     origin: (f32, f32),
+    captured: bool,
     out: f32,
 ) -> Vec<Box<dyn Widget>> {
     let mut shadow = Vec::new();
 
-    if out > 0.0 {
+    if !captured && out > 0.0 {
         shadow::draw(&mut shadow, body, radius);
     } else {
         shadow::none(&mut shadow);
     }
 
     if let Some(plate) = plate {
-        let rect = Rect {
-            x: plate.rect.x - origin.0,
-            y: plate.rect.y - origin.1,
-            ..plate.rect
-        };
+        if captured {
+            shadow::none(&mut shadow);
+        } else {
+            let rect = Rect {
+                x: plate.rect.x - origin.0,
+                y: plate.rect.y - origin.1,
+                ..plate.rect
+            };
 
-        shadow::draw(&mut shadow, rect, plate.radius);
+            shadow::draw(&mut shadow, rect, plate.radius);
+        }
     }
 
     shadow
+}
+
+fn capture_visible(
+    out: f32,
+    sliding: bool,
+    merged_dock_visible: bool,
+    covered: bool,
+    raised: bool,
+) -> bool {
+    (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised)
+}
+
+/*
+ * captured out to everywhere the body goes until its rim is shown, so it fits as the body
+ * grows, and never samples the Island where the spring overshoots on the way; and to where it
+ * was a quarter of that before, as the screen it is captured from lags this frame
+ */
+fn capture(
+    island: &IslandService,
+    monitor: &str,
+    stand: Stand,
+    scene: &Scene,
+    body: pane::Body,
+    now: Instant,
+) -> pane::Body {
+    let since = now.checked_sub(pane::LEAD / 4).unwrap_or(now);
+
+    iter::once(since)
+        .chain((1..=4).map(|step| now + pane::LEAD * step / 4))
+        .fold(body, |captured, at| {
+            let ahead = stand.pose(island.shape(monitor, at), autohide::at(monitor, at));
+
+            pane::ahead(captured, scene.pane(ahead))
+        })
 }
 
 // the pane under the Island's body
@@ -637,13 +686,20 @@ enum Pane {
  * merged, one pane under both the Island's body and the Dock's plate, in the window's
  * coordinates, which cuts its fill to the two united; the body then has none of its own
  */
-fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pane {
+fn body_pane(
+    pane_body: pane::Body,
+    body: Rect,
+    radius: f32,
+    backdrop: Option<pane::Seen>,
+    merged: bool,
+) -> Pane {
     if !merged {
         return Pane::Under(Box::new(pane::layer(pane::Pane {
             width: body.width,
             height: body.height,
             radius,
             united: None,
+            backdrop,
         })));
     }
 
@@ -660,6 +716,7 @@ fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pa
                 height,
                 radius,
                 united: Some(scene::within(pane_body, (x, y))),
+                backdrop,
             })),
     ))
 }
