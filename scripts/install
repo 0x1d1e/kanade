@@ -1,7 +1,7 @@
 #!/bin/sh
 # installs Kanade: the binary, the systemd user unit, the icon, and on a fresh TTY install the
 # desktop pieces and a default niri config. Run again to update. The unit is Kanade's own and is
-# replaced (the old one kept as kanade.service.bak); change it with
+# replaced (the old one kept as kanade.service.bak.DATE); change it with
 # `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --shell-only
@@ -16,7 +16,8 @@ repo=https://github.com/0x1d1e/kanade
 # everything is in main, so the shell has read the whole script before anything runs: a piped
 # script's stdin is then free for sudo and pacman's questions
 main() {
-    if [ ! -t 0 ]; then
+    # piped from curl, stdin is the script's; sudo, pacman and the uninstall question read the terminal
+    if [ ! -t 0 ] && [ ! -f "$0" ]; then
         if ! (: < /dev/tty) 2> /dev/null; then
             echo "failed to find a terminal for sudo and pacman, run this from a shell" >&2
             exit 1
@@ -42,12 +43,30 @@ main() {
     root="$HOME/.cargo"
 
     if [ "$uninstall" = 1 ]; then
+        # niri's binds spawn kanade, the lock one included; without it they do nothing
+        if grep -Eqs 'spawn[^/]*"kanade[ "]' "$config/niri/config.kdl"; then
+            echo "warning: $config/niri/config.kdl still runs kanade, so its binds, locking included, stop working" >&2
+            printf "remove Kanade anyway? [y/N] " >&2
+            read -r answer || answer=n
+            case "$answer" in
+                [yY]*) ;;
+                *) echo "kept Kanade; point those binds at another program first" >&2; exit 1 ;;
+            esac
+        fi
+        # first, so a failure leaves the unit and the binary as they were; a binary that is not there
+        # has nothing to fail on
+        if [ -e "$root/bin/kanade" ]; then
+            if ! command -v cargo > /dev/null; then
+                echo "failed to find cargo to uninstall $root/bin/kanade, remove it yourself" >&2
+                exit 1
+            fi
+            cargo uninstall --root "$root" kanade
+        fi
         systemctl --user disable --now kanade.service || true
-        rm -f "$config/systemd/user/kanade.service" "$config/systemd/user/kanade.service.bak" \
+        rm -f "$config/systemd/user/kanade.service" "$config/systemd/user/kanade.service".bak* \
             "$data/icons/hicolor/256x256/apps/kanade.png"
         rm -rf "$data/kanade/src"
         systemctl --user daemon-reload
-        cargo uninstall --root "$root" kanade || true
         echo "removed Kanade; kept your configs, niri's kanade.kdl include and the packages"
         exit 0
     fi
@@ -94,7 +113,7 @@ main() {
     # shellcheck disable=SC2086 # the list is split on purpose
     sudo pacman -S --needed $packages
     if [ "$optional" = 1 ]; then
-        sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct glib2 dconf wlsunset \
+        sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf wlsunset \
             xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
         # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
         # replaces whatever manages the network now
@@ -120,8 +139,9 @@ main() {
     # the old unit is kept when it differs, so a hand edit is not lost
     unit="$config/systemd/user/kanade.service"
     if [ -e "$unit" ] && ! cmp -s dist/kanade.service "$unit"; then
-        cp "$unit" "$unit.bak"
-        echo "replaced $unit, the old one is $unit.bak; customize with: systemctl --user edit kanade.service"
+        backup="$unit.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$unit" "$backup"
+        echo "replaced $unit, the old one is $backup; customize with: systemctl --user edit kanade.service"
     fi
     install -Dm644 dist/kanade.service "$unit"
     install -Dm644 dist/kanade.png "$data/icons/hicolor/256x256/apps/kanade.png"
