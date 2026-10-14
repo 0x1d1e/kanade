@@ -1,0 +1,73 @@
+#!/bin/sh
+# installs Kanade from this checkout: system libraries, the binary, the systemd user unit, the icon,
+# and a default niri config when there is none. Run again to update; nothing of yours is overwritten.
+#   scripts/install [--optional]    --optional also installs the packages of the optional features
+set -eu
+
+optional=0
+for arg in "$@"; do
+    case "$arg" in
+        --optional) optional=1 ;;
+        *) echo "usage: scripts/install [--optional]" >&2; exit 2 ;;
+    esac
+done
+
+# checked first, so nothing is installed when the build can't run anyway
+if ! command -v cargo > /dev/null; then
+    echo "failed to find cargo, install rust from https://rustup.rs and run this again" >&2
+    exit 1
+fi
+
+# the libraries and tools come from docs/wiki/Installation.md
+if ! command -v pacman > /dev/null; then
+    echo "failed to find pacman, Kanade installs on Arch Linux and derivatives only" >&2
+    exit 1
+fi
+sudo pacman -S --needed niri base-devel pkgconf wayland libxkbcommon fontconfig freetype2 \
+    expat vulkan-icd-loader libpulse pam pipewire systemd dbus util-linux
+if [ "$optional" = 1 ]; then
+    sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf \
+        wlsunset gnome-keyring xdg-utils xdg-terminal-exec
+fi
+
+# the script can be run from any folder, the checkout is above it
+cd "$(dirname "$0")/.."
+
+cargo install --locked --path .
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}"
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+
+# the unit runs ~/.cargo/bin/kanade, where cargo install puts it
+install -Dm644 dist/kanade.service "$config/systemd/user/kanade.service"
+install -Dm644 dist/kanade.png "$data/icons/hicolor/256x256/apps/kanade.png"
+
+# a config of yours is never replaced; Kanade's binds are in docs/wiki/Keyboard.md
+if [ -e "$config/niri/config.kdl" ]; then
+    echo "kept $config/niri/config.kdl, dist/niri/config.kdl is the default"
+    echo "  add this as its last line for appearance.sync: include optional=true \"kanade.kdl\""
+else
+    install -Dm644 dist/niri/config.kdl "$config/niri/config.kdl"
+    echo "installed $config/niri/config.kdl"
+fi
+
+systemctl --user daemon-reload
+systemctl --user enable kanade.service
+
+# the unit needs niri's graphical session; outside it, it starts with the next login
+if systemctl --user is-active --quiet graphical-session.target; then
+    systemctl --user restart kanade.service
+else
+    echo "not in a graphical session, Kanade starts with niri at the next login"
+fi
+
+# only one notification daemon can own the bus name, so the other one has to go
+if command -v busctl > /dev/null; then
+    owner=$(busctl --user status org.freedesktop.Notifications 2> /dev/null | sed -n 's/^Comm=//p')
+    if [ -n "$owner" ] && [ "$owner" != "kanade" ]; then
+        echo "warning: $owner is the notification daemon, stop it and keep it from starting" >&2
+        echo "  (systemctl --user disable --now $owner, spawn-at-startup in niri's config)" >&2
+    fi
+fi
+
+echo "done, 'kanade doctor' checks the setup"

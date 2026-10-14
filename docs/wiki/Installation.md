@@ -2,6 +2,8 @@
 
 ## Install
 
+`scripts/install` does all of this on Arch Linux and derivatives: libraries, build, unit, icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. `--optional` adds the optional packages. The steps below are what it runs.
+
 Kanade needs:
 
 - niri, which it talks to over `$NIRI_SOCKET`.
