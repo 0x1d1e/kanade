@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Align, Button, Center, Color, Column, Cursor, End, Gradient, Padding, Parent, Rectangle, Row,
-    ScrollArea, Size, SpaceBetween, Start, Text, TextInput, Widget, Window, children,
+    Align, Button, Center, Color, Column, Cursor, End, Gradient, Image, Padding, Parent, Rectangle,
+    Row, ScrollArea, Size, SpaceBetween, Start, Text, TextInput, Widget, Window, children,
 };
 use toml::Value;
 
@@ -17,6 +17,7 @@ use crate::config::{self, Choices, DayTime, Kind, Location, Setting};
 use crate::icon::Icon;
 use crate::look::{Along, Edge, ShellMode};
 use crate::modules::{self, CORE, Module};
+use crate::sources::icons;
 use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
 
@@ -176,14 +177,18 @@ fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 fn brand(roles: &ThemeRoles) -> Row {
     const MARK: f32 = 30.0;
 
-    Row::new(children![
-        Rectangle::new()
-            .width(MARK)
-            .height(MARK)
-            .radius(9.0)
+    // Kanade's icon, else the gradient and Island mark while it is not installed
+    let mark = Rectangle::new().width(MARK).height(MARK).radius(9.0);
+    let mark = match icons::own_icon() {
+        Some(path) => mark.fill(Image::contain(path).thumbnail(MARK as u32 * 2, MARK as u32 * 2)),
+        None => mark
             .fill(backdrop())
             .align_child(Center, Center)
             .child(Icon::Island.on(16.0, theme::ON_SCENE)),
+    };
+
+    Row::new(children![
+        mark,
         Column::new(children![
             Text::new("kanade")
                 .size(theme::text::BODY)
@@ -1813,7 +1818,7 @@ fn owner(key: &str) -> Option<&'static Module> {
         .find(|module| module.settings.iter().any(|setting| setting.key == key))
 }
 
-// the gradient of Settings' mark
+// the gradient of Settings' mark without Kanade's icon
 fn backdrop() -> Gradient {
     let [from, middle, to] = theme::SCENE;
 
