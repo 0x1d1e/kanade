@@ -35,6 +35,15 @@ This puts `kanade` in `~/.cargo/bin`.
 
 Kanade must be the only notification daemon. Stop mako, dunst or any other one and keep it from starting again, for example `systemctl --user disable --now mako` and removing it from niri's `spawn-at-startup`. Otherwise the Notifications Surface says which daemon has the bus name, and no notification reaches the island until it is stopped and Kanade restarted.
 
+To keep the wallpaper in niri's overview, add a layer rule to your niri config, which Kanade never edits. awww draws on a Background layer named `awww-daemon`, and niri shows such a layer in the overview and between workspaces only with `place-within-backdrop` (niri 25.05 or later); without it the overview shows niri's background color. The default config from the installer has a rule for every layer. `kanade doctor` warns while the `wallpaper` Module is on and no rule places `awww-daemon` there; it reads `$NIRI_CONFIG`, else `config.kdl` in niri's config directory, and the files it includes. A pattern it cannot read as plain text counts as matching, so it never warns wrongly.
+
+```kdl
+layer-rule {
+    match namespace="^awww-daemon"
+    place-within-backdrop true
+}
+```
+
 Only one Kanade runs per session. A second one stops at start with `failed to listen: kanade is already running`.
 
 ## Run

@@ -143,7 +143,6 @@ Not worth changing, by this review:
 
 - No screen reader support (AT-SPI tree); an architecture change, see `docs/wiki/Limitations.md`.
 - No UI text scale setting; type sizes are fixed tokens.
-- The lock screen shows no Caps Lock hint.
 - The Session Surface treats Lock and the counted-down Restart, Power off and Log out alike in weight; the countdown with Cancel is the guard.
 - ADR numbers skip 0045.
 
