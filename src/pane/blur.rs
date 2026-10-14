@@ -129,12 +129,15 @@ fn spans(outline: &Outline, left: i32, right: i32, y: f32) -> Vec<(i32, i32)> {
 struct Outline {
     first: Rect,
     second: Option<(Rect, f32)>,
+
+    // the exponent of the corners' norm: a squircle's where the shader draws one, else a circle's
+    corner: f32,
 }
 
 // center, half size and radius
 type Rect = ((f32, f32), (f32, f32), f32);
 
-// how squarely a corner is drawn, as in `pane.wgsl`
+// how squarely `pane.wgsl` draws a corner, 2 being a circle's arc
 const SQUIRCLE: f32 = 4.0;
 
 impl Outline {
@@ -148,6 +151,11 @@ impl Outline {
         };
 
         Self {
+            /*
+             * a body alone is clipped to a circle's corners by its window's widget, which cuts the
+             * squircle's fuller ones; two united bodies are drawn, unclipped, as the shader says
+             */
+            corner: if body.join.is_some() { SQUIRCLE } else { 2.0 },
             first: rect(body.x, body.y, body.width, body.height, body.radius),
             second: body.join.map(|join| {
                 (
@@ -160,22 +168,22 @@ impl Outline {
 
     // `pane.wgsl`'s `outline`: negative inside
     fn distance(&self, x: f32, y: f32) -> f32 {
-        let a = rounded(x, y, self.first);
+        let a = rounded(x, y, self.first, self.corner);
 
         match self.second {
-            Some((second, blend)) => united(a, rounded(x, y, second), blend),
+            Some((second, blend)) => united(a, rounded(x, y, second, self.corner), blend),
             None => a,
         }
     }
 }
 
 // `pane.wgsl`'s `rounded`
-fn rounded(x: f32, y: f32, ((cx, cy), (half_x, half_y), r): Rect) -> f32 {
+fn rounded(x: f32, y: f32, ((cx, cy), (half_x, half_y), r): Rect, corner: f32) -> f32 {
     let (qx, qy) = ((x - cx).abs() - half_x + r, (y - cy).abs() - half_y + r);
     let (outer_x, outer_y) = (qx.max(0.0), qy.max(0.0));
 
     let t = ((r / half_x.min(half_y).max(1e-4) - 0.6) / 0.4).clamp(0.0, 1.0);
-    let n = SQUIRCLE + (2.0 - SQUIRCLE) * t * t * (3.0 - 2.0 * t);
+    let n = corner + (2.0 - corner) * t * t * (3.0 - 2.0 * t);
     let norm = (outer_x.powf(n) + outer_y.powf(n)).powf(1.0 / n);
 
     norm + qx.max(qy).min(0.0) - r
