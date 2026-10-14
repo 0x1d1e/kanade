@@ -19,7 +19,7 @@ use crate::bus::{Argument, Bus};
 use crate::cli::{self, Reply};
 use crate::config::{self, Config};
 use crate::lock;
-use crate::look::Visualizer;
+use crate::look::{Finish, Visualizer};
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
 use crate::sources::{binds, bus, cava, clipboard, keys, niri, pipewire, radios, sound, wallpaper};
@@ -95,11 +95,14 @@ pub fn run() -> ExitCode {
         niri(),
     ];
 
-    checks.extend(wayland::check());
+    let blur = config.appearance.finish == Finish::Blur;
+
+    checks.extend(wayland::check(blur));
     checks.extend(sockets());
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
     checks.extend(backdrop(&config));
+    checks.extend(blur.then(blur_check).flatten());
     checks.extend(sounds(&config));
 
     let report: String = checks
@@ -655,6 +658,44 @@ fn backdrop_check(found: Result<bool, binds::Unread>) -> Check {
             unread.why
         )),
     }
+}
+
+// the layers whose panes blur behind them under the finish `blur`
+const BLURRED: [&str; 3] = ["kanade", "kanade-dock", "kanade-banners"];
+
+/*
+ * whether niri blurs the windows behind Kanade's panes, not only the wallpaper: it blurs what a
+ * layer asks for xray, the wallpaper alone, unless a layer rule in the config Kanade never edits
+ * sets `background-effect { xray false }` (ADR 0057). Asked only while the finish is `blur`
+ */
+fn blur_check() -> Option<Check> {
+    let path = binds::config()?;
+    let found = binds::xrayed(&path, &BLURRED, &mut |file| fs::read_to_string(file));
+
+    Some(match found {
+        Ok(xrayed) if xrayed.is_empty() => Check::ok(String::from(
+            "niri: a layer rule blurs the windows behind the panes, not only the wallpaper",
+        )),
+        Ok(xrayed) => Check {
+            detail: vec![
+                String::from("add to niri's config.kdl, see docs/wiki/Installation.md:"),
+                String::from(
+                    "layer-rule { match namespace=\"^kanade(-dock|-banners)?$\"; \
+                     background-effect { xray false; }; }",
+                ),
+            ],
+            ..Check::warn(format!(
+                "niri: no layer rule sets xray false on {}, so the finish blur blurs only the \
+                 wallpaper behind those panes, and windows show through them sharp",
+                xrayed.join(", ")
+            ))
+        },
+        Err(unread) => Check::warn(format!(
+            "niri: cannot tell whether the finish blur blurs the windows behind the panes: {}: {}",
+            unread.file.display(),
+            unread.why
+        )),
+    })
 }
 
 // niri as a Module needs it: reachable, and new enough for what Kanade asks of it

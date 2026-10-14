@@ -54,6 +54,10 @@ choice! {
 
         // clear glass over the screen, its edge reflecting what lies around it, light text (ADR 0052)
         LiquidGlass = "liquid-glass",
+
+        // the tinted solid's ramp, translucent over the compositor's blur of what lies behind it,
+        // the windows too, with light text (ADR 0057)
+        Blur = "blur",
     }
 }
 

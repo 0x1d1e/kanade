@@ -1242,7 +1242,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.finish",
         label: "Finish",
-        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around",
+        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around, or \"blur\", the tinted solid translucent over what the compositor blurs behind it (needs niri 26.04)",
         hint: Some("What the Island, Dock and Banners are made of"),
         kind: Kind::Choice(
             Choices::named(Finish::NAMES),

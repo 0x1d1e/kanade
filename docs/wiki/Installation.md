@@ -45,6 +45,18 @@ layer-rule {
 }
 ```
 
+The `blur` finish (`appearance.finish`) asks niri to blur what lies behind the Island, Dock and Banners, which needs niri 26.04 or later. niri blurs a layer's request as xray, the wallpaper only, so windows behind a pane would show through sharp; a layer rule in your niri config, which Kanade never edits, turns xray off for Kanade's layers. The default config from the installer has it. niri marks non-xray effects experimental and recomputes them whenever what lies behind changes, so they cost more GPU than xray. `kanade doctor` warns while the finish is `blur` and no rule sets `xray false` on `kanade`, `kanade-dock` and `kanade-banners`, and when the compositor has no `ext_background_effect_manager_v1`; it reads the config as it does for the wallpaper rule. niri's own `blur { off }` turns all blur off, this one included.
+
+```kdl
+layer-rule {
+    match namespace="^kanade(-dock|-banners)?$"
+
+    background-effect {
+        xray false
+    }
+}
+```
+
 Only one Kanade runs per session. A second one stops at start with `failed to listen: kanade is already running`.
 
 ## Run
