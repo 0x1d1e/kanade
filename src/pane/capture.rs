@@ -15,8 +15,8 @@ use super::{Body, Spot, glass};
 
 // how far out the edge reads the screen at most, as a share of the output's height (the studio's
 // refraction distance), and the widest a channel of the dispersion stretches it
-const REACH: f32 = 0.05;
-const SPREAD: f32 = 1.14;
+const REACH: f32 = 0.02;
+const SPREAD: f32 = 1.02;
 
 // how much further out than its body a pane's copy reaches, past the edge's widest read
 fn margin(screen: (u32, u32)) -> f32 {

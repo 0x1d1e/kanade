@@ -14,7 +14,7 @@
 //
 // This is the final pass of liquid-glass-studio (src/shaders-wgsl/fragment-main.wgsl) at its default
 // values: the Snell edge profile over 20 px, per-channel dispersion, Fresnel and glare in LCH, no
-// tint, and a refraction distance of 5% of the output's height. A copy of the screen holds the
+// tint, and a refraction distance of 2% of the output's height. A copy of the screen holds the
 // pane itself, so what lies under the body cannot be read: where the studio reads inward, the edge
 // here reads the screen just outside the outline, along the same profile. The middle is not drawn:
 // the compositor shows the screen through it.
@@ -24,7 +24,7 @@ const PI = 3.14159265359;
 // the studio's defaults
 const THICKNESS = 20.0;
 const FACTOR = 1.4;
-const DISPERSION = 7.0;
+const DISPERSION = 1.0;
 const N_R = 0.98;
 const N_B = 1.02;
 const FRESNEL_RANGE = 30.0;
