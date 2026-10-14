@@ -61,6 +61,45 @@ pub fn origin(anchor: Anchor, canvas: (f32, f32), screen: (u32, u32)) -> (f32, f
 }
 
 /*
+ * the rects wholly inside a body's outline, `x` and `y` being its corner in the copy: each of its
+ * rects less what its rounded corners cut off, which is at most 30% of the radius at a corner
+ */
+fn inside(body: Body, x: f32, y: f32) -> Vec<Region> {
+    let rect = |at: (f32, f32), width: f32, height: f32, radius: f32| {
+        let inset = radius.min(width / 2.0).min(height / 2.0) * 0.3 + 1.0;
+
+        Region {
+            x: at.0 + inset,
+            y: at.1 + inset,
+            width: (width - 2.0 * inset).max(0.0),
+            height: (height - 2.0 * inset).max(0.0),
+        }
+    };
+
+    // `body` is placed in its canvas, `x` and `y` is where its bounds start
+    let (bx, by, _, _) = body.bounds();
+    let at = |rx: f32, ry: f32| (x + rx - bx, y + ry - by);
+
+    let mut rects = vec![rect(
+        at(body.x, body.y),
+        body.width,
+        body.height,
+        body.radius,
+    )];
+
+    if let Some(join) = body.join {
+        rects.push(rect(
+            at(join.x, join.y),
+            join.width,
+            join.height,
+            join.radius,
+        ));
+    }
+
+    rects
+}
+
+/*
  * what to copy around a body whose canvas has its corner at `origin` on a screen: its bounds and
  * `margin` around them, within the screen, in whole pixels; none where nothing of it is on the screen
  */
@@ -111,6 +150,18 @@ fn request(
         .collect();
 
     near.sort_by(|a, b| b.0.total_cmp(&a.0));
+    near.truncate(NEAR);
+
+    // what the shader reads none of: the screen inside the body, and the panes it skips
+    let mut unread: Vec<Region> = inside(body, x - left, y - top);
+
+    unread.extend(near.iter().map(|&(_, [x, y, width, height])| Region {
+        x,
+        y,
+        width,
+        height,
+    }));
+
     values.extend(
         near.into_iter()
             .map(|(_, rect)| rect)
@@ -129,6 +180,7 @@ fn request(
             width: width + 2.0 * RING,
             height: height + 2.0 * RING,
         },
+        unread,
         values,
     })
 }
