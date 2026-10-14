@@ -11,6 +11,7 @@ pub mod bus;
 pub mod caffeine;
 pub mod calendar;
 pub mod capture;
+pub mod cava;
 pub mod charge_limit;
 pub mod clipboard;
 pub mod desktop;

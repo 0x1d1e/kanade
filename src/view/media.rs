@@ -14,7 +14,7 @@ use crate::island::fade::{Dissolve, InPlace, swap};
 use crate::island::motion::Mode;
 use crate::island::presentation::Presentation;
 use crate::look::Visualizer;
-use crate::sources::playback;
+use crate::sources::{cava, playback};
 use crate::theme::{self, ThemeRoles};
 
 use super::forms::sized;
@@ -260,14 +260,17 @@ pub(crate) fn accent(track: &Track) -> Color {
     playback::fit(track.accent.map(|(r, g, b)| Color::rgb(r, g, b)))
 }
 
+// how tall the visualizer's row is
+const TALL: f32 = 14.0;
+
 /*
  * what moves beside a playing track, as `media.visualizer` says, in `ink`, the artwork's accent: the
  * motion is drawn, not heard, as the Dynamic Island's. A pause mark while it does not play, and
- * three still bars with `off`, so only a moving one draws frames
+ * three still bars with `off`, so only a moving one draws frames. `audio` draws what cava hears
+ * (`sources/cava.rs`), a frame per answer of its own; until it answers, or where cava is missing,
+ * it draws the synthetic bars
  */
 pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
-    const TALL: f32 = 14.0;
-
     let style = config::get().visualizer;
     if !playing || style == Visualizer::Off {
         let bar = |height: f32| mark(3.0, height, theme::island().on_surface, 1.0);
@@ -279,6 +282,18 @@ pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
 
         return Row::new(bars).height(TALL).gap(2.0).align(End);
     }
+
+    let style = if style == Visualizer::Audio {
+        cava::want();
+
+        if let Some(bars) = cava::bars() {
+            return audio(bars, ink);
+        }
+
+        Visualizer::Bars
+    } else {
+        style
+    };
 
     request_frame();
 
@@ -331,10 +346,24 @@ pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
                 .collect(),
             3.0,
         ),
-        Visualizer::Off => unreachable!("drawn still above"),
+        Visualizer::Audio | Visualizer::Off => unreachable!("drawn still or as bars above"),
     };
 
     Row::new(marks).height(TALL).gap(gap).align(Center)
+}
+
+// the bars cava gave, each up to `TALL`, which draw again when the next ones come
+fn audio(bars: [u8; cava::BARS], ink: Color) -> Row {
+    let marks: Vec<Box<dyn Widget>> = bars
+        .into_iter()
+        .map(|bar| {
+            let height = 3.0 + (TALL - 3.0) * f32::from(bar) / f32::from(cava::PEAK);
+
+            Box::new(mark(3.0, height, ink, 1.0)) as Box<dyn Widget>
+        })
+        .collect();
+
+    Row::new(marks).height(TALL).gap(2.0).align(Center)
 }
 
 // when the first moving visualizer drew, so its motion runs on from there

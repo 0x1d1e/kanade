@@ -19,9 +19,10 @@ use crate::bus::{Argument, Bus};
 use crate::cli::{self, Reply};
 use crate::config::{self, Config};
 use crate::lock;
+use crate::look::Visualizer;
 use crate::modules::{self, Module, Provider};
 use crate::sources::json::Json;
-use crate::sources::{binds, bus, clipboard, keys, niri, pipewire, radios, wallpaper};
+use crate::sources::{binds, bus, cava, clipboard, keys, niri, pipewire, radios, wallpaper};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -507,6 +508,14 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
 
             checks.push(found.check(module.name, need.without));
         }
+    }
+
+    // cava only matters to the visualizer that asks for it; without it the synthetic bars draw
+    if resolved.on("media") && config.visualizer == Visualizer::Audio {
+        checks.push(
+            program_found(cava::CAVA, env::var_os("PATH"))
+                .check("media", "the audio visualizer draws the synthetic bars"),
+        );
     }
 
     // two idle daemons would each lock, dim and suspend on their own timers

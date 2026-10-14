@@ -193,6 +193,10 @@ choice! {
 
         // dots pulsing
         Dots = "dots",
+
+        // bars that follow what the default sink plays, read through `cava`; the synthetic bars
+        // stand in while it is missing or has not answered yet (ADR 0056)
+        Audio = "audio",
         Off = "off",
     }
 }
