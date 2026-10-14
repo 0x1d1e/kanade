@@ -72,6 +72,8 @@ autohide = false
 reserve = false
 # the wheel over the Island sets the volume while it shows Media or the volume; over anything else it does nothing
 wheel = true
+# a Bluetooth device connecting or going, the charger plugged in or out, a new sound output and a Wi-Fi network joined show on the Island for a moment, each while its Module is on
+device_events = true
 
 [rest]
 # an idle Island shows the time; with it and the battery off, the Island hides as it does with autohide, per output

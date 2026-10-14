@@ -10,7 +10,7 @@ use kanade_runtime::{
 
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Awake, Clip, Detail, Leave, Leaving, Reminder, Track,
+    Action, Activity, Awake, Clip, Detail, Hardware, Leave, Leaving, Reminder, Track,
 };
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
@@ -23,7 +23,7 @@ use crate::theme;
 
 use super::media::{Change, media_compact, media_peek};
 use super::rest::placeholder;
-use super::satellites::satellite_mark;
+use super::satellites::{mark, satellite_mark};
 use super::shape::{Room, hang, shape, upright};
 use super::standing::{stacked, stacked_tile};
 use super::status::{
@@ -256,6 +256,7 @@ pub(super) fn small_form(
             self::session(presentation, leaving, actions, now)
         }
         (presentation, Some(Detail::NightLight(why))) => night_light(presentation, why),
+        (presentation, Some(Detail::Hardware(event))) => hardware(presentation, event),
         (presentation, Some(Detail::Reminder(shown))) => {
             let activity = content.activity.as_ref();
             let actions = activity.map_or(&[][..], Activity::actions);
@@ -344,6 +345,21 @@ fn night_light(presentation: Presentation, why: &str) -> Option<Rectangle> {
         (Icon::Sunset, theme::island().on_surface),
         "Night light failed",
         why,
+        Pills {
+            actions: &[],
+            subject: "",
+            act: |_, _| {},
+        },
+    )
+}
+
+// the device's mark, then what happened to it; it has nothing to press
+fn hardware(presentation: Presentation, event: &Hardware) -> Option<Rectangle> {
+    titled(
+        presentation,
+        (mark(event.class), theme::island().on_surface),
+        &event.title,
+        &event.line,
         Pills {
             actions: &[],
             subject: "",

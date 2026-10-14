@@ -180,7 +180,7 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Pointer",
-                rows: &[Row::Key("island.wheel")],
+                rows: &[Row::Key("island.wheel"), Row::Key("island.device_events")],
             },
             Section {
                 title: "At Rest",

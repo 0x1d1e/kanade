@@ -187,6 +187,7 @@ A draining battery shows from `battery.low` %, and is Critical, preempting, from
 
 - notification toast → **Banner**: focused output, hanging from the Island and coming out of it ([ADR 0023](adr/0023-banners-come-out-of-the-island.md)); 4 s low, 6 s normal, critical sticky; hover pause; max 3; per-app rules (`notifications.rules`, first match wins) choose Banner, history, DND bypass, time and urgency, applied as a notification arrives.
 - volume/brightness/mic, Caps Lock/Num Lock/airplane mode and a keyboard layout switch niri announces (`osd.layout`) → **OSD**, a `Feedback` Transient on the Island, from changes and from the level keys, masked evdev (ADR 0021).
+- a Bluetooth device connecting or going, the charger plugged in or out, a new default sound output and a Wi-Fi network joined → a `Glance` Transient on the focused output (`island.device_events`), told from the change each Module's own Service shows: its first look is a baseline, so starting shows nothing; one Activity per class, the same event within 10 s once; Compact says what happened, Peek to what, a Bluetooth connection with its battery once the device reports it.
 - Island keeps durable Activities.
 
 ### Later

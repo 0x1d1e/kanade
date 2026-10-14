@@ -140,6 +140,9 @@ pub struct Config {
     // `island.wheel`
     pub island_wheel: bool,
 
+    // `island.device_events`
+    pub device_events: bool,
+
     // `idle.*`: after how long idle each stage fires (ADR 0047)
     pub idle: Stages,
 
@@ -452,6 +455,7 @@ impl Default for Config {
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
             island_wheel: true,
+            device_events: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
                 lock: Some(Duration::from_secs(300)),
@@ -1381,6 +1385,19 @@ pub const ISLAND: &[Setting] = &[
         kind: Kind::Switch(Field {
             get: |config| config.island_wheel,
             set: |config, on| config.island_wheel = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.device_events",
+        label: "Device events",
+        help: "a Bluetooth device connecting or going, the charger plugged in or out, a new sound output and a Wi-Fi network joined show on the Island for a moment, each while its Module is on",
+        hint: Some("Show a device connecting or a charger plugged in"),
+        kind: Kind::Switch(Field {
+            get: |config| config.device_events,
+            set: |config, on| config.device_events = on,
         }),
         example: None,
         restart: false,
@@ -3163,6 +3180,7 @@ mod tests {
                 "island.autohide",
                 "island.reserve",
                 "island.wheel",
+                "island.device_events",
                 "rest.clock",
                 "rest.battery",
                 "rest.peek.battery",
