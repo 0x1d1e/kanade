@@ -127,7 +127,7 @@ A command the user lists in config (`hooks.<event>`, an argv list) that Kanade r
 - **Avoid:** plugin, script event soup, subscription
 
 ## Reminder
-An Activity saying a calendar event is coming: its title and how long until it starts, or ends for an alarm on its end, with Open and Dismiss (ADR 0043). It comes from the event's own `VALARM`s that display or play a sound, or `calendar.reminder` minutes before a timed event with none. Persistent, Ongoing, Global, interrupting nothing; it goes 5 minutes after its event starts, an hour after it went off at most, or on Open or Dismiss.
+An Activity saying a calendar event is coming: its title and how long until it starts, or ends for an alarm on its end, with Open and Dismiss, and Join while the event links to a video meeting (ADR 0043). Join opens the first `https` link of its URL, LOCATION or DESCRIPTION whose host `sources/meeting.rs` lists (Google Meet, Zoom, Teams, Webex, Jitsi, Whereby) with `xdg-open`, by argv with no shell, never logging it. It comes from the event's own `VALARM`s that display or play a sound, or `calendar.reminder` minutes before a timed event with none. Persistent, Ongoing, Global, interrupting nothing; it goes 5 minutes after its event starts, an hour after it went off at most, or on Open, Join or Dismiss.
 - **Invariant:** a reminder goes off once. Which went off is kept in a file under the state directory, keyed by event, occurrence and alarm, the default lead by a mark of its own, so a restart, a clock set or a new `calendar.reminder` never fires one again.
 - **Invariant:** a missed reminder goes off only until 5 minutes after its event starts; past that it is dropped, never shown late.
 - **Avoid:** alarm (the `VALARM` it comes from), alert, notification

@@ -48,7 +48,7 @@ use chrono::{
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::google;
+use super::{google, meeting};
 use crate::{clock, config, modules, supervise};
 
 pub mod add;
@@ -671,6 +671,15 @@ pub(super) fn reminded(
                     uid: text(event, &ICalendarProperty::Uid)
                         .unwrap_or_else(|| occurrence.title.clone()),
                     triggers: triggers(calendar, event, &local),
+                    link: meeting::link(&[
+                        text(event, &ICalendarProperty::Url)
+                            .as_deref()
+                            .unwrap_or(""),
+                        occurrence.location.as_deref().unwrap_or(""),
+                        text(event, &ICalendarProperty::Description)
+                            .as_deref()
+                            .unwrap_or(""),
+                    ]),
                     occurrence,
                 });
             },
@@ -689,6 +698,9 @@ pub struct Reminded {
 
     // its event's own alarms that show, none for one that has none
     pub triggers: Vec<Trigger>,
+
+    // the meeting its event links to, if its URL, location or description has one (`meeting`)
+    pub link: Option<String>,
 }
 
 // when an alarm goes off (RFC 5545 3.8.6.3)
@@ -2833,6 +2845,36 @@ mod tests {
                     &[Trigger::Start(-900), Trigger::End(-300), Trigger::At(eight)][..]
                 ),
                 ("bare", eight + 4 * 3600, &[][..]),
+            ]
+        );
+    }
+
+    // a meeting link comes from the URL, LOCATION or DESCRIPTION, and only an allowed one
+    #[test]
+    fn an_event_links_to_the_meeting_its_fields_name() {
+        let calendars = calendar(
+            "BEGIN:VEVENT\r\nUID:url\r\nDTSTART:20261012T100000Z\r\n\
+             URL:https://meet.google.com/abc-defg-hij\r\nEND:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:place\r\nDTSTART:20261012T110000Z\r\n\
+             LOCATION:https://example.zoom.us/j/1\\, Room 4\r\nEND:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:notes\r\nDTSTART:20261012T120000Z\r\n\
+             DESCRIPTION:Agenda\\nJoin https://teams.microsoft.com/l/x\\n\r\nEND:VEVENT\r\n\
+             BEGIN:VEVENT\r\nUID:other\r\nDTSTART:20261012T130000Z\r\n\
+             DESCRIPTION:https://example.com/j/1\r\nEND:VEVENT\r\n",
+        );
+        let from = instant(at(day(2026, 10, 12), 0, 0), &plus_two).unwrap();
+        let mut found = reminded(&calendars, (from, from + 24 * 3600), plus_two);
+        found.sort_by_key(|reminded| reminded.occurrence.span.0);
+
+        let links: Vec<Option<&str>> = found.iter().map(|found| found.link.as_deref()).collect();
+
+        assert_eq!(
+            links,
+            [
+                Some("https://meet.google.com/abc-defg-hij"),
+                Some("https://example.zoom.us/j/1"),
+                Some("https://teams.microsoft.com/l/x"),
+                None
             ]
         );
     }

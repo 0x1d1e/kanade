@@ -88,7 +88,7 @@ Rules:
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `media.visualizer = audio` runs `cava` over the default sink's monitor, on demand only while a playing track's visualizer draws, so a paused or hidden one costs no process and no frame; without cava it draws the synthetic bars ([ADR 0056](adr/0056-audio-visualizer-through-cava.md)).
 - `privacy` default on; disable warns indicators disappear.
-- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
+- `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043); Join opens an allowlisted meeting link from the event with `xdg-open`.
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
 - module toggle requires restart while the runtime registers windows only at startup.
 

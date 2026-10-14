@@ -25,6 +25,7 @@ pub mod keys;
 pub mod launch;
 pub mod live;
 pub mod media;
+pub mod meeting;
 pub mod mirror;
 pub mod network;
 pub mod night_light;
