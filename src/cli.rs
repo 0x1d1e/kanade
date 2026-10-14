@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::{IpcCall, ipc_socket};
 
+mod completions;
+
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
@@ -156,6 +158,11 @@ struct Entry {
 
 // the name of a verb this process answers itself, with what it does and the form it takes
 const OWN: &[(&str, &str, &str)] = &[
+    (
+        "completions",
+        "Print shell completions, from the commands in this list",
+        "completions bash|fish|zsh",
+    ),
     ("config", "", "config defaults"),
     (
         "doctor",
@@ -390,6 +397,12 @@ pub fn run(arguments: &[String]) -> ExitCode {
                     ExitCode::from(2)
                 }
             };
+        }
+        ["completions", shell] if completions::script(shell).is_some() => {
+            return print(
+                &completions::script(shell).unwrap_or_default(),
+                ExitCode::SUCCESS,
+            );
         }
         ["doctor"] => return doctor::run(),
         ["config", "defaults"] => return print(&config::defaults(), ExitCode::SUCCESS),

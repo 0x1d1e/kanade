@@ -10,9 +10,9 @@ The script does all of this on Arch Linux and derivatives, from a fresh TTY inst
 
 - `--shell-only` installs only the build dependencies and Kanade, for a niri desktop you already have.
 - `--optional` adds the optional packages and enables bluetooth, upower and power-profiles-daemon; NetworkManager is installed but left for you to enable.
-- `--uninstall` removes Kanade's binary, unit, icon and the build checkout, after asking if niri's config still runs `kanade` (its binds, locking included, would stop working). Your configs and the packages stay.
+- `--uninstall` removes Kanade's binary, shell completions, unit, icon and the build checkout, after asking if niri's config still runs `kanade` (its binds, locking included, would stop working). Your configs and the packages stay.
 
-The binary goes to `~/.cargo/bin`, where the unit expects it. A run replaces the unit and keeps the old one as `kanade.service.bak.DATE`; customize it with `systemctl --user edit kanade.service`, whose drop-in an update leaves alone. A failed build leaves the installed binary as it was. The steps below are what it runs.
+The binary goes to `~/.cargo/bin`, where the unit expects it, and the shell completions to `~/.local/share/bash-completion/completions/kanade`, `~/.config/fish/completions/kanade.fish` and `~/.local/share/zsh/site-functions/_kanade` (under `XDG_DATA_HOME` and `XDG_CONFIG_HOME` when set); zsh needs that directory in its `fpath` before `compinit`. A run replaces the unit and keeps the old one as `kanade.service.bak.DATE`; customize it with `systemctl --user edit kanade.service`, whose drop-in an update leaves alone. A failed build leaves the installed binary as it was. The steps below are what it runs.
 
 Kanade needs:
 
@@ -31,7 +31,7 @@ Kanade needs:
 cargo install --locked --path .
 ```
 
-This puts `kanade` in `~/.cargo/bin`.
+This puts `kanade` in `~/.cargo/bin`. `kanade completions bash|fish|zsh` prints the completions for a shell, from the commands `kanade help` lists, to put where that shell reads them, like `kanade completions fish > ~/.config/fish/completions/kanade.fish`.
 
 Kanade must be the only notification daemon. Stop mako, dunst or any other one and keep it from starting again, for example `systemctl --user disable --now mako` and removing it from niri's `spawn-at-startup`. Otherwise the Notifications Surface says which daemon has the bus name, and no notification reaches the island until it is stopped and Kanade restarted.
 

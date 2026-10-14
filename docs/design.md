@@ -272,6 +272,7 @@ capture open|close|toggle
 osd volume|brightness
 settings open [page]|close
 config reload|validate|defaults
+completions bash|fish|zsh
 status
 doctor
 module list|enable <name>|disable <name>
