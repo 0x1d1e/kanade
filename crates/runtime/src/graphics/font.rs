@@ -66,11 +66,11 @@ fn read(family: &str, weight: Weight) -> Face<'static> {
     // a .ttc file holds several fonts, the index says which one
     let index = found.index.unwrap_or(0) as u32;
 
-    open(&found.path.to_string_lossy(), index)
+    open(&found.path.to_string_lossy(), index).expect("failed to open font")
 }
 
-fn open(path: &str, index: u32) -> Face<'static> {
-    let bytes = std::fs::read(path).expect("failed to read font file");
+fn open(path: &str, index: u32) -> Option<Face<'static>> {
+    let bytes = std::fs::read(path).ok()?;
 
     // the face borrows the bytes, so they have to live as long as it
     let bytes = Vec::leak(bytes);
@@ -78,7 +78,7 @@ fn open(path: &str, index: u32) -> Face<'static> {
     // fontconfig keeps a variable font's named style in the upper half, the file only knows the lower
     let face_index = index & 0xffff;
 
-    Face::parse(bytes, face_index).expect("failed to parse font")
+    Face::parse(bytes, face_index).ok()
 }
 
 // the font that has this letter: the text's own font first, then a fallback
@@ -112,9 +112,8 @@ pub struct MeasuredLetter<'a> {
 pub fn measure_letter<'a>(font: &'a Face<'a>, letter: char, size: f32) -> MeasuredLetter<'a> {
     let (face, id) = with_letter(font, letter);
 
-    let advance = face
-        .glyph_hor_advance(id)
-        .expect("failed to read letter advance");
+    // a font without the metric moves the pen nowhere, not the shell down
+    let advance = face.glyph_hor_advance(id).unwrap_or(0);
 
     let units = size / f32::from(face.units_per_em());
 
@@ -184,7 +183,10 @@ fn find_covering(letter: char) -> Option<&'static Face<'static>> {
             continue;
         }
 
-        let face = load_file(path, index);
+        // a file fontconfig lists but nothing can parse, like a bitmap font, is passed over
+        let Some(face) = load_file(path, index) else {
+            continue;
+        };
 
         // the fonts with the letter come first, so the first without it ends the search
         if face.glyph_index(letter).is_none() {
@@ -201,18 +203,18 @@ fn find_covering(letter: char) -> Option<&'static Face<'static>> {
     other
 }
 
-fn load_file(path: &str, index: u32) -> &'static Face<'static> {
+fn load_file(path: &str, index: u32) -> Option<&'static Face<'static>> {
     let key = format!("{path} {index}");
 
     let mut loaded = LOADED.locked();
 
     if let Some(face) = loaded.get(&key) {
-        return face;
+        return Some(face);
     }
 
-    let face = Box::leak(Box::new(open(path, index)));
+    let face = Box::leak(Box::new(open(path, index)?));
 
     loaded.insert(key, face);
 
-    face
+    Some(face)
 }

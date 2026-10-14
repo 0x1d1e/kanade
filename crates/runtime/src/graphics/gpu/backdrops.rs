@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
 use vello::wgpu::{
-    AddressMode, Device, Extent3d, FilterMode, MipmapFilterMode, Origin3d, Queue, Sampler,
-    SamplerDescriptor, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect,
-    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    AddressMode, Device, Extent3d, FilterMode, Origin3d, Queue, Sampler, SamplerDescriptor,
+    TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureUsages, TextureView,
 };
 
 use crate::backdrop::{self, Pixels, Spot};
 
-use super::{picture, texture};
+use super::texture;
 
 /*
  * the copies of what is behind each pane (backdrop.rs) as gpu textures, one upload per copy
@@ -35,13 +35,12 @@ impl Backdrops {
             },
         );
 
-        // smooth between pixels and between the blurred sizes, and the edge repeated past the copy
+        // smooth between pixels, and the edge repeated past the copy
         let sampler = device.create_sampler(&SamplerDescriptor {
             address_mode_u: AddressMode::ClampToEdge,
             address_mode_v: AddressMode::ClampToEdge,
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
-            mipmap_filter: MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -89,26 +88,8 @@ impl Backdrops {
     }
 }
 
-// how many smaller, blurrier sizes of a copy a shader may read, besides the copy itself
-const BLURS: u32 = 5;
-
-// a copy as a gpu texture with `BLURS` smaller sizes, each pixel the average of the four above it,
-// for a shader to read a blur of what is around a pane in one sample
+// a copy as a gpu texture; shaders read only its full size
 fn upload(device: &Device, queue: &Queue, pixels: &Pixels) -> Texture {
-    let mut levels = vec![(pixels.width, pixels.height, pixels.rgba.clone())];
-
-    for _ in 0..BLURS {
-        let (width, height, last) = levels.last().expect("a copy has a first size");
-
-        if *width <= 1 && *height <= 1 {
-            break;
-        }
-
-        let smaller = picture::halve(last, *width, *height);
-
-        levels.push(((*width / 2).max(1), (*height / 2).max(1), smaller));
-    }
-
     let texture = device.create_texture(&TextureDescriptor {
         label: None,
         size: Extent3d {
@@ -116,7 +97,7 @@ fn upload(device: &Device, queue: &Queue, pixels: &Pixels) -> Texture {
             height: pixels.height,
             depth_or_array_layers: 1,
         },
-        mip_level_count: levels.len() as u32,
+        mip_level_count: 1,
         sample_count: 1,
         dimension: TextureDimension::D2,
         format: TextureFormat::Rgba8Unorm,
@@ -124,28 +105,26 @@ fn upload(device: &Device, queue: &Queue, pixels: &Pixels) -> Texture {
         view_formats: &[],
     });
 
-    for (level, (width, height, rgba)) in levels.iter().enumerate() {
-        let target = TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: level as u32,
-            origin: Origin3d::ZERO,
-            aspect: TextureAspect::All,
-        };
+    let target = TexelCopyTextureInfo {
+        texture: &texture,
+        mip_level: 0,
+        origin: Origin3d::ZERO,
+        aspect: TextureAspect::All,
+    };
 
-        let layout = TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 4),
-            rows_per_image: Some(*height),
-        };
+    let layout = TexelCopyBufferLayout {
+        offset: 0,
+        bytes_per_row: Some(pixels.width * 4),
+        rows_per_image: Some(pixels.height),
+    };
 
-        let size = Extent3d {
-            width: *width,
-            height: *height,
-            depth_or_array_layers: 1,
-        };
+    let size = Extent3d {
+        width: pixels.width,
+        height: pixels.height,
+        depth_or_array_layers: 1,
+    };
 
-        queue.write_texture(target, rgba, layout, size);
-    }
+    queue.write_texture(target, &pixels.rgba, layout, size);
 
     texture
 }

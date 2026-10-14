@@ -75,6 +75,15 @@ fn save(hint: &Value) -> Option<PathBuf> {
 
     let data = data.list();
 
+    // a row is at least as wide as its pixels, and every row must be there, so the sender's
+    // sizes cannot ask for more than the data it sent
+    let row = width.checked_mul(channels)?;
+    let needed = (height - 1).checked_mul(rowstride)?.checked_add(row)?;
+
+    if rowstride < row || needed > data.len() {
+        return None;
+    }
+
     let mut pixels = Vec::with_capacity(width * height * 4);
 
     for y in 0..height {
@@ -115,4 +124,32 @@ fn save(hint: &Value) -> Option<PathBuf> {
         .ok()?;
 
     Some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hint(width: f64, height: f64, rowstride: f64, bytes: usize) -> Value {
+        let number = Value::Number;
+
+        Value::List(vec![
+            number(width),
+            number(height),
+            number(rowstride),
+            Value::Bool(true),
+            number(8.0),
+            number(4.0),
+            Value::List(vec![number(0.0); bytes]),
+        ])
+    }
+
+    // the sender's sizes must not ask for more memory than the bytes it sent
+    #[test]
+    fn sizes_beyond_the_data_are_refused() {
+        assert!(save(&hint(65536.0, 65536.0, 0.0, 4)).is_none());
+        assert!(save(&hint(1e9, 1e9, 4e9, 16)).is_none());
+        assert!(save(&hint(2.0, 2.0, 8.0, 15)).is_none());
+        assert!(save(&hint(-2.0, 2.0, 8.0, 16)).is_none());
+    }
 }

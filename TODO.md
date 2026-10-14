@@ -151,3 +151,16 @@ Not worth changing, by this review:
 
 - Settings: the header title sits at the window's left padding while the page column is centered; in a window maximized under the Island a long title runs under it.
 - Settings: stepper step sizes are fixed per kind, not adaptive to the range; its `-`/`+` buttons are pointer-only (Up/Down cover the keyboard).
+
+## External audit triage (a6f29f3)
+
+Unfixed, no visual change wanted. Fixed in the same pass: notification `image-data` sizes checked against the bytes sent, font fallback skips unparseable files, dead backdrop mip pyramid removed.
+
+- [ ] `Atlas::place` wraps and clears while earlier glyphs of the same batch still wait for `Quads::draw`; the write lands before the draw. Needs a flush before the wrap; only when one frame holds over a 1024x1024 atlas of distinct glyphs.
+- [ ] `ipc` answers on the UI thread (1 s read timeout) and `request_frames` follows every call; handlers may change state outside a Service, so the redraw stays until each is checked.
+- [ ] `update_surface` commits a layer change, then `present` commits the frame; the first commit is how a hidden window shows again. A property-only change could skip it.
+- [ ] `open_normal` runs the view once only to read title and size.
+- [ ] `Brightness` and `Palette` poll every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
+- [ ] `elide` and the `tail` helpers re-measure from the start per removed letter (quadratic).
+- [ ] `disc_angle`'s `DISC` is one process-wide state, so two monitors showing the disc advance it twice per refresh.
+- [ ] `Reveal`'s `HONORED` is one cell for all scroll areas; a serial one surface used can hide the same serial in another.
