@@ -12,7 +12,7 @@ use std::thread;
 use crate::changes;
 use crate::unpoisoned::MutexExt;
 
-pub use decode::{Format, MOST_PIXELS, decode, format};
+pub use decode::{Format, MOST_PIXELS, decode, decode_png, format};
 
 // one size for every svg; keying the cache by the shown size would sharpen a big svg that looks soft
 const ICON_SIDE: f32 = 256.0;
@@ -49,6 +49,15 @@ impl Bitmap {
             width: 1,
             height: 1,
             pixels: Arc::new(vec![0; 4]),
+        }
+    }
+
+    // plain RGBA pixels, width * height * 4 of them
+    pub fn from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            pixels: Arc::new(pixels),
         }
     }
 

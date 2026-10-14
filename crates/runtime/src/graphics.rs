@@ -1,5 +1,6 @@
 mod cap;
 mod color;
+mod emoji;
 pub mod font;
 mod geometry;
 mod gpu;

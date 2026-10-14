@@ -48,6 +48,33 @@ pub fn format(path: &Path) -> Option<Format> {
     }
 }
 
+// a png whole, as 8-bit RGBA with plain alpha; none for one unreadable, or past `MOST_PIXELS`
+pub fn decode_png(source: impl io::BufRead + io::Seek) -> Option<(u32, u32, Vec<u8>)> {
+    let mut decoder = png::Decoder::new(source);
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+
+    let mut reader = decoder.read_info().ok()?;
+    let info = reader.info();
+    let (width, height) = (info.width, info.height);
+    if width as usize * height as usize > MOST_PIXELS {
+        return None;
+    }
+
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut pixels).ok()?;
+    pixels.truncate(frame.buffer_size());
+
+    let rgba = match frame.color_type.samples() {
+        4 => pixels,
+        3 => rgba(&pixels, 3, |pixel| [pixel[0], pixel[1], pixel[2], 255]),
+        2 => rgba(&pixels, 2, |pixel| [pixel[0], pixel[0], pixel[0], pixel[1]]),
+        1 => rgba(&pixels, 1, |pixel| [pixel[0], pixel[0], pixel[0], 255]),
+        _ => return None,
+    };
+
+    Some((width, height, rgba))
+}
+
 /*
  * an image whole, as 8-bit RGBA with plain alpha: the first frame of a webp or gif, an svg drawn
  * with its longest side `vector_side` pixels across; none for one unreadable, or past
@@ -55,32 +82,7 @@ pub fn format(path: &Path) -> Option<Format> {
  */
 pub fn decode(path: &Path, vector_side: f32) -> Option<(u32, u32, Vec<u8>)> {
     match format(path)? {
-        Format::Png => {
-            let file = io::BufReader::new(fs::File::open(path).ok()?);
-            let mut decoder = png::Decoder::new(file);
-            decoder.set_transformations(png::Transformations::normalize_to_color8());
-
-            let mut reader = decoder.read_info().ok()?;
-            let info = reader.info();
-            let (width, height) = (info.width, info.height);
-            if width as usize * height as usize > MOST_PIXELS {
-                return None;
-            }
-
-            let mut pixels = vec![0; reader.output_buffer_size()?];
-            let frame = reader.next_frame(&mut pixels).ok()?;
-            pixels.truncate(frame.buffer_size());
-
-            let rgba = match frame.color_type.samples() {
-                4 => pixels,
-                3 => rgba(&pixels, 3, |pixel| [pixel[0], pixel[1], pixel[2], 255]),
-                2 => rgba(&pixels, 2, |pixel| [pixel[0], pixel[0], pixel[0], pixel[1]]),
-                1 => rgba(&pixels, 1, |pixel| [pixel[0], pixel[0], pixel[0], 255]),
-                _ => return None,
-            };
-
-            Some((width, height, rgba))
-        }
+        Format::Png => decode_png(io::BufReader::new(fs::File::open(path).ok()?)),
         Format::Jpeg => {
             let file = io::BufReader::new(fs::File::open(path).ok()?);
             let options = zune_jpeg::zune_core::options::DecoderOptions::default()

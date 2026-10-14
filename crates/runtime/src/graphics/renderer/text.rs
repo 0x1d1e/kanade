@@ -1,8 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ttf_parser::{Face, GlyphId};
 
+use crate::graphics::emoji::{self, Picture};
 use crate::graphics::{Area, BezierPath, Color, Outline, Renderer, Transform, font};
 
 use super::Command;
@@ -63,6 +65,18 @@ impl Renderer {
 
             pen += measured.advance;
 
+            if let Some(picture) = emoji::picture(measured.face, measured.id) {
+                self.picture(
+                    &picture,
+                    letter_x,
+                    baseline,
+                    pixel_size,
+                    Transform::IDENTITY,
+                );
+
+                continue;
+            }
+
             self.commands.push(Command::Glyph {
                 face: measured.face,
                 id: measured.id.0,
@@ -89,6 +103,12 @@ impl Renderer {
 
             pen_x += measured.advance;
 
+            if let Some(picture) = emoji::picture(measured.face, measured.id) {
+                self.picture(&picture, letter_x, baseline, size, self.transform);
+
+                continue;
+            }
+
             // a space has no outline but still moves the pen
             let Some(path) = outline(measured.face, measured.id) else {
                 continue;
@@ -107,6 +127,38 @@ impl Renderer {
                 color,
             });
         }
+    }
+}
+
+impl Renderer {
+    /*
+     * a letter that is a picture, with its pen at `x` on the `baseline` and the text `size` tall,
+     * both in the space `to_device` takes to the canvas
+     */
+    fn picture(
+        &mut self,
+        picture: &Picture,
+        x: f32,
+        baseline: f32,
+        size: f32,
+        to_device: Transform,
+    ) {
+        let scale = size / picture.pixels_per_em;
+
+        let width = picture.image.width() as f32 * scale;
+        let height = picture.image.height() as f32 * scale;
+
+        let left = (x + picture.left * scale).round();
+        let top = (baseline - picture.bottom * scale - height).round();
+
+        self.commands.push(Command::Image {
+            image: Arc::clone(&picture.image),
+            transform: Transform::from_row(scale, 0.0, 0.0, scale, left, top)
+                .post_concat(to_device),
+            area: Area::new(left, top, width, height),
+            radius: 0.0,
+            clip_transform: to_device,
+        });
     }
 }
 
