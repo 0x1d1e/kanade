@@ -40,7 +40,7 @@ pub(super) fn timer(
 ) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
         // the stopwatch at the round end, the countdown at the other, a part a line, the minutes over
-        // the seconds, as the clock; held in from both ends
+        // the seconds, as the clock; held in from both ends, a rail between them draining as it runs
         let mut clock: Vec<Box<dyn Widget>> = Vec::new();
 
         for part in timer::clock(countdown, now).split(':') {
@@ -64,6 +64,12 @@ pub(super) fn timer(
                 .child(
                     Column::new(children![
                         Icon::Stopwatch.draw(18.0),
+                        rising(
+                            shape(presentation).height - TIMER_RAIL,
+                            countdown.left(now).as_secs_f32()
+                                / countdown.length.as_secs_f32().max(1.0),
+                            timer_tone(countdown),
+                        ),
                         Column::new(clock).gap(3.0).align(Center)
                     ])
                     .height(Parent)
@@ -156,8 +162,13 @@ pub(super) fn timer(
         row.push(Box::new(Icon::Stopwatch.draw(icon)));
     }
 
-    row.extend(children![
-        Column::new(words).width(width).gap(3.0),
+    row.push(Box::new(Column::new(words).width(width).gap(3.0)));
+    row.extend(
+        pills
+            .into_iter()
+            .map(|pill| Box::new(pill) as Box<dyn Widget>),
+    );
+    row.push(Box::new(
         Rectangle::new()
             .width(clock)
             .height(size)
@@ -168,12 +179,7 @@ pub(super) fn timer(
                     .color(timer_tone(countdown))
                     .weight(theme::text::SEMIBOLD),
             ),
-    ]);
-    row.extend(
-        pills
-            .into_iter()
-            .map(|pill| Box::new(pill) as Box<dyn Widget>),
-    );
+    ));
 
     Some(
         sized(presentation)
@@ -316,6 +322,9 @@ pub(super) fn battery_icon(width: f32, percent: u8, tone: Color) -> Row {
 
 // past this many workspaces on an output the pager would not fit, so the numbers say it instead
 const PAGER: u32 = 10;
+
+// what an upright Compact keeps from the timer's rail: its ends, the stopwatch and the countdown
+const TIMER_RAIL: f32 = 112.0;
 
 // the most a pager down an upright Compact holds
 const UPRIGHT_PAGER: u32 = 8;
