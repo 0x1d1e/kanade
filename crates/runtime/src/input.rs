@@ -1,3 +1,4 @@
+pub(crate) mod dropped;
 pub mod focus;
 pub mod paste;
 mod pointer;
