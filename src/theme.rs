@@ -344,6 +344,49 @@ impl ThemeRoles {
     pub fn track(&self) -> Color {
         over(self.surface_container_high, self.surface)
     }
+
+    // the grounds a control sits on in a window: the page, a card, the sidebar, a trough
+    fn grounds(&self) -> [Color; 4] {
+        [
+            self.surface,
+            self.card(),
+            over(self.surface_container, self.surface),
+            self.track(),
+        ]
+    }
+
+    /*
+     * the edge of a control (a field, a trough, an off switch), the faintest step from the surface
+     * toward the secondary text that is 3:1 against every ground (WCAG 1.4.11). The roles'
+     * `outline` is a quiet hairline for lines that carry nothing
+     */
+    pub fn edge(&self) -> Color {
+        let grounds = self.grounds();
+
+        (1..=20)
+            .map(|step| mix(self.surface, self.on_surface_variant, step as f32 / 20.0))
+            .find(|edge| grounds.iter().all(|&ground| contrast(*edge, ground) >= 3.1))
+            .unwrap_or(self.on_surface)
+    }
+
+    // a card on the page: a step the eye finds without a shadow, where `surface_container` is faint
+    pub fn card(&self) -> Color {
+        mix(self.surface, self.on_surface, 0.05)
+    }
+
+    // the keyboard's ring: the accent while it is 3:1 against every ground, else the text color
+    pub fn ring(&self) -> Color {
+        let grounds = self.grounds();
+
+        if grounds
+            .iter()
+            .all(|&ground| contrast(self.primary, ground) >= 3.1)
+        {
+            self.primary
+        } else {
+            self.on_surface
+        }
+    }
 }
 
 // `color` at `opacity`, to fade a single text without a group of its own
@@ -409,4 +452,49 @@ pub fn over(top: Color, under: Color) -> Color {
 
 pub fn channels(color: Color) -> [f32; 3] {
     [color.red(), color.green(), color.blue()].map(|channel| f32::from(channel) / 255.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roles(surface: Color, text: Color, primary: Color, container: u8, high: u8) -> ThemeRoles {
+        let alpha =
+            |color: Color, alpha| Color::rgba(color.red(), color.green(), color.blue(), alpha);
+
+        ThemeRoles {
+            primary,
+            on_primary: surface,
+            surface,
+            on_surface: text,
+            on_surface_variant: text,
+            surface_container: alpha(text, container),
+            surface_container_high: alpha(text, high),
+            outline: alpha(text, 64),
+        }
+    }
+
+    // a control's edge and the ring read at 3:1 on every ground, in dark and light tones and on a
+    // wallpaper's accent that is too dim or too bright for its tone
+    #[test]
+    fn a_control_edge_and_the_ring_reach_three_to_one_in_every_tone() {
+        let dark = Color::rgb(18, 19, 22);
+        let light = Color::rgb(250, 248, 252);
+        let near_black = Color::rgb(230, 225, 232);
+        let near_white = Color::rgb(30, 28, 34);
+
+        for roles in [
+            ISLAND_DARK,
+            ISLAND_LIGHT,
+            roles(dark, near_black, Color::rgb(208, 188, 255), 20, 36),
+            roles(light, near_white, Color::rgb(103, 80, 164), 14, 26),
+            roles(dark, near_black, Color::rgb(60, 50, 90), 20, 36),
+            roles(light, near_white, Color::rgb(230, 220, 255), 14, 26),
+        ] {
+            for ground in roles.grounds() {
+                assert!(contrast(roles.edge(), ground) >= 3.0, "edge on {ground:?}");
+                assert!(contrast(roles.ring(), ground) >= 3.0, "ring on {ground:?}");
+            }
+        }
+    }
 }

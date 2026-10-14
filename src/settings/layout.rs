@@ -303,7 +303,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "modules",
         title: "Modules",
-        summary: "What runs in the shell; the Island's core always does",
+        summary: "What runs in the shell. A change takes a restart; the Island's core always runs",
         group: "System",
         icon: Icon::Grid,
         sections: &[Section {

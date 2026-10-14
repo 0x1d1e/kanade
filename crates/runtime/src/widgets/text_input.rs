@@ -98,6 +98,16 @@ impl TextInput {
         fields::set(id, field);
     }
 
+    // the input of this id takes the keyboard when it is next drawn
+    pub fn focus(id: &'static str) {
+        focus::want(id);
+    }
+
+    // takes the keyboard from whichever input has it
+    pub fn blur() {
+        focus::clear();
+    }
+
     // runs after every change to the text, with the whole new text
     pub fn on_change(mut self, handler: impl Fn(String) + 'static) -> Self {
         self.on_change = Some(Rc::new(handler));

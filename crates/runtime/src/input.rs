@@ -27,6 +27,9 @@ pub enum Key {
 
     Tab,
 
+    // tab with shift held
+    BackTab,
+
     Backspace,
 
     Space,

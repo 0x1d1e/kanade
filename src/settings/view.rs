@@ -5,11 +5,13 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Align, Button, Center, Color, Column, Cursor, End, Gradient, Image, Padding, Parent, Rectangle,
-    Row, ScrollArea, Size, SpaceBetween, Start, Text, TextInput, Widget, Window, children,
+    Align, Button, Canvas, Center, Color, Column, Cursor, End, Gradient, Image, Padding, Parent,
+    Path, Rectangle, Reveal, Row, ScrollArea, Shape, Size, SpaceBetween, Start, Text, TextInput,
+    Widget, Window, children,
 };
 use toml::Value;
 
@@ -22,9 +24,10 @@ use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
 
 use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
+use super::ring::{self, Stop};
 use super::{
-    FONT_SEARCH, SEARCH, Settings, change, change_all, font_search, input, inspect, path, search,
-    select_font, turn_to, undo,
+    FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change, change_all, font_search, input, inspect,
+    module_filter, path, search, select_font, turn_to, undo,
 };
 
 // the size it opens at, and the smallest it can be made
@@ -46,10 +49,18 @@ const MOST_MEASURE: f32 = 460.0;
 const CARD_INSET: f32 = 16.0;
 
 const BAR: f32 = 52.0;
+
+// a gap and a ring around a control that has no edge of its own to take the ring
+const HALO: f32 = 4.0;
+const RING: f32 = 2.0;
 const ROW_INSET: f32 = 14.0;
 const FIELD: f32 = 34.0;
 const ENTRY: f32 = 36.0;
-const PAGE_TITLE: f32 = 24.0;
+const PAGE_TITLE: f32 = 22.0;
+
+// between a page's sections, and from a heading to its card
+const SECTIONS: f32 = 24.0;
+const HEADING: f32 = 8.0;
 
 // the area right of the sidebar, as wide as the window now is
 fn main_width() -> f32 {
@@ -104,6 +115,8 @@ const MINUTE_STEP: u64 = 5;
 const KELVIN_STEP: u64 = 100;
 
 pub fn window() -> Window {
+    ring::begin();
+
     let settings = Settings::read();
     let roles = theme::roles();
 
@@ -111,6 +124,7 @@ pub fn window() -> Window {
         .title("Kanade Settings")
         .size(WIDTH, HEIGHT)
         .min_size(MIN_WIDTH, MIN_HEIGHT)
+        .on_key(ring::key)
         .child(
             Row::new(children![
                 sidebar(&settings, &roles),
@@ -127,6 +141,23 @@ pub fn window() -> Window {
 
 // the brand, the search field, then the pages under their groups' headings, scrolled in a short window
 fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
+    let search = search_field(roles);
+
+    // the pages are one stop: Up and Down turn to the one before or after
+    let at = PAGES
+        .iter()
+        .position(|page| page.name == settings.page)
+        .unwrap_or(0);
+    let pages = ring::register(
+        Stop::new("pages")
+            .press(move || turn_to(PAGES[at].name))
+            .step(move |direction| {
+                let next = (at as i32 + direction).clamp(0, PAGES.len() as i32 - 1);
+
+                turn_to(PAGES[next as usize].name);
+            }),
+    );
+
     let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
     let mut group = "";
@@ -153,7 +184,7 @@ fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
             ));
         }
 
-        items.push(Box::new(nav(page, settings, roles)));
+        items.push(nav(page, settings, pages, roles));
     }
 
     Rectangle::new()
@@ -165,7 +196,7 @@ fn sidebar(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         .child(
             Column::new(children![
                 brand(roles),
-                search_field(roles),
+                search,
                 ScrollArea::new(scroll_id("pages"), Column::new(items).width(NAV).gap(4.0))
                     .width(Parent)
                     .height(Parent),
@@ -209,33 +240,46 @@ fn brand(roles: &ThemeRoles) -> Row {
     .align(Center)
 }
 
-fn search_field(roles: &ThemeRoles) -> Rectangle {
-    Rectangle::new()
-        .width(NAV)
-        .height(FIELD)
-        .radius(radius::ROW)
-        .fill(roles.surface_container_high)
-        .padding(sides(10.0))
-        .align_child(Start, Center)
-        .child(
-            Row::new(children![
-                Icon::Search.on(14.0, roles.on_surface_variant),
-                TextInput::new(SEARCH)
-                    .width(Parent)
-                    .size(theme::text::LABEL)
-                    .color(roles.on_surface)
-                    .placeholder("Find a setting")
-                    .on_change(search),
-            ])
-            .width(Parent)
-            .gap(8.0)
-            .align(Center),
-        )
+fn search_field(roles: &ThemeRoles) -> Box<dyn Widget> {
+    let token = ring::register(Stop::new("search").input(SEARCH));
+
+    outlined(
+        Rectangle::new()
+            .width(NAV)
+            .height(FIELD)
+            .radius(radius::ROW)
+            .fill(roles.surface)
+            .padding(sides(10.0))
+            .align_child(Start, Center)
+            .child(
+                Row::new(children![
+                    Icon::Search.on(14.0, roles.on_surface_variant),
+                    TextInput::new(SEARCH)
+                        .width(Parent)
+                        .size(theme::text::LABEL)
+                        .color(roles.on_surface)
+                        .placeholder("Find a setting")
+                        .on_change(search),
+                ])
+                .width(Parent)
+                .gap(8.0)
+                .align(Center),
+            ),
+        token,
+        Some(roles.edge()),
+        roles,
+    )
 }
 
-// a page down the side, filled while it shows
-fn nav(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
-    let here = page.name == settings.page && settings.query.trim().is_empty();
+// a page down the side, filled while it shows; the ring is on the one that shows
+fn nav(
+    page: &'static Page,
+    settings: &Settings,
+    ring: Option<u64>,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    let shown = page.name == settings.page;
+    let here = shown && settings.query.trim().is_empty();
     let name = page.name;
 
     let (ink, weight) = if here {
@@ -263,12 +307,13 @@ fn nav(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Rectangl
             .gap(10.0)
             .align(Center),
         );
-
-    if here {
+    let row = if here {
         row.fill(roles.surface_container_high)
     } else {
         row
-    }
+    };
+
+    outlined(row, ring.filter(|_| shown), None, roles)
 }
 
 // the header, the page or the search's results, the footer
@@ -279,14 +324,19 @@ fn main(settings: &Settings, roles: &ThemeRoles) -> Column {
         .unwrap_or(&PAGES[0]);
 
     let searching = !settings.query.trim().is_empty();
-    let (title, body) = if searching {
-        ("Search", results(settings, roles))
+    let title = if searching { "Search" } else { page.title };
+
+    // built in the order the keyboard goes through them
+    let header = header(title, settings, roles);
+    let body = if searching {
+        results(settings, roles)
     } else {
-        (page.title, page_body(page, settings, roles))
+        page_body(page, settings, roles)
     };
+    let footer = footer(settings, roles);
 
     Column::new(children![
-        header(title, settings, roles),
+        header,
         hairline(Parent, roles),
         Rectangle::new()
             .width(Parent)
@@ -308,13 +358,13 @@ fn main(settings: &Settings, roles: &ThemeRoles) -> Column {
                 .height(Parent),
             ),
         hairline(Parent, roles),
-        footer(settings, roles),
+        footer,
     ])
     .width(Parent)
     .height(Parent)
 }
 
-// where in the window this is, and Inspect
+// the page's title, and Inspect
 fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let inspect_button = Rectangle::new()
         .width(96.0)
@@ -338,8 +388,14 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let inspect_button = if settings.inspect {
         inspect_button.fill(roles.surface_container_high)
     } else {
-        inspect_button.border(1.0, roles.outline)
+        inspect_button
     };
+    let inspect_button = outlined(
+        inspect_button,
+        ring::register(Stop::new("inspect").press(inspect)),
+        Some(roles.edge()),
+        roles,
+    );
 
     Rectangle::new()
         .width(Parent)
@@ -348,18 +404,10 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         .align_child(Start, Center)
         .child(
             Row::new(children![
-                Row::new(children![
-                    Text::new("Settings  /")
-                        .size(theme::text::LABEL)
-                        .color(roles.on_surface_variant)
-                        .weight(theme::text::MEDIUM),
-                    Text::new(title)
-                        .size(theme::text::LABEL)
-                        .color(roles.on_surface)
-                        .weight(theme::text::SEMIBOLD),
-                ])
-                .gap(6.0)
-                .align(Center),
+                Text::new(title)
+                    .size(PAGE_TITLE)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
                 inspect_button,
             ])
             .width(Parent)
@@ -368,7 +416,7 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         )
 }
 
-// what the files say, and Undo
+// what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
 fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     let waiting = settings.pending.len();
     let (status, ink) = if let Some(refused) = &settings.refused {
@@ -389,36 +437,49 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         };
 
         (format!("{waiting} {changes} for a restart"), roles.primary)
+    } else if let Some(saved) = settings.history.last().and_then(|last| last.first()) {
+        (
+            format!("Saved: {}", changed(&saved.path)),
+            roles.on_surface_variant,
+        )
     } else {
         (
-            String::from("Changes apply as you make them"),
+            config::settings_file().map_or_else(
+                || String::from("Changes are written as you make them"),
+                |file| format!("Changes are saved to {}", shortened(&file)),
+            ),
             roles.on_surface_variant,
         )
     };
 
-    let undo_button = Rectangle::new()
-        .width(84.0)
-        .height(30.0)
-        .radius(radius::ROW)
-        .border(1.0, roles.outline)
-        .align_child(Center, Center)
-        .child(
-            Row::new(children![
-                Icon::Undo.on(14.0, roles.on_surface),
-                Text::new("Undo")
-                    .size(theme::text::LABEL)
-                    .color(roles.on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            ])
-            .gap(6.0)
-            .align(Center),
-        );
+    let mut actions: Vec<Box<dyn Widget>> = Vec::new();
+    if !settings.history.is_empty() {
+        let undo_button = Rectangle::new()
+            .width(84.0)
+            .height(30.0)
+            .radius(radius::ROW)
+            .align_child(Center, Center)
+            .cursor(Cursor::Pointer)
+            .on_click(left(undo))
+            .child(
+                Row::new(children![
+                    Icon::Undo.on(14.0, roles.on_surface),
+                    Text::new("Undo")
+                        .size(theme::text::LABEL)
+                        .color(roles.on_surface)
+                        .weight(theme::text::SEMIBOLD),
+                ])
+                .gap(6.0)
+                .align(Center),
+            );
 
-    let undo_button = if settings.history.is_empty() {
-        undo_button.opacity(theme::DISABLED)
-    } else {
-        undo_button.cursor(Cursor::Pointer).on_click(left(undo))
-    };
+        actions.push(outlined(
+            undo_button,
+            ring::register(Stop::new("undo").press(undo)),
+            Some(roles.edge()),
+            roles,
+        ));
+    }
 
     Rectangle::new()
         .width(Parent)
@@ -432,7 +493,7 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
                     .color(ink)
                     .weight(theme::text::MEDIUM)
                     .elide(),
-                undo_button,
+                Row::new(actions),
             ])
             .width(Parent)
             .gap(16.0)
@@ -441,14 +502,32 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         )
 }
 
-// a page's title and summary, what is wrong with the files, then its sections
+// what a change to the key at `path` is called
+fn changed(path: &[String]) -> String {
+    let key = path.join(".");
+
+    match path {
+        [modules, name] if modules == MODULES => format!("{} module", humanized(name)),
+        _ => setting(&key)
+            .or_else(|| setting(&path[..path.len().saturating_sub(1)].join(".")))
+            .map_or(key, |setting| setting.label.to_owned()),
+    }
+}
+
+// a path with the home directory as ~
+fn shortened(path: &std::path::Path) -> String {
+    match std::env::var_os("HOME")
+        .and_then(|home| path.strip_prefix(home).ok().map(|rest| rest.to_owned()))
+    {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+// a page's summary, what is wrong with the files, then its sections
 fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Column {
     let mut items = children![
-        space(20.0),
-        Text::new(page.title)
-            .size(PAGE_TITLE)
-            .color(roles.on_surface)
-            .weight(theme::text::SEMIBOLD),
+        space(14.0),
         wrapped(
             Text::new(page.summary)
                 .size(theme::text::BODY)
@@ -461,7 +540,7 @@ fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Co
 
     for section in page.sections {
         items.push(Box::new(section_view(
-            section.title,
+            Heading::Page(section.title),
             section.rows.iter().collect(),
             settings,
             None,
@@ -471,7 +550,7 @@ fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Co
 
     items.push(Box::new(space(12.0)));
 
-    Column::new(items).width(content()).gap(14.0)
+    Column::new(items).width(content()).gap(SECTIONS)
 }
 
 // every row matching the search, under its page's and section's titles
@@ -479,14 +558,14 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
     let query = settings.query.trim().to_lowercase();
 
     let mut items = children![
-        space(20.0),
+        space(14.0),
         Text::new(format!(
             "Results for \u{201c}{}\u{201d}",
             settings.query.trim()
         ))
-        .size(PAGE_TITLE)
-        .color(roles.on_surface)
-        .weight(theme::text::SEMIBOLD),
+        .size(theme::text::BODY)
+        .color(roles.on_surface_variant)
+        .weight(theme::text::MEDIUM),
     ];
     items.extend(notices(settings));
 
@@ -503,13 +582,8 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
             }
 
             found = true;
-            let title = if section.title.is_empty() {
-                page.title.to_owned()
-            } else {
-                format!("{}  \u{203a}  {}", page.title, section.title)
-            };
             items.push(Box::new(section_view(
-                &title,
+                Heading::Found(page, section.title),
                 rows,
                 settings,
                 Some(&query),
@@ -529,7 +603,7 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
 
     items.push(Box::new(space(12.0)));
 
-    Column::new(items).width(content()).gap(14.0)
+    Column::new(items).width(content()).gap(SECTIONS)
 }
 
 // whether a row's settings mention the query; the Modules row, whether a Module does, as it shows those
@@ -596,12 +670,19 @@ fn notice(text: &str, ink: Color) -> Rectangle {
         .child(text)
 }
 
+// what a section is titled in: on its page, or found by a search under the page's name too
+enum Heading {
+    Page(&'static str),
+    Found(&'static Page, &'static str),
+}
+
 /*
- * a section's heading and its rows on a card, hairlines between them; the Modules row draws its
- * own cards. `query` narrows the Modules to those it mentions
+ * a section's rows on a card, hairlines between them, under a heading when it has several rows:
+ * one row is titled by its own label. The Modules row draws its own cards. `query` narrows the
+ * Modules to those it mentions
  */
 fn section_view(
-    title: &str,
+    heading: Heading,
     rows: Vec<&Line>,
     settings: &Settings,
     query: Option<&str>,
@@ -609,13 +690,17 @@ fn section_view(
 ) -> Column {
     let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
-    if !title.is_empty() {
-        items.push(Box::new(
-            Text::new(title)
-                .size(theme::text::TITLE)
-                .color(roles.on_surface)
-                .weight(theme::text::SEMIBOLD),
-        ));
+    match heading {
+        Heading::Page(title) if rows.len() > 1 && !title.is_empty() => {
+            items.push(Box::new(
+                Text::new(title)
+                    .size(theme::text::TITLE)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
+            ));
+        }
+        Heading::Page(_) => {}
+        Heading::Found(page, title) => items.push(found_heading(page, title, roles)),
     }
 
     let mut card: Vec<Box<dyn Widget>> = Vec::new();
@@ -635,7 +720,51 @@ fn section_view(
         items.push(Box::new(card_of(card, roles)));
     }
 
-    Column::new(items).width(content()).gap(10.0)
+    Column::new(items).width(content()).gap(HEADING)
+}
+
+// "Page  ›  Section" over a result, pressed to open the page
+fn found_heading(page: &'static Page, title: &str, roles: &ThemeRoles) -> Box<dyn Widget> {
+    let name = page.name;
+    let mut path = children![
+        page.icon.on(14.0, roles.on_surface_variant),
+        Text::new(page.title)
+            .size(theme::text::LABEL)
+            .color(roles.on_surface_variant)
+            .weight(theme::text::SEMIBOLD),
+    ];
+    if !title.is_empty() {
+        path.push(Box::new(
+            Text::new("\u{203a}")
+                .size(theme::text::LABEL)
+                .color(roles.on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        ));
+        path.push(Box::new(
+            Text::new(title)
+                .size(theme::text::LABEL)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ));
+    }
+
+    let row = Row::new(path).gap(8.0).align(Center);
+    let width = fixed(Widget::width(&row)) + 2.0 * 8.0;
+
+    outlined(
+        Rectangle::new()
+            .width(width)
+            .height(28.0)
+            .radius(radius::ROW - 4.0)
+            .padding(sides(8.0))
+            .align_child(Start, Center)
+            .cursor(Cursor::Pointer)
+            .on_click(left(move || turn_to(name)))
+            .child(row),
+        ring::register(Stop::new(format!("open {name} {title}")).press(move || turn_to(name))),
+        None,
+        roles,
+    )
 }
 
 fn card_of(rows: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> Rectangle {
@@ -646,7 +775,7 @@ fn card_of(rows: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> Rectangle {
         .width(content())
         .height(height)
         .radius(radius::CARD)
-        .fill(roles.surface_container)
+        .fill(roles.card())
         .padding(sides(CARD_INSET))
         .child(column)
 }
@@ -707,6 +836,9 @@ struct Label {
     title: String,
     help: String,
     marks: Vec<Box<dyn Widget>>,
+
+    // under Inspect, the schema's whole help where Settings shows a shorter line
+    detail: Option<String>,
     keys: Option<String>,
     off: Option<String>,
 }
@@ -733,10 +865,19 @@ fn label(
         .filter(|path| settings.set_here(path))
         .collect();
     if !paths.is_empty() {
-        marks.push(Box::new(link("Reset", roles, move || {
-            change_all(paths.iter().map(|path| (path.clone(), None)).collect());
-        })));
+        marks.push(link(
+            format!("reset {}", shown[0].key),
+            "Reset",
+            roles,
+            move || change_all(paths.iter().map(|path| (path.clone(), None)).collect()),
+        ));
     }
+
+    let detail = shown
+        .iter()
+        .find(|setting| setting.hint.is_some())
+        .filter(|_| settings.inspect)
+        .map(|setting| capitalized(setting.help));
 
     let keys = settings.inspect.then(|| {
         shown
@@ -767,6 +908,7 @@ fn label(
         title: title.to_owned(),
         help: help.to_owned(),
         marks,
+        detail,
         keys,
         off,
     }
@@ -810,6 +952,15 @@ fn labeled(
             text_width,
         ),
     ];
+    if let Some(detail) = label.detail {
+        lines.push(Box::new(wrapped(
+            Text::new(detail)
+                .size(theme::text::LABEL_SMALL)
+                .color(roles.on_surface_variant)
+                .weight(theme::text::MEDIUM),
+            text_width,
+        )));
+    }
     if let Some(off) = label.off {
         lines.push(Box::new(wrapped(
             Text::new(off)
@@ -880,9 +1031,9 @@ fn control(
             let on = (field.get)(read);
 
             (
-                Box::new(switch(on, roles, move || {
+                switch(format!("switch {key}"), on, roles, move || {
                     change(path(key, None), Some(Value::Boolean(!on)));
-                })),
+                }),
                 true,
             )
         }
@@ -890,17 +1041,31 @@ fn control(
             let chosen = (field.get)(read);
             let enabled = key != "dock.merge" || read.shell.mode == ShellMode::Separate;
 
-            (
-                Box::new(segmented(options, chosen, roles, enabled, move |option| {
-                    change(path(key, None), Some(Value::String(option.to_owned())));
-                })),
-                true,
-            )
+            let choose = move |option: &'static str| {
+                change(path(key, None), Some(Value::String(option.to_owned())));
+            };
+            let id = format!("choice {key}");
+
+            let control = match key {
+                "appearance.tone" => cards(id, options, chosen, roles, tone_preview, choose),
+                "appearance.finish" => cards(id, options, chosen, roles, finish_preview, choose),
+                "appearance.motion" => cards(
+                    id,
+                    options,
+                    chosen,
+                    roles,
+                    |option| spring_preview(option, roles),
+                    choose,
+                ),
+                _ => segmented(id, options, chosen, roles, enabled, choose),
+            };
+
+            (control, true)
         }
         Kind::Millis(field) => {
             let ms = u64::try_from((field.get)(read).as_millis()).unwrap_or(config::LONGEST);
 
-            (Box::new(stepper(setting, ms, MILLIS, roles)), true)
+            (stepper(setting, ms, MILLIS, roles), true)
         }
         Kind::Pixels(range, field) => {
             let px = u64::from((field.get)(read));
@@ -912,7 +1077,7 @@ fn control(
                 expected: "whole pixels",
             };
 
-            (Box::new(stepper(setting, px, steps, roles)), true)
+            (stepper(setting, px, steps, roles), true)
         }
         Kind::Percent(range, field) => {
             let percent = u64::from((field.get)(read));
@@ -924,7 +1089,7 @@ fn control(
                 expected: "whole percent",
             };
 
-            (Box::new(stepper(setting, percent, steps, roles)), true)
+            (stepper(setting, percent, steps, roles), true)
         }
         Kind::Seconds(range, field) => {
             let seconds = u64::from((field.get)(read));
@@ -936,7 +1101,7 @@ fn control(
                 expected: "whole seconds",
             };
 
-            (Box::new(stepper(setting, seconds, steps, roles)), true)
+            (stepper(setting, seconds, steps, roles), true)
         }
         Kind::Minutes(range, field) => {
             let minutes = (field.get)(read).as_secs() / 60;
@@ -948,7 +1113,7 @@ fn control(
                 expected: "whole minutes",
             };
 
-            (Box::new(stepper(setting, minutes, steps, roles)), true)
+            (stepper(setting, minutes, steps, roles), true)
         }
         Kind::Kelvin(range, field) => {
             let kelvin = u64::from((field.get)(read));
@@ -960,7 +1125,7 @@ fn control(
                 expected: "whole kelvin",
             };
 
-            (Box::new(stepper(setting, kelvin, steps, roles)), true)
+            (stepper(setting, kelvin, steps, roles), true)
         }
         Kind::DayTime(_) => (
             Box::new(field_with_hint(setting, "HH:MM", roles, move |text| {
@@ -989,7 +1154,7 @@ fn control(
                 expected: count.expected,
             };
 
-            (Box::new(stepper(setting, number, steps, roles)), true)
+            (stepper(setting, number, steps, roles), true)
         }
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
@@ -1056,9 +1221,12 @@ fn control(
 
                     // one from the user's own config is theirs to remove
                     let actions = if settings.set_here(&entry) {
-                        children![icon_button(Icon::Dismiss, roles, move || {
-                            change(entry.clone(), None)
-                        })]
+                        children![icon_button(
+                            format!("remove {key} {app_id}"),
+                            Icon::Dismiss,
+                            roles,
+                            move || change(entry.clone(), None)
+                        )]
                     } else {
                         children![]
                     };
@@ -1071,7 +1239,7 @@ fn control(
                 })
                 .collect();
 
-            rows.push(Box::new(text_field(
+            rows.push(text_field(
                 input(setting),
                 inner(),
                 "app id = .desktop file id, then Enter",
@@ -1087,7 +1255,7 @@ fn control(
                         ));
                     }
                 },
-            )));
+            ));
 
             (Box::new(Column::new(rows).width(inner()).gap(6.0)), false)
         }
@@ -1096,38 +1264,44 @@ fn control(
     }
 }
 
+// the font picker's width
+const FONT_FIELD: f32 = 320.0;
+
 fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
-    const FONT_FIELD: f32 = 320.0;
     const SUGGESTIONS: usize = 8;
 
     let families = settings.fonts.clone();
     let matching = super::fonts::matching(&families, &settings.font_query, SUGGESTIONS);
     let chosen = settings.read.appearance.font.as_deref();
     let query = settings.font_query.clone();
-    let field = Rectangle::new()
-        .width(FONT_FIELD)
-        .height(FIELD)
-        .radius(radius::ROW - 2.0)
-        .fill(roles.surface_container_high)
-        .border(1.0, faint(roles.outline))
-        .padding(sides(10.0))
-        .align_child(Start, Center)
-        .child(
-            TextInput::new(FONT_SEARCH)
-                .width(Parent)
-                .size(theme::text::LABEL)
-                .color(roles.on_surface)
-                .placeholder("Search installed font families")
-                .on_change(font_search)
-                .on_submit(move |query| {
-                    if let Some(family) = super::fonts::matching(&families, &query, 1)
-                        .into_iter()
-                        .next()
-                    {
-                        select_font(Some(family));
-                    }
-                }),
-        );
+    let field = outlined(
+        Rectangle::new()
+            .width(FONT_FIELD)
+            .height(FIELD)
+            .radius(radius::ROW - 2.0)
+            .fill(roles.surface)
+            .padding(sides(10.0))
+            .align_child(Start, Center)
+            .child(
+                TextInput::new(FONT_SEARCH)
+                    .width(Parent)
+                    .size(theme::text::LABEL)
+                    .color(roles.on_surface)
+                    .placeholder("Search installed font families")
+                    .on_change(font_search)
+                    .on_submit(move |query| {
+                        if let Some(family) = super::fonts::matching(&families, &query, 1)
+                            .into_iter()
+                            .next()
+                        {
+                            select_font(Some(family));
+                        }
+                    }),
+            ),
+        ring::register(Stop::new("font").input(FONT_SEARCH)),
+        Some(roles.edge()),
+        roles,
+    );
 
     let mut items = children![field];
     if settings.fonts_loading {
@@ -1149,9 +1323,7 @@ fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
             "Using the system default: Inter, then sans-serif"
         };
         if chosen.is_some() {
-            items.push(Box::new(font_choice(system, false, roles, || {
-                select_font(None)
-            })));
+            items.push(font_choice(system, false, roles, || select_font(None)));
         } else {
             items.push(Box::new(font_note(system, roles)));
         }
@@ -1161,9 +1333,9 @@ fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
         for family in matching {
             let selected = chosen.is_some_and(|chosen| chosen.eq_ignore_ascii_case(&family));
             let choice = family.clone();
-            items.push(Box::new(font_choice(&family, selected, roles, move || {
+            items.push(font_choice(&family, selected, roles, move || {
                 select_font(Some(choice.clone()))
-            })));
+            }));
         }
         items.push(Box::new(font_note(
             "Type to narrow the list. Enter chooses the first match.",
@@ -1179,9 +1351,9 @@ fn font_choice(
     selected: bool,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
-) -> Rectangle {
-    let name = name.to_owned();
-    let text = Text::new(name)
+) -> Box<dyn Widget> {
+    let id = format!("font {name}");
+    let text = Text::new(name.to_owned())
         .size(theme::text::LABEL)
         .color(roles.on_surface)
         .weight(if selected {
@@ -1196,28 +1368,30 @@ fn font_choice(
         .radius(radius::ROW - 4.0)
         .padding(sides(10.0))
         .align_child(Start, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(left(press))
         .child(text);
-
-    if selected {
+    let row = if selected {
         row.fill(roles.surface_container_high)
     } else {
         row
-    }
+    };
+
+    button(row, id, press, None, roles)
 }
 
-fn font_note(text: &str, roles: &ThemeRoles) -> Text {
-    Text::new(text)
-        .size(theme::text::LABEL_SMALL)
-        .color(roles.on_surface_variant)
-        .weight(theme::text::MEDIUM)
-        .wrap()
+fn font_note(text: &str, roles: &ThemeRoles) -> Rectangle {
+    wrapped(
+        Text::new(text)
+            .size(theme::text::LABEL_SMALL)
+            .color(roles.on_surface_variant)
+            .weight(theme::text::MEDIUM),
+        FONT_FIELD,
+    )
 }
 
 /*
- * the Modules, a card per group, each with what it does, what it needs and a switch; the core
- * first, which is always on. Turning one takes a restart
+ * the Modules, a card per group under its name and how many of it run, each with what it does, what
+ * it needs and a switch; the core first, which is always on. A filter narrows them. Turning one
+ * takes a restart
  */
 fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) -> Column {
     let off = match setting(MODULES).map(|setting| &setting.kind) {
@@ -1225,10 +1399,14 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
         _ => Vec::new(),
     };
 
-    let mut items = children![notice(
-        "Turning a Module on or off takes effect after a restart",
-        roles.primary
-    )];
+    // the search narrows them from outside, else the filter above them does
+    let filter = settings.module_query.trim().to_lowercase();
+    let query = query.or((!filter.is_empty()).then_some(filter.as_str()));
+
+    let mut items: Vec<Box<dyn Widget>> = Vec::new();
+    if !settings.searching() {
+        items.push(module_filter_field(roles));
+    }
 
     let core = modules::ALL.iter().find(|module| module.name == CORE);
     if let Some(core) = core.filter(|core| query.is_none_or(|query| module_matches(core, query))) {
@@ -1236,6 +1414,7 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
             children![module_line(
                 "Island core",
                 core.about,
+                true,
                 Box::new(
                     Text::new("Always on")
                         .size(theme::text::LABEL)
@@ -1249,12 +1428,20 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
         )));
     }
 
+    let mut shown = core.is_some_and(|core| query.is_none_or(|query| module_matches(core, query)));
     for (group, names) in MODULE_GROUPS {
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
-
-        for module in names
+        let members: Vec<&Module> = names
             .iter()
             .filter_map(|name| modules::ALL.iter().find(|module| module.name == *name))
+            .collect();
+        let running = members
+            .iter()
+            .filter(|module| !off.contains(&module.name))
+            .count();
+
+        for module in members
+            .iter()
             .filter(|module| query.is_none_or(|query| module_matches(module, query)))
         {
             let name = module.name;
@@ -1266,25 +1453,27 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
             }
 
             let mut about = String::from(module.about);
-            let requires: Vec<&str> = module
+            let requires: Vec<String> = module
                 .requires
                 .iter()
                 .copied()
                 .filter(|&required| required != CORE)
+                .map(|required| humanized(required).to_lowercase())
                 .collect();
             if !requires.is_empty() {
-                about.push_str(&format!(" \u{00b7} requires {}", requires.join(", ")));
+                about.push_str(&format!(" \u{00b7} needs {}", requires.join(", ")));
             }
 
             if !rows.is_empty() {
                 rows.push(Box::new(hairline(inner(), roles)));
             }
             rows.push(Box::new(module_line(
-                name,
+                &humanized(name),
                 &about,
-                Box::new(switch(on, roles, move || {
+                on,
+                switch(format!("switch {MODULES}.{name}"), on, roles, move || {
                     change(path(MODULES, Some(name)), Some(Value::Boolean(!on)));
-                })),
+                }),
                 marks,
                 roles,
             )));
@@ -1294,21 +1483,72 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
             continue;
         }
 
+        shown = true;
         items.push(Box::new(
-            Text::new(*group)
-                .size(theme::text::LABEL)
-                .color(roles.on_surface_variant)
-                .weight(theme::text::SEMIBOLD),
+            Row::new(children![
+                Text::new(*group)
+                    .size(theme::text::BODY)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
+                Text::new(format!("{running} of {} on", members.len()))
+                    .size(theme::text::LABEL_SMALL)
+                    .color(roles.on_surface_variant)
+                    .weight(theme::text::MEDIUM),
+            ])
+            .gap(10.0)
+            .align(Center),
         ));
         items.push(Box::new(card_of(rows, roles)));
     }
 
-    Column::new(items).width(content()).gap(10.0)
+    if !shown {
+        items.push(Box::new(
+            Text::new("No module matches")
+                .size(theme::text::BODY)
+                .color(roles.on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        ));
+    }
+
+    Column::new(items).width(content()).gap(HEADING)
 }
 
+fn module_filter_field(roles: &ThemeRoles) -> Box<dyn Widget> {
+    let token = ring::register(Stop::new("filter").input(MODULE_FILTER));
+
+    outlined(
+        Rectangle::new()
+            .width(280.0)
+            .height(FIELD)
+            .radius(radius::ROW - 2.0)
+            .fill(roles.surface)
+            .padding(sides(10.0))
+            .align_child(Start, Center)
+            .child(
+                Row::new(children![
+                    Icon::Search.on(14.0, roles.on_surface_variant),
+                    TextInput::new(MODULE_FILTER)
+                        .width(Parent)
+                        .size(theme::text::LABEL)
+                        .color(roles.on_surface)
+                        .placeholder("Filter modules")
+                        .on_change(module_filter),
+                ])
+                .width(Parent)
+                .gap(8.0)
+                .align(Center),
+            ),
+        token,
+        Some(roles.edge()),
+        roles,
+    )
+}
+
+// a Module's name over what it does, and its switch; one that is off has a quieter name
 fn module_line(
     name: &str,
     about: &str,
+    on: bool,
     action: Box<dyn Widget>,
     marks: Vec<Box<dyn Widget>>,
     roles: &ThemeRoles,
@@ -1320,7 +1560,11 @@ fn module_line(
             std::iter::once(Box::new(
                 Text::new(name)
                     .size(theme::text::BODY)
-                    .color(roles.on_surface)
+                    .color(if on {
+                        roles.on_surface
+                    } else {
+                        roles.on_surface_variant
+                    })
                     .weight(theme::text::SEMIBOLD),
             ) as Box<dyn Widget>)
             .chain(marks)
@@ -1340,7 +1584,7 @@ fn module_line(
     .width(width)
     .gap(2.0);
 
-    let height = fixed(Widget::height(&text)).max(TARGET) + 2.0 * 12.0;
+    let height = fixed(Widget::height(&text)).max(fixed(action.height())) + 2.0 * 10.0;
 
     Rectangle::new()
         .width(inner())
@@ -1354,7 +1598,7 @@ fn module_line(
         )
 }
 
-// a small screen with the six places an edge and a side make, the chosen one filled
+// a small screen with the places an edge and a side make, the chosen one filled
 fn position(
     settings: &Settings,
     edge: &'static Setting,
@@ -1400,29 +1644,27 @@ fn position(
         let cell = Rectangle::new()
             .width(cell_width)
             .height(cell_height)
-            .align_child(Center, Center);
-        let cell = if selectable {
-            cell.cursor(Cursor::Pointer).on_click(left(press))
-        } else {
-            cell
-        };
-        let cell = cell.child(
-            Rectangle::new()
-                .width(width)
-                .height(height)
-                .radius(5.0)
-                .fill(if here {
-                    roles.primary
-                } else {
-                    faint(roles.on_surface_variant)
-                }),
-        );
+            .radius(7.0)
+            .align_child(Center, Center)
+            .child(
+                Rectangle::new()
+                    .width(width)
+                    .height(height)
+                    .radius(5.0)
+                    .fill(if here { roles.primary } else { roles.edge() }),
+            );
 
-        Box::new(if selectable {
-            cell
+        if selectable {
+            button(
+                cell,
+                format!("place {edge_key} {} {}", to.0, to.1),
+                press,
+                None,
+                roles,
+            )
         } else {
-            cell.opacity(theme::DISABLED)
-        }) as Box<dyn Widget>
+            Box::new(cell.opacity(theme::DISABLED))
+        }
     };
 
     let line = |side: Edge| {
@@ -1436,6 +1678,7 @@ fn position(
         .justify(SpaceBetween)
     };
 
+    let top = line(Edge::Top);
     let sides = Row::new(
         [Edge::Left, Edge::Right]
             .into_iter()
@@ -1444,16 +1687,17 @@ fn position(
     )
     .width(Parent)
     .justify(SpaceBetween);
+    let bottom = line(Edge::Bottom);
 
     Rectangle::new()
         .width(176.0)
         .height(116.0)
         .radius(radius::ROW)
-        .fill(roles.surface_container_high)
-        .border(1.0, roles.outline)
+        .fill(roles.track())
+        .border(1.0, roles.edge())
         .padding(6.0)
         .child(
-            Column::new(children![line(Edge::Top), sides, line(Edge::Bottom)])
+            Column::new(children![top, sides, bottom])
                 .width(Parent)
                 .height(Parent)
                 .justify(SpaceBetween),
@@ -1479,23 +1723,38 @@ fn list(
             if index > 0 {
                 let mut list = ids.clone();
                 list.swap(index - 1, index);
-                actions.push(Box::new(text_button("\u{2191}", roles, to(list))));
+                actions.push(text_button(
+                    format!("up {key} {id}"),
+                    "\u{2191}",
+                    roles,
+                    to(list),
+                ));
             }
             if index + 1 < ids.len() {
                 let mut list = ids.clone();
                 list.swap(index, index + 1);
-                actions.push(Box::new(text_button("\u{2193}", roles, to(list))));
+                actions.push(text_button(
+                    format!("down {key} {id}"),
+                    "\u{2193}",
+                    roles,
+                    to(list),
+                ));
             }
 
             let mut without = ids.clone();
             without.remove(index);
-            actions.push(Box::new(icon_button(Icon::Dismiss, roles, to(without))));
+            actions.push(icon_button(
+                format!("remove {key} {id}"),
+                Icon::Dismiss,
+                roles,
+                to(without),
+            ));
 
             Box::new(entry_line(id, actions, roles)) as Box<dyn Widget>
         })
         .collect();
 
-    rows.push(Box::new(text_field(
+    rows.push(text_field(
         input(setting),
         inner(),
         placeholder,
@@ -1510,7 +1769,7 @@ fn list(
             list.push(text.to_owned());
             change(path(key, None), Some(strings(&list)));
         },
-    )));
+    ));
 
     Column::new(rows).width(inner()).gap(6.0)
 }
@@ -1521,7 +1780,7 @@ fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> 
         .width(inner())
         .height(ENTRY)
         .radius(radius::ROW)
-        .fill(roles.surface_container_high)
+        .fill(roles.surface)
         .padding(sides(12.0))
         .align_child(Start, Center)
         .child(
@@ -1540,17 +1799,15 @@ fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> 
         )
 }
 
-// on is filled with the knob at the end, off outlined with it at the start
-fn switch(on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Rectangle {
+// on is filled with the knob at the end, off in a trough with an edge and the knob at the start
+fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Box<dyn Widget> {
     const KNOB: f32 = 16.0;
 
     let track = Rectangle::new()
         .width(44.0)
         .height(TARGET)
         .radius(TARGET / 2.0)
-        .padding(4.0)
-        .cursor(Cursor::Pointer)
-        .on_click(left(press));
+        .padding(4.0);
 
     let (track, knob, end) = if on {
         (
@@ -1560,31 +1817,32 @@ fn switch(on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Rectangle
         )
     } else {
         (
-            track
-                .fill(roles.surface_container_high)
-                .border(1.0, roles.outline),
-            roles.on_surface_variant,
+            track.fill(roles.track()).border(1.0, roles.edge()),
+            roles.edge(),
             Align::from(Start),
         )
     };
 
-    track.align_child(end, Center).child(
+    let track = track.align_child(end, Center).child(
         Rectangle::new()
             .width(KNOB)
             .height(KNOB)
             .radius(KNOB / 2.0)
             .fill(knob),
-    )
+    );
+
+    pressed(track, id, press, TARGET / 2.0, roles)
 }
 
-// a Choice's options side by side in a trough, the chosen one filled
+// a Choice's options side by side in a trough, the chosen one filled; one stop, Left and Right choose
 fn segmented(
+    id: String,
     options: &'static Choices,
     chosen: &str,
     roles: &ThemeRoles,
     enabled: bool,
     choose: impl Fn(&'static str) + Clone + 'static,
-) -> Rectangle {
+) -> Box<dyn Widget> {
     const INSET: f32 = 3.0;
     const HEIGHT: f32 = 28.0;
 
@@ -1635,17 +1893,260 @@ fn segmented(
     let row = Row::new(segments).gap(2.0);
     let width = fixed(Widget::width(&row)) + 2.0 * INSET;
 
-    Rectangle::new()
+    let trough = Rectangle::new()
         .width(width)
         .height(HEIGHT + 2.0 * INSET)
         .radius(HEIGHT / 2.0 + INSET)
-        .fill(roles.outline)
+        .fill(roles.track())
+        .border(1.0, roles.edge())
         .padding(INSET)
-        .child(row)
+        .child(row);
+
+    if !enabled {
+        return Box::new(trough);
+    }
+
+    let at = options
+        .names
+        .iter()
+        .position(|&option| option == chosen)
+        .unwrap_or(0);
+    let names = options.names;
+    let token = ring::register(Stop::new(id).step(move |direction| {
+        let next = (at as i32 + direction).clamp(0, names.len() as i32 - 1);
+
+        choose(names[next as usize]);
+    }));
+
+    halo(trough, token, HEIGHT / 2.0 + INSET, roles)
 }
 
-// a number: `-`, the number to type over and its unit, `+`
-fn stepper(setting: &'static Setting, value: u64, steps: Steps, roles: &ThemeRoles) -> Row {
+// a Choice as cards that each show what choosing it does; one stop, the arrows choose
+fn cards(
+    id: String,
+    options: &'static Choices,
+    chosen: &str,
+    roles: &ThemeRoles,
+    preview: impl Fn(&'static str) -> Box<dyn Widget>,
+    choose: impl Fn(&'static str) + Clone + 'static,
+) -> Box<dyn Widget> {
+    const THUMB: (f32, f32) = (96.0, 56.0);
+    const CARD: f32 = 8.0;
+    const GAP: f32 = 8.0;
+
+    let cards: Vec<Box<dyn Widget>> = options
+        .names
+        .iter()
+        .map(|&option| {
+            let here = option == chosen;
+            let choose = choose.clone();
+            let card = Rectangle::new()
+                .width(THUMB.0 + 2.0 * CARD)
+                .height(THUMB.1 + 2.0 * CARD + 22.0)
+                .radius(radius::ROW + 2.0)
+                .padding(CARD)
+                .cursor(Cursor::Pointer)
+                .on_click(left(move || choose(option)))
+                .child(
+                    Column::new(children![
+                        Rectangle::new()
+                            .width(THUMB.0)
+                            .height(THUMB.1)
+                            .radius(radius::ROW - 2.0)
+                            .child(preview(option)),
+                        Rectangle::new()
+                            .width(THUMB.0)
+                            .height(22.0)
+                            .align_child(Center, Center)
+                            .child(
+                                Text::new(humanize(options, option))
+                                    .size(theme::text::LABEL)
+                                    .color(roles.on_surface)
+                                    .weight(if here {
+                                        theme::text::SEMIBOLD
+                                    } else {
+                                        theme::text::MEDIUM
+                                    }),
+                            ),
+                    ])
+                    .gap(0.0),
+                );
+
+            Box::new(if here {
+                card.fill(roles.track()).border(2.0, roles.primary)
+            } else {
+                card.border(1.0, roles.edge())
+            }) as Box<dyn Widget>
+        })
+        .collect();
+
+    let count = cards.len() as f32;
+    let row = Row::new(cards).gap(GAP);
+    let (width, height) = (
+        count * (THUMB.0 + 2.0 * CARD) + (count - 1.0) * GAP,
+        THUMB.1 + 2.0 * CARD + 22.0,
+    );
+    let group = Rectangle::new().width(width).height(height).child(row);
+
+    let at = options
+        .names
+        .iter()
+        .position(|&option| option == chosen)
+        .unwrap_or(0);
+    let names = options.names;
+    let token = ring::register(Stop::new(id).step(move |direction| {
+        let next = (at as i32 + direction).clamp(0, names.len() as i32 - 1);
+
+        choose(names[next as usize]);
+    }));
+
+    halo(group, token, radius::ROW + 2.0, roles)
+}
+
+// the tone's surface with a card and a line of text on it, as Settings and apps draw it
+fn tone_preview(option: &str) -> Box<dyn Widget> {
+    let tone = theme_tone(option);
+    let roles = crate::appearance::roles(tone);
+
+    Box::new(
+        Rectangle::new()
+            .width(Parent)
+            .height(Parent)
+            .radius(radius::ROW - 2.0)
+            .fill(roles.surface)
+            .padding(8.0)
+            .child(
+                Column::new(children![
+                    Rectangle::new()
+                        .width(40.0)
+                        .height(6.0)
+                        .radius(3.0)
+                        .fill(roles.on_surface),
+                    Rectangle::new()
+                        .width(Parent)
+                        .height(24.0)
+                        .radius(6.0)
+                        .fill(roles.card())
+                        .padding(6.0)
+                        .align_child(Start, Center)
+                        .child(
+                            Rectangle::new()
+                                .width(28.0)
+                                .height(8.0)
+                                .radius(4.0)
+                                .fill(roles.primary),
+                        ),
+                ])
+                .gap(6.0),
+            ),
+    )
+}
+
+fn theme_tone(option: &str) -> crate::look::Tone {
+    crate::look::Tone::named(option)
+}
+
+// the Island in a finish over the wallpaper's colors
+fn finish_preview(option: &str) -> Box<dyn Widget> {
+    let roles = crate::appearance::island_roles(crate::look::Finish::named(option));
+
+    Box::new(
+        Rectangle::new()
+            .width(Parent)
+            .height(Parent)
+            .radius(radius::ROW - 2.0)
+            .fill(backdrop())
+            .align_child(Center, Center)
+            .child(
+                Rectangle::new()
+                    .width(64.0)
+                    .height(24.0)
+                    .radius(12.0)
+                    .fill(roles.surface)
+                    .border(1.0, roles.outline)
+                    .padding(sides(8.0))
+                    .align_child(Start, Center)
+                    .child(
+                        Row::new(children![
+                            Rectangle::new()
+                                .width(8.0)
+                                .height(8.0)
+                                .radius(4.0)
+                                .fill(roles.primary),
+                            Rectangle::new()
+                                .width(24.0)
+                                .height(5.0)
+                                .radius(2.5)
+                                .fill(roles.on_surface),
+                        ])
+                        .gap(6.0)
+                        .align(Center),
+                    ),
+            ),
+    )
+}
+
+// a spring settling on its target: the curve of its position over time, the target a guide line
+fn spring_preview(option: &str, roles: &ThemeRoles) -> Box<dyn Widget> {
+    const WIDTH: f32 = 96.0;
+    const HEIGHT: f32 = 56.0;
+    const PAD_X: f32 = 10.0;
+    const PAD_Y: f32 = 8.0;
+    const SPAN: f32 = 1.25;
+    const STEPS: usize = 40;
+
+    // the natural frequency, so a spring settles in about 0.6 s
+    const OMEGA: f32 = 14.0;
+    const SECONDS: f32 = 0.6;
+
+    let zeta = crate::look::Bounce::named(option).damping();
+    let position = |t: f32| {
+        if zeta >= 1.0 {
+            1.0 - (-OMEGA * t).exp() * (1.0 + OMEGA * t)
+        } else {
+            let damped = OMEGA * (1.0 - zeta * zeta).sqrt();
+
+            1.0 - (-zeta * OMEGA * t).exp()
+                * ((damped * t).cos() + zeta / (1.0 - zeta * zeta).sqrt() * (damped * t).sin())
+        }
+    };
+    let at = |t: f32, value: f32| {
+        (
+            PAD_X + t / SECONDS * (WIDTH - 2.0 * PAD_X),
+            HEIGHT - PAD_Y - value / SPAN * (HEIGHT - 2.0 * PAD_Y),
+        )
+    };
+
+    let (x, y) = at(0.0, 0.0);
+    let mut curve = Path::new().move_to(x, y);
+    for step in 1..=STEPS {
+        let t = SECONDS * step as f32 / STEPS as f32;
+        let (x, y) = at(t, position(t));
+
+        curve = curve.line_to(x, y);
+    }
+    let (start, target) = (at(0.0, 1.0), at(SECONDS, 1.0));
+    let guide = Path::new()
+        .move_to(start.0, start.1)
+        .line_to(target.0, target.1)
+        .stroke(1.0, roles.edge());
+
+    Box::new(Canvas::new().width(WIDTH).height(HEIGHT).shapes(vec![
+        Box::new(guide),
+        Box::new(curve.stroke(2.0, roles.primary)),
+    ]))
+}
+
+// a number: `-`, the number to type over and its unit, `+`, in one outlined capsule; Up and Down step it
+fn stepper(
+    setting: &'static Setting,
+    value: u64,
+    steps: Steps,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    const SIDE: f32 = 30.0;
+    const NUMBER: f32 = 52.0;
+
     let key = setting.key;
     let Steps {
         least,
@@ -1660,26 +2161,93 @@ fn stepper(setting: &'static Setting, value: u64, steps: Steps, roles: &ThemeRol
             change(path(key, None), Some(Value::Integer(value as i64)));
         }
     };
+    let id = input(setting);
 
-    Row::new(children![
-        text_button("\u{2212}", roles, to(value.saturating_sub(step))),
-        text_field(input(setting), 64.0, "", roles, move |text| {
-            match text.trim().parse::<u64>() {
-                Ok(value) => to(value)(),
-                Err(_) => {
-                    Settings::write().refused =
-                        Some(format!("Not saved: {key}: expected {expected}"));
+    let unit = Text::new(unit)
+        .size(theme::text::LABEL)
+        .color(roles.on_surface_variant)
+        .weight(theme::text::MEDIUM);
+    let middle = NUMBER + 4.0 + fixed(Widget::width(&unit)) + 2.0 * 8.0;
+    let inside = FIELD - 2.0;
+
+    let side = |sign: &str, value: u64| {
+        Rectangle::new()
+            .width(SIDE)
+            .height(inside)
+            .align_child(Center, Center)
+            .cursor(Cursor::Pointer)
+            .on_click(left(to(value)))
+            .child(
+                Text::new(sign)
+                    .size(theme::text::BODY)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
+            )
+    };
+    let divider = || {
+        Rectangle::new()
+            .width(1.0)
+            .height(inside)
+            .fill(faint(roles.outline))
+    };
+
+    let token = ring::register(
+        Stop::new(format!("field {id}"))
+            .input(id)
+            .step(move |direction| {
+                // Up raises the number, as the arrows of a number field do
+                if direction < 0 {
+                    to(value + step)();
+                } else {
+                    to(value.saturating_sub(step))();
                 }
-            }
-        }),
-        Text::new(unit)
-            .size(theme::text::LABEL)
-            .color(roles.on_surface_variant)
-            .weight(theme::text::MEDIUM),
-        text_button("+", roles, to(value + step)),
-    ])
-    .gap(6.0)
-    .align(Center)
+            }),
+    );
+
+    outlined(
+        Rectangle::new()
+            .width(2.0 * SIDE + middle + 2.0 + 2.0)
+            .height(FIELD)
+            .radius(radius::ROW - 2.0)
+            .fill(roles.surface)
+            .align_child(Center, Center)
+            .child(
+                Row::new(children![
+                    side("\u{2212}", value.saturating_sub(step)),
+                    divider(),
+                    Rectangle::new()
+                        .width(middle)
+                        .height(inside)
+                        .padding(sides(8.0))
+                        .align_child(Start, Center)
+                        .child(
+                            Row::new(children![
+                                TextInput::new(id)
+                                    .width(NUMBER)
+                                    .size(theme::text::LABEL)
+                                    .color(roles.on_surface)
+                                    .on_submit(move |text| match text.trim().parse::<u64>() {
+                                        Ok(value) => to(value)(),
+                                        Err(_) => {
+                                            Settings::write().refused = Some(format!(
+                                                "Not saved: {key}: expected {expected}"
+                                            ));
+                                        }
+                                    }),
+                                unit,
+                            ])
+                            .gap(4.0)
+                            .align(Center),
+                        ),
+                    divider(),
+                    side("+", value + step),
+                ])
+                .align(Center),
+            ),
+        token,
+        Some(roles.edge()),
+        roles,
+    )
 }
 
 // a text field beside its label, saved by Enter, an empty one handing the key back
@@ -1703,49 +2271,76 @@ fn field_with_hint(
 }
 
 // a square button with a sign
-fn text_button(label: &str, roles: &ThemeRoles, press: impl Fn() + 'static) -> Rectangle {
-    Rectangle::new()
-        .width(28.0)
-        .height(28.0)
-        .radius(radius::ROW - 4.0)
-        .border(1.0, roles.outline)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(left(press))
-        .child(
-            Text::new(label)
-                .size(theme::text::BODY)
-                .color(roles.on_surface)
-                .weight(theme::text::SEMIBOLD),
-        )
+fn text_button(
+    id: String,
+    label: &str,
+    roles: &ThemeRoles,
+    press: impl Fn() + 'static,
+) -> Box<dyn Widget> {
+    button(
+        Rectangle::new()
+            .width(28.0)
+            .height(28.0)
+            .radius(radius::ROW - 4.0)
+            .align_child(Center, Center)
+            .child(
+                Text::new(label)
+                    .size(theme::text::BODY)
+                    .color(roles.on_surface)
+                    .weight(theme::text::SEMIBOLD),
+            ),
+        id,
+        press,
+        Some(roles.edge()),
+        roles,
+    )
 }
 
-fn icon_button(icon: Icon, roles: &ThemeRoles, press: impl Fn() + 'static) -> Rectangle {
-    Rectangle::new()
-        .width(28.0)
-        .height(28.0)
-        .radius(radius::ROW - 4.0)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(left(press))
-        .child(icon.on(14.0, roles.on_surface_variant))
+fn icon_button(
+    id: String,
+    icon: Icon,
+    roles: &ThemeRoles,
+    press: impl Fn() + 'static,
+) -> Box<dyn Widget> {
+    button(
+        Rectangle::new()
+            .width(28.0)
+            .height(28.0)
+            .radius(radius::ROW - 4.0)
+            .align_child(Center, Center)
+            .child(icon.on(14.0, roles.on_surface_variant)),
+        id,
+        press,
+        None,
+        roles,
+    )
 }
 
 // a word in the primary color that acts when pressed
-fn link(label: &str, roles: &ThemeRoles, press: impl Fn() + 'static) -> Rectangle {
+fn link(
+    id: String,
+    label: &str,
+    roles: &ThemeRoles,
+    press: impl Fn() + 'static,
+) -> Box<dyn Widget> {
     let text = Text::new(label)
         .size(theme::text::LABEL_SMALL)
         .color(roles.primary)
         .weight(theme::text::SEMIBOLD);
-    let width = fixed(Widget::width(&text)) + 4.0;
+    let width = fixed(Widget::width(&text)) + 8.0;
 
-    Rectangle::new()
-        .width(width)
-        .height(20.0)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(left(press))
-        .child(text)
+    button(
+        Rectangle::new()
+            .width(width)
+            .height(20.0)
+            .radius(5.0)
+            .align_child(Center, Center)
+            .child(text),
+        id,
+        press,
+        None,
+        roles,
+    )
 }
 
 // a text input, saved by Enter
@@ -1755,23 +2350,114 @@ fn text_field(
     placeholder: &str,
     roles: &ThemeRoles,
     submit: impl Fn(String) + 'static,
-) -> Rectangle {
-    Rectangle::new()
-        .width(width)
-        .height(FIELD)
-        .radius(radius::ROW - 2.0)
-        .fill(roles.surface_container_high)
-        .border(1.0, faint(roles.outline))
-        .padding(sides(10.0))
-        .align_child(Start, Center)
-        .child(
-            TextInput::new(id)
-                .width(Parent)
-                .size(theme::text::LABEL)
-                .color(roles.on_surface)
-                .placeholder(placeholder)
-                .on_submit(submit),
-        )
+) -> Box<dyn Widget> {
+    let token = ring::register(Stop::new(format!("field {id}")).input(id));
+
+    outlined(
+        Rectangle::new()
+            .width(width)
+            .height(FIELD)
+            .radius(radius::ROW - 2.0)
+            .fill(roles.surface)
+            .padding(sides(10.0))
+            .align_child(Start, Center)
+            .child(
+                TextInput::new(id)
+                    .width(Parent)
+                    .size(theme::text::LABEL)
+                    .color(roles.on_surface)
+                    .placeholder(placeholder)
+                    .on_submit(submit),
+            ),
+        token,
+        Some(roles.edge()),
+        roles,
+    )
+}
+
+/*
+ * a control with an edge of its own, which the ring takes the place of: 2 px in the ring's color
+ * where `resting` is a 1 px edge, or none. Moved into view when the ring arrives
+ */
+fn outlined(
+    control: Rectangle,
+    ring: Option<u64>,
+    resting: Option<Color>,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    match (ring, resting) {
+        (Some(token), _) => Box::new(Reveal::new(control.border(RING, roles.ring()), token)),
+        (None, Some(edge)) => Box::new(control.border(1.0, edge)),
+        (None, None) => Box::new(control),
+    }
+}
+
+/*
+ * a control whose own color is its edge, with a gap and a ring around it while the ring is on it.
+ * The gap is always there, so the ring arriving moves nothing
+ */
+fn halo(
+    control: impl Widget + 'static,
+    ring: Option<u64>,
+    corner: f32,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    let (width, height) = (fixed(control.width()), fixed(control.height()));
+    let around = Rectangle::new()
+        .width(width + 2.0 * HALO)
+        .height(height + 2.0 * HALO)
+        .radius(corner + HALO)
+        .padding(HALO)
+        .child(control);
+
+    match ring {
+        Some(token) => Box::new(Reveal::new(around.border(RING, roles.ring()), token)),
+        None => Box::new(around),
+    }
+}
+
+// a pressable of its own edge or none, that Enter and Space press as well
+fn button(
+    control: Rectangle,
+    id: impl Into<String>,
+    press: impl Fn() + 'static,
+    resting: Option<Color>,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    let press: Rc<dyn Fn()> = Rc::new(press);
+    let click = press.clone();
+    let token = ring::register(Stop::new(id).press(move || press()));
+
+    outlined(
+        control
+            .cursor(Cursor::Pointer)
+            .on_click(left(move || click())),
+        token,
+        resting,
+        roles,
+    )
+}
+
+// a pressable that is its own edge, in a halo
+fn pressed(
+    control: Rectangle,
+    id: String,
+    press: impl Fn() + 'static,
+    corner: f32,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    let press: Rc<dyn Fn()> = Rc::new(press);
+    let click = press.clone();
+    let token = ring::register(Stop::new(id).press(move || press()));
+
+    halo(
+        control
+            .cursor(Cursor::Pointer)
+            .on_click(left(move || click())),
+        token,
+        corner,
+        roles,
+    )
 }
 
 fn restart(roles: &ThemeRoles) -> Text {
@@ -1781,9 +2467,9 @@ fn restart(roles: &ThemeRoles) -> Text {
         .weight(theme::text::SEMIBOLD)
 }
 
-// a setting's help as a sentence, saying when it takes a restart
+// the line a setting shows under its name, saying when it takes a restart
 fn help(setting: &Setting) -> String {
-    let mut help = capitalized(setting.help);
+    let mut help = capitalized(setting.hint.unwrap_or(setting.help));
     if setting.restart {
         help.push_str(". Takes a restart");
     }
@@ -1795,7 +2481,12 @@ fn help(setting: &Setting) -> String {
 fn humanize(options: &Choices, option: &str) -> String {
     options
         .label(option)
-        .map_or_else(|| capitalized(&option.replace('-', " ")), str::to_owned)
+        .map_or_else(|| humanized(option), str::to_owned)
+}
+
+// a name with dashes as spaces, as a sentence
+fn humanized(name: &str) -> String {
+    capitalized(&name.replace('-', " "))
 }
 
 fn capitalized(text: &str) -> String {

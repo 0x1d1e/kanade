@@ -13,6 +13,18 @@ struct Focus {
 thread_local! {
     // only one text input takes keys at a time
     static FOCUS: RefCell<Option<Focus>> = const { RefCell::new(None) };
+
+    // the input that takes the keyboard when it is next drawn, for a key that moves to it
+    static WANTED: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+}
+
+pub fn want(id: &'static str) {
+    WANTED.set(Some(id));
+}
+
+// whether `id` was wanted, which it then no longer is
+pub fn wanted(id: &'static str) -> bool {
+    WANTED.with_borrow_mut(|wanted| wanted.take_if(|wanted| *wanted == id).is_some())
 }
 
 pub fn set(id: &'static str, on_key: KeyHandler) {
@@ -30,7 +42,10 @@ pub fn has(id: &'static str) -> bool {
 // returns whether a text input took the key
 pub fn send(key: Key) -> bool {
     // a text input has no use for these, so they go on to the window's on_key
-    if matches!(key, Key::Up | Key::Down | Key::Tab | Key::Other) {
+    if matches!(
+        key,
+        Key::Up | Key::Down | Key::Tab | Key::BackTab | Key::Other
+    ) {
         return false;
     }
 

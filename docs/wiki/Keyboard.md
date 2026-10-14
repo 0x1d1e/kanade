@@ -59,6 +59,7 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Calendar | Left/Right move a day, Up/Down a week, `n`/`p` a month, Home or `t` go to today; Tab or Enter enters the day's agenda, where Up/Down move through its events; Tab, Enter or Escape leave it; `a` adds an event to the day: type `14:30 Title`, `9:00-10:30 Title` or just a title for all day, Enter saves, Escape drops it; with the ring on an event you added, `e` changes it and `d` twice removes it (others are read-only) |
 | Timer, Capture | arrows and Tab move the ring over the tiles (a running timer: Pause or Resume, Skip, Cancel), Enter or Space presses what it is on; a screenshot or recording starts as the island closes |
 | Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
+| Settings | Tab and Shift+Tab move the ring through the pages, the controls and Undo, Enter or Space presses what it is on, arrows step a choice, a number or the page list (Up/Down in a number field), Escape leaves a field or the ring |
 | Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
 | Controls | Up/Down and Tab move the ring, Left/Right move it or adjust a slider, Enter or Space presses what it is on |
 | Media, Controls, Weather, Session | a typed character collapses an island opened from a keybind, so it goes to the window beneath |

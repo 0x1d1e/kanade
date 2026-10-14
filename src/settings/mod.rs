@@ -10,6 +10,7 @@
 mod file;
 mod fonts;
 mod layout;
+mod ring;
 mod view;
 
 use std::cell::RefCell;
@@ -52,6 +53,9 @@ pub struct Settings {
     fonts_error: Option<String>,
     font_query: String,
 
+    // what the Modules page's filter holds
+    module_query: String,
+
     // the config the files give now, the settings file included, which a reload applies
     read: Config,
 
@@ -89,6 +93,11 @@ impl Service for Settings {
 }
 
 impl Settings {
+    // whether the search shows its results in place of a page
+    fn searching(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
     // whether the settings file sets the key at `path`
     fn set_here(&self, path: &[String]) -> bool {
         let [first, rest @ ..] = path else {
@@ -248,7 +257,10 @@ pub fn open(page: Option<&'static str>) {
     if !kanade_runtime::window_open(WINDOW) {
         Settings::write().history.clear();
         Settings::write().query.clear();
+        Settings::write().module_query.clear();
         TextInput::set_text(SEARCH, "");
+        TextInput::set_text(MODULE_FILTER, "");
+        ring::reset();
     } else if page.is_some() {
         TextInput::set_text(SEARCH, "");
     }
@@ -358,6 +370,10 @@ fn search(query: String) {
     Settings::write().query = query;
 }
 
+fn module_filter(query: String) {
+    Settings::write().module_query = query;
+}
+
 fn font_search(query: String) {
     Settings::write().font_query = query;
 }
@@ -454,6 +470,7 @@ fn reset_inputs() {
 // the search fields' text input ids
 const SEARCH: &str = "settings search";
 const FONT_SEARCH: &str = "settings font search";
+const MODULE_FILTER: &str = "settings module filter";
 
 thread_local! {
     // each setting's text input id, made once, as an id lives as long as the input's text

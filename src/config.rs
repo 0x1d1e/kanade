@@ -698,8 +698,11 @@ pub struct Setting {
     // what Settings calls it
     pub label: &'static str,
 
-    // what it does, a line for the docs and Settings
+    // what it does, a line for the docs and `kanade config defaults`
     pub help: &'static str,
+
+    // a shorter line for Settings when `help` is written for the docs; none shows `help`
+    pub hint: Option<&'static str>,
 
     // what it takes, which says how it is checked and shown, and where in `Config` it goes
     pub kind: Kind,
@@ -1009,6 +1012,7 @@ pub const ISLAND: &[Setting] = &[
         key: "reduced_motion",
         label: "Reduce motion",
         help: "the island snaps to its new shape and fades its content; the fade is 80 ms at 100% animation speed; KANADE_REDUCED_MOTION=1 or 0 overrides it",
+        hint: Some("Snap to new shapes instead of morphing"),
         kind: Kind::Switch(Field {
             get: |config| config.island.motion == Mode::Reduced,
             set: |config, reduced| {
@@ -1023,6 +1027,7 @@ pub const ISLAND: &[Setting] = &[
         key: "clock",
         label: "Clock format",
         help: "the time an idle island shows: \"24h\" (14:05) or \"12h\" (2:05 PM)",
+        hint: Some("How an idle Island writes the time"),
         kind: Kind::Choice(
             Choices::labeled(&["24h", "12h"], &[("24h", "14:05"), ("12h", "2:05 PM")]),
             Field {
@@ -1046,6 +1051,7 @@ pub const ISLAND: &[Setting] = &[
         key: "timings.hover",
         label: "Peek delay",
         help: "pointer resting on a Compact island before it peeks",
+        hint: Some("How long the pointer rests before a Peek"),
         kind: Kind::Millis(Field {
             get: |config| config.island.hover,
             set: |config, hover| config.island.hover = hover,
@@ -1058,6 +1064,7 @@ pub const ISLAND: &[Setting] = &[
         key: "timings.expand",
         label: "Expansion",
         help: "morph to a larger form",
+        hint: Some("How long growing to a larger form takes"),
         kind: Kind::Millis(Field {
             get: |config| config.island.expand,
             set: |config, expand| config.island.expand = expand,
@@ -1070,6 +1077,7 @@ pub const ISLAND: &[Setting] = &[
         key: "timings.surface_change",
         label: "Content change",
         help: "one Surface replacing another, and a new track dissolving in",
+        hint: Some("How long one Surface takes to replace another"),
         kind: Kind::Millis(Field {
             get: |config| config.island.surface_change,
             set: |config, change| config.island.surface_change = change,
@@ -1082,6 +1090,7 @@ pub const ISLAND: &[Setting] = &[
         key: "timings.collapse",
         label: "Collapse",
         help: "morph to a smaller form",
+        hint: Some("How long shrinking to a smaller form takes"),
         kind: Kind::Millis(Field {
             get: |config| config.island.collapse,
             set: |config, collapse| config.island.collapse = collapse,
@@ -1094,6 +1103,7 @@ pub const ISLAND: &[Setting] = &[
         key: "timings.grace",
         label: "Leave delay",
         help: "pointer out before a Peek or Surface collapses",
+        hint: Some("How long the Island waits after the pointer leaves"),
         kind: Kind::Millis(Field {
             get: |config| config.island.grace,
             set: |config, grace| config.island.grace = grace,
@@ -1107,6 +1117,7 @@ pub const ISLAND: &[Setting] = &[
         key: "timings.osd",
         label: "Feedback duration",
         help: "the OSD, and a workspace switch on the island",
+        hint: Some("How long volume, brightness and workspace changes show"),
         kind: Kind::Millis(Field {
             get: |config| config.osd,
             set: |config, osd| config.osd = osd,
@@ -1119,6 +1130,7 @@ pub const ISLAND: &[Setting] = &[
         key: "theme.palette",
         label: "Legacy palette image",
         help: "accepted from older config files; no longer changes the shell theme",
+        hint: None,
         kind: Kind::Path(Field {
             get: |config| config.palette.clone(),
             set: |config, palette| config.palette = palette,
@@ -1131,6 +1143,7 @@ pub const ISLAND: &[Setting] = &[
         key: "shell.mode",
         label: "Arrangement",
         help: "separate keeps the Island and Dock in their own positions; combined puts both in one shell, with apps on either side",
+        hint: Some("Keep the Island and Dock apart, or join them in one shell"),
         kind: Kind::Choice(
             Choices::named(ShellMode::NAMES),
             Field {
@@ -1146,6 +1159,7 @@ pub const ISLAND: &[Setting] = &[
         key: "shell.edge",
         label: "Combined edge",
         help: "which top or bottom edge the combined shell hangs from; stored while Separate is active",
+        hint: Some("Top or bottom edge the joined shell hangs from"),
         kind: Kind::Choice(
             Choices::named(&["top", "bottom"]),
             Field {
@@ -1161,6 +1175,7 @@ pub const ISLAND: &[Setting] = &[
         key: "shell.align",
         label: "Combined position",
         help: "where along that edge the combined shell sits; stored while Separate is active",
+        hint: Some("Where along that edge the joined shell sits"),
         kind: Kind::Choice(
             Choices::named(Along::NAMES),
             Field {
@@ -1176,6 +1191,7 @@ pub const ISLAND: &[Setting] = &[
         key: "appearance.tone",
         label: "Color tone",
         help: "selects light or dark for Settings and apps; the Island, Dock and Banners follow the finish. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
+        hint: Some("Light or dark for Settings and apps"),
         kind: Kind::Choice(
             Choices::named(Tone::NAMES),
             Field {
@@ -1191,6 +1207,7 @@ pub const ISLAND: &[Setting] = &[
         key: "appearance.finish",
         label: "Finish",
         help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around",
+        hint: Some("What the Island, Dock and Banners are made of"),
         kind: Kind::Choice(
             Choices::named(Finish::NAMES),
             Field {
@@ -1206,6 +1223,7 @@ pub const ISLAND: &[Setting] = &[
         key: "appearance.sync",
         label: "Sync desktop appearance",
         help: "sets the desktop color preference and paired GTK theme; writes the wallpaper colors for GTK, qt5ct/qt6ct, KDE apps, niri, kitty and Pywalfox. Kvantum gives way to Darkly or Fusion; GTK and Qt apps need restart. Other apps are unchanged",
+        hint: Some("Match GTK, Qt, KDE, niri and kitty to the wallpaper"),
         kind: Kind::Switch(Field {
             get: |config| config.appearance.sync,
             set: |config, sync| config.appearance.sync = sync,
@@ -1218,6 +1236,7 @@ pub const ISLAND: &[Setting] = &[
         key: "animation.speed",
         label: "Animation speed",
         help: "100% is unchanged; higher values are faster. Interaction delays and countdowns do not change",
+        hint: Some("How fast the shell animates; 100% is the default"),
         kind: Kind::Percent(
             ANIMATION_SPEED,
             Field {
@@ -1233,6 +1252,7 @@ pub const ISLAND: &[Setting] = &[
         key: "appearance.motion",
         label: "Spring character",
         help: "how the Island and Dock settle: \"bouncy\" like macOS, \"smooth\" with no overshoot, \"snappy\", or \"playful\"",
+        hint: Some("How the Island and Dock settle into place"),
         kind: Kind::Choice(
             Choices::named(Bounce::NAMES),
             Field {
@@ -1248,6 +1268,7 @@ pub const ISLAND: &[Setting] = &[
         key: "appearance.font",
         label: "Font",
         help: "installed family for shell labels; unset uses Inter, then sans-serif. A family without a static SemiBold face renders regular weights",
+        hint: Some("Typeface for the shell's labels"),
         kind: Kind::Text(Field {
             get: |config| config.appearance.font.clone(),
             set: |config, font| config.appearance.font = font,
@@ -1262,6 +1283,7 @@ pub const ISLAND: &[Setting] = &[
         key: "island.edge",
         label: "Edge",
         help: "the edge of the screen the Island hangs from",
+        hint: None,
         kind: Kind::Choice(
             Choices::named(Edge::NAMES),
             Field {
@@ -1277,6 +1299,7 @@ pub const ISLAND: &[Setting] = &[
         key: "island.align",
         label: "Side",
         help: "where along its edge the Island sits",
+        hint: None,
         kind: Kind::Choice(
             Choices::named(Along::NAMES),
             Field {
@@ -1292,6 +1315,7 @@ pub const ISLAND: &[Setting] = &[
         key: "island.width",
         label: "Largest width",
         help: "how wide the Surfaces with a list grow, as their content asks",
+        hint: Some("How wide a list Surface can grow"),
         kind: Kind::Pixels(
             Largest::WIDTH,
             Field {
@@ -1307,6 +1331,7 @@ pub const ISLAND: &[Setting] = &[
         key: "island.height",
         label: "Largest height",
         help: "how tall the Surfaces with a list grow, as their content asks",
+        hint: Some("How tall a list Surface can grow"),
         kind: Kind::Pixels(
             Largest::HEIGHT,
             Field {
@@ -1322,6 +1347,7 @@ pub const ISLAND: &[Setting] = &[
         key: "island.autohide",
         label: "Hide at Rest",
         help: "an idle Island slides past its edge, back as the pointer touches the edge under it or anything shows",
+        hint: Some("Slide away while idle, back at the screen edge"),
         kind: Kind::Switch(Field {
             get: |config| config.island_place.autohide,
             set: |config, on| config.island_place.autohide = on,
@@ -1334,6 +1360,7 @@ pub const ISLAND: &[Setting] = &[
         key: "island.reserve",
         label: "Keep windows clear",
         help: "windows keep off the Island's strip of the screen, unless it autohides; off, it floats over them",
+        hint: Some("Keep windows out from under the Island"),
         kind: Kind::Switch(Field {
             get: |config| config.island_place.reserve,
             set: |config, on| config.island_place.reserve = on,
@@ -1346,6 +1373,7 @@ pub const ISLAND: &[Setting] = &[
         key: "rest.clock",
         label: "Clock at Rest",
         help: "an idle Island shows the time; with it and the battery off, the Island hides as it does with autohide",
+        hint: Some("Show the time while idle"),
         kind: Kind::Switch(Field {
             get: |config| config.rest.clock,
             set: |config, on| config.rest.clock = on,
@@ -1358,6 +1386,7 @@ pub const ISLAND: &[Setting] = &[
         key: "rest.battery",
         label: "Battery at Rest",
         help: "an idle Island shows the battery's percent after the time",
+        hint: Some("Show the battery after the time"),
         kind: Kind::Switch(Field {
             get: |config| config.rest.battery,
             set: |config, on| config.rest.battery = on,
@@ -1370,6 +1399,7 @@ pub const ISLAND: &[Setting] = &[
         key: "rest.peek.battery",
         label: "Battery in the clock's Peek",
         help: "the time's Peek shows the battery's percent beside the time, where an autohidden Island is seen",
+        hint: Some("Show the battery in the time's Peek"),
         kind: Kind::Switch(Field {
             get: |config| config.rest.peek_battery,
             set: |config, on| config.rest.peek_battery = on,
@@ -1382,6 +1412,7 @@ pub const ISLAND: &[Setting] = &[
         key: "rest.peek.weather",
         label: "Weather in the clock's Peek",
         help: "the time's Peek shows the weather beside the date",
+        hint: Some("Show the weather beside the date"),
         kind: Kind::Switch(Field {
             get: |config| config.rest.weather,
             set: |config, on| config.rest.weather = on,
@@ -1394,6 +1425,7 @@ pub const ISLAND: &[Setting] = &[
         key: "rest.peek.agenda",
         label: "Agenda in the clock's Peek",
         help: "the time's Peek shows the next event beside the date",
+        hint: Some("Show the next event beside the date"),
         kind: Kind::Switch(Field {
             get: |config| config.rest.agenda,
             set: |config, on| config.rest.agenda = on,
@@ -1406,6 +1438,7 @@ pub const ISLAND: &[Setting] = &[
         key: "privacy.indicators",
         label: "Capture indicators",
         help: "dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls; not shown over a fullscreen window",
+        hint: Some("Mark a microphone, camera or screen cast in use"),
         kind: Kind::Switch(Field {
             get: |config| config.privacy_indicators,
             set: |config, on| config.privacy_indicators = on,
@@ -1418,6 +1451,7 @@ pub const ISLAND: &[Setting] = &[
         key: "banners.entrance",
         label: "Banner entrance",
         help: "how a Banner comes in: \"morph\" out from under the Island, \"drop\" from the edge, or \"fade\"",
+        hint: Some("How a Banner arrives"),
         kind: Kind::Choice(
             Choices::named(Entrance::NAMES),
             Field {
@@ -1434,6 +1468,7 @@ pub const ISLAND: &[Setting] = &[
         key: "modules",
         label: "Modules",
         help: "every Module is on unless set to false here; idle is off unless set to true",
+        hint: None,
         kind: Kind::Modules(Field {
             get: |config| config.off.clone(),
             set: |config, off| config.off = off,
@@ -1450,6 +1485,7 @@ pub const NOTIFICATIONS: &[Setting] = &[Setting {
     key: "notifications.rules",
     label: "Notification rules",
     help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, bypass_dnd, timeout (ms) and urgency; file only",
+    hint: None,
     kind: Kind::Rules(Field {
         get: |config| config.notification_rules.clone(),
         set: |config, rules| config.notification_rules = rules,
@@ -1465,6 +1501,7 @@ pub const OSD: &[Setting] = &[Setting {
     key: "osd.layout",
     label: "Keyboard layout switch",
     help: "a keyboard layout switch shows as an OSD, with two or more layouts",
+    hint: Some("Show a keyboard layout switch"),
     kind: Kind::Switch(Field {
         get: |config| config.osd_layout,
         set: |config, on| config.osd_layout = on,
@@ -1478,6 +1515,7 @@ pub const WINDOWS: &[Setting] = &[Setting {
     key: "windows.apps",
     label: "App matching",
     help: "app id = the .desktop file it belongs to, where Kanade's guess is wrong",
+    hint: Some("Name the .desktop file of an app Kanade mismatches"),
     kind: Kind::AppIds(Field {
         get: |config| config.apps.clone(),
         set: |config, apps| config.apps = apps,
@@ -1492,6 +1530,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.pinned",
         label: "Pinned apps",
         help: ".desktop file ids, in the Dock's order",
+        hint: None,
         kind: Kind::DesktopIds(Field {
             get: |config| config.pinned.clone(),
             set: |config, pinned| config.pinned = pinned,
@@ -1504,6 +1543,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.edge",
         label: "Edge",
         help: "the edge of the screen the Dock sits on; beside the Island, on its edge and side or either centered, it sits further in than the Island; wherever the Island grows over it, as an open Surface, it steps aside and fades back as the Island closes",
+        hint: Some("Which screen edge the Dock sits on"),
         kind: Kind::Choice(
             Choices::named(Edge::NAMES),
             Field {
@@ -1519,6 +1559,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.align",
         label: "Side",
         help: "where along its edge the Dock sits",
+        hint: Some("Where along its edge the Dock sits"),
         kind: Kind::Choice(
             Choices::named(Along::NAMES),
             Field {
@@ -1534,6 +1575,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.autohide",
         label: "Hide until needed",
         help: "the Dock hides until the pointer touches the edge under it; beside the Island it always shows, as the pointer could not reach past the Island; merged with it, it folds into the Island as `merge = \"fold\"` does",
+        hint: Some("Hide until the pointer touches the edge"),
         kind: Kind::Switch(Field {
             get: |config| config.dock_place.autohide,
             set: |config, on| config.dock_place.autohide = on,
@@ -1546,6 +1588,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.reserve",
         label: "Keep windows clear",
         help: "windows keep off the Dock's strip of the screen, unless it autohides; off, it floats over them",
+        hint: Some("Keep windows out from under the Dock"),
         kind: Kind::Switch(Field {
             get: |config| config.dock_place.reserve,
             set: |config, on| config.dock_place.reserve = on,
@@ -1558,6 +1601,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.magnification",
         label: "Magnification",
         help: "how much an icon grows under the pointer, its neighbors less",
+        hint: Some("How much an icon grows under the pointer"),
         kind: Kind::Choice(
             Choices::named(Magnify::NAMES),
             Field {
@@ -1573,6 +1617,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.size",
         label: "Icon size",
         help: "how big the icons are at rest; the gaps between and how far the swell under the pointer reaches grow with them",
+        hint: Some("Icon size at rest"),
         kind: Kind::Choice(
             Choices::named(DockSize::NAMES),
             Field {
@@ -1588,6 +1633,7 @@ pub const DOCK: &[Setting] = &[
         key: "dock.merge",
         label: "Join the Island",
         help: "how the Dock and the Island join where they share an edge and a side, along a top or bottom edge: crown, the Island rising from the Dock's middle; keystone, the Island the Dock's middle piece; fold, the Dock unfolding out of the Island under the pointer; off, the Dock beside the Island, further in",
+        hint: Some("How the Dock joins the Island on a shared edge"),
         kind: Kind::Choice(
             Choices::named(Merge::NAMES),
             Field {
@@ -1606,6 +1652,7 @@ pub const WALLPAPER: &[Setting] = &[
         key: "wallpaper.directory",
         label: "Wallpaper folder",
         help: "the images the Wallpapers Surface shows, else ~/Pictures/Wallpapers",
+        hint: Some("Images the Wallpapers Surface shows"),
         kind: Kind::Path(Field {
             get: |config| config.wallpapers.clone(),
             set: |config, wallpapers| config.wallpapers = wallpapers,
@@ -1618,6 +1665,7 @@ pub const WALLPAPER: &[Setting] = &[
         key: "wallpaper.transition",
         label: "Transition",
         help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle",
+        hint: Some("How the wallpaper changes to a new image"),
         kind: Kind::Choice(
             Choices::named(Transition::KINDS),
             Field {
@@ -1633,6 +1681,7 @@ pub const WALLPAPER: &[Setting] = &[
         key: "wallpaper.transition_duration",
         label: "Transition length",
         help: "how long a transition other than \"simple\" takes",
+        hint: Some("How long a transition takes"),
         kind: Kind::Millis(Field {
             get: |config| config.transition.duration,
             set: |config, duration| config.transition.duration = duration,
@@ -1648,6 +1697,7 @@ pub const TIMER: &[Setting] = &[
         key: "timer.pomodoro.work",
         label: "Focus",
         help: "how long a pomodoro's focus lasts, unless `kanade timer pomodoro` says",
+        hint: Some("Length of a focus round"),
         kind: Kind::Count(
             Pomodoro::MINUTES,
             Field {
@@ -1663,6 +1713,7 @@ pub const TIMER: &[Setting] = &[
         key: "timer.pomodoro.break",
         label: "Break",
         help: "how long the break after a focus lasts",
+        hint: Some("Break after a focus round"),
         kind: Kind::Count(
             Pomodoro::MINUTES,
             Field {
@@ -1678,6 +1729,7 @@ pub const TIMER: &[Setting] = &[
         key: "timer.pomodoro.long_break",
         label: "Long break",
         help: "how long the break after the last round's focus lasts",
+        hint: Some("Break after the last round"),
         kind: Kind::Count(
             Pomodoro::MINUTES,
             Field {
@@ -1693,6 +1745,7 @@ pub const TIMER: &[Setting] = &[
         key: "timer.pomodoro.rounds",
         label: "Rounds",
         help: "how many focus rounds come before a long break",
+        hint: Some("Focus rounds before the long break"),
         kind: Kind::Count(
             Pomodoro::ROUNDS,
             Field {
@@ -1711,6 +1764,7 @@ pub const CALENDAR: &[Setting] = &[Setting {
     label: "Calendar files",
     help: "iCalendar (.ics) files and directories of them, read recursively, else \
            $XDG_DATA_HOME/calendars",
+    hint: Some("Calendar files and folders to read"),
     kind: Kind::Paths(Field {
         get: |config| config.calendars.clone(),
         set: |config, calendars| config.calendars = calendars,
@@ -1730,6 +1784,7 @@ pub const REMINDERS: &[Setting] = &[Setting {
     key: "calendar.reminder",
     label: "Default reminder",
     help: "minutes before a timed event with no reminders of its own to remind of it, 0 for none",
+    hint: Some("Minutes ahead to remind of an event; 0 for none"),
     kind: Kind::Minutes(
         REMINDER,
         Field {
@@ -1750,6 +1805,7 @@ pub const WEATHER: &[Setting] = &[
         label: "Location",
         help: "where the weather is for, as [latitude, longitude] in degrees, north and east \
                positive; unset fetches nothing",
+        hint: Some("Latitude and longitude the weather is for"),
         kind: Kind::Location(Field {
             get: |config| config.location,
             set: |config, location| config.location = location,
@@ -1762,6 +1818,7 @@ pub const WEATHER: &[Setting] = &[
         key: "weather.place",
         label: "Place name",
         help: "the location's name, which the Weather Surface shows",
+        hint: Some("Name the Weather Surface shows"),
         kind: Kind::Text(Field {
             get: |config| config.place.clone(),
             set: |config, place| config.place = place,
@@ -1774,6 +1831,7 @@ pub const WEATHER: &[Setting] = &[
         key: "weather.units",
         label: "Units",
         help: "°C and km/h, or °F and mph",
+        hint: Some("Metric or imperial"),
         kind: Kind::Choice(
             Choices::labeled(
                 &["metric", "imperial"],
@@ -1805,6 +1863,7 @@ pub const MEDIA: &[Setting] = &[Setting {
     key: "media.visualizer",
     label: "Media visualizer",
     help: "what moves beside a playing track",
+    hint: Some("What moves beside a playing track"),
     kind: Kind::Choice(
         Choices::named(Visualizer::NAMES),
         Field {
@@ -1826,6 +1885,7 @@ pub const LIVE: &[Setting] = &[Setting {
     key: "live.stale",
     label: "Withdraw after",
     help: "how long a live Activity from `kanade activity` shows without a word from its program",
+    hint: Some("How long to keep a live Activity its program stopped updating"),
     kind: Kind::Minutes(
         LIVE_STALE,
         Field {
@@ -1842,6 +1902,7 @@ pub const LOCK: &[Setting] = &[Setting {
     key: "lock.backdrop",
     label: "Backdrop",
     help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
+    hint: Some("What shows behind the lock screen clock"),
     kind: Kind::Choice(
         Choices::named(LockBackdrop::NAMES),
         Field {
@@ -1876,6 +1937,7 @@ pub const IDLE: &[Setting] = &[
         key: "idle.dim",
         label: "Dim after",
         help: "seconds idle before the screens fade toward dark, until the lock; any input brings them back; 0 is never",
+        hint: Some("Idle time before the screens fade toward dark; 0 never"),
         kind: Kind::Seconds(
             IDLE_SECONDS,
             Field {
@@ -1891,6 +1953,7 @@ pub const IDLE: &[Setting] = &[
         key: "idle.lock",
         label: "Lock after",
         help: "seconds idle before the session locks, as `kanade lock` does; 0 is never",
+        hint: Some("Idle time before the session locks; 0 never"),
         kind: Kind::Seconds(
             IDLE_SECONDS,
             Field {
@@ -1906,6 +1969,7 @@ pub const IDLE: &[Setting] = &[
         key: "idle.screen_off",
         label: "Screens off after",
         help: "seconds idle before niri powers the monitors off, back on at any input; never before the lock holds; 0 is never",
+        hint: Some("Idle time before the monitors switch off; 0 never"),
         kind: Kind::Seconds(
             IDLE_SECONDS,
             Field {
@@ -1921,6 +1985,7 @@ pub const IDLE: &[Setting] = &[
         key: "idle.suspend",
         label: "Suspend after",
         help: "seconds idle before the machine suspends, through logind; never before the lock holds; 0 is never",
+        hint: Some("Idle time before the machine suspends; 0 never"),
         kind: Kind::Seconds(
             IDLE_SECONDS,
             Field {
@@ -1939,6 +2004,7 @@ pub const BATTERY: &[Setting] = &[
         key: "battery.low",
         label: "Low battery",
         help: "at or below, a draining battery shows on the island",
+        hint: Some("Show the battery on the Island at or below this"),
         kind: Kind::Percent(
             Battery::LOW,
             Field {
@@ -1954,6 +2020,7 @@ pub const BATTERY: &[Setting] = &[
         key: "battery.critical",
         label: "Critical battery",
         help: "at or below, the battery interrupts and battery.critical_action counts down; one above battery.low counts as battery.low",
+        hint: Some("Count down to the critical action at or below this"),
         kind: Kind::Percent(
             Battery::CRITICAL,
             Field {
@@ -1969,6 +2036,7 @@ pub const BATTERY: &[Setting] = &[
         key: "battery.critical_action",
         label: "When critical",
         help: "what a draining critical battery does after a 60 s countdown that Cancel or a charger stops: \"none\", \"suspend\", \"hibernate\" or \"poweroff\"",
+        hint: Some("What a critical battery does after a 60 s countdown"),
         kind: Kind::Choice(
             Choices::labeled(
                 CriticalAction::NAMES,
@@ -1995,6 +2063,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
         key: "night-light.mode",
         label: "Night light",
         help: "warms the screen through wlsunset: \"off\", \"on\" all day, or on a \"schedule\" from sunset to sunrise",
+        hint: Some("Warm the screen at night"),
         kind: Kind::Choice(
             Choices::labeled(
                 NightMode::NAMES,
@@ -2013,6 +2082,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
         key: "night-light.temperature",
         label: "Warmth",
         help: "the screen's color temperature while warm; lower is warmer, 6500 is neutral",
+        hint: Some("Lower is warmer; 6500 is neutral"),
         kind: Kind::Kelvin(
             NightLight::TEMPERATURE,
             Field {
@@ -2028,6 +2098,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
         key: "night-light.sunset",
         label: "Warm from",
         help: "when the schedule warms the screen, as \"HH:MM\"; with night-light.sunrise it is the schedule, else the sun at weather.location is",
+        hint: Some("When the screen turns warm"),
         kind: Kind::DayTime(Field {
             get: |config| config.night_light.sunset,
             set: |config, time| config.night_light.sunset = time,
@@ -2040,6 +2111,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
         key: "night-light.sunrise",
         label: "Neutral from",
         help: "when the schedule turns the screen neutral again, as \"HH:MM\"",
+        hint: Some("When the screen turns neutral again"),
         kind: Kind::DayTime(Field {
             get: |config| config.night_light.sunrise,
             set: |config, time| config.night_light.sunrise = time,

@@ -138,6 +138,7 @@ fn to_key(event: &KeyEvent) -> Key {
         Keysym::Return | Keysym::KP_Enter => Key::Enter,
         Keysym::Escape => Key::Escape,
         Keysym::Tab => Key::Tab,
+        Keysym::ISO_Left_Tab => Key::BackTab,
         Keysym::BackSpace => Key::Backspace,
         Keysym::space => Key::Space,
         Keysym::Up => Key::Up,

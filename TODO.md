@@ -148,3 +148,6 @@ Not worth changing, by this review:
 - ADR numbers skip 0045.
 
 - Capture Surface: a failed screenshot or recording start is only logged to stderr, as the island is already closed; Record starts as the island collapses.
+
+- Settings: the header title sits at the window's left padding while the page column is centered; in a window maximized under the Island a long title runs under it.
+- Settings: stepper step sizes are fixed per kind, not adaptive to the range; its `-`/`+` buttons are pointer-only (Up/Down cover the keyboard).

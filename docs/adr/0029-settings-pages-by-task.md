@@ -1,6 +1,6 @@
 # 29. Settings pages by task
 
-Status: accepted. Amends the Settings window of #148, which had a page per Module.
+Status: accepted. Amends the Settings window of #148, which had a page per Module. Its "no live preview" is amended by [ADR 0053](0053-settings-keyboard-and-previews.md).
 
 ## Context
 
