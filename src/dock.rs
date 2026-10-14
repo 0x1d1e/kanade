@@ -1176,7 +1176,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .visible(items)
         // the strip's outline in the window, which the margins offset in the pane's canvas
         .blur(pane::blurred(
-            (items && shown > 0.0 && aside <= 0.0).then(|| body(strip_at)),
+            (items && shown > 0.0 && aside <= 0.0 && !fullscreen).then(|| body(strip_at)),
             (margin.left as f32, margin.top as f32),
         ))
         .input_region(

@@ -40,7 +40,8 @@ impl Dispatch<ExtBackgroundEffectManagerV1, ()> for WaylandState {
 
         let blur = match flags {
             WEnum::Value(flags) => flags.contains(Capability::Blur),
-            WEnum::Unknown(_) => false,
+            // a flag set with bits this build does not know still says whether it can blur
+            WEnum::Unknown(bits) => bits & Capability::Blur.bits() != 0,
         };
 
         if AVAILABLE.swap(blur, Ordering::Relaxed) != blur {
