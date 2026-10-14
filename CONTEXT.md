@@ -143,8 +143,8 @@ Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pin
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One solid black piece of the shell: the Island's body, the Dock, or one Banner (ADR 0049). A merged Island and Dock are one pane with one outline (ADR 0031).
-- **Invariant:** always black with light text, whatever `appearance.tone` says; nothing behind it is read.
+One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). A merged Island and Dock are one pane with one outline (ADR 0031).
+- **Invariant:** always opaque and tinted from the wallpaper's hue (a cool slate until Matugen answers) with light text, whatever `appearance.tone` says; nothing behind it is read.
 - **Avoid:** glass, frost, material, layer (a `pane::layer` widget), surface (a Surface is the Island's)
 
 ## Idle stage

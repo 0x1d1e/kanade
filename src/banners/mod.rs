@@ -848,7 +848,7 @@ fn mix(from: f32, to: f32, amount: f32) -> f32 {
 
 /*
  * the card as `look` says, what it says laid out at its full `height`, clipped to where it is, on
- * the Island's black
+ * the Island's tinted solid
  */
 fn drawn(banner: &Banner, look: &Look, height: f32, roles: &ThemeRoles) -> Rectangle {
     let at = look.at;

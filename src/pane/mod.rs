@@ -1,5 +1,6 @@
-//! A pane: the solid black the Island's body, the Dock and the Banners are drawn on (ADR 0049).
-//! Its shader fills the body's outline, one rounded rect or two united, and nothing else.
+//! A pane: the tinted solid the Island's body, the Dock and the Banners are drawn on (ADR 0050).
+//! Its shader fills the body's outline, one rounded rect or two united, with the fill a hair
+//! lighter at the top, a top light edge and a rim, and nothing else.
 
 mod body;
 mod shader;
@@ -29,6 +30,9 @@ pub struct Pane {
 // the shader's values, by row
 const BODY_ROW: usize = 1;
 const FILL_ROW: usize = 4;
+const LIT_ROW: usize = 5;
+const EDGE_ROW: usize = 6;
+const RIM_ROW: usize = 7;
 
 /*
  * the pane as big as the body and drawn from its top left corner under the content; the shader
@@ -36,7 +40,7 @@ const FILL_ROW: usize = 4;
  * content over it keep their place mid-press or mid-drag
  */
 pub fn layer(pane: Pane) -> Rectangle {
-    let mut values = vec![[0.0; 4]; FILL_ROW + 1];
+    let mut values = vec![[0.0; 4]; RIM_ROW + 1];
 
     values[0] = [pane.radius, 0.0, 0.0, 0.0];
 
@@ -57,7 +61,12 @@ pub fn layer(pane: Pane) -> Rectangle {
         ];
     }
 
-    values[FILL_ROW] = rgba(theme::SEMANTIC.island_surface);
+    let surface = theme::island().surface;
+
+    values[FILL_ROW] = rgba(surface);
+    values[LIT_ROW] = rgba(theme::tint::lit(surface));
+    values[EDGE_ROW] = rgba(theme::PANE_EDGE);
+    values[RIM_ROW] = rgba(theme::PANE_RIM);
 
     Rectangle::new()
         .width(pane.width)

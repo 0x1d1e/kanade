@@ -21,7 +21,7 @@ use toml::Value as Toml;
 use super::adapters::Scheme;
 use super::child::{self, Interrupt, Ran};
 use crate::look::Tone;
-use crate::theme::{self, ThemeRoles};
+use crate::theme::{self, ThemeRoles, tint};
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -29,6 +29,9 @@ const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
 struct Palettes {
     dark: ThemeRoles,
     light: ThemeRoles,
+
+    // the Island's tinted ramp, built once from the source color rather than every frame
+    island: ThemeRoles,
 }
 
 #[derive(Debug, Default)]
@@ -114,6 +117,15 @@ pub fn roles(tone: Tone) -> ThemeRoles {
             Tone::Dark => theme::ISLAND_DARK,
             Tone::Light => theme::ISLAND_LIGHT,
         })
+}
+
+// the tinted solid ramp of the wallpaper's source color; slate while there is none (ADR 0050)
+pub fn island_roles() -> ThemeRoles {
+    static SLATE: LazyLock<ThemeRoles> = LazyLock::new(|| tint::roles(tint::NEUTRAL));
+
+    Generated::read()
+        .palettes
+        .map_or(*SLATE, |palettes| palettes.island)
 }
 
 pub fn tone_changed(tone: Tone) {
@@ -556,9 +568,17 @@ fn parse(output: &[u8]) -> Result<Palettes, String> {
     let json: Json = serde_json::from_slice(output)
         .map_err(|error| format!("Matugen returned invalid JSON: {error}"))?;
 
+    let source = json
+        .get("colors")
+        .and_then(|colors| colors.get("source_color"))
+        .and_then(|role| mode_color(role, "dark"))
+        .and_then(hex)
+        .map_or(tint::NEUTRAL, tint::Source::of);
+
     Ok(Palettes {
         dark: parse_roles(&json, Tone::Dark)?,
         light: parse_roles(&json, Tone::Light)?,
+        island: tint::roles(source),
     })
 }
 
@@ -802,6 +822,7 @@ input_path = "include"
                     Run::Done(Ok(Palettes {
                         dark: theme::ISLAND_DARK,
                         light: theme::ISLAND_LIGHT,
+                        island: theme::ISLAND_DARK,
                     }))
                 },
                 move |serial, result| finished.send((serial, result.is_ok())).unwrap(),
@@ -902,6 +923,41 @@ input_path = "include"
         assert_eq!(palettes.light.surface_container.alpha(), 14);
         assert_eq!(palettes.dark.outline.alpha(), 64);
         assert_eq!(palettes.light.outline.alpha(), 46);
+    }
+
+    // the Island's tint comes from the wallpaper's source color, whatever the tone's palettes say
+    #[test]
+    fn the_island_is_tinted_from_the_source_color() {
+        let role = |dark: &str, light: &str| serde_json::json!({ "dark": dark, "light": light });
+        let mut colors = serde_json::Map::new();
+
+        for name in [
+            "primary",
+            "on_primary",
+            "surface",
+            "on_surface",
+            "on_surface_variant",
+            "surface_container",
+            "surface_container_high",
+            "outline",
+        ] {
+            colors.insert(name.to_string(), role("#101010", "#f0f0f0"));
+        }
+
+        let parse_with = |source: Option<&str>| {
+            let mut colors = colors.clone();
+
+            if let Some(source) = source {
+                colors.insert("source_color".into(), role(source, "#ffffff"));
+            }
+
+            parse(&serde_json::to_vec(&serde_json::json!({ "colors": colors })).unwrap()).unwrap()
+        };
+        let blue = parse_with(Some("#2040e0")).island;
+
+        assert_ne!(blue, parse_with(None).island);
+        assert_ne!(blue, parse_with(Some("#e04020")).island);
+        assert_eq!(parse_with(None).island, tint::roles(tint::NEUTRAL));
     }
 
     #[test]

@@ -2,13 +2,16 @@
 //! `island::service::Timings` and `island::motion::REDUCED_FADE`, as `island/` cannot see this
 //! file. No component writes a color literal (`src/boundary.rs`).
 //!
-//! The Island, Dock, Banners and Settings share light or dark roles. Matugen derives them from the
-//! wallpaper awww shows at startup or one Kanade sets; otherwise the shell uses its built-in roles.
+//! Settings and the app adapters take light or dark roles Matugen derives from the wallpaper awww
+//! shows at startup or one Kanade sets; otherwise the shell uses its built-in roles. The Island,
+//! Dock and Banners take a tinted solid ramp from that wallpaper's hue (`tint`, ADR 0050).
 
 use std::ffi::CString;
 
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
 use kanade_runtime::{App, Color};
+
+pub mod tint;
 
 // colors that mean something, the same in every theme
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -25,7 +28,7 @@ pub struct SemanticColors {
     // critical, like a battery about to die or a critical notification
     pub critical: Color,
 
-    // the Island's body, the Dock's and the Banners' (ADR 0049)
+    // the black of the lock screen's pill and disc (ADR 0049); the Island's body is tinted (ADR 0050)
     pub island_surface: Color,
 
     // text and glyphs on the Island
@@ -50,7 +53,7 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
     ..SEMANTIC
 };
 
-// the colors that mean something on the Island, which is black whatever the tone
+// the colors that mean something on the Island, which is a tinted solid whatever the tone
 pub fn signals() -> SemanticColors {
     SEMANTIC
 }
@@ -115,9 +118,9 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
     outline: Color::rgba(0, 0, 0, 46),
 };
 
-// the Island's roles, dark whatever `appearance.tone` is, as its body is black
+// the Island's roles, the same whatever `appearance.tone` is: dark, tinted by the wallpaper
 pub fn island() -> ThemeRoles {
-    crate::appearance::roles(crate::look::Tone::Dark)
+    crate::appearance::island_roles()
 }
 
 // Settings' mark, from top left to bottom right
@@ -149,6 +152,16 @@ pub const ON_SCENE: Color = Color::rgb(255, 255, 255);
  */
 pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
 pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
+
+// the ring of a pinned Island on the tinted ramp: white, so it reads on every hue (ADR 0050)
+pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
+
+/*
+ * a pane's top light edge and its rim, white over the fill: the edge a 1 px line along the top,
+ * following the corners, the rim a 1 px line all round, inside the outline
+ */
+pub const PANE_EDGE: Color = Color::rgba(255, 255, 255, 26);
+pub const PANE_RIM: Color = Color::rgba(255, 255, 255, 15);
 
 // what the idle dim grace fades the outputs to before the lock (ADR 0047)
 pub const IDLE_DIM: Color = Color::rgb(0, 0, 0);

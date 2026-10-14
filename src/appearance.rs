@@ -35,3 +35,8 @@ pub fn shown_wallpaper(path: std::path::PathBuf) {
 pub fn roles(tone: Tone) -> ThemeRoles {
     matugen::roles(tone)
 }
+
+// the Island, Dock and Banners' tinted solid ramp (ADR 0050)
+pub fn island_roles() -> ThemeRoles {
+    matugen::island_roles()
+}

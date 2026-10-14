@@ -487,7 +487,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let size = Size::of(config.dock_size);
     let now = Instant::now();
 
-    // dark, as the pane under them is black, not the palette's background
+    // dark, as the pane under them is dark, not the palette's background
     let roles = theme::island();
     let pieces = pieces(&items);
 

@@ -164,7 +164,7 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Appearance {
-    // Settings' and apps' tone; the Island, Dock and Banners are black whatever it is
+    // Settings' and apps' tone; the Island, Dock and Banners are a tinted solid whatever it is
     pub tone: Tone,
 
     // share the tone with supported desktop, GTK, Qt and Zen appearance adapters
@@ -1172,7 +1172,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.tone",
         label: "Color tone",
-        help: "selects light or dark for Settings and apps; the Island, Dock and Banners stay black. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
+        help: "selects light or dark for Settings and apps; the Island, Dock and Banners are a tinted solid. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
         kind: Kind::Choice(
             Choices::named(Tone::NAMES),
             Field {

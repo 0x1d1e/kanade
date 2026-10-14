@@ -42,7 +42,7 @@ edge = "top"
 align = "center"
 
 [appearance]
-# selects light or dark for Settings and apps; the Island, Dock and Banners stay black. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets
+# selects light or dark for Settings and apps; the Island, Dock and Banners are a tinted solid. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets
 tone = "dark"
 # sets the desktop color preference and paired GTK theme; writes the wallpaper colors for GTK, qt5ct/qt6ct, KDE apps, niri, kitty and Pywalfox. Kvantum gives way to Darkly or Fusion; GTK and Qt apps need restart. Other apps are unchanged
 sync = false
