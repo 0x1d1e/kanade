@@ -1,6 +1,7 @@
 //! The Media Surface: art, title and artist, timeline, prev/play/next, the speaker volume,
 //! and which player it shows. Every part keeps its place in every state, so nothing moves when a
-//! player opens, art loads, or a title runs long.
+//! player opens, art loads, or a title runs long. A player that can seek has its timeline set by a
+//! press or a drag along it, or Left and Right with the ring on it.
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -8,15 +9,19 @@ use std::time::{Duration, Instant};
 use crate::sources::pulse::Audio;
 use kanade_runtime::service::Service;
 use kanade_runtime::{
-    Center, Color, Column, Cursor, End, Padding, Rectangle, Row, Scroll, SpaceBetween, Stack,
-    Start, Text, Widget, children, request_frame,
+    Button, Center, Color, Column, Cursor, End, Key, Padding, Rectangle, Row, Scroll, SpaceBetween,
+    Stack, Start, Text, Widget, children, request_frame,
 };
 
+use super::grid::moved;
+use super::pad::Focus;
 use super::slider::Slider;
+use super::{Outline, store};
 use crate::icon::Icon;
 use crate::island::activity::Track;
 use crate::island::geometry;
-use crate::island::presentation::Surface;
+use crate::island::presentation::{Presentation, Surface};
+use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::media::{self, Control};
 use crate::sources::playback::{Choice, Deck, Playback};
@@ -39,11 +44,41 @@ const CHIP_MIN: f32 = 64.0;
 const BUTTON: f32 = 36.0;
 const PLAY: f32 = 44.0;
 
+// the timeline's block: the ring's room around the bar and its thumb, then the times
+const SIDE: f32 = 4.0;
+const THUMB: f32 = 12.0;
+const BLOCK: f32 = 36.0;
+
+// how far Left and Right move a player
+const STEP: i64 = 5;
+
+// what the ring can be on
+#[derive(Debug, Clone, PartialEq)]
+enum At {
+    // a player's chip, by its bus name, and the one that turns to the page after
+    Chip(String),
+    More(usize),
+    Timeline,
+    Previous,
+    Play,
+    Next,
+    Speaker,
+    Controls,
+}
+
+impl Service for Focus<At> {
+    fn new() -> Self {
+        Focus::default()
+    }
+
+    fn listen() {}
+}
+
 /*
  * `open` says the Surface is open rather than fading out, so only then does it ask the follower
  * to keep it fed
  */
-pub fn surface(monitor: &str, open: bool, now: Instant) -> Rectangle {
+pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, now: Instant) -> Rectangle {
     if open {
         media::watch();
     }
@@ -53,6 +88,11 @@ pub fn surface(monitor: &str, open: bool, now: Instant) -> Rectangle {
     let width = shape.width - 2.0 * INSET;
 
     let deck = playback.shown.as_ref();
+    let (grid, chips) = grid(&playback);
+    let ring = open
+        .then(|| Focus::<At>::read().of(visit, held).ring.on(&grid, chips))
+        .flatten();
+    let ring = ring.as_ref();
     let accent = deck.map_or(theme::island().on_surface, |deck| deck.accent.at(now));
 
     // the dissolve and the tint are the follower's, so the Surface asks for frames until they rest
@@ -79,10 +119,21 @@ pub fn surface(monitor: &str, open: bool, now: Instant) -> Rectangle {
             Column::new(children![
                 rise(
                     0,
-                    header(track, &playback.players, deck, playback.page, width, now)
+                    header(
+                        track,
+                        &playback.players,
+                        deck,
+                        playback.page,
+                        width,
+                        now,
+                        ring
+                    )
                 ),
-                rise(1, timeline(deck, accent, width, now)),
-                rise(2, controls(monitor, deck, accent, width)),
+                rise(
+                    1,
+                    timeline(deck, accent, width, now, ring == Some(&At::Timeline))
+                ),
+                rise(2, controls(monitor, deck, accent, width, ring)),
             ])
             .width(width)
             .gap(12.0),
@@ -104,6 +155,7 @@ fn header(
     page: Option<usize>,
     width: f32,
     now: Instant,
+    ring: Option<&At>,
 ) -> Row {
     let words = width - ART - GAP;
 
@@ -151,7 +203,7 @@ fn header(
                 .width(words)
                 .height(ART)
                 .align_child(Start, End)
-                .child(choices(players, shown, page, words)),
+                .child(choices(players, shown, page, words, ring)),
         ])
         .width(words)
         .height(ART),
@@ -164,7 +216,13 @@ fn header(
  * until the Surface closes. Past what fits, a page of them, first the one with the shown player,
  * and a "+N" chip that only turns to the next page
  */
-fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: f32) -> Row {
+fn choices(
+    players: &[Choice],
+    shown: Option<&str>,
+    page: Option<usize>,
+    width: f32,
+    ring: Option<&At>,
+) -> Row {
     if let [only] = players {
         return Row::new(children![
             Text::new(&only.identity)
@@ -186,7 +244,9 @@ fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: 
 
         let select = Control::Select(player.name.clone());
 
-        chip(&player.identity, chips.width, selected, select)
+        let ring = ring == Some(&At::Chip(player.name.clone()));
+
+        chip(&player.identity, chips.width, selected, ring, select)
     });
 
     let more = chips.more.map(|next| {
@@ -196,6 +256,7 @@ fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: 
             &format!("+{hidden}"),
             chips.width,
             false,
+            ring == Some(&At::More(next)),
             Control::Page(next),
         )
     });
@@ -203,7 +264,7 @@ fn choices(players: &[Choice], shown: Option<&str>, page: Option<usize>, width: 
     Row::new(page.chain(more).collect()).gap(CHIP_GAP)
 }
 
-fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Widget> {
+fn chip(label: &str, width: f32, selected: bool, ring: bool, control: Control) -> Box<dyn Widget> {
     let chip = Rectangle::new()
         .width(width)
         .height(CHIP)
@@ -216,7 +277,7 @@ fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Wi
         })
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
-        .on_click(super::on_left(move || {
+        .on_click(pointed(move || {
             media::control(control.clone());
         }))
         .child(
@@ -231,11 +292,13 @@ fn chip(label: &str, width: f32, selected: bool, control: Control) -> Box<dyn Wi
                 .elide(),
         );
 
-    Box::new(if selected {
+    let chip = if selected {
         chip.fill(theme::island().surface_container_high)
     } else {
         chip.border(1.0, theme::island().surface_container_high)
-    })
+    };
+
+    Box::new(chip.border_if(ring))
 }
 
 // which player chips show, and how wide each is
@@ -285,9 +348,15 @@ fn chip_width(width: f32, slots: usize) -> f32 {
     ((width - CHIP_GAP * (slots - 1.0)) / slots).min(CHIP_WIDTH)
 }
 
-// how far along, with the time played and the time left; times only once the player says them
-fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant) -> Column {
+/*
+ * how far along, with the time played and the time left; times only once the player says them. One
+ * that can seek has a thumb on the bar, and the whole block takes a press or a drag, `SIDE` being
+ * the room for the ring around the track, whose ends are the bar's
+ */
+fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant, ring: bool) -> Rectangle {
     let timeline = deck.map(|deck| deck.timeline);
+    let seek = deck.filter(|deck| deck.can_seek);
+    let inner = width - 2.0 * SIDE;
 
     let fraction = timeline.map_or(0.0, |timeline| timeline.fraction(now));
     let (played, left) = timeline.map_or((String::new(), String::new()), |timeline| {
@@ -309,15 +378,79 @@ fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant) -> Col
             .weight(theme::text::MEDIUM)
     };
 
-    Column::new(children![
-        bar(width, fraction, accent),
-        Row::new(children![time(played), time(left)])
-            .width(width)
-            .height(16.0)
-            .justify(SpaceBetween)
-            .align(Center),
-    ])
-    .gap(6.0)
+    // the thumb's room is there with or without one, so nothing moves when a player can seek
+    let mut track = children![
+        Rectangle::new()
+            .width(inner)
+            .height(THUMB)
+            .align_child(Start, Center)
+            .child(bar(inner, fraction, accent)),
+    ];
+
+    if seek.is_some() {
+        let left = (inner * fraction - THUMB / 2.0).clamp(0.0, inner - THUMB);
+
+        track.push(Box::new(
+            Rectangle::new()
+                .width(inner)
+                .height(THUMB)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left,
+                })
+                .align_child(Start, Center)
+                .child(
+                    Rectangle::new()
+                        .width(THUMB)
+                        .height(THUMB)
+                        .radius(THUMB / 2.0)
+                        .fill(accent),
+                ),
+        ));
+    }
+
+    let block = Rectangle::new()
+        .width(width)
+        .height(BLOCK)
+        .radius(8.0)
+        .padding(Padding {
+            top: 2.0,
+            right: SIDE,
+            bottom: 2.0,
+            left: SIDE,
+        })
+        .align_child(Start, Start)
+        .border_if(ring)
+        .child(
+            Column::new(children![
+                Stack::new(track).width(inner).height(THUMB),
+                Row::new(children![time(played), time(left)])
+                    .width(inner)
+                    .height(16.0)
+                    .justify(SpaceBetween)
+                    .align(Center),
+            ])
+            .gap(4.0),
+        );
+
+    let Some(deck) = seek else {
+        return block;
+    };
+
+    let (name, length) = (deck.name.clone(), deck.timeline.length);
+
+    block.cursor(Cursor::Pointer).on_drag(move |point| {
+        crate::view::claim();
+        hide();
+        media::seek(name.clone(), place(length, (point.x - SIDE) / inner));
+    })
+}
+
+// where along a track `length` long a press at `fraction` of the bar is, the ends being its own
+fn place(length: Duration, fraction: f32) -> Duration {
+    length.mul_f64(f64::from(fraction.clamp(0.0, 1.0)))
 }
 
 // 3:07, or 1:02:07 past an hour
@@ -333,26 +466,38 @@ fn clock(time: Duration) -> String {
 }
 
 // previous, play or pause, next; then the speaker, pressed to mute, its level, and Controls
-fn controls(monitor: &str, deck: Option<&Deck>, accent: Color, width: f32) -> Row {
-    let able = |can: fn(&Deck) -> bool| deck.filter(|deck| can(deck)).map(|deck| deck.name.clone());
-
+fn controls(
+    monitor: &str,
+    deck: Option<&Deck>,
+    accent: Color,
+    width: f32,
+    ring: Option<&At>,
+) -> Row {
     let transport = Row::new(children![
         button(
             Transport::Previous,
             BUTTON,
             None,
-            able(|deck| deck.can_previous).map(Control::Previous)
+            able(deck, |deck| deck.can_previous).map(Control::Previous),
+            ring == Some(&At::Previous),
         ),
         {
             let (glyph, control) = play_pause(deck);
 
-            button(glyph, PLAY, Some(theme::island().primary), control)
+            button(
+                glyph,
+                PLAY,
+                Some(theme::island().primary),
+                control,
+                ring == Some(&At::Play),
+            )
         },
         button(
             Transport::Next,
             BUTTON,
             None,
-            able(|deck| deck.can_next).map(Control::Next)
+            able(deck, |deck| deck.can_next).map(Control::Next),
+            ring == Some(&At::Next),
         ),
     ])
     .gap(8.0)
@@ -369,27 +514,37 @@ fn controls(monitor: &str, deck: Option<&Deck>, accent: Color, width: f32) -> Ro
         level
     };
 
-    let mut row: Vec<Box<dyn Widget>> = vec![Box::new(transport), Box::new(volume(level, accent))];
+    let mut row: Vec<Box<dyn Widget>> = vec![
+        Box::new(transport),
+        Box::new(volume(level, accent, ring == Some(&At::Speaker))),
+    ];
     if controls {
-        row.push(Box::new(to_controls(monitor)));
+        row.push(Box::new(to_controls(monitor, ring == Some(&At::Controls))));
     }
 
     Row::new(row).width(width).gap(gap).align(Center)
 }
 
 // opens Controls in place of the player
-fn to_controls(monitor: &str) -> Rectangle {
+fn to_controls(monitor: &str, ring: bool) -> Rectangle {
     let monitor = monitor.to_owned();
 
     Rectangle::new()
         .width(TARGET)
         .height(TARGET)
+        .radius(TARGET / 2.0)
         .align_child(Center, Center)
+        .border_if(ring)
         .cursor(Cursor::Pointer)
-        .on_click(super::on_left(move || {
+        .on_click(pointed(move || {
             crate::view::open(&monitor, Surface::Controls, false);
         }))
         .child(Icon::Sliders.on(20.0, theme::island().on_surface_variant))
+}
+
+// the shown player's bus name when it can do what `can` says
+fn able(deck: Option<&Deck>, can: fn(&Deck) -> bool) -> Option<String> {
+    deck.filter(|deck| can(deck)).map(|deck| deck.name.clone())
 }
 
 // a playing player pauses, any other plays; each only when the player says it can
@@ -413,7 +568,13 @@ fn play_pause(deck: Option<&Deck>) -> (Transport, Option<Control>) {
  * gpu a canvas of its own every frame. The body-colored glyph on a fill stays solid, it
  * shows the body through either way
  */
-fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Control>) -> Rectangle {
+fn button(
+    glyph: Transport,
+    side: f32,
+    fill: Option<Color>,
+    control: Option<Control>,
+    ring: bool,
+) -> Rectangle {
     let fade = |color: Color| match control {
         Some(_) => color,
         None => faded(color),
@@ -435,14 +596,13 @@ fn button(glyph: Transport, side: f32, fill: Option<Color>, control: Option<Cont
     let button = match fill {
         Some(fill) => button.fill(fade(fill)),
         None => button,
-    };
+    }
+    .border_if(ring);
 
     match control {
-        Some(control) => button
-            .cursor(Cursor::Pointer)
-            .on_click(super::on_left(move || {
-                media::control(control.clone());
-            })),
+        Some(control) => button.cursor(Cursor::Pointer).on_click(pointed(move || {
+            media::control(control.clone());
+        })),
         None => button,
     }
 }
@@ -456,9 +616,19 @@ fn faded(color: Color) -> Color {
  * the speaker's icon and its level `width` wide, set by a press or a drag along it; with `audio`
  * off Audio is never read, and both are faded and empty
  */
-fn volume(width: f32, accent: Color) -> Row {
+fn volume(width: f32, accent: Color, ring: bool) -> Rectangle {
+    // the speaker and its bar, in the ring's room
+    let level = |row: Row| {
+        Rectangle::new()
+            .width(TARGET + 10.0 + width)
+            .height(TARGET)
+            .radius(TARGET / 2.0)
+            .align_child(Start, Center)
+            .child(row.gap(10.0).align(Center))
+    };
+
     if !modules::on("audio") {
-        return Row::new(children![
+        return level(Row::new(children![
             Rectangle::new()
                 .width(TARGET)
                 .height(TARGET)
@@ -471,9 +641,7 @@ fn volume(width: f32, accent: Color) -> Row {
                 .align_child(Start, Center)
                 .opacity(DISABLED)
                 .child(bar(width, 0.0, accent)),
-        ])
-        .gap(10.0)
-        .align(Center);
+        ]));
     }
 
     let audio = Audio::read();
@@ -491,7 +659,7 @@ fn volume(width: f32, accent: Color) -> Row {
         .height(TARGET)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
-        .on_click(super::on_left(|| {
+        .on_click(pointed(|| {
             Audio::toggle_mute();
         }))
         .child(icon.draw(20.0));
@@ -502,9 +670,226 @@ fn volume(width: f32, accent: Color) -> Row {
         accent
     };
 
-    let level = Slider::Speaker.bar(width, f32::from(percent) / 100.0, tone);
+    let bar = Slider::Speaker.bar(width, f32::from(percent) / 100.0, tone);
 
-    Row::new(children![speaker, level]).gap(10.0).align(Center)
+    level(Row::new(children![speaker, bar])).border_if(ring)
+}
+
+/*
+ * the targets, row by row, each with where its middle is across the Surface from 0 to 1: the
+ * player chips when there are several, then the timeline of a player that can seek, then the
+ * transport, the speaker and Controls. The ring starts on the row after the chips, which are the
+ * `header` rows
+ */
+fn grid(playback: &Playback) -> (Vec<Vec<(At, f32)>>, usize) {
+    let width = geometry::MEDIA.width - 2.0 * INSET;
+    let deck = playback.shown.as_ref();
+    let mut rows = Vec::new();
+
+    if playback.players.len() > 1 {
+        let index = deck.and_then(|deck| {
+            playback
+                .players
+                .iter()
+                .position(|player| player.name == deck.name)
+        });
+        let chips = Chips::of(
+            playback.players.len(),
+            index,
+            playback.page,
+            width - ART - GAP,
+        );
+
+        let ats = playback.players[chips.page.clone()]
+            .iter()
+            .map(|player| At::Chip(player.name.clone()))
+            .chain(chips.more.map(At::More));
+
+        rows.push(
+            ats.enumerate()
+                .map(|(place, at)| {
+                    let middle = ART + GAP + (place as f32 + 0.5) * (chips.width + CHIP_GAP);
+
+                    (at, middle / width)
+                })
+                .collect(),
+        );
+    }
+
+    let header = rows.len();
+
+    if deck.is_some_and(|deck| deck.can_seek) {
+        rows.push(vec![(At::Timeline, 0.5)]);
+    }
+
+    // where each button's middle is along the transport
+    let mut row = Vec::new();
+
+    if able(deck, |deck| deck.can_previous).is_some() {
+        row.push((At::Previous, BUTTON / 2.0 / width));
+    }
+
+    if play_pause(deck).1.is_some() {
+        row.push((At::Play, (BUTTON + 8.0 + PLAY / 2.0) / width));
+    }
+
+    if able(deck, |deck| deck.can_next).is_some() {
+        row.push((At::Next, (BUTTON + 8.0 + PLAY + 8.0 + BUTTON / 2.0) / width));
+    }
+
+    if modules::on("audio") {
+        row.push((At::Speaker, 0.6));
+    }
+
+    if modules::on("controls") {
+        row.push((At::Controls, 1.0 - TARGET / 2.0 / width));
+    }
+
+    if !row.is_empty() {
+        rows.push(row);
+    }
+
+    (rows, header)
+}
+
+// what a key asks for beyond moving the ring
+#[derive(Debug, PartialEq)]
+enum Act {
+    Press(At),
+
+    // Left or Right on a level: -1 or 1
+    Step(At, i64),
+}
+
+/*
+ * the focus after a key and what it asks for, none when the key is not the Surface's, as Escape,
+ * which closes it. A key while the ring hides only shows it, so nothing is pressed that it was not
+ * seen on. On the timeline and the speaker Left and Right move the level, not the ring
+ */
+fn step(
+    focus: Focus<At>,
+    key: Key,
+    grid: &[Vec<(At, f32)>],
+    header: usize,
+) -> Option<(Focus<At>, Option<Act>)> {
+    let place = focus.ring.place(grid, header)?;
+    let at = grid[place.row][place.column].0.clone();
+    let level = matches!(at, At::Timeline | At::Speaker);
+
+    let act = match key {
+        Key::Enter | Key::Space if at != At::Timeline => Some(Act::Press(at.clone())),
+        Key::Left if level => Some(Act::Step(at.clone(), -1)),
+        Key::Right if level => Some(Act::Step(at.clone(), 1)),
+        _ => None,
+    };
+
+    let to = match key {
+        Key::Left | Key::Right if level => None,
+        _ => moved(place, key, grid),
+    };
+
+    if act.is_none() && to.is_none() {
+        return None;
+    }
+
+    if let Some(ring) = focus.ring.revealed(grid, header) {
+        return Some((Focus { ring }, None));
+    }
+
+    let ring = match to {
+        Some(to) => focus.ring.onto(grid[to.row][to.column].0.clone()),
+        None => focus.ring,
+    };
+
+    Some((Focus { ring }, act))
+}
+
+/*
+ * a key while this island shows the Media Surface; false for one it does not use, as Escape,
+ * which the window's own keys then get to close it
+ */
+pub fn key(monitor: &str, key: Key) -> bool {
+    let (visit, held) = {
+        let island = IslandService::read();
+
+        if island.presentation(monitor) != Presentation::Expanded(Surface::Media) {
+            return false;
+        }
+
+        (island.visit(), island.held(monitor))
+    };
+
+    let playback = Playback::read().clone();
+    let (grid, header) = grid(&playback);
+
+    let Some((focus, act)) = step(Focus::<At>::read().of(visit, held), key, &grid, header) else {
+        return false;
+    };
+
+    if let Some(act) = act {
+        press(monitor, playback.shown.as_ref(), act);
+    }
+
+    store(focus);
+
+    IslandService::write().attend(monitor, Instant::now());
+
+    true
+}
+
+// what a key's act does, as the pointer would on the same target; what the player cannot do is nothing
+fn press(monitor: &str, deck: Option<&Deck>, act: Act) {
+    match act {
+        Act::Press(At::Chip(name)) => media::control(Control::Select(name)),
+        Act::Press(At::More(page)) => media::control(Control::Page(page)),
+        Act::Press(At::Previous) => {
+            if let Some(name) = able(deck, |deck| deck.can_previous) {
+                media::control(Control::Previous(name));
+            }
+        }
+        Act::Press(At::Play) => {
+            if let Some(control) = play_pause(deck).1 {
+                media::control(control);
+            }
+        }
+        Act::Press(At::Next) => {
+            if let Some(name) = able(deck, |deck| deck.can_next) {
+                media::control(Control::Next(name));
+            }
+        }
+        Act::Press(At::Speaker) => {
+            if modules::on("audio") {
+                Audio::toggle_mute();
+            }
+        }
+        Act::Press(At::Controls) => crate::view::open(monitor, Surface::Controls, false),
+        Act::Press(At::Timeline) => {}
+        Act::Step(At::Timeline, direction) => {
+            if let Some(deck) = deck.filter(|deck| deck.can_seek) {
+                media::control(Control::SeekBy(deck.name.clone(), direction * STEP));
+            }
+        }
+
+        // the wheel counts down as lower
+        Act::Step(At::Speaker, direction) => Slider::Speaker.wheel(-direction as f32),
+        Act::Step(..) => {}
+    }
+}
+
+// a press or drag with the pointer: the ring hides, since the pointer is what moves now
+fn pointed(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
+    super::on_left(move || {
+        hide();
+        press();
+    })
+}
+
+fn hide() {
+    let visit = IslandService::read().visit();
+
+    store(Focus {
+        ring: Focus::<At>::read().of(visit, false).ring.hidden(),
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -526,5 +911,56 @@ impl Transport {
         };
 
         icon.on(side, tone)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid() -> Vec<Vec<(At, f32)>> {
+        vec![
+            vec![(At::Timeline, 0.5)],
+            vec![(At::Play, 0.2), (At::Controls, 0.9)],
+        ]
+    }
+
+    // a ring that hides is shown by the first key, which seeks nothing
+    #[test]
+    fn a_hidden_ring_is_shown_before_a_key_seeks() {
+        let hidden = Focus::<At>::default().of(1, false);
+
+        let (shown, act) = step(hidden, Key::Right, &grid(), 0).unwrap();
+
+        assert_eq!(act, None);
+        assert_eq!(shown.ring.on(&grid(), 0), Some(At::Timeline));
+
+        let (_, act) = step(shown, Key::Left, &grid(), 0).unwrap();
+
+        assert_eq!(act, Some(Act::Step(At::Timeline, -1)));
+    }
+
+    // Left and Right move a level, so the ring leaves the timeline only by Down or Tab
+    #[test]
+    fn arrows_on_the_timeline_do_not_move_the_ring() {
+        let focus = Focus::<At>::default().of(1, true);
+
+        let (after, _) = step(focus.clone(), Key::Right, &grid(), 0).unwrap();
+
+        assert_eq!(after.ring.on(&grid(), 0), Some(At::Timeline));
+        assert_eq!(step(focus.clone(), Key::Enter, &grid(), 0), None);
+
+        let (after, _) = step(focus, Key::Down, &grid(), 0).unwrap();
+
+        assert_eq!(after.ring.on(&grid(), 0), Some(At::Play));
+    }
+
+    #[test]
+    fn a_press_beyond_the_bar_lands_on_the_track_s_ends() {
+        let length = Duration::from_secs(200);
+
+        assert_eq!(place(length, -0.3), Duration::ZERO);
+        assert_eq!(place(length, 0.5), Duration::from_secs(100));
+        assert_eq!(place(length, 1.4), length);
     }
 }
