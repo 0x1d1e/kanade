@@ -64,6 +64,6 @@ An island opened this way takes the keyboard. If nothing on it is used for 5 s a
 | Session | arrows and Tab move the ring, Enter or Space presses what it is on; a restart, power off or log out keeps it open on its countdown, the ring on Cancel |
 | Settings | Tab and Shift+Tab move the ring through the pages, the controls and Undo, Enter or Space presses what it is on, arrows step a choice, a number or the page list (Up/Down in a number field), Escape leaves a field or the ring |
 | Tray | arrows and Tab move the ring, Enter or Space presses what it is on, Right enters a submenu, Left or Escape goes back a level |
-| Controls | Up/Down and Tab move the ring, Left/Right move it or adjust a slider, Enter or Space presses what it is on |
+| Controls | Up/Down and Tab move the ring, Left/Right move it or adjust a slider, Enter or Space presses what it is on (Stop sharing, while a screen share runs, is the first target, above the tiles) |
 | Media, Controls, Weather, Session | a typed character collapses an island opened from a keybind, so it goes to the window beneath |
 

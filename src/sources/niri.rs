@@ -37,6 +37,9 @@ pub struct Seen {
     // what the casts niri has capture, paused ones included, each once; empty while none cast
     pub casts: BTreeSet<Target>,
 
+    // the sessions of those PipeWire carries, which niri can stop; a wlr-screencopy cast has none
+    pub sessions: BTreeSet<u64>,
+
     // the window each output shows, by output; empty while unknown
     pub shown: BTreeMap<String, Showing>,
 }
@@ -153,7 +156,7 @@ struct Known {
     overviews: u32,
 
     // every cast by stream id
-    casts: HashMap<u64, Target>,
+    casts: HashMap<u64, Cast>,
 
     // every window by id: which app's, and its tile
     windows: HashMap<u64, Showing>,
@@ -297,7 +300,12 @@ impl Known {
             overview: self.overview,
             overviews: self.overviews,
             workspace,
-            casts: self.casts.values().copied().collect(),
+            casts: self.casts.values().map(|cast| cast.target).collect(),
+            sessions: self
+                .casts
+                .values()
+                .filter_map(|cast| cast.session)
+                .collect(),
             shown,
         }
     }
@@ -333,8 +341,17 @@ fn tile(layout: &Json) -> Option<(f64, f64)> {
     }
 }
 
+// a cast as far as it is followed
+#[derive(Debug, Clone, Copy)]
+struct Cast {
+    target: Target,
+
+    // its session, only for a PipeWire cast, the one kind `stop` can end
+    session: Option<u64>,
+}
+
 // a cast's stream and what it captures; none for Kanade's own Liquid Glass backdrop capture
-fn cast(cast: &Json) -> Option<(u64, Target)> {
+fn cast(cast: &Json) -> Option<(u64, Cast)> {
     let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
 
     if own {
@@ -348,7 +365,26 @@ fn cast(cast: &Json) -> Option<(u64, Target)> {
         _ => Target::Unknown,
     };
 
-    Some((cast.get("stream_id").and_then(Json::as_u64)?, target))
+    let session = (cast.get("kind").and_then(Json::as_str) == Some("PipeWire"))
+        .then(|| cast.get("session_id").and_then(Json::as_u64))
+        .flatten();
+
+    Some((
+        cast.get("stream_id").and_then(Json::as_u64)?,
+        Cast { target, session },
+    ))
+}
+
+/*
+ * asks niri to stop the PipeWire cast of `session`, every stream of it; one niri cannot stop, or an
+ * older niri without the action, answers an error. Blocks up to `PATIENCE`, so never on the draw
+ * thread
+ */
+pub fn stop(session: u64) -> io::Result<()> {
+    act(&format!(
+        r#"{{"Action":{{"StopCast":{{"session_id":{session}}}}}}}"#
+    ))
+    .map(|_| ())
 }
 
 // what a window event says; none for another event, and for those `windows` ignores, like layouts
@@ -893,6 +929,19 @@ mod tests {
         );
     }
 
+    // only a PipeWire cast has a session niri can stop; a recording's wlr-screencopy one has none
+    #[test]
+    fn only_a_pipewire_cast_has_a_session_to_stop() {
+        let wlr = r#"{"CastStartedOrChanged":{"cast":{"stream_id":9,"session_id":9,"kind":"WlrScreencopy","target":{"Output":{"name":"eDP-1"}},"pid":1}}}"#;
+        let (posts, _) = posts(&[OK, wlr, &cast(1), &stopped(1)]);
+        let sessions: Vec<Vec<u64>> = posts
+            .iter()
+            .map(|seen| seen.sessions.iter().copied().collect())
+            .collect();
+
+        assert_eq!(sessions, [vec![], vec![1], vec![]]);
+    }
+
     // a share and a recording at once are one capture, until both stop
     #[test]
     fn casting_lasts_from_the_first_cast_to_the_last() {
@@ -943,10 +992,11 @@ mod tests {
 
         assert_eq!(casting(&replaced), [true, false]);
 
-        // a stop for a cast the list no longer has changes nothing
+        // a stop for a cast the list no longer has changes nothing; the list posts once, as the
+        // session of the PipeWire cast it replaces is gone
         let forgotten = posts(&[OK, &cast(1), &list("2"), &stopped(1)]).0;
 
-        assert_eq!(casting(&forgotten), [true]);
+        assert_eq!(casting(&forgotten), [true, true]);
     }
 
     // the layouts each switch of this stream goes to
