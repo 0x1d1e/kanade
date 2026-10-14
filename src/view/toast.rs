@@ -8,9 +8,10 @@ use crate::island::activity::{Priority, Toast};
 use crate::island::presentation::{Content, Presentation};
 use crate::theme::{self, ThemeRoles};
 
-use super::forms::{sized, stacked, stacked_tile};
+use super::forms::sized;
 use super::media::tile;
 use super::shape::{shape, upright};
+use super::standing::{stacked, stacked_tile};
 
 // the sender's picture, or its initial on the quiet tile
 pub(crate) fn toast_tile(toast: &Toast, side: f32, radius: f32, roles: &ThemeRoles) -> Stack {

@@ -40,6 +40,7 @@ mod media;
 mod rest;
 mod satellites;
 mod shape;
+mod standing;
 mod status;
 mod toast;
 
@@ -50,11 +51,12 @@ use self::hud::hud;
 pub(crate) use self::input::{claim, collapse, input_area, key, open, pin};
 use self::input::{expand, hover, moved_to, route, set_armed, set_segment};
 pub(crate) use self::media::{Change, state, tile};
+pub(crate) use self::rest::time_peek;
 use self::rest::{bare, has_battery, placeholder, rest};
-pub(crate) use self::rest::{time_peek, time_peek_upright};
 use self::satellites::satellites;
 use self::shape::Room;
 pub(crate) use self::shape::{canvas, hang, largest, shape, tray_slots, upright};
+pub(crate) use self::standing::time_peek as time_peek_upright;
 pub(crate) use self::status::bar;
 pub(crate) use self::toast::toast_tile;
 

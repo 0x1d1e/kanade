@@ -88,6 +88,7 @@ Not worth changing, by this review:
 
 - [ ] A side-edge Banner's window is full height.
 - [ ] An upright Compact drops titles to the app's tile; a rotated, book-spine title could keep them.
+- [ ] An upright Rest and Compact have one length each (`geometry::rest`, `compact`), so a form that needs less (the timer) or more (a Rest with the battery) is padded or tight; the shape could take the primary Activity's Kind and the Rest's battery setting.
 - [ ] A body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two.
 
 ## Island and Dock merge (ADR 0031)

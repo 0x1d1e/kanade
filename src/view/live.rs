@@ -10,9 +10,10 @@ use crate::island::activity::{Ended, Job};
 use crate::island::presentation::Presentation;
 use crate::theme;
 
-use super::forms::{sized, stacked};
+use super::forms::sized;
 use super::satellites::label;
 use super::shape::{shape, upright};
+use super::standing::stacked;
 use super::status::bar;
 
 // the mark: a pulse while it runs, a check once done, a cross in the critical tone once failed

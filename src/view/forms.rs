@@ -4,8 +4,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use kanade_runtime::{
-    Button, Center, Color, Column, Cursor, Justify, Padding, Parent, Rectangle, Row, Size, Stack,
-    Start, Text, Widget, children,
+    Button, Center, Color, Column, Cursor, Padding, Parent, Rectangle, Row, Size, Stack, Start,
+    Text, Widget, children,
 };
 
 use crate::icon::Icon;
@@ -25,6 +25,7 @@ use super::media::{Change, media_compact, media_peek};
 use super::rest::placeholder;
 use super::satellites::satellite_mark;
 use super::shape::{Room, hang, shape, upright};
+use super::standing::{stacked, stacked_tile};
 use super::status::{
     Level, battery, battery_icon, charge_tone, layout, level, mode, timer, workspace,
 };
@@ -89,41 +90,6 @@ pub(super) fn surface(
             recording::recording(island).is_some(),
         )),
     }
-}
-
-/*
- * a Compact standing along a side edge: its parts down its length from the round end, centered
- * across it, a lead tile concentric with the end. Its words wait for the Peek
- */
-pub(super) fn stacked(parts: Vec<Box<dyn Widget>>) -> Rectangle {
-    // a lone part sits in the middle of the pill rather than leaving the rest of it empty
-    let justify = if parts.len() == 1 {
-        Justify::Center
-    } else {
-        Justify::SpaceBetween
-    };
-
-    sized(Presentation::Compact)
-        .padding(Padding {
-            top: STACK_INSET,
-            bottom: STACK_INSET + 5.0,
-            ..Padding::default()
-        })
-        .align_child(Center, Start)
-        .child(
-            Column::new(parts)
-                .height(Parent)
-                .justify(justify)
-                .align(Center),
-        )
-}
-
-// a lead tile's inset from a small form's round end
-const STACK_INSET: f32 = 7.0;
-
-// the side of a lead tile in an upright Compact
-pub(super) fn stacked_tile() -> f32 {
-    shape(Presentation::Compact).width - 2.0 * STACK_INSET
 }
 
 // content is laid out at its Presentation's final size, which the morph reveals

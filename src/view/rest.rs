@@ -25,6 +25,7 @@ use crate::theme;
 use super::forms::sized;
 use super::satellites::abbreviation;
 use super::shape::{peek, shape, upright};
+use super::standing;
 use super::status::battery_icon;
 
 /*
@@ -44,7 +45,7 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
     let level = shown(config.rest.battery);
 
     if upright() {
-        return Some(rest_upright(monitor, level));
+        return Some(standing::rest(monitor, level));
     }
 
     let row = |level: Option<Charge>| {
@@ -83,21 +84,21 @@ pub(super) fn rest(monitor: &str, content: &Content) -> Option<Rectangle> {
 }
 
 // whether a laid-out length, as the widgets know it, is longer than the `room` it goes in
-fn overflows(length: Size, room: f32) -> bool {
+pub(super) fn overflows(length: Size, room: f32) -> bool {
     matches!(length, Size::Fixed(length) if length > room)
 }
 
 // the battery as Rest and its Peek show it
 #[derive(Clone, Copy)]
-struct Charge {
-    percent: u8,
+pub(super) struct Charge {
+    pub(super) percent: u8,
 
     // on the mains, so a bolt comes before the percent
-    charging: bool,
+    pub(super) charging: bool,
 }
 
 // the battery as `enabled` asks and the machine has; reading it only then keeps a Rest without it from waking on a change
-fn shown(enabled: bool) -> Option<Charge> {
+pub(super) fn shown(enabled: bool) -> Option<Charge> {
     let level = (enabled && modules::on("battery")).then(|| *BatteryLevel::read())?;
 
     Some(Charge {
@@ -136,74 +137,6 @@ pub(super) fn bare(monitor: &str) -> bool {
 
 pub(super) fn has_battery() -> bool {
     modules::on("battery") && BatteryLevel::read().present()
-}
-
-// Rest standing along a side edge: the hours over the minutes, then the battery under them
-fn rest_upright(monitor: &str, level: Option<Charge>) -> Rectangle {
-    let column = |level: Option<Charge>| {
-        let mut items: Vec<Box<dyn Widget>> = Vec::new();
-
-        if config::on(monitor).rest.clock {
-            items.push(Box::new(stacked_time(monitor, theme::text::LABEL)));
-        }
-
-        if let Some(charge) = level {
-            items.push(Box::new(battery_stacked(charge)));
-        }
-
-        Column::new(items).gap(8.0).align(Center)
-    };
-
-    // as along the top: the battery goes first where the dots leave the rest no room
-    let full = column(level);
-    let room = shape(Presentation::Rest).height - 2.0 * geometry::REST_MARGIN;
-    let column = if level.is_some() && overflows(Widget::height(&full), room) {
-        column(None)
-    } else {
-        full
-    };
-
-    sized(Presentation::Rest)
-        .align_child(Center, Center)
-        .child(column)
-}
-
-// the battery's icon over its percent, under a bolt while it charges
-fn battery_stacked(charge: Charge) -> Column {
-    let tone = theme::island().on_surface_variant;
-    let mut parts: Vec<Box<dyn Widget>> = Vec::new();
-
-    if charge.charging {
-        parts.push(Box::new(Icon::Bolt.on(geometry::BOLT, tone)));
-    }
-
-    parts.push(Box::new(battery_icon(20.0, charge.percent, tone)));
-    parts.push(Box::new(
-        Text::new(format!("{}%", charge.percent))
-            .size(theme::text::LABEL_SMALL)
-            .color(tone)
-            .weight(theme::text::SEMIBOLD),
-    ));
-
-    Column::new(parts).gap(3.0).align(Center)
-}
-
-// the local time a part a line, the hours over the minutes and any AM or PM
-fn stacked_time(monitor: &str, size: f32) -> Column {
-    let time = clock::now(config::on(monitor).clock);
-    let parts = time
-        .split([':', ' '])
-        .map(|part| {
-            Box::new(
-                Text::new(part)
-                    .size(size)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            ) as Box<dyn Widget>
-        })
-        .collect();
-
-    Column::new(parts).align(Center)
 }
 
 /*
@@ -386,70 +319,6 @@ fn agenda_widths(
             }
         })
         .collect()
-}
-
-/*
- * the time's Peek standing along a side edge, which leads the upright Tray strip: the hours over
- * the minutes, then the weather and the battery as the settings ask, and a line before the slots
- */
-pub(crate) fn time_peek_upright(monitor: &str, slots: bool) -> Rectangle {
-    let config = config::on(monitor);
-    let island = theme::island();
-    let mut parts = children![stacked_time(monitor, theme::text::BODY)];
-
-    let weather = (config.rest.weather && modules::on("weather")).then(Weather::read);
-
-    if let Some(current) = weather
-        .as_ref()
-        .and_then(|weather| weather.forecast.as_ref())
-        .map(|forecast| &forecast.current)
-    {
-        parts.push(Box::new(
-            Column::new(children![
-                surfaces::weather::icon(current.condition, current.day)
-                    .on(14.0, island.on_surface_variant),
-                Text::new(config.units.temperature(current.temperature))
-                    .size(theme::text::LABEL_SMALL)
-                    .color(island.on_surface_variant)
-                    .weight(theme::text::MEDIUM),
-            ])
-            .gap(2.0)
-            .align(Center),
-        ));
-    }
-
-    let level = shown(config.rest.peek_battery);
-
-    if let Some(charge) = level {
-        parts.push(Box::new(battery_stacked(charge)));
-    }
-
-    let content = Rectangle::new()
-        .width(Parent)
-        .height(peek().height())
-        .align_child(Center, Center)
-        .child(Column::new(parts).gap(6.0).align(Center));
-
-    if !slots {
-        return content;
-    }
-
-    // the line sits at the lead's foot, just before the first slot
-    let line = Rectangle::new()
-        .width(20.0)
-        .height(1.0)
-        .fill(island.on_surface_variant)
-        .opacity(0.4);
-
-    Rectangle::new()
-        .width(Parent)
-        .height(peek().height() + geometry::UPRIGHT_DIVIDER)
-        .align_child(Center, Start)
-        .child(
-            Column::new(vec![Box::new(content) as Box<dyn Widget>, Box::new(line)])
-                .gap((geometry::UPRIGHT_DIVIDER - 1.0) / 2.0)
-                .align(Center),
-        )
 }
 
 /*

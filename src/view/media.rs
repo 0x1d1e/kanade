@@ -17,8 +17,9 @@ use crate::look::Visualizer;
 use crate::sources::playback::Playback;
 use crate::theme::{self, ThemeRoles};
 
-use super::forms::{sized, stacked, stacked_tile};
+use super::forms::sized;
 use super::shape::{shape, upright};
+use super::standing::{stacked, stacked_tile};
 
 /*
  * art, title, then whether it plays. The art is inset evenly top and bottom and further from the

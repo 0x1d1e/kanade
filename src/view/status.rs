@@ -3,8 +3,8 @@
 use std::time::Instant;
 
 use kanade_runtime::{
-    Center, Color, Column, End, Justify, Padding, Parent, Rectangle, Row, Size, Stack, Start, Text,
-    Widget, children,
+    Center, Color, Column, End, Padding, Parent, Rectangle, Row, Size, Stack, Start, Text, Widget,
+    children,
 };
 
 use crate::icon::Icon;
@@ -15,8 +15,9 @@ use crate::island::presentation::Presentation;
 use crate::sources::timer;
 use crate::theme::{self, ThemeRoles};
 
-use super::forms::{Pills, action_pill, sized, stacked};
+use super::forms::{Pills, action_pill, sized};
 use super::shape::{shape, upright};
+use super::standing;
 
 // what is left, muted while it stands still
 pub(super) fn timer_tone(countdown: &Countdown) -> Color {
@@ -39,44 +40,7 @@ pub(super) fn timer(
     now: Instant,
 ) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
-        // the stopwatch at the round end, the countdown at the other, a part a line, the minutes over
-        // the seconds, as the clock; held in from both ends, a rail between them draining as it runs
-        let mut clock: Vec<Box<dyn Widget>> = Vec::new();
-
-        for part in timer::clock(countdown, now).split(':') {
-            clock.push(Box::new(
-                Text::new(part)
-                    .size(theme::text::LABEL)
-                    .color(timer_tone(countdown))
-                    .weight(theme::text::SEMIBOLD),
-            ));
-        }
-
-        return Some(stacked(vec![Box::new(
-            Rectangle::new()
-                .width(Parent)
-                .height(Parent)
-                .padding(Padding {
-                    top: 8.0,
-                    bottom: 8.0,
-                    ..Padding::default()
-                })
-                .child(
-                    Column::new(children![
-                        Icon::Stopwatch.draw(18.0),
-                        rising(
-                            shape(presentation).height - TIMER_RAIL,
-                            countdown.left(now).as_secs_f32()
-                                / countdown.length.as_secs_f32().max(1.0),
-                            timer_tone(countdown),
-                        ),
-                        Column::new(clock).gap(3.0).align(Center)
-                    ])
-                    .height(Parent)
-                    .justify(Justify::SpaceBetween)
-                    .align(Center),
-                ),
-        )]));
+        return Some(standing::timer(countdown, now));
     }
 
     // h:mm:ss once the timer was started for an hour or more, m:ss below
@@ -209,15 +173,7 @@ pub(super) fn charge_tone(charge: &Charge) -> Color {
  */
 pub(super) fn battery(presentation: Presentation, charge: &Charge) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
-        let tone = charge_tone(charge);
-
-        return Some(stacked(children![
-            battery_icon(22.0, charge.percent, tone),
-            Text::new(format!("{}%", charge.percent))
-                .size(theme::text::LABEL_SMALL)
-                .color(tone)
-                .weight(theme::text::SEMIBOLD),
-        ]));
+        return Some(standing::battery(charge));
     }
 
     let (icon, number, size, inset) = match presentation {
@@ -323,33 +279,13 @@ pub(super) fn battery_icon(width: f32, percent: u8, tone: Color) -> Row {
 // past this many workspaces on an output the pager would not fit, so the numbers say it instead
 const PAGER: u32 = 10;
 
-// what an upright Compact keeps from the timer's rail: its ends, the stopwatch and the countdown
-const TIMER_RAIL: f32 = 112.0;
-
-// the most a pager down an upright Compact holds
-const UPRIGHT_PAGER: u32 = 8;
-
 /*
  * the workspace's name, then where it is among its output's workspaces; Peek says its number
  * under a name. The pager has a fixed width, so a switch moves its mark and nothing else
  */
 pub(super) fn workspace(presentation: Presentation, workspace: &Workspace) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
-        // the pager alone, in the middle; its number and "of N" past what it fits
-        let mut parts: Vec<Box<dyn Widget>> = Vec::new();
-
-        if workspace.count > UPRIGHT_PAGER {
-            parts.push(Box::new(
-                Text::new(workspace.index.to_string())
-                    .size(theme::text::LABEL)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            ));
-        }
-
-        parts.push(pager(workspace, 6.0, true));
-
-        return Some(stacked(parts));
+        return Some(standing::workspace(workspace));
     }
 
     let (size, dot, inset) = match presentation {
@@ -389,7 +325,7 @@ pub(super) fn workspace(presentation: Presentation, workspace: &Workspace) -> Op
             .child(
                 Row::new(vec![
                     Box::new(Column::new(words).width(Parent).gap(1.0)) as Box<dyn Widget>,
-                    pager(workspace, dot, false),
+                    pager(workspace, dot),
                 ])
                 .width(Parent)
                 .gap(12.0)
@@ -399,20 +335,14 @@ pub(super) fn workspace(presentation: Presentation, workspace: &Workspace) -> Op
 }
 
 /*
- * a dot per workspace and a longer mark for the focused one, or its number past `PAGER`; down
- * the form standing `upright`, where the number above it already says which
+ * a dot per workspace and a longer mark for the focused one, or its number past `PAGER`
  */
-fn pager(workspace: &Workspace, dot: f32, upright: bool) -> Box<dyn Widget> {
+fn pager(workspace: &Workspace, dot: f32) -> Box<dyn Widget> {
     let (mark, gap) = (dot * 8.0 / 3.0, dot * 5.0 / 6.0);
 
-    if workspace.count > if upright { UPRIGHT_PAGER } else { PAGER } {
-        let count = match upright {
-            true => format!("of {}", workspace.count),
-            false => format!("{} / {}", workspace.index, workspace.count),
-        };
-
+    if workspace.count > PAGER {
         return Box::new(
-            Text::new(count)
+            Text::new(format!("{} / {}", workspace.index, workspace.count))
                 .size(theme::text::LABEL_SMALL)
                 .color(theme::island().on_surface_variant)
                 .weight(theme::text::SEMIBOLD),
@@ -422,14 +352,12 @@ fn pager(workspace: &Workspace, dot: f32, upright: bool) -> Box<dyn Widget> {
     let dots = (1..=workspace.count)
         .map(|index| {
             let focused = index == workspace.index;
-
             let long = if focused { mark } else { dot };
-            let (width, height) = if upright { (dot, long) } else { (long, dot) };
 
             Box::new(
                 Rectangle::new()
-                    .width(width)
-                    .height(height)
+                    .width(long)
+                    .height(dot)
                     .radius(dot / 2.0)
                     .fill(if focused {
                         theme::island().on_surface
@@ -440,11 +368,7 @@ fn pager(workspace: &Workspace, dot: f32, upright: bool) -> Box<dyn Widget> {
         })
         .collect();
 
-    if upright {
-        Box::new(Column::new(dots).gap(gap).align(Center))
-    } else {
-        Box::new(Row::new(dots).gap(gap).align(Center))
-    }
+    Box::new(Row::new(dots).gap(gap).align(Center))
 }
 
 // a Volume or Brightness as one bar, the same layout for both
@@ -512,16 +436,7 @@ pub(super) fn level(presentation: Presentation, level: Level) -> Option<Rectangl
     };
 
     if presentation == Presentation::Compact && upright() {
-        let length = shape(presentation).height - 100.0;
-
-        return Some(stacked(children![
-            level.icon.draw(icon),
-            rising(length, f32::from(level.percent) / 100.0, tone),
-            Text::new(level.percent.to_string())
-                .size(theme::text::LABEL_SMALL)
-                .color(tone)
-                .weight(theme::text::SEMIBOLD),
-        ]));
+        return Some(standing::level(level.icon, level.percent, tone));
     }
 
     let bar = bar(width, f32::from(level.percent) / 100.0, tone);
@@ -622,7 +537,7 @@ pub(super) fn mode(presentation: Presentation, mode: Mode) -> Option<Rectangle> 
         .weight(theme::text::MEDIUM);
 
     if presentation == Presentation::Compact && upright() {
-        return Some(stacked(children![lit, state]));
+        return Some(standing::stacked(children![lit, state]));
     }
 
     let right = match presentation {
@@ -710,7 +625,7 @@ pub(super) fn layout(presentation: Presentation, layout: &Layout) -> Option<Rect
         );
 
     if presentation == Presentation::Compact && upright() {
-        return Some(stacked(children![lit]));
+        return Some(standing::stacked(children![lit]));
     }
 
     let mut words = children![
@@ -749,32 +664,6 @@ pub(super) fn layout(presentation: Presentation, layout: &Layout) -> Option<Rect
                 .align(Center),
             ),
     )
-}
-
-// `bar` standing, filled from the bottom, for a level along a side edge
-fn rising(length: f32, fraction: f32, tone: Color) -> Rectangle {
-    let width = 6.0;
-    let filled = length * fraction.clamp(0.0, 1.0);
-
-    let track = Rectangle::new()
-        .width(width)
-        .height(length)
-        .radius(width / 2.0)
-        .fill(theme::island().surface_container_high)
-        .align_child(Center, End);
-
-    // shorter than its round ends it would draw as a misshapen dot
-    if filled >= width {
-        track.child(
-            Rectangle::new()
-                .width(width)
-                .height(filled)
-                .radius(width / 2.0)
-                .fill(tone),
-        )
-    } else {
-        track
-    }
 }
 
 // `fraction` of it filled, 0 to 1
