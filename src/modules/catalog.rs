@@ -790,7 +790,7 @@ pub const ALL: &[Module] = &[
         verbs: &[Verb {
             name: "wallpaper",
             about: "Set the wallpaper or one at random, show status, open its Surface",
-            usage: || String::from("wallpaper set <path>|shuffle|status"),
+            usage: || String::from("wallpaper set <path>|shuffle [--output <name>|all]|status"),
             parse: |arguments| {
                 wallpaper::Request::parse(arguments)
                     .map(Call::Wallpaper)

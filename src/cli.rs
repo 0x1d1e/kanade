@@ -458,13 +458,15 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
-            Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path)),
-            Err(error) => {
-                complain(&format!("kanade: {}: {error}", path.display()));
-                return ExitCode::FAILURE;
+        Call::Wallpaper(wallpaper::Request::Set(path, output)) => {
+            match std::path::absolute(&path) {
+                Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path, output)),
+                Err(error) => {
+                    complain(&format!("kanade: {}: {error}", path.display()));
+                    return ExitCode::FAILURE;
+                }
             }
-        },
+        }
         Call::Google(google::Request::SignIn(path)) => match std::path::absolute(&path) {
             Ok(path) => Call::Google(google::Request::SignIn(path)),
             Err(error) => {
@@ -475,11 +477,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
         asked => asked,
     };
     let arguments = match &asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => vec![
-            String::from("wallpaper"),
-            String::from("set"),
-            path.to_string_lossy().into_owned(),
-        ],
+        Call::Wallpaper(request @ wallpaper::Request::Set(..)) => request.arguments(),
         Call::Google(google::Request::SignIn(path)) => vec![
             String::from("google-calendar"),
             String::from("sign-in"),
