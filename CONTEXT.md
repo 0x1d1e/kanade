@@ -21,6 +21,8 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - While live it is Persistent Ongoing and Global, so it can be a Satellite; ended, as done or failed, it is a Transient Actionable on the focused output, as a saved recording is.
 - **Invariant:** what comes in is bounded: at most `MOST` (`src/sources/live.rs`) live at once, ids from a small alphabet, titles and details one line of plain text cut to a length. A verb for an id that is not live is refused. Titles and details are never logged.
 - **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
+- **Invariant:** a repost is cheap: a change within `REPOST` (250 ms) of the Activity's last post is held and posted when due, the newest of those held, and one that changes nothing is never posted (ADR 0058).
+- `activity hook claude` is a client of these verbs, not another path to the Island: a Claude Code session's events become one Live Activity, and a late event never brings an ended one back (ADR 0058).
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
 ## Device event

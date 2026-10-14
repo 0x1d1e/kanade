@@ -40,7 +40,7 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         ))),
         Err(Unparsed::Invalid(invalid)) => Err(Reply::Refused(invalid.to_string())),
         Ok((module, _)) if !modules::on(module.name) => {
-            Err(Reply::Refused(format!("module {} is off", module.name)))
+            Err(Reply::Refused(cli::module_off(module.name)))
         }
         Ok((_, call)) => Ok(call),
     };

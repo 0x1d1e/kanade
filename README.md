@@ -91,6 +91,7 @@ Per-feature detail is in [Installation](docs/wiki/Installation.md).
 - [Installation](docs/wiki/Installation.md): requirements, building, running as a systemd user unit.
 - [CLI](docs/wiki/CLI.md): every `kanade <verb>`.
 - [Configuration](docs/wiki/Configuration.md): config layers and every key.
+- [Agent hooks](docs/wiki/Agent-hooks.md): a Claude Code session as a live Activity.
 - [Google Calendar](docs/wiki/Google-Calendar.md): signing in with your own OAuth client.
 - [Keyboard](docs/wiki/Keyboard.md): niri keybinds and keys inside each Surface.
 - [Limitations](docs/wiki/Limitations.md): known gaps.

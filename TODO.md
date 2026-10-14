@@ -133,7 +133,6 @@ Not worth changing, by this review:
 - Reminders: MORE's `of` grows with each reminder joined; a deleted event's reminder stays until dismissed or due.
 - Clipboard and Launcher search look duplicated with `src/surfaces/search.rs`.
 - A dmenu reply to a client that stopped reading may block the UI thread up to 1 s (`IpcReply::send`).
-- Live Activities: no throttle on a client reposting many times a second.
 - A three-letter layout label may be cramped in the OSD capsule; Controls grew 290 to 330 px, check Tray, Weather and Session by eye.
 - The critical battery countdown names no battery reason line.
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.

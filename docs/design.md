@@ -173,7 +173,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Live Activities
 
-`kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word; a thread sleeps until the next one is due, none while none is live. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with.
+`kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word. A change within 250 ms of the last post of that Activity is held and posted as it falls due, and one that changes nothing is not posted; one thread sleeps until the next withdrawal or held post is due, none while none is live or held. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with. `activity hook claude` runs in the client too: one Claude Code hook event on stdin becomes the same verbs, a session as one Activity, bounded to exit 0 or 1 within a short wait and never 2, which Claude Code takes as a block ([ADR 0058](adr/0058-agent-hooks-and-coalesced-reposts.md), [wiki](wiki/Agent-hooks.md)).
 
 ### Night light
 
@@ -265,6 +265,7 @@ weather open|close|toggle|refresh|status
 timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
 activity start <id> <title>|progress <id> <amount>|detail <id> [text]
 activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
+activity hook claude
 capture screenshot area|window|output
 capture record start|stop|status
 caffeine on|off|toggle [duration]|status
