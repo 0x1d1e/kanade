@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::iter;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
@@ -204,6 +205,9 @@ enum Press {
 
     Launch(Launch),
 
+    // files dropped on the icon, which start the app with them
+    Open { launch: Launch, files: Vec<PathBuf> },
+
     DesktopAction { launch: Launch, id: String },
 }
 
@@ -254,6 +258,7 @@ fn carry_out(press: Press) {
             Press::Focus(id) => window_action("FocusWindow", *id),
             Press::Close(id) => window_action("CloseWindow", *id),
             Press::Launch(launch) => launch.run(),
+            Press::Open { launch, files } => launch.run_files(files),
             Press::DesktopAction { launch, id } => launch.run_action(id),
         };
 
@@ -1930,7 +1935,8 @@ fn slot(
 
     let context = item.clone();
 
-    slot.cursor(Cursor::Pointer)
+    let slot = slot
+        .cursor(Cursor::Pointer)
         .on_click(move |button| match button {
             Button::Left => {
                 if let Some(press) = press.clone() {
@@ -1939,7 +1945,18 @@ fn slot(
             }
             Button::Right => context_menu::open(&target.monitor, &context, target.at, target.edge),
             Button::Middle => {}
-        })
+        });
+
+    // only an app with a command takes files, so a drag over any other is turned down
+    match desktop(&item.app).and_then(|entry| entry.launch.clone()) {
+        Some(launch) => slot.on_drop(move |files| {
+            carry_out(Press::Open {
+                launch: launch.clone(),
+                files,
+            })
+        }),
+        None => slot,
+    }
 }
 
 // the app's icon, `side` across (Kanade's own windows, with no entry, show Kanade's), or its initial
