@@ -2,11 +2,15 @@
 
 ## Install
 
-`scripts/install` does all of this on Arch Linux and derivatives, from a fresh TTY install: niri with its portal and polkit agent, the GPU's Vulkan driver, audio, fonts, kitty and qt6ct, then the build, the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Afterwards run `niri-session` from the TTY.
+```sh
+curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
+```
+
+The script does all of this on Arch Linux and derivatives, from a fresh TTY install: niri with its portal and polkit agent, the GPU's Vulkan driver, audio, fonts, kitty and qt6ct, then it clones Kanade to `~/.local/share/kanade/src`, builds it, and sets up the unit, the icon and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. Afterwards run `niri-session` from the TTY. Run it again to update. From a checkout, `scripts/install` builds that checkout instead. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only`:
 
 - `--shell-only` installs only the build dependencies and Kanade, for a niri desktop you already have.
 - `--optional` adds the optional packages and enables bluetooth, upower and power-profiles-daemon; NetworkManager is installed but left for you to enable.
-- `--uninstall` removes Kanade's binary, unit and icon. Your configs and the packages stay.
+- `--uninstall` removes Kanade's binary, unit, icon and the build checkout. Your configs and the packages stay.
 
 The binary goes to `~/.cargo/bin`, where the unit expects it. A run replaces the unit and keeps the old one as `kanade.service.bak`; customize it with `systemctl --user edit kanade.service`, whose drop-in an update leaves alone. A failed build leaves the installed binary as it was. The steps below are what it runs.
 
