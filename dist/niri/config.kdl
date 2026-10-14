@@ -66,6 +66,7 @@ hotkey-overlay {
 
 screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
 
+spawn-at-startup "/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1"
 spawn-at-startup "dbus-update-activation-environment" "--systemd" "QT_QPA_PLATFORMTHEME"
 
 environment {

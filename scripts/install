@@ -1,16 +1,40 @@
 #!/bin/sh
-# installs Kanade from this checkout: system libraries, the binary, the systemd user unit, the icon,
-# and a default niri config when there is none. Run again to update; nothing of yours is overwritten.
-#   scripts/install [--optional]    --optional also installs the packages of the optional features
+# installs Kanade from this checkout: the binary, the systemd user unit, the icon, and on a fresh
+# TTY install the desktop pieces and a default niri config. Run again to update. The unit is
+# Kanade's own and is replaced (the old one kept as kanade.service.bak); change it with
+# `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
+#   scripts/install [--optional] [--shell-only] [--uninstall]
+#     --optional    also the packages of the optional features
+#     --shell-only  only build dependencies and Kanade, for a niri desktop you already have
+#     --uninstall   removes Kanade's binary, unit and icon; configs and packages stay
 set -eu
 
 optional=0
+desktop=1
+uninstall=0
 for arg in "$@"; do
     case "$arg" in
         --optional) optional=1 ;;
-        *) echo "usage: scripts/install [--optional]" >&2; exit 2 ;;
+        --shell-only) desktop=0 ;;
+        --uninstall) uninstall=1 ;;
+        *) echo "usage: scripts/install [--optional] [--shell-only] [--uninstall]" >&2; exit 2 ;;
     esac
 done
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}"
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+# where the unit's ExecStart expects the binary, whatever CARGO_HOME or CARGO_INSTALL_ROOT say
+root="$HOME/.cargo"
+
+if [ "$uninstall" = 1 ]; then
+    systemctl --user disable --now kanade.service || true
+    rm -f "$config/systemd/user/kanade.service" "$config/systemd/user/kanade.service.bak" \
+        "$data/icons/hicolor/256x256/apps/kanade.png"
+    systemctl --user daemon-reload
+    cargo uninstall --root "$root" kanade || true
+    echo "removed Kanade; kept your configs, niri's kanade.kdl include and the packages"
+    exit 0
+fi
 
 # the libraries and tools come from docs/wiki/Installation.md
 if ! command -v pacman > /dev/null; then
@@ -18,40 +42,44 @@ if ! command -v pacman > /dev/null; then
     exit 1
 fi
 
-# the Vulkan driver of each GPU, by PCI vendor; a virtual GPU gets the virtio one and the CPU
-# rasterizer, a plain VGA adapter the rasterizer alone. Proprietary NVIDIA is left to the user.
-gpu=""
-for vendor in /sys/class/drm/card*/device/vendor; do
-    [ -r "$vendor" ] || continue
-    case "$(cat "$vendor")" in
-        0x8086) gpu="$gpu vulkan-intel" ;;
-        0x1002) gpu="$gpu vulkan-radeon" ;;
-        # virgl gives the guest OpenGL only, so Kanade's Vulkan needs the CPU rasterizer there
-        0x1af4) gpu="$gpu vulkan-virtio vulkan-swrast" ;;
-        0x1234 | 0x15ad) gpu="$gpu vulkan-swrast" ;;
-        0x10de) echo "note: install nvidia-utils or vulkan-nouveau yourself for the NVIDIA GPU" >&2 ;;
-    esac
-done
-if [ -z "$gpu" ]; then
-    echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
-fi
-
-# a fresh TTY install has no session pieces: niri with its portal and polkit, audio, fonts (Noto
-# Color Emoji for the Launcher's emoji, Inter for its labels), and what the default niri config
-# binds: kitty, brightnessctl and playerctl. xwayland-satellite gives niri X11 apps.
-# rust only when there is no cargo, so rustup keeps working.
-packages="niri xdg-desktop-portal-gnome gnome-keyring polkit pipewire pipewire-pulse wireplumber
-    noto-fonts noto-fonts-emoji inter-font kitty brightnessctl playerctl xwayland-satellite
-    base-devel pkgconf wayland libxkbcommon fontconfig freetype2 expat vulkan-icd-loader libpulse
-    pam systemd dbus util-linux $gpu"
+# what the build and the shell need; rust only when there is no cargo, so rustup keeps working
+packages="base-devel pkgconf wayland libxkbcommon fontconfig freetype2 expat vulkan-icd-loader
+    libpulse pam systemd dbus util-linux"
 if ! command -v cargo > /dev/null; then
     packages="$packages rust"
+fi
+
+if [ "$desktop" = 1 ]; then
+    # the Vulkan driver of each GPU, by PCI vendor; a virtual GPU gets the virtio one and the CPU
+    # rasterizer, a plain VGA adapter the rasterizer alone. Proprietary NVIDIA is left to the user.
+    gpu=""
+    for vendor in /sys/class/drm/card*/device/vendor; do
+        [ -r "$vendor" ] || continue
+        case "$(cat "$vendor")" in
+            0x8086) gpu="$gpu vulkan-intel" ;;
+            0x1002) gpu="$gpu vulkan-radeon" ;;
+            # virgl gives the guest OpenGL only, so Kanade's Vulkan needs the CPU rasterizer there
+            0x1af4) gpu="$gpu vulkan-virtio vulkan-swrast" ;;
+            0x1234 | 0x15ad) gpu="$gpu vulkan-swrast" ;;
+            0x10de) echo "note: install nvidia-utils or vulkan-nouveau yourself for the NVIDIA GPU" >&2 ;;
+        esac
+    done
+    if [ -z "$gpu" ]; then
+        echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
+    fi
+
+    # a fresh TTY install has no session pieces: niri with its portal and a polkit agent, audio,
+    # fonts (Noto Color Emoji for the Launcher's emoji, Inter for its labels), what the default
+    # niri config uses (kitty, brightnessctl, playerctl, qt6ct) and xwayland-satellite for X11 apps
+    packages="$packages niri xdg-desktop-portal-gnome gnome-keyring polkit polkit-gnome pipewire
+        pipewire-pulse wireplumber noto-fonts noto-fonts-emoji inter-font kitty brightnessctl
+        playerctl qt6ct xwayland-satellite $gpu"
 fi
 # shellcheck disable=SC2086 # the list is split on purpose
 sudo pacman -S --needed $packages
 if [ "$optional" = 1 ]; then
-    sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf \
-        wlsunset xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
+    sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct glib2 dconf wlsunset \
+        xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
     # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
     # replaces whatever manages the network now
     sudo systemctl enable --now bluetooth upower power-profiles-daemon
@@ -60,22 +88,26 @@ fi
 # the script can be run from any folder, the checkout is above it
 cd "$(dirname "$0")/.."
 
-cargo install --locked --path .
+cargo install --locked --root "$root" --path .
 
-config="${XDG_CONFIG_HOME:-$HOME/.config}"
-data="${XDG_DATA_HOME:-$HOME/.local/share}"
-
-# the unit runs ~/.cargo/bin/kanade, where cargo install puts it
-install -Dm644 dist/kanade.service "$config/systemd/user/kanade.service"
+# the old unit is kept when it differs, so a hand edit is not lost
+unit="$config/systemd/user/kanade.service"
+if [ -e "$unit" ] && ! cmp -s dist/kanade.service "$unit"; then
+    cp "$unit" "$unit.bak"
+    echo "replaced $unit, the old one is $unit.bak; customize with: systemctl --user edit kanade.service"
+fi
+install -Dm644 dist/kanade.service "$unit"
 install -Dm644 dist/kanade.png "$data/icons/hicolor/256x256/apps/kanade.png"
 
 # a config of yours is never replaced; Kanade's binds are in docs/wiki/Keyboard.md
-if [ -e "$config/niri/config.kdl" ]; then
-    echo "kept $config/niri/config.kdl, dist/niri/config.kdl is the default"
-    echo "  add this as its last line for appearance.sync: include optional=true \"kanade.kdl\""
-else
-    install -Dm644 dist/niri/config.kdl "$config/niri/config.kdl"
-    echo "installed $config/niri/config.kdl"
+if [ "$desktop" = 1 ]; then
+    if [ -e "$config/niri/config.kdl" ]; then
+        echo "kept $config/niri/config.kdl, dist/niri/config.kdl is the default"
+        echo "  add this as its last line for appearance.sync: include optional=true \"kanade.kdl\""
+    else
+        install -Dm644 dist/niri/config.kdl "$config/niri/config.kdl"
+        echo "installed $config/niri/config.kdl"
+    fi
 fi
 
 systemctl --user daemon-reload
@@ -84,10 +116,12 @@ systemctl --user enable kanade.service
 # the unit runs with niri; with niri up it restarts, from a TTY it starts with niri
 if systemctl --user is-active --quiet niri.service; then
     systemctl --user restart kanade.service
-else
+elif [ "$desktop" = 1 ]; then
     echo "installed; start niri from this TTY with: niri-session"
     echo "  Kanade starts with it, Mod+T opens kitty. To start niri at login on tty1, add to"
     echo "  ~/.bash_profile or ~/.zprofile: [ \"\$(tty)\" = /dev/tty1 ] && exec niri-session"
+else
+    echo "installed; Kanade starts with niri"
 fi
 
 # the niri binds run `kanade`, so it has to be on the session's PATH, which niri-session takes
