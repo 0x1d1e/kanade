@@ -41,6 +41,8 @@ const NAV: f32 = SIDEBAR - 2.0 * SIDE_INSET;
 const PAD: f32 = 28.0;
 const GUTTER: f32 = 8.0;
 const MOST_CONTENT: f32 = 780.0;
+// a row's label and help, about 70 characters a line
+const MOST_MEASURE: f32 = 460.0;
 const CARD_INSET: f32 = 16.0;
 
 const BAR: f32 = 52.0;
@@ -783,7 +785,8 @@ fn labeled(
         inner() - width - 24.0
     } else {
         inner()
-    };
+    }
+    .min(MOST_MEASURE);
 
     let mut lines = children![
         Row::new(

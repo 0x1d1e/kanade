@@ -142,3 +142,9 @@ Not worth changing, by this review:
 - ADR numbers skip 0045.
 
 - Capture Surface: a failed screenshot or recording start is only logged to stderr, as the island is already closed; Record starts as the island collapses.
+
+## Visual audit (2026-10-14)
+
+- [ ] Island Surfaces: 11-12px secondary text at reduced alpha (Launcher subtitles, Calendar weekdays, Controls sublabels) is faint on black; consider one step up or less transparency.
+- [ ] Calendar's empty agenda is a bare "No events"; a composed empty state (next event, or the day's date) would use the space.
+- [ ] Settings segmented control: the track (`surface_container_high`) is barely visible in light tone, so the unselected option reads as loose text.
