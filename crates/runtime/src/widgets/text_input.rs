@@ -93,6 +93,7 @@ impl TextInput {
         let field = Field {
             text: String::from(text),
             cursor: text.chars().count(),
+            anchor: None,
         };
 
         fields::set(id, field);
@@ -135,15 +136,37 @@ impl TextInput {
         Text::new(content).size(self.size).color(color)
     }
 
-    fn draw_cursor(&self, renderer: &mut Renderer, area: Area) {
-        let field = fields::get(self.id);
+    // how far from the input's left edge the first `index` letters reach
+    fn offset(&self, field: &Field, index: usize, area: Area) -> f32 {
+        let before = self.label(self.shown(&field.before(index)), self.color);
 
-        let before = self.label(self.shown(&field.before_cursor()), self.color);
-        let offset = before.width().resolve(area.width);
+        before.width().resolve(area.width)
+    }
+
+    fn draw_cursor(&self, renderer: &mut Renderer, field: &Field, area: Area) {
+        let offset = self.offset(field, field.cursor, area);
 
         let cursor = Area::new(area.x + offset, area.y, CURSOR_WIDTH, area.height);
 
         renderer.rectangle(cursor, self.color, 0.0);
+    }
+
+    // the text color at a third of its strength, behind the letters
+    fn draw_selection(&self, renderer: &mut Renderer, field: &Field, area: Area) {
+        let Some((start, end)) = field.selection() else {
+            return;
+        };
+
+        let from = self.offset(field, start, area);
+        let to = self.offset(field, end, area);
+
+        let tint = Color::rgba(self.color.r, self.color.g, self.color.b, self.color.a / 3);
+
+        renderer.rectangle(
+            Area::new(area.x + from, area.y, to - from, area.height),
+            tint,
+            0.0,
+        );
     }
 }
 
@@ -157,7 +180,8 @@ impl Widget for TextInput {
     }
 
     fn draw(&self, renderer: &mut Renderer, area: Area) {
-        let text = fields::get(self.id).text;
+        let field = fields::get(self.id);
+        let text = field.text.clone();
 
         // the placeholder is the text color at half strength
         let faded = Color::rgba(self.color.r, self.color.g, self.color.b, self.color.a / 2);
@@ -171,10 +195,16 @@ impl Widget for TextInput {
         // text longer than the input is cut off at its edge
         let mut inside = renderer.group();
 
+        let focused = focus::has(self.id);
+
+        if focused {
+            self.draw_selection(&mut inside, &field, area);
+        }
+
         label.draw(&mut inside, area);
 
-        if focus::has(self.id) {
-            self.draw_cursor(&mut inside, area);
+        if focused {
+            self.draw_cursor(&mut inside, &field, area);
         }
 
         renderer.clip(inside, area, 0.0);

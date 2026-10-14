@@ -3,7 +3,7 @@ mod effect;
 mod shape;
 mod text;
 
-use super::{Area, Transform};
+use super::{Area, Corners, Transform};
 
 pub use command::Command;
 pub use effect::VALUE_ROWS;
@@ -62,7 +62,7 @@ impl Renderer {
     }
 
     // what the group drew only shows inside the rounded rectangle
-    pub fn clip(&mut self, group: Renderer, area: Area, radius: f32) {
+    pub fn clip(&mut self, group: Renderer, area: Area, radius: impl Into<Corners>) {
         // an empty rectangle shows none of the group
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -70,7 +70,7 @@ impl Renderer {
 
         self.commands.push(Command::Clip {
             area,
-            radius,
+            radius: radius.into(),
             transform: self.transform,
             commands: group.commands,
         });
