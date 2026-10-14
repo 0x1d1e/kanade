@@ -2,7 +2,7 @@
 
 ## Install
 
-`scripts/install` does all of this on Arch Linux and derivatives: libraries, build, unit, icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. `--optional` adds the optional packages. The steps below are what it runs.
+`scripts/install` does all of this on Arch Linux and derivatives, from a fresh TTY install: niri with its portal and polkit, the GPU's Vulkan driver, audio, fonts and kitty, then the build, the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. `--optional` adds the optional packages and enables bluetooth, upower and power-profiles-daemon; NetworkManager is installed but left for you to enable. Afterwards run `niri-session` from the TTY. The steps below are what it runs.
 
 Kanade needs:
 

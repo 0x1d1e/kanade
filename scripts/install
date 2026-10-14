@@ -12,22 +12,47 @@ for arg in "$@"; do
     esac
 done
 
-# checked first, so nothing is installed when the build can't run anyway
-if ! command -v cargo > /dev/null; then
-    echo "failed to find cargo, install rust from https://rustup.rs and run this again" >&2
-    exit 1
-fi
-
 # the libraries and tools come from docs/wiki/Installation.md
 if ! command -v pacman > /dev/null; then
     echo "failed to find pacman, Kanade installs on Arch Linux and derivatives only" >&2
     exit 1
 fi
-sudo pacman -S --needed niri base-devel pkgconf wayland libxkbcommon fontconfig freetype2 \
-    expat vulkan-icd-loader libpulse pam pipewire systemd dbus util-linux
+
+# the Vulkan driver of each GPU, by PCI vendor; a virtual GPU gets the virtio one, a plain
+# VGA adapter the CPU rasterizer. Proprietary NVIDIA is left to the user.
+gpu=""
+for vendor in /sys/class/drm/card*/device/vendor; do
+    [ -r "$vendor" ] || continue
+    case "$(cat "$vendor")" in
+        0x8086) gpu="$gpu vulkan-intel" ;;
+        0x1002) gpu="$gpu vulkan-radeon" ;;
+        0x1af4) gpu="$gpu vulkan-virtio" ;;
+        0x1234 | 0x15ad) gpu="$gpu vulkan-swrast" ;;
+        0x10de) echo "note: install nvidia-utils or vulkan-nouveau yourself for the NVIDIA GPU" >&2 ;;
+    esac
+done
+if [ -z "$gpu" ]; then
+    echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
+fi
+
+# a fresh TTY install has no session pieces: niri with its portal and polkit, audio, fonts (Noto
+# Color Emoji for the Launcher's emoji), and kitty, which the default niri config binds to Mod+T.
+# rust only when there is no cargo, so rustup keeps working.
+packages="niri xdg-desktop-portal-gnome gnome-keyring polkit pipewire pipewire-pulse wireplumber
+    noto-fonts noto-fonts-emoji kitty base-devel pkgconf wayland libxkbcommon fontconfig freetype2
+    expat vulkan-icd-loader libpulse pam systemd dbus util-linux $gpu"
+if ! command -v cargo > /dev/null; then
+    packages="$packages rust"
+fi
+# shellcheck disable=SC2086 # the list is split on purpose
+sudo pacman -S --needed $packages
 if [ "$optional" = 1 ]; then
     sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf \
-        wlsunset gnome-keyring xdg-utils xdg-terminal-exec
+        wlsunset xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon \
+        brightnessctl playerctl nautilus
+    # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
+    # replaces whatever manages the network now
+    sudo systemctl enable --now bluetooth upower power-profiles-daemon
 fi
 
 # the script can be run from any folder, the checkout is above it
@@ -54,12 +79,21 @@ fi
 systemctl --user daemon-reload
 systemctl --user enable kanade.service
 
-# the unit needs niri's graphical session; outside it, it starts with the next login
+# the unit needs niri's graphical session; from a TTY it starts with niri
 if systemctl --user is-active --quiet graphical-session.target; then
     systemctl --user restart kanade.service
 else
-    echo "not in a graphical session, Kanade starts with niri at the next login"
+    echo "installed; start niri from this TTY with: niri-session"
+    echo "  Kanade starts with it, Mod+T opens kitty. To start niri at login on tty1, add to"
+    echo "  ~/.bash_profile or ~/.zprofile: [ \"\$(tty)\" = /dev/tty1 ] && exec niri-session"
 fi
+
+# the niri binds run `kanade`, so it has to be on the session's PATH, which niri-session takes
+# from the login shell
+case ":$PATH:" in
+    *":$HOME/.cargo/bin:"*) ;;
+    *) echo "warning: ~/.cargo/bin is not in PATH, add to ~/.profile: export PATH=\"\$HOME/.cargo/bin:\$PATH\"" >&2 ;;
+esac
 
 # only one notification daemon can own the bus name, so the other one has to go
 if command -v busctl > /dev/null; then

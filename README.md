@@ -42,10 +42,10 @@ Kanade is not a bar, wallpaper renderer or system settings app, and it shows no 
 ## Quick start
 
 ```sh
-scripts/install    # --optional also installs the optional features' packages
+scripts/install    # then `niri-session`; --optional also installs the optional features' packages
 ```
 
-It installs the dependencies with pacman, builds Kanade, sets up the systemd unit and icon, and adds `dist/niri/config.kdl` as niri's config only when you have none. Or by hand:
+It installs everything a fresh TTY install lacks with pacman (niri, a Vulkan driver, audio, fonts), builds Kanade, sets up the systemd unit and icon, and adds `dist/niri/config.kdl` as niri's config only when you have none. Or by hand:
 
 ```sh
 cargo install --locked --path .
