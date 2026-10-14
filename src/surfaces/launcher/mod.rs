@@ -1,13 +1,12 @@
 //! The Launcher Surface: a search over its providers, the apps `sources::apps`
-//! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, the Clipboard, the Calendar, Settings and
-//! each setting), with the `wallpaper` Module on, wallpapers after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
+//! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, each Surface, Settings and
+//! each setting), with `wallpaper-surface` on, the Wallpapers Surface for anything after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
-//! starts and the island closes; a value or an emoji is copied, or a wallpaper set, and the island
+//! starts and the island closes; a value or an emoji is copied, and the island
 //! closes once it is, or says it was not. It says when the apps are still being found and when
 //! nothing matches. `kanade dmenu` opens it on a script's lines alone (`choose`).
 
-use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -26,7 +25,6 @@ use crate::sources::apps::{App, Apps};
 use crate::sources::bluetooth::Adapter;
 use crate::sources::network::Connectivity;
 use crate::sources::system::Radio;
-use crate::sources::wallpaper::Unset;
 use crate::sources::{self, clipboard};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
@@ -42,7 +40,6 @@ mod destinations;
 mod emoji;
 mod history;
 mod provider;
-mod wallpaper;
 
 use apps::Apps as AppsProvider;
 use calculator::Calculator;
@@ -51,7 +48,6 @@ use destinations::{Destination, Destinations};
 use emoji::Emoji;
 use history::History;
 use provider::{Action, Answer, Mark};
-use wallpaper::Wallpapers;
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -155,7 +151,6 @@ impl Search {
         match action {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Paste(_) => Some(String::from("Not copied")),
-            Action::Wallpaper(_) => Some(format!("Not set: {why}")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
             Action::Launch(..) | Action::Choose(_) => None,
         }
@@ -337,11 +332,6 @@ fn history(query: &str) -> bool {
     query.trim().starts_with(history::PREFIX) && modules::on("clipboard")
 }
 
-// whether the query searches wallpapers, which it does only with their Module on
-fn wallpapers(query: &str) -> bool {
-    query.trim().starts_with(wallpaper::PREFIX) && modules::on("wallpaper")
-}
-
 /*
  * whether the machine has each radio, as far as Wi-Fi and Bluetooth are on. A Service of its own,
  * so the Launcher draws again when a radio comes or goes and not on each state it takes
@@ -384,6 +374,12 @@ fn destinations() -> Destinations {
     Destinations {
         wifi: controls && radios.wifi,
         bluetooth: controls && radios.bluetooth,
+        notifications: modules::on("notification-surface"),
+        controls,
+        weather: modules::on("weather-surface"),
+        session: modules::on("session"),
+        timer: modules::on("timer-surface"),
+        capture: modules::on("capture-surface"),
         clipboard: modules::on("clipboard-surface"),
         calendar: modules::on("calendar-surface"),
         wallpapers: modules::on("wallpaper-surface"),
@@ -398,18 +394,6 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
         return provider::ranked(&[&Choices(&choices)], query);
     }
 
-    // listed only for a wallpaper search, so no other query stats the directory
-    let (images, current) = if wallpapers(query) {
-        (sources::wallpaper::images(), sources::wallpaper::current())
-    } else {
-        (Arc::default(), None)
-    };
-
-    let wallpapers = Wallpapers {
-        images: &images,
-        current: current.as_deref(),
-    };
-
     // read only for a history search, which also subscribes the view to the clipboard
     let entries = if history(query) {
         clipboard::Clipboard::read().entries().to_vec()
@@ -417,13 +401,14 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
         Vec::new()
     };
 
+    let destinations = destinations();
+
     provider::ranked(
         &[
             &Calculator,
-            &AppsProvider(apps, modules::on("wallpaper")),
-            &destinations(),
+            &AppsProvider(apps, destinations.wallpapers),
+            &destinations,
             &Emoji,
-            &wallpapers,
             &History { entries: &entries },
         ],
         query,
@@ -440,7 +425,6 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let query = search.query.trim();
     let emoji = query.starts_with(emoji::PREFIX);
-    let wallpapers = wallpapers(query);
     let history = history(query);
 
     let list: Box<dyn Widget> = if !found.is_empty() {
@@ -449,11 +433,6 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         Box::new(state(
             "No matching choices",
             &format!("Nothing found for \u{201c}{query}\u{201d}"),
-        ))
-    } else if wallpapers && sources::wallpaper::images().is_empty() {
-        Box::new(state(
-            "No wallpapers",
-            &format!("Add images to {}", directory()),
         ))
     } else if history {
         Box::new(state(
@@ -464,15 +443,13 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
                 String::from("What you copy shows here")
             },
         ))
-    } else if !apps.found() && !emoji && !wallpapers {
+    } else if !apps.found() && !emoji {
         // read once the Module starts, so only a Launcher opened at once waits
         Box::new(state("Finding apps", ""))
     } else {
         Box::new(state(
             if emoji {
                 "No matching emoji"
-            } else if wallpapers {
-                "No matching wallpapers"
             } else {
                 "No matching apps"
             },
@@ -502,20 +479,6 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             .width(width())
             .gap(GAP),
         )
-}
-
-// where the wallpapers are looked for, the home directory as `~`
-fn directory() -> String {
-    let Some(directory) = sources::wallpaper::directory() else {
-        return String::from("the wallpaper directory");
-    };
-
-    match std::env::var_os("HOME")
-        .and_then(|home| directory.strip_prefix(home).ok().map(ToOwned::to_owned))
-    {
-        Some(rest) => format!("~/{}", rest.display()),
-        None => directory.display().to_string(),
-    }
 }
 
 /*
@@ -576,9 +539,9 @@ fn field(query: &str, placeholder: &str) -> Rectangle {
         )
 }
 
-// what to type, wallpapers only with their Module on
+// what to type, `@` only with the Wallpapers Surface on
 fn placeholder() -> &'static str {
-    match (modules::on("wallpaper"), modules::on("clipboard")) {
+    match (modules::on("wallpaper-surface"), modules::on("clipboard")) {
         (true, true) => "Search apps, settings, 2+2, :emoji, @wallpaper or >clipboard",
         (true, false) => "Search apps, settings, 2+2, :emoji or @wallpaper",
         (false, true) => "Search apps, settings, 2+2, :emoji or >clipboard",
@@ -796,13 +759,6 @@ fn mark(mark: &Mark) -> Box<dyn Widget> {
                 .height(ICON)
                 .fill(Image::contain(path).thumbnail(pixels, pixels)),
         ),
-        Mark::Photo(path) => Box::new(
-            Rectangle::new()
-                .width(ICON)
-                .height(ICON)
-                .radius(radius::ICON)
-                .fill(Image::cover(path).thumbnail(pixels, pixels)),
-        ),
         Mark::Tile(sign) => Box::new(view::tile(None, sign, ICON, radius::ICON, &theme::island())),
         Mark::Icon(icon) => Box::new(
             Rectangle::new()
@@ -916,14 +872,6 @@ fn press(monitor: &str, visit: u64, action: Action) {
 
     let started = match &action {
         Action::Copy(text) => copy(text.clone(), done),
-        Action::Wallpaper(path) => sources::wallpaper::set(
-            path.clone(),
-            None,
-            Some(Box::new(move |set: Result<(), Unset>| {
-                done(set.map_err(|unset| String::from(unset.brief())))
-            })),
-        )
-        .map_err(|unset| String::from(unset.brief())),
         Action::Paste(id) => paste(*id, done),
         Action::Launch(..) | Action::Open(_) | Action::Choose(_) => Ok(()),
     };
@@ -949,6 +897,32 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
         }
         Destination::Calendar => {
             IslandService::write().open(monitor, Surface::Calendar, Instant::now());
+            Ok(())
+        }
+        Destination::Notifications => {
+            IslandService::write().open(monitor, Surface::Notifications, Instant::now());
+            Ok(())
+        }
+        Destination::Controls => {
+            IslandService::write().open(monitor, Surface::Controls, Instant::now());
+            Ok(())
+        }
+        Destination::Weather => {
+            // an old forecast is fetched again, as when `kanade weather open` asks (`ipc::island`)
+            sources::weather::opened();
+            IslandService::write().open(monitor, Surface::Weather, Instant::now());
+            Ok(())
+        }
+        Destination::Session => {
+            IslandService::write().open(monitor, Surface::Session, Instant::now());
+            Ok(())
+        }
+        Destination::Timer => {
+            IslandService::write().open(monitor, Surface::Timer, Instant::now());
+            Ok(())
+        }
+        Destination::Capture => {
+            IslandService::write().open(monitor, Surface::Capture, Instant::now());
             Ok(())
         }
         Destination::Wallpapers => {

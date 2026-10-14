@@ -17,7 +17,7 @@ use crate::island::geometry::{self, Rect};
 use crate::island::presentation::{Content, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::sources::{caffeine, capture, reminders, session};
+use crate::sources::{caffeine, capture, recording, reminders, session};
 use crate::surfaces;
 use crate::theme;
 
@@ -76,6 +76,17 @@ pub(super) fn surface(
             open,
             island.visit(),
             island.held(monitor),
+        )),
+        Surface::Timer => Some(surfaces::timer::surface(
+            open,
+            island.visit(),
+            island.held(monitor),
+        )),
+        Surface::Capture => Some(surfaces::capture::surface(
+            open,
+            island.visit(),
+            island.held(monitor),
+            recording::recording(island).is_some(),
         )),
     }
 }

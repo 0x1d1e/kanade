@@ -1016,6 +1016,28 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| app,
     },
+    // a countdown or a pomodoro to start from the island, and the one running
+    Module {
+        name: "timer-surface",
+        about: "Start, pause and cancel a timer or a pomodoro",
+        requires: &[CORE, "timer"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "timer",
+            about: "Start a timer or a pomodoro; pause, resume, skip or cancel it, open its Surface",
+            usage: || String::from("timer open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Timer, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
     // niri's keybinds on the island, read from its config, and the keys Kanade's Surfaces take
     Module {
         name: "keys-surface",
@@ -1090,6 +1112,28 @@ pub const ALL: &[Module] = &[
             niri::on_screenshot(capture::captured);
             app
         },
+    },
+    // screenshots and the screen recording from the island
+    Module {
+        name: "capture-surface",
+        about: "Screenshots and screen recording to choose from",
+        requires: &[CORE, "capture"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "capture",
+            about: "Take a screenshot or record the screen, open its Surface",
+            usage: || String::from("capture open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Capture, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
     },
     // keeps the session from going idle while on, by systemd-inhibit, which only it starts
     Module {

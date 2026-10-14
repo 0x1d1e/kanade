@@ -51,6 +51,18 @@ impl Later {
         Self(shared)
     }
 
+    // a call nobody waits on, as a press on the island's own targets: every answer is dropped
+    pub fn detached() -> Self {
+        Self(Arc::new(Shared {
+            waiting: Mutex::new(Waiting {
+                reply: None,
+                unsettled: String::new(),
+            }),
+            answered: Condvar::new(),
+            deadline: Instant::now(),
+        }))
+    }
+
     // what the shell says if the source does not answer within `LATER`, as only it knows what may still happen
     pub fn unsettled(&self, unsettled: impl Into<String>) {
         self.0.waiting.locked().unsettled = unsettled.into();

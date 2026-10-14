@@ -46,9 +46,6 @@ pub enum Mark {
     // an app's icon
     Picture(PathBuf),
 
-    // an image cropped to fill the tile, like a wallpaper
-    Photo(PathBuf),
-
     // one of Kanade's own icons, like a Settings page's
     Icon(Icon),
 
@@ -71,10 +68,7 @@ pub enum Action {
     // puts the clipboard history's entry of this id back on the clipboard
     Paste(u64),
 
-    // sets the image as the wallpaper
-    Wallpaper(PathBuf),
-
-    // opens Controls, the Clipboard or Settings, as the island does
+    // opens another Surface or Settings, as the island does
     Open(Destination),
 
     // answers the dmenu waiting with the place of the line chosen

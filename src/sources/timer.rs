@@ -207,6 +207,26 @@ impl Service for Clocks {
     fn listen() {}
 }
 
+/*
+ * the timer as the island shows it, for the Timer Surface to draw: its countdown and the pomodoro's
+ * round, none while none runs. Set before its Activity is posted or withdrawn, so a view that
+ * redraws on the island's change sees it
+ */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Standing(Option<(Countdown, Option<Round>)>);
+
+impl Service for Standing {
+    fn new() -> Self {
+        Standing::default()
+    }
+
+    fn listen() {}
+}
+
+pub fn standing() -> Option<(Countdown, Option<Round>)> {
+    Standing::read().0
+}
+
 // likewise for Satellite readings, which change far less often than a clock beside them
 pub struct Shorts;
 
@@ -426,6 +446,13 @@ fn show(running: Option<Running>) {
     let now = Instant::now();
 
     forget();
+
+    Standing::write().0 = running.map(|running| {
+        (
+            running.countdown,
+            running.pomodoro.map(|pomodoro| pomodoro.round),
+        )
+    });
 
     match running {
         Some(running) => IslandService::write().post(activity(running), now),

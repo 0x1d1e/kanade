@@ -1587,7 +1587,7 @@ pub const WALLPAPER: &[Setting] = &[
     Setting {
         key: "wallpaper.directory",
         label: "Wallpaper folder",
-        help: "the images the Launcher offers after `@` and the Wallpapers Surface shows, else ~/Pictures/Wallpapers",
+        help: "the images the Wallpapers Surface shows, else ~/Pictures/Wallpapers",
         kind: Kind::Path(Field {
             get: |config| config.wallpapers.clone(),
             set: |config, wallpapers| config.wallpapers = wallpapers,

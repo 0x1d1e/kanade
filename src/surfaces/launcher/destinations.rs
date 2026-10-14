@@ -1,7 +1,8 @@
 /*
  * where Kanade itself goes, as a Launcher provider: Wi-Fi and Bluetooth open Controls on their
- * networks and devices, Clipboard opens the history, Calendar the month and agenda, Wallpapers the wallpaper grid, Keys the
- * keybinds, and each page of Settings and each setting opens Settings on the page showing it. They only open: switching a radio or joining a network
+ * networks and devices, Clipboard opens the history, Calendar the month and agenda, Wallpapers the wallpaper grid (also for
+ * anything typed after `@`), Keys the keybinds, Notifications, Controls, Weather, Session, Timer and Capture
+ * their Surfaces, and each page of Settings and each setting opens Settings on the page showing it. They only open: switching a radio or joining a network
  * is done in the Surface they open
  */
 
@@ -9,12 +10,21 @@ use crate::icon::Icon;
 use crate::settings;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, history, wallpaper};
+use super::{emoji, history};
+
+// what opens the Wallpapers Surface when typed first, whatever follows
+pub const WALLPAPER: &str = "@";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Destination {
     Wifi,
     Bluetooth,
+    Notifications,
+    Controls,
+    Weather,
+    Session,
+    Timer,
+    Capture,
     Clipboard,
     Calendar,
     Wallpapers,
@@ -29,6 +39,12 @@ pub enum Destination {
 pub struct Destinations {
     pub wifi: bool,
     pub bluetooth: bool,
+    pub notifications: bool,
+    pub controls: bool,
+    pub weather: bool,
+    pub session: bool,
+    pub timer: bool,
+    pub capture: bool,
     pub clipboard: bool,
     pub calendar: bool,
     pub wallpapers: bool,
@@ -46,9 +62,13 @@ const ANYWHERE: usize = 3;
 impl LauncherProvider for Destinations {
     // by name within a fit; nothing for a query of one letter or none, which lists the apps
     fn find(&self, query: &str) -> Vec<Answer> {
+        // `@` and whatever follows it opens the grid of wallpapers
+        if query.starts_with(WALLPAPER) {
+            return self.wallpapers.then(wallpapers).into_iter().collect();
+        }
+
         if query.chars().count() < FROM
             || query.starts_with(emoji::PREFIX)
-            || query.starts_with(wallpaper::PREFIX)
             || query.starts_with(history::PREFIX)
         {
             return Vec::new();
@@ -73,6 +93,54 @@ impl LauncherProvider for Destinations {
                 "Devices",
                 &["bluetooth", "bt"][..],
                 Destination::Bluetooth,
+            ),
+            (
+                self.notifications,
+                Icon::Bell,
+                "Notifications",
+                "Recent and Do Not Disturb",
+                &["notifications", "notification", "notifs", "dnd"][..],
+                Destination::Notifications,
+            ),
+            (
+                self.controls,
+                Icon::Sliders,
+                "Controls",
+                "Volume, brightness and toggles",
+                &["controls", "control", "volume", "brightness"][..],
+                Destination::Controls,
+            ),
+            (
+                self.weather,
+                Icon::Cloud,
+                "Weather",
+                "Forecast",
+                &["weather", "forecast", "temperature"][..],
+                Destination::Weather,
+            ),
+            (
+                self.session,
+                Icon::Power,
+                "Session",
+                "Lock, log out, restart and power off",
+                &["session", "power", "lock", "logout", "shutdown", "restart"][..],
+                Destination::Session,
+            ),
+            (
+                self.timer,
+                Icon::Stopwatch,
+                "Timer",
+                "Countdown and pomodoro",
+                &["timer", "countdown", "pomodoro", "stopwatch"][..],
+                Destination::Timer,
+            ),
+            (
+                self.capture,
+                Icon::Capture,
+                "Capture",
+                "Screenshot and screen recording",
+                &["capture", "screenshot", "record", "recording"][..],
+                Destination::Capture,
             ),
             (
                 self.clipboard,
@@ -131,6 +199,17 @@ impl LauncherProvider for Destinations {
         }
 
         answers
+    }
+}
+
+// the one answer of an `@` search
+fn wallpapers() -> Answer {
+    Answer {
+        fit: Fit::Exact,
+        title: String::from("Wallpapers"),
+        detail: String::from("Choose a wallpaper"),
+        mark: Mark::Icon(Icon::Picture),
+        action: Action::Open(Destination::Wallpapers),
     }
 }
 

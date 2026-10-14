@@ -402,6 +402,11 @@ impl IslandService {
         )
     }
 
+    // the Activity registered under `id`, shown or not
+    pub fn activity(&self, id: &Id) -> Option<&Activity> {
+        self.arbiter.activity(id)
+    }
+
     // the primary this island last settled on, since when, and until when (`Arbiter::shown`)
     pub fn shown(&self, monitor: &str) -> Option<(&Id, Instant, Option<Instant>)> {
         self.arbiter.shown(arbiter::Island {

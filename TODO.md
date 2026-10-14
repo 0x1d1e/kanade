@@ -139,3 +139,5 @@ Not worth changing, by this review:
 - The lock screen shows no Caps Lock hint.
 - The Session Surface treats Lock and the counted-down Restart, Power off and Log out alike in weight; the countdown with Cancel is the guard.
 - ADR numbers skip 0045.
+
+- Capture Surface: a failed screenshot or recording start is only logged to stderr, as the island is already closed; Record starts as the island collapses.

@@ -522,7 +522,13 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
                 tray(slots, peek)
             }
         }
-        Presentation::Expanded(Surface::Controls | Surface::Weather | Surface::Session) => CONTROLS,
+        Presentation::Expanded(
+            Surface::Controls
+            | Surface::Weather
+            | Surface::Session
+            | Surface::Timer
+            | Surface::Capture,
+        ) => CONTROLS,
         Presentation::Expanded(Surface::Tray) => TRAY_LIST,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,

@@ -6,41 +6,14 @@
 use std::time::Instant;
 
 use kanade_runtime::service::Service;
-use kanade_runtime::{
-    Center, Column, Cursor, Key, Padding, Rectangle, Row, Start, Text, Widget, children,
-};
+use kanade_runtime::{Key, Rectangle, children};
 
-use super::grid::moved;
-use super::ring::Ring;
-use super::{Outline, store};
+use super::pad::{self, Focus};
 use crate::icon::Icon;
 use crate::island::activity::{Ending, Leave};
-use crate::island::geometry;
-use crate::island::presentation::{Presentation, Surface};
-use crate::island::service::IslandService;
+use crate::island::presentation::Surface;
 use crate::modules;
 use crate::sources::session::{self, Counting};
-use crate::theme::space::{INSET, TARGET};
-use crate::theme::{self, radius};
-use crate::view;
-
-const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
-const HEADER: f32 = TARGET;
-const GAP: f32 = 14.0;
-
-// where the tiles or the countdown go
-const BODY: f32 = geometry::CONTROLS.height - 2.0 * INSET - HEADER - GAP;
-
-const TILE: f32 = 92.0;
-const TILE_GAP: f32 = 8.0;
-const KNOB: f32 = 40.0;
-
-const PILL: f32 = 32.0;
-const PILL_WIDTH: f32 = 140.0;
-const PILL_GAP: f32 = 8.0;
-
-// the pills sit below where the tiles were, so a double click on a tile never presses Now
-const _: () = assert!(BODY - PILL >= (BODY + TILE) / 2.0);
 
 // what the ring can be on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,62 +24,12 @@ enum At {
     Now(Counting),
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Focus {
-    ring: Ring<At>,
-}
-
-impl Service for Focus {
+impl Service for Focus<At> {
     fn new() -> Self {
         Focus::default()
     }
 
     fn listen() {}
-}
-
-impl Focus {
-    // this visit's focus; one kept from an earlier visit is over
-    fn of(&self, visit: u64, held: bool) -> Focus {
-        if self.ring.current(visit) {
-            self.clone()
-        } else {
-            Focus {
-                ring: Ring::start(visit, held),
-            }
-        }
-    }
-
-    fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        self.ring.on(grid, 0)
-    }
-
-    /*
-     * the focus after a key and what it presses, none when the key is not the Surface's, as
-     * Escape, which closes it. A key while the ring hides only shows it, so nothing is pressed
-     * that the ring was not seen on
-     */
-    fn step(self, key: Key, grid: &[Vec<(At, f32)>]) -> Option<(Focus, Option<At>)> {
-        let place = self.ring.place(grid, 0)?;
-        let at = grid[place.row][place.column].0;
-
-        let act = matches!(key, Key::Enter | Key::Space).then_some(at);
-        let to = moved(place, key, grid);
-
-        if act.is_none() && to.is_none() {
-            return None;
-        }
-
-        if let Some(ring) = self.ring.revealed(grid, 0) {
-            return Some((Focus { ring }, None));
-        }
-
-        let ring = match to {
-            Some(to) => self.ring.onto(grid[to.row][to.column].0),
-            None => self.ring,
-        };
-
-        Some((Focus { ring }, act))
-    }
 }
 
 // the tiles, the lock's only while its Module is on
@@ -147,151 +70,58 @@ fn grid(counting: Option<&Counting>) -> Vec<Vec<(At, f32)>> {
  * then does the ring show
  */
 pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
-    let shape = geometry::CONTROLS;
     let counting = session::counting();
     let grid = grid(counting.as_ref());
     let ring = open
-        .then(|| Focus::read().of(visit, held).ring(&grid))
+        .then(|| Focus::<At>::read().of(visit, held).ring(&grid))
         .flatten();
 
-    let header = Row::new(children![
-        Text::new("Session")
-            .size(theme::text::TITLE)
-            .color(theme::island().on_surface)
-            .weight(theme::text::SEMIBOLD)
-    ])
-    .width(WIDTH)
-    .height(HEADER)
-    .align(Center);
-
-    let body: Box<dyn Widget> = match counting {
-        Some(counting) => Box::new(countdown(&counting, ring)),
-        None => Box::new(tiles(ring)),
-    };
-
-    Rectangle::new()
-        .width(shape.width)
-        .height(shape.height)
-        .padding(INSET)
-        .align_child(Start, Start)
-        .child(
-            Column::new(vec![Box::new(header), body])
-                .width(WIDTH)
-                .gap(GAP),
-        )
+    match counting {
+        Some(counting) => pad::frame("Session", countdown(&counting, ring)),
+        None => pad::frame("Session", tiles(ring)),
+    }
 }
 
 fn tiles(ring: Option<At>) -> Rectangle {
     let leaves = leaves();
-    let width = (WIDTH - (leaves.len() - 1) as f32 * TILE_GAP) / leaves.len() as f32;
+    let width = pad::tile_width(leaves.len());
 
     let row = leaves
         .into_iter()
-        .map(|leave| Box::new(tile(leave, width, ring == Some(At::Tile(leave)))) as _)
+        .map(|leave| {
+            Box::new(pad::tile(
+                icon(leave),
+                name(leave),
+                width,
+                ring == Some(At::Tile(leave)),
+                move || click(At::Tile(leave)),
+            )) as _
+        })
         .collect();
 
-    Rectangle::new()
-        .width(WIDTH)
-        .height(BODY)
-        .align_child(Center, Center)
-        .child(Row::new(row).gap(TILE_GAP))
-}
-
-// its icon in a knob, then its name; filled while the ring is on it
-fn tile(leave: Leave, width: f32, ring: bool) -> Rectangle {
-    let knob = Rectangle::new()
-        .width(KNOB)
-        .height(KNOB)
-        .radius(KNOB / 2.0)
-        .fill(theme::island().surface_container_high)
-        .align_child(Center, Center)
-        .child(icon(leave).on(18.0, theme::island().on_surface));
-
-    let tile = Rectangle::new()
-        .width(width)
-        .height(TILE)
-        .radius(radius::TILE)
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(super::on_left(move || click(At::Tile(leave))))
-        .child(
-            Column::new(children![
-                knob,
-                Text::new(name(leave))
-                    .size(theme::text::LABEL_SMALL)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD)
-            ])
-            .gap(10.0)
-            .align(Center),
-        );
-
-    if ring {
-        tile.fill(theme::island().surface_container).border_if(true)
-    } else {
-        tile
-    }
+    pad::tiles(row)
 }
 
 // what is left, then Cancel and Now along the bottom
-fn countdown(counting: &Counting, ring: Option<At>) -> Column {
+fn countdown(counting: &Counting, ring: Option<At>) -> impl kanade_runtime::Widget + use<> {
     let left = session::left(&counting.countdown, Instant::now());
-    let leave = Leave::Ending(counting.end);
+    let said = pad::reading(
+        icon(Leave::Ending(counting.end)),
+        format!("{} in {left} s", session::doing(counting.end)),
+    );
 
-    let said = Rectangle::new()
-        .width(WIDTH)
-        .height(BODY - PILL)
-        .align_child(Center, Center)
-        .child(
-            Column::new(children![
-                icon(leave).on(28.0, theme::island().on_surface_variant),
-                Text::new(format!("{} in {left} s", session::doing(counting.end)))
-                    .size(theme::text::BODY)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD)
-            ])
-            .gap(6.0)
-            .align(Center),
-        );
+    let (cancel, now) = (At::Cancel(*counting), At::Now(*counting));
 
-    let pills = Row::new(children![
-        pill("Cancel", At::Cancel(*counting), ring),
-        pill(session::at_once(counting.end), At::Now(*counting), ring)
-    ])
-    .gap(PILL_GAP);
+    let pills = pad::pills(children![
+        pad::pill("Cancel", ring == Some(cancel), move || click(cancel)),
+        pad::pill(
+            session::at_once(counting.end),
+            ring == Some(now),
+            move || click(now)
+        )
+    ]);
 
-    Column::new(children![said, pills])
-        .width(WIDTH)
-        .align(Center)
-}
-
-// outlined, the ring in place of the outline
-fn pill(label: &str, at: At, ring: Option<At>) -> Rectangle {
-    let pill = Rectangle::new()
-        .width(PILL_WIDTH)
-        .height(PILL)
-        .radius(PILL / 2.0)
-        .padding(Padding {
-            top: 0.0,
-            right: 14.0,
-            bottom: 0.0,
-            left: 14.0,
-        })
-        .align_child(Center, Center)
-        .cursor(Cursor::Pointer)
-        .on_click(super::on_left(move || click(at)))
-        .child(
-            Text::new(label)
-                .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface)
-                .weight(theme::text::SEMIBOLD),
-        );
-
-    if ring == Some(at) {
-        pill.border_if(true)
-    } else {
-        pill.border(1.0, theme::island().surface_container_high)
-    }
+    pad::stacked(said, pills)
 }
 
 pub fn icon(leave: Leave) -> Icon {
@@ -322,51 +152,17 @@ pub fn name(leave: Leave) -> &'static str {
  * which the window's own keys then get to close it
  */
 pub fn key(monitor: &str, key: Key) -> bool {
-    let (visit, held) = {
-        let island = IslandService::read();
-
-        if island.presentation(monitor) != Presentation::Expanded(Surface::Session) {
-            return false;
-        }
-
-        (island.visit(), island.held(monitor))
-    };
-
-    let counting = session::counting();
-    let focus = Focus::read().of(visit, held);
-
-    let Some((focus, at)) = focus.step(key, &grid(counting.as_ref())) else {
-        return false;
-    };
-
-    let focus = match at {
-        Some(at) => press(focus, at),
-        None => focus,
-    };
-
-    store(focus);
-
-    IslandService::write().attend(monitor, Instant::now());
-
-    true
+    pad::key(
+        monitor,
+        Surface::Session,
+        key,
+        || grid(session::counting().as_ref()),
+        press,
+    )
 }
 
-// only while open: two clicks queued before the next frame both reach the targets that frame drew
 fn click(at: At) {
-    let visit = {
-        let island = IslandService::read();
-
-        if island.surface() != Some(Surface::Session) {
-            return;
-        }
-
-        island.visit()
-    };
-    let focus = Focus {
-        ring: Focus::read().of(visit, false).ring.hidden(),
-    };
-
-    store(press(focus, at));
+    pad::click(Surface::Session, at, press);
 }
 
 /*
@@ -375,7 +171,7 @@ fn click(at: At) {
  * so a key repeated only counts down again; the rest close it, as does a countdown already gone.
  * One refused shows its refusal on the island, which closes the Surface
  */
-fn press(focus: Focus, at: At) -> Focus {
+fn press(focus: Focus<At>, at: At) -> Focus<At> {
     match at {
         At::Tile(leave) => {
             let requested = session::request(leave);
@@ -403,23 +199,15 @@ fn press(focus: Focus, at: At) -> Focus {
         At::Now(counting) => session::act(session::NOW, &counting.serial.to_string()),
     }
 
-    close();
+    pad::close();
     focus
-}
-
-// the Surface done with
-fn close() {
-    let monitor = IslandService::read().expanded_on().map(str::to_owned);
-
-    if let Some(monitor) = monitor {
-        view::collapse(&monitor);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
+    use super::super::ring::Ring;
     use super::*;
     use crate::island::activity::Countdown;
 
@@ -429,7 +217,7 @@ mod tests {
             (At::Tile(Leave::Sleep), 0.25),
             (At::Tile(Leave::Lock), 0.75),
         ]];
-        let hidden = Focus::default().of(1, false);
+        let hidden = Focus::<At>::default().of(1, false);
 
         let (shown, act) = hidden.step(Key::Enter, &grid).unwrap();
 

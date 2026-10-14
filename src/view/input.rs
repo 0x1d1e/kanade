@@ -105,6 +105,14 @@ pub fn key(monitor: &str, key: Key) {
         return;
     }
 
+    if modules::on("timer-surface") && surfaces::timer::key(monitor, key) {
+        return;
+    }
+
+    if modules::on("capture-surface") && surfaces::capture::key(monitor, key) {
+        return;
+    }
+
     if key == Key::Escape {
         collapse(monitor);
 

@@ -106,6 +106,10 @@ impl Arbiter {
         self.activities.contains_key(id)
     }
 
+    pub fn activity(&self, id: &Id) -> Option<&Activity> {
+        self.activities.get(id).map(|entry| &entry.activity)
+    }
+
     /*
      * how `id` interrupts, if up at `now`: a repost with the same Interrupt is no new arrival,
      * while one that changes it, or a repost of an expired one not yet swept, is

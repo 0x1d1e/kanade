@@ -23,7 +23,7 @@ It is also the session's notification daemon, a Dock, and a lock screen.
 
 ## Features
 
-- **Island**: hovering it while it shows something peeks; a click expands it into one of eleven Surfaces: Media, Notifications, Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys and Session.
+- **Island**: hovering it while it shows something peeks; a click expands it into one of thirteen Surfaces: Media, Notifications, Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Session, Timer and Capture.
 - **Tray**: hovering the Island at rest shows the apps' tray items beside the clock. Left click activates one, middle click is its secondary action, the wheel scrolls it, and right click opens its menu.
 - **Notifications**: Kanade is the notification daemon. Banners come out of the Island, with Do Not Disturb.
 - **Privacy indicators**: dots at the Island's trailing end, or its top corner in a Surface, show a microphone, camera or screen capture in use, and the Controls Surface names the apps. A fullscreen window covers them, and `privacy.indicators` turns them off.

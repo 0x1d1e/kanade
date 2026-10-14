@@ -38,6 +38,12 @@ pub enum Surface {
 
     // niri's keybinds, and the keys Kanade's own Surfaces take
     Keys,
+
+    // a countdown or a pomodoro to start, and the one running
+    Timer,
+
+    // a screenshot of an area, a window or the screen, and the screen recording
+    Capture,
 }
 
 impl Surface {

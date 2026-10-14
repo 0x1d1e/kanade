@@ -4,18 +4,18 @@ use crate::sources::apps::App;
 use crate::sources::recents;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
-use super::{emoji, history, wallpaper};
+use super::{destinations, emoji, history};
 
-// the apps, and whether `@` searches wallpapers instead
+// the apps, and whether `@` opens Wallpapers instead
 pub struct Apps<'a>(pub &'a [App], pub bool);
 
 impl LauncherProvider for Apps<'_> {
     // by name within a fit, since the list is sorted so; an empty query finds every app
     fn find(&self, query: &str) -> Vec<Answer> {
-        // an emoji or wallpaper search, which no app answers
+        // an emoji search or the Wallpapers destination, which no app answers
         if query.starts_with(emoji::PREFIX)
             || query.starts_with(history::PREFIX)
-            || (self.1 && query.starts_with(wallpaper::PREFIX))
+            || (self.1 && query.starts_with(destinations::WALLPAPER))
         {
             return Vec::new();
         }

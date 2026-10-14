@@ -464,6 +464,17 @@ fn arguments<'a>(output: &'a str, path: &'a str) -> [&'a str; 6] {
     ["-c", CODEC, "-o", output, "-f", path]
 }
 
+/*
+ * the path being recorded to, none while none records. Read from the Activity the island holds, not
+ * the recorder, so a view under the island's lock never waits on a recorder that waits on it
+ */
+pub fn recording(island: &IslandService) -> Option<String> {
+    match island.activity(&id())?.detail() {
+        Detail::Recording(Clip::Recording { path, .. }) => Some(path.clone()),
+        _ => None,
+    }
+}
+
 // one recording at a time, its end replacing it
 fn id() -> Id {
     Id::new(Kind::Recording, "recording")

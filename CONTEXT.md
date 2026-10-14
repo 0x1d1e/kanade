@@ -81,22 +81,22 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - **Avoid:** state (state is what Services hold)
 
 ## Surface
-Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Wallpapers | Keys | Session`.
+Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Wallpapers | Keys | Session | Timer | Capture`.
 - Media, Notifications and Session are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface. A Session Activity is a restart, power off or log out counting down, or the sleep, hibernation or power off `battery.critical_action` counts down at a critical battery, a lock, sleep, restart, power off or log out that was refused or failed, or one logind never answered, which may still happen; the Session Surface opens by user action too, and shows a countdown but no refusal, so a refusal or no answer closes it.
-- Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers and Keys have no Activity of their own Kind. They open only by user action; a click on a Reminder opens Calendar.
-- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `session`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
+- Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Timer and Capture have no Activity of their own Kind. They open only by user action; a click on a Reminder opens Calendar.
+- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface`, `session`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is the runtime's build function)
 
 ## Sub-surface
 A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has four: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, and Audio, from the speaker level's chevron. In the Tray Surface an item's menu is one, from its chevron or its slot, and each submenu another below it.
 - **Invariant:** every target in a Surface and its sub-surfaces is a key away. Arrows move a ring between targets, Enter or Space presses, Escape leaves a sub-surface for the level it came from, ringed on the target that entered it, and collapses the island only from the top level.
-- **Invariant:** a hidden ring (a Surface opened by pointer, or its target gone) is shown by the first key that would act or move, which does nothing else; any other key does nothing. Session, Tray and Controls share it through `surfaces/ring.rs`; Notifications keeps an equivalent local one.
+- **Invariant:** a hidden ring (a Surface opened by pointer, or its target gone) is shown by the first key that would act or move, which does nothing else; any other key does nothing. Session, Timer, Capture, Tray and Controls share it through `surfaces/ring.rs` (the first three through `surfaces/pad.rs`); Notifications keeps an equivalent local one.
 - **Invariant:** a sub-surface lasts one opening of its Surface. The Surface opens at its top level.
 - **Invariant:** a password never prints, in a log or a `Debug`; it lives only until NetworkManager has it.
 - **Avoid:** detail (an Activity's Detail), page, view
 
 ## LauncherProvider
-One kind of answer the Launcher finds for a query: apps, the calculator, emoji, wallpapers, destinations (Wi-Fi, Bluetooth, Clipboard, Settings). Each answer has a Fit, what its row shows, and its action: start an app, copy text, set a wallpaper, or open a Surface or Settings.
+One kind of answer the Launcher finds for a query: apps, the calculator, emoji, destinations (Wi-Fi, Bluetooth, each Surface, Settings; anything after `@` is the Wallpapers destination). Each answer has a Fit, what its row shows, and its action: start an app, copy text, or open a Surface or Settings.
 - **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, emoji), then each provider's own.
 - Emoji answer only a query starting with `:`, and apps answer none of those.
 - Kanade's own seam; no plugin API.
