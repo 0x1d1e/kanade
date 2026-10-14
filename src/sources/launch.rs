@@ -1,12 +1,13 @@
 //! How a desktop entry starts, as the Desktop Entry spec says, for the Dock and the Launcher:
 //! over D-Bus for `DBusActivatable=true`, else `Exec` split into its arguments, its field
 //! codes expanded for a launch with no file or URL, run in `Path` and, for `Terminal=true`, in a
-//! terminal through `xdg-terminal-exec`. niri runs the command, so the app gets niri's environment,
-//! not Kanade's. An activatable app runs `Exec` only when the bus could not deliver `Activate`: one
+//! terminal through `xdg-terminal-exec`. Files dropped on an app start it with them as arguments,
+//! through niri's `Spawn`, which no shell reads. niri runs the command, so the app gets niri's
+//! environment, not Kanade's. An activatable app runs `Exec` only when the bus could not deliver `Activate`: one
 //! that got it but has not answered may be starting, and a second start would open it twice.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use zbus::blocking::{Connection, connection};
@@ -37,7 +38,7 @@ pub struct Launch {
     activate: Option<String>,
 
     // `Exec`; for an activatable entry, what runs when the bus could not deliver `Activate`
-    command: Option<Command>,
+    command: Option<Box<Command>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -51,6 +52,66 @@ struct Command {
     dir: Option<String>,
 
     terminal: bool,
+
+    // where `Exec` takes files, none for an entry that takes none
+    files: Option<Files>,
+}
+
+// the most starts one drop of files makes, for an `Exec` that takes one file at a time
+const MAX_STARTS: usize = 8;
+
+/*
+ * where an `Exec` takes files: its arguments before and after the one file code that stands as an
+ * argument of its own (`%f`, `%u`, `%F`, `%U`). A code inside another argument, as `--file=%f`, is
+ * not one: the files are never joined into an argument they did not stand as
+ */
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Files {
+    before: Vec<String>,
+    after: Vec<String>,
+
+    // `%F` or `%U` take every file in one start; `%f` and `%u` one, so each file is a start
+    many: bool,
+}
+
+impl Files {
+    fn of(args: &[String], fields: &Fields) -> Option<Files> {
+        let at = args
+            .iter()
+            .position(|arg| matches!(arg.as_str(), "%f" | "%F" | "%u" | "%U"))?;
+        let around = |args: &[String]| -> Vec<String> {
+            args.iter().flat_map(|arg| expand(arg, fields)).collect()
+        };
+        let before = around(&args[..at]);
+
+        // an `Exec` that is only a code has no program
+        (!before.is_empty()).then(|| Files {
+            before,
+            after: around(&args[at + 1..]),
+            many: matches!(args[at].as_str(), "%F" | "%U"),
+        })
+    }
+
+    // each start's arguments, every file one argument of its own
+    fn argvs(&self, files: &[String]) -> Vec<Vec<String>> {
+        let with = |files: &[String]| {
+            self.before
+                .iter()
+                .chain(files)
+                .chain(&self.after)
+                .cloned()
+                .collect()
+        };
+
+        if self.many {
+            vec![with(files)]
+        } else {
+            files
+                .iter()
+                .map(|file| with(std::slice::from_ref(file)))
+                .collect()
+        }
+    }
 }
 
 // what of a `[Desktop Entry]` launching reads, its string values unescaped
@@ -69,6 +130,13 @@ pub struct Fields<'a> {
 }
 
 impl Launch {
+    // whether the entry's `Exec` has a file code, so a drop on it starts something
+    pub fn takes_files(&self) -> bool {
+        self.command
+            .as_ref()
+            .is_some_and(|command| command.files.is_some())
+    }
+
     // none for an entry that cannot start: no `Exec` that parses, nor a bus name to activate
     pub fn of(fields: &Fields) -> Option<Launch> {
         let activate = fields
@@ -97,14 +165,17 @@ impl Launch {
                     .filter(|arg| !arg.is_empty())
                     .collect();
 
-                (argv, written.join(" "))
+                (argv, written.join(" "), Files::of(&args, fields))
             })
-            .filter(|(argv, _)| !argv.is_empty())
-            .map(|(argv, written)| Command {
-                argv,
-                written,
-                dir: fields.path.map(String::from),
-                terminal: fields.terminal,
+            .filter(|(argv, _, _)| !argv.is_empty())
+            .map(|(argv, written, files)| {
+                Box::new(Command {
+                    argv,
+                    written,
+                    dir: fields.path.map(String::from),
+                    terminal: fields.terminal,
+                    files,
+                })
             });
 
         (activate.is_some() || command.is_some()).then_some(Launch { activate, command })
@@ -119,7 +190,7 @@ impl Launch {
 
     #[cfg(test)]
     pub(crate) fn shell_line(&self) -> Option<String> {
-        self.command.as_ref().map(Command::shell)
+        self.command.as_ref().map(|command| command.shell())
     }
 
     // starts it; blocks on the bus and niri, so off the view thread
@@ -147,6 +218,56 @@ impl Launch {
             },
             Command::run,
         )
+    }
+
+    /*
+     * starts it with `files`, which an `Exec` taking one standing as an argument of its own
+     * receives as arguments of the start and nowhere else: niri's `Spawn` takes the arguments as
+     * they are, so no shell reads a name. Nothing starts for an entry that takes no file, or whose
+     * `Path` needs a shell to move into, nor for a name that is not an absolute path to something
+     * that exists. Blocks on niri, so off the view thread
+     */
+    pub fn run_files(&self, files: &[PathBuf]) -> Result<(), String> {
+        let command = self
+            .command
+            .as_ref()
+            .ok_or("it has no Exec, so it takes no files")?;
+        let takes = command
+            .files
+            .as_ref()
+            .ok_or("its Exec has no %f, %F, %u or %U argument, so it takes no files")?;
+
+        if command.dir.is_some() {
+            return Err(String::from(
+                "its Path needs a shell, which files never go through",
+            ));
+        }
+
+        let argvs = takes.argvs(&named(files)?);
+
+        if argvs.len() > MAX_STARTS {
+            return Err(format!(
+                "it takes one file at a time and {} files would start it {} times",
+                files.len(),
+                argvs.len()
+            ));
+        }
+
+        if command.terminal && !wake::found(TERMINAL) {
+            return Err(format!(
+                "{TERMINAL} is missing, so a terminal app cannot start"
+            ));
+        }
+
+        for mut argv in argvs {
+            if command.terminal {
+                argv.insert(0, String::from(TERMINAL));
+            }
+
+            act(&spawn(&argv))?;
+        }
+
+        Ok(())
     }
 
     // activates it when it is activatable, running `Exec` only when that was not delivered
@@ -268,11 +389,7 @@ impl Command {
             json::quote(&self.shell())
         );
 
-        match niri::act(&action) {
-            Ok(Acted::Done) => Ok(()),
-            Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
-            Err(error) => Err(error.to_string()),
-        }
+        act(&action)
     }
 
     // a shell line, since niri's `Spawn` takes no working directory
@@ -290,6 +407,44 @@ impl Command {
             None => format!("exec {argv}"),
         }
     }
+}
+
+fn act(action: &str) -> Result<(), String> {
+    match niri::act(action) {
+        Ok(Acted::Done) => Ok(()),
+        Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+// niri's `Spawn`: the arguments as a JSON list, run as they are
+fn spawn(argv: &[String]) -> String {
+    format!(
+        r#"{{"Action":{{"Spawn":{{"command":{}}}}}}}"#,
+        json::Json::from(argv)
+    )
+}
+
+// the dropped files as arguments: an absolute path, as UTF-8 for niri, to something that exists
+fn named(files: &[PathBuf]) -> Result<Vec<String>, String> {
+    if files.is_empty() {
+        return Err(String::from("no files"));
+    }
+
+    files
+        .iter()
+        .map(|file| {
+            let name = file
+                .to_str()
+                .filter(|_| file.is_absolute())
+                .ok_or_else(|| format!("{} is not an absolute UTF-8 path", file.display()))?;
+
+            std::fs::symlink_metadata(file)
+                .map_err(|error| format!("{}: {error}", file.display()))?;
+
+            Ok(name.to_owned())
+        })
+        .collect()
 }
 
 fn quoted(arg: &str) -> String {
@@ -511,6 +666,64 @@ mod tests {
             Some("cd -- '/srv/my dir' && exec 'xdg-terminal-exec' 'htop' '--tree' 'its'")
         );
         assert_eq!(quoted("it's"), r"'it'\''s'");
+    }
+
+    fn starts(exec: &str, files: &[&str]) -> Option<Vec<Vec<String>>> {
+        let files: Vec<String> = files.iter().map(|file| String::from(*file)).collect();
+
+        Launch::of(&fields(exec))
+            .and_then(|launch| launch.command)
+            .and_then(|command| command.files)
+            .map(|takes| takes.argvs(&files))
+    }
+
+    // a name with blanks, quotes or shell syntax is still one argument, and no shell line holds it
+    #[test]
+    fn dropped_files_are_arguments_of_their_own() {
+        let odd = "/tmp/a b'; rm -rf ~ $(x).txt";
+
+        assert_eq!(
+            starts("viewer --new %F --quiet", &[odd, "/tmp/b"]),
+            Some(vec![vec![
+                "viewer".to_owned(),
+                "--new".to_owned(),
+                odd.to_owned(),
+                "/tmp/b".to_owned(),
+                "--quiet".to_owned()
+            ]])
+        );
+        assert_eq!(
+            starts("viewer %u", &["/tmp/a", "/tmp/b"]),
+            Some(vec![
+                vec!["viewer".to_owned(), "/tmp/a".to_owned()],
+                vec!["viewer".to_owned(), "/tmp/b".to_owned()]
+            ])
+        );
+        assert_eq!(
+            spawn(&["viewer".to_owned(), odd.to_owned()]),
+            r#"{"Action":{"Spawn":{"command":["viewer","/tmp/a b'; rm -rf ~ $(x).txt"]}}}"#
+        );
+    }
+
+    // only a code standing alone takes the files; the entry is not guessed at
+    #[test]
+    fn an_exec_without_a_standing_file_code_takes_no_files() {
+        assert_eq!(starts("viewer", &["/tmp/a"]), None);
+        assert_eq!(starts("viewer --file=%f", &["/tmp/a"]), None);
+        assert_eq!(starts("%F", &["/tmp/a"]), None);
+    }
+
+    #[test]
+    fn only_absolute_names_of_what_exists_are_arguments() {
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+
+        assert_eq!(
+            named(std::slice::from_ref(&here)),
+            Ok(vec![here.to_str().unwrap().to_owned()])
+        );
+        assert!(named(&[]).is_err());
+        assert!(named(&[PathBuf::from("-rf")]).is_err());
+        assert!(named(&[PathBuf::from("/no/such/kanade-file")]).is_err());
     }
 
     #[test]

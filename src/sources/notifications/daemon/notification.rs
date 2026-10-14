@@ -1,6 +1,7 @@
 use std::time::SystemTime;
 
 use super::super::rules::Effects;
+use crate::sources::sound::Hints;
 
 #[derive(Debug, Clone)]
 pub struct Notification {
@@ -31,6 +32,9 @@ pub struct Notification {
 
     // stays open after an action, until it is dismissed or the sender closes it
     pub(crate) resident: bool,
+
+    // what its sender asked for as sound
+    pub(crate) sound: Hints,
 
     pub(crate) received: SystemTime,
 
@@ -106,6 +110,10 @@ impl Notification {
     // whether clicking the notification itself does something, see Notifications::click
     pub fn has_default_action(&self) -> bool {
         self.has_default
+    }
+
+    pub fn sound(&self) -> &Hints {
+        &self.sound
     }
 
     pub fn effects(&self) -> Effects {

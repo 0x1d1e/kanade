@@ -117,6 +117,10 @@ pub fn key(monitor: &str, key: Key) {
         return;
     }
 
+    if modules::on("media") && surfaces::media::key(monitor, key) {
+        return;
+    }
+
     if modules::on("weather-surface") && surfaces::weather::key(monitor, key) {
         return;
     }

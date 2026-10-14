@@ -153,6 +153,9 @@ pub struct Config {
     // `banners.entrance`
     pub entrance: Entrance,
 
+    // `notifications.sound`: a notification arriving plays a sound
+    pub notification_sound: bool,
+
     // `notifications.rules`: what a notification does, by the first rule matching it
     pub notification_rules: Vec<Rule>,
 
@@ -471,6 +474,7 @@ impl Default for Config {
                 suspend: None,
             },
             entrance: Entrance::default(),
+            notification_sound: false,
             notification_rules: Vec::new(),
             osd_layout: true,
             live_stale: Duration::from_secs(30 * 60),
@@ -1539,21 +1543,36 @@ pub const ISLAND: &[Setting] = &[
     },
 ];
 
-pub const NOTIFICATIONS: &[Setting] = &[Setting {
-    key: "notifications.rules",
-    label: "Notification rules",
-    help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, bypass_dnd, timeout (ms) and urgency; file only",
-    hint: None,
-    kind: Kind::Rules(Field {
-        get: |config| config.notification_rules.clone(),
-        set: |config, rules| config.notification_rules = rules,
-    }),
-    example: Some(
-        "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
-    ),
-    restart: false,
-    per_output: false,
-}];
+pub const NOTIFICATIONS: &[Setting] = &[
+    Setting {
+        key: "notifications.sound",
+        label: "Notification sounds",
+        help: "a notification arriving plays the sound it names, else a default, through pw-play or canberra-gtk-play; never under Do Not Disturb",
+        hint: Some("Play a sound for each notification"),
+        kind: Kind::Switch(Field {
+            get: |config| config.notification_sound,
+            set: |config, on| config.notification_sound = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "notifications.rules",
+        label: "Notification rules",
+        help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, sound, bypass_dnd, timeout (ms) and urgency; file only",
+        hint: None,
+        kind: Kind::Rules(Field {
+            get: |config| config.notification_rules.clone(),
+            set: |config, rules| config.notification_rules = rules,
+        }),
+        example: Some(
+            "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
+        ),
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const OSD: &[Setting] = &[Setting {
     key: "osd.layout",
@@ -3348,6 +3367,7 @@ mod tests {
                 "timer.pomodoro.rounds",
                 "live.stale",
                 "osd.layout",
+                "notifications.sound",
                 "notifications.rules",
                 "wallpaper.directory",
                 "wallpaper.transition",

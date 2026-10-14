@@ -397,7 +397,7 @@ pub const TRAY_LIST: Shape = Shape {
 // as wide as Controls, so the two Surfaces line up when one replaces the other
 pub const MEDIA: Shape = Shape {
     width: 440.0,
-    height: 216.0,
+    height: 224.0,
     radius: 32.0,
 };
 
