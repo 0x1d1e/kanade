@@ -207,7 +207,7 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Playing media",
-                rows: &[Row::Key("media.visualizer")],
+                rows: &[Row::Key("media.visualizer"), Row::Key("media.lyrics")],
             },
             Section {
                 title: "Launcher",

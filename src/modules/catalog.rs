@@ -23,7 +23,7 @@ use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
-    fullscreen, google, keys, launch, live, media, network, night_light,
+    fullscreen, google, keys, launch, live, lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -290,7 +290,10 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::MEDIA,
-        hooks: Hooks::NONE,
+        hooks: Hooks {
+            status: Some(lyrics::status),
+            reload: None,
+        },
         verbs: &[
             Verb {
                 name: "media",

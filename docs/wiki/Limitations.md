@@ -21,3 +21,4 @@
 
 - The Settings window is a normal window, so niri tiles it. To float it, add a niri window rule: `window-rule { match app-id="kanade" title="Kanade Settings"; open-floating true; }`.
 - The `audio` visualizer follows the default sink as a whole, not one player, and needs `cava` built with PulseAudio support. It is untested against a live cava in this release; without cava the synthetic bars draw. See [ADR 0056](../adr/0056-audio-visualizer-through-cava.md).
+- Synced lyrics (`media.lyrics`) show on the Media Surface only, not on the Island's Peek. A streaming player gives no file, so only `lrclib` can serve it, and only when it reports an album and a length. The `lrclib` lookup is untested against the live service in this release.

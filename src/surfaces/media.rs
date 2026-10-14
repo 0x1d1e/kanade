@@ -163,7 +163,7 @@ fn header(
     const MOVING: f32 = 36.0;
 
     // the artist's line is there even when it names none, like the Peek's
-    let lines = children![
+    let mut lines = children![
         track
             .line(|track| &track.title, theme::island().on_surface)
             .size(theme::text::TITLE)
@@ -175,6 +175,17 @@ fn header(
             .weight(theme::text::MEDIUM)
             .elide(),
     ];
+
+    // the synced lyric line, in the artwork's accent, under the artist (ADR 0063)
+    if let Some((lyric, deck)) = deck.and_then(|deck| Some((deck.lyric.as_deref()?, deck))) {
+        lines.push(Box::new(
+            Text::new(lyric)
+                .size(theme::text::LABEL_SMALL)
+                .color(deck.accent.at(now))
+                .weight(theme::text::MEDIUM)
+                .elide(),
+        ));
+    }
 
     let shown = deck.map(|deck| deck.name.as_str());
 

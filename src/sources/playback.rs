@@ -58,6 +58,9 @@ pub struct Deck {
 
     pub timeline: Timeline,
 
+    // the synced lyric line at the player's position, when `media.lyrics` found lyrics (ADR 0063)
+    pub lyric: Option<String>,
+
     // toward the artwork's accent, or the neutral foreground without art or for grey art
     pub accent: Tint,
 

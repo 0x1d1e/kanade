@@ -44,8 +44,8 @@ use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
-    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, Magnify, Merge,
-    Placement, ShellMode, Tone, Visualizer,
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
+    Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
 use crate::sources::notifications::rules::Rule;
@@ -138,6 +138,9 @@ pub struct Config {
 
     // `media.visualizer`
     pub visualizer: Visualizer,
+
+    // `media.lyrics`
+    pub lyrics: LyricsSource,
 
     // `lock.backdrop`
     pub lock_backdrop: LockBackdrop,
@@ -471,6 +474,7 @@ impl Default for Config {
             shell: ShellConfig::default(),
             rest: Rest::default(),
             visualizer: Visualizer::default(),
+            lyrics: LyricsSource::default(),
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
             island_wheel: true,
@@ -2023,22 +2027,40 @@ pub const WEATHER: &[Setting] = &[
     },
 ];
 
-pub const MEDIA: &[Setting] = &[Setting {
-    key: "media.visualizer",
-    label: "Media visualizer",
-    help: "what moves beside a playing track",
-    hint: Some("What moves beside a playing track"),
-    kind: Kind::Choice(
-        Choices::named(Visualizer::NAMES),
-        Field {
-            get: |config| config.visualizer.name(),
-            set: |config, name| config.visualizer = Visualizer::named(name),
-        },
-    ),
-    example: None,
-    restart: false,
-    per_output: false,
-}];
+pub const MEDIA: &[Setting] = &[
+    Setting {
+        key: "media.visualizer",
+        label: "Media visualizer",
+        help: "what moves beside a playing track",
+        hint: Some("What moves beside a playing track"),
+        kind: Kind::Choice(
+            Choices::named(Visualizer::NAMES),
+            Field {
+                get: |config| config.visualizer.name(),
+                set: |config, name| config.visualizer = Visualizer::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "media.lyrics",
+        label: "Synced lyrics",
+        help: "the current line of a playing track's synced lyrics on the Media Surface, from a .lrc file beside a local track, or also from LRCLIB, which is told the track's title, artist, album and length",
+        hint: Some("Show the current lyric line; lrclib asks the internet"),
+        kind: Kind::Choice(
+            Choices::named(LyricsSource::NAMES),
+            Field {
+                get: |config| config.lyrics.name(),
+                set: |config, name| config.lyrics = LyricsSource::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const LAUNCHER: &[Setting] = &[Setting {
     key: "launcher.actions",
@@ -3493,6 +3515,7 @@ mod tests {
                 "battery.critical",
                 "battery.critical_action",
                 "media.visualizer",
+                "media.lyrics",
                 "timer.pomodoro.work",
                 "timer.pomodoro.break",
                 "timer.pomodoro.long_break",
