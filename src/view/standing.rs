@@ -64,7 +64,7 @@ pub(super) fn stacked_tile() -> f32 {
 
 /*
  * the stopwatch at the round end, the countdown at the other, a part a line, the minutes over the
- * seconds, as the clock; held in from both ends, a rail between them draining as it runs
+ * seconds, as the clock
  */
 pub(super) fn timer(countdown: &Countdown, now: Instant) -> Rectangle {
     let mut clock: Vec<Box<dyn Widget>> = Vec::new();
@@ -78,36 +78,11 @@ pub(super) fn timer(countdown: &Countdown, now: Instant) -> Rectangle {
         ));
     }
 
-    let left = countdown.left(now).as_secs_f32() / countdown.length.as_secs_f32().max(1.0);
-
-    stacked(vec![Box::new(
-        Rectangle::new()
-            .width(Parent)
-            .height(Parent)
-            .padding(Padding {
-                top: 8.0,
-                bottom: 8.0,
-                ..Padding::default()
-            })
-            .child(
-                Column::new(children![
-                    Icon::Stopwatch.draw(18.0),
-                    rising(
-                        shape(Presentation::Compact).height - TIMER_RAIL,
-                        left,
-                        timer_tone(countdown),
-                    ),
-                    Column::new(clock).gap(3.0).align(Center)
-                ])
-                .height(Parent)
-                .justify(Justify::SpaceBetween)
-                .align(Center),
-            ),
-    )])
+    stacked(children![
+        Icon::Stopwatch.draw(18.0),
+        Column::new(clock).gap(3.0).align(Center),
+    ])
 }
-
-// what the timer's rail leaves: its ends, the stopwatch and the countdown
-const TIMER_RAIL: f32 = 112.0;
 
 // the battery's icon over its percent
 pub(super) fn battery(charge: &activity::Charge) -> Rectangle {

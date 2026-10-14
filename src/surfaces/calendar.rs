@@ -808,22 +808,30 @@ fn agenda(
     .align(Center);
 
     let list: Box<dyn Widget> = if events.is_empty() {
+        let quiet = theme::island().on_surface_variant;
+        let message = Text::new(match pending {
+            Some(Pending::Loading) => "Loading events",
+            Some(Pending::Failed) => "Events could not be read",
+            None if partial => "Some events not shown",
+            None => "No events",
+        })
+        .size(theme::text::BODY)
+        .color(quiet)
+        .weight(theme::text::MEDIUM);
+
+        // an empty day, not a failure or a wait, is marked with the calendar's own glyph
+        let mut parts: Vec<Box<dyn Widget>> = Vec::new();
+        if pending.is_none() && !partial {
+            parts.push(Box::new(Icon::Calendar.on(24.0, quiet)));
+        }
+        parts.push(Box::new(message));
+
         Box::new(
             Rectangle::new()
                 .width(AGENDA)
                 .height(LIST)
                 .align_child(Center, Center)
-                .child(
-                    Text::new(match pending {
-                        Some(Pending::Loading) => "Loading events",
-                        Some(Pending::Failed) => "Events could not be read",
-                        None if partial => "Some events not shown",
-                        None => "No events",
-                    })
-                    .size(theme::text::BODY)
-                    .color(theme::island().on_surface_variant)
-                    .weight(theme::text::MEDIUM),
-                ),
+                .child(Column::new(parts).gap(8.0).align(Center)),
         )
     } else {
         let end = (browse.first + ROWS).min(events.len());

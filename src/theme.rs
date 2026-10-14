@@ -97,7 +97,7 @@ pub const ISLAND_DARK: ThemeRoles = ThemeRoles {
     on_primary: SEMANTIC.island_surface,
     surface: SEMANTIC.island_surface,
     on_surface: SEMANTIC.on_island_surface,
-    on_surface_variant: Color::rgba(235, 235, 245, 153),
+    on_surface_variant: Color::rgba(235, 235, 245, 184),
     surface_container: Color::rgba(255, 255, 255, 20),
     surface_container_high: Color::rgba(255, 255, 255, 36),
     outline: Color::rgba(255, 255, 255, 64),

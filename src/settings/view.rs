@@ -1639,7 +1639,7 @@ fn segmented(
         .width(width)
         .height(HEIGHT + 2.0 * INSET)
         .radius(HEIGHT / 2.0 + INSET)
-        .fill(roles.surface_container_high)
+        .fill(roles.outline)
         .padding(INSET)
         .child(row)
 }
