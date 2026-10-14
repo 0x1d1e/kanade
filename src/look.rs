@@ -44,6 +44,17 @@ choice! {
 }
 
 choice! {
+    // what the Island, Dock and Banners are made of: `appearance.finish`
+    Finish {
+        // opaque and dark, tinted toward the wallpaper's hue, with light text (ADR 0050)
+        TintedSolid = "tinted-solid",
+
+        // opaque and light, tinted toward the wallpaper's hue, with dark ink (ADR 0051)
+        Paper = "paper",
+    }
+}
+
+choice! {
     // how the Island's and the Dock's springs settle, `appearance.motion`
     Bounce {
         // a little past the target and back, like macOS

@@ -6,7 +6,7 @@ mod matugen;
 pub mod pywalfox;
 
 use crate::config::Config;
-use crate::look::Tone;
+use crate::look::{Finish, Tone};
 use crate::theme::ThemeRoles;
 
 pub const MATUGEN: &str = "matugen";
@@ -36,7 +36,7 @@ pub fn roles(tone: Tone) -> ThemeRoles {
     matugen::roles(tone)
 }
 
-// the Island, Dock and Banners' tinted solid ramp (ADR 0050)
-pub fn island_roles() -> ThemeRoles {
-    matugen::island_roles()
+// the Island, Dock and Banners' ramp in a finish (ADRs 0050, 0051)
+pub fn island_roles(finish: Finish) -> ThemeRoles {
+    matugen::island_roles(finish)
 }

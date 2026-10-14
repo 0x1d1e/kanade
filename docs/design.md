@@ -202,7 +202,7 @@ No literal theme colors in components.
 
 - `ThemeRoles`: changing M3-like roles.
 - `SemanticColors`: `privacy`, `capture`, `warning`, `critical`, `island_surface`, `on_island_surface`.
-- Settings and the app adapters take their roles from `ThemeRoles`; `appearance.tone` chooses light or dark. The Island, Dock and Banners are a tinted solid with light text, whatever the tone: a ramp built from the wallpaper's hue, `theme::island()` ([ADR 0050](adr/0050-the-shell-is-a-tinted-solid.md), after [ADR 0049](adr/0049-the-shell-is-solid-black.md)).
+- Settings and the app adapters take their roles from `ThemeRoles`; `appearance.tone` chooses light or dark. The Island, Dock and Banners follow `appearance.finish`, whatever the tone: a tinted solid with light text, or paper with dark ink, each a ramp built from the wallpaper's hue, `theme::island()` ([ADR 0050](adr/0050-the-shell-is-a-tinted-solid.md), [ADR 0051](adr/0051-paper-finish.md), after [ADR 0049](adr/0049-the-shell-is-solid-black.md)).
 - radii/spacing/type/motion = tokens too; in `src/theme.rs`, motion in `island::service::Timings` + `island::motion` (`island/` stays pure).
 - At startup, Kanade reads the wallpaper awww shows. Matugen derives both palettes from it and renders only configured targets; a wallpaper Kanade sets, or one set with `awww img` outside Kanade (followed through awww's cache), replaces that palette. The active tone selects the Settings palette, and changing tone rerenders configured targets ([ADR 0039](adr/0039-wallpaper-palettes-through-matugen.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)).
 - `theme.palette` remains accepted for old config files but is ignored; cover art may still supply the Media track accent.

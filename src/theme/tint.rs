@@ -1,6 +1,6 @@
-//! The tinted solid material's roles (ADR 0050): the Island, Dock and Banners' ramp, taken from
-//! one hue, the wallpaper's. Built in OKLCH so the steps are even to the eye whatever the hue, and
-//! the contrast of text on them does not depend on it.
+//! The finishes' roles (ADRs 0050, 0051): the Island, Dock and Banners' ramp, taken from one hue,
+//! the wallpaper's: dark for the tinted solid, light for paper. Built in OKLCH so the steps are
+//! even to the eye whatever the hue, and the contrast of text on them does not depend on it.
 
 use kanade_runtime::Color;
 
@@ -69,6 +69,27 @@ pub fn roles(source: Source) -> ThemeRoles {
     }
 }
 
+/*
+ * paper's roles toward `source`: the same steps turned over, so the surface is near white and each
+ * container a step darker, the text near black and the accent a dark ink that stands on the
+ * surface
+ */
+pub fn paper(source: Source) -> ThemeRoles {
+    let share = source.share();
+    let color = |lightness: f32, chroma: f32| oklch(lightness, chroma * share, source.hue);
+
+    ThemeRoles {
+        primary: color(0.30, 0.06),
+        on_primary: color(0.97, 0.01),
+        surface: color(0.955, 0.018),
+        on_surface: color(0.22, 0.02),
+        on_surface_variant: color(0.42, 0.02),
+        surface_container: color(0.915, 0.022),
+        surface_container_high: color(0.87, 0.028),
+        outline: super::PAPER_OUTLINE,
+    }
+}
+
 // a hair lighter than the surface, which the pane's fill is at its top edge
 pub fn lit(surface: Color) -> Color {
     let [lightness, a, b] = oklab(surface);
@@ -130,6 +151,8 @@ mod tests {
     use super::*;
     use crate::theme::{contrast, over};
 
+    const RAMPS: [fn(Source) -> ThemeRoles; 2] = [roles, paper];
+
     fn sources() -> impl Iterator<Item = Source> {
         (0..360).step_by(15).flat_map(|hue| {
             [0.0, 0.03, 0.06, 0.15].map(|chroma| Source {
@@ -139,11 +162,11 @@ mod tests {
         })
     }
 
-    // the text and the accent hold their contrast on every step of the ramp, whatever the wallpaper
+    // the text and the accent hold their contrast on every step of each ramp, whatever the wallpaper
     #[test]
     fn text_reads_on_every_step_whatever_the_hue() {
-        for source in sources() {
-            let roles = roles(source);
+        for (source, ramp) in sources().flat_map(|source| RAMPS.map(|ramp| (source, ramp))) {
+            let roles = ramp(source);
             let steps = [
                 roles.surface,
                 roles.surface_container,

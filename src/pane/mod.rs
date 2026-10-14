@@ -1,4 +1,4 @@
-//! A pane: the tinted solid the Island's body, the Dock and the Banners are drawn on (ADR 0050).
+//! A pane: the opaque tinted finish the Island's body, the Dock and the Banners are drawn on (ADRs 0050, 0051).
 //! Its shader fills the body's outline, one rounded rect or two united, with the fill a hair
 //! lighter at the top, a top light edge and a rim, and nothing else.
 
@@ -65,8 +65,8 @@ pub fn layer(pane: Pane) -> Rectangle {
 
     values[FILL_ROW] = rgba(surface);
     values[LIT_ROW] = rgba(theme::tint::lit(surface));
-    values[EDGE_ROW] = rgba(theme::PANE_EDGE);
-    values[RIM_ROW] = rgba(theme::PANE_RIM);
+    values[EDGE_ROW] = rgba(theme::pane_edge());
+    values[RIM_ROW] = rgba(theme::pane_rim());
 
     Rectangle::new()
         .width(pane.width)

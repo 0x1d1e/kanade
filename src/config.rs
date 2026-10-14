@@ -43,8 +43,8 @@ use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
-    Along, Anchor, Bounce, DockSize, Edge, Entrance, LockBackdrop, Magnify, Merge, Placement,
-    ShellMode, Tone, Visualizer,
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, Magnify, Merge,
+    Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
 use crate::sources::notifications::rules::Rule;
@@ -164,8 +164,11 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Appearance {
-    // Settings' and apps' tone; the Island, Dock and Banners are a tinted solid whatever it is
+    // Settings' and apps' tone; the Island, Dock and Banners follow `finish` whatever it is
     pub tone: Tone,
+
+    // what the Island, Dock and Banners are made of
+    pub finish: Finish,
 
     // share the tone with supported desktop, GTK, Qt and Zen appearance adapters
     pub sync: bool,
@@ -1172,12 +1175,27 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.tone",
         label: "Color tone",
-        help: "selects light or dark for Settings and apps; the Island, Dock and Banners are a tinted solid. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
+        help: "selects light or dark for Settings and apps; the Island, Dock and Banners follow the finish. Matugen derives both palettes from the wallpaper awww shows at startup or Kanade sets",
         kind: Kind::Choice(
             Choices::named(Tone::NAMES),
             Field {
                 get: |config| config.appearance.tone.name(),
                 set: |config, name| config.appearance.tone = Tone::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.finish",
+        label: "Finish",
+        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue either way: \"tinted-solid\", dark with light text, or \"paper\", light with dark ink",
+        kind: Kind::Choice(
+            Choices::named(Finish::NAMES),
+            Field {
+                get: |config| config.appearance.finish.name(),
+                set: |config, name| config.appearance.finish = Finish::named(name),
             },
         ),
         example: None,
@@ -3044,6 +3062,7 @@ mod tests {
                 "shell.edge",
                 "shell.align",
                 "appearance.tone",
+                "appearance.finish",
                 "appearance.sync",
                 "animation.speed",
                 "appearance.motion",

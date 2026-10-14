@@ -1,6 +1,6 @@
 # 50. The shell is a tinted solid
 
-Status: accepted. Supersedes ADR 0049's black fill for the Island, Dock and Banners; the rest of ADR 0049 (no capture, no blur, one outline for a merged shell, the lock screen's solid pill and disc) stands.
+Status: accepted; the one look is now a default finish (ADR 0051). Supersedes ADR 0049's black fill for the Island, Dock and Banners; the rest of ADR 0049 (no capture, no blur, one outline for a merged shell, the lock screen's solid pill and disc) stands.
 
 ## Context
 

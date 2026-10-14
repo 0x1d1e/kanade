@@ -118,13 +118,17 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "appearance",
         title: "Appearance",
-        summary: "Choose the color tone of Settings and apps, and type",
+        summary: "Choose the color tone of Settings and apps, the shell's finish, and type",
         group: "Shell",
         icon: Icon::Palette,
         sections: &[
             Section {
                 title: "Tone",
                 rows: &[Row::Key("appearance.tone"), Row::Key("appearance.sync")],
+            },
+            Section {
+                title: "Finish",
+                rows: &[Row::Key("appearance.finish")],
             },
             Section {
                 title: "Type",

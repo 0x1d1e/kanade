@@ -143,9 +143,9 @@ Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pin
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). A merged Island and Dock are one pane with one outline (ADR 0031).
-- **Invariant:** always opaque and tinted from the wallpaper's hue (a cool slate until Matugen answers) with light text, whatever `appearance.tone` says; nothing behind it is read.
-- **Avoid:** glass, frost, material, layer (a `pane::layer` widget), surface (a Surface is the Island's)
+One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text) or paper (light, dark ink) (ADR 0051). A merged Island and Dock are one pane with one outline (ADR 0031).
+- **Invariant:** always opaque and tinted from the wallpaper's hue (a cool slate until Matugen answers), with text that suits its finish, whatever `appearance.tone` says; nothing behind it is read.
+- **Avoid:** glass, frost, material (the choice is the finish), layer (a `pane::layer` widget), surface (a Surface is the Island's)
 
 ## Idle stage
 What the `idle` Module does after the user has been idle for so long (ADR 0047): `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`, each optional. The Dim grace comes first: a click-through Overlay layer on every output fading toward dark until the lock, taken away at once by any input.

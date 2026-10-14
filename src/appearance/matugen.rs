@@ -20,7 +20,7 @@ use toml::Value as Toml;
 
 use super::adapters::Scheme;
 use super::child::{self, Interrupt, Ran};
-use crate::look::Tone;
+use crate::look::{Finish, Tone};
 use crate::theme::{self, ThemeRoles, tint};
 
 const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
@@ -30,8 +30,9 @@ struct Palettes {
     dark: ThemeRoles,
     light: ThemeRoles,
 
-    // the Island's tinted ramp, built once from the source color rather than every frame
+    // the Island's ramps, one per finish, built once from the source color rather than every frame
     island: ThemeRoles,
+    paper: ThemeRoles,
 }
 
 #[derive(Debug, Default)]
@@ -119,13 +120,17 @@ pub fn roles(tone: Tone) -> ThemeRoles {
         })
 }
 
-// the tinted solid ramp of the wallpaper's source color; slate while there is none (ADR 0050)
-pub fn island_roles() -> ThemeRoles {
-    static SLATE: LazyLock<ThemeRoles> = LazyLock::new(|| tint::roles(tint::NEUTRAL));
+// the ramp of the wallpaper's source color in a finish; slate while there is none (ADRs 0050, 0051)
+pub fn island_roles(finish: Finish) -> ThemeRoles {
+    static SLATE: LazyLock<[ThemeRoles; 2]> =
+        LazyLock::new(|| [tint::roles(tint::NEUTRAL), tint::paper(tint::NEUTRAL)]);
 
-    Generated::read()
-        .palettes
-        .map_or(*SLATE, |palettes| palettes.island)
+    match (Generated::read().palettes, finish) {
+        (Some(palettes), Finish::TintedSolid) => palettes.island,
+        (Some(palettes), Finish::Paper) => palettes.paper,
+        (None, Finish::TintedSolid) => SLATE[0],
+        (None, Finish::Paper) => SLATE[1],
+    }
 }
 
 pub fn tone_changed(tone: Tone) {
@@ -579,6 +584,7 @@ fn parse(output: &[u8]) -> Result<Palettes, String> {
         dark: parse_roles(&json, Tone::Dark)?,
         light: parse_roles(&json, Tone::Light)?,
         island: tint::roles(source),
+        paper: tint::paper(source),
     })
 }
 
@@ -823,6 +829,7 @@ input_path = "include"
                         dark: theme::ISLAND_DARK,
                         light: theme::ISLAND_LIGHT,
                         island: theme::ISLAND_DARK,
+                        paper: theme::ISLAND_LIGHT,
                     }))
                 },
                 move |serial, result| finished.send((serial, result.is_ok())).unwrap(),

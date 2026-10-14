@@ -11,6 +11,8 @@ use std::ffi::CString;
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
 use kanade_runtime::{App, Color};
 
+use crate::look::Finish;
+
 pub mod tint;
 
 // colors that mean something, the same in every theme
@@ -53,9 +55,16 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
     ..SEMANTIC
 };
 
-// the colors that mean something on the Island, which is a tinted solid whatever the tone
+// the colors that mean something on the Island: the bright ones on a dark finish, the darker hues on paper
 pub fn signals() -> SemanticColors {
-    SEMANTIC
+    match finish() {
+        Finish::TintedSolid => SEMANTIC,
+        Finish::Paper => SIGNALS_LIGHT,
+    }
+}
+
+fn finish() -> Finish {
+    crate::config::get().appearance.finish
 }
 
 // the same in a shell-owned window's tone: darker hues of the same meaning on a light one
@@ -118,9 +127,10 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
     outline: Color::rgba(0, 0, 0, 46),
 };
 
-// the Island's roles, the same whatever `appearance.tone` is: dark, tinted by the wallpaper
+// the Island's roles, the same whatever `appearance.tone` is: tinted by the wallpaper, dark or
+// light as `appearance.finish` says
 pub fn island() -> ThemeRoles {
-    crate::appearance::island_roles()
+    crate::appearance::island_roles(finish())
 }
 
 // Settings' mark, from top left to bottom right
@@ -160,8 +170,28 @@ pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
  * a pane's top light edge and its rim, white over the fill: the edge a 1 px line along the top,
  * following the corners, the rim a 1 px line all round, inside the outline
  */
-pub const PANE_EDGE: Color = Color::rgba(255, 255, 255, 26);
-pub const PANE_RIM: Color = Color::rgba(255, 255, 255, 15);
+const PANE_EDGE: Color = Color::rgba(255, 255, 255, 26);
+const PANE_RIM: Color = Color::rgba(255, 255, 255, 15);
+
+// paper's: a white edge catching the light, a faint ink rim, the outline of a pinned Island in ink
+const PAPER_EDGE: Color = Color::rgba(255, 255, 255, 230);
+const PAPER_RIM: Color = Color::rgba(30, 30, 50, 18);
+pub const PAPER_OUTLINE: Color = Color::rgba(30, 30, 50, 89);
+
+// the pane's top light edge and rim in the finish
+pub fn pane_edge() -> Color {
+    match finish() {
+        Finish::TintedSolid => PANE_EDGE,
+        Finish::Paper => PAPER_EDGE,
+    }
+}
+
+pub fn pane_rim() -> Color {
+    match finish() {
+        Finish::TintedSolid => PANE_RIM,
+        Finish::Paper => PAPER_RIM,
+    }
+}
 
 // what the idle dim grace fades the outputs to before the lock (ADR 0047)
 pub const IDLE_DIM: Color = Color::rgb(0, 0, 0);
