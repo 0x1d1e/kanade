@@ -166,7 +166,7 @@ which kanade exits with
 }
 
 // letters, digits, '.', '_' and '-', so an id never carries markup, spaces or control characters
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     (1..=ID).contains(&id.len())
         && id
             .chars()
@@ -238,6 +238,9 @@ struct Entry {
     // when its program last said anything of it
     heard: Instant,
 
+    // how long it may go unheard instead of `live.stale`, as a notification asks to show for
+    lasts: Option<Duration>,
+
     // when it was last posted to the Island, and whether a change since waits to be
     posted: Instant,
     held: bool,
@@ -274,6 +277,7 @@ impl Board {
             Entry {
                 job: job.clone(),
                 heard: now,
+                lasts: None,
                 posted: now,
                 held: false,
             },
@@ -354,7 +358,9 @@ impl Board {
         let gone: Vec<String> = self
             .live
             .iter()
-            .filter(|(_, entry)| now.saturating_duration_since(entry.heard) >= stale)
+            .filter(|(_, entry)| {
+                now.saturating_duration_since(entry.heard) >= entry.lasts.unwrap_or(stale)
+            })
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -367,7 +373,10 @@ impl Board {
 
     // when the next goes stale, none while nothing is live
     pub fn due(&self, stale: Duration) -> Option<Instant> {
-        self.live.values().map(|entry| entry.heard + stale).min()
+        self.live
+            .values()
+            .map(|entry| entry.heard + entry.lasts.unwrap_or(stale))
+            .min()
     }
 
     // a line each, by id: the id, how far along, the title, tab-separated
@@ -439,6 +448,74 @@ pub fn request(request: Request) -> Result<String, String> {
     CHANGED.notify_one();
 
     Ok(String::new())
+}
+
+/*
+ * a progress from this process rather than a client, a notification's `value` hint (ADR 0059):
+ * starts the live Activity `id` unless it is live, then shows `title`, `detail` and `percent`.
+ * Unheard from for `lasts`, else `live.stale`, it is withdrawn. Refused past `MOST`, as a client is
+ */
+pub fn show(
+    id: &str,
+    title: &str,
+    detail: &str,
+    percent: u8,
+    lasts: Option<Duration>,
+) -> Result<(), String> {
+    let now = Instant::now();
+    let title = line(&[title], TITLE);
+    let detail = line(&[detail], DETAIL);
+    let mut board = BOARD.locked();
+
+    let fresh = !board.live.contains_key(id);
+
+    if fresh {
+        board.start(id, title.clone(), now)?;
+    }
+
+    let changed = board.change(id, now, |job| {
+        job.title = title;
+        job.detail = detail;
+        job.progress = Some(u16::from(percent) * 10);
+    })?;
+
+    let entry = board.live.get_mut(id);
+
+    // a new one is posted whole at once, not held back as a change within `REPOST` of its start
+    let job = entry.map(|entry| {
+        entry.lasts = lasts;
+        entry.held = entry.held && !fresh;
+
+        entry.job.clone()
+    });
+
+    if let Some(job) = job.filter(|_| fresh || changed.is_some()) {
+        IslandService::write().post(activity(id, job), now);
+    }
+
+    CHANGED.notify_one();
+
+    Ok(())
+}
+
+// ends the live Activity `id` as done, if it is live
+pub fn finish(id: &str) {
+    let _ = request(Request::End {
+        id: id.to_owned(),
+        ended: Ended::Done,
+        detail: None,
+    });
+}
+
+// takes the live Activity `id` away at once, with no ended form, if it is live
+pub fn withdraw(id: &str) {
+    let now = Instant::now();
+    let mut board = BOARD.locked();
+
+    if board.live.remove(id).is_some() {
+        IslandService::write().withdraw(&Id::new(Kind::Live, id), now);
+        CHANGED.notify_one();
+    }
 }
 
 // the `live` Module's thread: withdraws each live Activity once it is stale and posts the changes

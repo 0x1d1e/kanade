@@ -509,7 +509,7 @@ pub const ALL: &[Module] = &[
         name: "notifications",
         about: "The notification daemon, its history and Do Not Disturb",
         requires: &[CORE],
-        optional: &[],
+        optional: &["live"],
         warns: None,
         needs: &[
             Need {

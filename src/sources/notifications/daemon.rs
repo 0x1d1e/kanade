@@ -21,6 +21,40 @@ pub struct Notifications {
     running: bool,
 }
 
+// the history's bounds (docs/design.md): this many of one app, and this many in all
+const PER_APP: usize = 20;
+const TOTAL: usize = 100;
+
+/*
+ * the ids to close for the bounds, the oldest received first, never `new`, which was just added: of
+ * `app` past `PER_APP`, then of all past `TOTAL`
+ */
+fn oldest(list: &[Notification], app: &str, new: u32) -> Vec<u32> {
+    let mut oldest: Vec<&Notification> = list
+        .iter()
+        .filter(|notification| notification.id != new)
+        .collect();
+    oldest.sort_by_key(|notification| notification.received);
+
+    let of_app = oldest
+        .iter()
+        .filter(|notification| notification.app_name == app);
+    let over_app = (of_app.clone().count() + 1).saturating_sub(PER_APP);
+    let mut closing: Vec<u32> = of_app.take(over_app).map(|n| n.id).collect();
+
+    let over_all = (list.len() - closing.len()).saturating_sub(TOTAL);
+
+    let rest: Vec<u32> = oldest
+        .iter()
+        .filter(|notification| !closing.contains(&notification.id))
+        .take(over_all)
+        .map(|notification| notification.id)
+        .collect();
+    closing.extend(rest);
+
+    closing
+}
+
 // the numbers the spec gives each way a notification can close
 #[derive(Clone, Copy)]
 pub enum Reason {
@@ -62,6 +96,15 @@ impl Notifications {
 
     pub fn dismiss(id: u32) {
         Self::write().close(id, Reason::Dismissed);
+    }
+
+    // those of a stack, in one write
+    pub fn dismiss_all(ids: &[u32]) {
+        let mut notifications = Self::write();
+
+        for &id in ids {
+            notifications.close(id, Reason::Dismissed);
+        }
     }
 
     pub fn clear() {
@@ -161,7 +204,14 @@ impl Notifications {
 
         notification.id = id;
 
+        let app = notification.app_name.clone();
+
         self.list.push(notification);
+
+        // a notification past the bounds closes as expired, the oldest of its app first
+        for old in oldest(&self.list, &app, id) {
+            self.close(old, Reason::Expired);
+        }
 
         id
     }
@@ -185,7 +235,7 @@ impl Notifications {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use super::*;
     use crate::sources::notifications::rules::Effects;
@@ -206,6 +256,8 @@ mod tests {
             has_default: false,
             resident: false,
             sound: Hints::default(),
+            value: None,
+            timeout: None,
             received: SystemTime::UNIX_EPOCH,
             version: 0,
             effects: Effects {
@@ -222,6 +274,25 @@ mod tests {
             .find(|notification| notification.id == id)
             .unwrap()
             .version
+    }
+
+    // the history is bounded, so a burst from one app or many never grows it without end
+    #[test]
+    fn the_history_keeps_20_of_an_app_and_100_in_all() {
+        let from = |id: u32, app: &str| Notification {
+            id,
+            app_name: app.to_owned(),
+            received: SystemTime::UNIX_EPOCH + Duration::from_secs(u64::from(id)),
+            ..notification(true)
+        };
+
+        let one_app: Vec<_> = (1..=21).map(|id| from(id, "a")).collect();
+        assert_eq!(oldest(&one_app, "a", 21), vec![1]);
+        assert!(oldest(&one_app[..20], "a", 20).is_empty());
+
+        let many: Vec<_> = (1..=101).map(|id| from(id, &id.to_string())).collect();
+        assert_eq!(oldest(&many, "101", 101), vec![1]);
+        assert!(oldest(&many[..100], "100", 100).is_empty());
     }
 
     // an expiry of a version a replacement took over closes nothing, whatever the new one's rule

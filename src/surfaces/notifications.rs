@@ -1,9 +1,13 @@
 //! The Notifications Surface: the history, newest first, each with its actions and a
-//! dismiss, then Do Not Disturb and Clear all. Arrow keys move a ring over every part of it and
-//! Enter presses what the ring is on, so it works without a pointer. It says when another daemon
-//! has the notifications, and when there are none.
+//! dismiss, then Do Not Disturb and Clear all. An app with more than one notification shows them
+//! as a stack: the newest one with a count, pressed to open the stack, whose head then closes it
+//! and whose cross dismisses them all. A stack is closed again each time the Surface opens. Arrow
+//! keys move a ring over every part of it and Enter presses what the ring is on, so it works
+//! without a pointer. It says when another daemon has the notifications, and when there are none.
 
 use std::cmp::Reverse;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Instant, SystemTime};
 
 use crate::sources::notifications::{Notification, Notifications, Urgency};
@@ -43,6 +47,10 @@ fn room() -> f32 {
 const STATE: f32 = 120.0;
 
 const CARD: f32 = 70.0;
+
+// what a stack shows of the notifications behind its newest, and the head of an open stack
+const STACK: f32 = 10.0;
+const HEAD: f32 = 36.0;
 const CARD_GAP: f32 = 6.0;
 const PILL_PADDING: f32 = 10.0;
 const CARD_INSET: f32 = 10.0;
@@ -68,6 +76,9 @@ const WHEEL: f32 = 40.0;
 pub struct Focus {
     // none is the first part: the newest card, or Do Not Disturb with none
     ring: Ring<At>,
+
+    // the stacks open, by `group`
+    open: Vec<u64>,
 
     // how far the cards scrolled, in pixels
     offset: f32,
@@ -101,8 +112,15 @@ impl Focus {
  */
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum At {
-    Card { id: u32, row: usize, part: Part },
+    Card { item: Item, row: usize, part: Part },
     Footer(Footer),
+}
+
+// what a row is: one notification, or the stack of an app, closed or open
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Item {
+    Card(u32),
+    Group(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -125,10 +143,23 @@ struct Place {
     column: usize,
 }
 
-// the parts of each card the ring moves over, newest first
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Look {
+    Card,
+
+    // the newest of an app's notifications, with the others behind it
+    Stack,
+
+    // the line over an app's notifications while they show
+    Head,
+}
+
+// the parts of each row the ring moves over, newest first; a stack and its head have the body
+// and the dismiss only
 #[derive(Debug, Clone, PartialEq)]
 struct Shape {
-    id: u32,
+    item: Item,
+    look: Look,
     actions: usize,
 }
 
@@ -139,10 +170,11 @@ impl Shape {
     }
 
     fn height(&self) -> f32 {
-        if self.actions == 0 {
-            CARD
-        } else {
-            CARD + ACTIONS
+        match (self.look, self.actions) {
+            (Look::Stack, _) => CARD + STACK,
+            (Look::Head, _) => HEAD,
+            (Look::Card, 0) => CARD,
+            (Look::Card, _) => CARD + ACTIONS,
         }
     }
 }
@@ -171,17 +203,19 @@ impl At {
         };
 
         match at {
-            At::Card { id, row, part } => {
+            At::Card { item, row, part } => {
                 let row = cards
                     .iter()
-                    .position(|card| card.id == id)
+                    .position(|card| card.item == item)
                     .unwrap_or(row.min(footer));
                 let last = columns(cards, row) - 1;
 
                 let column = match (cards.get(row), part) {
                     (_, Part::Body) => 0,
                     (_, Part::Dismiss) => last,
-                    (Some(card), Part::Action(index)) if card.id == id && index < card.actions => {
+                    (Some(card), Part::Action(index))
+                        if card.item == item && index < card.actions =>
+                    {
                         index + 1
                     }
                     _ => 0,
@@ -204,7 +238,7 @@ impl At {
     fn on(place: Place, cards: &[Shape]) -> At {
         match cards.get(place.row) {
             Some(card) => At::Card {
-                id: card.id,
+                item: card.item,
                 row: place.row,
                 part: match place.column {
                     0 => Part::Body,
@@ -298,23 +332,33 @@ fn listed(cards: &[Shape]) -> f32 {
 }
 
 /*
- * tells the island how tall the Notifications Surface asks to be, the same in every visit. After
- * each change of the notifications or the daemon, never from a view
+ * tells the island how tall the Notifications Surface asks to be: as its stacks closed when a
+ * visit opens it, and as the ones open in the visit now. After each change of the notifications,
+ * the daemon or a stack, never from a view
  */
 pub fn fit() {
     let _ordered = super::fitting();
-    let shapes: Vec<Shape> = match *Daemon::read() {
-        Daemon::Running => cards().iter().map(Card::shape).collect(),
-        Daemon::Starting | Daemon::Conflict(_) => Vec::new(),
+    let visit = IslandService::read().visit();
+    let open = Focus::read().of(visit, false).open;
+
+    let shapes = |open: &[u64]| -> Vec<Shape> {
+        match *Daemon::read() {
+            Daemon::Running => rows(open).iter().map(Entry::shape).collect(),
+            Daemon::Starting | Daemon::Conflict(_) => Vec::new(),
+        }
     };
 
-    super::ask(Surface::Notifications, asks(&shapes), None);
+    let fresh = asks(&shapes(&[]));
+    let now = asks(&shapes(&open));
+
+    super::ask(Surface::Notifications, fresh, Some((visit, now)));
 }
 
-// at start: the body follows the notifications from now on
+// at start: the body follows the notifications and the stacks open from now on
 pub fn start() {
     service::watch::<Notifications>(fit);
     service::watch::<Daemon>(fit);
+    service::watch::<Focus>(fit);
     fit();
 }
 
@@ -344,13 +388,21 @@ enum Press {
     Open { id: u32, default: bool },
     Action { id: u32, key: String },
     Dismiss(u32),
+
+    // a stack: open it or close it, or dismiss all it holds
+    Toggle(u64),
+    DismissAll(Vec<u32>),
     Dnd,
     Clear,
 }
 
 // what a card shows, read from the daemon's list
+#[derive(Clone)]
 struct Card {
     id: u32,
+
+    // groups the notifications into stacks, as the sender named itself
+    app: String,
     toast: Toast,
     critical: bool,
     default: bool,
@@ -365,6 +417,7 @@ impl Card {
     fn of(notification: &Notification) -> Card {
         Card {
             id: notification.id(),
+            app: notification.app_name().to_owned(),
             toast: notifications::toast(notification),
             critical: notification.urgency() == Urgency::Critical,
             default: notification.has_default_action(),
@@ -380,7 +433,8 @@ impl Card {
 
     fn shape(&self) -> Shape {
         Shape {
-            id: self.id,
+            item: Item::Card(self.id),
+            look: Look::Card,
             actions: self.actions.len(),
         }
     }
@@ -400,10 +454,109 @@ impl Card {
     }
 }
 
+// an app's notifications, newest first: `front` is the newest
+struct Group {
+    key: u64,
+    ids: Vec<u32>,
+    front: Card,
+
+    // a Critical one among them shows on the stack
+    critical: bool,
+}
+
+// what the list shows: a notification, or an app's stack closed or open
+enum Entry {
+    Card(Card),
+    Stack(Group),
+    Head(Group),
+}
+
+impl Entry {
+    fn shape(&self) -> Shape {
+        match self {
+            Entry::Card(card) => card.shape(),
+            Entry::Stack(group) => group.shape(Look::Stack),
+            Entry::Head(group) => group.shape(Look::Head),
+        }
+    }
+
+    fn press(&self, part: Part) -> Press {
+        match self {
+            Entry::Card(card) => card.press(part),
+            Entry::Stack(group) | Entry::Head(group) => match part {
+                Part::Dismiss => Press::DismissAll(group.ids.clone()),
+                Part::Body | Part::Action(_) => Press::Toggle(group.key),
+            },
+        }
+    }
+}
+
+impl Group {
+    fn shape(&self, look: Look) -> Shape {
+        Shape {
+            item: Item::Group(self.key),
+            look,
+            actions: 0,
+        }
+    }
+}
+
+// the same for the same app within a run, which is as long as a stack open is kept
+fn group(app: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    app.hash(&mut hasher);
+
+    hasher.finish()
+}
+
 /*
  * newest first, a replaced one counting from its replacement; one its rule keeps out of the
- * history never shows here, only as its Banner
+ * history never shows here, only as its Banner. An app's notifications are a stack, placed by its
+ * newest, or a head and each of them while its key is in `open`; one alone is a card
  */
+fn rows(open: &[u64]) -> Vec<Entry> {
+    let mut apps: Vec<Vec<Card>> = Vec::new();
+
+    for card in cards() {
+        match apps
+            .iter_mut()
+            .find(|cards| cards.first().is_some_and(|first| first.app == card.app))
+        {
+            Some(cards) => cards.push(card),
+            None => apps.push(vec![card]),
+        }
+    }
+
+    let mut rows = Vec::new();
+
+    for mut cards in apps {
+        if cards.len() == 1 {
+            rows.extend(cards.pop().map(Entry::Card));
+
+            continue;
+        }
+
+        let key = group(&cards[0].app);
+
+        let stack = Group {
+            key,
+            ids: cards.iter().map(|card| card.id).collect(),
+            critical: cards.iter().any(|card| card.critical),
+            front: cards[0].clone(),
+        };
+
+        if open.contains(&key) {
+            rows.push(Entry::Head(stack));
+            rows.extend(cards.into_iter().map(Entry::Card));
+        } else {
+            rows.push(Entry::Stack(stack));
+        }
+    }
+
+    rows
+}
+
+// newest first
 fn cards() -> Vec<Card> {
     let notifications = Notifications::read();
 
@@ -423,11 +576,11 @@ fn cards() -> Vec<Card> {
  * rest is the view's own read of IslandService, so this never reads it again
  */
 pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> Rectangle {
-    let cards = cards();
-    let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
+    let focus = Focus::read().of(visit, held);
+    let cards = rows(&focus.open);
+    let shapes: Vec<Shape> = cards.iter().map(Entry::shape).collect();
     let daemon = Daemon::read().clone();
 
-    let focus = Focus::read().of(visit, held);
     let ring = (open && focus.ring.shown).then(|| At::place(focus.ring.at, &shapes));
     let offset = focus.offset.clamp(0.0, most(&shapes));
 
@@ -464,7 +617,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
         .align_child(Start, Start)
         .child(
             Column::new(vec![
-                Box::new(view::rise(0, header(cards.len()))) as Box<dyn Widget>,
+                Box::new(view::rise(0, header(count(&cards)))) as Box<dyn Widget>,
                 Box::new(view::rise(1, list)),
                 Box::new(view::rise(
                     2,
@@ -474,6 +627,17 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
             .width(width())
             .gap(GAP),
         )
+}
+
+// how many notifications the rows hold: a stack holds all of an app's, its head none
+fn count(rows: &[Entry]) -> usize {
+    rows.iter()
+        .map(|row| match row {
+            Entry::Card(_) => 1,
+            Entry::Stack(group) => group.ids.len(),
+            Entry::Head(_) => 0,
+        })
+        .sum()
 }
 
 // the title and how many there are
@@ -533,7 +697,7 @@ fn state(icon: Rectangle, title: &str, detail: &str) -> Rectangle {
  */
 fn list(
     monitor: &str,
-    cards: &[Card],
+    cards: &[Entry],
     shapes: &[Shape],
     ring: Option<Place>,
     offset: f32,
@@ -547,7 +711,13 @@ fn list(
                     .filter(|place| place.row == row)
                     .map(|place| place.column);
 
-                Box::new(self::card(monitor, card, ring)) as Box<dyn Widget>
+                match card {
+                    Entry::Card(card) => {
+                        Box::new(self::card(monitor, card, ring)) as Box<dyn Widget>
+                    }
+                    Entry::Stack(group) => Box::new(stack(monitor, group, ring)),
+                    Entry::Head(group) => Box::new(head(monitor, group, ring)),
+                }
             })
             .collect(),
     )
@@ -592,33 +762,36 @@ fn list(
     Stack::new(layers).width(width()).height(listed(shapes))
 }
 
-/*
- * the sender's picture, who sent it, the summary and the body, a dismiss in the corner, and the
- * actions under the text. Pressing it opens it. `ring` is the column the ring is on
- */
-fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
-    let words = width() - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
-
+// the lines of text of a card: who sent it, the summary and the body. A stack counts its notifications
+fn lines(card: &Card, critical: bool, count: Option<usize>) -> Vec<Box<dyn Widget>> {
     let sender = Text::new(&card.toast.app)
         .size(theme::text::LABEL_SMALL)
         .color(theme::island().on_surface_variant)
         .weight(theme::text::MEDIUM)
         .elide();
 
+    let mut tags: Vec<Box<dyn Widget>> = Vec::new();
+
+    if let Some(count) = count {
+        tags.push(Box::new(badge(count)));
+    }
+
     // said in words before the sender, so it never rests on color alone or elides away
-    let from: Box<dyn Widget> = if card.critical {
-        Box::new(
-            Row::new(children![
-                Text::new("Critical")
-                    .size(theme::text::LABEL_SMALL)
-                    .color(theme::signals().critical)
-                    .weight(theme::text::SEMIBOLD),
-                sender,
-            ])
-            .gap(6.0),
-        )
+    if critical {
+        tags.push(Box::new(
+            Text::new("Critical")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::signals().critical)
+                .weight(theme::text::SEMIBOLD),
+        ));
+    }
+
+    tags.push(Box::new(sender));
+
+    let from: Box<dyn Widget> = if tags.len() == 1 {
+        tags.remove(0)
     } else {
-        Box::new(sender)
+        Box::new(Row::new(tags).gap(6.0).align(Center))
     };
 
     let mut lines = vec![
@@ -629,7 +802,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
                 .color(theme::island().on_surface)
                 .weight(theme::text::SEMIBOLD)
                 .elide(),
-        ),
+        ) as Box<dyn Widget>,
     ];
 
     if !card.toast.body.is_empty() {
@@ -642,10 +815,44 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         ));
     }
 
+    lines
+}
+
+// how many a stack holds, in a small round tag
+fn badge(count: usize) -> Rectangle {
+    let digits = count.to_string();
+
+    Rectangle::new()
+        .width(12.0 + 6.0 * digits.len() as f32)
+        .height(16.0)
+        .radius(8.0)
+        .fill(theme::island().surface_container_high)
+        .align_child(Center, Center)
+        .child(
+            Text::new(digits)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
+
+/*
+ * the sender's picture, who sent it, the summary and the body, a dismiss in the corner, and the
+ * actions under the text. Pressing it opens it. `ring` is the column the ring is on
+ */
+fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
+    let words = width() - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
+
     let top = Row::new(children![
         view::toast_tile(&card.toast, TILE, radius::TILE, &theme::island()),
-        Column::new(lines).width(words).gap(1.0),
-        dismiss(monitor, card.id, ring == Some(card.actions.len() + 1)),
+        Column::new(lines(card, card.critical, None))
+            .width(words)
+            .gap(1.0),
+        dismiss(
+            monitor,
+            Press::Dismiss(card.id),
+            ring == Some(card.actions.len() + 1)
+        ),
     ])
     .gap(TILE_GAP)
     .align(Start);
@@ -673,6 +880,133 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         }))
         .child(Column::new(parts).gap(8.0))
         .border_if(ring == Some(0))
+}
+
+/*
+ * an app's newest notification with a count, and the edge of one or two more behind it. Pressing it
+ * opens the stack; its cross dismisses every notification of the app. `ring` is the column the ring
+ * is on
+ */
+fn stack(monitor: &str, group: &Group, ring: Option<usize>) -> Stack {
+    let card = &group.front;
+    let words = width() - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
+
+    let top = Row::new(children![
+        view::toast_tile(&card.toast, TILE, radius::TILE, &theme::island()),
+        Column::new(lines(card, group.critical, Some(group.ids.len())))
+            .width(words)
+            .gap(1.0),
+        dismiss(
+            monitor,
+            Press::DismissAll(group.ids.clone()),
+            ring == Some(1)
+        ),
+    ])
+    .gap(TILE_GAP)
+    .align(Start);
+
+    let press = Press::Toggle(group.key);
+    let clicked = monitor.to_owned();
+
+    let front = Rectangle::new()
+        .width(width())
+        .height(CARD)
+        .radius(radius::CARD)
+        .fill(theme::island().surface_container)
+        .padding(CARD_INSET)
+        .align_child(Start, Start)
+        .identity(("stack", group.key))
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(move || {
+            click(&clicked, press.clone());
+        }))
+        .child(top)
+        .border_if(ring == Some(0));
+
+    // the notifications behind, each a little narrower and lower, the farthest first
+    let behind = (group.ids.len() - 1).min(2);
+    let mut layers: Vec<Box<dyn Widget>> = Vec::new();
+
+    for depth in (1..=behind).rev() {
+        let depth = depth as f32;
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(width() - 2.0 * STACK * depth)
+                .height(CARD)
+                .radius(radius::CARD)
+                .fill(theme::island().surface_container_high)
+                .translate(STACK * depth, STACK * depth / 2.0),
+        ));
+    }
+
+    layers.push(Box::new(front));
+
+    Stack::new(layers).width(width()).height(CARD + STACK)
+}
+
+/*
+ * the line over an open stack's notifications: the app and how many, pressed to close the stack,
+ * and a cross that dismisses them all. `ring` is the column the ring is on
+ */
+fn head(monitor: &str, group: &Group, ring: Option<usize>) -> Rectangle {
+    let less = Text::new("Show less")
+        .size(theme::text::LABEL_SMALL)
+        .color(theme::island().on_surface_variant)
+        .weight(theme::text::MEDIUM);
+
+    let less_width = match less.width() {
+        Size::Fixed(natural) => natural,
+        _ => 70.0,
+    };
+
+    let words = width() - 2.0 * CARD_INSET - TARGET - less_width - 2.0 * TILE_GAP - 4.0;
+
+    let label = Text::new(format!("{} · {}", group.front.toast.app, group.ids.len()))
+        .size(theme::text::LABEL_SMALL)
+        .color(theme::island().on_surface)
+        .weight(theme::text::SEMIBOLD)
+        .elide();
+
+    let head = Rectangle::new()
+        .width(width())
+        .height(HEAD)
+        .radius(HEAD / 2.0)
+        .padding(Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: CARD_INSET,
+        })
+        .align_child(Start, Center)
+        .identity(("head", group.key))
+        .cursor(Cursor::Pointer);
+
+    let head = if ring == Some(0) {
+        head.border(RING, theme::island().on_surface)
+    } else {
+        head.border(1.0, theme::island().surface_container_high)
+    };
+
+    let press = Press::Toggle(group.key);
+    let clicked = monitor.to_owned();
+
+    head.on_click(super::on_left(move || {
+        click(&clicked, press.clone());
+    }))
+    .child(
+        Row::new(children![
+            Column::new(children![label]).width(words),
+            less,
+            dismiss(
+                monitor,
+                Press::DismissAll(group.ids.clone()),
+                ring == Some(1)
+            ),
+        ])
+        .gap(TILE_GAP)
+        .align(Center),
+    )
 }
 
 // a pill per action, as wide as fits, under the text
@@ -718,8 +1052,8 @@ fn label_in(label: &str, width: f32) -> Text {
     }
 }
 
-// a round target with a cross, pressed to close the notification
-fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
+// a round target with a cross, pressed to close the notification, or a stack's
+fn dismiss(monitor: &str, press: Press, ring: bool) -> Rectangle {
     let monitor = monitor.to_owned();
 
     // on the same 20 unit grid as every icon, so its 10 point cross keeps the icons' line
@@ -732,7 +1066,7 @@ fn dismiss(monitor: &str, id: u32, ring: bool) -> Rectangle {
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
         .on_click(super::on_left(move || {
-            click(&monitor, Press::Dismiss(id));
+            click(&monitor, press.clone());
         }))
         .child(cross)
         .border_if(ring)
@@ -862,10 +1196,11 @@ pub fn key(monitor: &str, key: Key) -> bool {
         (island.visit(), island.held(monitor))
     };
 
-    let cards = cards();
-    let shapes: Vec<Shape> = cards.iter().map(Card::shape).collect();
+    let focus = Focus::read().of(visit, held);
+    let cards = rows(&focus.open);
+    let shapes: Vec<Shape> = cards.iter().map(Entry::shape).collect();
 
-    let Some((focus, press)) = Focus::read().of(visit, held).step(key, &cards, &shapes) else {
+    let Some((focus, press)) = focus.step(key, &cards, &shapes) else {
         return false;
     };
 
@@ -888,14 +1223,14 @@ impl Focus {
     fn step(
         mut self,
         key: Key,
-        cards: &[Card],
+        cards: &[Entry],
         shapes: &[Shape],
     ) -> Option<(Focus, Option<Press>)> {
         let place = At::place(self.ring.at, shapes);
 
         let press = match key {
             Key::Enter | Key::Space => Some(press(cards, shapes, place)),
-            Key::Backspace => cards.get(place.row).map(|card| Press::Dismiss(card.id)),
+            Key::Backspace => cards.get(place.row).map(|card| card.press(Part::Dismiss)),
             _ => None,
         };
 
@@ -920,7 +1255,7 @@ impl Focus {
     }
 }
 
-fn press(cards: &[Card], shapes: &[Shape], place: Place) -> Press {
+fn press(cards: &[Entry], shapes: &[Shape], place: Place) -> Press {
     match At::on(place, shapes) {
         At::Card { part, .. } => cards[place.row].press(part),
         At::Footer(Footer::Dnd) => Press::Dnd,
@@ -955,6 +1290,19 @@ fn run(monitor: &str, press: Press) {
             view::collapse(monitor);
         }
         Press::Dismiss(id) => Notifications::dismiss(id),
+        Press::DismissAll(ids) => Notifications::dismiss_all(&ids),
+        Press::Toggle(key) => {
+            let mut focus = focus(monitor);
+
+            match focus.open.iter().position(|open| *open == key) {
+                Some(index) => {
+                    focus.open.remove(index);
+                }
+                None => focus.open.push(key),
+            }
+
+            store(focus);
+        }
         Press::Dnd => {
             let dnd = IslandService::read().dnd();
 
@@ -966,10 +1314,11 @@ fn run(monitor: &str, press: Press) {
 
 // down scrolls further down the list
 fn wheel(monitor: &str, lines: f32) {
-    let shapes: Vec<Shape> = cards().iter().map(Card::shape).collect();
+    let mut focus = focus(monitor);
+
+    let shapes: Vec<Shape> = rows(&focus.open).iter().map(Entry::shape).collect();
     let most = most(&shapes);
 
-    let mut focus = focus(monitor);
     focus.offset = (focus.offset.clamp(0.0, most) + lines * WHEEL).clamp(0.0, most);
 
     store(focus);

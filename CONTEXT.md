@@ -23,6 +23,7 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
 - **Invariant:** a repost is cheap: a change within `REPOST` (250 ms) of the Activity's last post is held and posted when due, the newest of those held, and one that changes nothing is never posted (ADR 0058).
 - `activity hook claude` is a client of these verbs, not another path to the Island: a Claude Code session's events become one Live Activity, and a late event never brings an ended one back (ADR 0058).
+- A notification with a `value` hint under 100 is also a Live Activity of the `notifications` Module, id `notification.<app>.<id>`: the same policy, in the same 8, kept while the notification lasts, ended as done at 100, and withdrawn when it closes or is replaced without the hint. It follows the notification's rule and Do Not Disturb as its Banner does (ADR 0059).
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
 ## Device event
@@ -42,6 +43,7 @@ A notification card on the focused output, hanging from the Island on its edge a
 - A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, play no sound, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
 - **Invariant:** a notification plays a sound only with `notifications.sound` on, only when new to the list (a replacement plays none), only if its rule and `suppress-sound` allow, and never under DND, a Critical one included. A sound is a helper (`pw-play`, else `canberra-gtk-play`) started without a shell, one at a time, for at most 5 s, from a `sound-file` hint that is an absolute existing regular file or a plain `sound-name`; Kanade links no audio library.
 - **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
+- **Invariant:** the history is bounded: 20 notifications of one app and 100 in all, the oldest of the app, then of all, closing as expired when one arrives past them. The Notifications Surface shows an app's notifications as a stack, the newest with a count, once it has more than one; a stack is closed each time the Surface opens, opened by click, Enter or Space, and its cross or Backspace dismisses all it holds. Banners are not stacked.
 - **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
 
