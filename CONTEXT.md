@@ -112,6 +112,14 @@ One kind of answer the Launcher finds for a query: apps, an app's own Desktop Ac
 - In a visit opened by `kanade dmenu`, the lines read from stdin are the only provider (choose mode); a press answers the waiting client instead of acting.
 - **Avoid:** plugin, source (a source posts to the island)
 
+## Hook
+A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume. The Module that owns the fact fires it.
+- **Invariant:** a hook never blocks a Service, a watcher or the draw thread; it runs as a bounded child that dies with Kanade, at most one per event at a time, and a fire while it runs is dropped.
+- **Invariant:** hooks are set in files under the config directory; `kanade config set` and Settings refuse them. The payload is environment variables only, and only event names are logged.
+- **Invariant:** a failing hook shows in `kanade status`, never as an Activity.
+- Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
+- **Avoid:** plugin, script event soup, subscription
+
 ## Reminder
 An Activity saying a calendar event is coming: its title and how long until it starts, or ends for an alarm on its end, with Open and Dismiss (ADR 0043). It comes from the event's own `VALARM`s that display or play a sound, or `calendar.reminder` minutes before a timed event with none. Persistent, Ongoing, Global, interrupting nothing; it goes 5 minutes after its event starts, an hour after it went off at most, or on Open or Dismiss.
 - **Invariant:** a reminder goes off once. Which went off is kept in a file under the state directory, keyed by event, occurrence and alarm, the default lead by a mark of its own, so a restart, a clock set or a new `calendar.reminder` never fires one again.

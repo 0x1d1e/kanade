@@ -16,7 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use std::sync::Mutex;
+
+use kanade_runtime::{MutexExt, service::Service};
 
 use super::osd::UPOWER;
 use super::session;
@@ -24,6 +26,7 @@ use super::wake::{Announcer, Pace, Wakes};
 use crate::backoff::Backoff;
 use crate::bus::Bus;
 use crate::config::{self, CriticalAction};
+use crate::hooks::{self, Event};
 use crate::island::activity::{
     Activity, Charge, Detail, Ending, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
@@ -80,6 +83,34 @@ impl Service for BatteryLevel {
     }
 
     fn listen() {}
+}
+
+// whether the charger was in as the watcher last saw, none before it saw anything
+static PLUGGED: Mutex<Option<bool>> = Mutex::new(None);
+
+/*
+ * a watcher of `BatteryLevel`: the charger going in or out fires its hook (ADR 0055). What it first
+ * sees is a baseline, and a machine without a battery has no charger to tell of
+ */
+pub fn follow_charger_hook() {
+    let level = *BatteryLevel::read();
+
+    if !level.present() {
+        return;
+    }
+
+    let before = PLUGGED.locked().replace(level.charging);
+
+    if before.is_some_and(|before| before != level.charging) {
+        hooks::fire_with(
+            Event::Charger,
+            if level.charging {
+                "plugged"
+            } else {
+                "unplugged"
+            },
+        );
+    }
 }
 
 // UPower's device for the machine's batteries as one, the one a desktop environment shows

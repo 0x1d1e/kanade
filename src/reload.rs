@@ -20,6 +20,7 @@ use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use kanade_runtime::{MutexExt, service::Service};
 
 use crate::config::{self, Config, Place};
+use crate::hooks::{self, Event};
 use crate::island::service::IslandService;
 use crate::{appearance, modules, settings, supervise, view};
 
@@ -87,6 +88,7 @@ pub fn reload() -> Outcome {
 
                 if next.appearance.tone != running.appearance.tone {
                     appearance::tone_changed(next.appearance.tone);
+                    hooks::fire_with(Event::Tone, next.appearance.tone.name());
                 }
 
                 if next.appearance.sync != running.appearance.sync

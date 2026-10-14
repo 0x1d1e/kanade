@@ -76,7 +76,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
 | Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
-| Session | `lock`, `idle`, `session`, `settings` |
+| Session | `lock`, `idle`, `session`, `settings`, `hooks` |
 
 Rules:
 
@@ -325,6 +325,7 @@ Nested-niri E2E checks idle/morph each release.
 - clipboard history bounded; persistence off by default; a selection marked sensitive is never read or kept, unknown state fails closed ([ADR 0019](adr/0019-clipboard-sensitive-content.md)).
 - calendar credentials/tokens never logged; weather sends only the configured coordinates, never logged; account secrets stored through system secret service, not TOML.
 - never log passwords, notification/window/media/clipboard content.
+- hooks run only commands the user's own config files list (`kanade config set` refuses them), each a bounded child that dies with Kanade; only event names are logged ([ADR 0055](adr/0055-hooks-run-user-commands.md)).
 - PAM password only enters unlock path; never store/log/echo.
 - polkit credentials stay external.
 - privacy dots inside the Island; not shown over fullscreen (ADR 0033).
@@ -354,7 +355,7 @@ Lock ship gate: kill Kanade while locked → compositor remains locked → syste
 Need design before commitment:
 
 - **Plugins**: likely after Module/Service/Activity/Surface/LauncherProvider contracts stabilize. No plugin ABI/runtime yet.
-- **Hooks/event automation**: decide event model, permissions, execution isolation, failure/backpressure semantics; avoid shell-script event soup.
+- **Hooks/event automation**: resolved by [ADR 0055](adr/0055-hooks-run-user-commands.md): a closed event set, argv commands from config, env payload, bounded child, one in flight per event, failures in `status` only. Arbitrary events and plugins stay deferred.
 - **ASR dictation**: speech → text; modes: copy to clipboard, paste into focused input. Need engine boundary, microphone/privacy semantics, focus-safe paste path, cancellation, offline/remote policy.
 
 ## Roadmap
@@ -372,7 +373,7 @@ Need design before commitment:
 
 - Track/test the privacy dots at each small form and beside a side edge.
 - Native polkit waits for safe helper stdin integration.
-- Plugins/hooks/ASR remain deferred design decisions.
+- Plugins/ASR remain deferred design decisions.
 
 ## Fixed
 

@@ -25,6 +25,7 @@ use kanade_lock::{Locker, News};
 use kanade_runtime::{MutexExt, service::Service};
 
 use crate::cli::Reply;
+use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::pane;
 use crate::sources::sleep;
@@ -609,10 +610,17 @@ fn heard(news: News) {
         _ => {}
     }
 
+    let was = requests.locked;
     requests.heard(news);
+    let locked = requests.locked;
     say(&requests);
     drop(requests);
     HEARD.notify_all();
+
+    // the lock's own transition, after the requests are let go: a hook never waits under them
+    if locked != was {
+        hooks::fire(if locked { Event::Lock } else { Event::Unlock });
+    }
 }
 
 // whether the session is locked, its lock on its way, or a password being checked on it

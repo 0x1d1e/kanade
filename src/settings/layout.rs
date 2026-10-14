@@ -102,14 +102,25 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "weather-surface",
         ],
     ),
-    ("Session", &["lock", "idle", "session", "settings"]),
+    ("Session", &["lock", "idle", "session", "settings", "hooks"]),
 ];
 
 pub const MODULES: &str = "modules";
 
 // settings owned by another control surface, or lists of tables set in config files only, but
 // still accepted in the config schema
-pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned", "notifications.rules"];
+pub const EXTERNAL_KEYS: &[&str] = &[
+    "dock.pinned",
+    "notifications.rules",
+    "hooks.lock",
+    "hooks.unlock",
+    "hooks.wallpaper",
+    "hooks.tone",
+    "hooks.charger",
+    "hooks.suspend",
+    "hooks.resume",
+    "hooks.timeout",
+];
 
 // old config keys that remain readable but no longer affect the shell
 pub const LEGACY_KEYS: &[&str] = &["theme.palette"];

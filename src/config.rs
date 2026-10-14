@@ -38,6 +38,7 @@ use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::hooks::{self, Commands};
 use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
@@ -166,6 +167,9 @@ pub struct Config {
     pub night_light: NightLight,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
     pub pomodoro: Pomodoro,
+
+    // `hooks.*`: the commands run on an event (ADR 0055)
+    pub hooks: Commands,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -473,6 +477,7 @@ impl Default for Config {
             battery: Battery::default(),
             night_light: NightLight::default(),
             pomodoro: Pomodoro::default(),
+            hooks: Commands::default(),
             outputs: BTreeMap::new(),
         }
     }
@@ -820,6 +825,10 @@ pub enum Kind {
 
     // a list of notification rules, each a table; a layer replaces the list below
     Rules(Field<Vec<Rule>>),
+
+    // a command as a list of strings, the program first, run without a shell (`hooks`); an empty
+    // list is none, and a layer replaces the list below
+    Argv(Field<Vec<String>>),
 }
 
 impl Kind {
@@ -940,6 +949,16 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::Argv(field) => {
+                let mut argv = hooks::argv(value)?;
+
+                // no shell is run, so only the program's own `~/` is expanded
+                if let Some(program) = argv.first_mut() {
+                    *program = expand(program, home);
+                }
+
+                (field.set)(config, argv);
+            }
         }
 
         Ok(())
@@ -964,7 +983,7 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
             Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
-            Kind::DesktopIds(field) | Kind::Paths(field) => {
+            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
             Kind::AppIds(field) => Value::Table(
@@ -1010,6 +1029,7 @@ impl Kind {
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
+            Kind::Argv(field) => field.copy(from, to),
         }
     }
 
@@ -3347,6 +3367,14 @@ mod tests {
                 "idle.lock",
                 "idle.screen_off",
                 "idle.suspend",
+                "hooks.lock",
+                "hooks.unlock",
+                "hooks.wallpaper",
+                "hooks.tone",
+                "hooks.charger",
+                "hooks.suspend",
+                "hooks.resume",
+                "hooks.timeout",
             ]
         );
         assert_eq!(

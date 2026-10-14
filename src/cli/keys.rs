@@ -115,6 +115,7 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
         Kind::DesktopIds(_) | Kind::Paths(_) => {
             json!({ "type": "array", "items": { "type": "string", "minLength": 1 } })
         }
+        Kind::Argv(_) => json!({ "type": "array", "items": { "type": "string" } }),
         Kind::AppIds(_) => {
             json!({ "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } })
         }
@@ -187,6 +188,14 @@ fn parse(setting: &Setting, raw: &str) -> Result<Value, String> {
 // writes the key to the settings file, refusing what its Kind does not take with that message
 pub fn set(key: &str, raw: &str) -> Result<String, String> {
     let setting = config::setting(key)?;
+
+    // a command runs as the user: only a file the user writes holds one, never a call to the shell
+    if matches!(setting.kind, Kind::Argv(_)) {
+        return Err(format!(
+            "{key} runs a command, so it is set in a file under the config directory, never here"
+        ));
+    }
+
     let value = parse(setting, raw)?;
 
     settings::set(&path(key), Some(value))?;

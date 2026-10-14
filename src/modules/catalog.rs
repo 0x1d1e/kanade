@@ -29,8 +29,8 @@ use crate::sources::{
     sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, idle, ipc, lock, reload,
-    settings, shadow, supervise, surfaces, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
+    reload, settings, shadow, supervise, surfaces, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -276,6 +276,7 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             service::watch::<BatteryLevel>(devices::follow_charger);
+            service::watch::<BatteryLevel>(battery::follow_charger_hook);
             supervise::spawn("battery", battery::follow);
             supervise::spawn("charge-limit", charge_limit::follow);
             app
@@ -1415,6 +1416,25 @@ pub const ALL: &[Module] = &[
                 _ => Err(Unparsed::Usage),
             },
         }],
+        start: |app| app,
+    },
+    /*
+     * commands the user lists for events (ADR 0055); the Module that owns an event fires it, so
+     * this one has no thread or window of its own, and off, it makes every fire do nothing
+     */
+    Module {
+        name: hooks::MODULE,
+        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend and resume",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: hooks::SETTINGS,
+        hooks: Hooks {
+            status: Some(hooks::status),
+            ..Hooks::NONE
+        },
+        verbs: &[],
         start: |app| app,
     },
 ];

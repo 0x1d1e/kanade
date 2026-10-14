@@ -1261,6 +1261,7 @@ fn control(
         }
         Kind::Modules(_) => unreachable!("section_view draws the Modules row itself"),
         Kind::Rules(_) => unreachable!("notifications.rules is set in config files only"),
+        Kind::Argv(_) => unreachable!("hooks are set in config files only"),
     }
 }
 
