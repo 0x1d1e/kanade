@@ -23,6 +23,7 @@ use kanade_runtime::service::Service;
 
 use super::apps::Apps;
 use super::bus;
+use super::icons;
 use super::wake::{Announcer, Pace, Wakes};
 use crate::banners::{Banner, Banners};
 use crate::island::activity::Toast;
@@ -183,12 +184,13 @@ fn local(path: &str) -> Option<String> {
 
 /*
  * the icon of the app that sent it, by the icon name it gave or else its name, from the desktop
- * entries `apps` read; none while it is still reading them
+ * entries `apps` read; none while it is still reading them. Kanade's own notifications, which
+ * have no desktop entry, take the `kanade` icon of the theme (`dist/kanade.png`)
  */
 fn app_icon(notification: &Notification) -> Option<String> {
     let apps = Apps::read();
 
-    let app = apps
+    let entry = apps
         .list()
         .iter()
         .find(|app| {
@@ -198,9 +200,18 @@ fn app_icon(notification: &Notification) -> Option<String> {
             apps.list()
                 .iter()
                 .find(|app| app.name.eq_ignore_ascii_case(notification.app_name()))
-        })?;
+        })
+        .and_then(|app| app.icon_file.clone());
 
-    Some(app.icon_file.as_ref()?.to_string_lossy().into_owned())
+    entry
+        .or_else(|| {
+            notification
+                .app_name()
+                .eq_ignore_ascii_case("kanade")
+                .then(|| icons::find("kanade", None))
+                .flatten()
+        })
+        .map(|file| file.to_string_lossy().into_owned())
 }
 
 /*

@@ -38,6 +38,12 @@ systemctl --user enable --now kanade.service
 
 The unit runs `~/.cargo/bin/kanade`; edit its `ExecStart` for another install. Remove any `spawn-at-startup "kanade"` from niri's config: a second shell stops at start. `kanade doctor` warns about a unit that is not enabled or does not run the shell. The unit restarts the shell however it ends; `systemctl --user stop kanade.service` stops it.
 
+Kanade's own notifications, like the timer's, show its icon from the icon theme:
+
+```sh
+install -Dm644 dist/kanade.png ~/.local/share/icons/hicolor/256x256/apps/kanade.png
+```
+
 Starting early also keeps D-Bus from activating another notification daemon for the first notification of the session.
 
 A shell that crashes at every start stops restarting after 5 starts in 60 s, and a locked session stays on niri's red screen. From another TTY (`Ctrl+Alt+F3`), fix the cause, then restart the unit, which locks again and keeps the session:
