@@ -9,6 +9,7 @@ use super::{Notification, Notifications, Urgency};
 use super::{Action, Reason, image_hint};
 use crate::config;
 use crate::sources::notifications::rules::{self, Fields};
+use crate::sources::sound::Hints;
 
 const NAME: &str = "org.freedesktop.Notifications";
 
@@ -86,6 +87,12 @@ fn notify(method: &Method) {
 
         resident: hints.get("resident").bool(),
 
+        sound: Hints {
+            suppress: hints.get("suppress-sound").bool(),
+            file: String::from(hints.get("sound-file").text()),
+            name: String::from(hints.get("sound-name").text()),
+        },
+
         received: SystemTime::now(),
 
         // add() picks it too
@@ -156,11 +163,16 @@ fn close(method: &Method) {
 }
 
 fn send_capabilities(method: &Method) {
-    let capabilities = vec![
+    let mut capabilities = vec![
         String::from("actions"),
         String::from("body"),
         String::from("icon-static"),
     ];
+
+    // so a sender that can play its own sound knows Kanade does
+    if config::get().notification_sound {
+        capabilities.push(String::from("sound"));
+    }
 
     method.reply(&[Argument::from(capabilities)]);
 }

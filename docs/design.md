@@ -76,7 +76,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
 | Utilities | `capture`, `caffeine`, `night-light`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
-| Session | `lock`, `idle`, `session`, `settings` |
+| Session | `lock`, `idle`, `session`, `settings`, `hooks` |
 
 Rules:
 
@@ -86,6 +86,7 @@ Rules:
 - `dock` → `windows`, never `workspace`.
 - `osd` optionally reads `audio`/`brightness`, the keyboards' evdev devices (input group), `/dev/rfkill` and logind's `Active` (ADR 0021); typing and key repeat are the runtime's (ADR 0034).
 - `privacy` reads capture state independently from `audio` and `capture`.
+- `media.visualizer = audio` runs `cava` over the default sink's monitor, on demand only while a playing track's visualizer draws, so a paused or hidden one costs no process and no frame; without cava it draws the synthetic bars ([ADR 0056](adr/0056-audio-visualizer-through-cava.md)).
 - `privacy` default on; disable warns indicators disappear.
 - `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043).
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
@@ -123,11 +124,14 @@ Rules:
 
 **Split:** follows the Frame like Compact: Split while a Satellite exists, Compact without. Hover/click/right click act on the segment under the pointer; Peek shows one Activity by identity. [ADR 0010](adr/0010-split-and-rest-right-click.md).
 
+**Wheel:** over an island showing Media or the volume (the segment or Peek under the pointer) it sets the speaker's level, as the Surface's bar does; `island.wheel` turns it off. Over anything else it does nothing: stepping through Activities would let input change the Frame, which ADR 0010 rules out.
+
 ## UI
 
 ### Core Surfaces
 
-- **Launcher**: providers = apps, calculator, emoji, clipboard history (`>`, puts an entry back on the clipboard; never shown without the prefix), destinations (Wi-Fi and Bluetooth open Controls on their sub-surface; Notifications, Controls, Weather, Tray, Session, Timer, Capture, Clipboard, Calendar, Wallpapers and Keys open their Surface, and anything after `@` is the Wallpapers destination; each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface, never by the hold or the grace; a newer one replaces the one waiting, a Launcher the user opened refuses it.
+- **Launcher**: providers = apps (ordered within a Fit by how often each started, never over a better Fit; with nothing typed, the last six started first), apps' Desktop Actions (from two letters, `launcher.actions`, default on), open windows (from two letters; titles asked of niri when the Launcher opens, held only in the Launcher; pressing focuses the window; needs `windows`), calculator, emoji, clipboard history (`>`, puts an entry back on the clipboard; never shown without the prefix), destinations (Wi-Fi and Bluetooth open Controls on their sub-surface; Notifications, Controls, Weather, Tray, Session, Timer, Capture, Clipboard, Calendar, Wallpapers and Keys open their Surface, and anything after `@` is the Wallpapers destination; each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface, never by the hold or the grace; a newer one replaces the one waiting, a Launcher the user opened refuses it.
+- **Media**: the active MPRIS player, or the one chosen by chip: art, title, artist, a timeline, transport, the speaker's volume. The timeline seeks only where the player says `CanSeek` and gives a track id and a length: a press or drag sets `SetPosition`, Left/Right with the ring on it move 5 s, both clamped to the track and asked on the follower thread (a drag coalesces to its newest place). The Island's small forms stay read-only.
 - **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio (done, #133).
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
@@ -177,20 +181,21 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Battery
 
-A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker, so the draw thread never waits; the call is answered when UPower does, and a refusal shows on the switch.
+A draining battery shows from `battery.low` %, and is Critical, preempting, from `battery.critical` %, both held until a charger goes in. At critical, `battery.critical_action` (none by default, else suspend, hibernate or poweroff) counts down 60 s as a Session Activity, as a restart does, so Cancel or Now apply; a charger cancels it, and it counts down once per discharge. The charge limit is UPower's (1.90 or later): `ChargeThresholdSupported`, `ChargeThresholdEnabled`, `ChargeEndThreshold` on the battery device, set only through `EnableChargeThreshold`; Kanade never writes sysfs. The Controls switch shows only where it is supported; it and `kanade battery limit` ask on a worker, so the draw thread never waits; the call is answered when UPower does, and a refusal shows on the switch. The Controls header ends with UPower's estimate for the machine's batteries as one (`TimeToEmpty` while draining, `TimeToFull` while charging, asked of its DisplayDevice every 30 s and on each change of the reading, whole minutes, "2 h 5 min left", nothing while UPower says 0): text only, no graph, written without a redraw as only Controls shows it.
 
 ### Presentation migration
 
 [ADR 0007](adr/0007-banners-and-osd-leave-the-island.md), its OSD part superseded by [ADR 0021](adr/0021-the-osd-returns-to-the-island.md).
 
-- notification toast → **Banner**: focused output, hanging from the Island and coming out of it ([ADR 0023](adr/0023-banners-come-out-of-the-island.md)); 4 s low, 6 s normal, critical sticky; hover pause; max 3; per-app rules (`notifications.rules`, first match wins) choose Banner, history, DND bypass, time and urgency, applied as a notification arrives.
+- notification toast → **Banner**: focused output, hanging from the Island and coming out of it ([ADR 0023](adr/0023-banners-come-out-of-the-island.md)); 4 s low, 6 s normal, critical sticky; hover pause; max 3; per-app rules (`notifications.rules`, first match wins) choose Banner, history, sound, DND bypass, time and urgency, applied as a notification arrives. Sound is opt-in (`notifications.sound`): a new notification's `sound-file`/`sound-name` hint, else a default, through `pw-play` or `canberra-gtk-play` under `setpriv`, one at a time and bounded, never under DND; no audio library is linked.
 - volume/brightness/mic, Caps Lock/Num Lock/airplane mode and a keyboard layout switch niri announces (`osd.layout`) → **OSD**, a `Feedback` Transient on the Island, from changes and from the level keys, masked evdev (ADR 0021).
+- a Bluetooth device connecting or going, the charger plugged in or out, a new default sound output and a Wi-Fi network joined → a `Glance` Transient on the focused output (`island.device_events`), told from the change each Module's own Service shows: its first look is a baseline, so starting shows nothing; one Activity per class, the same event within 10 s once; Compact says what happened, Peek to what, a Bluetooth connection with its battery once the device reports it.
 - Island keeps durable Activities.
 
 ### Later
 
-- **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; edge and side, magnification under the pointer, autohide, reserve or float over windows; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144); merges with the Island where they share an edge and a side, `dock.merge` (ADR 0031).
-- **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>|shuffle`, the Wallpapers Surface over `wallpaper.directory` (the Launcher's `@` opens it): the folder as a grid of thumbnails the runtime decodes off the draw thread into a bounded cache, the one showing marked, searched by file name; a pick's `wallpaper.transition` grows from its tile; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145).
+- **Dock**: pinned (`dock.pinned`) + running unpinned + indicator; click launch/focus/next window; right click a menu: pin, the windows by title (focus, close), the app's actions; files dropped on an icon start the app with them, as arguments (no shell); edge and side, magnification under the pointer, autohide, reserve or float over windows; recents later; `.desktop` override map (`windows.apps`, ADR 0014) (done, #144); merges with the Island where they share an edge and a side, `dock.merge` (ADR 0031).
+- **Wallpaper**: Kanade selects; awww renders. `wallpaper set <path>|shuffle`, the Wallpapers Surface over `wallpaper.directory` (the Launcher's `@` opens it): the folder as a grid of thumbnails the runtime decodes off the draw thread into a bounded cache, the one showing marked, searched by file name; a pick's `wallpaper.transition` grows from its tile; Kanade holds `awww-daemon` unless one runs already; doctor checks awww (done, #145) and warns when niri has no layer rule with `place-within-backdrop` for `awww-daemon`, which keeps the wallpaper out of the overview; Kanade never edits the niri config, and the wiki's Installation page documents the rule.
 - **Lock**: `ext-session-lock` + PAM (`login` service); as macOS's, date, time, user and a solid black password pill over the output's wallpaper as `lock.backdrop` says ([ADR 0049](adr/0049-the-shell-is-solid-black.md), [ADR 0050](adr/0050-the-shell-is-a-tinted-solid.md)), no notification content; drawn and held by `kanade-lock` over a Wayland connection of its own, a surface committed per output as niri sizes it, so niri shows no red ([ADR 0025](adr/0025-the-lock-screen-over-its-own-connection.md)); `kanade lock`, which exits 0 once niri holds the lock for that call and no password was accepted since, undoing an unlock niri has not ended yet, 1 when niri refuses it, and 3 when that is not known, as while a password is checked (#196); re-locks at start on a true logind `LockedHint`; Kanade runs as the `kanade.service` user unit tied to `graphical-session.target`, `Restart=always` with a start limit; doctor checks PAM, logind and the unit (done, #154, [ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 - **Idle/suspend**: on logind `PrepareForSleep` the `lock` Module locks and confirms before letting go of its `systemd-inhibit --what=sleep --mode=delay` holder (ADR 0011, under `setpriv --pdeathsig`), retaken on resume; signals only from logind's unique name, over Kanade's own zbus system connection, connected again with a backoff when lost. From `PrepareForSleep(true)` until `(false)` no password goes to PAM: the gate shuts as the signal is heard, and on each connection from logind's `PreparingForSleep`; only logind saying `false` opens it, never a lost bus or no answer; a password typed while it is shut stays in the field, shows Locked for sleep and asks logind, so a `(false)` never heard does not keep it shut. Kanade checks a password with PAM once and asks `kanade-lock` to unlock under the same lock as the gate (ADR 0025); sleep drops a check, so its late result unlocks nothing. An unlock sent just before `PrepareForSleep(true)` is asked over, and sleep waits up to logind's delay for niri to hold the lock again, so the session unlocks only for that moment. A holder that ends or cannot start is retaken with a backoff (1 s doubling to 5 min), followed by its stdout closing, not polled; `kanade status` says how it stands. Caffeine is an idle inhibitor only: it stops an idle lock, not an explicit suspend's lock. Idle locking is the `idle` Module's when on (ADR 0047): stages `idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend` after the runtime's `ext-idle-notify-v1` primitive says idle, the dim grace a click-through Overlay layer per output fading toward dark until the lock, which never waits on it and is asked again while it fails; logind's idle inhibitors and caffeine hold every stage. Off by default, idle locking stays hypridle's (`lock_cmd = kanade lock`), documented in the wiki's Keyboard page; doctor warns when both run.
 - **Session**: the Session Surface and `kanade session`: lock by the `lock` Module, sleep/restart/poweroff/logout via logind over Kanade's own zbus system connection, not interactive, so polkit never asks for a password typed after a Cancel; restart, power off and log out first count down 60 s as a Critical Global Preempt Session Activity with Cancel and Now, a newer one replacing it by serial; one logind call at a time, never given up on: until it answers no other is asked and no countdown starts. A call never made, as with no system bus or session, is a refusal. An error logind sends is one too, unless it passes on an answer it never got (a timeout or lost connection); one the bus sends is a refusal only if it never delivered the call (no logind, its policy or limits denied it, activation failed). Anything else is no answer (the bus's NoReply, a timeout, a lost connection, a panic): a Critical Preempt Session Activity says it may still happen, Persistent on every island with Dismiss, a countdown running is refused at once, and none is asked until Kanade restarts. A refusal closes the Session Surface, which shows none, and shows a Failed Activity with the reason, logind's if it gave one, Critical while a countdown is, Transient on the focused output for a lock or sleep, and Persistent on every island with Dismiss for a restart, power off or log out, which may have counted down unattended (done, #156).
@@ -202,7 +207,7 @@ No literal theme colors in components.
 
 - `ThemeRoles`: changing M3-like roles.
 - `SemanticColors`: `privacy`, `capture`, `warning`, `critical`, `island_surface`, `on_island_surface`.
-- Settings and the app adapters take their roles from `ThemeRoles`; `appearance.tone` chooses light or dark. The Island, Dock and Banners follow `appearance.finish`, whatever the tone: a tinted solid with light text, paper with dark ink, or Liquid Glass, the tinted solid's ramp as clear glass over the screen, its edge reflecting it, each built from the wallpaper's hue, `theme::island()` ([ADR 0050](adr/0050-the-shell-is-a-tinted-solid.md), [ADR 0051](adr/0051-paper-finish.md), [ADR 0052](adr/0052-liquid-glass-finish.md), after [ADR 0049](adr/0049-the-shell-is-solid-black.md)). Only Liquid Glass captures the screen, for its edge to reflect.
+- Settings and the app adapters take their roles from `ThemeRoles`; `appearance.tone` chooses light or dark. The Island, Dock and Banners follow `appearance.finish`, whatever the tone: a tinted solid with light text, paper with dark ink, or Liquid Glass, the tinted solid's ramp as clear glass over the screen, its edge reflecting it and its ink turning dark over a bright page, each built from the wallpaper's hue, `theme::island()` ([ADR 0050](adr/0050-the-shell-is-a-tinted-solid.md), [ADR 0051](adr/0051-paper-finish.md), [ADR 0052](adr/0052-liquid-glass-finish.md), [ADR 0054](adr/0054-liquid-glass-refinements.md), after [ADR 0049](adr/0049-the-shell-is-solid-black.md)). Only Liquid Glass captures the screen, for its edge to reflect.
 - radii/spacing/type/motion = tokens too; in `src/theme.rs`, motion in `island::service::Timings` + `island::motion` (`island/` stays pure).
 - At startup, Kanade reads the wallpaper awww shows. Matugen derives both palettes from it and renders only configured targets; a wallpaper Kanade sets, or one set with `awww img` outside Kanade (followed through awww's cache), replaces that palette. The active tone selects the Settings palette, and changing tone rerenders configured targets ([ADR 0039](adr/0039-wallpaper-palettes-through-matugen.md), [ADR 0041](adr/0041-wallpaper-colors-in-apps.md)).
 - `theme.palette` remains accepted for old config files but is ignored; cover art may still supply the Media track accent.
@@ -218,8 +223,9 @@ Precedence: binary defaults → `~/.config/kanade/*.toml` alphabetical → `~/.l
 - never rewrite user/Nix config; only GUI state auto-migrates/writes.
 - GUI value == lower layer → remove override.
 - tables deep-merge; lists replace; output overrides global: `[output."<name>"]` sets per-output keys only, and wins over a global value from any layer.
-- unknown key → warning with file/line.
+- unknown key → warning with file/line, naming the nearest registry key when one is close.
 - writes = temp + rename.
+- `kanade config get|set|reset|schema|validate <file>` run in the CLI process from the registry, shell or none; `set` and `reset` write the settings file through the Settings writer, and the schema is derived, never kept by hand.
 - export = merged current schema.
 
 ### Hot reload
@@ -245,6 +251,10 @@ launcher open|close|toggle
 dmenu [--prompt <text>]
 controls open|close|toggle
 media open|close|toggle
+media play-pause|next|previous
+wifi on|off|toggle|status
+bluetooth on|off|toggle|status
+power-profile set <profile>|cycle|status
 island collapse
 notifications open|close|toggle|clear
 notifications dnd on|off|toggle
@@ -267,7 +277,8 @@ timer open|close|toggle
 capture open|close|toggle
 osd volume|brightness
 settings open [page]|close
-config reload|validate|defaults
+config reload|validate [file]|defaults|schema|get <key>|set <key> <value>|reset <key>
+completions bash|fish|zsh
 status
 doctor
 module list|enable <name>|disable <name>
@@ -316,6 +327,7 @@ Nested-niri E2E checks idle/morph each release.
 - clipboard history bounded; persistence off by default; a selection marked sensitive is never read or kept, unknown state fails closed ([ADR 0019](adr/0019-clipboard-sensitive-content.md)).
 - calendar credentials/tokens never logged; weather sends only the configured coordinates, never logged; account secrets stored through system secret service, not TOML.
 - never log passwords, notification/window/media/clipboard content.
+- hooks run only commands the user's own config files list (`kanade config set` refuses them), each a bounded child that dies with Kanade; only event names are logged ([ADR 0055](adr/0055-hooks-run-user-commands.md)).
 - PAM password only enters unlock path; never store/log/echo.
 - polkit credentials stay external.
 - privacy dots inside the Island; not shown over fullscreen (ADR 0033).
@@ -345,7 +357,7 @@ Lock ship gate: kill Kanade while locked → compositor remains locked → syste
 Need design before commitment:
 
 - **Plugins**: likely after Module/Service/Activity/Surface/LauncherProvider contracts stabilize. No plugin ABI/runtime yet.
-- **Hooks/event automation**: decide event model, permissions, execution isolation, failure/backpressure semantics; avoid shell-script event soup.
+- **Hooks/event automation**: resolved by [ADR 0055](adr/0055-hooks-run-user-commands.md): a closed event set, argv commands from config, env payload, bounded child, one in flight per event, failures in `status` only. Arbitrary events and plugins stay deferred.
 - **ASR dictation**: speech → text; modes: copy to clipboard, paste into focused input. Need engine boundary, microphone/privacy semantics, focus-safe paste path, cancellation, offline/remote policy.
 
 ## Roadmap
@@ -363,7 +375,7 @@ Need design before commitment:
 
 - Track/test the privacy dots at each small form and beside a side edge.
 - Native polkit waits for safe helper stdin integration.
-- Plugins/hooks/ASR remain deferred design decisions.
+- Plugins/ASR remain deferred design decisions.
 
 ## Fixed
 

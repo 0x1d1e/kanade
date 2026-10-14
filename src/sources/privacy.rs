@@ -14,7 +14,7 @@ use std::io::{self, BufRead};
 use kanade_runtime::service::Service;
 
 use super::json::Json;
-use super::niri::Niri;
+use super::niri::{Niri, Target};
 use super::pipewire::{self, DUMP, LINK, NODE, Object};
 use super::wake;
 use crate::supervise;
@@ -25,14 +25,18 @@ pub struct Privacy {
     // none while no app captures from a microphone or a camera
     pub sensors: Option<Sensors>,
 
-    // niri has at least one screen cast besides Liquid Glass's own capture, paused ones included;
-    // niri cannot say why, so it is never a "Recording" or "Sharing"
-    pub casting: bool,
+    // what the casts niri has capture, besides Liquid Glass's own, paused ones included; niri says
+    // what, a window or an output, never whose, so a cast is never a "Recording" or "Sharing"
+    pub casts: BTreeSet<Target>,
 }
 
 impl Privacy {
+    pub fn casting(&self) -> bool {
+        !self.casts.is_empty()
+    }
+
     pub fn any(&self) -> bool {
-        self.sensors.is_some() || self.casting
+        self.sensors.is_some() || self.casting()
     }
 }
 
@@ -44,15 +48,15 @@ impl Service for Privacy {
     fn listen() {}
 }
 
-// a watcher of `Niri`: whether a screen cast runs; the same again changes nothing
+// a watcher of `Niri`: what screen casts capture; the same again changes nothing
 pub fn follow_casts() {
-    let casting = Niri::read().seen.casting;
+    let casts = Niri::read().seen.casts.clone();
     let mut privacy = Privacy::write();
 
-    if privacy.casting == casting {
+    if privacy.casts == casts {
         privacy.quiet();
     } else {
-        privacy.casting = casting;
+        privacy.casts = casts;
     }
 }
 

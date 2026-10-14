@@ -4,7 +4,7 @@ use ttf_parser::Face;
 
 use crate::graphics::gpu::picture;
 use crate::graphics::image::Bitmap;
-use crate::graphics::{Area, Color};
+use crate::graphics::{Area, Color, Corners};
 
 use super::clip::NO_CLIP;
 use super::pipeline::picture_group;
@@ -12,14 +12,21 @@ use super::{Clips, LETTER, PICTURE, QUAD_SIZE, Quads, Run, SHAPE};
 
 impl Quads {
     // area and radius in canvas pixels
-    pub fn rectangle(&mut self, area: Area, radius: f32, color: Color, clips: Clips) {
-        self.push(area, [radius, 0.0], color, clips, SHAPE, [0.0; 4], None);
+    pub fn rectangle(&mut self, area: Area, radius: Corners, color: Color, clips: Clips) {
+        self.push(area, (radius, 0.0), color, clips, SHAPE, [0.0; 4], None);
     }
 
-    pub fn border(&mut self, area: Area, radius: f32, thickness: f32, color: Color, clips: Clips) {
+    pub fn border(
+        &mut self,
+        area: Area,
+        radius: Corners,
+        thickness: f32,
+        color: Color,
+        clips: Clips,
+    ) {
         self.push(
             area,
-            [radius, thickness],
+            (radius, thickness),
             color,
             clips,
             SHAPE,
@@ -59,7 +66,15 @@ impl Quads {
             (letter.y + letter.height) as f32,
         ];
 
-        self.push(area, [0.0; 2], color, clips, LETTER, texels, None);
+        self.push(
+            area,
+            (Corners::default(), 0.0),
+            color,
+            clips,
+            LETTER,
+            texels,
+            None,
+        );
     }
 
     pub fn forget(&mut self, picture: usize) {
@@ -89,7 +104,7 @@ impl Quads {
 
         self.push(
             area,
-            [0.0; 2],
+            (Corners::default(), 0.0),
             Color::WHITE,
             clips,
             PICTURE,
@@ -102,7 +117,7 @@ impl Quads {
     fn push(
         &mut self,
         area: Area,
-        [radius, thickness]: [f32; 2],
+        (radius, thickness): (Corners, f32),
         color: Color,
         clips: Clips,
         kind: f32,
@@ -130,7 +145,9 @@ impl Quads {
             channel(color.b),
             channel(color.a),
         ];
-        let shape_row = [radius, thickness, outer.radius, kind];
+        let shape_row = [thickness, 0.0, 0.0, kind];
+        let radius_row = radius.to_array();
+        let clip_radius_row = outer.radius.to_array();
         let source_row = source;
         let inner_clip_row = [
             inner.area.x,
@@ -138,7 +155,7 @@ impl Quads {
             inner.area.width,
             inner.area.height,
         ];
-        let inner_radius_row = [inner.radius, 0.0, 0.0, 0.0];
+        let inner_radius_row = inner.radius.to_array();
 
         let rows = [
             area_row,
@@ -147,6 +164,8 @@ impl Quads {
             shape_row,
             source_row,
             inner_clip_row,
+            radius_row,
+            clip_radius_row,
             inner_radius_row,
         ];
 

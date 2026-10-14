@@ -24,6 +24,21 @@ Runtime work, done when wanted.
 
 - [x] Key repeat and the fullscreen toplevel list are the runtime's (ADR 0034);
       `crates/repeat` and `crates/toplevels` are gone.
+- [x] Text input: modifiers reach a focused text input (`Modifiers`, not a window's `on_key`),
+      with Delete, PageUp and PageDown keys, word jumps, selection and paste from the Wayland
+      selection (`text/plain;charset=utf-8`, 64 KiB, read on the event loop with a 2 s deadline).
+      Delete repeats with Backspace and the arrows, which extends ADR 0034's list. SCTK's `utf8`
+      already applies xkb compose (from `LC_ALL`, `LC_CTYPE` or `LANG`), so dead keys work.
+      Not done: copy and cut (the runtime sets no selection), shortcuts on a non-Latin layout
+      (Ctrl+V names the key by its keysym, so it needs a Latin letter on the layout).
+- [x] Per-corner radius (`Rectangle::radius_top_left` and the other three, `Corners`), and the
+      justify overflow spill. A drop shadow and the inner shadow of a rectangle with unequal
+      corners still use the largest corner.
+- [x] File drops, as a primitive: `Rectangle::on_drop` takes the paths of a `text/uri-list` let go
+      over it. Only absolute `file://` links on this machine count, percent-decoded, no `..`,
+      at most 256 files and a 64 KiB list, read on the event loop with the paste's 2 s deadline;
+      a list with one bad link is refused whole. The drag is accepted only over a widget with
+      `on_drop`. No consumer yet (the Dock's drop behavior is not built).
 - [ ] Fold `crates/lock` (session lock in the runtime) into the runtime's
       connection. Drop its `src/boundary.rs` exception with it.
 - [ ] The Island, its Satellites, Surfaces, Banners and OSD as one shape on one

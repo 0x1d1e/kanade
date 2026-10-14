@@ -4,10 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::animation::moving;
-use crate::graphics::{Area, Renderer, image};
+use crate::graphics::{Area, Corners, Renderer, image};
 use crate::input::Target;
 use crate::style::Kind;
-use crate::{Fill, Image, Size, Widget};
+use crate::{Fill, Image, Radius, Size, Widget};
 
 use super::{Rectangle, child, targets, transform};
 
@@ -38,7 +38,7 @@ impl Widget for Rectangle {
 
 // the drawing as if the rectangle were not rotated, scaled or moved
 fn draw_in_place(rectangle: &Rectangle, renderer: &mut Renderer, area: Area) {
-    let radius = rectangle.radius.resolve(area.width, area.height);
+    let radius = corners(rectangle, area);
 
     // the rectangle holding a mask is still drawing into this renderer, so the cut lands in it
     if let Fill::Mask = rectangle.fill {
@@ -53,7 +53,22 @@ fn draw_in_place(rectangle: &Rectangle, renderer: &mut Renderer, area: Area) {
     renderer.blend(group, rectangle.opacity);
 }
 
-fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: f32) {
+// a corner set apart wins; with none set, every corner takes the radius, square by default
+fn corners(rectangle: &Rectangle, area: Area) -> Corners {
+    let resolve = |radius: Radius| radius.resolve(area.width, area.height);
+
+    match rectangle.corners {
+        Some([top_left, top_right, bottom_right, bottom_left]) => Corners {
+            top_left: resolve(top_left),
+            top_right: resolve(top_right),
+            bottom_right: resolve(bottom_right),
+            bottom_left: resolve(bottom_left),
+        },
+        None => Corners::from(resolve(rectangle.radius.unwrap_or(Radius::Fixed(0.0)))),
+    }
+}
+
+fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: Corners) {
     drop_shadow(rectangle, renderer, area, radius);
 
     match &rectangle.fill {
@@ -108,7 +123,7 @@ fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: f32
     renderer.clip(inside, area, radius);
 }
 
-fn paint_image(fill: &Image, renderer: &mut Renderer, area: Area, radius: f32) {
+fn paint_image(fill: &Image, renderer: &mut Renderer, area: Area, radius: Corners) {
     // still decoding, or unreadable
     let Some(image) = image::load(&fill.path, fill.thumbnail) else {
         return;
@@ -123,7 +138,7 @@ fn paint_image(fill: &Image, renderer: &mut Renderer, area: Area, radius: f32) {
 }
 
 // drawn before the fill, so the fill covers the part under the rectangle
-pub fn drop_shadow(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: f32) {
+pub fn drop_shadow(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: Corners) {
     let Some(shadow) = &rectangle.shadow else {
         return;
     };
@@ -138,7 +153,7 @@ pub fn drop_shadow(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, r
 }
 
 // drawn over the fill but under the border and child
-pub fn inner_shadow(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: f32) {
+pub fn inner_shadow(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: Corners) {
     let Some(shadow) = &rectangle.shadow else {
         return;
     };
@@ -154,7 +169,7 @@ pub fn inner_shadow(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, 
 
 /*
  * only a shader that reads time changes between frames, so only that
- * one keeps the window drawing; any `time` word counts, even in a comment
+ * one keeps the window drawing; any `time` word counts outside a comment
  */
 pub fn reads_time(shader: &Path) -> bool {
     READS_TIME.with_borrow_mut(|known| {
@@ -163,15 +178,59 @@ pub fn reads_time(shader: &Path) -> bool {
         }
 
         let source = fs::read_to_string(shader).unwrap_or_default();
-
-        let is_name_part = |character: char| character.is_alphanumeric() || character == '_';
-
-        let reads = source
-            .split(|character| !is_name_part(character))
-            .any(|word| word == "time");
+        let reads = names_time(&source);
 
         known.insert(shader.to_path_buf(), reads);
 
         reads
     })
+}
+
+// whether the code of a WGSL source, its comments left out, has a `time` word
+fn names_time(source: &str) -> bool {
+    let is_name_part = |character: char| character.is_alphanumeric() || character == '_';
+
+    let mut code = String::with_capacity(source.len());
+    let mut rest = source;
+
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("//") {
+            rest = after.find('\n').map_or("", |end| &after[end..]);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.find("*/").map_or("", |end| &after[end + 2..]);
+            code.push(' ');
+        } else {
+            let mut characters = rest.chars();
+
+            code.extend(characters.next());
+            rest = characters.as_str();
+        }
+    }
+
+    code.split(|character| !is_name_part(character))
+        .any(|word| word == "time")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::names_time;
+
+    // the glass shader's comment "a channel at a time" once kept every glass window drawing at the
+    // display's rate, at rest
+    #[test]
+    fn a_comment_does_not_make_a_shader_read_time() {
+        assert!(!names_time("// a channel at a time\nlet x = 1.0;"));
+        assert!(!names_time(
+            "/* one at a time,\nthen the next */ let x = 1.0;"
+        ));
+        assert!(!names_time("let x = 1.0; // time"));
+    }
+
+    #[test]
+    fn code_that_names_time_reads_it() {
+        assert!(names_time("let x = time * 2.0;"));
+        assert!(names_time("// one\nlet x = sin(time);"));
+        assert!(names_time("/* c */ let x = time;"));
+        assert!(!names_time("let x = runtime + times + time_of_day;"));
+    }
 }

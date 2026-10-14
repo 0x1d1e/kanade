@@ -189,6 +189,7 @@ mod tests {
 
     use super::*;
     use crate::sources::notifications::rules::Effects;
+    use crate::sources::sound::Hints;
 
     fn notification(history: bool) -> Notification {
         Notification {
@@ -204,6 +205,7 @@ mod tests {
             actions: Vec::new(),
             has_default: false,
             resident: false,
+            sound: Hints::default(),
             received: SystemTime::UNIX_EPOCH,
             version: 0,
             effects: Effects {

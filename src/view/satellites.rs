@@ -5,7 +5,7 @@ use std::time::Instant;
 use kanade_runtime::{Center, Color, Rectangle, Row, Text, Widget};
 
 use crate::icon::Icon;
-use crate::island::activity::{Activity, Detail, Kind, Leaving};
+use crate::island::activity::{Activity, Class, Detail, Kind, Leaving};
 use crate::island::geometry::{self, Canvas, Hang, Rect, Shape};
 use crate::island::satellites::{Mark, Satellites};
 use crate::sources::{session, timer};
@@ -56,6 +56,7 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
         Detail::Media(track) => Box::new(super::media::disc(track, 20.0, now)),
         Detail::Live(job) => super::live::satellite(job),
         Detail::NightLight(_) => Box::new(Icon::Sunset.draw(14.0)),
+        Detail::Hardware(event) => Box::new(mark(event.class).draw(14.0)),
         Detail::Reminder(reminder) => label(reminder.short.clone(), theme::island().on_surface),
         Detail::Battery(charge) => label(charge.percent.to_string(), charge_tone(charge)),
         Detail::Timer(countdown, _) => label(timer::short(countdown, now), timer_tone(countdown)),
@@ -70,6 +71,16 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
             abbreviation(activity.kind()).to_owned(),
             theme::island().on_surface,
         ),
+    }
+}
+
+// the mark of a device event's class
+pub(super) fn mark(class: Class) -> Icon {
+    match class {
+        Class::Bluetooth => Icon::Bluetooth,
+        Class::Charger => Icon::Bolt,
+        Class::Output => Icon::Speaker(1),
+        Class::Wifi => Icon::Wifi,
     }
 }
 

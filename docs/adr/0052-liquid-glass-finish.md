@@ -1,6 +1,6 @@
 # 52. Liquid Glass, a third finish
 
-Status: accepted. Amends ADR 0049 (the capture and the glass it removed come back, for this finish only) and ADR 0051 (a third `Finish`). The tinted solid stays the default (ADR 0050); a pane of any other finish captures nothing.
+Status: accepted; its readability stance, edge thickness, corners and what makes a copy news are amended by ADR 0054. Amends ADR 0049 (the capture and the glass it removed come back, for this finish only) and ADR 0051 (a third `Finish`). The tinted solid stays the default (ADR 0050); a pane of any other finish captures nothing.
 
 ## Context
 
@@ -13,7 +13,7 @@ ADR 0049 removed frosted glass for its cost and for what a translucent pane lets
 - The copy holds the pane itself, so what lies under the body cannot be read. Where the studio reads inward, the edge reads the screen just outside the outline, along the same profile and channel by channel; a read of another pane of Kanade (a Banner under the Island) in any channel reads none, and a read past the screen's edge is skipped. That is a reflection of the screen, not true refraction.
 - Capture is the runtime's wlr-screencopy path of ADR 0037 (`crates/runtime/src/backdrop.rs`, `wayland/backdrop.rs`), covering the body and the reach of the edge's read, with a lookahead (`pane::LEAD`) so a morphing body is read where it is heading; the Dock adds the icons' rise and the slide, the Banners each follow their own pane. It is driven only through `pane::place`, which releases the copy unless the finish is Liquid Glass, so switching away stops the capture and brings back the pane's shadow. A captured pane casts no shadow. `pane::locked` pauses every capture over the lock screen.
 - The glass's containers (tiles, tracks, segments) are white veils at 11% and 19%, not the solid fills of the tinted ramp (`theme::tint::clear`), so a tile is more glass, not an opaque patch.
-- Readability is not a goal of this finish: the screen shows through, text behind the pane included, and over a bright page the light text is hard to read.
+- The screen shows through, text behind the pane included. Over a bright page the light text was hard to read, which ADR 0054 answers with a scrim and dark ink.
 - Kanade's own capture is not a screen cast: `sources::niri::stream` ignores casts of its own pid, so the privacy dot does not light.
 - Files: `src/pane/{capture,glass}.rs` and `glass.wgsl`; `pane/shader.rs` writes `glass-<pid>.wgsl` beside `pane-<pid>.wgsl` when first asked for, under the same lock and sweep.
 

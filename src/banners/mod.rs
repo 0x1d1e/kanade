@@ -448,8 +448,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             )
         };
 
-        let roles = theme::island();
-
         for placed in &placed {
             let card_height = heights
                 .get(&placed.banner.id)
@@ -487,7 +485,11 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 (width, height),
                 (now_look.seen > 0.0 && !covered).then_some(captured),
             );
-            let backdrop = pane::shown(&spot);
+            let backdrop = pane::shown(&spot, now);
+
+            // each card's ink follows the page behind it, for all the card builds
+            let _ink = pane::inked(backdrop.as_ref());
+            let roles = theme::island();
 
             /*
              * A captured pane casts no shadow, which would darken its sampled colors; either

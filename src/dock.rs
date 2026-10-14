@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::iter;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::thread;
@@ -199,7 +200,13 @@ fn desktop(app: &App) -> Option<&DesktopEntry> {
 enum Press {
     Focus(WindowId),
 
+    // asks the app to close that window, as its own close button does
+    Close(WindowId),
+
     Launch(Launch),
+
+    // files dropped on the icon, which start the app with them
+    Open { launch: Launch, files: Vec<PathBuf> },
 
     DesktopAction { launch: Launch, id: String },
 }
@@ -248,17 +255,10 @@ fn press(item: &Item) -> Option<Press> {
 fn carry_out(press: Press) {
     thread::spawn(move || {
         let done = match &press {
-            Press::Focus(id) => {
-                match niri::act(&format!(
-                    r#"{{"Action":{{"FocusWindow":{{"id":{}}}}}}}"#,
-                    id.0
-                )) {
-                    Ok(Acted::Done) => Ok(()),
-                    Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
-                    Err(error) => Err(error.to_string()),
-                }
-            }
+            Press::Focus(id) => window_action("FocusWindow", *id),
+            Press::Close(id) => window_action("CloseWindow", *id),
             Press::Launch(launch) => launch.run(),
+            Press::Open { launch, files } => launch.run_files(files),
             Press::DesktopAction { launch, id } => launch.run_action(id),
         };
 
@@ -266,6 +266,15 @@ fn carry_out(press: Press) {
             eprintln!("dock: {press:?}: {error}");
         }
     });
+}
+
+// niri's action on one window, by id
+fn window_action(action: &str, id: WindowId) -> Result<(), String> {
+    match niri::act(&format!(r#"{{"Action":{{"{action}":{{"id":{}}}}}}}"#, id.0)) {
+        Ok(Acted::Done) => Ok(()),
+        Ok(Acted::Unknown(why)) => Err(format!("niri gave no clear answer: {why}")),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 // pins the configured apps, at start and after a reload
@@ -1108,7 +1117,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
      * while the Dock is out of sight, empty, under a fullscreen window, slid past its edge or
      * stepped aside
      */
-    let spot = pane::Spot::new(&monitor.name, PANE);
     let fullscreen = view::covered(monitor, || IslandService::read().overview());
     pane::place(
         monitor,
@@ -1120,7 +1128,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         ),
         (items && shown > 0.0 && aside < 1.0 && !fullscreen).then_some(pane_body),
     );
-    let backdrop = pane::shown(&spot);
+
+    // Liquid Glass's ink follows the page behind the pane, for all this window builds
+    let backdrop = pane::shown(&pane::Spot::new(&monitor.name, PANE), Instant::now());
+    let _ink = pane::inked(backdrop.as_ref());
 
     let roles = theme::island();
     let mut strip = Rectangle::new()
@@ -1924,7 +1935,8 @@ fn slot(
 
     let context = item.clone();
 
-    slot.cursor(Cursor::Pointer)
+    let slot = slot
+        .cursor(Cursor::Pointer)
         .on_click(move |button| match button {
             Button::Left => {
                 if let Some(press) = press.clone() {
@@ -1933,7 +1945,21 @@ fn slot(
             }
             Button::Right => context_menu::open(&target.monitor, &context, target.at, target.edge),
             Button::Middle => {}
-        })
+        });
+
+    // only an app whose `Exec` has a file code takes files, so a drag over any other is turned down
+    match desktop(&item.app)
+        .and_then(|entry| entry.launch.clone())
+        .filter(Launch::takes_files)
+    {
+        Some(launch) => slot.on_drop(move |files| {
+            carry_out(Press::Open {
+                launch: launch.clone(),
+                files,
+            })
+        }),
+        None => slot,
+    }
 }
 
 // the app's icon, `side` across (Kanade's own windows, with no entry, show Kanade's), or its initial

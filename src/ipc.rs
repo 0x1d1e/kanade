@@ -24,8 +24,8 @@ use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
-    apps, caffeine, charge_limit, fullscreen, google, live, night_light, reminders, session,
-    wallpaper, weather,
+    apps, bluetooth, caffeine, charge_limit, fullscreen, google, live, media, network, night_light,
+    power, reminders, session, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -53,6 +53,10 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         // on the draw thread, which systemd-inhibit dies with
         Ok(Call::Caffeine(request)) => caffeine::request(request, Later::new(reply)),
         Ok(Call::Battery(request)) => charge_limit::request(request, Later::new(reply)),
+        Ok(Call::Media(transport)) => media::request(transport, Later::new(reply)),
+        Ok(Call::Wifi(switch)) => network::request(switch, Later::new(reply)),
+        Ok(Call::Bluetooth(switch)) => bluetooth::request(switch, Later::new(reply)),
+        Ok(Call::PowerProfile(request)) => power::request(request, Later::new(reply)),
         Ok(Call::Wallpaper(request)) => wallpaper::request(request, Later::new(reply)),
         Ok(Call::Lock) => lock::request(Later::new(reply)),
         Ok(call) => reply.send(&run(call).encode()),
@@ -75,6 +79,10 @@ fn run(call: Call) -> Reply {
         | Call::Record(_)
         | Call::Caffeine(_)
         | Call::Battery(_)
+        | Call::Media(_)
+        | Call::Wifi(_)
+        | Call::Bluetooth(_)
+        | Call::PowerProfile(_)
         | Call::Wallpaper(_)
         | Call::Lock => Reply::Refused(String::from("answered later, not by `run`")),
         Call::ClearNotifications => {
@@ -168,6 +176,7 @@ fn island(command: Command) -> Reply {
             // way to open the Launcher must refresh as well
             if let Effect::Open(_, Surface::Launcher) = &effect {
                 apps::refresh();
+                launcher::windows::refresh();
             }
 
             IslandService::write().apply(effect, Instant::now());

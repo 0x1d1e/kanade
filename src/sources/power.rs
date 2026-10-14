@@ -4,6 +4,7 @@
 use std::thread;
 
 use crate::bus::{Argument, Bus, Value};
+use crate::later::Later;
 use kanade_runtime::service::Service;
 
 pub const NAME: &str = "org.freedesktop.UPower.PowerProfiles";
@@ -21,7 +22,7 @@ impl Profile {
     pub const ALL: [Profile; 3] = [Profile::PowerSaver, Profile::Balanced, Profile::Performance];
 
     // the daemon's name for it
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Profile::PowerSaver => "power-saver",
             Profile::Balanced => "balanced",
@@ -29,7 +30,7 @@ impl Profile {
         }
     }
 
-    fn of(key: &str) -> Option<Profile> {
+    pub fn of(key: &str) -> Option<Profile> {
         Profile::ALL
             .into_iter()
             .find(|profile| profile.key() == key)
@@ -93,15 +94,90 @@ fn profiles(properties: &Value) -> Profiles {
     }
 }
 
+fn set_now(profile: Profile) {
+    Bus::system().set_property(
+        NAME,
+        PATH,
+        NAME,
+        "ActiveProfile",
+        Argument::from(profile.key()),
+    );
+}
+
 // the daemon answers with the change, which `system::follow` reads back
 pub fn set(profile: Profile) {
+    thread::spawn(move || set_now(profile));
+}
+
+// what `kanade power-profile` asks
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request {
+    Set(Profile),
+    Cycle,
+    Status,
+}
+
+impl Request {
+    pub fn parse(arguments: &[&str]) -> Option<Request> {
+        match arguments {
+            ["set", profile] => Profile::of(profile).map(Request::Set),
+            ["cycle"] => Some(Request::Cycle),
+            ["status"] => Some(Request::Status),
+            _ => None,
+        }
+    }
+}
+
+// `kanade power-profile`, answered once the daemon has the profile as asked
+pub fn request(request: Request, later: Later) {
+    let profiles = Profiles::read().clone();
+
+    let Some(active) = profiles.active else {
+        return later.refused("unavailable: power-profiles-daemon is not running");
+    };
+
+    let want = match request {
+        Request::Status => {
+            let available: Vec<&str> = profiles.available.iter().map(|each| each.key()).collect();
+
+            return later.done(format!(
+                "{} (available: {})",
+                active.key(),
+                available.join(", ")
+            ));
+        }
+        Request::Set(profile) => profile,
+        // the next one the machine has, after this one, then the first again
+        Request::Cycle => profiles
+            .available
+            .iter()
+            .position(|each| *each == active)
+            .map_or(active, |at| {
+                profiles.available[(at + 1) % profiles.available.len()]
+            }),
+    };
+
+    if !profiles.available.contains(&want) {
+        return later.refused(format!("{} is not available on this machine", want.key()));
+    }
+
+    later.unsettled("power-profiles-daemon got the call; the profile may still have changed");
+
     thread::spawn(move || {
-        Bus::system().set_property(
-            NAME,
-            PATH,
-            NAME,
-            "ActiveProfile",
-            Argument::from(profile.key()),
-        );
+        set_now(want);
+
+        let read = Bus::system().property(NAME, PATH, NAME, "ActiveProfile");
+
+        match Profile::of(read.text()) {
+            Some(now) if now == want => later.done(now.key()),
+            _ => later.refused(format!(
+                "the daemon left it {}",
+                if read.text().is_empty() {
+                    "unset"
+                } else {
+                    read.text()
+                }
+            )),
+        }
     });
 }

@@ -11,21 +11,26 @@ use crate::island::activity::{Ending, Leave};
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
+use crate::sources::audio::Mixer;
+use crate::sources::battery::BatteryLevel;
+use crate::sources::bluetooth::Adapter;
 use crate::sources::calendar::Calendars;
 use crate::sources::clipboard::Clipboard;
+use crate::sources::network::Connectivity;
 use crate::sources::notifications::Daemon;
+use crate::sources::system::Switch;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard,
+    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
     fullscreen, google, keys, launch, live, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, idle, ipc, lock, reload,
-    settings, shadow, supervise, surfaces, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
+    reload, settings, shadow, supervise, surfaces, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -59,7 +64,7 @@ pub const ALL: &[Module] = &[
             },
             Verb {
                 name: "config",
-                about: "Reload, validate or print the config",
+                about: "Reload, validate, print or change the config",
                 usage: || String::from("config reload|validate"),
                 parse: |arguments| match arguments {
                     ["reload"] => Ok(Call::Reload),
@@ -270,6 +275,8 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| {
+            service::watch::<BatteryLevel>(devices::follow_charger);
+            service::watch::<BatteryLevel>(battery::follow_charger_hook);
             supervise::spawn("battery", battery::follow);
             supervise::spawn("charge-limit", charge_limit::follow);
             app
@@ -284,16 +291,33 @@ pub const ALL: &[Module] = &[
         needs: &[],
         settings: config::MEDIA,
         hooks: Hooks::NONE,
-        verbs: &[Verb {
-            name: "media",
-            about: "Open or close the media Surface",
-            usage: || String::from("media open|close|toggle"),
-            parse: |arguments| {
-                Command::surface(Surface::Media, arguments)
-                    .map(Call::Island)
-                    .ok_or(Unparsed::Usage)
+        verbs: &[
+            Verb {
+                name: "media",
+                about: "Play, pause or skip the player, open or close the media Surface",
+                usage: || String::from("media open|close|toggle"),
+                parse: |arguments| {
+                    Command::surface(Surface::Media, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
             },
-        }],
+            Verb {
+                name: "media",
+                about: "Play, pause or skip the player, open or close the media Surface",
+                usage: || {
+                    String::from(
+                        "media play-pause|next|previous
+  play-pause, next, previous: ask the player playing, or else the one shown last",
+                    )
+                },
+                parse: |arguments| {
+                    media::Transport::parse(arguments)
+                        .map(Call::Media)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+        ],
         start: |app| {
             supervise::spawn("media", media::follow);
             app
@@ -393,6 +417,7 @@ pub const ALL: &[Module] = &[
         hooks: Hooks::NONE,
         verbs: &[],
         start: |app| {
+            service::watch::<Mixer>(devices::follow_output);
             supervise::spawn("audio", audio::follow);
             app
         },
@@ -555,8 +580,18 @@ pub const ALL: &[Module] = &[
         }],
         settings: &[],
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "wifi",
+            about: "Turn the Wi-Fi radio on or off",
+            usage: || String::from("wifi on|off|toggle|status"),
+            parse: |arguments| {
+                Switch::parse(arguments)
+                    .map(Call::Wifi)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
+            service::watch::<Connectivity>(devices::follow_wifi);
             system::spawn();
             app
         },
@@ -573,8 +608,18 @@ pub const ALL: &[Module] = &[
         }],
         settings: &[],
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "bluetooth",
+            about: "Turn the Bluetooth adapter on or off",
+            usage: || String::from("bluetooth on|off|toggle|status"),
+            parse: |arguments| {
+                Switch::parse(arguments)
+                    .map(Call::Bluetooth)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
+            service::watch::<Adapter>(devices::follow_bluetooth);
             system::spawn();
             app
         },
@@ -658,7 +703,22 @@ pub const ALL: &[Module] = &[
         }],
         settings: &[],
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "power-profile",
+            about: "Switch the power profile",
+            usage: || {
+                String::from(
+                    "power-profile set <profile>|cycle|status
+  <profile>: power-saver|balanced|performance, as the machine has them
+  cycle: the next profile the machine has, then the first again",
+                )
+            },
+            parse: |arguments| {
+                power::Request::parse(arguments)
+                    .map(Call::PowerProfile)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| {
             system::spawn();
             app
@@ -745,13 +805,13 @@ pub const ALL: &[Module] = &[
         name: "launcher",
         about: "Apps, calculations, emoji and wallpapers",
         requires: &[CORE],
-        optional: &["wallpaper"],
+        optional: &["wallpaper", "windows"],
         warns: None,
         needs: &[Need {
             on: Provider::Program(clipboard::COPY),
             without: "no copying a calculator value or an emoji",
         }],
-        settings: &[],
+        settings: config::LAUNCHER,
         hooks: Hooks::NONE,
         verbs: &[
             Verb {
@@ -1356,6 +1416,25 @@ pub const ALL: &[Module] = &[
                 _ => Err(Unparsed::Usage),
             },
         }],
+        start: |app| app,
+    },
+    /*
+     * commands the user lists for events (ADR 0055); the Module that owns an event fires it, so
+     * this one has no thread or window of its own, and off, it makes every fire do nothing
+     */
+    Module {
+        name: hooks::MODULE,
+        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend and resume",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: hooks::SETTINGS,
+        hooks: Hooks {
+            status: Some(hooks::status),
+            ..Hooks::NONE
+        },
+        verbs: &[],
         start: |app| app,
     },
 ];

@@ -66,6 +66,9 @@ pub struct Deck {
     pub can_pause: bool,
     pub can_previous: bool,
     pub can_next: bool,
+
+    // SetPosition works: CanSeek, a track to name and a length to seek within
+    pub can_seek: bool,
 }
 
 /*
@@ -191,6 +194,23 @@ impl Timeline {
         }
     }
 
+    // `seconds` on from where it is now, or back when negative, kept within the track
+    pub fn shifted(&self, seconds: i64, now: Instant) -> Duration {
+        let position = self.position(now);
+        let by = Duration::from_secs(seconds.unsigned_abs());
+        let to = if seconds < 0 {
+            position.saturating_sub(by)
+        } else {
+            position.saturating_add(by)
+        };
+
+        if self.length.is_zero() {
+            to
+        } else {
+            to.min(self.length)
+        }
+    }
+
     // when the whole second it shows next changes, none while it stands still
     pub fn next_second(&self, now: Instant) -> Option<Instant> {
         let position = self.position(now);
@@ -265,4 +285,26 @@ pub fn fit(accent: Option<Color>) -> Color {
                 .find(|&color| contrast(color, island.track()) >= CONTRAST)
         })
         .unwrap_or(island.on_surface)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a seek by key never leaves the track: before its start, or past its end
+    #[test]
+    fn a_shift_stays_within_the_track() {
+        let now = Instant::now();
+        let timeline = Timeline {
+            position: Duration::from_secs(3),
+            at: now,
+            length: Duration::from_secs(10),
+            rate: 0.0,
+        };
+
+        assert_eq!(timeline.shifted(-5, now), Duration::ZERO);
+        assert_eq!(timeline.shifted(5, now), Duration::from_secs(8));
+        assert_eq!(timeline.shifted(50, now), Duration::from_secs(10));
+        assert_eq!(timeline.shifted(i64::MIN, now), Duration::ZERO);
+    }
 }

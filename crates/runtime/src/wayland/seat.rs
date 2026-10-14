@@ -36,6 +36,8 @@ impl SeatHandler for WaylandState {
                     .expect("failed to get pointer");
 
                 self.pointer_device = Some(pointer);
+
+                self.follow_data_device(qh, &seat);
             }
 
             Capability::Keyboard => {
@@ -52,6 +54,8 @@ impl SeatHandler for WaylandState {
                     .expect("failed to get keyboard");
 
                 self.keyboard_device = Some(keyboard);
+
+                self.follow_data_device(qh, &seat);
             }
 
             _ => {}
@@ -83,7 +87,22 @@ impl SeatHandler for WaylandState {
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {
+        self.data_device = None;
+
         self.forget_idle();
         self.follow_idle();
+    }
+}
+
+impl WaylandState {
+    // the clipboard follows the keyboard and drags the pointer, so the first of either brings it
+    fn follow_data_device(&mut self, qh: &QueueHandle<Self>, seat: &WlSeat) {
+        if self.data_device.is_some() {
+            return;
+        }
+
+        if let Some(manager) = &self.data_device_manager {
+            self.data_device = Some(manager.get_data_device(qh, seat));
+        }
     }
 }

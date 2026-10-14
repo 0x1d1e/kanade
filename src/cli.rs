@@ -13,12 +13,16 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::{IpcCall, ipc_socket};
 
+mod completions;
+mod keys;
+
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
+use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, google, live, night_light, osd, recording, reminders, timer,
-    wallpaper, weather,
+    caffeine, capture, charge_limit, google, live, media, night_light, osd, power, recording,
+    reminders, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -61,6 +65,10 @@ pub enum Call {
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
     Battery(charge_limit::Request),
+    Media(media::Transport),
+    Wifi(Switch),
+    Bluetooth(Switch),
+    PowerProfile(power::Request),
     Wallpaper(wallpaper::Request),
     Google(google::Request),
     Reminders(reminders::Request),
@@ -151,7 +159,25 @@ struct Entry {
 
 // the name of a verb this process answers itself, with what it does and the form it takes
 const OWN: &[(&str, &str, &str)] = &[
-    ("config", "", "config defaults"),
+    (
+        "completions",
+        "Print shell completions, from the commands in this list",
+        "completions bash|fish|zsh",
+    ),
+    (
+        "config",
+        "",
+        "config defaults|schema
+config get <key>
+config set <key> <value>
+config reset <key>
+config validate <file>
+  <key>: a dotted key of `kanade config defaults`, like timings.hover
+  <value>: text as it is for a key that takes text, else a TOML value, like 300, true or [1, 2]
+  set: writes the settings file, as the Settings window does, never your own files
+  reset: removes the key from the settings file, so your files and the defaults give it again
+  validate: says what a file alone would not apply, without a shell",
+    ),
     (
         "doctor",
         "Check what Kanade runs on, without a shell",
@@ -386,8 +412,19 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 }
             };
         }
+        ["completions", shell] if completions::script(shell).is_some() => {
+            return print(
+                &completions::script(shell).unwrap_or_default(),
+                ExitCode::SUCCESS,
+            );
+        }
         ["doctor"] => return doctor::run(),
         ["config", "defaults"] => return print(&config::defaults(), ExitCode::SUCCESS),
+        ["config", "schema"] => return print(&keys::schema(), ExitCode::SUCCESS),
+        ["config", "get", key] => return keyed(keys::get(key)),
+        ["config", "set", key, value] => return keyed(keys::set(key, value)),
+        ["config", "reset", key] => return keyed(keys::reset(key)),
+        ["config", "validate", file] => return validated(file),
         _ => {}
     }
 
@@ -470,6 +507,29 @@ pub fn run(arguments: &[String]) -> ExitCode {
  * writes `text` to stdout and gives back `code` as the exit code. A closed pipe is no failure, as its
  * reader, like `head`, wanted no more; any other error is said on stderr and fails
  */
+// what a key's verb says, or 1 for why it refused
+fn keyed(said: Result<String, String>) -> ExitCode {
+    match said {
+        Ok(said) => print(&said, ExitCode::SUCCESS),
+        Err(why) => {
+            complain(&format!("kanade: {why}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// `config validate <file>`: 1 for a problem in it, or for a file that does not read
+fn validated(file: &str) -> ExitCode {
+    match keys::validate(file.as_ref()) {
+        Ok(problems) if problems.is_empty() => print("valid\n", ExitCode::SUCCESS),
+        Ok(problems) => {
+            complain(&problems.join("\n"));
+            ExitCode::FAILURE
+        }
+        Err(why) => keyed(Err(why)),
+    }
+}
+
 pub fn print(text: &str, code: ExitCode) -> ExitCode {
     match written(io::stdout().lock(), text.as_bytes()) {
         Ok(()) => code,
@@ -744,6 +804,26 @@ mod tests {
             [b"one".to_vec(), b"\xff two".to_vec(), b"three".to_vec()]
         );
         assert!(choices(&b"\n\n"[..]).is_err());
+    }
+
+    // a verb that acts on a daemon or player is its Module's, which the shell refuses it for while off
+    #[test]
+    fn verbs_that_act_on_the_system_belong_to_their_module() {
+        for (words, owner) in [
+            (&["media", "play-pause"][..], "media"),
+            (&["media", "next"], "media"),
+            (&["wifi", "toggle"], "network"),
+            (&["bluetooth", "off"], "bluetooth"),
+            (&["power-profile", "set", "balanced"], "power"),
+            (&["power-profile", "cycle"], "power"),
+        ] {
+            let (module, _) = parse(words).expect("parses");
+            assert_eq!(module.name, owner, "{words:?}");
+        }
+
+        assert!(parse(&["wifi", "maybe"]).is_err());
+        assert!(parse(&["power-profile", "set", "turbo"]).is_err());
+        assert!(parse(&["media", "stop"]).is_err());
     }
 
     #[test]

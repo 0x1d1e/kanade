@@ -6,8 +6,10 @@
 //! DND (`notifications dnd toggle`) silences Banners, never the history. Banners never take the
 //! keyboard.
 //!
-//! A notification's rule (`rules`) may show it with no Banner, under DND, for its own time, or keep
-//! it out of the history: then it closes as expired once its Banner is gone, or at once with none.
+//! A notification's rule (`rules`) may show it with no Banner or sound, under DND, for its own time,
+//! or keep it out of the history: then it closes as expired once its Banner is gone, or at once with none.
+//!
+//! With `notifications.sound` on, a new notification plays a sound (`sound`), never under DND.
 //!
 //! `Notifications` has no subscription, so this reads it again when the bus carries a
 //! notification arriving or closing (`wake`), and polls while that settles or the bus cannot be
@@ -24,8 +26,10 @@ use kanade_runtime::service::Service;
 use super::apps::Apps;
 use super::bus;
 use super::icons;
+use super::sound::{self, Hints};
 use super::wake::{Announcer, Pace, Wakes};
 use crate::banners::{Banner, Banners};
+use crate::config;
 use crate::island::activity::Toast;
 use crate::island::service::IslandService;
 use crate::{banners, modules, supervise};
@@ -293,6 +297,18 @@ pub fn follow() {
                 .map(|notification| (notification.id(), notification.version()))
                 .collect();
 
+            // only a notification new to the list rings; a replacement, like a progress, does not
+            let rings: Vec<Hints> = if config::get().notification_sound {
+                arrived
+                    .iter()
+                    .filter(|notification| notification.effects().sound)
+                    .filter(|notification| !before.iter().any(|(id, _)| *id == notification.id()))
+                    .map(|notification| notification.sound().clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             drop(notifications);
 
             // Running and Conflict are for good, so only Starting asks again
@@ -312,6 +328,13 @@ pub fn follow() {
             }
 
             let dnd = IslandService::read().dnd();
+
+            // never under DND, which quiets what the Banners show
+            if !dnd {
+                for hints in &rings {
+                    sound::play(hints);
+                }
+            }
 
             /*
              * a Banner DND drops that replaces none, or one already put away, changes nothing, so

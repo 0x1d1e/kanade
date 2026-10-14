@@ -38,6 +38,7 @@ use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::hooks::{self, Commands};
 use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
@@ -137,11 +138,23 @@ pub struct Config {
     // `privacy.indicators`
     pub privacy_indicators: bool,
 
+    // `island.wheel`
+    pub island_wheel: bool,
+
+    // `island.device_events`
+    pub device_events: bool,
+
+    // `launcher.actions`: the apps' Desktop Actions are rows of the Launcher
+    pub launcher_actions: bool,
+
     // `idle.*`: after how long idle each stage fires (ADR 0047)
     pub idle: Stages,
 
     // `banners.entrance`
     pub entrance: Entrance,
+
+    // `notifications.sound`: a notification arriving plays a sound
+    pub notification_sound: bool,
 
     // `notifications.rules`: what a notification does, by the first rule matching it
     pub notification_rules: Vec<Rule>,
@@ -157,6 +170,9 @@ pub struct Config {
     pub night_light: NightLight,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
     pub pomodoro: Pomodoro,
+
+    // `hooks.*`: the commands run on an event (ADR 0055)
+    pub hooks: Commands,
 
     // `output."<name>"`: each output's overrides of the keys marked per output, by output name
     pub outputs: BTreeMap<String, Output>,
@@ -448,6 +464,9 @@ impl Default for Config {
             visualizer: Visualizer::default(),
             lock_backdrop: LockBackdrop::default(),
             privacy_indicators: true,
+            island_wheel: true,
+            device_events: true,
+            launcher_actions: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
                 lock: Some(Duration::from_secs(300)),
@@ -455,12 +474,14 @@ impl Default for Config {
                 suspend: None,
             },
             entrance: Entrance::default(),
+            notification_sound: false,
             notification_rules: Vec::new(),
             osd_layout: true,
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
             pomodoro: Pomodoro::default(),
+            hooks: Commands::default(),
             outputs: BTreeMap::new(),
         }
     }
@@ -808,6 +829,10 @@ pub enum Kind {
 
     // a list of notification rules, each a table; a layer replaces the list below
     Rules(Field<Vec<Rule>>),
+
+    // a command as a list of strings, the program first, run without a shell (`hooks`); an empty
+    // list is none, and a layer replaces the list below
+    Argv(Field<Vec<String>>),
 }
 
 impl Kind {
@@ -928,6 +953,16 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::Argv(field) => {
+                let mut argv = hooks::argv(value)?;
+
+                // no shell is run, so only the program's own `~/` is expanded
+                if let Some(program) = argv.first_mut() {
+                    *program = expand(program, home);
+                }
+
+                (field.set)(config, argv);
+            }
         }
 
         Ok(())
@@ -952,7 +987,7 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
             Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
-            Kind::DesktopIds(field) | Kind::Paths(field) => {
+            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
             Kind::AppIds(field) => Value::Table(
@@ -998,6 +1033,7 @@ impl Kind {
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
+            Kind::Argv(field) => field.copy(from, to),
         }
     }
 
@@ -1370,6 +1406,32 @@ pub const ISLAND: &[Setting] = &[
         per_output: false,
     },
     Setting {
+        key: "island.wheel",
+        label: "Wheel sets the volume",
+        help: "the wheel over the Island sets the volume while it shows Media or the volume; over anything else it does nothing",
+        hint: Some("Scroll over the Island to set the volume"),
+        kind: Kind::Switch(Field {
+            get: |config| config.island_wheel,
+            set: |config, on| config.island_wheel = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "island.device_events",
+        label: "Device events",
+        help: "a Bluetooth device connecting or going, the charger plugged in or out, a new sound output and a Wi-Fi network joined show on the Island for a moment, each while its Module is on",
+        hint: Some("Show a device connecting or a charger plugged in"),
+        kind: Kind::Switch(Field {
+            get: |config| config.device_events,
+            set: |config, on| config.device_events = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
         key: "rest.clock",
         label: "Clock at Rest",
         help: "an idle Island shows the time; with it and the battery off, the Island hides as it does with autohide",
@@ -1437,7 +1499,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "privacy.indicators",
         label: "Capture indicators",
-        help: "dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls; not shown over a fullscreen window",
+        help: "dots at the Island's trailing end while a microphone, camera or screen cast is in use, and the apps named in Controls, with whether a cast captures a window or a screen; not shown over a fullscreen window",
         hint: Some("Mark a microphone, camera or screen cast in use"),
         kind: Kind::Switch(Field {
             get: |config| config.privacy_indicators,
@@ -1481,21 +1543,36 @@ pub const ISLAND: &[Setting] = &[
     },
 ];
 
-pub const NOTIFICATIONS: &[Setting] = &[Setting {
-    key: "notifications.rules",
-    label: "Notification rules",
-    help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, bypass_dnd, timeout (ms) and urgency; file only",
-    hint: None,
-    kind: Kind::Rules(Field {
-        get: |config| config.notification_rules.clone(),
-        set: |config, rules| config.notification_rules = rules,
-    }),
-    example: Some(
-        "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
-    ),
-    restart: false,
-    per_output: false,
-}];
+pub const NOTIFICATIONS: &[Setting] = &[
+    Setting {
+        key: "notifications.sound",
+        label: "Notification sounds",
+        help: "a notification arriving plays the sound it names, else a default, through pw-play or canberra-gtk-play; never under Do Not Disturb",
+        hint: Some("Play a sound for each notification"),
+        kind: Kind::Switch(Field {
+            get: |config| config.notification_sound,
+            set: |config, on| config.notification_sound = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "notifications.rules",
+        label: "Notification rules",
+        help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, sound, bypass_dnd, timeout (ms) and urgency; file only",
+        hint: None,
+        kind: Kind::Rules(Field {
+            get: |config| config.notification_rules.clone(),
+            set: |config, rules| config.notification_rules = rules,
+        }),
+        example: Some(
+            "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
+        ),
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const OSD: &[Setting] = &[Setting {
     key: "osd.layout",
@@ -1871,6 +1948,20 @@ pub const MEDIA: &[Setting] = &[Setting {
             set: |config, name| config.visualizer = Visualizer::named(name),
         },
     ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
+pub const LAUNCHER: &[Setting] = &[Setting {
+    key: "launcher.actions",
+    label: "App actions",
+    help: "an app's own actions, like a browser's New Private Window, are rows of the Launcher once two letters are typed",
+    hint: Some("List an app's own actions in the Launcher"),
+    kind: Kind::Switch(Field {
+        get: |config| config.launcher_actions,
+        set: |config, on| config.launcher_actions = on,
+    }),
     example: None,
     restart: false,
     per_output: false,
@@ -2821,8 +2912,107 @@ fn migrate(table: &mut Table, migrations: &[Migration]) -> Result<(), (usize, St
     Ok(())
 }
 
-fn settings() -> impl Iterator<Item = &'static Setting> {
+pub fn settings() -> impl Iterator<Item = &'static Setting> {
     modules::ALL.iter().flat_map(|module| module.settings)
+}
+
+// the setting a dotted key names, or why none does
+pub fn setting(key: &str) -> Result<&'static Setting, String> {
+    settings()
+        .find(|setting| setting.key == key)
+        .ok_or_else(|| unknown(key, key, false))
+}
+
+// `unknown key`, with the nearest key or section when one is close, as `shown` names it
+fn unknown(shown: &str, path: &str, per_output: bool) -> String {
+    let known = settings().filter(|setting| !per_output || setting.per_output);
+    let candidates = known.flat_map(|setting| {
+        setting
+            .key
+            .match_indices('.')
+            .map(|(at, _)| &setting.key[..at])
+            .chain([setting.key])
+    });
+    let limit = (path.len() / 4).clamp(1, 2);
+
+    match candidates
+        .map(|candidate| (distance(path, candidate), candidate))
+        .filter(|&(distance, _)| (1..=limit).contains(&distance))
+        .min_by_key(|&(distance, _)| distance)
+    {
+        Some((_, near)) => format!("unknown key {shown}, did you mean {near}?"),
+        None => format!("unknown key {shown}"),
+    }
+}
+
+// how many single-character edits turn `from` into `to`
+fn distance(from: &str, to: &str) -> usize {
+    let to: Vec<char> = to.chars().collect();
+    let mut row: Vec<usize> = (0..=to.len()).collect();
+
+    for (at, from) in from.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = at + 1;
+
+        for (to_at, &to) in to.iter().enumerate() {
+            let above = row[to_at + 1];
+
+            row[to_at + 1] = (diagonal + usize::from(from != to))
+                .min(above + 1)
+                .min(row[to_at] + 1);
+            diagonal = above;
+        }
+    }
+
+    row[to.len()]
+}
+
+/*
+ * the files that set a key and apply, in layer order, the last of which gives its value; none when
+ * the defaults do. A file that does not read whole is `layers`' to report
+ */
+pub fn origin(setting: &Setting) -> Vec<PathBuf> {
+    let home = env::var("HOME").ok();
+    let mut config = Config::default();
+    let mut origin = Vec::new();
+
+    for path in files(home.as_deref(), true, &mut Vec::new()) {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+
+        if let Ok(table) = settings_table(&text)
+            && let Some(value) = setting
+                .key
+                .split('.')
+                .try_fold(&Value::Table(table), |value, key| value.get(key))
+        {
+            let nested = setting
+                .key
+                .split('.')
+                .rev()
+                .fold(value.clone(), |inner, key| {
+                    Value::Table(toml::Table::from_iter([(key.to_owned(), inner)]))
+                });
+
+            if let Value::Table(nested) = nested
+                && apply_table(&mut config.clone(), &nested).is_empty()
+            {
+                origin.push(path.clone());
+            }
+        }
+
+        layer(&mut config, &text, MIGRATIONS, home.as_deref());
+    }
+
+    origin
+}
+
+// what a file alone would not apply, as `(line, what)`; the file is no layer, so it is read over the defaults
+pub fn check(text: &str) -> Vec<(usize, String)> {
+    let home = env::var("HOME").ok();
+
+    layer(&mut Config::default(), text, MIGRATIONS, home.as_deref())
 }
 
 // the keys a table may set: any, or for an output the keys marked per output, noting each it sets
@@ -2910,7 +3100,10 @@ fn apply(
                     problems.push((entry.line, format!("{shown}: expected a table")));
                 }
             },
-            None => problems.push((entry.line, format!("unknown key {shown}"))),
+            None => problems.push((
+                entry.line,
+                unknown(&shown, &path, matches!(scope, Scope::Output { .. })),
+            )),
         }
     }
 }
@@ -3145,6 +3338,8 @@ mod tests {
                 "island.height",
                 "island.autohide",
                 "island.reserve",
+                "island.wheel",
+                "island.device_events",
                 "rest.clock",
                 "rest.battery",
                 "rest.peek.battery",
@@ -3172,10 +3367,12 @@ mod tests {
                 "timer.pomodoro.rounds",
                 "live.stale",
                 "osd.layout",
+                "notifications.sound",
                 "notifications.rules",
                 "wallpaper.directory",
                 "wallpaper.transition",
                 "wallpaper.transition_duration",
+                "launcher.actions",
                 "calendar.paths",
                 "calendar.reminder",
                 "weather.location",
@@ -3190,6 +3387,14 @@ mod tests {
                 "idle.lock",
                 "idle.screen_off",
                 "idle.suspend",
+                "hooks.lock",
+                "hooks.unlock",
+                "hooks.wallpaper",
+                "hooks.tone",
+                "hooks.charger",
+                "hooks.suspend",
+                "hooks.resume",
+                "hooks.timeout",
             ]
         );
         assert_eq!(
@@ -3526,6 +3731,23 @@ battery = false
                 (14, "modules.island: the core module cannot be turned off"),
                 (15, "unknown module modules.teleport"),
                 (16, "modules.media: expected true or false"),
+            ])
+        );
+    }
+
+    // a typo names the key it is close to, in a section or per output; one far from any names none
+    #[test]
+    fn an_unknown_key_names_the_nearest() {
+        let text = "clok = \"12h\"\n[timings]\nhovr = 300\n[output.\"eDP-1\"]\nclok = \"12h\"\nteleport = 1";
+        let (_, problems) = one(text);
+
+        assert_eq!(
+            problems,
+            said(&[
+                (1, "unknown key clok, did you mean clock?"),
+                (3, "unknown key timings.hovr, did you mean timings.hover?"),
+                (5, "unknown key output.eDP-1.clok, did you mean clock?"),
+                (6, "unknown key output.eDP-1.teleport"),
             ])
         );
     }

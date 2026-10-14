@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use crate::graphics::image::Bitmap;
-use crate::graphics::{Area, BezierPath, Cap, Color, Gradient, Renderer, Transform};
+use crate::graphics::{Area, BezierPath, Cap, Color, Corners, Gradient, Renderer, Transform};
 
 use super::Command;
 
 impl Renderer {
-    pub fn rectangle(&mut self, area: Area, color: Color, radius: f32) {
+    pub fn rectangle(&mut self, area: Area, color: Color, radius: impl Into<Corners>) {
         /*
          * an invisible fill still counts as drawing, and one before a shader
          * makes the gpu run a whole extra drawing pass each frame
@@ -21,13 +21,13 @@ impl Renderer {
 
         self.commands.push(Command::Rectangle {
             area,
-            radius,
+            radius: radius.into(),
             transform: self.transform,
             color,
         });
     }
 
-    pub fn border(&mut self, area: Area, radius: f32, thickness: f32, color: Color) {
+    pub fn border(&mut self, area: Area, radius: impl Into<Corners>, thickness: f32, color: Color) {
         // a zero width line would still draw as a hairline
         if thickness == 0.0 || color.a == 0 {
             return;
@@ -39,7 +39,7 @@ impl Renderer {
 
         self.commands.push(Command::Border {
             area,
-            radius,
+            radius: radius.into(),
             thickness,
             transform: self.transform,
             color,
@@ -47,8 +47,8 @@ impl Renderer {
     }
 
     // the gradient spreads across the rectangle, not the whole window
-    pub fn gradient(&mut self, area: Area, gradient: &Gradient, radius: f32) {
-        let Some(path) = area.trace(radius) else {
+    pub fn gradient(&mut self, area: Area, gradient: &Gradient, radius: impl Into<Corners>) {
+        let Some(path) = area.trace(radius.into()) else {
             return;
         };
 
@@ -60,7 +60,13 @@ impl Renderer {
         });
     }
 
-    pub fn image(&mut self, area: Area, radius: f32, image: Arc<Bitmap>, placement: Area) {
+    pub fn image(
+        &mut self,
+        area: Area,
+        radius: impl Into<Corners>,
+        image: Arc<Bitmap>,
+        placement: Area,
+    ) {
         // an empty rectangle shows none of the image
         if area.width <= 0.0 || area.height <= 0.0 {
             return;
@@ -85,7 +91,7 @@ impl Renderer {
             image,
             transform,
             area,
-            radius,
+            radius: radius.into(),
             clip_transform: self.transform,
         });
     }

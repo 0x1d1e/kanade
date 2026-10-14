@@ -23,15 +23,22 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
+## Device event
+A Bluetooth device connecting or going, the charger plugged in or out, the default sound output changing, or a Wi-Fi network joined, shown as a Transient Glance Activity on the focused output (the Detail is `Hardware`, posted under the Kind of its source: Bluetooth, Battery, Volume or Network). It shows a short title for Compact and a line for Peek, and nothing to press. `island.device_events` turns them off.
+- **Invariant:** each is told from a change a Module's own Service shows, so a Module that is off shows none. What a watcher first sees is a baseline, never an event, so starting the shell, a daemon or an adapter, or a battery or Wi-Fi device turning up, shows nothing; an adapter turned off disconnects its devices without news.
+- **Invariant:** one Activity per class, so a burst takes one place; the same event again within 10 s shows nothing.
+- **Avoid:** notification, toast
+
 ## Privacy cluster
-The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps; `privacy.indicators` turns it off.
+The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps and says whether a screen cast captures a window or a screen, never whose; `privacy.indicators` turns it off.
 - **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show. A Tray strip shows them past its last slot.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
 ## Banner
 A notification card on the focused output, hanging from the Island on its edge and side and clear of the Dock, in its own Top-layer window per monitor (ADRs 0007, 0023). It comes out of the Island and goes back into it, as `banners.entrance` says. The `banners` Module draws it over what `notifications` keeps: the bus, state and history stay there.
 - Low shows 4 s, normal 6 s, Critical until closed. The pointer on any Banner pauses every timer. At most `MOST` (`src/banners/stack.rs`) show, newest nearest the Island; the rest queue, Critical first.
-- A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
+- A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, play no sound, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
+- **Invariant:** a notification plays a sound only with `notifications.sound` on, only when new to the list (a replacement plays none), only if its rule and `suppress-sound` allow, and never under DND, a Critical one included. A sound is a helper (`pw-play`, else `canberra-gtk-play`) started without a shell, one at a time, for at most 5 s, from a `sound-file` hint that is an absolute existing regular file or a plain `sound-name`; Kanade links no audio library.
 - **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
 - **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
@@ -72,6 +79,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - Tray is Rest's own small form: the time's Peek (the time, with the battery as set, over the date, and the weather and next event as set), then the apps' tray items, raised by the hover delay and gone with the pointer, as a Peek is (ADR 0012). A slot is the item's own target: left activates it (an item that is only a menu shows its menu instead), middle is its secondary activation, the wheel scrolls it, right opens its menu.
 - Split is Compact while the Frame has a Satellite: one body in two segments, the primary leading and the top Satellite trailing. It follows the Frame, never input (ADR 0010).
 - A Peek shows one Activity, by identity: the one under the pointer, primary or top Satellite. It lasts while that Activity still shows on the island as either.
+- The wheel over an island showing Media or the volume (the Compact or Split segment, or the Peek, under the pointer) sets the speaker's level, 5% a line as the Surface's own bar does, and changes no Presentation. It does nothing for any other Activity or when `island.wheel` is off; at Rest, on the Tray or on a Surface it stays with what is there.
 - **Invariant:** a body is never larger than the largest (`island.width` by `island.height`), made smaller on an output with no room for it. A list Surface is as tall as its content asks, down to the Peek, never shrinking from under the pointer; the canvas never resizes during a morph (ADR 0030).
 - **Invariant:** `Expanded` always carries a Surface. There is no surface-less expanded form.
 - **Invariant:** which Surface opens is a pure function of (Presentation, the Activities shown, the segment under the pointer, request, the Surfaces withheld). No remembered last-used Surface: a click at Rest opens Controls.
@@ -83,6 +91,7 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 ## Surface
 Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Wallpapers | Keys | Session | Timer | Capture`.
 - Media, Notifications and Session are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface. A Session Activity is a restart, power off or log out counting down, or the sleep, hibernation or power off `battery.critical_action` counts down at a critical battery, a lock, sleep, restart, power off or log out that was refused or failed, or one logind never answered, which may still happen; the Session Surface opens by user action too, and shows a countdown but no refusal, so a refusal or no answer closes it.
+- Media's timeline is seekable only in the Surface, never in the Island's forms, and only for a player that says `CanSeek` and gives a track id and a length; a seek never leaves the track.
 - Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Timer and Capture have no Activity of their own Kind. They open only by user action; a click on a Reminder opens Calendar.
 - Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface`, `session`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is the runtime's build function)
@@ -96,12 +105,22 @@ A level inside a Surface, entered from one of its targets and left by a back con
 - **Avoid:** detail (an Activity's Detail), page, view
 
 ## LauncherProvider
-One kind of answer the Launcher finds for a query: apps, the calculator, emoji, destinations (Wi-Fi, Bluetooth, each Surface, Settings; anything after `@` is the Wallpapers destination). Each answer has a Fit, what its row shows, and its action: start an app, copy text, or open a Surface or Settings.
-- **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, emoji), then each provider's own.
+One kind of answer the Launcher finds for a query: apps, an app's own Desktop Actions (like New Private Window, from two letters, while `launcher.actions` is on), open windows (by title or app, from two letters, with the `windows` Module on), the calculator, emoji, destinations (Wi-Fi, Bluetooth, each Surface, Settings; anything after `@` is the Wallpapers destination). Each answer has a Fit, what its row shows, and its action: start an app or one of its actions, focus a window, copy text, or open a Surface or Settings.
+- **Invariant:** every provider ranks on one Fit scale, so their answers interleave; a tie keeps the provider order (calculator, apps, app actions, windows, destinations, emoji, clipboard history), then each provider's own.
+- **Invariant:** how often an app started (`launcher-usage`, bounded, counts halving at a cap) orders only apps that fit a query alike; it never lifts one over a better Fit, so an exact name always leads. With nothing typed, the last six started list first.
+- Window titles are asked of niri off the view thread each time the Launcher opens and held in the Launcher's memory; `windows` still holds ids only.
 - Emoji answer only a query starting with `:`, and apps answer none of those.
 - Kanade's own seam; no plugin API.
 - In a visit opened by `kanade dmenu`, the lines read from stdin are the only provider (choose mode); a press answers the waiting client instead of acting.
 - **Avoid:** plugin, source (a source posts to the island)
+
+## Hook
+A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume. The Module that owns the fact fires it.
+- **Invariant:** a hook never blocks a Service, a watcher or the draw thread; it runs as a bounded child that dies with Kanade, at most one per event at a time, and a fire while it runs is dropped.
+- **Invariant:** hooks are set in files, never through `kanade config set` or Settings. The payload is environment variables only; a failure logs the first line of the command's own error.
+- **Invariant:** a failing hook shows in `kanade status`, never as an Activity.
+- Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
+- **Avoid:** plugin, script event soup, subscription
 
 ## Reminder
 An Activity saying a calendar event is coming: its title and how long until it starts, or ends for an alarm on its end, with Open and Dismiss (ADR 0043). It comes from the event's own `VALARM`s that display or play a sound, or `calendar.reminder` minutes before a timed event with none. Persistent, Ongoing, Global, interrupting nothing; it goes 5 minutes after its event starts, an hour after it went off at most, or on Open or Dismiss.
@@ -133,17 +152,17 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 
 ## Running app
 One app's open windows, as `windows` groups them for the Dock: those whose `app_id` matches one desktop entry (ADR 0014). Windows that match none group by `app_id`; a window without one stands alone.
-- **Invariant:** nothing of niri leaves `windows` but window ids.
+- **Invariant:** nothing of niri leaves `windows` but window ids. A window's title is asked of niri each time the Dock's menu opens and lives only as long as the menu.
 - **Invariant:** an override in `windows.apps` is final: one naming a missing entry leaves the app unmatched, never guessed.
 - **Avoid:** client, toplevel, task, program
 
 ## Dock
-Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pinned apps (`dock.pinned`), then Running apps not pinned, a dot between each running one and the edge. A click launches an app without windows, else focuses its window, cycling while it has the focus. Icons sized by `dock.size` grow near the pointer (`dock.magnification`); an autohidden Dock comes out when the pointer touches the edge under it. It steps aside while the Island grows over it, as with a Surface open beside it. Where it shares the Island's edge and side, `dock.merge` joins them instead (ADR 0031): one window, one pane: the Dock a plate on the edge with the Island crowning it (`crown`), the Island the middle piece of its row (`keystone`), or the Dock folded into the Island and out under the pointer (`fold`).
+Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pinned apps (`dock.pinned`), then Running apps not pinned, a dot between each running one and the edge. A click launches an app without windows, else focuses its window, cycling while it has the focus. A right click opens the app's menu: pin or unpin, one row per open window (its title, most recently focused first where niri says when; Enter focuses it, its close target or Delete closes it), then the app's own actions. Files dragged onto an icon start that app with them, each as an argument of its own and never through a shell, when its `Exec` has a standing `%f`, `%F`, `%u` or `%U` and no `Path`; an app that takes one file at a time starts once per file, up to 8. Icons sized by `dock.size` grow near the pointer (`dock.magnification`); an autohidden Dock comes out when the pointer touches the edge under it. It steps aside while the Island grows over it, as with a Surface open beside it. Where it shares the Island's edge and side, `dock.merge` joins them instead (ADR 0031): one window, one pane: the Dock a plate on the edge with the Island crowning it (`crown`), the Island the middle piece of its row (`keystone`), or the Dock folded into the Island and out under the pointer (`fold`).
 - **Invariant:** app data only from `windows`; never reads `workspace` or raw niri objects, the niri source hands it the output names.
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text), paper (light, dark ink) (ADR 0051) or Liquid Glass (clear glass, the screen showing through, its edge reflecting what lies around it, light text) (ADR 0052). A merged Island and Dock are one pane with one outline (ADR 0031).
+One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text), paper (light, dark ink) (ADR 0051) or Liquid Glass (clear glass, the screen showing through, its edge reflecting what lies around it, light text that turns to dark ink over a bright page) (ADRs 0052, 0054). A merged Island and Dock are one pane with one outline (ADR 0031).
 - **Invariant:** tinted from the wallpaper's hue (a cool slate until Matugen answers), with text that suits its finish, whatever `appearance.tone` says; opaque, and nothing behind it read, except under Liquid Glass, the only finish that captures the screen, which stops when the finish changes or the session locks.
 - **Avoid:** frost, material (the choice is the finish), glass for anything but the Liquid Glass finish, layer (a `pane::layer` widget), surface (a Surface is the Island's)
 
@@ -161,6 +180,6 @@ A feature the user can turn off in `[modules]` of the config: `src/modules/catal
 - **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its verbs with `module <name> is off`. A Service only it reads stays cold.
 - **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
 - A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).
-- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable. The Night Light switch likewise belongs to `night-light`, and is unavailable without `wlsunset`. The Limit Charge switch belongs to `battery`, and shows only while UPower says the battery supports a charge limit.
+- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable. The Night Light switch likewise belongs to `night-light`, and is unavailable without `wlsunset`. The Limit Charge switch belongs to `battery`, and shows only while UPower says the battery supports a charge limit. `kanade wifi`, `bluetooth` and `power-profile` belong to `network`, `bluetooth` and `power`, and `media play-pause|next|previous` to `media`; each answers once the daemon or player has it as asked, or refuses saying why.
 - Which Modules run is decided once at start; a change takes a restart.
 - **Avoid:** plugin (not built), feature flag, Service (a `Service` is shared state a Module reads)

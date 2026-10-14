@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::{Button, Cursor, Scroll};
 
@@ -73,11 +74,15 @@ impl Pointer {
 
     // the innermost target under the pointer that has the handler asked for
     fn find_topmost(&self, has_handler: fn(&Target) -> bool) -> Option<usize> {
+        self.find_topmost_at(self.x, self.y, has_handler)
+    }
+
+    fn find_topmost_at(&self, x: f32, y: f32, has_handler: fn(&Target) -> bool) -> Option<usize> {
         let mut topmost = None;
 
         // children are collected after their parents, so the last match is the innermost
         for (index, target) in self.targets.iter().enumerate() {
-            if target.contains(self.x, self.y) && has_handler(target) {
+            if target.contains(x, y) && has_handler(target) {
                 topmost = Some(index);
             }
         }
@@ -256,6 +261,30 @@ impl Pointer {
         };
 
         handler(scroll);
+
+        true
+    }
+
+    // drop
+
+    // whether files let go at this spot would be taken; the offer's position is in window space
+    pub fn accepts_drop(&self, x: f32, y: f32) -> bool {
+        self.find_topmost_at(x, y, |target| target.handlers.drop.is_some())
+            .is_some()
+    }
+
+    // returns whether a handler ran
+    pub fn drop_files(&self, x: f32, y: f32, files: Vec<PathBuf>) -> bool {
+        let Some(index) = self.find_topmost_at(x, y, |target| target.handlers.drop.is_some())
+        else {
+            return false;
+        };
+
+        let Some(drop) = &self.targets[index].handlers.drop else {
+            return false;
+        };
+
+        drop(files);
 
         true
     }

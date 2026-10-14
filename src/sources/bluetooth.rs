@@ -18,7 +18,8 @@ use std::time::Duration;
 use crate::bus::{Argument, Bus, Value};
 use kanade_runtime::{MutexExt, service::Service};
 
-use super::system::{Radio, Watched};
+use super::system::{self, Radio, Switch, Watched};
+use crate::later::Later;
 use crate::supervise;
 
 mod agent;
@@ -330,11 +331,36 @@ fn device(path: &str, interfaces: &Value) -> Option<Device> {
     })
 }
 
+fn powered(adapter: &str) -> bool {
+    Bus::system()
+        .property(BLUEZ, adapter, ADAPTER, "Powered")
+        .bool()
+}
+
+fn set_powered(adapter: &str, on: bool) {
+    Bus::system().set_property(BLUEZ, adapter, ADAPTER, "Powered", Argument::from(on));
+}
+
 // BlueZ answers with the change, which `system::follow` reads back
 pub fn power(adapter: String, on: bool) {
-    thread::spawn(move || {
-        Bus::system().set_property(BLUEZ, &adapter, ADAPTER, "Powered", Argument::from(on));
-    });
+    thread::spawn(move || set_powered(&adapter, on));
+}
+
+// `kanade bluetooth`, answered once BlueZ has the adapter as asked
+pub fn request(switch: Switch, later: Later) {
+    later.unsettled("BlueZ got the call; Bluetooth may still have changed");
+
+    let adapter = Adapter::read().clone();
+    let (set, read) = (adapter.path.clone(), adapter.path.clone());
+
+    system::flip(
+        "no Bluetooth adapter, or BlueZ is not running",
+        switch,
+        adapter.radio,
+        move |on| set_powered(&set, on),
+        move || powered(&read),
+        later,
+    );
 }
 
 /*

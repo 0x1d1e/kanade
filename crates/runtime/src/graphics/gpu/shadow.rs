@@ -2,14 +2,14 @@ use vello::Scene;
 use vello::kurbo;
 use vello::peniko::{self, Compose, Fill, Mix};
 
-use crate::graphics::{Area, BezierPath, Color, Transform};
+use crate::graphics::{Area, BezierPath, Color, Corners, Transform};
 
 use super::convert::{affine, bezier, paint};
 
 pub(super) fn drop_shadow(
     scene: &mut Scene,
     area: Area,
-    radius: f32,
+    radius: Corners,
     transform: Transform,
     color: Color,
     blur: f32,
@@ -18,7 +18,7 @@ pub(super) fn drop_shadow(
         affine(transform),
         rounded(area),
         paint(color),
-        f64::from(radius),
+        f64::from(radius.largest()),
         deviation(blur),
     );
 }
@@ -27,7 +27,7 @@ pub(super) fn inner_shadow(
     scene: &mut Scene,
     clip: &BezierPath,
     hole: Area,
-    radius: f32,
+    radius: Corners,
     transform: Transform,
     color: Color,
     blur: f32,
@@ -48,7 +48,7 @@ pub(super) fn inner_shadow(
         transform,
         rounded(hole),
         peniko::Color::BLACK,
-        f64::from(radius),
+        f64::from(radius.largest()),
         deviation(blur),
     );
 

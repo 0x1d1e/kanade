@@ -23,7 +23,7 @@ mod pad;
 mod ring;
 mod search;
 pub mod session;
-mod slider;
+pub(crate) mod slider;
 pub mod timer;
 pub mod tray;
 mod visit;

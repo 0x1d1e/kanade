@@ -58,6 +58,10 @@ pub struct Request {
     /// ends short of it, as at the screen's edge, nothing is read.
     pub ring: Region,
 
+    /// Where the shader reads none of the copy, in the copy's logical pixels: inside the body's
+    /// outline and under other panes. A copy that differs from the held one only there is the same.
+    pub unread: Vec<Region>,
+
     /// Handed back with the copy it was asked for, to the rows of the shader's values.
     pub values: Vec<[f32; 4]>,
 }
@@ -252,7 +256,8 @@ pub(crate) fn arrived(spot: &Spot, request: &Request, width: u32, height: u32, r
     /*
      * a copy of a still screen is the one held: storing it again would redraw the readers, whose
      * next frame asks for another copy, round and round. The glass drawn at a copy's edge is itself
-     * in the next copy, off by a level or two each time, so a copy within `SAME` of the held one is it
+     * in the next copy, off by a level or two each time, so a copy within `SAME` of the held one is it.
+     * What the shader never reads, as the screen behind the body, may move all it likes
      */
     let same = backdrops.seen.get(spot).is_some_and(|seen| {
         (seen.light - light).abs() <= f32::from(SAME) / 255.0 && seen.values == request.values
@@ -263,11 +268,7 @@ pub(crate) fn arrived(spot: &Spot, request: &Request, width: u32, height: u32, r
             held.width == width
                 && held.height == height
                 && held.rgba.len() == rgba.len()
-                && held
-                    .rgba
-                    .iter()
-                    .zip(&rgba)
-                    .all(|(a, b)| a.abs_diff(*b) <= SAME)
+                && alike(&held.rgba, &rgba, width, height, request)
         });
 
     if same {
@@ -302,6 +303,47 @@ pub(crate) fn arrived(spot: &Spot, request: &Request, width: u32, height: u32, r
             since,
         },
     );
+}
+
+// whether two copies of a size are within `SAME` everywhere but where the request reads nothing
+fn alike(held: &[u8], rgba: &[u8], width: u32, height: u32, request: &Request) -> bool {
+    let scale = (
+        width as f32 / request.region.width,
+        height as f32 / request.region.height,
+    );
+
+    // in whole pixels, shrunk to the ones wholly inside
+    let skips: Vec<(usize, usize, usize, usize)> = request
+        .unread
+        .iter()
+        .map(|rect| {
+            let low = |at: f32, scale: f32| (at * scale).ceil().max(0.0) as usize;
+            let high = |at: f32, scale: f32| (at * scale).floor().max(0.0) as usize;
+
+            (
+                low(rect.x, scale.0),
+                high(rect.x + rect.width, scale.0),
+                low(rect.y, scale.1),
+                high(rect.y + rect.height, scale.1),
+            )
+        })
+        .collect();
+
+    (0..height as usize).all(|row| {
+        (0..width as usize).all(|column| {
+            let unread = skips.iter().any(|&(left, right, top, bottom)| {
+                (left..right).contains(&column) && (top..bottom).contains(&row)
+            });
+
+            let at = (row * width as usize + column) * 4;
+
+            unread
+                || held[at..at + 4]
+                    .iter()
+                    .zip(&rgba[at..at + 4])
+                    .all(|(a, b)| a.abs_diff(*b) <= SAME)
+        })
+    })
 }
 
 // a pane's copy dropped, as it is let go or its output is gone
@@ -401,6 +443,7 @@ mod tests {
         Request {
             region,
             ring,
+            unread: Vec::new(),
             values: Vec::new(),
         }
     }
@@ -487,6 +530,44 @@ mod tests {
 
         cleared(|dropped| *dropped == spot);
         assert!(pixels(&spot).is_none());
+    }
+
+    // the screen behind the body is never read, so it may change without a copy being news
+    #[test]
+    fn a_copy_that_differs_only_where_nothing_is_read_is_the_same() {
+        let spot = Spot::new("test-output", "unread-copy");
+        let ring = Region {
+            x: 5.0,
+            y: 5.0,
+            width: 30.0,
+            height: 30.0,
+        };
+
+        let mut asked = request(REGION, ring);
+
+        asked.unread.push(Region {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+        });
+
+        arrived(&spot, &asked, 40, 40, gray(100));
+        let first = pixels(&spot).expect("the copy is held").generation;
+
+        let mut inside = gray(100);
+        inside[(20 * 40 + 20) * 4..][..3].fill(250);
+
+        arrived(&spot, &asked, 40, 40, inside);
+        assert_eq!(pixels(&spot).unwrap().generation, first);
+
+        let mut outside = gray(100);
+        outside[(5 * 40 + 20) * 4..][..3].fill(250);
+
+        arrived(&spot, &asked, 40, 40, outside);
+        assert!(pixels(&spot).unwrap().generation > first);
+
+        cleared(|dropped| *dropped == spot);
     }
 
     // a copy redraws the windows that read its pane, as they would not have seen it, and no other

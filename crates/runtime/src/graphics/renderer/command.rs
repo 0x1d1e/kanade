@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ttf_parser::Face;
 
 use crate::backdrop::Spot;
-use crate::graphics::{Area, BezierPath, Cap, Color, Gradient, Transform};
+use crate::graphics::{Area, BezierPath, Cap, Color, Corners, Gradient, Transform};
 
 pub enum Command {
     // one letter as a picture, at a whole device pixel; x and y are where its baseline starts
@@ -21,7 +21,7 @@ pub enum Command {
     // a rounded rectangle, kept as one so the gpu can draw it without tracing its outline
     Rectangle {
         area: Area,
-        radius: f32,
+        radius: Corners,
         transform: Transform,
         color: Color,
     },
@@ -29,7 +29,7 @@ pub enum Command {
     // a line along the inside edge of a rounded rectangle
     Border {
         area: Area,
-        radius: f32,
+        radius: Corners,
         thickness: f32,
         transform: Transform,
         color: Color,
@@ -63,14 +63,14 @@ pub enum Command {
         image: Arc<Bitmap>,
         transform: Transform,
         area: Area,
-        radius: f32,
+        radius: Corners,
         clip_transform: Transform,
     },
 
     // a soft copy of the rounded rectangle, blur is in logical pixels
     Shadow {
         area: Area,
-        radius: f32,
+        radius: Corners,
         transform: Transform,
         color: Color,
         blur: f32,
@@ -80,7 +80,7 @@ pub enum Command {
     InnerShadow {
         clip: BezierPath,
         hole: Area,
-        radius: f32,
+        radius: Corners,
         transform: Transform,
         color: Color,
         blur: f32,
@@ -112,7 +112,7 @@ pub enum Command {
     // commands that only show inside the rounded rectangle
     Clip {
         area: Area,
-        radius: f32,
+        radius: Corners,
         transform: Transform,
         commands: Vec<Command>,
     },

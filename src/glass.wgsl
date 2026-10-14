@@ -10,19 +10,23 @@
 //   values[10] and [11]: two other panes on the copy, x, y, width and height in its pixels, which
 //     are read as none of what lies around this one
 //   values[12].x: how far out the edge reads at most, in pixels; 0 when no copy can fill this pane
+//   values[13].x: how black the glass is under the body, 0 to 1, over a fairly bright page
 // It never reads the clock, so a body at rest draws no frames of its own.
 //
 // This is the final pass of liquid-glass-studio (src/shaders-wgsl/fragment-main.wgsl) at its default
-// values: the Snell edge profile over 20 px, per-channel dispersion, Fresnel and glare in LCH, no
-// tint, and a refraction distance of 2% of the output's height. A copy of the screen holds the
+// values: the Snell edge profile over 20 px (less on a small body), per-channel dispersion, Fresnel
+// (in the hue of what the edge reflects) and glare in LCH, no tint, and a refraction distance of 2%
+// of the output's height; hyprglass's faint shade inside the bottom edge is added. A copy of the screen holds the
 // pane itself, so what lies under the body cannot be read: where the studio reads inward, the edge
 // here reads the screen just outside the outline, along the same profile. The middle is not drawn:
 // the compositor shows the screen through it.
 
 const PI = 3.14159265359;
 
-// the studio's defaults
+// the studio's defaults, but for the edge's thickness, which is its at most
 const THICKNESS = 20.0;
+const THIN = 8.0;
+const THIN_SHARE = 0.35;
 const FACTOR = 1.4;
 const DISPERSION = 1.0;
 const N_R = 0.98;
@@ -30,6 +34,7 @@ const N_B = 1.02;
 const FRESNEL_RANGE = 30.0;
 const FRESNEL_HARDNESS = 0.2;
 const FRESNEL_FACTOR = 0.2;
+const FRESNEL_TINT = 0.5;
 const GLARE_RANGE = 30.0;
 const GLARE_HARDNESS = 0.2;
 const GLARE_FACTOR = 0.9;
@@ -37,11 +42,25 @@ const GLARE_CONVERGENCE = 0.5;
 const GLARE_OPPOSITE = 0.8;
 const GLARE_ANGLE = -0.78539816339;
 
-// signed distance to a rounded rectangle centered on 0, negative inside
+// the shade just inside the bottom edge, as hyprglass has it, at most this opaque
+const SHADE = 0.06;
+
+// how squarely a corner is drawn: the exponent of its norm, 2 being a circle's arc. A corner is a
+// squircle's, as the system's rounded shapes are, until its radius takes the short side, when it is
+// a pill's round cap
+const SQUIRCLE = 4.0;
+
+// distance, not exact, to a rounded rectangle centered on 0, negative inside. The corners are
+// squircles, so a body is a hair fuller there than a circle of the same radius (content clipped to
+// the circle stays inside)
 fn rounded(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
     let q = abs(p) - half + vec2<f32>(r, r);
+    let out = max(q, vec2<f32>(0.0, 0.0));
 
-    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+    let n = mix(SQUIRCLE, 2.0, smoothstep(0.6, 1.0, r / max(min(half.x, half.y), 1e-4)));
+    let norm = pow(pow(out.x, n) + pow(out.y, n), 1.0 / n);
+
+    return norm + min(max(q.x, q.y), 0.0) - r;
 }
 
 // the pull of the smooth minimum of two distances: the edges meet in a fillet, not a crease
@@ -160,13 +179,21 @@ fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(rgb, a);
 }
 
-// the studio's Snell edge profile: how far the edge reads, 0 to 1 at the edge, 0 from `THICKNESS` in
+// how thick the edge is: the studio's 20 px, less on a body too small to carry it, as the Island at
+// rest, so its middle is not all edge
+fn thickness() -> f32 {
+    return clamp(THIN_SHARE * min(size.x, size.y), THIN, THICKNESS);
+}
+
+// the studio's Snell edge profile: how far the edge reads, 0 to 1 at the edge, 0 from `thickness()` in
 fn profile(depth: f32) -> f32 {
-    if depth >= THICKNESS {
+    let thick = thickness();
+
+    if depth >= thick {
         return 0.0;
     }
 
-    let x = clamp(1.0 - depth / THICKNESS, 0.0, 1.0);
+    let x = clamp(1.0 - depth / thick, 0.0, 1.0);
     let incident = asin(clamp(x * x, -1.0, 1.0));
     let transmitted = asin(clamp(sin(incident) / FACTOR, -1.0, 1.0));
 
@@ -258,16 +285,20 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     ) + vec2<f32>(1e-5, 1e-5));
     let up = vec2<f32>(n.x, -n.y);
 
-    var glass = vec4<f32>(0.0);
+    // the scrim under the edge, which the pane's light ink wants over a page growing bright
+    var glass = vec4<f32>(0.0, 0.0, 0.0, values[13].x);
 
     if values[12].x > 0.5 {
-        glass = lens(uv);
+        glass = over(lens(uv), glass);
     }
 
-    // the Fresnel lift: the edge toward white
+    // the Fresnel lift: the edge toward white, in the hue of what it reflects where it reflects any
     let fresnel = clamp(pow(max(1.0 + d / 1500.0 * pow(500.0 / FRESNEL_RANGE, 2.0) + FRESNEL_HARDNESS, 0.0), 5.0), 0.0, 1.0);
 
-    glass = over(vec4<f32>(1.0, 1.0, 1.0, fresnel * FRESNEL_FACTOR * 0.7), glass);
+    let top = max(max(glass.r, glass.g), glass.b);
+    let hue = select(vec3<f32>(1.0), glass.rgb / max(top, 1e-3), glass.a > 0.0 && top > 0.02);
+
+    glass = over(vec4<f32>(mix(vec3<f32>(1.0), hue, FRESNEL_TINT), fresnel * FRESNEL_FACTOR * 0.7), glass);
 
     // the glare: two lobes on opposite corners, in the color of what the edge reflects, lifted
     let geo = clamp(pow(max(1.0 + d / 1500.0 * pow(500.0 / GLARE_RANGE, 2.0) + GLARE_HARDNESS, 0.0), 5.0), 0.0, 1.0);
@@ -287,6 +318,12 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     lifted.y += 30.0 * lobe * geo;
 
     glass = over(vec4<f32>(clamp(lch_to_srgb(lifted), vec3<f32>(0.0), vec3<f32>(1.0)), lobe * geo), glass);
+
+    // the shade inside the bottom edge, which the light does not reach
+    let near = clamp(1.0 + d / thickness(), 0.0, 1.0);
+    let below = clamp(n.y, 0.0, 1.0);
+
+    glass = over(vec4<f32>(0.0, 0.0, 0.0, SHADE * near * near * below * below), glass);
 
     return vec4<f32>(glass.rgb, glass.a * covered);
 }

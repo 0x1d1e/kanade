@@ -1,4 +1,6 @@
+pub(crate) mod dropped;
 pub mod focus;
+pub mod paste;
 mod pointer;
 mod target;
 
@@ -46,8 +48,27 @@ pub enum Key {
 
     End,
 
+    Delete,
+
+    PageUp,
+
+    PageDown,
+
     // a key the runtime has no name for yet
     Other,
+}
+
+// the modifier keys held while a key goes down; only a focused text input is given them
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Modifiers {
+    pub shift: bool,
+
+    pub ctrl: bool,
+
+    pub alt: bool,
+
+    // the super or windows key
+    pub logo: bool,
 }
 
 // where the pointer is, measured from a widget's top-left corner

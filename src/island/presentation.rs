@@ -183,7 +183,8 @@ pub enum Input {
     RightClick(Segment),
 
     // routed but meaning nothing yet: the wheel belongs to the Surface under it; positive
-    // scrolls down
+    // scrolls down. The view sets the speaker's level with it over Media or the volume
+    // (`IslandService::pointed`), which changes no Presentation
     Wheel(f32),
 
     // IPC or keybind asking for a Surface
@@ -339,6 +340,21 @@ impl Presentations {
             Some(Raised::Peek(id)) => Some(id),
             _ => None,
         }
+    }
+
+    /*
+     * the Activity a pointer on `segment` of this island is over, as a click would open its
+     * Surface: none at Rest, on the Tray, on a Surface or in the overview
+     */
+    pub fn under(&self, monitor: &str, segment: Segment) -> Option<&Id> {
+        if self.overview {
+            return None;
+        }
+
+        self.islands
+            .get(monitor)
+            .unwrap_or(&self.untouched)
+            .under(segment)
     }
 
     // what every untouched island shows
@@ -661,6 +677,30 @@ mod tests {
         // the last item gone, the strip keeps the time
         presentations.set_tray(0);
         assert_eq!(presentations.get(MONITOR), Presentation::Tray(0));
+    }
+
+    // the wheel's level goes to the Activity the pointer is over, never one it is not
+    #[test]
+    fn the_pointer_is_over_the_segment_it_is_on_and_nothing_at_rest_or_on_a_surface() {
+        let mut presentations = Presentations::default();
+        assert_eq!(presentations.under(MONITOR, Primary), None);
+
+        presentations.set_shown(MONITOR, Some(id(Kind::Media)), Some(id(Kind::Battery)));
+        assert_eq!(
+            presentations.under(MONITOR, Primary),
+            Some(&id(Kind::Media))
+        );
+        assert_eq!(
+            presentations.under(MONITOR, Segment::Satellite),
+            Some(&id(Kind::Battery))
+        );
+
+        presentations.input(MONITOR, Input::Open(Controls));
+        assert_eq!(presentations.under(MONITOR, Primary), None);
+
+        presentations.input(MONITOR, Input::Collapse);
+        presentations.set_overview(true);
+        assert_eq!(presentations.under(MONITOR, Primary), None);
     }
 
     #[test]

@@ -39,7 +39,7 @@ use zbus::zvariant::OwnedValue;
 use super::caffeine::{self, HELD, INHIBIT, READY};
 use super::wake::{self, SETPRIV};
 use crate::backoff::Backoff;
-use crate::{lock, supervise};
+use crate::{hooks, lock, supervise};
 
 const LOGIND: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
@@ -286,9 +286,20 @@ fn run() -> Result<Infallible, String> {
                     eprintln!("kanade: no delay inhibitor, so sleep may come before the lock");
                 }
 
+                // started before the lock is asked, which it never waits on
+                let hook = hooks::fire(hooks::Event::Suspend);
+                let asked = Instant::now();
+
                 match lock::hold(patience) {
                     Ok(()) => eprintln!("kanade: locked before sleep"),
                     Err(why) => eprintln!("kanade: did not lock before sleep: {why}"),
+                }
+
+                // sleep waits for the hook only as long as logind's delay allows
+                if let Some(hook) = hook
+                    && !hook.wait(patience.saturating_sub(asked.elapsed()))
+                {
+                    eprintln!("kanade: the suspend hook still runs as the machine sleeps");
                 }
 
                 delay = None;
@@ -296,7 +307,9 @@ fn run() -> Result<Infallible, String> {
             }
             // also said when a sleep failed, or never began here
             Event::Sleep(false) => {
-                asleep = false;
+                if std::mem::replace(&mut asleep, false) {
+                    hooks::fire(hooks::Event::Resume);
+                }
 
                 if delay.is_none() {
                     retry = Retry::now(Instant::now());

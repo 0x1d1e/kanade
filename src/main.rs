@@ -12,6 +12,7 @@ mod cluster;
 mod config;
 mod dock;
 mod doctor;
+mod hooks;
 mod icon;
 mod idle;
 mod ipc;

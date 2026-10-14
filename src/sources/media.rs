@@ -27,6 +27,7 @@ use crate::island::activity::{
 use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
+use crate::later::Later;
 use crate::supervise;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
@@ -112,6 +113,10 @@ struct Player {
     can_pause: bool,
     can_previous: bool,
     can_next: bool,
+
+    // what SetPosition names the track by, when it is a path D-Bus takes
+    track_id: Option<String>,
+    can_seek: bool,
 }
 
 impl Player {
@@ -129,6 +134,9 @@ impl Player {
             "Paused" => Status::Paused,
             _ => Status::Stopped,
         };
+
+        let length = micros(metadata.get("mpris:length"));
+        let track_id = object_path(metadata.get("mpris:trackid").text());
 
         Player {
             owner: owner.to_owned(),
@@ -148,7 +156,7 @@ impl Player {
             timeline: Timeline {
                 position: micros(properties.get("Position")),
                 at,
-                length: micros(metadata.get("mpris:length")),
+                length,
 
                 // a player without Rate plays at normal speed
                 rate: match (status, properties.get("Rate")) {
@@ -163,6 +171,13 @@ impl Player {
             can_pause: able("CanControl") && able("CanPause"),
             can_previous: able("CanControl") && able("CanGoPrevious"),
             can_next: able("CanControl") && able("CanGoNext"),
+
+            // a stream of unknown length has no place to seek to
+            can_seek: able("CanControl")
+                && able("CanSeek")
+                && !length.is_zero()
+                && track_id.is_some(),
+            track_id,
         }
     }
 }
@@ -259,7 +274,6 @@ impl Seen {
 }
 
 // what the bus says, as far as the island cares
-#[derive(Debug, PartialEq)]
 enum Event {
     // a player opened, or closed when it has no owner
     Owner { name: String, owner: Option<String> },
@@ -272,6 +286,31 @@ enum Event {
 
     // pressed on the Media Surface
     Control(Control),
+
+    // `kanade media`, answered once the player has been asked
+    Transport(Transport, Later),
+
+    // a place on the timeline asked for, left in `SEEK`
+    Seek,
+}
+
+// what `kanade media` asks of the player the island follows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    PlayPause,
+    Next,
+    Previous,
+}
+
+impl Transport {
+    pub fn parse(arguments: &[&str]) -> Option<Transport> {
+        match arguments {
+            ["play-pause"] => Some(Transport::PlayPause),
+            ["next"] => Some(Transport::Next),
+            ["previous"] => Some(Transport::Previous),
+            _ => None,
+        }
+    }
 }
 
 // what the Media Surface asks of a player, by its bus name
@@ -287,6 +326,9 @@ pub enum Control {
 
     // turn the player chips to this page until the Surface closes, the shown player unchanged
     Page(usize),
+
+    // move the player this many seconds, back when negative, as the timeline's keys ask
+    SeekBy(String, i64),
 }
 
 impl Event {
@@ -486,6 +528,7 @@ impl Watcher {
                 can_pause: player.can_pause,
                 can_previous: player.can_previous,
                 can_next: player.can_next,
+                can_seek: player.can_seek,
             }
         });
 
@@ -545,6 +588,9 @@ impl Watcher {
                 self.page = Some(page);
                 None
             }
+
+            // asked of the bus by the follower, which knows where the player is
+            Control::SeekBy(..) => None,
         }
     }
 
@@ -570,6 +616,32 @@ pub fn watch() {
 // a press on the Media Surface; the bus call happens on the follower, never in the view
 pub fn control(control: Control) {
     send(Event::Control(control));
+}
+
+// `kanade media play-pause|next|previous`; the follower asks the player and answers `later`
+pub fn request(transport: Transport, later: Later) {
+    later.unsettled("the player got the call; it may still have acted");
+
+    match FEED.get() {
+        Some(feed)
+            if feed
+                .send
+                .send(Event::Transport(transport, later.clone()))
+                .is_ok() => {}
+        _ => later.refused("no session bus, so no media player to ask"),
+    }
+}
+
+/*
+ * the place a press or drag along the timeline asked for, and whose player. A drag asks on every
+ * move, so only the newest waits here and the follower seeks once per look
+ */
+static SEEK: Mutex<Option<(String, Duration)>> = Mutex::new(None);
+
+// seeks `name` to `to`; as `control`, the bus is called on the follower
+pub fn seek(name: String, to: Duration) {
+    *SEEK.locked() = Some((name, to));
+    send(Event::Seek);
 }
 
 fn send(event: Event) {
@@ -663,6 +735,17 @@ fn follow_players(
             }
             Ok(Event::Watch) => {}
             Ok(Event::Control(control)) => {
+                if let Control::SeekBy(name, seconds) = &control {
+                    let by = |player: &Player| player.timeline.shifted(*seconds, Instant::now());
+
+                    if let Some(to) = players.open.get(name).map(by) {
+                        set_position(bus, players, name, to);
+                        refresh(bus, players, name);
+                    }
+
+                    continue;
+                }
+
                 let Some((method, name)) = watcher.take(control) else {
                     continue;
                 };
@@ -670,6 +753,18 @@ fn follow_players(
                 // the player announces what changed, read back here too for an answer this frame
                 bus.call(&name, PATH, PLAYER, method, &[]);
                 refresh(bus, players, &name);
+            }
+            Ok(Event::Transport(transport, later)) => {
+                later.result(transport_call(bus, players, transport));
+            }
+            Ok(Event::Seek) => {
+                // only the latest place asked for: a drag asks far faster than a player can seek
+                let asked = SEEK.locked().take();
+
+                if let Some((name, to)) = asked {
+                    set_position(bus, players, &name, to);
+                    refresh(bus, players, &name);
+                }
             }
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(name) = watcher.poll(players, watching(), Instant::now()) {
@@ -683,6 +778,33 @@ fn follow_players(
             }
         }
     }
+}
+
+/*
+ * asks the player the island follows, the one playing or else the last shown, to play or pause, or
+ * to skip; refused when none is open or it says it cannot
+ */
+fn transport_call(bus: Bus, players: &mut Players, transport: Transport) -> Result<String, String> {
+    let Some(Seen { key: name, .. }) = players.choose() else {
+        return Err(String::from("no media player is open"));
+    };
+
+    let player = &players.open[&name];
+
+    let (method, able) = match transport {
+        Transport::PlayPause => ("PlayPause", player.can_play || player.can_pause),
+        Transport::Next => ("Next", player.can_next),
+        Transport::Previous => ("Previous", player.can_previous),
+    };
+
+    if !able {
+        return Err(format!("{} cannot do that now", player.identity));
+    }
+
+    bus.call(&name, PATH, PLAYER, method, &[]);
+    refresh(bus, players, &name);
+
+    Ok(String::new())
 }
 
 // watched before the first look, so a player opening in between is not missed
@@ -796,6 +918,50 @@ fn refresh(bus: Bus, players: &mut Players, name: &str) {
     players.open.insert(name.to_owned(), player);
 }
 
+/*
+ * moves a player that can seek to `to`, kept within its track: past the end a player does nothing,
+ * or skips on. The track is named by the player's own id, so a seek meant for a track since
+ * replaced is ignored by it
+ */
+fn set_position(bus: Bus, players: &Players, name: &str, to: Duration) {
+    let Some(player) = players.open.get(name).filter(|player| player.can_seek) else {
+        return;
+    };
+    let Some(track) = player.track_id.clone() else {
+        return;
+    };
+
+    let to = to.min(player.timeline.length);
+    let micros = i64::try_from(to.as_micros()).unwrap_or(i64::MAX);
+
+    bus.call(
+        name,
+        PATH,
+        PLAYER,
+        "SetPosition",
+        &[Argument::Path(track), Argument::Long(micros)],
+    );
+}
+
+/*
+ * a player's track id when it is an object path D-Bus takes: `/`, or `/` and elements of letters,
+ * digits and `_` between slashes. A player may say any text, and an argument that is not one would
+ * panic the bus layer
+ */
+fn object_path(text: &str) -> Option<String> {
+    let valid = text == "/"
+        || text.strip_prefix('/').is_some_and(|rest| {
+            rest.split('/').all(|element| {
+                !element.is_empty()
+                    && element
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            })
+        });
+
+    valid.then(|| text.to_owned())
+}
+
 // every property of an interface in one call, as a map
 fn get_all(bus: Bus, name: &str, interface: &str) -> Value {
     bus.call(
@@ -869,4 +1035,54 @@ fn unescape(path: &str) -> Option<String> {
     }
 
     String::from_utf8(bytes).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn player(properties: &[(&str, Value)], metadata: &[(&str, Value)]) -> Player {
+        let map = |pairs: &[(&str, Value)]| -> BTreeMap<String, Value> {
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect()
+        };
+
+        let mut properties = map(properties);
+        properties.insert(String::from("Metadata"), Value::Map(map(metadata)));
+
+        Player::of(":1.2", "mpv", &Value::Map(properties), Instant::now())
+    }
+
+    // a player may say any text for a track id, and the bus layer panics on a bad path
+    #[test]
+    fn a_track_id_that_is_no_object_path_is_never_sent() {
+        assert!(object_path("/org/mpris/MediaPlayer2/Track/7").is_some());
+        assert!(object_path("/").is_some());
+
+        for bad in ["", "no-slash", "/a/", "//", "/a b", "/a-b", "/é"] {
+            assert_eq!(object_path(bad), None, "{bad:?}");
+        }
+    }
+
+    // CanSeek alone is not enough: SetPosition names the track and wants a length to seek within
+    #[test]
+    fn seeking_needs_the_player_to_say_so_a_track_and_a_length() {
+        let control = [
+            ("CanControl", Value::Bool(true)),
+            ("CanSeek", Value::Bool(true)),
+        ];
+        let track = |length: f64, id: &str| {
+            [
+                ("mpris:length", Value::Number(length)),
+                ("mpris:trackid", Value::Text(id.to_owned())),
+            ]
+        };
+
+        assert!(player(&control, &track(60e6, "/t/1")).can_seek);
+        assert!(!player(&control, &track(0.0, "/t/1")).can_seek);
+        assert!(!player(&control, &track(60e6, "")).can_seek);
+        assert!(!player(&[("CanSeek", Value::Bool(true))], &track(60e6, "/t/1")).can_seek);
+    }
 }

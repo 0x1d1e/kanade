@@ -1,5 +1,5 @@
 //! The Launcher Surface: a search over its providers, the apps `sources::apps`
-//! lists, the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, each Surface, Settings and
+//! lists and their own actions, the open windows (`windows`), the calculator, emoji, where Kanade goes (Wi-Fi, Bluetooth, each Surface, Settings and
 //! each setting), with `wallpaper-surface` on, the Wallpapers Surface for anything after `@`, and with `clipboard` on, what was copied after `>`, best answer first.
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
@@ -16,6 +16,7 @@ use kanade_runtime::{
     Start, Text, Widget, children,
 };
 
+use crate::config;
 use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
@@ -24,6 +25,7 @@ use crate::settings;
 use crate::sources::apps::{App, Apps};
 use crate::sources::bluetooth::Adapter;
 use crate::sources::network::Connectivity;
+use crate::sources::niri::{self, Acted};
 use crate::sources::system::Radio;
 use crate::sources::{self, clipboard};
 use crate::theme::space::{INSET, TARGET};
@@ -40,8 +42,9 @@ mod destinations;
 mod emoji;
 mod history;
 mod provider;
+pub mod windows;
 
-use apps::Apps as AppsProvider;
+use apps::{Actions, Apps as AppsProvider};
 use calculator::Calculator;
 use choose::{Choices, Choosing};
 use destinations::{Destination, Destinations};
@@ -152,7 +155,7 @@ impl Search {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Paste(_) => Some(String::from("Not copied")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
-            Action::Launch(..) | Action::Choose(_) => None,
+            Action::Launch(..) | Action::Perform(..) | Action::Focus(_) | Action::Choose(_) => None,
         }
     }
 
@@ -288,6 +291,7 @@ pub fn start() {
     service::watch::<Apps>(fit);
     service::watch::<Search>(fit);
     service::watch::<Choosing>(fit);
+    service::watch::<windows::Held>(fit);
     service::watch::<IslandService>(choose::follow);
     fit();
 }
@@ -403,11 +407,14 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
     };
 
     let destinations = destinations();
+    let titles = windows::titles();
 
     provider::ranked(
         &[
             &Calculator,
             &AppsProvider(apps, destinations.wallpapers),
+            &Actions(apps, config::get().launcher_actions),
+            &windows::Titles(&titles),
             &destinations,
             &Emoji,
             &History { entries: &entries },
@@ -850,6 +857,36 @@ fn press(monitor: &str, visit: u64, action: Action) {
         return;
     }
 
+    if let Action::Focus(id) = &action {
+        let id = *id;
+
+        // off the view thread, as niri's answer may take its patience
+        thread::spawn(move || match niri::act(&windows::focus(id)) {
+            Ok(Acted::Done) => {}
+            Ok(Acted::Unknown(why)) => eprintln!("launcher: focus {id}: no clear answer: {why}"),
+            Err(error) => eprintln!("launcher: focus {id}: {error}"),
+        });
+
+        view::collapse(monitor);
+        return;
+    }
+
+    if let Action::Perform(launch, id, action) = &action {
+        let (launch, action) = (launch.clone(), action.clone());
+
+        sources::recents::used(id);
+
+        // off the view thread, as the bus's or niri's answer may take its patience
+        thread::spawn(move || {
+            if let Err(error) = launch.run_action(&action) {
+                eprintln!("launcher: {launch:?} {action}: {error}");
+            }
+        });
+
+        view::collapse(monitor);
+        return;
+    }
+
     // the island changes Surface, so this is no copy to wait on
     if let Action::Open(destination) = &action {
         if let Err(why) = open(monitor, destination) {
@@ -877,7 +914,11 @@ fn press(monitor: &str, visit: u64, action: Action) {
     let started = match &action {
         Action::Copy(text) => copy(text.clone(), done),
         Action::Paste(id) => paste(*id, done),
-        Action::Launch(..) | Action::Open(_) | Action::Choose(_) => Ok(()),
+        Action::Launch(..)
+        | Action::Perform(..)
+        | Action::Focus(_)
+        | Action::Open(_)
+        | Action::Choose(_) => Ok(()),
     };
 
     if let Err(why) = started {

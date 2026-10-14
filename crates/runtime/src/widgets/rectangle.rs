@@ -16,7 +16,8 @@ pub struct Rectangle {
     pub(crate) width: Size,
     pub(crate) height: Size,
     pub(crate) fill: Fill,
-    pub(crate) radius: Radius,
+    pub(crate) radius: Option<Radius>,
+    pub(crate) corners: Option<[Radius; 4]>,
     pub(crate) border_thickness: f32,
     pub(crate) border_color: Color,
     pub(crate) opacity: f32,
@@ -56,8 +57,44 @@ impl Rectangle {
         self
     }
 
+    // every corner alike; can't be mixed with the radius_ corner methods
     pub fn radius(mut self, radius: impl Into<Radius>) -> Self {
-        self.radius = radius.into();
+        assert!(
+            self.corners.is_none(),
+            "radius and radius_<corner> can't be mixed on one Rectangle"
+        );
+
+        self.radius = Some(radius.into());
+
+        self
+    }
+
+    pub fn radius_top_left(self, radius: impl Into<Radius>) -> Self {
+        self.corner(0, radius.into())
+    }
+
+    pub fn radius_top_right(self, radius: impl Into<Radius>) -> Self {
+        self.corner(1, radius.into())
+    }
+
+    pub fn radius_bottom_right(self, radius: impl Into<Radius>) -> Self {
+        self.corner(2, radius.into())
+    }
+
+    pub fn radius_bottom_left(self, radius: impl Into<Radius>) -> Self {
+        self.corner(3, radius.into())
+    }
+
+    // corners left unset stay square
+    fn corner(mut self, index: usize, radius: Radius) -> Self {
+        assert!(
+            self.radius.is_none(),
+            "radius and radius_<corner> can't be mixed on one Rectangle"
+        );
+
+        let corners = self.corners.get_or_insert([Radius::Fixed(0.0); 4]);
+
+        corners[index] = radius;
 
         self
     }
@@ -158,7 +195,8 @@ impl RectangleNeedsHeight {
         Rectangle {
             width: self.width,
             height: height.into(),
-            radius: Radius::Fixed(0.0),
+            radius: None,
+            corners: None,
             fill: Fill::Color(Color::TRANSPARENT),
             border_thickness: 0.0,
             border_color: Color::TRANSPARENT,

@@ -264,6 +264,9 @@ pub enum Detail {
     // why the night light's wlsunset is not running
     NightLight(String),
     Reminder(Reminder),
+
+    // a device that connected, went or took over, whatever Kind posts it
+    Hardware(Hardware),
 }
 
 impl Detail {
@@ -285,6 +288,7 @@ impl Detail {
             Detail::Live(_) => Some(Kind::Live),
             Detail::NightLight(_) => Some(Kind::NightLight),
             Detail::Reminder(_) => Some(Kind::Reminder),
+            Detail::Hardware(_) => None,
         }
     }
 
@@ -384,6 +388,29 @@ impl Mode {
             Mode::CapsLock(on) | Mode::NumLock(on) | Mode::Airplane(on) => on,
         }
     }
+}
+
+// what a device event is about, which its mark shows
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Class {
+    Bluetooth,
+    Charger,
+
+    // the default sound output
+    Output,
+    Wifi,
+}
+
+// a device that connected or went, a charger plugged or unplugged, an output or a network taken
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hardware {
+    pub class: Class,
+
+    // what happened, short enough for Compact
+    pub title: String,
+
+    // what it happened to, for Peek
+    pub line: String,
 }
 
 // the keyboard layout switched to

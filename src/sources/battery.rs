@@ -7,17 +7,26 @@
 //! The kernel's power supply files have no subscription, so this reads them every 5 s, and every
 //! second for a while after the kernel announces a charger going in or out (`wake`), as the status
 //! may settle after the announcement. A read that changes nothing the island shows posts nothing.
+//!
+//! UPower's estimate of the time left (`Remaining`) is asked of its DisplayDevice every
+//! `ESTIMATE` and after each change of the reading. Only Controls shows it, so writing it redraws
+//! nothing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use kanade_runtime::service::Service;
+use std::sync::Mutex;
 
+use kanade_runtime::{MutexExt, service::Service};
+
+use super::osd::UPOWER;
 use super::session;
 use super::wake::{Announcer, Pace, Wakes};
 use crate::backoff::Backoff;
+use crate::bus::Bus;
 use crate::config::{self, CriticalAction};
+use crate::hooks::{self, Event};
 use crate::island::activity::{
     Activity, Charge, Detail, Ending, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
@@ -71,6 +80,94 @@ impl Service for BatteryLevel {
     // read as it is first asked, so Rest knows at its first frame whether there is a battery
     fn new() -> Self {
         Reading::read().into()
+    }
+
+    fn listen() {}
+}
+
+// whether the charger was in as the watcher last saw, none before it saw anything
+static PLUGGED: Mutex<Option<bool>> = Mutex::new(None);
+
+/*
+ * a watcher of `BatteryLevel`: the charger going in or out fires its hook (ADR 0055). What it first
+ * sees is a baseline, and a machine without a battery has no charger to tell of
+ */
+pub fn follow_charger_hook() {
+    let level = *BatteryLevel::read();
+
+    if !level.present() {
+        return;
+    }
+
+    let before = PLUGGED.locked().replace(level.charging);
+
+    if before.is_some_and(|before| before != level.charging) {
+        hooks::fire_with(
+            Event::Charger,
+            if level.charging {
+                "plugged"
+            } else {
+                "unplugged"
+            },
+        );
+    }
+}
+
+// UPower's device for the machine's batteries as one, the one a desktop environment shows
+const DISPLAY: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
+
+// how often the estimate is asked again while the reading stays as it is
+const ESTIMATE: Duration = Duration::from_secs(30);
+
+// UPower's estimate in whole minutes: how long on battery power, or until full while charging
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Remaining {
+    // no UPower, no battery, or UPower cannot say, as when it is full or has not settled
+    #[default]
+    Unknown,
+    Empty(u32),
+    Full(u32),
+}
+
+impl Remaining {
+    fn estimate(reading: Reading) -> Remaining {
+        if !reading.present {
+            return Remaining::Unknown;
+        }
+
+        let minutes = |name| {
+            let value =
+                Bus::system().property(UPOWER, DISPLAY, "org.freedesktop.UPower.Device", name);
+
+            // 0 is what UPower says when it does not know
+            (value.number() >= 60.0).then(|| (value.number() / 60.0) as u32)
+        };
+
+        match (reading.draining, reading.charging) {
+            (true, _) => minutes("TimeToEmpty").map_or(Remaining::Unknown, Remaining::Empty),
+            (_, true) => minutes("TimeToFull").map_or(Remaining::Unknown, Remaining::Full),
+            _ => Remaining::Unknown,
+        }
+    }
+
+    // like "2 h 5 min left" or "45 min to full", none while unknown
+    pub fn said(self) -> Option<String> {
+        let (minutes, then) = match self {
+            Remaining::Unknown => return None,
+            Remaining::Empty(minutes) => (minutes, "left"),
+            Remaining::Full(minutes) => (minutes, "to full"),
+        };
+
+        Some(match minutes {
+            60.. => format!("{} h {} min {then}", minutes / 60, minutes % 60),
+            _ => format!("{minutes} min {then}"),
+        })
+    }
+}
+
+impl Service for Remaining {
+    fn new() -> Self {
+        Remaining::default()
     }
 
     fn listen() {}
@@ -366,6 +463,7 @@ pub fn follow() {
     let mut wakes = Wakes::new(PACE, vec![POWER]);
     let mut shown = None;
     let mut last = None;
+    let mut estimated: Option<Instant> = None;
     let mut guard = Guard::new();
 
     supervise::run("battery", || {
@@ -393,6 +491,15 @@ pub fn follow() {
             let busy = last != Some(reading);
             if busy {
                 *BatteryLevel::write() = reading.into();
+            }
+
+            if busy || estimated.is_none_or(|at| at.elapsed() >= ESTIMATE) {
+                let estimate = Remaining::estimate(reading);
+                let mut remaining = Remaining::write();
+
+                *remaining = estimate;
+                remaining.quiet();
+                estimated = Some(Instant::now());
             }
 
             shown = next;

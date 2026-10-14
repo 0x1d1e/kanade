@@ -13,7 +13,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Once, mpsc};
-use std::{iter, mem};
+use std::{iter, mem, thread};
 
 use crate::bus::{Bus, Value};
 use kanade_runtime::service::Service;
@@ -21,6 +21,7 @@ use kanade_runtime::service::Service;
 use super::{bluetooth, network, power, wifi};
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
+use crate::later::Later;
 use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
@@ -45,6 +46,69 @@ impl Radio {
             (true, true) => Radio::On,
         }
     }
+}
+
+// what `kanade wifi` and `kanade bluetooth` ask of a radio
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switch {
+    On,
+    Off,
+    Toggle,
+    Status,
+}
+
+impl Switch {
+    pub fn parse(arguments: &[&str]) -> Option<Switch> {
+        match arguments {
+            ["on"] => Some(Switch::On),
+            ["off"] => Some(Switch::Off),
+            ["toggle"] => Some(Switch::Toggle),
+            ["status"] => Some(Switch::Status),
+            _ => None,
+        }
+    }
+}
+
+/*
+ * does what `switch` asks of a radio, answering `later`: its state for `status`, or once the daemon
+ * has it as asked. `set` and `read` run on a thread of their own, and `read` is the daemon's
+ * word, as a refusal says nothing; `missing` says what is wrong while there is no radio
+ */
+pub fn flip(
+    missing: &str,
+    switch: Switch,
+    radio: Radio,
+    set: impl FnOnce(bool) + Send + 'static,
+    read: impl FnOnce() -> bool + Send + 'static,
+    later: Later,
+) {
+    let word = |on: bool| String::from(if on { "on" } else { "off" });
+
+    let now = match radio {
+        Radio::Missing => return later.refused(format!("unavailable: {missing}")),
+        Radio::On => true,
+        Radio::Off => false,
+    };
+
+    let want = match switch {
+        Switch::Status => return later.done(word(now)),
+        Switch::On => true,
+        Switch::Off => false,
+        Switch::Toggle => !now,
+    };
+
+    if want == now {
+        return later.done(word(now));
+    }
+
+    thread::spawn(move || {
+        set(want);
+
+        match read() {
+            on if on == want => later.done(word(on)),
+            on => later.refused(format!("the daemon left it {}", word(on))),
+        }
+    });
 }
 
 /*

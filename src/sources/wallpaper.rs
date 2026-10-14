@@ -30,6 +30,7 @@ use kanade_runtime::{MOST_PIXELS, MutexExt, queue::Queue, service::Service};
 pub use kanade_runtime::{ImageFormat as Format, image_format as format};
 
 use super::wake;
+use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::{appearance, config, modules, supervise};
 
@@ -124,6 +125,18 @@ struct Wallpaper {
 }
 
 static WALLPAPER: Mutex<Wallpaper> = Mutex::new(Wallpaper { current: None });
+
+// the wallpaper last told to the hook, so one seen twice, as awww's cache reports one Kanade set,
+// fires once; the one shown at start is only noted, as it is no change
+static HOOKED: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn hook(path: &Path, fire: bool) {
+    let new = HOOKED.locked().replace(path.to_owned()).as_deref() != Some(path);
+
+    if new && fire {
+        hooks::fire_with(Event::Wallpaper, path);
+    }
+}
 
 // the sets waiting for `serve`, which outlive a restart of it
 static QUEUE: LazyLock<Queue<Job>> = LazyLock::new(Queue::new);
@@ -312,6 +325,7 @@ pub fn serve() {
         }
 
         if shown.is_ok() {
+            hook(&path, true);
             appearance::wallpaper(path);
         }
 
@@ -731,8 +745,14 @@ fn look_with(palette: Palette) {
             };
 
             match palette {
-                Some((path, true)) => appearance::shown_wallpaper(path),
-                Some((path, false)) => appearance::seed_wallpaper(path),
+                Some((path, true)) => {
+                    hook(&path, true);
+                    appearance::shown_wallpaper(path);
+                }
+                Some((path, false)) => {
+                    hook(&path, false);
+                    appearance::seed_wallpaper(path);
+                }
                 None => {}
             }
         });

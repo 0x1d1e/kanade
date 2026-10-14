@@ -102,14 +102,25 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "weather-surface",
         ],
     ),
-    ("Session", &["lock", "idle", "session", "settings"]),
+    ("Session", &["lock", "idle", "session", "settings", "hooks"]),
 ];
 
 pub const MODULES: &str = "modules";
 
 // settings owned by another control surface, or lists of tables set in config files only, but
 // still accepted in the config schema
-pub const EXTERNAL_KEYS: &[&str] = &["dock.pinned", "notifications.rules"];
+pub const EXTERNAL_KEYS: &[&str] = &[
+    "dock.pinned",
+    "notifications.rules",
+    "hooks.lock",
+    "hooks.unlock",
+    "hooks.wallpaper",
+    "hooks.tone",
+    "hooks.charger",
+    "hooks.suspend",
+    "hooks.resume",
+    "hooks.timeout",
+];
 
 // old config keys that remain readable but no longer affect the shell
 pub const LEGACY_KEYS: &[&str] = &["theme.palette"];
@@ -179,6 +190,10 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("island.autohide"), Row::Key("island.reserve")],
             },
             Section {
+                title: "Pointer",
+                rows: &[Row::Key("island.wheel"), Row::Key("island.device_events")],
+            },
+            Section {
                 title: "At Rest",
                 rows: &[
                     Row::Key("clock"),
@@ -192,6 +207,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "Playing media",
                 rows: &[Row::Key("media.visualizer")],
+            },
+            Section {
+                title: "Launcher",
+                rows: &[Row::Key("launcher.actions")],
             },
             Section {
                 title: "Feedback",
@@ -273,6 +292,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "Banners",
                 rows: &[Row::Key("banners.entrance")],
+            },
+            Section {
+                title: "Sound",
+                rows: &[Row::Key("notifications.sound")],
             },
             Section {
                 title: "Privacy",
