@@ -208,7 +208,7 @@ fn app_icon(notification: &Notification) -> Option<String> {
             notification
                 .app_name()
                 .eq_ignore_ascii_case("kanade")
-                .then(|| icons::find("kanade", None))
+                .then(icons::own_icon)
                 .flatten()
         })
         .map(|file| file.to_string_lossy().into_owned())

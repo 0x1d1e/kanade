@@ -27,6 +27,12 @@ static OWN: LazyLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> = LazyLock::new(Mute
 // every folder of the themes that may hold an icon, nearest theme first
 static FOLDERS: OnceLock<Vec<Vec<PathBuf>>> = OnceLock::new();
 
+// Kanade's own icon, `dist/kanade.png` installed in the theme, for what has no desktop entry: its
+// notifications and its Settings window
+pub fn own_icon() -> Option<PathBuf> {
+    find("kanade", None)
+}
+
 pub fn find(name: &str, own: Option<&Path>) -> Option<PathBuf> {
     if name.is_empty() {
         return None;

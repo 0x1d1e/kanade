@@ -37,6 +37,7 @@ use crate::merge;
 use crate::modules;
 use crate::pane;
 use crate::scene;
+use crate::sources::icons;
 use crate::sources::launch::Launch;
 use crate::sources::niri::{self, Acted, Window, WindowId};
 use crate::sources::windows::{self, App, DesktopEntry, Windows};
@@ -1849,10 +1850,18 @@ fn slot(
         })
 }
 
-// the app's icon, `side` across, or its initial on the quiet tile; `?` with no name, as of a pin
-// no entry has
+// the app's icon, `side` across (Kanade's own windows, with no entry, show Kanade's), or its initial
+// on the quiet tile; `?` with no name, as of a pin no entry has
 fn mark(app: &App, side: f32, roles: &ThemeRoles) -> Box<dyn Widget> {
-    if let Some(path) = desktop(app).and_then(|entry| entry.icon_file.clone()) {
+    let own = match app {
+        App::Unmatched(Some(app_id)) if app_id == "kanade" => icons::own_icon(),
+        _ => None,
+    };
+
+    if let Some(path) = desktop(app)
+        .and_then(|entry| entry.icon_file.clone())
+        .or(own)
+    {
         /*
          * decoded once, at twice the largest any icon grows to, crisp at scale 2, rather than anew
          * at each size it passes through
