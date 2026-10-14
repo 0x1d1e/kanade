@@ -886,10 +886,10 @@ fn pointed(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
 
 fn hide() {
     let visit = IslandService::read().visit();
+    // bound first: a read guard left in `store`'s argument would block its write
+    let ring = Focus::<At>::read().of(visit, false).ring.hidden();
 
-    store(Focus {
-        ring: Focus::<At>::read().of(visit, false).ring.hidden(),
-    });
+    store(Focus { ring });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -923,6 +923,30 @@ mod tests {
             vec![(At::Timeline, 0.5)],
             vec![(At::Play, 0.2), (At::Controls, 0.9)],
         ]
+    }
+
+    // a press hides the ring through the Focus Service: a read guard held across its write once froze
+    // the shell at the first click
+    #[test]
+    fn hiding_the_ring_does_not_wait_on_itself() {
+        let (done, ended) = std::sync::mpsc::channel();
+
+        // shown, so that hiding it is a write, which `store` skips when nothing changes
+        let visit = IslandService::read().visit();
+        *Focus::<At>::write() = Focus {
+            ring: crate::surfaces::ring::Ring::start(visit, true),
+        };
+
+        std::thread::spawn(move || {
+            hide();
+            let _ = done.send(());
+        });
+
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok()
+        );
     }
 
     // a ring that hides is shown by the first key, which seeks nothing
