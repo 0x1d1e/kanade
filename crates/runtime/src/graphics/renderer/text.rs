@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ttf_parser::{Face, GlyphId};
 
 use crate::graphics::emoji::{self, Picture};
-use crate::graphics::{Area, BezierPath, Color, Outline, Renderer, Transform, font};
+use crate::graphics::{Area, BezierPath, Color, Corners, Outline, Renderer, Transform, font};
 
 use super::Command;
 
@@ -156,7 +156,7 @@ impl Renderer {
             transform: Transform::from_row(scale, 0.0, 0.0, scale, left, top)
                 .post_concat(to_device),
             area: Area::new(left, top, width, height),
-            radius: 0.0,
+            radius: Corners::default(),
             clip_transform: to_device,
         });
     }
