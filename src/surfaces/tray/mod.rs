@@ -64,7 +64,7 @@ pub fn strip(monitor: &str, presentation: Presentation) -> Option<Rectangle> {
 
     let upright = view::upright();
     let mut row = match upright {
-        true => children![view::time_peek_upright(monitor)],
+        true => children![view::time_peek_upright(monitor, slots > 0)],
         false => children![view::time_peek(monitor, slots > 0)],
     };
 

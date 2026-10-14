@@ -39,19 +39,21 @@ pub(super) fn timer(
     now: Instant,
 ) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
-        // the countdown alone, m:ss; an hour or more would be wider than the pill, so it reads 1h
-        let left = if countdown.length.as_secs() >= 3600 {
-            timer::short(countdown, now)
-        } else {
-            timer::clock(countdown, now)
-        };
+        // the stopwatch over the countdown a part a line, the minutes over the seconds, as the clock
+        let mut parts = children![Icon::Stopwatch.draw(18.0)];
 
-        return Some(stacked(children![
-            Text::new(left)
-                .size(theme::text::LABEL_SMALL)
-                .color(timer_tone(countdown))
-                .weight(theme::text::SEMIBOLD),
-        ]));
+        for part in timer::clock(countdown, now).split(':') {
+            parts.push(Box::new(
+                Text::new(part)
+                    .size(theme::text::LABEL)
+                    .color(timer_tone(countdown))
+                    .weight(theme::text::SEMIBOLD),
+            ));
+        }
+
+        return Some(stacked(vec![Box::new(
+            Column::new(parts).gap(3.0).align(Center),
+        )]));
     }
 
     // h:mm:ss once the timer was started for an hour or more, m:ss below
@@ -282,21 +284,30 @@ pub(super) fn battery_icon(width: f32, percent: u8, tone: Color) -> Row {
 // past this many workspaces on an output the pager would not fit, so the numbers say it instead
 const PAGER: u32 = 10;
 
+// the most a pager down an upright Compact holds
+const UPRIGHT_PAGER: u32 = 8;
+
 /*
  * the workspace's name, then where it is among its output's workspaces; Peek says its number
  * under a name. The pager has a fixed width, so a switch moves its mark and nothing else
  */
 pub(super) fn workspace(presentation: Presentation, workspace: &Workspace) -> Option<Rectangle> {
     if presentation == Presentation::Compact && upright() {
-        return Some(stacked(vec![
-            Box::new(
+        // the pager alone, in the middle; its number and "of N" past what it fits
+        let mut parts: Vec<Box<dyn Widget>> = Vec::new();
+
+        if workspace.count > UPRIGHT_PAGER {
+            parts.push(Box::new(
                 Text::new(workspace.index.to_string())
                     .size(theme::text::LABEL)
                     .color(theme::island().on_surface)
                     .weight(theme::text::SEMIBOLD),
-            ),
-            pager(workspace, 6.0, true),
-        ]));
+            ));
+        }
+
+        parts.push(pager(workspace, 6.0, true));
+
+        return Some(stacked(parts));
     }
 
     let (size, dot, inset) = match presentation {
@@ -352,7 +363,7 @@ pub(super) fn workspace(presentation: Presentation, workspace: &Workspace) -> Op
 fn pager(workspace: &Workspace, dot: f32, upright: bool) -> Box<dyn Widget> {
     let (mark, gap) = (dot * 8.0 / 3.0, dot * 5.0 / 6.0);
 
-    if workspace.count > PAGER {
+    if workspace.count > if upright { UPRIGHT_PAGER } else { PAGER } {
         let count = match upright {
             true => format!("of {}", workspace.count),
             false => format!("{} / {}", workspace.index, workspace.count),

@@ -114,10 +114,22 @@ pub const fn upright(shape: Shape, hang: Hang) -> Shape {
 }
 
 /*
- * Compact as it hangs. Standing upright it holds a lead tile and a mark, no words, so it is as
- * long as they ask rather than as long as the horizontal one that holds a line of text
+ * Rest and Compact as they hang. Standing upright they hold a stacked time or a lead tile and a
+ * mark, no words, so they are as long as that asks rather than as long as the horizontal ones
  */
+const UPRIGHT_REST_LENGTH: f32 = 104.0;
 const UPRIGHT_COMPACT_LENGTH: f32 = 128.0;
+
+pub const fn rest(hang: Hang) -> Shape {
+    match hang.edge {
+        Edge::Left | Edge::Right => Shape {
+            width: REST.height,
+            height: UPRIGHT_REST_LENGTH,
+            radius: REST.radius,
+        },
+        Edge::Top | Edge::Bottom => REST,
+    }
+}
 
 pub const fn compact(hang: Hang) -> Shape {
     match hang.edge {
@@ -319,6 +331,9 @@ pub const UPRIGHT_CLOCK: f32 = 64.0;
 pub const UPRIGHT_WEATHER: f32 = 34.0;
 pub const UPRIGHT_BATTERY: f32 = 44.0 + BOLT + 3.0;
 
+// the line between the time's Peek and the slots down a side edge, with the space around it
+pub const UPRIGHT_DIVIDER: f32 = 13.0;
+
 const fn tray(slots: usize, peek: TimePeek) -> Shape {
     // with no item the strip ends as it began, round
     let after = if slots == 0 {
@@ -348,7 +363,10 @@ pub const UPRIGHT_TRAY_WIDTH: f32 = 44.0;
 const fn upright_tray(slots: usize, peek: TimePeek) -> Shape {
     Shape {
         width: UPRIGHT_TRAY_WIDTH,
-        height: peek.height() + slots as f32 * TRAY_SLOT + tray_end(slots, peek.dots),
+        height: peek.height()
+            + if slots > 0 { UPRIGHT_DIVIDER } else { 0.0 }
+            + slots as f32 * TRAY_SLOT
+            + tray_end(slots, peek.dots),
         radius: UPRIGHT_TRAY_WIDTH / 2.0,
     }
 }
@@ -555,7 +573,7 @@ pub fn tray_slots(slots: u8, largest: Shape, hang: Hang, peek: TimePeek) -> usiz
  */
 pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimePeek) -> Shape {
     match presentation {
-        Presentation::Rest => upright(REST, hang),
+        Presentation::Rest => rest(hang),
         Presentation::Compact => compact(hang),
         Presentation::Split => split(hang),
         Presentation::Peek => PEEK,

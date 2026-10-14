@@ -179,7 +179,7 @@ fn battery_stacked(charge: Charge) -> Column {
 
     parts.push(Box::new(battery_icon(20.0, charge.percent, tone)));
     parts.push(Box::new(
-        Text::new(charge.percent.to_string())
+        Text::new(format!("{}%", charge.percent))
             .size(theme::text::LABEL_SMALL)
             .color(tone)
             .weight(theme::text::SEMIBOLD),
@@ -390,9 +390,9 @@ fn agenda_widths(
 
 /*
  * the time's Peek standing along a side edge, which leads the upright Tray strip: the hours over
- * the minutes, then the weather and the battery as the settings ask
+ * the minutes, then the weather and the battery as the settings ask, and a line before the slots
  */
-pub(crate) fn time_peek_upright(monitor: &str) -> Rectangle {
+pub(crate) fn time_peek_upright(monitor: &str, slots: bool) -> Rectangle {
     let config = config::on(monitor);
     let island = theme::island();
     let mut parts = children![stacked_time(monitor, theme::text::BODY)];
@@ -424,11 +424,32 @@ pub(crate) fn time_peek_upright(monitor: &str) -> Rectangle {
         parts.push(Box::new(battery_stacked(charge)));
     }
 
-    Rectangle::new()
+    let content = Rectangle::new()
         .width(Parent)
         .height(peek().height())
         .align_child(Center, Center)
-        .child(Column::new(parts).gap(6.0).align(Center))
+        .child(Column::new(parts).gap(6.0).align(Center));
+
+    if !slots {
+        return content;
+    }
+
+    // the line sits at the lead's foot, just before the first slot
+    let line = Rectangle::new()
+        .width(20.0)
+        .height(1.0)
+        .fill(island.on_surface_variant)
+        .opacity(0.4);
+
+    Rectangle::new()
+        .width(Parent)
+        .height(peek().height() + geometry::UPRIGHT_DIVIDER)
+        .align_child(Center, Start)
+        .child(
+            Column::new(vec![Box::new(content) as Box<dyn Widget>, Box::new(line)])
+                .gap((geometry::UPRIGHT_DIVIDER - 1.0) / 2.0)
+                .align(Center),
+        )
 }
 
 /*
