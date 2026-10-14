@@ -1,7 +1,7 @@
 /*
  * where Kanade itself goes, as a Launcher provider: Wi-Fi and Bluetooth open Controls on their
  * networks and devices, Clipboard opens the history, Calendar the month and agenda, Wallpapers the wallpaper grid (also for
- * anything typed after `@`), Keys the keybinds, Notifications, Controls, Weather, Session, Timer and Capture
+ * anything typed after `@`), Keys the keybinds, Notifications, Controls, Weather, Tray, Session, Timer and Capture
  * their Surfaces, and each page of Settings and each setting opens Settings on the page showing it. They only open: switching a radio or joining a network
  * is done in the Surface they open
  */
@@ -22,6 +22,7 @@ pub enum Destination {
     Notifications,
     Controls,
     Weather,
+    Tray,
     Session,
     Timer,
     Capture,
@@ -42,6 +43,7 @@ pub struct Destinations {
     pub notifications: bool,
     pub controls: bool,
     pub weather: bool,
+    pub tray: bool,
     pub session: bool,
     pub timer: bool,
     pub capture: bool,
@@ -117,6 +119,14 @@ impl LauncherProvider for Destinations {
                 "Forecast",
                 &["weather", "forecast", "temperature"][..],
                 Destination::Weather,
+            ),
+            (
+                self.tray,
+                Icon::Grid,
+                "Tray",
+                "Apps' tray items and menus",
+                &["tray", "systray", "status icons", "indicators"][..],
+                Destination::Tray,
             ),
             (
                 self.session,

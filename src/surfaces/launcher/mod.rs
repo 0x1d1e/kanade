@@ -377,6 +377,7 @@ fn destinations() -> Destinations {
         notifications: modules::on("notification-surface"),
         controls,
         weather: modules::on("weather-surface"),
+        tray: modules::on("tray"),
         session: modules::on("session"),
         timer: modules::on("timer-surface"),
         capture: modules::on("capture-surface"),
@@ -911,6 +912,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
             // an old forecast is fetched again, as when `kanade weather open` asks (`ipc::island`)
             sources::weather::opened();
             IslandService::write().open(monitor, Surface::Weather, Instant::now());
+            Ok(())
+        }
+        Destination::Tray => {
+            IslandService::write().open(monitor, Surface::Tray, Instant::now());
             Ok(())
         }
         Destination::Session => {
