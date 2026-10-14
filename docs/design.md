@@ -129,7 +129,7 @@ Rules:
 
 ### Core Surfaces
 
-- **Launcher**: providers = apps, calculator, emoji, clipboard history (`>`, puts an entry back on the clipboard; never shown without the prefix), destinations (Wi-Fi and Bluetooth open Controls on their sub-surface; Notifications, Controls, Weather, Tray, Session, Timer, Capture, Clipboard, Calendar, Wallpapers and Keys open their Surface, and anything after `@` is the Wallpapers destination; each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface, never by the hold or the grace; a newer one replaces the one waiting, a Launcher the user opened refuses it.
+- **Launcher**: providers = apps (ordered within a Fit by how often each started, never over a better Fit; with nothing typed, the last six started first), apps' Desktop Actions (from two letters, `launcher.actions`, default on), open windows (from two letters; titles asked of niri when the Launcher opens, held only in the Launcher; pressing focuses the window; needs `windows`), calculator, emoji, clipboard history (`>`, puts an entry back on the clipboard; never shown without the prefix), destinations (Wi-Fi and Bluetooth open Controls on their sub-surface; Notifications, Controls, Weather, Tray, Session, Timer, Capture, Clipboard, Calendar, Wallpapers and Keys open their Surface, and anything after `@` is the Wallpapers destination; each Settings page and setting opens Settings on its page; they only open, switching is done there). Focus only while open. Provider seam internal; no public plugin API yet. Choose mode: `kanade dmenu` opens it with only stdin's lines as the one provider, answering the line's place on a press and dismissed on Escape, a collapse or another Surface, never by the hold or the grace; a newer one replaces the one waiting, a Launcher the user opened refuses it.
 - **Controls**: macOS pattern. Top-level quick tiles/sliders; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio (done, #133).
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
@@ -221,8 +221,9 @@ Precedence: binary defaults → `~/.config/kanade/*.toml` alphabetical → `~/.l
 - never rewrite user/Nix config; only GUI state auto-migrates/writes.
 - GUI value == lower layer → remove override.
 - tables deep-merge; lists replace; output overrides global: `[output."<name>"]` sets per-output keys only, and wins over a global value from any layer.
-- unknown key → warning with file/line.
+- unknown key → warning with file/line, naming the nearest registry key when one is close.
 - writes = temp + rename.
+- `kanade config get|set|reset|schema|validate <file>` run in the CLI process from the registry, shell or none; `set` and `reset` write the settings file through the Settings writer, and the schema is derived, never kept by hand.
 - export = merged current schema.
 
 ### Hot reload
@@ -248,6 +249,10 @@ launcher open|close|toggle
 dmenu [--prompt <text>]
 controls open|close|toggle
 media open|close|toggle
+media play-pause|next|previous
+wifi on|off|toggle|status
+bluetooth on|off|toggle|status
+power-profile set <profile>|cycle|status
 island collapse
 notifications open|close|toggle|clear
 notifications dnd on|off|toggle
@@ -270,7 +275,8 @@ timer open|close|toggle
 capture open|close|toggle
 osd volume|brightness
 settings open [page]|close
-config reload|validate|defaults
+config reload|validate [file]|defaults|schema|get <key>|set <key> <value>|reset <key>
+completions bash|fish|zsh
 status
 doctor
 module list|enable <name>|disable <name>

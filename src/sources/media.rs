@@ -27,6 +27,7 @@ use crate::island::activity::{
 use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
+use crate::later::Later;
 use crate::supervise;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
@@ -259,7 +260,6 @@ impl Seen {
 }
 
 // what the bus says, as far as the island cares
-#[derive(Debug, PartialEq)]
 enum Event {
     // a player opened, or closed when it has no owner
     Owner { name: String, owner: Option<String> },
@@ -272,6 +272,28 @@ enum Event {
 
     // pressed on the Media Surface
     Control(Control),
+
+    // `kanade media`, answered once the player has been asked
+    Transport(Transport, Later),
+}
+
+// what `kanade media` asks of the player the island follows
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    PlayPause,
+    Next,
+    Previous,
+}
+
+impl Transport {
+    pub fn parse(arguments: &[&str]) -> Option<Transport> {
+        match arguments {
+            ["play-pause"] => Some(Transport::PlayPause),
+            ["next"] => Some(Transport::Next),
+            ["previous"] => Some(Transport::Previous),
+            _ => None,
+        }
+    }
 }
 
 // what the Media Surface asks of a player, by its bus name
@@ -572,6 +594,20 @@ pub fn control(control: Control) {
     send(Event::Control(control));
 }
 
+// `kanade media play-pause|next|previous`; the follower asks the player and answers `later`
+pub fn request(transport: Transport, later: Later) {
+    later.unsettled("the player got the call; it may still have acted");
+
+    match FEED.get() {
+        Some(feed)
+            if feed
+                .send
+                .send(Event::Transport(transport, later.clone()))
+                .is_ok() => {}
+        _ => later.refused("no session bus, so no media player to ask"),
+    }
+}
+
 fn send(event: Event) {
     if let Some(feed) = FEED.get() {
         drop(feed.send.send(event));
@@ -671,6 +707,9 @@ fn follow_players(
                 bus.call(&name, PATH, PLAYER, method, &[]);
                 refresh(bus, players, &name);
             }
+            Ok(Event::Transport(transport, later)) => {
+                later.result(transport_call(bus, players, transport));
+            }
             Err(RecvTimeoutError::Timeout) => {
                 if let Some(name) = watcher.poll(players, watching(), Instant::now()) {
                     refresh(bus, players, &name);
@@ -683,6 +722,33 @@ fn follow_players(
             }
         }
     }
+}
+
+/*
+ * asks the player the island follows, the one playing or else the last shown, to play or pause, or
+ * to skip; refused when none is open or it says it cannot
+ */
+fn transport_call(bus: Bus, players: &mut Players, transport: Transport) -> Result<String, String> {
+    let Some(Seen { key: name, .. }) = players.choose() else {
+        return Err(String::from("no media player is open"));
+    };
+
+    let player = &players.open[&name];
+
+    let (method, able) = match transport {
+        Transport::PlayPause => ("PlayPause", player.can_play || player.can_pause),
+        Transport::Next => ("Next", player.can_next),
+        Transport::Previous => ("Previous", player.can_previous),
+    };
+
+    if !able {
+        return Err(format!("{} cannot do that now", player.identity));
+    }
+
+    bus.call(&name, PATH, PLAYER, method, &[]);
+    refresh(bus, players, &name);
+
+    Ok(String::new())
 }
 
 // watched before the first look, so a player opening in between is not missed

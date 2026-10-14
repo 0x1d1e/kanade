@@ -198,6 +198,10 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("media.visualizer")],
             },
             Section {
+                title: "Launcher",
+                rows: &[Row::Key("launcher.actions")],
+            },
+            Section {
                 title: "Feedback",
                 rows: &[Row::Key("osd.layout")],
             },

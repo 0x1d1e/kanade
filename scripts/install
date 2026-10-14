@@ -1,5 +1,5 @@
 #!/bin/sh
-# installs Kanade: the binary, the systemd user unit, the icon, and on a fresh TTY install the
+# installs Kanade: the binary, its shell completions, the systemd user unit, the icon, and on a fresh TTY install the
 # desktop pieces and a default niri config. Run again to update. The unit is Kanade's own and is
 # replaced (the old one kept as kanade.service.bak.DATE); change it with
 # `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
@@ -8,7 +8,7 @@
 # or scripts/install from a checkout, which builds that checkout. Options:
 #     --optional    also the packages of the optional features
 #     --shell-only  only build dependencies and Kanade, for a niri desktop you already have
-#     --uninstall   removes Kanade's binary, unit, icon and build checkout; configs and packages stay
+#     --uninstall   removes Kanade's binary, completions, unit, icon and build checkout; configs and packages stay
 set -eu
 
 repo=https://github.com/0x1d1e/kanade
@@ -64,7 +64,8 @@ main() {
         fi
         systemctl --user disable --now kanade.service || true
         rm -f "$config/systemd/user/kanade.service" "$config/systemd/user/kanade.service".bak* \
-            "$data/icons/hicolor/256x256/apps/kanade.png"
+            "$data/icons/hicolor/256x256/apps/kanade.png" "$data/bash-completion/completions/kanade" \
+            "$config/fish/completions/kanade.fish" "$data/zsh/site-functions/_kanade"
         rm -rf "$data/kanade/src"
         systemctl --user daemon-reload
         echo "removed Kanade; kept your configs, niri's kanade.kdl include and the packages"
@@ -145,6 +146,12 @@ main() {
     fi
     install -Dm644 dist/kanade.service "$unit"
     install -Dm644 dist/kanade.png "$data/icons/hicolor/256x256/apps/kanade.png"
+
+    # from the verbs of the binary just built, so they never lag it; zsh needs the directory in its fpath
+    mkdir -p "$data/bash-completion/completions" "$config/fish/completions" "$data/zsh/site-functions"
+    "$root/bin/kanade" completions bash > "$data/bash-completion/completions/kanade"
+    "$root/bin/kanade" completions fish > "$config/fish/completions/kanade.fish"
+    "$root/bin/kanade" completions zsh > "$data/zsh/site-functions/_kanade"
 
     # a config of yours is never replaced; Kanade's binds are in docs/wiki/Keyboard.md
     if [ "$desktop" = 1 ]; then
