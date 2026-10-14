@@ -33,6 +33,7 @@ use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
+use crate::sources::battery::Remaining;
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
 use crate::sources::charge_limit::{self, ChargeLimit};
 use crate::sources::network::{Connectivity, set_wifi};
@@ -165,6 +166,23 @@ fn header() -> Row {
     // the dots only mark a capture, so the apps behind them are named here
     if modules::on("privacy") && cluster::on() {
         header.extend(capturing(&Privacy::read()));
+    }
+
+    // the time left at the header's end, over whatever room the capture leaves
+    if let Some(left) = modules::on("battery")
+        .then(|| Remaining::read().said())
+        .flatten()
+    {
+        if header.len() == 1 {
+            header.push(Box::new(Rectangle::new().width(Parent).height(HEADER)));
+        }
+
+        header.push(Box::new(
+            Text::new(left)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::MEDIUM),
+        ));
     }
 
     Row::new(header)
