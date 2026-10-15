@@ -42,7 +42,7 @@ pub enum At {
     Wifi,
     BluetoothSwitch,
     Bluetooth,
-    Microphone,
+    Caffeine,
     Dnd,
     NightLight,
     ChargeLimit,
@@ -144,7 +144,7 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>, stop: bool) -> Vec<
                     (At::BluetoothSwitch, 0.58),
                     (At::Bluetooth, 0.8),
                 ],
-                vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
+                vec![(At::Caffeine, 0.25), (At::Dnd, 0.75)],
             ]);
 
             grid.extend(rows);

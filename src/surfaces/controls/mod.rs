@@ -1,4 +1,4 @@
-//! The Controls Surface: Wi-Fi, Bluetooth, the microphone, Do Not Disturb, the night
+//! The Controls Surface: Wi-Fi, Bluetooth, caffeine, Do Not Disturb, the night
 //! light and, where the battery supports it, its charge limit as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
@@ -7,8 +7,8 @@
 //! The Wi-Fi and Bluetooth switches' tiles each open a sub-surface in its place, their knobs still
 //! switching them: the networks in range, to join or leave, and the password a secured one asks
 //! for; or the Bluetooth devices, to pair, connect, disconnect or forget. The speaker's
-//! level ends in a chevron to the Audio sub-surface: the devices to play on and record from, and
-//! each app's level. A sub-surface goes back a level by its chevron or Escape. Every target
+//! level ends in a chevron to the Audio sub-surface: the devices to play on and record from, the
+//! microphone's level and mute, and each app's level. A sub-surface goes back a level by its chevron or Escape. Every target
 //! is a key away, a ring on the one the arrows reach (`focus`).
 
 use std::collections::BTreeSet;
@@ -32,10 +32,12 @@ use crate::island::activity::Uplink;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::later::Later;
 use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::battery::Remaining;
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
+use crate::sources::caffeine;
 use crate::sources::charge_limit::{self, ChargeLimit};
 use crate::sources::focus as quiet;
 use crate::sources::network::{Connectivity, set_wifi};
@@ -287,14 +289,13 @@ fn stop(ring: bool) -> Rectangle {
 }
 
 /*
- * Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge
+ * Wi-Fi and Bluetooth, then caffeine and Do Not Disturb, then the night light and charge
  * limit, with Focus's round button at the end of the row, which takes its room from them
  */
 fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
     let wifi = self::wifi(&Connectivity::read());
     let bluetooth = self::bluetooth(&Adapter::read());
-    let microphone =
-        self::microphone(modules::on("audio").then(|| Audio::read().microphone_muted()));
+    let caffeine = self::caffeine(modules::on("caffeine").then(|| caffeine::newest().is_some()));
     let dnd = self::dnd(dnd);
 
     let width = (WIDTH - SWITCH_GAP) / 2.0;
@@ -316,7 +317,7 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
         on(At::Bluetooth),
         Some(At::Bluetooth),
     );
-    let microphone = switch(microphone, width, false, on(At::Microphone), None);
+    let caffeine = switch(caffeine, width, false, on(At::Caffeine), None);
     let dnd = switch(dnd, width, false, on(At::Dnd), None);
     let focus = modules::on("focus");
     let limit = self::charge_limit();
@@ -346,7 +347,7 @@ fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
 
     Column::new(children![
         row(wifi, bluetooth),
-        row(microphone, dnd),
+        row(caffeine, dnd),
         Row::new(third).gap(SWITCH_GAP)
     ])
     .gap(SWITCH_GAP)
@@ -372,7 +373,7 @@ struct Switch {
 enum Press {
     Wifi(bool),
     Bluetooth { adapter: String, on: bool },
-    Microphone,
+    Caffeine(bool),
     Dnd(bool),
     NightLight(bool),
     ChargeLimit(bool),
@@ -435,24 +436,20 @@ fn radio(
     }
 }
 
-// none while `audio` is off, which leaves it unavailable
-fn microphone(muted: Option<bool>) -> Switch {
-    let status = match muted {
+// `on` is none while `caffeine` is off, which leaves it unavailable
+fn caffeine(on: Option<bool>) -> Switch {
+    let status = match on {
         None => "Unavailable",
-        Some(true) => "Muted",
-        Some(false) => "On",
+        Some(true) => "On",
+        Some(false) => "Off",
     };
 
     Switch {
-        icon: if muted == Some(true) {
-            Icon::MicrophoneMuted
-        } else {
-            Icon::Microphone
-        },
-        name: "Microphone",
+        icon: Icon::Cup,
+        name: "Caffeine",
         status: String::from(status),
-        on: muted == Some(false),
-        press: muted.map(|_| Press::Microphone),
+        on: on == Some(true),
+        press: on.map(|on| Press::Caffeine(!on)),
     }
 }
 
@@ -671,7 +668,14 @@ fn run(press: Press) {
     match press {
         Press::Wifi(on) => set_wifi(on),
         Press::Bluetooth { adapter, on } => bluez::power(adapter, on),
-        Press::Microphone => Audio::toggle_microphone_mute(),
+        Press::Caffeine(on) => caffeine::request(
+            if on {
+                caffeine::Request::On(None)
+            } else {
+                caffeine::Request::Off
+            },
+            Later::detached(),
+        ),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
         Press::NightLight(on) => night_light::switch(on),
         Press::Focus => quiet::toggle(),
@@ -1129,8 +1133,8 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         }
         At::WifiSwitch => self::wifi(&Connectivity::read()).press,
         At::BluetoothSwitch => self::bluetooth(&Adapter::read()).press,
-        At::Microphone => {
-            microphone(modules::on("audio").then(|| Audio::read().microphone_muted())).press
+        At::Caffeine => {
+            caffeine(modules::on("caffeine").then(|| caffeine::newest().is_some())).press
         }
         At::Dnd => {
             let on = modules::on("notifications").then(|| IslandService::read().dnd());
