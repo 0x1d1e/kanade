@@ -340,9 +340,10 @@ fn capturing(privacy: &Privacy, ring: bool) -> Option<Box<dyn Widget>> {
         .sensors
         .iter()
         .flat_map(|sensors| sensors.apps.clone());
+    let paused = if privacy.paused { " (paused)" } else { "" };
     let casts = privacy.casts.iter().filter_map(|target| match target {
-        Target::Screen => Some(String::from("Screen cast")),
-        Target::Window => Some(String::from("Window cast")),
+        Target::Screen => Some(format!("Screen cast{paused}")),
+        Target::Window => Some(format!("Window cast{paused}")),
         Target::Unknown => None,
     });
     let named: Vec<String> = apps.chain(casts).collect();

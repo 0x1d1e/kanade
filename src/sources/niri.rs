@@ -41,6 +41,12 @@ pub struct Seen {
     // the sessions of those PipeWire carries, which niri can stop; a wlr-screencopy cast has none
     pub sessions: BTreeSet<u64>,
 
+    // some cast has a dynamic target, which `retarget` changes
+    pub dynamic: bool,
+
+    // casts run and every one has stopped streaming frames, as OBS does on another scene
+    pub paused: bool,
+
     // the window each output shows, by output; empty while unknown
     pub shown: BTreeMap<String, Showing>,
 }
@@ -307,6 +313,8 @@ impl Known {
                 .values()
                 .filter_map(|cast| cast.session)
                 .collect(),
+            dynamic: self.casts.values().any(|cast| cast.dynamic),
+            paused: !self.casts.is_empty() && self.casts.values().all(|cast| !cast.active),
             shown,
         }
     }
@@ -349,6 +357,12 @@ struct Cast {
 
     // its session, only for a PipeWire cast, the one kind `stop` can end
     session: Option<u64>,
+
+    // whether `retarget` acts on it
+    dynamic: bool,
+
+    // streaming frames; a cast niri does not say is taken to be
+    active: bool,
 }
 
 // a cast's stream and what it captures; none for Kanade's own Liquid Glass backdrop capture
@@ -370,9 +384,16 @@ fn cast(cast: &Json) -> Option<(u64, Cast)> {
         .then(|| cast.get("session_id").and_then(Json::as_u64))
         .flatten();
 
+    let flag = |key, default| cast.get(key).and_then(Json::as_bool).unwrap_or(default);
+
     Some((
         cast.get("stream_id").and_then(Json::as_u64)?,
-        Cast { target, session },
+        Cast {
+            target,
+            session,
+            dynamic: flag("is_dynamic_target", false),
+            active: flag("is_active", true),
+        },
     ))
 }
 
@@ -386,6 +407,38 @@ pub fn stop(session: u64) -> io::Result<Acted> {
     act(&format!(
         r#"{{"Action":{{"StopCast":{{"session_id":{session}}}}}}}"#
     ))
+}
+
+/*
+ * what a dynamic cast target is set to: a window by id, none for the focused one; an output by
+ * name, none for the focused one; or nothing. An older niri without the actions answers an error,
+ * and the same as for `stop` otherwise
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retarget {
+    Window(Option<u64>),
+    Output(Option<String>),
+    Clear,
+}
+
+pub fn retarget(to: &Retarget) -> io::Result<Acted> {
+    let action = match to {
+        Retarget::Window(id) => {
+            let id = id.map_or_else(|| String::from("null"), |id| id.to_string());
+
+            format!(r#""SetDynamicCastWindow":{{"id":{id}}}"#)
+        }
+        Retarget::Output(name) => {
+            let name = name
+                .as_deref()
+                .map_or_else(|| String::from("null"), json::quote);
+
+            format!(r#""SetDynamicCastMonitor":{{"output":{name}}}"#)
+        }
+        Retarget::Clear => String::from(r#""ClearDynamicCastTarget":{}"#),
+    };
+
+    act(&format!(r#"{{"Action":{{{action}}}}}"#))
 }
 
 // what a window event says; none for another event, and for those `windows` ignores, like layouts
@@ -968,6 +1021,39 @@ mod tests {
                 vec![Target::Screen, Target::Window],
                 vec![Target::Screen, Target::Window, Target::Unknown],
                 vec![Target::Screen, Target::Unknown],
+            ]
+        );
+    }
+
+    // a paused cast still counts as a cast, and a dynamic one can be retargeted
+    #[test]
+    fn a_cast_says_whether_it_is_paused_or_dynamic() {
+        let with = |stream: u64, dynamic: bool, active: bool| {
+            format!(
+                r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":{stream},"session_id":{stream},"kind":"PipeWire","target":{{"Nothing":{{}}}},"is_dynamic_target":{dynamic},"is_active":{active},"pid":null,"pw_node_id":null}}}}}}"#
+            )
+        };
+        let (posts, _) = posts(&[
+            OK,
+            &with(1, true, true),
+            &with(1, true, false),
+            &with(2, false, true),
+            &with(2, false, false),
+            &stopped(1),
+        ]);
+        let states: Vec<(bool, bool, bool)> = posts
+            .iter()
+            .map(|seen| (!seen.casts.is_empty(), seen.dynamic, seen.paused))
+            .collect();
+
+        assert_eq!(
+            states,
+            [
+                (true, true, false),
+                (true, true, true),
+                (true, true, false),
+                (true, true, true),
+                (true, false, true),
             ]
         );
     }

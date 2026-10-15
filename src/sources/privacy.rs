@@ -32,6 +32,10 @@ pub struct Privacy {
 
     // the sessions of the PipeWire ones, which niri can stop; none of a wlr-screencopy cast
     pub sessions: BTreeSet<u64>,
+
+    // every cast has stopped streaming frames, like OBS on another scene; the dots stay, as the
+    // cast is still open and can resume
+    pub paused: bool,
 }
 
 impl Privacy {
@@ -54,18 +58,23 @@ impl Service for Privacy {
 
 // a watcher of `Niri`: what screen casts capture; the same again changes nothing
 pub fn follow_casts() {
-    let (casts, sessions) = {
+    let (casts, sessions, paused) = {
         let niri = Niri::read();
 
-        (niri.seen.casts.clone(), niri.seen.sessions.clone())
+        (
+            niri.seen.casts.clone(),
+            niri.seen.sessions.clone(),
+            niri.seen.paused,
+        )
     };
     let mut privacy = Privacy::write();
 
-    if privacy.casts == casts && privacy.sessions == sessions {
+    if privacy.casts == casts && privacy.sessions == sessions && privacy.paused == paused {
         privacy.quiet();
     } else {
         privacy.casts = casts;
         privacy.sessions = sessions;
+        privacy.paused = paused;
     }
 }
 

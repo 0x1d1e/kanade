@@ -19,6 +19,7 @@ use crate::reload::{self, Outcome};
 use crate::settings;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard;
+use crate::sources::niri::Acted;
 use crate::sources::notifications;
 use crate::sources::osd;
 use crate::sources::recording;
@@ -97,6 +98,12 @@ fn run(call: Call) -> Reply {
         Call::Screenshot(mode) => match capture::screenshot(mode) {
             Ok(Asked::Taken(path)) => Reply::Done(path),
             Ok(Asked::Unknown(why)) => Reply::Unknown(why),
+            Err(error) => Reply::Refused(error),
+        },
+        // niri answers at once, but the client may wait on it as on a screenshot
+        Call::Cast(to) => match capture::cast(&to) {
+            Ok(Acted::Done) => Reply::Done(String::new()),
+            Ok(Acted::Unknown(why)) => Reply::Unknown(why),
             Err(error) => Reply::Refused(error),
         },
         // through the settings file's writes, which the Settings window shares

@@ -1192,7 +1192,7 @@ pub const ALL: &[Module] = &[
             about: "Take a screenshot or record the screen",
             usage: || {
                 String::from(
-                    "capture screenshot area|window|output\ncapture record start|stop|status",
+                    "capture screenshot area|window|output\ncapture record start|stop|status\ncapture cast window [<id>]|monitor [<output>]|clear",
                 )
             },
             parse: |arguments| match arguments {
@@ -1201,6 +1201,9 @@ pub const ALL: &[Module] = &[
                     .ok_or(Unparsed::Usage),
                 ["record", request] => recording::Request::parse(request)
                     .map(Call::Record)
+                    .ok_or(Unparsed::Usage),
+                ["cast", target @ ..] => capture::parse_cast(target)
+                    .map(Call::Cast)
                     .ok_or(Unparsed::Usage),
                 _ => Err(Unparsed::Usage),
             },

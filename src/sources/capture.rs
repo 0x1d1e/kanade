@@ -14,10 +14,11 @@ use std::thread;
 use std::time::Duration;
 
 use kanade_runtime::MutexExt;
+use kanade_runtime::service::Service;
 
 use super::clipboard;
 use super::json::{self, Json};
-use super::niri::{self, Acted};
+use super::niri::{self, Acted, Niri, Retarget};
 use super::recording;
 use crate::clock;
 
@@ -142,6 +143,37 @@ pub fn free(dir: &Path, stem: &str, extension: &str, taken: impl Fn(&Path) -> bo
         })
         .find(|path| !taken(path))
         .expect("an unbounded count finds a free name")
+}
+
+/*
+ * `capture cast window [<id>]|monitor [<output>]|clear`: what a screen share that picks its target
+ * as it runs (a dynamic cast target, as a portal share of niri's "dynamic target" is) shows; none
+ * for the focused window or output
+ */
+pub fn parse_cast(words: &[&str]) -> Option<Retarget> {
+    match words {
+        ["window"] => Some(Retarget::Window(None)),
+        ["window", id] => Some(Retarget::Window(Some(id.parse().ok()?))),
+        ["monitor"] => Some(Retarget::Output(None)),
+        ["monitor", output] => Some(Retarget::Output(Some((*output).to_owned()))),
+        ["clear"] => Some(Retarget::Clear),
+        _ => None,
+    }
+}
+
+/*
+ * changes what the dynamic-target cast shows. Refused while no cast has a dynamic target, as niri
+ * would do nothing; a niri without the actions says so. Blocks up to niri's patience, so never on
+ * the draw thread
+ */
+pub fn cast(to: &Retarget) -> Result<Acted, String> {
+    if !Niri::read().seen.dynamic {
+        return Err(String::from(
+            "no screen cast with a dynamic target is running",
+        ));
+    }
+
+    niri::retarget(to).map_err(backend)
 }
 
 /*

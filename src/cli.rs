@@ -23,7 +23,7 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, focus, google, live, media, night_light, osd, power,
+    caffeine, capture, charge_limit, focus, google, live, media, night_light, niri, osd, power,
     recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
@@ -64,6 +64,7 @@ pub enum Call {
     ClearClipboard,
     Screenshot(capture::Mode),
     Record(recording::Request),
+    Cast(niri::Retarget),
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
     Focus(focus::Request),
