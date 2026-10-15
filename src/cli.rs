@@ -18,6 +18,7 @@ use kanade_runtime::{IpcCall, ipc_socket};
 mod completions;
 mod keys;
 
+use crate::gesture;
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
@@ -65,6 +66,7 @@ pub enum Call {
     ClearClipboard,
     Screenshot(capture::Mode),
     PickColor,
+    Gesture(gesture::Request),
     Record(recording::Request),
     Cast(niri::Retarget),
     Caffeine(caffeine::Request),
@@ -507,7 +509,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
     // the user picks at their own pace
     let reply = match asked {
-        Call::PickColor => call_waiting(&arguments),
+        Call::PickColor | Call::Gesture(gesture::Request::Record(_)) => call_waiting(&arguments),
         _ => call(&arguments),
     };
 

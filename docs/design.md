@@ -74,7 +74,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
-| Utilities | `capture`, `caffeine`, `night-light`, `focus`, `doctor` |
+| Utilities | `capture`, `gesture`, `caffeine`, `night-light`, `focus`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `idle`, `session`, `settings`, `hooks`, `ui` |
 
@@ -168,6 +168,10 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 - completion: a screenshot is shown by niri's own notification as a Banner, not in the Island; a recording's end emits a Transient Activity + copy/open path actions (done, #139);
 - color picker: niri's `PickColor` request (its own on-screen picker, which answers when the user clicks a pixel, or null when they leave it) through `kanade capture color` and a Color tile in the Capture Surface. The `#rrggbb` goes on the clipboard through `wl-copy`, plain text without ADR 0019's sensitive hint, and shows as a Transient Live Activity under a Kind-neutral id; leaving the picker shows and copies nothing, and the verb refuses with "no color picked" ([ADR 0086](adr/0086-color-picker-through-niri.md));
 - no OCR, reverse-image search, annotation editor, upload service.
+
+### Gesture
+
+`gesture` (a Utility): `kanade gesture` (bound by the user to a niri key; Kanade grabs no global key) covers the focused output with an Overlay layer that takes the pointer. The user draws one stroke with the left button held; on release a pure-Rust $1 recognizer matches it against the recorded templates and a match runs the Kanade verb in `gestures.<name>`. Escape, a right click, 8 s or a lock close it; it never opens while locked, and with the Module off it opens no window and answers its verb with `module gesture is off`. `gesture record <name>` takes three strokes, `forget` and `list` manage them. Templates are state (`$XDG_STATE_HOME/kanade/gestures.toml`, private mode), verbs are config; a verb runs through the shell's own socket and only a Kanade verb is accepted, so user commands stay with Hooks. The trail is a glowing polyline fading on release; reduced motion draws a plain line fading in 80 ms. No match or an ambiguous one shows a Transient "No gesture" ([ADR 0105](adr/0105-gesture-recognizer.md), [0106](adr/0106-gesture-templates-in-state-actions-in-config.md), [0107](adr/0107-gesture-verbs-run-through-the-socket.md), [0108](adr/0108-gesture-overlay-always-lets-go.md), [0109](adr/0109-gesture-trail-and-reduced-motion.md)).
 
 ### Caffeine
 
@@ -283,6 +287,7 @@ activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 activity hook claude
 capture screenshot area|window|output
 capture record start|stop|status
+gesture | gesture record <name> | gesture forget <name> | gesture list
 caffeine on|off|toggle [duration]|status
 night-light on|off|toggle|status
 focus on|off|toggle|status

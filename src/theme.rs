@@ -248,6 +248,13 @@ pub fn pane_rim() -> Color {
 // what the idle dim grace fades the outputs to before the lock (ADR 0047)
 pub const IDLE_DIM: Color = Color::rgb(0, 0, 0);
 
+// the gesture overlay (ADR 0109): a light scrim over the output, and a trail of a soft wide line
+// under a bright narrow one, which read on a light and on a dark desktop alike
+pub const GESTURE_SCRIM: Color = Color::rgba(0, 0, 0, 56);
+pub const GESTURE_GLOW: Color = Color::rgba(110, 170, 255, 70);
+pub const GESTURE_CORE: Color = Color::rgb(235, 245, 255);
+pub const GESTURE_TEXT: Color = Color::WHITE;
+
 // the OSD's capsule over an open Surface: darker, as it floats over the Island, not the desktop
 pub const SHADOW_HUD: Color = Color::rgba(0, 0, 0, 89);
 

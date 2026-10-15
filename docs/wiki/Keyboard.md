@@ -29,6 +29,12 @@ Mod+Alt+K hotkey-overlay-title="Caffeine" { spawn "kanade" "caffeine" "toggle"; 
 Mod+Alt+L hotkey-overlay-title="Lock" { spawn "kanade" "lock"; }
 ```
 
+The pointer-gesture launcher opens from a key as well; Kanade grabs no key of its own. Draw with the left button held; Escape or a right click cancels, and so does 8 seconds without a stroke ending:
+
+```kdl
+Mod+G hotkey-overlay-title="Gesture" { spawn "kanade" "gesture"; }
+```
+
 Kanade can lock on idle itself: turn on the `idle` Module (`kanade module enable idle`, then restart Kanade) and stop any idle daemon. After `idle.dim` seconds the screens fade toward dark, and any input brings them back; at `idle.lock` the session locks, then `idle.screen_off` turns the monitors off and `idle.suspend` suspends, each 0 for never, see [Configuration](Configuration.md). A video playing, caffeine or any logind idle inhibitor holds every stage. `kanade idle status` says how it stands, and `kanade doctor` warns when hypridle runs beside it.
 
 With the Module off, as by default, an idle daemon locks the same way as the keybind. For hypridle, in `~/.config/hypr/hypridle.conf`:

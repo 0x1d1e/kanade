@@ -202,6 +202,14 @@ What the `idle` Module does after the user has been idle for so long (ADR 0047):
 - **Invariant:** the stage scheduler takes time as an input, never reads a clock.
 - **Avoid:** screensaver, DPMS (niri powers monitors off), idle inhibit (an inhibitor is what holds the stages)
 
+## Gesture
+A stroke the user recorded under a name (`kanade gesture record NAME`, three strokes, kept normalized in the state file `gestures.toml`, ADR 0106) and mapped, in `gestures.<name>` of the config, to a Kanade verb. `kanade gesture` covers the focused output with an overlay that takes the pointer; the stroke drawn is matched by a $1 recognizer and a match runs its verb (ADR 0105 to 0109).
+- **Invariant:** a Gesture runs only a Kanade verb, through the shell's own socket, never a shell command; user commands go through a Hook. Verbs that wait on the user, run a program or end the session are refused when the config is read.
+- **Invariant:** the overlay always lets go of the pointer and keyboard: Escape, a right click, the end of the stroke, 8 s and a lock close it, and it never opens while locked.
+- **Invariant:** no match, or two Gestures too close to tell apart, runs nothing and shows a Transient "No gesture".
+- The templates are state (rewritten by `record`), the verbs are config (user-owned); neither holds the other.
+- **Avoid:** macro, shortcut, mouse gesture (a gesture here is drawn on an overlay, not a global pointer motion), Hook (runs a user command on an event)
+
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules/catalog.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.

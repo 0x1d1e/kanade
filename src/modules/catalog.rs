@@ -30,8 +30,8 @@ use crate::sources::{
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
-    reload, settings, shadow, supervise, surfaces, ui, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, gesture, hooks, idle, ipc,
+    lock, reload, settings, shadow, supervise, surfaces, ui, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -1284,6 +1284,40 @@ notifications dnd on until <HH:MM>
             },
         }],
         start: |app| app,
+    },
+    /*
+     * a stroke drawn with the pointer runs a verb of Kanade (ADR 0105 to 0109): the overlay opens
+     * only on `kanade gesture`, which the user binds, so Kanade grabs no key. Inert until a
+     * gesture is recorded
+     */
+    Module {
+        name: "gesture",
+        about: "Draw a pointer gesture to run a Kanade verb",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::GESTURES,
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "gesture",
+            about: "Draw a pointer gesture to run a verb, record or forget one",
+            usage: || {
+                format!(
+                    "gesture\ngesture record <name>\ngesture forget <name>\ngesture list\n  <name>: {}",
+                    gesture::NAME_RULE
+                )
+            },
+            parse: |arguments| {
+                gesture::Request::parse(arguments)
+                    .map(Call::Gesture)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            gesture::spawn();
+            app.window_per_monitor(gesture::window)
+        },
     },
     // keeps the session from going idle while on, by systemd-inhibit, which only it starts
     Module {

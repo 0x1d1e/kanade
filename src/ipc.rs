@@ -8,6 +8,7 @@ use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
+use crate::gesture;
 use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
@@ -52,6 +53,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
         // answered once the user has picked or left niri's picker, so the client waits on the user
         Ok(Call::PickColor) => capture::pick(reply),
+        // answered once the three strokes are drawn or the overlay closes, so the client waits on the user
+        Ok(Call::Gesture(gesture::Request::Record(name))) => gesture::record(name, reply),
         // answered when the source is done, or unknown once `LATER` passes (`crate::later`)
         Ok(Call::Record(request)) => recording::request(request, Later::new(reply)),
         // on the draw thread, which systemd-inhibit dies with
@@ -80,6 +83,8 @@ fn run(call: Call) -> Reply {
             Reply::Done(String::new())
         }
         Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // opens the overlay or answers from the state file; the user's stroke is no answer to this
+        Call::Gesture(request) => gesture::run(request),
         // `answer` keeps these waiting
         Call::Dmenu(_)
         | Call::Record(_)
