@@ -407,6 +407,11 @@ impl IslandService {
         self.arbiter.activity(id)
     }
 
+    // every Activity registered, shown or not, in no order
+    pub fn activities(&self) -> impl Iterator<Item = &Activity> {
+        self.arbiter.activities()
+    }
+
     // the primary this island last settled on, since when, and until when (`Arbiter::shown`)
     pub fn shown(&self, monitor: &str) -> Option<(&Id, Instant, Option<Instant>)> {
         self.arbiter.shown(arbiter::Island {

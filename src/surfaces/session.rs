@@ -13,6 +13,7 @@ use crate::icon::Icon;
 use crate::island::activity::{Ending, Leave};
 use crate::island::presentation::Surface;
 use crate::modules;
+use crate::sources::session::warning;
 use crate::sources::session::{self, Counting};
 
 // what the ring can be on
@@ -105,9 +106,10 @@ fn tiles(ring: Option<At>) -> Rectangle {
 // what is left, then Cancel and Now along the bottom
 fn countdown(counting: &Counting, ring: Option<At>) -> impl kanade_runtime::Widget + use<> {
     let left = session::left(&counting.countdown, Instant::now());
-    let said = pad::reading(
+    let said = pad::noted(
         icon(Leave::Ending(counting.end)),
         format!("{} in {left} s", session::doing(counting.end)),
+        warning::lines(counting.serial),
     );
 
     let (cancel, now) = (At::Cancel(*counting), At::Now(*counting));

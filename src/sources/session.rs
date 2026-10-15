@@ -48,6 +48,8 @@ pub const NOW: &str = "now";
 // the action of a refused restart, power off or log out
 pub const DISMISS: &str = "dismiss";
 
+pub mod warning;
+
 const LOGIND: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const MANAGER: &str = "org.freedesktop.login1.Manager";
@@ -518,6 +520,7 @@ fn start(end: Ending, now: Instant) -> Result<u64, String> {
     island.post(activity(counting), now);
     drop(island);
 
+    warning::look(counting.serial, end);
     wake();
     Ok(counting.serial)
 }

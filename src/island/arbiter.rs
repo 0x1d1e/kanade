@@ -111,6 +111,11 @@ impl Arbiter {
         self.activities.get(id).map(|entry| &entry.activity)
     }
 
+    // every Activity registered, in no order
+    pub fn activities(&self) -> impl Iterator<Item = &Activity> {
+        self.activities.values().map(|entry| &entry.activity)
+    }
+
     /*
      * how `id` interrupts, if up at `now`: a repost with the same Interrupt is no new arrival,
      * while one that changes it, or a repost of an expired one not yet swept, is
