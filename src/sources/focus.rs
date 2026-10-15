@@ -48,6 +48,23 @@ fn turns_off<S: PartialEq>(set: Option<S>, now: Option<S>) -> bool {
     set.is_some() && set == now
 }
 
+/*
+ * whether Focus is on, as a Service so the Controls tile draws again when it changes, even when every
+ * piece it turns on was already on and nothing else moved
+ */
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Quiet {
+    pub on: bool,
+}
+
+impl Service for Quiet {
+    fn new() -> Self {
+        Quiet::default()
+    }
+
+    fn listen() {}
+}
+
 // what `kanade focus` asks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
@@ -132,6 +149,8 @@ fn turn(on: bool) -> Vec<String> {
     } else if let Some(turned) = held.take() {
         release(turned, &mut problems);
     }
+
+    Quiet::write().on = held.is_some();
 
     problems
 }

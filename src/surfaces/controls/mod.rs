@@ -611,7 +611,7 @@ fn night_light() -> Switch {
 
 // on while Focus holds what it turned on
 fn focus() -> Switch {
-    let on = quiet::on();
+    let on = quiet::Quiet::read().on;
 
     Switch {
         icon: icon(Tile::Focus),

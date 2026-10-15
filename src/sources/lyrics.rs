@@ -12,7 +12,7 @@
 //! title, artist, album and length, so no file name tells what was played; a miss is kept for
 //! `NEGATIVE` only, and at most `CACHE_FILES` files stay. A request that fails waits twice as long
 //! after each failure in a row (`Backoff`) or what `Retry-After` says if longer, and two requests
-//! are `GAP` apart. The request says `Kanade/<version>` and nothing else of this machine. Neither
+//! are `GAP` apart. A 429 holds every track back, not only the one asked. The request says `Kanade/<version>` and nothing else of this machine. Neither
 //! the lyrics nor the track are logged or shown in `status`.
 
 use std::fs;
@@ -400,6 +400,9 @@ fn read_file(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
+// the outcome of a 429, which holds every track back, not only the one asked
+const RATE_LIMITED: &str = "rate limited";
+
 // what asking LRCLIB came to
 #[derive(Debug, PartialEq, Eq)]
 enum Answer {
@@ -442,7 +445,7 @@ fn fetch(agent: &Agent, endpoint: &str, wanted: &Wanted) -> Answer {
                 .and_then(|value| value.trim().parse::<u64>().ok())
                 .map_or(Duration::ZERO, Duration::from_secs);
 
-            return Answer::Later(after.min(RETRY_AFTER), "rate limited");
+            return Answer::Later(after.min(RETRY_AFTER), RATE_LIMITED);
         }
         _ => return Answer::Later(Duration::ZERO, "server error"),
     }
@@ -568,6 +571,9 @@ struct Worker {
     // the failed track and when to ask for it again, kept past a Stop, so closing the Surface or
     // a skip back does not skip a `Retry-After`
     penalty: Option<(String, Instant)>,
+
+    // when LRCLIB may be asked again after it limited us: it is the server's, so every track waits
+    cooldown: Option<Instant>,
     backoff: Backoff,
     last_request: Option<Instant>,
 }
@@ -583,6 +589,7 @@ impl Worker {
             resolved: false,
             retry: None,
             penalty: None,
+            cooldown: None,
             backoff: Backoff::new(RETRY, RETRY_LONGEST),
             last_request: None,
         }
@@ -592,15 +599,18 @@ impl Worker {
         match message {
             Message::Want(wanted) => {
                 if self.current.as_ref() != Some(&*wanted) {
-                    self.retry = self
+                    let now = Instant::now();
+                    let lrclib = wanted.mode == LyricsSource::Lrclib;
+                    let track = self
                         .penalty
                         .as_ref()
-                        .filter(|(key, until)| {
-                            *key == wanted.key
-                                && wanted.mode == LyricsSource::Lrclib
-                                && *until > Instant::now()
-                        })
+                        .filter(|(key, _)| *key == wanted.key)
                         .map(|(_, until)| *until);
+
+                    self.retry = lrclib
+                        .then(|| track.into_iter().chain(self.cooldown).max())
+                        .flatten()
+                        .filter(|until| *until > now);
                     self.current = Some(*wanted);
                     self.resolved = false;
                     self.backoff.reset();
@@ -637,6 +647,11 @@ impl Worker {
 
                 self.retry = Some(until);
                 self.penalty = Some((wanted.key, until));
+
+                if outcome == RATE_LIMITED {
+                    self.cooldown = Some(until);
+                }
+
                 *OUTCOME.locked() = outcome;
                 return;
             }
@@ -1074,6 +1089,24 @@ mod tests {
         again.apply(Message::Want(Box::new(track.clone())));
         assert_eq!(again.retry, Some(until));
         assert!(!again.due());
+
+        // a 429 is LRCLIB's: another track waits for it too, but a local one does not
+        again.apply(Message::Stop);
+        again.penalty = None;
+        again.cooldown = Some(until);
+        let third = Wanted::new(
+            LyricsSource::Lrclib,
+            "",
+            "Third",
+            "Artist",
+            "Album",
+            Duration::from_secs(150),
+        );
+        again.apply(Message::Want(Box::new(third)));
+        assert_eq!(again.retry, Some(until));
+        assert!(!again.due());
+        again.apply(Message::Want(Box::new(wanted(LyricsSource::Local, "/x"))));
+        assert_eq!(again.retry, None);
 
         drop(fs::remove_dir_all(&dir));
     }
