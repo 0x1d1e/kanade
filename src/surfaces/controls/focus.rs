@@ -52,6 +52,7 @@ pub enum At {
     Dnd,
     NightLight,
     ChargeLimit,
+    PowerProfile,
     Focus,
     Speaker,
 

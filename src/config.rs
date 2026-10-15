@@ -2564,7 +2564,7 @@ pub const FOCUS: &[Setting] = &[
 pub const CONTROLS: &[Setting] = &[Setting {
     key: "controls.tiles",
     label: "Controls tiles",
-    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
+    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit, power-profile; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
     hint: Some("Their order and size; add one, like focus or wifi:full, then Enter"),
     kind: Kind::Tiles(Field {
         get: |config| config.tiles.clone(),
