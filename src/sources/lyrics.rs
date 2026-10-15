@@ -4,9 +4,9 @@
 //! Nothing here runs until the Surface is open and a track plays with the setting on. The media
 //! follower then says what it wants (`want`), and one worker thread, started on the first ask,
 //! looks it up: the `.lrc` file named like a `file://` track, else (`lrclib` only) the cache, else
-//! one `GET /api/get` over https for the track's title, artist, album and length. A pause drops a
-//! retry that waits, and the Surface closing drops the lyrics, so nothing is asked for a track no
-//! one watches.
+//! one `GET /api/get` over https for the track's title, artist, album and length. A failed
+//! look-up waits, for that track, past a pause or the Surface closing, and the Surface closing
+//! drops the lyrics, so nothing is asked for a track no one watches.
 //!
 //! The cache (`$XDG_CACHE_HOME/kanade/lyrics`) holds an answer per track, named by a hash of its
 //! title, artist, album and length, so no file name tells what was played; a miss is kept for
@@ -163,7 +163,7 @@ enum Message {
     // a track plays and its lyrics are wanted
     Want(Box<Wanted>),
 
-    // it stopped playing: a retry that waits is dropped, what was found stays
+    // it stopped playing: what was found stays, and a retry that waits goes on waiting
     Pause,
 
     // nobody watches: forget it all
@@ -177,8 +177,8 @@ static QUEUE: LazyLock<Queue<Message>> = LazyLock::new(Queue::new);
 static ASKED: Mutex<Option<(Wanted, bool)>> = Mutex::new(None);
 
 /*
- * the track that is shown, and whether it plays. Lyrics are looked up while it plays; paused, a
- * retry stops waiting and what was found stays on screen
+ * the track that is shown, and whether it plays. Lyrics are looked up while it plays; paused, none
+ * is, what was found stays on screen, and a retry that waits goes on waiting
  */
 pub fn want(wanted: &Wanted, playing: bool) {
     let mut asked = ASKED.locked();
@@ -595,7 +595,11 @@ impl Worker {
                     self.retry = self
                         .penalty
                         .as_ref()
-                        .filter(|(key, until)| *key == wanted.key && *until > Instant::now())
+                        .filter(|(key, until)| {
+                            *key == wanted.key
+                                && wanted.mode == LyricsSource::Lrclib
+                                && *until > Instant::now()
+                        })
                         .map(|(_, until)| *until);
                     self.current = Some(*wanted);
                     self.resolved = false;
@@ -639,7 +643,15 @@ impl Worker {
         };
 
         self.backoff.reset();
-        self.penalty = None;
+
+        if self
+            .penalty
+            .as_ref()
+            .is_some_and(|(key, _)| *key == wanted.key)
+        {
+            self.penalty = None;
+        }
+
         self.resolved = true;
         *OUTCOME.locked() = outcome;
 
@@ -1035,7 +1047,7 @@ mod tests {
         assert!(again.resolved);
         assert_eq!(asked.join().unwrap().len(), 1);
 
-        // a pause drops a wait, and `local` never asks
+        // `local` never asks
         let local = wanted(LyricsSource::Local, "");
         again.apply(Message::Want(Box::new(local.clone())));
         again.resolve();
@@ -1044,6 +1056,24 @@ mod tests {
 
         again.apply(Message::Stop);
         assert_eq!(line(&track, Duration::from_secs(3)), Shown::default());
+
+        // a wait is for its track: it outlasts a Stop, and another track's success keeps it
+        let other = Wanted::new(
+            LyricsSource::Lrclib,
+            "",
+            "Other",
+            "Artist",
+            "Album",
+            Duration::from_secs(100),
+        );
+        let until = Instant::now() + Duration::from_secs(60);
+        again.penalty = Some((track.key.clone(), until));
+        again.apply(Message::Want(Box::new(other)));
+        assert_eq!(again.retry, None);
+        again.apply(Message::Stop);
+        again.apply(Message::Want(Box::new(track.clone())));
+        assert_eq!(again.retry, Some(until));
+        assert!(!again.due());
 
         drop(fs::remove_dir_all(&dir));
     }
