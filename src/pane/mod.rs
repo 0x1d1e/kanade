@@ -4,15 +4,18 @@
 //! draws clear glass over the screen, its content's ink following the light around it (`glass`, `ink`);
 //! Blur is the tinted solid, translucent, over what the compositor blurs behind it (`blur`, ADR 0057).
 
+mod blob;
 mod blur;
 mod body;
 mod capture;
 mod glass;
 mod ink;
 mod shader;
+mod unmix;
 
 use std::time::Duration;
 
+pub use self::blob::{Dot, blob};
 pub use self::blur::{FILL as BLUR_FILL, behind as blurred};
 pub use self::body::{Body, Join, ahead};
 pub use self::capture::{forget, locked, origin, place, shown};
@@ -33,6 +36,14 @@ pub const LEAD: Duration = Duration::from_millis(33);
 // whether panes are Liquid Glass now, which is the only finish that captures the screen
 pub fn glass() -> bool {
     config::get().appearance.finish == Finish::LiquidGlass
+}
+
+/*
+ * whether Liquid Glass bends what lies under its edge, taking the shell's own drawing out of the
+ * copy of the screen (ADR 0100): the setting, on the finish
+ */
+pub fn refraction() -> bool {
+    glass() && config::get().appearance.refraction
 }
 
 /*

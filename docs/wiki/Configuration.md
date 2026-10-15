@@ -46,6 +46,8 @@ align = "center"
 tone = "dark"
 # what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: "tinted-solid", dark with light text, "paper", light with dark ink, "liquid-glass", clear glass over the screen, its edge reflecting what lies around, or "blur", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is "light" (needs niri 26.04)
 finish = "tinted-solid"
+# Liquid Glass only: bend what lies under its edge, taking the shell's own drawing out of the copy of the screen, where that can be told apart, else the edge reflects what lies around as before; costs a copy of each frame of the window
+refraction = false
 # sets the desktop color preference and paired GTK theme; writes the wallpaper colors for GTK, qt5ct/qt6ct, KDE apps, niri, kitty and Pywalfox. Kvantum gives way to Darkly or Fusion; GTK and Qt apps need restart. Other apps are unchanged
 sync = false
 # follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; turning it on takes a restart

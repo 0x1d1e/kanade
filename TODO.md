@@ -87,6 +87,18 @@ Not worth changing, by this review:
 
 - [ ] The `unread` regions (`src/pane/capture.rs`) rest on the shader's read geometry (`glass.wgsl`), with no test tying the two; a merged outline's concave notch is the case to check by eye or by a test that samples the shader's offsets.
 
+## Panes (Satellites as one liquid shape, ADR 0101)
+
+- [ ] Not seen: the neck as a Satellite comes out and tucks back (tinted, paper, blur; a dot bringing in a second one; a dot sliding to another slot). Tune `pane::blob::REACH` by eye: the neck lasts the last quarter of a dot's travel.
+- [ ] Banners do not join the Island's body: they are a window of their own (ADR 0023).
+- [ ] Liquid Glass keeps plain dots; the neck there would feed the screen copy the edge reads.
+
+## Panes (Liquid Glass refraction, ADR 0100)
+
+- [ ] Not run on a GPU: `appearance.refraction = true` under `liquid-glass`. Check by eye: the edge of the Island at rest and open, the Dock and a Banner over a photo wallpaper and over a window with text; no flicker or colored fringe at the edge while the body morphs or a clock ticks (skew rejects should fall back to the outward look, not show a wrong color); 5 s at rest over a static page draws 0 frames; with it off, the look and idle frames are as before. A wgpu validation error at start (bind group, binding 6) would show in the log for every shader, with the setting off too.
+- [ ] If it holds: tune `pane::unmix::MAX_ALPHA` and `SLACK`; consider the inward read only where the outward one is weakest; take the ink's ring from the unmixed page only if a bright window under the body, not around it, ever needs it.
+- [ ] A copy of the output holds windows in higher layers and the cursor, which the unmix reads as page.
+
 ## Panes (Blur finish, ADR 0057)
 
 - [ ] Not verified: windows behind a pane blurred (non-xray). It needs the niri layer rule `xray false` for `kanade`, `kanade-dock` and `kanade-banners` (`dist/niri/config.kdl`), which the E2E session's niri config lacks and an agent may not add. Without the rule, E2E on niri 26.04 showed the wallpaper blurred and a window's text under the Island hidden (xray), as niri's docs say. Check with the rule: text behind the Island, Dock and a Banner blurred, not hidden, and the fill's 78% (`pane::BLUR_FILL`) readable over a white window and a dark one.

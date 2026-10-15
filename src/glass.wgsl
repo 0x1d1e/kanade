@@ -10,7 +10,10 @@
 //   values[10] and [11]: two other panes on the copy, x, y, width and height in its pixels, which
 //     are read as none of what lies around this one
 //   values[12].x: how far out the edge reads at most, in pixels; 0 when no copy can fill this pane
-//   values[13].x: how black the glass is under the body, 0 to 1, over a fairly bright page
+//   values[13]: where the copy's corner lies in the window, then the window's size, in logical pixels
+//   values[14].x: how black the glass is under the body, 0 to 1, over a fairly bright page
+//   values[14].y: 1 when `canvas` is the window as last presented (ADR 0100), then the most opaque
+//     its drawing may be for the page under it to be told, and the slack of the result's range
 // It never reads the clock, so a body at rest draws no frames of its own.
 //
 // This is the final pass of liquid-glass-studio (src/shaders-wgsl/fragment-main.wgsl) at its default
@@ -200,6 +203,43 @@ fn profile(depth: f32) -> f32 {
     return -tan(transmitted - incident);
 }
 
+/*
+ * the page under the shell's own drawing at `at` (the copy's logical pixels): the compositor
+ * blended the window over it, copy = ours + (1 - alpha) * page, and `canvas` is ours as last
+ * presented, so page = (copy - ours) / (1 - alpha). Plain rgb and 1; 0 where it cannot be told:
+ * no frame kept, a place off the copy or the window, a drawing nearly opaque, or a result that is
+ * no color, as when the copy is of another frame (ADR 0100). Mirrored by `unmix` in src/pane/unmix.rs
+ */
+fn page(at: vec2<f32>) -> vec4<f32> {
+    let place = values[9];
+    let map = values[13];
+    let c = at / place.zw;
+    let w = (map.xy + at) / map.zw;
+
+    if values[14].y < 0.5 || textureDimensions(canvas).x <= 1u
+        || any(c < vec2<f32>(0.0)) || any(c > vec2<f32>(1.0))
+        || any(w < vec2<f32>(0.0)) || any(w > vec2<f32>(1.0)) {
+        return vec4<f32>(0.0);
+    }
+
+    let copy = textureSampleLevel(backdrop, backdrop_sampler, c, 0.0).rgb;
+    let ours = textureSampleLevel(canvas, backdrop_sampler, w, 0.0);
+    let remaining = 1.0 - ours.a;
+
+    if remaining < 1.0 - values[14].z {
+        return vec4<f32>(0.0);
+    }
+
+    let found = (copy - ours.rgb) / remaining;
+    let margin = values[14].w + 0.5 / 255.0 / remaining;
+
+    if any(found < vec3<f32>(-margin)) || any(found > vec3<f32>(1.0 + margin)) {
+        return vec4<f32>(0.0);
+    }
+
+    return vec4<f32>(clamp(found, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+}
+
 // the screen around the body, bent at the edge: inside the outline, the copy read just outside it,
 // the further out the nearer the edge, a channel at a time. Plain rgb, and how much the read covers
 fn lens(uv: vec2<f32>) -> vec4<f32> {
@@ -239,6 +279,29 @@ fn lens(uv: vec2<f32>) -> vec4<f32> {
 
         if other(place.xy + p + out * (max(depth, 0.0) + reach * split)) {
             return vec4<f32>(0.0);
+        }
+    }
+
+    // with the page under the body told, the edge reads inward as the studio's does, from the
+    // same distance and channel by channel; all three or none, or the channels left would fringe
+    if values[14].y > 0.5 {
+        var inward = vec3<f32>(0.0);
+        var told = true;
+
+        for (var channel = 0; channel < 3; channel++) {
+            let split = 1.0 - (N_R + 0.02 * f32(channel) - 1.0) * DISPERSION;
+            let seen = page(place.xy + p - out * (reach * split));
+
+            if seen.w < 0.5 {
+                told = false;
+                break;
+            }
+
+            inward[channel] = seen[channel];
+        }
+
+        if told {
+            return vec4<f32>(inward, smoothstep(0.02, 0.15, edge));
         }
     }
 
@@ -286,7 +349,7 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let up = vec2<f32>(n.x, -n.y);
 
     // the scrim under the edge, which the pane's light ink wants over a page growing bright
-    var glass = vec4<f32>(0.0, 0.0, 0.0, values[13].x);
+    var glass = vec4<f32>(0.0, 0.0, 0.0, values[14].x);
 
     if values[12].x > 0.5 {
         glass = over(lens(uv), glass);

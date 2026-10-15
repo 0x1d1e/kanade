@@ -155,7 +155,10 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Finish",
-                rows: &[Row::Key("appearance.finish")],
+                rows: &[
+                    Row::Key("appearance.finish"),
+                    Row::Key("appearance.refraction"),
+                ],
             },
             Section {
                 title: "Type",

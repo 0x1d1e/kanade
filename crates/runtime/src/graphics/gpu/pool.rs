@@ -29,6 +29,38 @@ impl Gpu {
         }
     }
 
+    /*
+     * the frame as it is about to be presented, for the shaders of the next one that read it, when
+     * one this frame asked; else none is kept
+     */
+    pub(super) fn keep_presented(&mut self, canvas: &Texture) {
+        if !std::mem::take(&mut self.presenting) {
+            self.presented = None;
+
+            return;
+        }
+
+        let fits =
+            |kept: &Texture| kept.width() == canvas.width() && kept.height() == canvas.height();
+
+        let kept = match self.presented.take() {
+            Some(kept) if fits(&kept) => kept,
+            _ => texture::kept(&self.device, canvas.width(), canvas.height()),
+        };
+
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        encoder.copy_texture_to_texture(
+            canvas.as_image_copy(),
+            kept.as_image_copy(),
+            canvas.size(),
+        );
+
+        self.queue.submit([encoder.finish()]);
+
+        self.presented = Some(kept);
+    }
+
     pub(super) fn give_back(&mut self, texture: Texture) {
         self.spare.push(texture);
     }
