@@ -540,12 +540,26 @@ impl Layouts {
 
         self.names.get(usize::try_from(index).ok()?).cloned()
     }
+
+    // the name of the layout in use; none with fewer than two, where there is nothing to switch
+    // between, and for an index the list does not have
+    fn in_use(&self) -> Option<String> {
+        if self.names.len() < 2 {
+            return None;
+        }
+
+        self.names.get(usize::try_from(self.current).ok()?).cloned()
+    }
 }
 
 // what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
 static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
 static LAYOUTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
 static CONFIGS: Mutex<Vec<fn()>> = Mutex::new(Vec::new());
+static KEYBOARDS: Mutex<Vec<InUse>> = Mutex::new(Vec::new());
+
+// what hears the layout in use, none when there is no choice of one
+type InUse = fn(Option<String>);
 
 // set once `follow` runs, after which a Module can no longer ask to hear
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
@@ -572,6 +586,21 @@ pub fn on_layout(then: fn(String)) {
     );
 
     LAYOUTS.locked().push(then);
+}
+
+/*
+ * `then` hears the layout in use, by the name XKB gives it, when it changes: as niri lists the
+ * layouts on connecting and on a change of config, and on each switch. None with fewer than two
+ * layouts. On the niri thread, so it must not block. Unlike `on_layout` it says what is in use
+ * before any switch, for what shows the layout rather than the change
+ */
+pub fn on_keyboard(then: InUse) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    KEYBOARDS.locked().push(then);
 }
 
 /*
@@ -836,8 +865,17 @@ fn watch(
             hear(heard);
         }
 
+        let before = layouts.in_use();
         if let Some(name) = layouts.switch(&event) {
             switched(name);
+        }
+        let after = layouts.in_use();
+        if after != before {
+            let hearing = KEYBOARDS.locked().clone();
+
+            for then in hearing {
+                then(after.clone());
+            }
         }
 
         if event
@@ -1233,6 +1271,25 @@ mod tests {
             switches(&[&layouts(&["English (US)", "German"], 0), &switched(5)]),
             Vec::<String>::new()
         );
+    }
+
+    // what the lock screen shows is the layout in use, known from the list, before any switch
+    #[test]
+    fn the_layout_in_use_is_known_from_the_list_and_only_with_two() {
+        let mut layouts = Layouts::default();
+        let mut feed = |event: String| {
+            layouts.switch(&json::parse(&event).unwrap());
+            layouts.in_use()
+        };
+
+        assert_eq!(feed(switched(1)), None);
+        assert_eq!(
+            feed(self::layouts(&["English (US)", "Russian"], 1)).as_deref(),
+            Some("Russian")
+        );
+        assert_eq!(feed(switched(0)).as_deref(), Some("English (US)"));
+        assert_eq!(feed(switched(5)), None);
+        assert_eq!(feed(self::layouts(&["English (US)"], 0)), None);
     }
 
     #[test]
