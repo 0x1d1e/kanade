@@ -3,6 +3,7 @@
 use kanade_runtime::Rectangle;
 
 use super::shader::glass_shader;
+use super::unmix;
 use super::{Pane, Spot};
 
 // the captured area around a body
@@ -28,8 +29,9 @@ impl Seen {
 }
 
 // the rows of values a copy's place takes: its body's three, where it lies in the copy, the rects
-// of `NEAR` other panes on it, and how far out the edge reads, which is 0 while there is no copy
-pub(super) const COPY_ROWS: usize = 4 + NEAR + 1;
+// of `NEAR` other panes on it, how far out the edge reads, which is 0 while there is no copy, and
+// where the copy lies in the window (for `unmix`)
+pub(super) const COPY_ROWS: usize = 4 + NEAR + 2;
 
 // how many other panes on a copy are told to the shader, which reads none of them
 pub(super) const NEAR: usize = 2;
@@ -74,6 +76,15 @@ pub(super) fn layer(pane: Pane) -> Rectangle {
         }
 
         values[SCRIM_ROW][0] = seen.scrim;
+
+        // the window as last presented, to take the shell's drawing out of the copy (ADR 0100)
+        if super::refraction() {
+            values[SCRIM_ROW][1] = 1.0;
+            values[SCRIM_ROW][2] = unmix::MAX_ALPHA;
+            values[SCRIM_ROW][3] = unmix::SLACK;
+
+            layer = layer.presented();
+        }
 
         layer = layer.backdrop(seen.spot);
     }

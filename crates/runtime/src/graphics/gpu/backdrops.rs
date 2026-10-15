@@ -51,6 +51,11 @@ impl Backdrops {
         }
     }
 
+    // one transparent texel
+    pub fn blank(&self) -> TextureView {
+        self.blank.clone()
+    }
+
     pub fn sampler(&self) -> &Sampler {
         &self.sampler
     }

@@ -91,6 +91,7 @@ pub enum Command {
         shader: PathBuf,
         values: Vec<[f32; 4]>,
         backdrop: Option<Spot>,
+        presented: bool,
         area: Area,
         path: Option<BezierPath>,
         transform: Transform,

@@ -11,6 +11,7 @@ mod capture;
 mod glass;
 mod ink;
 mod shader;
+mod unmix;
 
 use std::time::Duration;
 
@@ -35,6 +36,14 @@ pub const LEAD: Duration = Duration::from_millis(33);
 // whether panes are Liquid Glass now, which is the only finish that captures the screen
 pub fn glass() -> bool {
     config::get().appearance.finish == Finish::LiquidGlass
+}
+
+/*
+ * whether Liquid Glass bends what lies under its edge, taking the shell's own drawing out of the
+ * copy of the screen (ADR 0100): the setting, on the finish
+ */
+pub fn refraction() -> bool {
+    glass() && config::get().appearance.refraction
 }
 
 /*

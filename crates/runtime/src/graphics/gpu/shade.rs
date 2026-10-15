@@ -22,6 +22,9 @@ pub(super) struct Material<'a> {
     pub shader: &'a Path,
     pub values: &'a [[f32; 4]],
     pub backdrop: Option<&'a Spot>,
+
+    // whether the shader reads the window as last presented
+    pub presented: bool,
 }
 
 impl Gpu {
@@ -67,6 +70,7 @@ impl Gpu {
             shader,
             values,
             backdrop,
+            presented,
         } = material;
 
         // compiled the first time a path is drawn, then kept
@@ -103,6 +107,16 @@ impl Gpu {
         let mut backdrops = backdrops.borrow_mut();
         let behind = backdrops.view(&self.device, &self.queue, backdrop);
 
+        // the last presented frame, else one transparent texel
+        let before = match (&self.presented, presented) {
+            (Some(kept), true) => texture::view(kept),
+            _ => backdrops.blank(),
+        };
+
+        if presented {
+            self.presenting = true;
+        }
+
         let inputs = self.device.create_bind_group(&BindGroupDescriptor {
             label: None,
             layout: &shader.inputs,
@@ -130,6 +144,10 @@ impl Gpu {
                 BindGroupEntry {
                     binding: 5,
                     resource: BindingResource::Sampler(backdrops.sampler()),
+                },
+                BindGroupEntry {
+                    binding: 6,
+                    resource: BindingResource::TextureView(&before),
                 },
             ],
         });

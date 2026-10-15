@@ -16,6 +16,7 @@ impl Gpu {
             // spares and kept results of the old size would never fit again
             self.spare.clear();
             self.painted.clear();
+            self.presented = None;
         }
 
         let Some(frame) = self.next_frame() else {
@@ -27,6 +28,8 @@ impl Gpu {
         let canvas = self.take_canvas(width, height);
 
         self.run(commands, &canvas);
+
+        self.keep_presented(&canvas);
 
         let target = frame.texture.create_view(&Default::default());
 

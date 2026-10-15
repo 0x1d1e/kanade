@@ -234,6 +234,10 @@ pub struct Appearance {
     // follow the desktop's reduced motion and higher contrast (ADR 0080)
     pub accessibility: bool,
 
+    // Liquid Glass bends what lies under its edge, with the shell's own drawing taken out of the
+    // screen copy (experimental, ADR 0100)
+    pub refraction: bool,
+
     // the UI scale in percent, on top of each output's own scale (ADR 0091)
     pub scale: u32,
 }
@@ -253,6 +257,7 @@ impl Default for Appearance {
             sync: false,
             font: None,
             accessibility: true,
+            refraction: false,
             scale: 100,
         }
     }
@@ -1461,6 +1466,19 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.appearance.finish = Finish::named(name),
             },
         ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.refraction",
+        label: "Refraction (experimental)",
+        help: "Liquid Glass only: bend what lies under its edge, taking the shell's own drawing out of the copy of the screen, where that can be told apart, else the edge reflects what lies around as before; costs a copy of each frame of the window",
+        hint: Some("Experimental: Liquid Glass bends what is under its edge"),
+        kind: Kind::Switch(Field {
+            get: |config| config.appearance.refraction,
+            set: |config, refraction| config.appearance.refraction = refraction,
+        }),
         example: None,
         restart: false,
         per_output: false,
@@ -3865,6 +3883,7 @@ mod tests {
                 "shell.align",
                 "appearance.tone",
                 "appearance.finish",
+                "appearance.refraction",
                 "appearance.sync",
                 "appearance.accessibility",
                 "animation.speed",

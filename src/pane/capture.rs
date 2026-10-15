@@ -109,6 +109,7 @@ fn request(
     body: Body,
     origin: (f32, f32),
     screen: (u32, u32),
+    canvas: (f32, f32),
     others: &[[f32; 4]],
 ) -> Option<Request> {
     let (x, y, width, height) = body.bounds();
@@ -154,8 +155,12 @@ fn request(
     near.sort_by(|a, b| b.0.total_cmp(&a.0));
     near.truncate(NEAR);
 
-    // what the shader reads none of: the screen inside the body, and the panes it skips
-    let mut unread: Vec<Region> = inside(body, x - left, y - top);
+    // what the shader reads none of: the screen inside the body unless it is unmixed, and the panes it skips
+    let mut unread: Vec<Region> = if super::refraction() {
+        Vec::new()
+    } else {
+        inside(body, x - left, y - top)
+    };
 
     unread.extend(near.iter().map(|&(_, [x, y, width, height])| Region {
         x,
@@ -173,6 +178,9 @@ fn request(
 
     // how far out the edge reads at most, in pixels, which is 0 while there is no copy
     values.push([REACH * screen.1 as f32, 0.0, 0.0, 0.0]);
+
+    // where the copy's corner lies in the window, and the window's size, for the frame it presented
+    values.push([left - origin.0, top - origin.1, canvas.0, canvas.1]);
 
     Some(Request {
         region,
@@ -239,7 +247,7 @@ pub fn place(
 
     backdrop::watch(
         &spot,
-        body.and_then(|body| request(body, origin, screen, &others)),
+        body.and_then(|body| request(body, origin, screen, canvas, &others)),
     );
 
     glass && backdrop::capable()
