@@ -390,6 +390,9 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("live", live::follow);
+
+            // a failed reload of niri's config shows as a failed one, heard from niri
+            niri::on_config_failed(live::niri_config_failed);
             app
         },
     },

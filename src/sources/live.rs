@@ -657,6 +657,25 @@ fn activity(id: &str, job: Job) -> Activity {
     .with_detail(Detail::Live(job))
 }
 
+// the id of niri's failed config load; a space is outside a client's alphabet, so no client has it
+const NIRI_CONFIG: &str = "niri config";
+
+/*
+ * niri says its config failed to load (`niri::on_config_failed`, ADR 0071): the failed form of a
+ * Live Activity, shown a while on the focused output. Nothing is live, so there is nothing to end
+ * or to withdraw
+ */
+pub fn niri_config_failed() {
+    let job = Job {
+        title: String::from("niri config"),
+        detail: String::from("run niri validate"),
+        progress: None,
+        ended: Some(Ended::Failed),
+    };
+
+    IslandService::write().post(activity(NIRI_CONFIG, job), Instant::now());
+}
+
 /*
  * `kanade activity run`: starts the live Activity, runs `command` and ends it by how the command
  * ended, exiting as it did; 127 when it cannot start. The command runs without a shell to tell, as

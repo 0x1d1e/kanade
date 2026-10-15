@@ -3,7 +3,8 @@
 //! many times it opened, the focused workspace, whether anything casts and the window each output
 //! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. Each window
 //! niri opens, closes or focuses and each keyboard layout switch are events, not state, so a
-//! Module takes those by `on_windows` and `on_layout`. `ask` sends
+//! Module takes those by `on_windows` and `on_layout`, and a failed load of niri's config by
+//! `on_config_failed`. `ask` sends
 //! niri one request on a connection of its own.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -491,6 +492,7 @@ impl Layouts {
 // what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
 static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
 static LAYOUTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
+static CONFIGS: Mutex<Vec<fn()>> = Mutex::new(Vec::new());
 
 // set once `follow` runs, after which a Module can no longer ask to hear
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
@@ -519,6 +521,20 @@ pub fn on_layout(then: fn(String)) {
     LAYOUTS.locked().push(then);
 }
 
+/*
+ * `then` hears each time niri says a load of its config failed, on the niri thread, so it must
+ * not block. That includes the failure of the last load when the stream connects, which a shell
+ * started after it would otherwise never hear of; a load that succeeded says nothing
+ */
+pub fn on_config_failed(then: fn()) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    CONFIGS.locked().push(then);
+}
+
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
 pub fn follow() {
     FOLLOWING.store(true, Ordering::Relaxed);
@@ -545,6 +561,13 @@ pub fn follow() {
                     then(name.clone());
                 }
             },
+            || {
+                let hearing = CONFIGS.locked().clone();
+
+                for then in hearing {
+                    then();
+                }
+            },
         );
     });
 }
@@ -555,9 +578,17 @@ fn run(
     mut post: impl FnMut(&Seen, &Seen),
     mut hear: impl FnMut(Heard),
     mut switched: impl FnMut(String),
+    mut failed: impl FnMut(),
 ) {
     let lost = match stream {
-        Ok(stream) => watch(stream, posted, &mut post, &mut hear, &mut switched),
+        Ok(stream) => watch(
+            stream,
+            posted,
+            &mut post,
+            &mut hear,
+            &mut switched,
+            &mut failed,
+        ),
         Err(error) => error,
     };
 
@@ -706,6 +737,7 @@ fn watch(
     post: &mut impl FnMut(&Seen, &Seen),
     hear: &mut impl FnMut(Heard),
     switched: &mut impl FnMut(String),
+    failed: &mut impl FnMut(),
 ) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Known::default();
@@ -739,6 +771,15 @@ fn watch(
 
         if let Some(name) = layouts.switch(&event) {
             switched(name);
+        }
+
+        if event
+            .get("ConfigLoaded")
+            .and_then(|loaded| loaded.get("failed"))
+            .and_then(Json::as_bool)
+            == Some(true)
+        {
+            failed();
         }
 
         niri.apply(&event);
@@ -786,6 +827,7 @@ mod tests {
             },
             &mut drop,
             &mut drop,
+            &mut || {},
         );
 
         assert_eq!(posts.last().cloned().unwrap_or_default(), posted);
@@ -836,6 +878,7 @@ mod tests {
             &mut |_, _| {},
             &mut |told| heard.push(told),
             &mut drop,
+            &mut || {},
         );
 
         heard
@@ -999,6 +1042,33 @@ mod tests {
         assert_eq!(casting(&forgotten), [true, true]);
     }
 
+    // how many failed loads of its config this stream tells of
+    fn failures(lines: &[&str]) -> usize {
+        let text = [&[OK], lines].concat().join("\n");
+        let mut failures = 0;
+
+        watch(
+            text.as_bytes(),
+            &mut Seen::default(),
+            &mut |_, _| {},
+            &mut drop,
+            &mut drop,
+            &mut || failures += 1,
+        );
+
+        failures
+    }
+
+    #[test]
+    fn only_a_failed_config_load_is_told() {
+        let loaded = |failed| format!(r#"{{"ConfigLoaded":{{"failed":{failed}}}}}"#);
+
+        assert_eq!(failures(&[&loaded(false), WORKSPACES]), 0);
+        assert_eq!(failures(&[&loaded(true)]), 1);
+        assert_eq!(failures(&[&loaded(false), &loaded(true), &loaded(true)]), 2);
+        assert_eq!(failures(&[r#"{"ConfigLoaded":{}}"#]), 0);
+    }
+
     // the layouts each switch of this stream goes to
     fn switches(lines: &[&str]) -> Vec<String> {
         let text = [&[OK], lines].concat().join("\n");
@@ -1010,6 +1080,7 @@ mod tests {
             &mut |_, _| {},
             &mut drop,
             &mut |name| switches.push(name),
+            &mut || {},
         );
 
         switches
@@ -1084,6 +1155,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            || {},
         );
 
         // nobody can say a cast still runs, so its capture goes too
@@ -1099,6 +1171,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            || {},
         );
         run(
             Ok(OK.as_bytes()),
@@ -1106,6 +1179,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            || {},
         );
 
         assert_eq!(posts, []);
