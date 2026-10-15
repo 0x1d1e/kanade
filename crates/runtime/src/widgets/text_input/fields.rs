@@ -17,3 +17,12 @@ pub fn set(id: &'static str, field: Field) {
         fields.insert(id, field);
     });
 }
+
+// no input is composing any more: the input method went away, or left the input
+pub fn end_composition() {
+    FIELDS.with_borrow_mut(|fields| {
+        for field in fields.values_mut() {
+            field.preedit = None;
+        }
+    });
+}

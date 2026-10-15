@@ -3,6 +3,7 @@ mod compositor;
 mod data_device;
 mod effect;
 mod idle;
+mod ime;
 mod keyboard;
 mod layer;
 mod normal;
@@ -58,6 +59,7 @@ use crate::window::Named;
 use crate::{Cursor, LayerWindow, Modifiers, Monitor};
 use backdrop::Captures;
 pub use effect::blur_available;
+use ime::Ime;
 use toplevels::Toplevel;
 
 use surface::{OpenWindow, View};
@@ -92,6 +94,9 @@ struct WaylandState {
     // both are needed for fractional scales like 1.25, none when the compositor lacks one
     fractional_scale: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
+
+    // the compositor's input method for the focused text input, none without its text-input-v3
+    ime: Option<Ime>,
 
     // blur behind the panes of a layer window, none when the compositor has no `ext-background-effect`
     background_effect: Option<ExtBackgroundEffectManagerV1>,
@@ -169,6 +174,7 @@ impl WaylandApp {
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
         let background_effect = globals.bind(&qh, 1..=1, ()).ok();
+        let ime = ime::bind(&globals, &qh);
 
         // windows per monitor are opened once the compositor describes each monitor
         let mut state = WaylandState {
@@ -195,6 +201,8 @@ impl WaylandApp {
             viewporter,
 
             background_effect,
+
+            ime,
 
             toplevel_manager,
             toplevels: HashMap::new(),

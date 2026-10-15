@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use crate::graphics::Area;
 use crate::input::focus::FocusHandler;
+use crate::input::ime::{self, Batch, Caret, Context};
 use crate::input::{Cursor, Handlers, Target, focus, paste};
 use crate::{Button, Key, Modifiers};
 
@@ -12,13 +13,23 @@ pub fn collect_targets(text_input: &TextInput, area: Area, targets: &mut Vec<Tar
     let id = text_input.id;
     let on_key = key_handler(text_input);
 
+    let editor: Rc<dyn ime::Editor> = Rc::new(Editor {
+        id,
+        sensitive: text_input.password,
+        on_change: text_input.on_change.clone(),
+    });
+
     // the handler holds this redraw's on_change and on_submit, so a focused input takes the new one
     if focus::wanted(id) || focus::has(id) || text_input.focused {
-        focus::set(id, on_key.clone());
+        focus::set(id, on_key.clone(), editor.clone());
     }
 
-    let on_click = move |_: Button| {
-        focus::set(id, on_key.clone());
+    let on_click = {
+        let editor = editor.clone();
+
+        move |_: Button| {
+            focus::set(id, on_key.clone(), editor.clone());
+        }
     };
 
     let handlers = Handlers {
@@ -27,7 +38,47 @@ pub fn collect_targets(text_input: &TextInput, area: Area, targets: &mut Vec<Tar
         ..Handlers::default()
     };
 
-    targets.push(Target::new(area, handlers));
+    let mut target = Target::new(area, handlers);
+
+    // only the input that has the keyboard has an input method to tell where it is
+    if focus::has(id) {
+        target.caret = Some(Caret {
+            id,
+            area: text_input.caret_area(&fields::get(id), area),
+        });
+    }
+
+    targets.push(target);
+}
+
+// the input method reaches the input through this, kept by the focus like the key handler
+struct Editor {
+    id: &'static str,
+    sensitive: bool,
+    on_change: Option<TextHandler>,
+}
+
+impl ime::Editor for Editor {
+    fn context(&self) -> Context {
+        fields::get(self.id).context(self.sensitive)
+    }
+
+    fn apply(&self, batch: &Batch) -> bool {
+        let mut field = fields::get(self.id);
+
+        let effect = field.apply_done(batch);
+
+        // stored before the handler runs, so it reads the new text
+        fields::set(self.id, field.clone());
+
+        if effect == Effect::Unchanged {
+            return false;
+        }
+
+        changed(field.text, self.on_change.as_ref());
+
+        true
+    }
 }
 
 fn key_handler(text_input: &TextInput) -> FocusHandler {

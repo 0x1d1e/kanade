@@ -114,6 +114,9 @@ impl WaylandState {
             window.redraw();
         }
 
+        // the caret is known once the window is drawn
+        self.sync_ime();
+
         self.refresh_cursor(surface);
     }
 
