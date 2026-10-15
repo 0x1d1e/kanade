@@ -163,6 +163,12 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
 - **Avoid:** sticky, lock (lock is the screen locker)
 
+## Confirm hold
+How a Surface confirms a destructive press: the target fills while the pointer button or the key is held, and acts only when it is full after 700 ms (ADR 0085). Calendar remove (`d`) and the Clipboard's Clear all.
+- **Invariant:** a release before it is full acts on nothing, and drains the fill. Any key coming up, the next key going down, the pointer leaving the target or the window, or the Surface being visited anew ends it. It acts on a thread of its own, never in a view.
+- **Invariant:** reduced motion has no fill or drain, only the same wait.
+- **Avoid:** Hold (that is the island's keyboard), double press, arm
+
 ## Running app
 One app's open windows, as `windows` groups them for the Dock: those whose `app_id` matches one desktop entry (ADR 0014). Windows that match none group by `app_id`; a window without one stands alone.
 - **Invariant:** nothing of niri leaves `windows` but window ids. A window's title is asked of niri each time the Dock's menu opens and lives only as long as the menu.

@@ -35,7 +35,7 @@ use crate::view::rise;
 
 use super::search;
 use super::visit::Visited;
-use super::{Outline, store};
+use super::{Outline, confirm, store};
 
 // the content's height, which both sides fill
 const HEIGHT: f32 = geometry::CALENDAR.height - 2.0 * INSET;
@@ -106,9 +106,6 @@ pub struct Browse {
 
     // the first of the events the agenda shows
     first: usize,
-
-    // `d` was pressed on the ringed event, and another `d` removes it
-    removing: bool,
 }
 
 impl Service for Browse {
@@ -896,8 +893,10 @@ fn agenda(
         .map(|&at| &month.events.occurrences[at])
     {
         Some(event) if event.added.is_none() => String::from("Read-only here"),
-        Some(_) if browse.removing => String::from("d again removes, else keeps"),
-        Some(_) => String::from("e changes, d removes"),
+        Some(event) if confirm::fill(removal(event)) > 0.0 => {
+            String::from("Keep holding d to remove")
+        }
+        Some(_) => String::from("e changes, hold d to remove"),
         None => count,
     };
     let count = match account {
@@ -1011,11 +1010,9 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
         None => when(event, day),
     };
 
-    Rectangle::new()
+    let text = Rectangle::new()
         .width(AGENDA)
         .height(ROW)
-        .radius(radius::ROW)
-        .fill(theme::island().surface_container)
         .padding(Padding {
             top: 0.0,
             right: ROW_INSET,
@@ -1038,7 +1035,22 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
             ])
             .width(Parent)
             .gap(2.0),
-        )
+        );
+
+    // the fill of a removal being held grows behind the text
+    Rectangle::new()
+        .width(AGENDA)
+        .height(ROW)
+        .radius(radius::ROW)
+        .fill(theme::island().surface_container)
+        .clip()
+        .child(confirm::behind(
+            removal(event),
+            AGENDA,
+            ROW,
+            theme::signals().critical,
+            text,
+        ))
         .border_if(ring)
 }
 
@@ -1279,19 +1291,13 @@ fn change(monitor: &str, text: String, replacing: Option<String>) {
 }
 
 /*
- * `e` changes and `d` twice removes the event the ring is on, if it was added here (ADR 0045);
- * false for any other key or event. Any other key takes the first `d` back
+ * `e` changes and `d` held removes the event the ring is on, if it was added here (ADR 0045,
+ * ADR 0085); false for any other key or event
  */
 fn added(monitor: &str, key: Key) -> bool {
     let visit = IslandService::read().visit();
     let browse = Browse::read().of(visit);
 
-    if browse.removing && key != Key::Character('d') {
-        store(Browse {
-            removing: false,
-            ..browse
-        });
-    }
     if !browse.agenda {
         return false;
     }
@@ -1305,29 +1311,32 @@ fn added(monitor: &str, key: Key) -> bool {
 
     match key {
         Key::Character('e') => change(monitor, add::text(&event), Some(stem)),
-        Key::Character('d') if browse.removing => {
-            thread::spawn(move || {
-                if let Err(error) = add::remove(&stem) {
-                    eprintln!("kanade: calendar: could not remove the event ({error})");
-                }
-            });
-            store(Browse {
-                removing: false,
-                ..browse
-            });
-            IslandService::write().attend(monitor, Instant::now());
-        }
         Key::Character('d') => {
-            store(Browse {
-                removing: true,
-                ..browse
-            });
+            confirm::press(
+                ("calendar remove", stem.clone()),
+                Arc::new(move || remove(&stem)),
+            );
             IslandService::write().attend(monitor, Instant::now());
         }
         _ => return false,
     }
 
     true
+}
+
+// what holding `d` on an event is held as, so the fill shows on its own row
+fn removal(event: &Occurrence) -> (&'static str, &str) {
+    (
+        "calendar remove",
+        event.added.as_deref().unwrap_or_default(),
+    )
+}
+
+// the file of an event removed, on the thread that held `d`
+fn remove(stem: &str) {
+    if let Err(error) = add::remove(stem) {
+        eprintln!("kanade: calendar: could not remove the event ({error})");
+    }
 }
 
 // the event the ring is on, none outside the agenda

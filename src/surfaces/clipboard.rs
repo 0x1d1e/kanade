@@ -6,7 +6,7 @@
 //! kind and size, since the runtime draws images from files and the history never leaves memory.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
 use kanade_runtime::{
@@ -28,7 +28,7 @@ use crate::theme::{self, DISABLED, radius};
 use crate::view;
 
 use super::visit::Visited;
-use super::{Outline, RING, store};
+use super::{Outline, RING, confirm, store};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -69,6 +69,10 @@ const PREVIEW: usize = 200;
 // pixels per wheel line
 const WHEEL: f32 = 40.0;
 
+// what Clear all is held as, and how wide its pill is
+const CLEAR: &str = "clipboard clear";
+const PILL: f32 = 96.0;
+
 /*
  * the query, the ring and the scroll for one visit of the Surface (`IslandService::visit`), so every
  * opening starts empty at the top. Written by input only, never by the view
@@ -86,9 +90,6 @@ pub struct Search {
 
     // the ring is on Clear all, below the rows
     clear: bool,
-
-    // Clear all was pressed once and asks again; any other key or a new query takes it back
-    armed: bool,
 
     // how far the rows scrolled, in pixels
     offset: f32,
@@ -142,10 +143,6 @@ impl Search {
      */
     fn step(mut self, key: Key, count: usize, any: bool) -> Option<(Search, bool)> {
         let last = count.saturating_sub(1);
-
-        if key != Key::Enter {
-            self.armed = false;
-        }
 
         match key {
             Key::Character(letter) => return Some((self.typed(Some(letter)), false)),
@@ -236,20 +233,15 @@ impl Search {
         self.selected = self.selected.min(count.saturating_sub(1));
         self.delete = self.delete && count > 0;
         self.clear = self.clear && any;
-        self.armed = self.armed && any;
         self.offset = self.offset.clamp(0.0, most(count));
 
         self
     }
 
-    // what Enter presses, from the entries the query finds; Clear all asks twice
-    fn press(&mut self, found: &[Entry], any: bool) -> Option<Press> {
+    // what Enter presses, from the entries the query finds; Clear all is held to act
+    fn press(&self, found: &[Entry], any: bool) -> Option<Press> {
         if self.clear {
-            let armed = self.armed;
-
-            self.armed = any && !armed;
-
-            return (any && armed).then_some(Press::Clear);
+            return any.then_some(Press::Clear);
         }
 
         let entry = found.get(self.selected)?;
@@ -825,40 +817,52 @@ fn delete(id: u64, ring: bool) -> Rectangle {
 fn footer(search: &Search, found: usize, all: usize) -> Row {
     let count = match all {
         _ if search.copying == Copying::Failed => String::from("The entry was not copied"),
-        _ if search.armed => format!("Clear all {all}? This cannot be undone"),
+        _ if confirm::fill(CLEAR) > 0.0 => format!("Keep holding to clear all {all}"),
+        _ if search.clear => format!("Hold Enter to clear all {all}, no undo"),
         0 => String::from("0 entries"),
         _ if !search.query.trim().is_empty() => format!("{found} of {all}"),
         1 => String::from("1 entry"),
         all => format!("{all} entries"),
     };
 
-    let (word, ink) = if search.armed {
-        ("Confirm", theme::signals().critical)
-    } else {
-        ("Clear all", theme::island().on_surface)
-    };
+    let ink = theme::island().on_surface;
 
-    let label = Text::new(word)
-        .size(theme::text::LABEL_SMALL)
-        .color(ink)
-        .weight(theme::text::SEMIBOLD);
+    let label = Rectangle::new()
+        .width(PILL)
+        .height(FOOTER)
+        .align_child(Center, Center)
+        .child(
+            Text::new("Hold to clear")
+                .size(theme::text::LABEL_SMALL)
+                .color(ink)
+                .weight(theme::text::SEMIBOLD),
+        );
 
     let pill = Rectangle::new()
-        .width(84.0)
+        .width(PILL)
         .height(FOOTER)
         .radius(FOOTER / 2.0)
-        .align_child(Center, Center)
-        .child(label);
+        .clip()
+        .child(confirm::behind(
+            CLEAR,
+            PILL,
+            FOOTER,
+            theme::signals().critical,
+            label,
+        ));
 
-    let pill = if search.clear || search.armed {
+    let pill = if search.clear {
         pill.border(RING, ink)
     } else {
         pill.border(1.0, theme::island().surface_container_high)
     };
 
     let pill = if all > 0 {
-        pill.cursor(Cursor::Pointer)
-            .on_click(super::on_left(clear_pressed))
+        confirm::target(
+            pill.cursor(Cursor::Pointer),
+            CLEAR,
+            Arc::new(clipboard::clear),
+        )
     } else {
         pill.opacity(DISABLED)
     };
@@ -941,7 +945,7 @@ fn run(monitor: &str, visit: u64, press: Press) {
             clipboard::restore(&entry, move |done| copied(&monitor, visit, done));
         }
         Press::Remove(id) => clipboard::remove(id),
-        Press::Clear => clipboard::clear(),
+        Press::Clear => confirm::press(CLEAR, Arc::new(clipboard::clear)),
     }
 }
 
@@ -975,27 +979,6 @@ fn copied(monitor: &str, visit: u64, done: bool) {
     });
 }
 
-// a click on Clear all: the first arms it, the second clears
-fn clear_pressed() {
-    let visit = IslandService::read().visit();
-    let search = Search::read().of(visit);
-
-    if search.armed {
-        store(Search {
-            armed: false,
-            ..search
-        });
-        clipboard::clear();
-    } else {
-        // the button the click arms is the one Enter confirms
-        store(Search {
-            armed: true,
-            clear: true,
-            ..search
-        });
-    }
-}
-
 // down scrolls further down the list
 fn wheel(lines: f32) {
     let visit = IslandService::read().visit();
@@ -1020,22 +1003,6 @@ mod tests {
             id,
             content: Content::Text(text.into()),
         }
-    }
-
-    // a click arms Clear all and Enter then confirms it, though the ring was on an entry
-    #[test]
-    fn enter_confirms_a_clear_all_the_mouse_armed() {
-        let entries = [entry(1, "a")];
-
-        clear_pressed();
-
-        let (mut search, presses) = Search::read()
-            .clone()
-            .step(Key::Enter, entries.len(), true)
-            .unwrap();
-
-        assert!(presses);
-        assert!(matches!(search.press(&entries, true), Some(Press::Clear)));
     }
 
     // the Launcher asks on every redraw: an unchanged history and query are not scanned again, and

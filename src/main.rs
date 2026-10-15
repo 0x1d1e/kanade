@@ -62,6 +62,8 @@ fn main() -> ExitCode {
     }
 
     supervise::follow_services();
-    modules::start(theme::font(App::new())).run();
+    modules::start(theme::font(App::new()))
+        .on_key_release(surfaces::confirm::release)
+        .run();
     ExitCode::SUCCESS
 }

@@ -63,6 +63,17 @@ impl Rectangle {
         self
     }
 
+    /*
+     * true when the left button goes down on the rectangle, false when it comes up, the pointer
+     * leaves the rectangle or the window, or the rectangle goes away: for a press that counts only
+     * while it lasts. It sets no click, so a click set beneath it still gets the short press
+     */
+    pub fn on_hold(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.handlers.hold = Some(Rc::new(handler));
+
+        self
+    }
+
     // how the pointer looks while it is over the rectangle
     pub fn cursor(mut self, cursor: Cursor) -> Self {
         self.handlers.cursor = Some(cursor);
@@ -444,5 +455,57 @@ mod tests {
         pointer.release(Button::Left);
 
         assert_eq!(log.borrow().last().unwrap(), "click 1");
+    }
+
+    // a hold is told it began, and once, however it ends: the release, the pointer leaving the
+    // target or the window, or the target going away
+    #[test]
+    fn a_hold_ends_once_by_release_leaving_or_going_away() {
+        let events: Rc<std::cell::RefCell<Vec<bool>>> = Rc::default();
+        let frame = |present: bool| {
+            let events = events.clone();
+            let mut targets = Vec::new();
+
+            if present {
+                Rectangle::new()
+                    .width(50.0)
+                    .height(50.0)
+                    .on_hold(move |held| events.borrow_mut().push(held))
+                    .collect_targets(Area::new(0.0, 0.0, 50.0, 50.0), &mut targets);
+            }
+
+            targets
+        };
+        let mut pointer = Pointer::default();
+
+        pointer.set_targets(frame(true));
+        pointer.move_to(25.0, 25.0);
+
+        // a release
+        assert!(pointer.start_hold());
+        assert!(pointer.stop_hold());
+        assert!(!pointer.stop_hold());
+        assert_eq!(*events.borrow(), [true, false]);
+
+        // out of the target
+        events.borrow_mut().clear();
+        pointer.start_hold();
+        pointer.move_to(75.0, 25.0);
+        pointer.move_to(25.0, 25.0);
+        assert_eq!(*events.borrow(), [true, false]);
+
+        // out of the window
+        events.borrow_mut().clear();
+        pointer.start_hold();
+        pointer.leave();
+        assert_eq!(*events.borrow(), [true, false]);
+
+        // gone with the next frame
+        events.borrow_mut().clear();
+        pointer.move_to(25.0, 25.0);
+        pointer.start_hold();
+        pointer.set_targets(frame(false));
+        pointer.stop_hold();
+        assert_eq!(*events.borrow(), [true, false]);
     }
 }

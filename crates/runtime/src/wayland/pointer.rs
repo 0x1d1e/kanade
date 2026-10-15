@@ -77,7 +77,9 @@ impl WaylandState {
                     return false;
                 }
 
-                pointer.start_drag()
+                let held = pointer.start_hold();
+
+                pointer.start_drag() || held
             }
 
             PointerEventKind::Release { button, .. } => {
@@ -86,11 +88,14 @@ impl WaylandState {
                     return false;
                 };
 
+                let mut held = false;
+
                 if button == Button::Left {
                     pointer.stop_drag();
+                    held = pointer.stop_hold();
                 }
 
-                pointer.release(button)
+                pointer.release(button) || held
             }
 
             PointerEventKind::Axis {

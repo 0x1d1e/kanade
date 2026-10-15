@@ -2,6 +2,7 @@ pub(crate) mod dropped;
 pub mod focus;
 pub mod paste;
 mod pointer;
+pub(crate) mod released;
 mod target;
 
 pub use pointer::Pointer;
