@@ -11,6 +11,7 @@ use wayland_client::{
 
 use crate::input::dropped;
 use crate::input::paste::Paste;
+use crate::ui_scale;
 
 use super::WaylandState;
 
@@ -91,10 +92,13 @@ impl WaylandState {
 
         let files = offer.with_mime_types(|types| types.iter().any(|kind| kind == URI_LIST));
 
+        // the drag is at the compositor's logical pixels, the targets in the virtual space
+        let ui = ui_scale::ui_scale();
+
         let wanted = files
             && self
                 .window(surface)
-                .is_some_and(|window| window.pointer.accepts_drop(x as f32, y as f32));
+                .is_some_and(|window| window.pointer.accepts_drop(x as f32 / ui, y as f32 / ui));
 
         // a drag that is turned down shows the pointer that it can't be dropped here
         if wanted {
@@ -148,10 +152,12 @@ impl WaylandState {
 
                 let surface = offer.surface.clone();
 
+                let ui = ui_scale::ui_scale();
+
                 let handled = state.window(&surface).is_some_and(|window| {
                     window
                         .pointer
-                        .drop_files(offer.x as f32, offer.y as f32, files)
+                        .drop_files(offer.x as f32 / ui, offer.y as f32 / ui, files)
                 });
 
                 if handled {

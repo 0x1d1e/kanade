@@ -4,6 +4,8 @@ use std::rc::Rc;
 use crate::graphics::{Area, Transform};
 use crate::{Button, Cursor, Key, Point, Scroll};
 
+use super::ime::Caret;
+
 /*
  * shared, so the hit areas kept after a redraw
  * still work once the widget tree they came from is dropped
@@ -44,6 +46,9 @@ pub struct Target {
      */
     pub key: u64,
 
+    // a text input's caret, for its input method; the area above is where it sits
+    pub caret: Option<Caret>,
+
     // named by what it is (see `anchor`), so the places above it no longer change its key
     anchored: bool,
 }
@@ -55,6 +60,7 @@ impl Target {
             handlers,
             inverse: Transform::IDENTITY,
             key: 0,
+            caret: None,
             anchored: false,
         }
     }
@@ -63,6 +69,45 @@ impl Target {
         let (local_x, local_y) = self.inverse.map(x, y);
 
         self.area.contains(local_x, local_y)
+    }
+
+    // the caret's box in the window, where parents have moved, scaled or turned it
+    pub fn caret_in_window(&self) -> Option<(f32, f32, f32, f32)> {
+        let caret = self.caret?;
+        let into_window = self.inverse.invert()?;
+
+        let Area {
+            x,
+            y,
+            width,
+            height,
+        } = caret.area;
+
+        let corners = [
+            into_window.map(x, y),
+            into_window.map(x + width, y),
+            into_window.map(x, y + height),
+            into_window.map(x + width, y + height),
+        ];
+
+        let left = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(f32::MAX, f32::min);
+        let top = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(f32::MAX, f32::min);
+        let right = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(f32::MIN, f32::max);
+        let bottom = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(f32::MIN, f32::max);
+
+        Some((left, top, right - left, bottom - top))
     }
 
     // the position measured from the area's top-left corner

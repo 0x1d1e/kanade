@@ -33,16 +33,34 @@ pub struct Settings {
     pub visible: bool,
 }
 
-impl From<&LayerWindow> for Settings {
-    fn from(window: &LayerWindow) -> Self {
+impl Settings {
+    /*
+     * what the compositor is told of a window whose view works in the virtual space: sizes and
+     * margins in its logical pixels, so a changed UI scale is a changed setting like any other
+     */
+    pub fn new(window: &LayerWindow, ui: f32) -> Self {
+        let up = |length: f32| length * ui;
+
+        let size = |size: WindowSize| match size {
+            WindowSize::Full => WindowSize::Full,
+            WindowSize::Fixed(pixels) => WindowSize::Fixed(up(pixels)),
+        };
+
+        let margin = |side: i32| up(side as f32).round() as i32;
+
         Self {
-            width: window.width,
-            height: window.height,
+            width: size(window.width),
+            height: size(window.height),
 
             vertical: window.vertical,
             horizontal: window.horizontal,
 
-            margin: window.margin,
+            margin: Margin {
+                top: margin(window.margin.top),
+                right: margin(window.margin.right),
+                bottom: margin(window.margin.bottom),
+                left: margin(window.margin.left),
+            },
             layer: window.layer,
             keyboard: window.keyboard,
             zone: window.zone,

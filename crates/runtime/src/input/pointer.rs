@@ -62,6 +62,14 @@ impl Pointer {
         }
     }
 
+    // where the caret of the text input `id` was drawn, in the window: left, top, width, height
+    pub fn caret(&self, id: &str) -> Option<(f32, f32, f32, f32)> {
+        self.targets
+            .iter()
+            .find(|target| target.caret.is_some_and(|caret| caret.id == id))
+            .and_then(Target::caret_in_window)
+    }
+
     // where in the last frame an id is, if it still is
     fn index(&self, id: Id) -> Option<usize> {
         self.ids.iter().position(|other| *other == id)

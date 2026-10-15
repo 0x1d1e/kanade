@@ -17,6 +17,15 @@ pub type TextHandler = Rc<dyn Fn(String)>;
 
 const CURSOR_WIDTH: f32 = 1.5;
 
+// the letters of the composed text an input method's preedit takes
+struct Composing {
+    from: usize,
+    to: usize,
+
+    // the letters of the preedit its cursor marks, none when the method hides it
+    marked: Option<(usize, usize)>,
+}
+
 pub struct TextInput {
     // the view builds a fresh input on every redraw, so the text is kept under this name
     id: &'static str,
@@ -93,7 +102,7 @@ impl TextInput {
         let field = Field {
             text: String::from(text),
             cursor: text.chars().count(),
-            anchor: None,
+            ..Field::default()
         };
 
         fields::set(id, field);
@@ -107,6 +116,11 @@ impl TextInput {
     // takes the keyboard from whichever input has it
     pub fn blur() {
         focus::clear();
+    }
+
+    // no input is being composed in any more, which is what the input method leaving means
+    pub(crate) fn end_composition() {
+        fields::end_composition();
     }
 
     // runs after every change to the text, with the whole new text
@@ -136,15 +150,55 @@ impl TextInput {
         Text::new(content).size(self.size).color(color)
     }
 
-    // how far from the input's left edge the first `index` letters reach
-    fn offset(&self, field: &Field, index: usize, area: Area) -> f32 {
-        let before = self.label(self.shown(&field.before(index)), self.color);
+    // the text with what an input method is composing at the cursor, which is not in the field yet
+    fn composed(field: &Field) -> String {
+        let Some(preedit) = &field.preedit else {
+            return field.text.clone();
+        };
+
+        let mut text = field.text.clone();
+
+        text.insert_str(field.byte_index(field.cursor), &preedit.text);
+
+        text
+    }
+
+    // how far from the input's left edge the first `index` letters of the composed text reach
+    fn offset(&self, text: &str, index: usize, area: Area) -> f32 {
+        let before: String = text.chars().take(index).collect();
+
+        let before = self.label(self.shown(&before), self.color);
 
         before.width().resolve(area.width)
     }
 
-    fn draw_cursor(&self, renderer: &mut Renderer, field: &Field, area: Area) {
-        let offset = self.offset(field, field.cursor, area);
+    // the letters of the composed text the preedit takes, and where its cursor sits among them
+    fn composing(field: &Field) -> Option<Composing> {
+        let preedit = field.preedit.as_ref()?;
+
+        let letters = |end: usize| preedit.text[..end].chars().count();
+
+        let marked = preedit
+            .cursor
+            .map(|(from, to)| (letters(from), letters(to)));
+
+        Some(Composing {
+            from: field.cursor,
+            to: field.cursor + letters(preedit.text.len()),
+            marked,
+        })
+    }
+
+    // the letter index the caret stands at, none while the input method hides it
+    fn caret_at(field: &Field) -> Option<usize> {
+        match Self::composing(field) {
+            None => Some(field.cursor),
+            Some(Composing { from, marked, .. }) => marked.map(|(_, to)| from + to),
+        }
+    }
+
+    fn draw_cursor(&self, renderer: &mut Renderer, text: &str, at: usize, area: Area) {
+        let offset = self.offset(text, at, area);
 
         let cursor = Area::new(area.x + offset, area.y, CURSOR_WIDTH, area.height);
 
@@ -152,13 +206,15 @@ impl TextInput {
     }
 
     // the text color at a third of its strength, behind the letters
-    fn draw_selection(&self, renderer: &mut Renderer, field: &Field, area: Area) {
-        let Some((start, end)) = field.selection() else {
-            return;
-        };
-
-        let from = self.offset(field, start, area);
-        let to = self.offset(field, end, area);
+    fn draw_selection(
+        &self,
+        renderer: &mut Renderer,
+        text: &str,
+        range: (usize, usize),
+        area: Area,
+    ) {
+        let from = self.offset(text, range.0, area);
+        let to = self.offset(text, range.1, area);
 
         let tint = Color::rgba(self.color.r, self.color.g, self.color.b, self.color.a / 3);
 
@@ -167,6 +223,37 @@ impl TextInput {
             tint,
             0.0,
         );
+    }
+
+    // an underline below the letters an input method is composing, the marked part tinted
+    fn draw_preedit(&self, renderer: &mut Renderer, text: &str, field: &Field, area: Area) {
+        let Some(Composing { from, to, marked }) = Self::composing(field) else {
+            return;
+        };
+
+        if let Some((begin, end)) = marked.filter(|(begin, end)| begin != end) {
+            self.draw_selection(renderer, text, (from + begin, from + end), area);
+        }
+
+        let left = self.offset(text, from, area);
+        let right = self.offset(text, to, area);
+
+        let underline = Area::new(area.x + left, area.y + area.height - 1.0, right - left, 1.0);
+
+        renderer.rectangle(underline, self.color, 0.0);
+    }
+
+    // where the caret is, for an input method's popup to sit by; wide enough to point at
+    fn caret_area(&self, field: &Field, area: Area) -> Area {
+        let text = Self::composed(field);
+
+        let at = Self::caret_at(field)
+            .or_else(|| Self::composing(field).map(|composing| composing.to))
+            .unwrap_or(field.cursor);
+
+        let offset = self.offset(&text, at, area).min(area.width);
+
+        Area::new(area.x + offset, area.y, 1.0, area.height)
     }
 }
 
@@ -181,7 +268,7 @@ impl Widget for TextInput {
 
     fn draw(&self, renderer: &mut Renderer, area: Area) {
         let field = fields::get(self.id);
-        let text = field.text.clone();
+        let text = Self::composed(&field);
 
         // the placeholder is the text color at half strength
         let faded = Color::rgba(self.color.r, self.color.g, self.color.b, self.color.a / 2);
@@ -197,14 +284,18 @@ impl Widget for TextInput {
 
         let focused = focus::has(self.id);
 
-        if focused {
-            self.draw_selection(&mut inside, &field, area);
+        if focused && let Some(range) = field.selection() {
+            self.draw_selection(&mut inside, &text, range, area);
         }
 
         label.draw(&mut inside, area);
 
         if focused {
-            self.draw_cursor(&mut inside, &field, area);
+            self.draw_preedit(&mut inside, &text, &field, area);
+
+            if let Some(at) = Self::caret_at(&field) {
+                self.draw_cursor(&mut inside, &text, at, area);
+            }
         }
 
         renderer.clip(inside, area, 0.0);

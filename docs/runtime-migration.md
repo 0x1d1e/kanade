@@ -31,6 +31,13 @@ Runtime work, done when wanted.
       already applies xkb compose (from `LC_ALL`, `LC_CTYPE` or `LANG`), so dead keys work.
       Not done: copy and cut (the runtime sets no selection), shortcuts on a non-Latin layout
       (Ctrl+V names the key by its keysym, so it needs a Latin letter on the layout).
+- [x] Input methods: `zwp_text_input_v3` in `wayland/ime.rs` (ADR 0090). The focused text input is
+      enabled with its surrounding text (bounded; none for a password) and caret rectangle, and a
+      `done`'s preedit, commit and surrounding deletion are applied together, the preedit drawn
+      inline. Not done: `input_method` (Kanade being an input method), a scrolling field's caret,
+      and a check against a live fcitx5 or ibus.
+- [x] UI scale: `appearance.scale` is one multiplier at the runtime's scale seam (ADR 0091), virtual space
+      in, compositor pixels out. Not done: a scale per window or output, resizing an open normal window.
 - [x] Per-corner radius (`Rectangle::radius_top_left` and the other three, `Corners`), and the
       justify overflow spill. A drop shadow and the inner shadow of a rectangle with unequal
       corners still use the largest corner.

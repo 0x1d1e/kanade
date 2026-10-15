@@ -64,6 +64,12 @@ pub const ANIMATION_SPEED: Range = Range {
     most: 400,
 };
 
+// `appearance.scale`, whole percent: 0.8 to 2.0 times each output's own scale
+pub const UI_SCALE: Range = Range {
+    least: 80,
+    most: 200,
+};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub island: Timings,
@@ -224,6 +230,16 @@ pub struct Appearance {
 
     // follow the desktop's reduced motion and higher contrast (ADR 0080)
     pub accessibility: bool,
+
+    // the UI scale in percent, on top of each output's own scale (ADR 0091)
+    pub scale: u32,
+}
+
+impl Appearance {
+    // the multiplier the runtime scales the whole UI by
+    pub fn ui_scale(&self) -> f32 {
+        self.scale.clamp(UI_SCALE.least, UI_SCALE.most) as f32 / 100.0
+    }
 }
 
 impl Default for Appearance {
@@ -234,6 +250,7 @@ impl Default for Appearance {
             sync: false,
             font: None,
             accessibility: true,
+            scale: 100,
         }
     }
 }
@@ -1515,6 +1532,22 @@ pub const ISLAND: &[Setting] = &[
 
         // the runtime takes the font as the app starts
         restart: true,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.scale",
+        label: "Interface size",
+        help: "the size of everything Kanade draws, on top of each output's own scale: 100% is unchanged, 125% a quarter larger. Windows already open keep their size; the lock screen is not scaled",
+        hint: Some("Make the whole shell smaller or larger; 100% is the default"),
+        kind: Kind::Percent(
+            UI_SCALE,
+            Field {
+                get: |config| config.appearance.scale,
+                set: |config, scale| config.appearance.scale = scale,
+            },
+        ),
+        example: None,
+        restart: false,
         per_output: false,
     },
     Setting {
@@ -3819,6 +3852,7 @@ mod tests {
                 "animation.speed",
                 "appearance.motion",
                 "appearance.font",
+                "appearance.scale",
                 "island.edge",
                 "island.align",
                 "island.width",
