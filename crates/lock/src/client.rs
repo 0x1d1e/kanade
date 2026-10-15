@@ -22,7 +22,9 @@ use smithay_client_toolkit::seat::keyboard::{
     KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
 };
 use smithay_client_toolkit::seat::pointer::cursor_shape::CursorShapeManager;
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::pointer::{
+    AxisScroll, PointerEvent, PointerEventKind, PointerHandler,
+};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
     SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
@@ -51,7 +53,8 @@ use crate::paint::{self, Faces, Field, Look};
 use crate::picture;
 use crate::stage::{Stage, Step};
 use crate::text::Font;
-use crate::{Ask, Backdrop, Decode, Fonts, Image, News, Report, Scene, Submit};
+use crate::wake::{Pointer, Wake};
+use crate::{Ask, Backdrop, Decode, Fonts, Image, News, Report, Scene, Submit, Touch};
 
 // how long the caret shows, then hides
 const BLINK: Duration = Duration::from_millis(530);
@@ -173,6 +176,11 @@ struct State {
     work: mpsc::Sender<Job>,
     submit: Submit,
     report: Report,
+    touch: Touch,
+
+    // the key that wakes the monitors, which is not typed, and where the pointer was last counted
+    wake: Wake,
+    hand: Pointer,
 
     // the lock cannot go on, so its thread ends, saying it is gone
     dead: bool,
@@ -187,10 +195,11 @@ pub(crate) fn run(
     decode: Decode,
     submit: Submit,
     report: Report,
+    touch: Touch,
     started: &mpsc::Sender<Result<(), String>>,
     up: &AtomicBool,
 ) {
-    let (mut events, mut state) = match connect(asked, decode, submit, report) {
+    let (mut events, mut state) = match connect(asked, decode, submit, report, touch) {
         Ok(connected) => connected,
         Err(error) => {
             let _ = started.send(Err(error));
@@ -211,6 +220,7 @@ fn connect(
     decode: Decode,
     submit: Submit,
     report: Report,
+    touch: Touch,
 ) -> Result<(EventLoop<'static, State>, State), String> {
     let connection = Connection::connect_to_env()
         .map_err(|error| format!("cannot connect to the compositor: {error}"))?;
@@ -302,6 +312,9 @@ fn connect(
         work,
         submit,
         report,
+        touch,
+        wake: Wake::default(),
+        hand: Pointer::default(),
         dead: false,
     };
 
@@ -430,6 +443,13 @@ impl State {
                 self.step(step);
             }
             Ask::Scene(output, scene) => self.scene(output, *scene),
+            Ask::Dark(true) => {
+                // with no lock there is no field to type in, and no key here to wake them by
+                if self.lock.is_some() {
+                    self.wake.dark();
+                }
+            }
+            Ask::Dark(false) => self.wake.lit(Instant::now()),
         }
     }
 
@@ -475,6 +495,7 @@ impl State {
 
         self.lock = Some(lock);
         self.clear();
+        self.wake.reset();
         self.caret = true;
         self.shake = None;
         self.start_blinking();
@@ -517,6 +538,8 @@ impl State {
         self.pool = None;
 
         self.clear();
+        self.wake.reset();
+        self.hand.left();
         if let Some(blink) = self.blink.take() {
             self.events.remove(blink);
         }
@@ -942,6 +965,34 @@ impl State {
         self.password.zeroize();
     }
 
+    /*
+     * a key pressed (`press`) or repeating on a lock surface: it is input, which the shell may
+     * answer, and unless it is the one that woke the monitors it is typed
+     */
+    fn pressed(&mut self, event: &KeyEvent, press: bool) {
+        if self.lock.is_none() {
+            return;
+        }
+
+        if press {
+            (self.touch)();
+        }
+
+        if !self.wake.key(event.raw_code, Instant::now()) {
+            self.key(event);
+        }
+    }
+
+    // the pointer did something a hand does on a lock surface
+    fn handled(&mut self) {
+        if self.lock.is_none() {
+            return;
+        }
+
+        self.wake.pointer();
+        (self.touch)();
+    }
+
     fn key(&mut self, event: &KeyEvent) {
         if self.lock.is_none() {
             return;
@@ -1169,7 +1220,7 @@ impl SeatHandler for State {
                 &seat,
                 None,
                 self.events.clone(),
-                Box::new(|state, _, event| state.key(&event)),
+                Box::new(|state, _, event| state.pressed(&event, false)),
             );
             match keyboard {
                 Ok(keyboard) => self.keyboard = Some(keyboard),
@@ -1241,6 +1292,7 @@ impl KeyboardHandler for State {
         _: &WlSurface,
         _: u32,
     ) {
+        self.wake.left();
     }
 
     fn press_key(
@@ -1251,7 +1303,7 @@ impl KeyboardHandler for State {
         _: u32,
         event: KeyEvent,
     ) {
-        self.key(&event);
+        self.pressed(&event, true);
     }
 
     fn repeat_key(
@@ -1262,7 +1314,7 @@ impl KeyboardHandler for State {
         _: u32,
         event: KeyEvent,
     ) {
-        self.key(&event);
+        self.pressed(&event, false);
     }
 
     fn release_key(
@@ -1271,8 +1323,9 @@ impl KeyboardHandler for State {
         _: &QueueHandle<Self>,
         _: &WlKeyboard,
         _: u32,
-        _: KeyEvent,
+        event: KeyEvent,
     ) {
+        self.wake.released(event.raw_code);
     }
 
     fn update_modifiers(
@@ -1295,7 +1348,7 @@ impl KeyboardHandler for State {
 }
 
 impl PointerHandler for State {
-    // the arrow over a lock surface, as niri draws none of its own there
+    // the arrow over a lock surface, as niri draws none of its own there; and what a hand does
     fn pointer_frame(
         &mut self,
         _: &Connection,
@@ -1303,13 +1356,37 @@ impl PointerHandler for State {
         _: &WlPointer,
         events: &[PointerEvent],
     ) {
-        let Some((_, Some(shape))) = &self.pointer else {
-            return;
-        };
-
         for event in events {
-            if let PointerEventKind::Enter { serial } = event.kind {
-                shape.set_shape(serial, Shape::Default);
+            match event.kind {
+                PointerEventKind::Enter { serial } => {
+                    // arriving is no movement, as when a lock surface appears under a still pointer
+                    self.hand.entered(event.position);
+
+                    if let Some((_, Some(shape))) = &self.pointer {
+                        shape.set_shape(serial, Shape::Default);
+                    }
+                }
+                PointerEventKind::Leave { .. } => self.hand.left(),
+                PointerEventKind::Motion { .. } => {
+                    if self.hand.moved(event.position) {
+                        self.handled();
+                    }
+                }
+                PointerEventKind::Press { .. } => self.handled(),
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    let turned = |axis: AxisScroll| {
+                        axis.absolute != 0.0 || axis.value120 != 0 || axis.discrete != 0
+                    };
+
+                    if turned(horizontal) || turned(vertical) {
+                        self.handled();
+                    }
+                }
+                PointerEventKind::Release { .. } => {}
             }
         }
     }

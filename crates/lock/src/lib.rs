@@ -14,6 +14,7 @@ mod paint;
 mod picture;
 pub mod stage;
 mod text;
+mod wake;
 
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -166,11 +167,22 @@ pub type Submit = Box<dyn FnMut(String) -> bool + Send>;
 
 pub type Report = Box<dyn FnMut(News) + Send>;
 
+/*
+ * a key pressed, a button pressed, a wheel turned or the pointer moved a few pixels on a lock
+ * surface, on the lock's thread, which the shell may answer by asking to unlock (`Locker::unlock`).
+ * Called with the lock held or on its way, and never for the pointer arriving on a surface; the
+ * shell decides what it means, this only reports
+ */
+pub type Touch = Box<dyn FnMut() + Send>;
+
 // what the shell asks of the lock's thread
 enum Ask {
     Lock(u64),
     Unlock,
     Scene(String, Box<Scene>),
+
+    // the monitors went off (true), or input lit them (false)
+    Dark(bool),
 }
 
 // the lock screen's own connection and thread
@@ -183,7 +195,12 @@ impl Locker {
      * connects to the compositor and starts the thread that holds the lock; none without a
      * compositor, `ext-session-lock`, shared memory or a thread
      */
-    pub fn start(decode: Decode, submit: Submit, report: Report) -> Result<Self, String> {
+    pub fn start(
+        decode: Decode,
+        submit: Submit,
+        report: Report,
+        touch: Touch,
+    ) -> Result<Self, String> {
         let (asks, asked) = channel::channel();
         let (started, starting) = std::sync::mpsc::channel();
 
@@ -199,7 +216,7 @@ impl Locker {
                 let up = AtomicBool::new(false);
 
                 let ran = panic::catch_unwind(AssertUnwindSafe(|| {
-                    client::run(asked, decode, submit, reported, &started, &up);
+                    client::run(asked, decode, submit, reported, touch, &started, &up);
                 }));
 
                 // one that never started said so to `start`, which fails
@@ -228,6 +245,15 @@ impl Locker {
     // ends the lock, once niri holds it if it does not yet
     pub fn unlock(&self) {
         let _ = self.asks.send(Ask::Unlock);
+    }
+
+    /*
+     * the monitors were powered off (`dark`), or input lit them again. The first key after they went
+     * off is what woke them, so it is not typed into the password field; the lock cannot know of
+     * any other way they went dark
+     */
+    pub fn dark(&self, dark: bool) {
+        let _ = self.asks.send(Ask::Dark(dark));
     }
 
     /*

@@ -52,6 +52,8 @@ const PAM_SUCCESS: c_int = 0;
 const PAM_CONV_ERR: c_int = 19;
 const PAM_PROMPT_ECHO_OFF: c_int = 1;
 const PAM_PROMPT_ECHO_ON: c_int = 2;
+const PAM_ERROR_MSG: c_int = 3;
+const PAM_TEXT_INFO: c_int = 4;
 
 #[repr(C)]
 struct PamMessage {
@@ -507,11 +509,97 @@ pub fn default_sigint(command: &mut Command) -> &mut Command {
     }
 }
 
+// what PAM says to the user meanwhile, as the lock screen shows it (ADR 0065)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Note {
+    // PAM_TEXT_INFO, like "Place your finger on the reader"
+    Info(String),
+
+    // PAM_ERROR_MSG
+    Error(String),
+}
+
+// the longest note kept, in characters: the lock screen draws one line
+const NOTE: usize = 64;
+
+// a note's text as one line of printable characters, none if nothing is left
+fn clean(text: &str) -> Option<String> {
+    let line: String = text
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect();
+    let line = line.trim();
+
+    if line.is_empty() {
+        return None;
+    }
+
+    if line.chars().count() <= NOTE {
+        return Some(line.to_owned());
+    }
+
+    let cut: String = line.chars().take(NOTE - 1).collect();
+
+    Some(format!("{}\u{2026}", cut.trim_end()))
+}
+
+// what one message of PAM's conversation gets
+#[derive(Debug, PartialEq, Eq)]
+enum Turn {
+    // the password, the one hidden prompt of a check
+    Answer,
+
+    // shown to the user, answered with nothing
+    Tell(Note),
+
+    // nothing to show or answer
+    Skip,
+}
+
+/*
+ * what each of `messages`, a conversation's styles and texts, gets, or none when it cannot be
+ * answered, which fails the check. The password answers the first hidden prompt of a check and
+ * nothing else: not an echoed prompt, which is a name or a code, nor a second hidden one, which is
+ * another secret (a one-time code, a PIN), nor a style this does not know. `answered` is whether
+ * the password was given already, and is set when it is
+ */
+fn decide(messages: &[(c_int, String)], answered: &mut bool) -> Option<Vec<Turn>> {
+    let mut given = *answered;
+    let mut turns = Vec::with_capacity(messages.len());
+
+    for (style, text) in messages {
+        turns.push(match *style {
+            PAM_PROMPT_ECHO_OFF if !given => {
+                given = true;
+                Turn::Answer
+            }
+            PAM_TEXT_INFO => clean(text).map_or(Turn::Skip, |text| Turn::Tell(Note::Info(text))),
+            PAM_ERROR_MSG => clean(text).map_or(Turn::Skip, |text| Turn::Tell(Note::Error(text))),
+            // an echoed prompt, or a second hidden one
+            PAM_PROMPT_ECHO_OFF | PAM_PROMPT_ECHO_ON => return None,
+            _ => return None,
+        });
+    }
+
+    *answered = given;
+
+    Some(turns)
+}
+
+// what a conversation has to answer with and tell to
+struct Talk<'a> {
+    password: &'a CString,
+    answered: bool,
+    tell: &'a mut dyn FnMut(Note),
+}
+
 /*
  * whether PAM's `service` accepts `password` for `user`; blocks for as long as PAM takes, seconds
- * for a wrong one. The copy it makes is zeroed before it returns; the caller zeroes its own
+ * for a wrong one. What PAM says meanwhile goes to `tell`, on this thread. The copy it makes is
+ * zeroed before it returns; the caller zeroes its own
  */
-pub fn authenticate(service: &str, user: &str, password: &str) -> bool {
+pub fn authenticate(service: &str, user: &str, password: &str, tell: &mut dyn FnMut(Note)) -> bool {
     let (Ok(service), Ok(user)) = (CString::new(service), CString::new(user)) else {
         return false;
     };
@@ -524,14 +612,19 @@ pub fn authenticate(service: &str, user: &str, password: &str) -> bool {
         }
     };
 
-    pam(&service, &user, &password)
+    pam(&service, &user, &password, tell)
 }
 
 // one PAM transaction answering with `password`, as `authenticate` says
-fn pam(service: &CString, user: &CString, password: &CString) -> bool {
+fn pam(service: &CString, user: &CString, password: &CString, tell: &mut dyn FnMut(Note)) -> bool {
+    let mut talk = Talk {
+        password,
+        answered: false,
+        tell,
+    };
     let conversation = PamConv {
         converse,
-        data: password.as_ptr().cast_mut().cast(),
+        data: (&raw mut talk).cast(),
     };
     let mut handle = std::ptr::null_mut();
 
@@ -557,7 +650,7 @@ fn pam(service: &CString, user: &CString, password: &CString) -> bool {
     }
 }
 
-// answers every prompt PAM gives with the password in `data`, and every message with nothing
+// answers the first hidden prompt of the check with the password, shows PAM's notes, fails the rest
 extern "C" fn converse(
     count: c_int,
     messages: *mut *const PamMessage,
@@ -567,21 +660,57 @@ extern "C" fn converse(
     let Ok(count) = usize::try_from(count) else {
         return PAM_CONV_ERR;
     };
-    let password = data.cast::<c_char>().cast_const();
 
-    // SAFETY: Linux-PAM hands `count` messages, an array of pointers, and takes the answers,
-    // which it frees
+    // SAFETY: `data` is the `Talk` `pam` made, which outlives the transaction and is used by this
+    // thread alone
+    let talk = unsafe { &mut *data.cast::<Talk<'_>>() };
+
+    // SAFETY: Linux-PAM hands `count` messages, an array of pointers, each to a style and a text
+    let texts: Vec<(c_int, String)> = (0..count)
+        .map(|index| unsafe {
+            let message = &**messages.add(index);
+            let text = if message.text.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(message.text)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+
+            (message.style, text)
+        })
+        .collect();
+
+    // all decided before anything is allocated, so a refusal leaves nothing for PAM to free
+    let Some(turns) = decide(&texts, &mut talk.answered) else {
+        return PAM_CONV_ERR;
+    };
+
+    // SAFETY: Linux-PAM takes the answers, an array it frees, each text with it
     unsafe {
         let answers = libc::calloc(count, size_of::<PamResponse>()).cast::<PamResponse>();
         if answers.is_null() {
             return PAM_CONV_ERR;
         }
 
-        for index in 0..count {
-            let style = (**messages.add(index)).style;
+        for (index, turn) in turns.into_iter().enumerate() {
+            match turn {
+                Turn::Answer => {
+                    let text = libc::strdup(talk.password.as_ptr());
 
-            if style == PAM_PROMPT_ECHO_OFF || style == PAM_PROMPT_ECHO_ON {
-                (*answers.add(index)).text = libc::strdup(password);
+                    if text.is_null() {
+                        for done in 0..index {
+                            libc::free((*answers.add(done)).text.cast());
+                        }
+                        libc::free(answers.cast());
+
+                        return PAM_CONV_ERR;
+                    }
+
+                    (*answers.add(index)).text = text;
+                }
+                Turn::Tell(note) => (talk.tell)(note),
+                Turn::Skip => {}
             }
         }
 
@@ -655,6 +784,60 @@ mod tests {
                 value: 1
             }
         );
+    }
+
+    fn said(styles: &[c_int]) -> Vec<(c_int, String)> {
+        styles
+            .iter()
+            .map(|&style| (style, String::from("a message")))
+            .collect()
+    }
+
+    // the password goes to one hidden prompt of a check, and never to any other
+    #[test]
+    fn the_password_answers_only_the_first_hidden_prompt() {
+        let mut answered = false;
+        let turns = decide(&said(&[PAM_TEXT_INFO, PAM_PROMPT_ECHO_OFF]), &mut answered).unwrap();
+
+        assert_eq!(
+            turns.iter().filter(|turn| **turn == Turn::Answer).count(),
+            1
+        );
+        assert!(answered);
+
+        // a second hidden prompt, in this conversation or a later one, is a code or a PIN
+        assert_eq!(decide(&said(&[PAM_PROMPT_ECHO_OFF]), &mut answered), None);
+        assert_eq!(
+            decide(
+                &said(&[PAM_PROMPT_ECHO_OFF, PAM_PROMPT_ECHO_OFF]),
+                &mut false
+            ),
+            None
+        );
+
+        // an echoed prompt asks for a name or a code; styles unknown are not guessed at
+        assert_eq!(decide(&said(&[PAM_PROMPT_ECHO_ON]), &mut false), None);
+        assert_eq!(decide(&said(&[5]), &mut false), None);
+
+        // notes alone give the password to nobody
+        let mut answered = false;
+        let turns = decide(&said(&[PAM_TEXT_INFO, PAM_ERROR_MSG]), &mut answered).unwrap();
+        assert!(!answered);
+        assert!(turns.iter().all(|turn| matches!(turn, Turn::Tell(_))));
+    }
+
+    #[test]
+    fn a_note_is_one_short_printable_line() {
+        assert_eq!(
+            clean("  Place your\tfinger \n"),
+            Some(String::from("Place your finger"))
+        );
+        assert_eq!(clean("a\u{1b}[31mb"), Some(String::from("a[31mb")));
+        assert_eq!(clean(" \n\t "), None);
+
+        let line = clean(&"x".repeat(200)).unwrap();
+        assert_eq!(line.chars().count(), NOTE);
+        assert!(line.ends_with('\u{2026}'));
     }
 
     // radio 3, Bluetooth, soft-blocked

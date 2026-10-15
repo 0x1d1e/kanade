@@ -23,6 +23,13 @@ impl OpenWindow {
 
         self.update_input_region(window);
 
+        self.blur.set(
+            &window.blur,
+            self.role.wl_surface(),
+            &self.compositor,
+            &self.qh,
+        );
+
         // a normal window has no layer settings
         let Role::Layer {
             surface: layer_surface,

@@ -9,6 +9,7 @@ use kanade_lock::{Backdrop, FontFile, Fonts, Image, Locker, Palette, Picture, Sc
 use kanade_runtime::{Color, LayerWindow, Monitor, Monitors, Rectangle};
 use kanade_runtime::{MutexExt, service::Service};
 
+use crate::clock::Note;
 use crate::look::LockBackdrop;
 use crate::sources::wallpaper;
 use crate::{clock, config, theme};
@@ -71,15 +72,20 @@ fn scened(monitor: &Monitor) -> Scene {
     };
 
     // reading subscribes the scene to what it says and who is signed in
-    let said = *Said::read();
+    let said = Said::read().clone();
     let who = Who::read().clone();
 
-    let status = match said.status {
-        Status::None => "",
-        Status::Checking => "Checking…",
-        Status::Sleeping => "Locked for sleep",
-        Status::Again => "Enter your password again",
-        Status::Wrong => "Wrong password",
+    // what PAM said, ahead of the status: a prompt to touch a reader, or why it refused
+    let (status, critical) = match &said.note {
+        Some(Note::Info(text)) => (text.as_str(), false),
+        Some(Note::Error(text)) => (text.as_str(), true),
+        None => match said.status {
+            Status::None => ("", false),
+            Status::Checking => ("Checking…", false),
+            Status::Sleeping => ("Locked for sleep", false),
+            Status::Again => ("Enter your password again", false),
+            Status::Wrong => ("Wrong password", true),
+        },
     };
 
     // the date and status are English, in the face
@@ -102,7 +108,7 @@ fn scened(monitor: &Monitor) -> Scene {
         name: who.name,
         face: who.face.map(Image::new),
         status: String::from(status),
-        critical: said.status == Status::Wrong,
+        critical,
         refused: said.wrong,
         palette: Palette {
             text: color(roles.on_surface),

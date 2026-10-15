@@ -1,8 +1,10 @@
 //! A pane: what the Island's body, the Dock and the Banners are drawn on, as the finish says (ADRs
 //! 0050 to 0052). The solid finishes fill the body's outline, one rounded rect or two united, with
 //! the fill a hair lighter at the top, a top light edge and a rim, and nothing else; Liquid Glass
-//! draws clear glass over the screen, its content's ink following the light around it (`glass`, `ink`).
+//! draws clear glass over the screen, its content's ink following the light around it (`glass`, `ink`);
+//! Blur is the tinted solid, translucent, over what the compositor blurs behind it (`blur`, ADR 0057).
 
+mod blur;
 mod body;
 mod capture;
 mod glass;
@@ -11,6 +13,7 @@ mod shader;
 
 use std::time::Duration;
 
+pub use self::blur::{FILL as BLUR_FILL, behind as blurred};
 pub use self::body::{Body, Join, ahead};
 pub use self::capture::{forget, locked, origin, place, shown};
 pub use self::glass::Seen;
@@ -99,7 +102,14 @@ pub fn layer(pane: Pane) -> Rectangle {
 
     let surface = theme::island().surface;
 
-    values[FILL_ROW] = rgba(surface);
+    // Blur's panes are the tinted solid's, translucent over what the compositor blurs behind them
+    let mut fill = rgba(surface);
+
+    if blur::on() {
+        fill[3] *= blur::FILL;
+    }
+
+    values[FILL_ROW] = fill;
     values[LIT_ROW] = rgba(theme::tint::lit(surface));
     values[EDGE_ROW] = rgba(theme::pane_edge());
     values[RIM_ROW] = rgba(theme::pane_rim());

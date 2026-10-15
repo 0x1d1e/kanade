@@ -87,6 +87,16 @@ Not worth changing, by this review:
 
 - [ ] The `unread` regions (`src/pane/capture.rs`) rest on the shader's read geometry (`glass.wgsl`), with no test tying the two; a merged outline's concave notch is the case to check by eye or by a test that samples the shader's offsets.
 
+## Panes (Blur finish, ADR 0057)
+
+- [ ] Not verified: windows behind a pane blurred (non-xray). It needs the niri layer rule `xray false` for `kanade`, `kanade-dock` and `kanade-banners` (`dist/niri/config.kdl`), which the E2E session's niri config lacks and an agent may not add. Without the rule, E2E on niri 26.04 showed the wallpaper blurred and a window's text under the Island hidden (xray), as niri's docs say. Check with the rule: text behind the Island, Dock and a Banner blurred, not hidden, and the fill's 78% (`pane::BLUR_FILL`) readable over a white window and a dark one.
+- [ ] Tune by eye once windows blur: `pane::BLUR_FILL`, and whether a flip to dark ink over a bright window (ADR 0054's) is wanted; none reads the page under Blur.
+- [ ] Not taken: the wakeup, frame-gap and memory baselines with Blur; the cost of non-xray blur in niri while a body morphs and a page animates behind it. Idle frames were 0 over 20 s at rest on the Island, with Blur and no rule, but not rechecked with it.
+- [ ] Not run: the fallback with a compositor that lacks the global or its blur capability (the opaque tinted solid, the doctor warning); and niri's `blur { off }`, where the capability may still say blur.
+- [ ] A Banner stops blurring the moment its fade out begins and starts when its fade in ends; the compositor's blur does not fade. A Dock fading aside for an open Surface (`aside`) likewise.
+- [ ] The shadow's corner pieces reach under a body's corners, so a translucent pane shows them faintly; cut them to the outline for Blur if seen.
+- [ ] Every size change of a body sends a new region (rows of rects, about the body's height in the worst case); coalescing or a cheaper cut is possible if a morph shows slow.
+
 ## Panes (glass removed, ADR 0049)
 
 - [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
@@ -133,7 +143,6 @@ Not worth changing, by this review:
 - Reminders: MORE's `of` grows with each reminder joined; a deleted event's reminder stays until dismissed or due.
 - Clipboard and Launcher search look duplicated with `src/surfaces/search.rs`.
 - A dmenu reply to a client that stopped reading may block the UI thread up to 1 s (`IpcReply::send`).
-- Live Activities: no throttle on a client reposting many times a second.
 - A three-letter layout label may be cramped in the OSD capsule; Controls grew 290 to 330 px, check Tray, Weather and Session by eye.
 - The critical battery countdown names no battery reason line.
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
@@ -165,3 +174,12 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] `elide` and the `tail` helpers re-measure from the start per removed letter (quadratic).
 - [ ] `disc_angle`'s `DISC` is one process-wide state, so two monitors showing the disc advance it twice per refresh.
 - [ ] `Reveal`'s `HONORED` is one cell for all scroll areas; a serial one surface used can hide the same serial in another.
+
+## From the trend-improvements review (unfixed polish)
+
+- [ ] Lock: a hung PAM module holds the one check at a time (no watchdog); `Dark` in `crates/lock/src/wake.rs` never expires; `kanade status` prints the grace with `idle.lock` off and the raw service name; `clean` keeps Unicode format characters; `Kind::Text` accepts a path as `lock.pam_service`; the interleaving model in `src/lock/mod.rs` lacks `grant` and `touch`.
+- [ ] Lyrics: a paused track gets no local `.lrc`; `now + until.div_f64(rate)` in `media.rs` and `next_second` panic for a tiny MPRIS `Rate`; `mpris:url` may point at any readable `.lrc`; lyric text keeps control and bidi characters; stale `.part` files in the cache are never pruned.
+- [ ] Calendar subscriptions: feeds are fetched one by one (16 dead hosts hold `Reread` for minutes), all are due at start with no jitter, each keeps up to 5 MiB resident; ureq honors proxy environment variables, undocumented.
+- [ ] Wallpaper: `showing_on(Named)` falls back to the last image Kanade set when awww is not queried.
+- [ ] Focus: `status()` lists caffeine after it ended late; `night_light::turn(true)` that saved but did not reload leaves the mode unrecorded in `Held`; a user's DND off-then-on during Focus looks the same as untouched.
+- [ ] Notifications: four or more updating progress notifications rotate the three shown Activities (ADR 0059).

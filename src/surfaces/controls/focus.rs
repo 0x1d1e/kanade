@@ -12,6 +12,7 @@ use crate::sources::power::Profile;
 use crate::sources::wifi::Secret;
 use crate::surfaces::grid::moved;
 use crate::surfaces::ring::Ring;
+use crate::tiles::{Placed, Size, Tile};
 
 // a password is at most 64 characters, the WPA key itself as hex
 const MOST_SECRET: usize = 64;
@@ -30,20 +31,28 @@ pub enum Subsurface {
 
     // the sound devices and the apps playing or recording
     Audio,
+
+    // the tiles being arranged: the draft, not yet saved, and the one chosen (ADR 0067)
+    Arrange { draft: Vec<Placed>, chosen: usize },
 }
 
 // what the ring can be on, by what it is rather than where, so a network moving keeps it
 #[derive(Debug, Clone, PartialEq)]
 pub enum At {
-    // the top level: a radio's switch's knob, then the rest of its tile, which opens its sub-surface
+    // the top level: the header's Stop sharing while a PipeWire cast runs and its pencil, which
+    // arranges the tiles, then a radio's switch's knob and the rest of its tile, which opens its
+    // sub-surface
+    Stop,
+    Edit,
     WifiSwitch,
     Wifi,
     BluetoothSwitch,
     Bluetooth,
-    Microphone,
+    Caffeine,
     Dnd,
     NightLight,
     ChargeLimit,
+    Focus,
     Speaker,
 
     // the chevron at the end of the speaker's level, which opens the Audio sub-surface
@@ -75,6 +84,18 @@ pub enum At {
     Output(Node),
     Input(Node),
     Stream(Node),
+
+    /*
+     * the arrangement's: a tile to choose, what moves, resizes or takes out the chosen one, a tile
+     * to bring back, and saving
+     */
+    Pick(Tile),
+    Earlier,
+    Later,
+    Resize(Size),
+    Remove,
+    Add(Tile),
+    Done,
 }
 
 impl At {
@@ -120,23 +141,24 @@ impl Service for Focus {
 
 /*
  * a level's targets, row by row, each with where its middle is across the Surface from 0 to 1, so
- * Up and Down go to the nearest one. `rows` are a listing sub-surface's, top first, under its header,
- * or at the top level the switches' third row
+ * Up and Down go to the nearest one. `rows` are a sub-surface's, top first, under its header, or at
+ * the top level the tiles'; `stop` says a cast can be stopped
  */
-fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
+fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>, stop: bool) -> Vec<Vec<(At, f32)>> {
     match sub {
-        // `rows` are the switches' third row, which has the charge limit only where it is supported
+        // `rows` are the tiles' rows, then the sliders and the profiles
         None => {
-            let mut grid = vec![
-                vec![
-                    (At::WifiSwitch, 0.08),
-                    (At::Wifi, 0.3),
-                    (At::BluetoothSwitch, 0.58),
-                    (At::Bluetooth, 0.8),
-                ],
-                vec![(At::Microphone, 0.25), (At::Dnd, 0.75)],
-            ];
+            let mut grid = Vec::new();
 
+            // the header's, above the rest and apart from where the ring starts
+            let mut header = Vec::new();
+
+            if stop {
+                header.push((At::Stop, 0.8));
+            }
+
+            header.push((At::Edit, 0.99));
+            grid.push(header);
             grid.extend(rows);
             grid.extend([
                 vec![(At::Speaker, 0.45), (At::Audio, 0.97)],
@@ -166,6 +188,13 @@ fn grid(sub: Option<&Subsurface>, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32
             grid.extend(rows);
             grid
         }
+        // `rows` are the tiles, the toolbar and the hidden ones
+        Some(Subsurface::Arrange { .. }) => {
+            let mut grid = vec![vec![(At::Back, 0.0), (At::Done, 1.0)]];
+
+            grid.extend(rows);
+            grid
+        }
         // typing has no ring
         Some(Subsurface::Password { .. }) => Vec::new(),
     }
@@ -176,8 +205,8 @@ impl Focus {
      * the targets of the level this focus is on. Taken from the focus itself, never a stored one,
      * which may be an earlier visit's sub-surface while this visit starts at the top level
      */
-    pub fn grid(&self, rows: Vec<Vec<(At, f32)>>) -> Vec<Vec<(At, f32)>> {
-        grid(self.sub.as_ref(), rows)
+    pub fn grid(&self, rows: Vec<Vec<(At, f32)>>, stop: bool) -> Vec<Vec<(At, f32)>> {
+        grid(self.sub.as_ref(), rows, stop)
     }
 
     // a listing sub-surface: its header, then rows that scroll
@@ -200,14 +229,18 @@ impl Focus {
         }
     }
 
-    // the rows above a listing sub-surface's, its header
-    fn header(&self) -> usize {
-        usize::from(self.listing())
+    // the rows above where the ring starts: a sub-surface's header, or the top level's
+    fn header(&self, grid: &[Vec<(At, f32)>]) -> usize {
+        let top = grid
+            .first()
+            .is_some_and(|row| row.iter().any(|(at, _)| *at == At::Edit));
+
+        usize::from(self.listing() || top || matches!(self.sub, Some(Subsurface::Arrange { .. })))
     }
 
     // what the ring shows on in `grid`, none while it hides
     pub fn ring(&self, grid: &[Vec<(At, f32)>]) -> Option<At> {
-        self.ring.on(grid, self.header())
+        self.ring.on(grid, self.header(grid))
     }
 
     /*
@@ -215,7 +248,7 @@ impl Focus {
      * listing scrolls to show it
      */
     pub fn row(&self, grid: &[Vec<(At, f32)>]) -> Option<usize> {
-        self.ring.row(grid, self.header())
+        self.ring.row(grid, self.header(grid))
     }
 
     // the ring hides, the pointer being what moves now
@@ -232,6 +265,23 @@ impl Focus {
             ring: self.ring.top(),
             sub: Some(sub),
             offset: 0.0,
+        }
+    }
+
+    // into the arrangement of `draft`, its first tile chosen
+    pub fn arrange(self, draft: Vec<Placed>) -> Focus {
+        Focus {
+            ring: self.ring.top(),
+            sub: Some(Subsurface::Arrange { draft, chosen: 0 }),
+            offset: 0.0,
+        }
+    }
+
+    // the arrangement now `draft`, with `chosen` chosen
+    pub fn arranged(self, draft: Vec<Placed>, chosen: usize) -> Focus {
+        Focus {
+            sub: Some(Subsurface::Arrange { draft, chosen }),
+            ..self
         }
     }
 
@@ -266,6 +316,11 @@ impl Focus {
                 sub: None,
                 offset: 0.0,
             },
+            Some(Subsurface::Arrange { .. }) => Focus {
+                ring: self.ring.onto(At::Edit),
+                sub: None,
+                offset: 0.0,
+            },
             Some(Subsurface::Password { ssid, .. }) => Focus {
                 ring: self.ring.onto(At::Network(ssid.clone())),
                 sub: Some(Subsurface::Wifi),
@@ -288,7 +343,7 @@ impl Focus {
             return self.sub.is_some().then(|| (self.out(), None));
         }
 
-        let place = self.ring.place(grid, self.header())?;
+        let place = self.ring.place(grid, self.header(grid))?;
         let at = grid[place.row][place.column].0.clone();
         let level = at.level();
 
@@ -309,7 +364,7 @@ impl Focus {
             return None;
         }
 
-        if let Some(ring) = self.ring.revealed(grid, self.header()) {
+        if let Some(ring) = self.ring.revealed(grid, self.header(grid)) {
             return Some((Focus { ring, ..self }, None));
         }
 

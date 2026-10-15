@@ -30,9 +30,16 @@ const OPTIONAL: &[(&str, &str)] = &[
     ("wp_viewporter", "windows draw at whole scales"),
 ];
 
-pub fn check() -> Vec<Check> {
+// the compositor's blur, which the finish `blur` draws over (ADR 0057)
+const BLUR: (&str, &str) = (
+    "ext_background_effect_manager_v1",
+    "the finish blur draws as the tinted solid, not translucent",
+);
+
+// `blur` is whether the finish is `blur`, which asks for the compositor's blur
+pub fn check(blur: bool) -> Vec<Check> {
     match globals() {
-        Ok(globals) => judge(&globals),
+        Ok(globals) => judge(&globals, blur),
         Err(problem) => vec![Check::fail(format!("wayland: {problem}"))],
     }
 }
@@ -52,7 +59,7 @@ fn globals() -> Result<Vec<String>, String> {
 }
 
 // required: present or failing; optional: present or degrading, each with what goes without it
-fn judge(globals: &[String]) -> Vec<Check> {
+fn judge(globals: &[String], blur: bool) -> Vec<Check> {
     let offered = |name: &str| globals.iter().any(|global| global == name);
 
     let missing: Vec<Check> = REQUIRED
@@ -69,10 +76,14 @@ fn judge(globals: &[String]) -> Vec<Check> {
         false => missing,
     };
 
-    let optional = OPTIONAL.iter().map(|&(name, without)| match offered(name) {
-        true => Check::ok(format!("wayland: optional {name} available")),
-        false => Check::warn(format!("wayland: optional {name} missing: {without}")),
-    });
+    let optional = OPTIONAL
+        .iter()
+        .copied()
+        .chain(blur.then_some(BLUR))
+        .map(|(name, without)| match offered(name) {
+            true => Check::ok(format!("wayland: optional {name} available")),
+            false => Check::warn(format!("wayland: optional {name} missing: {without}")),
+        });
 
     required.into_iter().chain(optional).collect()
 }

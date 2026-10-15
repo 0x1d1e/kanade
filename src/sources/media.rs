@@ -15,12 +15,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+use super::lyrics;
 use super::palette::Palette;
 use crate::bus::{Argument, Bus, Signal, Value};
 use kanade_runtime::service::Service;
 use kanade_runtime::{Color, MutexExt};
 
 use super::playback::{self, Deck, Playback, Timeline, Tint};
+use crate::config;
 use crate::island::activity::{
     Activity, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope, Track,
 };
@@ -28,6 +30,7 @@ use crate::island::fade::Dissolve;
 use crate::island::presentation::Surface;
 use crate::island::service::{IslandService, Timings};
 use crate::later::Later;
+use crate::look::LyricsSource;
 use crate::supervise;
 
 // how long a paused player keeps its Activity, so a pause to answer the door does not empty the island
@@ -105,6 +108,10 @@ struct Player {
 
     title: String,
     artist: String,
+    album: String,
+
+    // `xesam:url`, where a local track's lyrics file lies beside it
+    url: String,
     art_url: String,
     status: Status,
 
@@ -150,6 +157,8 @@ impl Player {
                 .first()
                 .map_or_else(String::new, |artist| artist.text().to_owned()),
 
+            album: metadata.get("xesam:album").text().to_owned(),
+            url: metadata.get("xesam:url").text().to_owned(),
             art_url: metadata.get("mpris:artUrl").text().to_owned(),
             status,
 
@@ -245,7 +254,7 @@ impl Seen {
             title => title,
         };
 
-        let art = art(&player.art_url);
+        let art = file_path(&player.art_url);
 
         Seen {
             key: name.to_owned(),
@@ -498,6 +507,9 @@ impl Watcher {
             .as_ref()
             .and_then(|published| published.shown.clone());
 
+        // when the shown lyric line changes, if it will
+        let mut line_in = None;
+
         let deck = self.shown(players).map(|(name, player)| {
             let seen = Seen::of(name, player);
             let accent = seen.track.accent.map(|(r, g, b)| Color::rgb(r, g, b));
@@ -519,10 +531,15 @@ impl Watcher {
                 ),
             };
 
+            let (lyric, next_line) = lyric(player, now);
+
+            line_in = next_line;
+
             Deck {
                 name: name.clone(),
                 track,
                 timeline: player.timeline,
+                lyric,
                 accent: tint,
                 can_play: player.can_play,
                 can_pause: player.can_pause,
@@ -532,11 +549,18 @@ impl Watcher {
             }
         });
 
+        if deck.is_none() {
+            lyrics::stop();
+        }
+
         // a paused player is still asked, it may be moved without playing
         self.tick = deck.as_ref().map(|deck| {
-            deck.timeline.next_second(now).map_or(now + POLL, |next| {
+            let second = deck.timeline.next_second(now).map_or(now + POLL, |next| {
                 (next + PAST).clamp(now + GAP, now + POLL)
-            })
+            });
+
+            // a lyric line changes between seconds, so the frame waits for it, never sooner than GAP
+            line_in.map_or(second, |line| second.min((line + PAST).max(now + GAP)))
         });
 
         let playback = Playback {
@@ -596,11 +620,50 @@ impl Watcher {
 
     // what it shows next time starts over, with nothing to dissolve from
     fn close(&mut self) {
+        lyrics::stop();
         self.selected = None;
         self.page = None;
         self.tick = None;
         self.published = None;
     }
+}
+
+/*
+ * the lyric line of the shown player's track, and when the next one starts. Lyrics are asked for
+ * only here, while the Surface that shows them is open, and looked up only while the track plays
+ */
+fn lyric(player: &Player, now: Instant) -> (Option<String>, Option<Instant>) {
+    let mode = config::get().lyrics;
+
+    if mode == LyricsSource::Off {
+        lyrics::stop();
+        return (None, None);
+    }
+
+    let wanted = lyrics::Wanted::new(
+        mode,
+        &player.url,
+        &player.title,
+        &player.artist,
+        &player.album,
+        player.timeline.length,
+    );
+    lyrics::want(&wanted, player.status == Status::Playing);
+
+    let shown = lyrics::line(&wanted, player.timeline.position(now));
+
+    // no new line comes while paused or stopped, and a moving timeline gets there at its rate
+    let next = shown
+        .until
+        .zip((player.timeline.rate > 0.0).then_some(player.timeline.rate))
+        .map(|(until, rate)| now + until.div_f64(rate));
+
+    (shown.text, next)
+}
+
+// the lyrics worker found (or gave up on) the shown track: the Surface shows what it found
+pub(super) fn lyrics_ready() {
+    send(Event::Watch);
 }
 
 /*
@@ -973,8 +1036,8 @@ fn get_all(bus: Bus, name: &str, interface: &str) -> Value {
     )
 }
 
-// only a local file can be drawn; a web link, like Spotify's, falls back to no art
-fn art(url: &str) -> Option<String> {
+// only a local file can be drawn or read; a web link, like Spotify's, falls back to none
+pub(super) fn file_path(url: &str) -> Option<String> {
     let path = url.strip_prefix("file://")?;
 
     // a file:// link may carry a host, which can only be this machine

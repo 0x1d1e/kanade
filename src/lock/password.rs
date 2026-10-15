@@ -7,23 +7,57 @@ use std::thread;
 use kanade_runtime::service::Service;
 use zeroize::Zeroizing;
 
-use crate::clock;
+use crate::clock::{self, Note};
+use crate::config::{self, Config};
 
 use super::who::Who;
 use super::{HEARD, awake, locker, requests, say};
 
-// the PAM service the password is checked with
+// the PAM service the password is checked with unless `lock.pam_service` names another
 pub const PAM: &str = "login";
 
 // where Linux-PAM looks for a service's file, the admin's first
 pub(super) const PAM_DIRS: [&str; 3] = ["/etc/pam.d", "/usr/lib/pam.d", "/usr/etc/pam.d"];
 
-// the file PAM reads for `PAM`; without it no password unlocks
-pub fn pam() -> Option<PathBuf> {
+// the PAM service `config` names with `lock.pam_service`, which may not be a valid name (`valid`)
+pub fn service_of(config: &Config) -> &str {
+    config.lock_pam.as_deref().unwrap_or(PAM)
+}
+
+// the PAM service in use
+pub fn service() -> String {
+    service_of(&config::get()).to_owned()
+}
+
+/*
+ * whether `name` is a file name in PAM's directories and no path: letters, digits, dots, dashes and
+ * underscores, up to 64, not starting with a dot or a dash
+ */
+pub fn valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with(['.', '-'])
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+// the file PAM reads for `service`; without it, or with a name that is no file name, no password
+// unlocks, and no lock is asked
+pub fn pam_file(service: &str) -> Option<PathBuf> {
+    if !valid(service) {
+        return None;
+    }
+
     PAM_DIRS
         .iter()
-        .map(|dir| Path::new(dir).join(PAM))
+        .map(|dir| Path::new(dir).join(service))
         .find(|path| path.is_file())
+}
+
+// the file of the service in use
+pub fn pam() -> Option<PathBuf> {
+    pam_file(&service())
 }
 
 /*
@@ -70,7 +104,12 @@ pub(super) fn checked(check: u64, password: Zeroizing<String>) {
     // the account shown, by the uid, not whatever the environment names
     let accepted = panic::catch_unwind(AssertUnwindSafe(|| {
         let login = Who::read().login.clone();
-        clock::authenticate(PAM, &login, &password)
+        let service = service();
+
+        // the config reloads while locked: a name that is no file name in PAM's directories, or
+        // whose file is gone, unlocks nothing, as when the lock was asked
+        pam_file(&service).is_some()
+            && clock::authenticate(&service, &login, &password, &mut |note| told(check, note))
     }))
     // a check that panicked accepts nothing, and ends, so the next can begin
     .unwrap_or(false);
@@ -90,4 +129,13 @@ pub(super) fn checked(check: u64, password: Zeroizing<String>) {
     say(&requests);
     drop(requests);
     HEARD.notify_all();
+}
+
+// what PAM said during the check `check`, for the lock screen to show under the field
+fn told(check: u64, note: Note) {
+    let mut requests = requests();
+
+    if requests.noted(check, note) {
+        say(&requests);
+    }
 }

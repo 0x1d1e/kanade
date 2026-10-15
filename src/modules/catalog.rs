@@ -23,10 +23,10 @@ use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
     apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
-    fullscreen, google, keys, launch, live, media, network, night_light,
+    focus, fullscreen, google, keys, launch, live, lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
-    sleep, system, timer, tray, wake, wallpaper, weather, windows, workspace,
+    sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
@@ -290,7 +290,10 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[],
         settings: config::MEDIA,
-        hooks: Hooks::NONE,
+        hooks: Hooks {
+            status: Some(lyrics::status),
+            reload: None,
+        },
         verbs: &[
             Verb {
                 name: "media",
@@ -509,7 +512,7 @@ pub const ALL: &[Module] = &[
         name: "notifications",
         about: "The notification daemon, its history and Do Not Disturb",
         requires: &[CORE],
-        optional: &[],
+        optional: &["live"],
         warns: None,
         needs: &[
             Need {
@@ -740,7 +743,7 @@ pub const ALL: &[Module] = &[
         ],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::CONTROLS,
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "controls",
@@ -787,7 +790,7 @@ pub const ALL: &[Module] = &[
         verbs: &[Verb {
             name: "wallpaper",
             about: "Set the wallpaper or one at random, show status, open its Surface",
-            usage: || String::from("wallpaper set <path>|shuffle|status"),
+            usage: || String::from("wallpaper set <path>|shuffle [--output <name>|all]|status"),
             parse: |arguments| {
                 wallpaper::Request::parse(arguments)
                     .map(Call::Wallpaper)
@@ -976,6 +979,37 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("google-calendar", google::follow);
+            app
+        },
+    },
+    /*
+     * public iCalendar feeds, fetched into read-only files `calendar` reads (ADR 0062); fetches
+     * nothing without a `calendar.subscriptions`
+     */
+    Module {
+        name: "calendar-subscriptions",
+        about: "Public iCalendar feeds fetched into read-only calendars",
+        requires: &[CORE, "calendar"],
+        optional: &["calendar-surface"],
+        warns: None,
+        needs: &[],
+        settings: config::SUBSCRIPTIONS,
+        hooks: Hooks {
+            status: Some(subscriptions::status),
+            reload: Some(subscriptions::reread),
+        },
+        verbs: &[Verb {
+            name: "calendar-subscriptions",
+            about: "Fetch the calendar subscriptions now, or show how they stand",
+            usage: || String::from("calendar-subscriptions sync|status"),
+            parse: |arguments| {
+                subscriptions::Request::parse(arguments)
+                    .map(Call::Subscriptions)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            supervise::spawn("calendar-subscriptions", subscriptions::follow);
             app
         },
     },
@@ -1269,6 +1303,31 @@ pub const ALL: &[Module] = &[
         },
     },
     /*
+     * one switch for do not disturb, caffeine and the night light (ADR 0060), through the Modules
+     * that own them; each is optional, so Focus runs with whichever are on
+     */
+    Module {
+        name: "focus",
+        about: "Quiets the session with one switch",
+        requires: &[CORE],
+        optional: &["notifications", "caffeine", "night-light"],
+        warns: None,
+        needs: &[],
+        settings: config::FOCUS,
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "focus",
+            about: "Quiet the session",
+            usage: || String::from("focus on|off|toggle|status"),
+            parse: |arguments| {
+                focus::Request::parse(arguments)
+                    .map(Call::Focus)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
+    /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at
      * start it locks again a session logind still counts as locked, which a crash left on niri's
      * red screen
@@ -1281,7 +1340,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[
             Need {
-                on: Provider::Pam(lock::PAM),
+                on: Provider::Pam,
                 without: "no password unlocks, so `kanade lock` refuses",
             },
             Need {
@@ -1303,7 +1362,7 @@ pub const ALL: &[Module] = &[
         ],
         settings: config::LOCK,
         hooks: Hooks {
-            status: Some(|| vec![sleep::status()]),
+            status: Some(lock::lines),
             ..Hooks::NONE
         },
         verbs: &[Verb {

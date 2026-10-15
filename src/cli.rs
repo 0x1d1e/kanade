@@ -9,6 +9,8 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{IpcCall, ipc_socket};
@@ -21,8 +23,8 @@ use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
 use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, google, live, media, night_light, osd, power, recording,
-    reminders, timer, wallpaper, weather,
+    caffeine, capture, charge_limit, focus, google, live, media, night_light, osd, power,
+    recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -64,6 +66,7 @@ pub enum Call {
     Record(recording::Request),
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
+    Focus(focus::Request),
     Battery(charge_limit::Request),
     Media(media::Transport),
     Wifi(Switch),
@@ -73,6 +76,7 @@ pub enum Call {
     Google(google::Request),
     Reminders(reminders::Request),
     Weather(weather::Request),
+    Subscriptions(subscriptions::Request),
     Osd(osd::Asked),
     Lock,
     LockStatus,
@@ -445,6 +449,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return live::run(id, title, command);
     }
 
+    // the agent's event comes on stdin, never the arguments
+    if let Call::Live(live::Request::Hook(agent)) = asked {
+        return live::hook(agent);
+    }
+
     // the lines come from stdin, never the arguments
     if let Call::Dmenu(asked) = asked {
         if !asked.choices.is_empty() {
@@ -457,13 +466,15 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
-            Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path)),
-            Err(error) => {
-                complain(&format!("kanade: {}: {error}", path.display()));
-                return ExitCode::FAILURE;
+        Call::Wallpaper(wallpaper::Request::Set(path, output)) => {
+            match std::path::absolute(&path) {
+                Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path, output)),
+                Err(error) => {
+                    complain(&format!("kanade: {}: {error}", path.display()));
+                    return ExitCode::FAILURE;
+                }
             }
-        },
+        }
         Call::Google(google::Request::SignIn(path)) => match std::path::absolute(&path) {
             Ok(path) => Call::Google(google::Request::SignIn(path)),
             Err(error) => {
@@ -474,11 +485,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
         asked => asked,
     };
     let arguments = match &asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => vec![
-            String::from("wallpaper"),
-            String::from("set"),
-            path.to_string_lossy().into_owned(),
-        ],
+        Call::Wallpaper(request @ wallpaper::Request::Set(..)) => request.arguments(),
         Call::Google(google::Request::SignIn(path)) => vec![
             String::from("google-calendar"),
             String::from("sign-in"),
@@ -555,20 +562,40 @@ fn complain(text: &str) {
 
 // what the running shell answers, or why there is none to ask
 pub fn call(arguments: &[String]) -> Result<Reply, String> {
-    let stream = connect(arguments)?;
+    call_within(arguments, PATIENCE)
+}
 
-    send(stream, &IpcCall::new(HANDLER, arguments), Some(PATIENCE))
+// as `call`, for a caller that cannot wait as long, like an agent's hook: connecting, writing and
+// the reply all fall within `patience`
+pub fn call_within(arguments: &[String], patience: Duration) -> Result<Reply, String> {
+    let deadline = Instant::now() + patience;
+    let stream = connect(arguments, Some(patience))?;
+    let left = deadline.saturating_duration_since(Instant::now());
+
+    send(stream, &IpcCall::new(HANDLER, arguments), Some(left))
+}
+
+// what `call` says when no shell listens
+pub const NO_SHELL: &str = "no shell is running; start one with `kanade`";
+
+// what the shell refuses the verbs of a Module that is off with
+pub fn module_off(name: &str) -> String {
+    format!("module {name} is off")
 }
 
 // as `call`, waiting as long as the shell takes, as on the user
 fn call_waiting(arguments: &[String]) -> Result<Reply, String> {
-    let stream = connect(arguments)?;
+    let stream = connect(arguments, None)?;
 
     send(stream, &IpcCall::new(HANDLER, arguments), None)
 }
 
-// the running shell to send `arguments` to
-fn connect(arguments: &[String]) -> Result<UnixStream, String> {
+/*
+ * the running shell to send `arguments` to. A connect to a shell whose queue is full waits, so
+ * with a `patience` it is made on a thread that is left behind when the time is up: the caller
+ * exits soon after, and the thread ends with it
+ */
+fn connect(arguments: &[String], patience: Option<Duration>) -> Result<UnixStream, String> {
     // a newline would split one argument into two on the shell's side
     if arguments.iter().any(|argument| argument.contains('\n')) {
         return Err(String::from("an argument cannot hold a newline"));
@@ -581,8 +608,23 @@ fn connect(arguments: &[String]) -> Result<UnixStream, String> {
         ));
     }
 
-    UnixStream::connect(ipc_socket())
-        .map_err(|_| String::from("no shell is running; start one with `kanade`"))
+    let socket = ipc_socket();
+
+    let Some(patience) = patience else {
+        return UnixStream::connect(socket).map_err(|_| String::from(NO_SHELL));
+    };
+
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || drop(sender.send(UnixStream::connect(socket))));
+
+    // a shell with room answers at once, so a spent deadline still tells "no shell" from "full"
+    match receiver.recv_timeout(patience.max(Duration::from_millis(50))) {
+        Ok(connected) => connected.map_err(|_| String::from(NO_SHELL)),
+        Err(_) => Err(format!(
+            "the shell did not take the call within {patience:?}"
+        )),
+    }
 }
 
 /*
@@ -711,12 +753,19 @@ fn send(
     let deadline = patience.map(|patience| Instant::now() + patience);
     let late = || format!("did not answer within {:?}", patience.unwrap_or_default());
 
-    let sent = call
-        .write(&mut stream)
+    // a shell that reads no more must not hold the writer either
+    let sent = stream
+        .set_write_timeout(patience.map(|patience| patience.max(Duration::from_millis(1))))
+        .and_then(|()| call.write(&mut stream))
         // closing our side is how the shell knows the call is complete
         .and_then(|()| stream.shutdown(Shutdown::Write));
 
-    sent.map_err(|error| format!("the shell closed the connection: {error}"))?;
+    sent.map_err(|error| match error.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+            String::from("the shell did not take the call in time")
+        }
+        _ => format!("the shell closed the connection: {error}"),
+    })?;
 
     let mut reply = Vec::new();
     let mut read = [0; 4096];

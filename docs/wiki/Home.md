@@ -7,6 +7,7 @@ Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri), centered 
 | [Installation](Installation.md) | requirements, building, running as a systemd user unit, recovering a crashing shell |
 | [CLI](CLI.md) | every `kanade <verb>`, and exit statuses |
 | [Configuration](Configuration.md) | config layers, every key and its default, Modules |
+| [Agent hooks](Agent-hooks.md) | showing a Claude Code session as a live Activity, and adapting another agent |
 | [Google Calendar](Google-Calendar.md) | signing in with your own OAuth client |
 | [Keyboard](Keyboard.md) | niri keybinds, idle locking, keys inside each Surface |
 | [Limitations](Limitations.md) | known gaps and what runs worse without an optional tool |

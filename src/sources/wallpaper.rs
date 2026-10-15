@@ -66,6 +66,9 @@ pub enum Unset {
     NoAwww,
     NoDaemon,
 
+    // awww lists no output of this name
+    NoOutput(String),
+
     // awww took longer than this to show it, so it was stopped
     Stuck(Duration),
 
@@ -80,6 +83,7 @@ impl Unset {
             Unset::NoImage(_) => "no such image",
             Unset::NoAwww => "awww not found",
             Unset::NoDaemon => "awww-daemon is not running",
+            Unset::NoOutput(_) => "no such output",
             Unset::Stuck(_) => "awww did not answer",
             Unset::Refused(_) => "awww could not show it",
         }
@@ -92,6 +96,7 @@ impl fmt::Display for Unset {
             Unset::NoImage(path) => write!(f, "no image at {}", path.display()),
             Unset::NoAwww => write!(f, "{AWWW} not found; install awww to set the wallpaper"),
             Unset::NoDaemon => write!(f, "{DAEMON} is not running"),
+            Unset::NoOutput(name) => write!(f, "{AWWW} shows nothing on an output named {name}"),
             Unset::Stuck(limit) => write!(
                 f,
                 "{AWWW} did not show it within {}s, so it was stopped",
@@ -104,6 +109,10 @@ impl fmt::Display for Unset {
 
 struct Job {
     path: PathBuf,
+    output: Output,
+
+    // the output focused when it was asked, which the palette may follow (ADR 0064)
+    driver: Option<String>,
     from: Option<From>,
     done: Option<Done>,
 }
@@ -141,33 +150,154 @@ fn hook(path: &Path, fire: bool) {
 // the sets waiting for `serve`, which outlive a restart of it
 static QUEUE: LazyLock<Queue<Job>> = LazyLock::new(Queue::new);
 
+// the outputs of a pick (ADR 0064)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Output {
+    All,
+
+    // one, by the name awww and niri give it, like `eDP-1`
+    Named(String),
+}
+
+// the longest output name taken, well over any connector's
+const NAME: usize = 64;
+
+impl Output {
+    // `all`, or an output's name: no space, comma or control character, which awww's list takes
+    // apart, and no leading dash, which awww would read as a flag
+    fn parse(word: &str) -> Option<Output> {
+        let name = !word.is_empty()
+            && word.len() <= NAME
+            && !word.starts_with('-')
+            && !word
+                .chars()
+                .any(|c| c == ',' || c.is_whitespace() || c.is_control());
+
+        match word {
+            "all" => Some(Output::All),
+            _ if name => Some(Output::Named(word.to_owned())),
+            _ => None,
+        }
+    }
+
+    fn word(&self) -> &str {
+        match self {
+            Output::All => "all",
+            Output::Named(name) => name,
+        }
+    }
+}
+
 // what `kanade wallpaper` asks
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    Set(PathBuf),
+    // the image on the outputs asked, else all of them
+    Set(PathBuf, Option<Output>),
 
-    // a wallpaper of the directory picked at random, none of those showing
-    Shuffle,
+    // a wallpaper of the directory picked at random, none of those showing on the outputs asked,
+    // else the focused one
+    Shuffle(Option<Output>),
+
+    // what each output shows
     Status,
 }
 
 impl Request {
     pub fn parse(arguments: &[&str]) -> Option<Request> {
-        match arguments {
-            ["set", path] if !path.is_empty() => Some(Request::Set(PathBuf::from(path))),
-            ["shuffle"] => Some(Request::Shuffle),
-            ["status"] => Some(Request::Status),
+        let (words, output) = without_output(arguments)?;
+
+        match (words.as_slice(), output) {
+            (["set", path], output) if !path.is_empty() => {
+                Some(Request::Set(PathBuf::from(path), output))
+            }
+            (["shuffle"], output) => Some(Request::Shuffle(output)),
+            (["status"], None) => Some(Request::Status),
             _ => None,
         }
+    }
+
+    // the words of `parse`'s arguments, with the path as given
+    pub fn arguments(&self) -> Vec<String> {
+        let (mut words, output) = match self {
+            Request::Set(path, output) => (
+                vec![
+                    String::from("wallpaper"),
+                    String::from("set"),
+                    path.to_string_lossy().into_owned(),
+                ],
+                output,
+            ),
+            Request::Shuffle(output) => (
+                vec![String::from("wallpaper"), String::from("shuffle")],
+                output,
+            ),
+            Request::Status => {
+                return vec![String::from("wallpaper"), String::from("status")];
+            }
+        };
+
+        if let Some(output) = output {
+            words.push(String::from("--output"));
+            words.push(output.word().to_owned());
+        }
+
+        words
+    }
+}
+
+// the arguments without `--output NAME` or `--output=NAME`, and its output; none if it is odd
+fn without_output<'a>(arguments: &[&'a str]) -> Option<(Vec<&'a str>, Option<Output>)> {
+    let mut words = Vec::new();
+    let mut output = None;
+    let mut rest = arguments.iter().copied();
+
+    while let Some(word) = rest.next() {
+        let name = match word {
+            "--output" => rest.next()?,
+            _ => match word.strip_prefix("--output=") {
+                Some(name) => name,
+                None => {
+                    words.push(word);
+                    continue;
+                }
+            },
+        };
+
+        // once
+        if output.replace(Output::parse(name)?).is_some() {
+            return None;
+        }
+    }
+
+    Some((words, output))
+}
+
+// the output with the focus, none while niri does not say
+fn focused() -> Option<String> {
+    super::niri::Niri::read().seen.focused_output.clone()
+}
+
+// where a wallpaper picked on `monitor` lands: that monitor alone, or every one by
+// `wallpaper.per_monitor`
+pub fn picked_on(monitor: &str) -> Output {
+    if config::get().wallpaper_per_monitor {
+        Output::Named(monitor.to_owned())
+    } else {
+        Output::All
     }
 }
 
 /*
- * asks awww to show the image at `path`, answering at once; `done` is told how it went. A circle
- * transition centers on `from`, else the middle. Refused at once when there is no file there or no
- * awww to ask
+ * asks awww to show the image at `path` on `output`, the others as they were, answering at once;
+ * `done` is told how it went. A circle transition centers on `from`, else the middle. Refused at
+ * once when there is no file there or no awww to ask
  */
-pub fn set(path: PathBuf, from: Option<From>, done: Option<Done>) -> Result<(), Unset> {
+pub fn set(
+    path: PathBuf,
+    output: Output,
+    from: Option<From>,
+    done: Option<Done>,
+) -> Result<(), Unset> {
     if !path.is_file() {
         return Err(Unset::NoImage(path));
     }
@@ -177,7 +307,13 @@ pub fn set(path: PathBuf, from: Option<From>, done: Option<Done>) -> Result<(), 
     }
 
     // the receiver lives in the static, so sending never fails
-    QUEUE.send(Job { path, from, done });
+    QUEUE.send(Job {
+        path,
+        output,
+        driver: focused(),
+        from,
+        done,
+    });
 
     Ok(())
 }
@@ -192,7 +328,7 @@ pub fn request(request: Request, later: Later) {
         LATER.as_secs()
     ));
 
-    let set = |path: PathBuf| {
+    let set = |path: PathBuf, output: Output| {
         let answer = later.clone();
         let shown = path.display().to_string();
         let done: Done = Box::new(move |result| match result {
@@ -200,18 +336,26 @@ pub fn request(request: Request, later: Later) {
             Err(unset) => answer.refused(unset.to_string()),
         });
 
-        set(path, None, Some(done)).map_err(|unset| unset.to_string())
+        set(path, output, None, Some(done)).map_err(|unset| unset.to_string())
     };
 
     let asked = match request {
-        Request::Set(path) if !path.is_absolute() => Err(format!(
+        Request::Set(path, _) if !path.is_absolute() => Err(format!(
             "{} is not an absolute path, which the shell needs",
             path.display()
         )),
-        Request::Set(path) => set(path),
-        Request::Shuffle => pick_other().and_then(set),
+        Request::Set(path, output) => set(path, output.unwrap_or(Output::All)),
+        Request::Shuffle(output) => {
+            let output = output.unwrap_or_else(|| {
+                focused()
+                    .filter(|_| config::get().wallpaper_per_monitor)
+                    .map_or(Output::All, Output::Named)
+            });
+
+            pick_other(&output).and_then(|path| set(path, output))
+        }
         Request::Status => {
-            later.done(status());
+            say_status(later);
             return;
         }
     };
@@ -222,22 +366,27 @@ pub fn request(request: Request, later: Later) {
 }
 
 /*
- * sets a wallpaper of the directory picked at random, none of those showing, as `set` does: the
- * image, or why there is none to set
+ * sets a wallpaper of the directory picked at random, none of those showing on `output`, as `set`
+ * does: the image, or why there is none to set
  */
-pub fn shuffle(from: Option<From>, done: Option<Done>) -> Result<PathBuf, String> {
-    let path = pick_other()?;
+pub fn shuffle(output: Output, from: Option<From>, done: Option<Done>) -> Result<PathBuf, String> {
+    let path = pick_other(&output)?;
 
-    set(path.clone(), from, done).map_err(|unset| unset.to_string())?;
+    set(path.clone(), output, from, done).map_err(|unset| unset.to_string())?;
 
     Ok(path)
 }
 
-// an image of the directory none of those showing, picked at random
-fn pick_other() -> Result<PathBuf, String> {
+// an image of the directory none of those showing on `output`, picked at random
+fn pick_other(output: &Output) -> Result<PathBuf, String> {
     let images = images();
 
-    pick(&images, &showing(), RandomState::new().hash_one(())).ok_or_else(|| match directory() {
+    pick(
+        &images,
+        &showing_on(output),
+        RandomState::new().hash_one(()),
+    )
+    .ok_or_else(|| match directory() {
         Some(directory) if images.is_empty() => {
             format!("no wallpapers in {}", directory.display())
         }
@@ -264,21 +413,39 @@ pub fn current() -> Option<PathBuf> {
 }
 
 /*
- * the images showing now as best known: what awww said it shows on each output when last asked,
- * which follows every set through its cache (`watch`), else the one Kanade last set
+ * the images showing on `output` now as best known: what awww said it shows on each output when
+ * last asked, which follows every set through its cache (`watch`), else the one Kanade last set
  */
-pub fn showing() -> Vec<PathBuf> {
-    let mut showing: Vec<PathBuf> = Shown::read()
-        .by
-        .values()
-        .map(|shown| shown.path.clone())
-        .collect();
+pub fn showing_on(output: &Output) -> Vec<PathBuf> {
+    let mut showing: Vec<PathBuf> = {
+        let shown = Shown::read();
+
+        match output {
+            Output::All => shown.by.values().map(|shown| shown.path.clone()).collect(),
+            Output::Named(name) => shown
+                .on(name)
+                .map(|shown| shown.path.clone())
+                .into_iter()
+                .collect(),
+        }
+    };
 
     if showing.is_empty() {
         showing.extend(current());
     }
 
     showing
+}
+
+// the output the palette follows: the one focused at the last pick of Kanade's, none before
+static DRIVER: Mutex<Option<String>> = Mutex::new(None);
+
+// whether a pick on `output` changes the palette, as `driver` (ADR 0064) follows it
+fn drives(output: &Output, driver: Option<&str>) -> bool {
+    match (output, driver) {
+        (Output::Named(name), Some(driver)) => name == driver,
+        _ => true,
+    }
 }
 
 // for `kanade status`
@@ -298,11 +465,36 @@ pub fn serve() {
         let job = QUEUE.receiver().recv();
 
         // the sender lives in the static, so the queue never closes
-        let Ok(Job { path, from, done }) = job else {
+        let Ok(Job {
+            path,
+            output,
+            driver,
+            from,
+            done,
+        }) = job
+        else {
             return;
         };
 
-        let shown = show(&[AWWW], &path, config::get().transition, from, LIMIT);
+        // before awww writes its cache, which `watch` looks at to choose the palette's image
+        let drives = {
+            let mut remembered = DRIVER.locked();
+
+            if driver.is_some() {
+                *remembered = driver;
+            }
+
+            drives(&output, remembered.as_deref())
+        };
+
+        let shown = show(
+            &[AWWW],
+            &path,
+            &output,
+            config::get().transition,
+            from,
+            LIMIT,
+        );
 
         if let Err(why) = &shown {
             eprintln!(
@@ -324,7 +516,8 @@ pub fn serve() {
             }
         }
 
-        if shown.is_ok() {
+        // on another output than the palette's, it is the look of awww's cache that says it unchanged
+        if shown.is_ok() && drives {
             hook(&path, true);
             appearance::wallpaper(path);
         }
@@ -336,12 +529,14 @@ pub fn serve() {
 }
 
 /*
- * `awww img` through `awww`, the program and any arguments before its own, with `transition`,
- * killed after `limit`; says that the daemon is not running rather than awww's own words for it
+ * `awww img` through `awww`, the program and any arguments before its own, on `output` only, with
+ * `transition`, killed after `limit`; says that the daemon is not running rather than awww's own
+ * words for it, and that an output awww does not list is not there, asking it nothing
  */
 fn show(
     awww: &[&str],
     path: &Path,
+    output: &Output,
     transition: config::Transition,
     from: Option<From>,
     limit: Duration,
@@ -356,7 +551,18 @@ fn show(
         wake::act_within(program, &args, limit)
     };
 
-    let img = img(text, transition, from);
+    // a query that fails is left to the set, which then says why
+    if let Output::Named(name) = output {
+        let args: Vec<&str> = before.iter().copied().chain(["query"]).collect();
+
+        if let Ok(said) = wake::query_within(program, &args, limit)
+            && !listed(&said).any(|(listed, _)| listed == *name)
+        {
+            return Err(Unset::NoOutput(name.clone()));
+        }
+    }
+
+    let img = img(text, output, transition, from);
     let img: Vec<&str> = img.iter().map(String::as_str).collect();
 
     act(&img).map_err(|failed| match failed {
@@ -370,10 +576,15 @@ fn show(
 }
 
 /*
- * awww's arguments to show `path` with `transition`: a circle centered on `from`, which awww reads
- * as fractions of the screen for having a point; awww's own center without one
+ * awww's arguments to show `path` on `output` with `transition`: a circle centered on `from`, which
+ * awww reads as fractions of the screen for having a point; awww's own center without one
  */
-fn img(path: &str, transition: config::Transition, from: Option<From>) -> Vec<String> {
+fn img(
+    path: &str,
+    output: &Output,
+    transition: config::Transition,
+    from: Option<From>,
+) -> Vec<String> {
     let mut img = vec![
         String::from("img"),
         String::from("--transition-type"),
@@ -381,6 +592,11 @@ fn img(path: &str, transition: config::Transition, from: Option<From>) -> Vec<St
         String::from("--transition-duration"),
         format!("{:.3}", transition.duration.as_secs_f32()),
     ];
+
+    // awww sets every output unless told which
+    if let Output::Named(name) = output {
+        img.push(format!("--outputs={name}"));
+    }
 
     if let Some(From { x, y }) = from.filter(|_| transition.circle()) {
         img.push(String::from("--transition-pos"));
@@ -717,8 +933,13 @@ fn look_with(palette: Palette) {
                 return;
             };
             let raw = shown(&said);
-            let focused = super::niri::Niri::read().seen.focused_output.clone();
-            let palette = appearance_path(&raw, focused.as_deref());
+            // the output of the last pick, else the focused one (ADR 0064)
+            let driver = DRIVER
+                .locked()
+                .clone()
+                .filter(|driver| raw.contains_key(driver));
+            let preferred = driver.or_else(focused);
+            let palette = appearance_path(&raw, preferred.as_deref());
 
             // A palette may use an image the lock screen cannot decode, so keep its candidates apart.
             let by: HashMap<String, Showing> = raw
@@ -1020,8 +1241,27 @@ fn shown(said: &str) -> HashMap<String, PathBuf> {
     let mut shown = HashMap::new();
 
     // an output under several namespaces keeps the first awww lists
-    let said = said.lines().filter_map(|line| {
-        let (head, path) = line.split_once("currently displaying: image: ")?;
+    let said = listed(said).filter_map(|(name, what)| {
+        let path = what.strip_prefix("image: ")?;
+
+        // a path may end in spaces; only the line's end is cut
+        Some((name, PathBuf::from(path)))
+    });
+
+    for (name, path) in said {
+        shown.entry(name).or_insert(path);
+    }
+
+    shown
+}
+
+/*
+ * what `awww query` says each output shows, by its name, like `image: /path` or `color: #111111`;
+ * an output under several namespaces is listed for each
+ */
+fn listed(said: &str) -> impl Iterator<Item = (String, &str)> {
+    said.lines().filter_map(|line| {
+        let (head, what) = line.split_once("currently displaying: ")?;
         let pieces: Vec<&str> = head.split([':', ',']).map(str::trim).collect();
 
         // the output's name is the piece before its size
@@ -1032,15 +1272,60 @@ fn shown(said: &str) -> HashMap<String, PathBuf> {
             (number(size.0) && number(size.1) && !pair[0].is_empty()).then_some(pair[0])
         })?;
 
-        // a path may end in spaces; only the line's end is cut
-        Some((name.to_owned(), PathBuf::from(path.trim_end_matches('\r'))))
-    });
+        Some((name.to_owned(), what.trim_end_matches('\r')))
+    })
+}
 
-    for (name, path) in said {
-        shown.entry(name).or_insert(path);
+/*
+ * answers `later` with what each output shows, and which the palette follows, asking awww off the
+ * draw thread
+ */
+fn say_status(later: Later) {
+    let spawned = std::thread::Builder::new()
+        .name(String::from("wallpaper status"))
+        .spawn({
+            let later = later.clone();
+
+            move || {
+                let mut text = status();
+
+                if wake::found(AWWW) {
+                    match wake::query_within(AWWW, &["query"], LIMIT) {
+                        Ok(said) => text.push_str(&outputs(&said, DRIVER.locked().as_deref())),
+                        Err(_) => text.push_str(&format!("\n{DAEMON} is not answering")),
+                    }
+                }
+
+                later.done(text);
+            }
+        });
+
+    if let Err(error) = spawned {
+        later.refused(format!("cannot ask awww: {error}"));
+    }
+}
+
+// a line per output of what `awww query` said, the one the palette follows marked
+fn outputs(said: &str, driver: Option<&str>) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    let mut text = String::new();
+
+    for (name, what) in listed(said) {
+        if seen.contains(&name) {
+            continue;
+        }
+
+        let mark = if driver == Some(name.as_str()) {
+            " (palette)"
+        } else {
+            ""
+        };
+
+        text.push_str(&format!("\n{name}: {what}{mark}"));
+        seen.push(name);
     }
 
-    shown
+    text
 }
 
 #[cfg(test)]
@@ -1175,6 +1460,118 @@ mod tests {
         let external = looks.finish(external, Some(wallpaper.0.clone()));
         assert!(external.replace);
         assert_eq!(external.appearance, Some(wallpaper.0.clone()));
+    }
+
+    #[test]
+    fn output_words_are_taken_whole_or_not_at_all() {
+        let named = |name: &str| Some(Output::Named(name.to_owned()));
+        let set = |path: &str, output| Some(Request::Set(PathBuf::from(path), output));
+
+        assert_eq!(Request::parse(&["set", "/a.png"]), set("/a.png", None));
+        assert_eq!(
+            Request::parse(&["set", "/a.png", "--output", "eDP-1"]),
+            set("/a.png", named("eDP-1"))
+        );
+        assert_eq!(
+            Request::parse(&["set", "--output=all", "/a.png"]),
+            set("/a.png", Some(Output::All))
+        );
+        assert_eq!(
+            Request::parse(&["shuffle", "--output", "HDMI-A-5"]),
+            Some(Request::Shuffle(named("HDMI-A-5")))
+        );
+        assert_eq!(Request::parse(&["shuffle"]), Some(Request::Shuffle(None)));
+
+        // no name, two names, a list, a flag for awww, and an output for a status
+        for odd in [
+            &["set", "/a.png", "--output"][..],
+            &["set", "/a.png", "--output", "A", "--output", "B"],
+            &["set", "/a.png", "--output", "A,B"],
+            &["set", "/a.png", "--output", "-x"],
+            &["set", "/a.png", "--output", ""],
+            &["set", "/a.png", "--output", "A B"],
+            &["status", "--output", "A"],
+        ] {
+            assert_eq!(Request::parse(odd), None, "{odd:?}");
+        }
+
+        // what the client sends on is what the shell parses
+        let request = Request::Set(PathBuf::from("/a.png"), named("eDP-1"));
+        let words = request.arguments();
+        let words: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
+
+        assert_eq!(Request::parse(&words), Some(request));
+    }
+
+    #[test]
+    fn a_pick_on_another_output_leaves_the_palette_to_the_driver() {
+        let named = |name: &str| Output::Named(name.to_owned());
+
+        assert!(drives(&Output::All, Some("eDP-1")));
+        assert!(drives(&named("eDP-1"), Some("eDP-1")));
+        assert!(!drives(&named("HDMI-A-5"), Some("eDP-1")));
+
+        // no driver known yet: the pick is the palette, as before outputs were told apart
+        assert!(drives(&named("HDMI-A-5"), None));
+    }
+
+    #[test]
+    fn query_lines_name_each_output_and_what_it_shows() {
+        let said = ": eDP-1: 1920x1080, scale: 1, currently displaying: image: /a b.png\n\
+                    : HDMI-A-5: 1280x1024, scale: 1, currently displaying: color: 111111\n\
+                    ns: DP-2: 640x480, scale: 2, currently displaying: image: /c.png";
+
+        let listed: Vec<(String, &str)> = listed(said).collect();
+        assert_eq!(listed[1], (String::from("HDMI-A-5"), "color: 111111"));
+        assert_eq!(listed.len(), 3);
+
+        let shown = shown(said);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown["eDP-1"], PathBuf::from("/a b.png"));
+
+        let text = outputs(said, Some("DP-2"));
+        assert!(text.contains("\nHDMI-A-5: color: 111111\n"));
+        assert!(text.ends_with("DP-2: image: /c.png (palette)"));
+    }
+
+    // a stand-in for awww: lists two outputs and records the arguments of `img`
+    fn awww(log: &Path) -> Vec<String> {
+        let script = format!(
+            "if [ \"$1\" = query ]; then \
+               echo ': eDP-1: 1920x1080, scale: 1, currently displaying: image: /a.png'; \
+               echo ': HDMI-A-5: 1280x1024, scale: 1, currently displaying: image: /a.png'; \
+             else echo \"$@\" > {}; fi",
+            log.display()
+        );
+
+        ["sh", "-c", &script, "awww"].map(String::from).into()
+    }
+
+    #[test]
+    fn a_named_output_is_the_only_one_awww_is_told_to_change() {
+        let image = TestFile::new("png", b"image");
+        let log = TestFile::new("log", b"");
+        let awww = awww(&log.0);
+        let awww: Vec<&str> = awww.iter().map(String::as_str).collect();
+        let transition = config::get().transition;
+        let sent = || fs::read_to_string(&log.0).unwrap();
+
+        let show = |output| show(&awww, &image.0, &output, transition, None, LIMIT);
+
+        show(Output::Named(String::from("HDMI-A-5"))).unwrap();
+        assert!(sent().split(' ').any(|word| word == "--outputs=HDMI-A-5"));
+
+        // all of them: awww's own default, no list
+        show(Output::All).unwrap();
+        assert!(!sent().contains("--outputs"));
+
+        // an output awww does not list is not asked for, so nothing is set on any
+        fs::write(&log.0, "").unwrap();
+        assert_eq!(
+            show(Output::Named(String::from("DP-9"))),
+            Err(Unset::NoOutput(String::from("DP-9")))
+        );
+        assert_eq!(sent(), "");
     }
 
     #[test]

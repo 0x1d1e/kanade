@@ -25,13 +25,15 @@ It is also the session's notification daemon, a Dock, and a lock screen.
 
 - **Island**: hovering it while it shows something peeks; a click expands it into one of thirteen Surfaces: Media, Notifications, Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Session, Timer and Capture.
 - **Tray**: hovering the Island at rest shows the apps' tray items beside the clock. Left click activates one, middle click is its secondary action, the wheel scrolls it, and right click opens its menu.
-- **Notifications**: Kanade is the notification daemon. Banners come out of the Island, with Do Not Disturb.
-- **Privacy indicators**: dots at the Island's trailing end, or its top corner in a Surface, show a microphone, camera or screen capture in use, and the Controls Surface names the apps. A fullscreen window covers them, and `privacy.indicators` turns them off.
+- **Notifications**: Kanade is the notification daemon. Banners come out of the Island, with Do Not Disturb; one app's notifications group, and a progress hint shows as a live Activity.
+- **Privacy indicators**: dots at the Island's trailing end, or its top corner in a Surface, show a microphone, camera or screen capture in use, and the Controls Surface names the apps and ends a screen share with Stop sharing. A fullscreen window covers them, and `privacy.indicators` turns them off.
 - **Dock**: on each monitor, at the edge and side set in `dock.edge` and `dock.align`, it launches and focuses apps.
+- **Finishes**: tinted solid, paper, liquid glass, and blur, which blurs the wallpaper and the windows behind the Island, Dock and Banners (needs a niri layer rule, see [Installation](docs/wiki/Installation.md)).
 - **Appearance**: with Matugen installed, Kanade derives light and dark shell colors from the wallpaper awww shows, however it was set, then renders configured app targets for the selected tone; `appearance.sync` carries them to GTK, Qt, KDE apps, niri's window borders, kitty, and Firefox or Zen live through Pywalfox.
 - **Lock screen**: `kanade lock` shows the date, the time, who is signed in and a password field over the wallpaper, and no notification. The session also locks before the machine sleeps, and, with the `idle` Module on, after a dim grace when idle.
 - **Capture**: screenshots through niri and screen recording through `wf-recorder`, a saved recording shown on the Island, a saved screenshot by niri's notification.
-- **Calendar and weather**: local iCalendar files and events you add, Google Calendar, and the forecast from Open-Meteo.
+- **Calendar and weather**: local iCalendar files and events you add, Google Calendar, read-only `https` calendar subscriptions, a Join action for a meeting link, and the forecast from Open-Meteo.
+- **Live Activities**: scripts and agents (a Claude Code hook recipe in [Agent hooks](docs/wiki/Agent-hooks.md)) show what they do on the Island with `kanade activity`; Focus quiets the session in one press.
 - **Settings window**: task-based pages with search, Inspect and Undo; changes apply live unless marked Restart.
 - **Idle cost**: at rest the Island draws one frame a minute, for the clock, and nothing else.
 
@@ -91,6 +93,7 @@ Per-feature detail is in [Installation](docs/wiki/Installation.md).
 - [Installation](docs/wiki/Installation.md): requirements, building, running as a systemd user unit.
 - [CLI](docs/wiki/CLI.md): every `kanade <verb>`.
 - [Configuration](docs/wiki/Configuration.md): config layers and every key.
+- [Agent hooks](docs/wiki/Agent-hooks.md): a Claude Code session as a live Activity.
 - [Google Calendar](docs/wiki/Google-Calendar.md): signing in with your own OAuth client.
 - [Keyboard](docs/wiki/Keyboard.md): niri keybinds and keys inside each Surface.
 - [Limitations](docs/wiki/Limitations.md): known gaps.

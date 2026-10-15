@@ -401,6 +401,9 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
     let mut areas = Vec::new();
 
+    // the outlines of the cards the compositor blurs behind, the ones shown whole
+    let mut outlines = Vec::new();
+
     if !placed.is_empty() {
         // reading subscribes this window to the Island, which the Banners hang from, and its slide
         let island = IslandService::read();
@@ -487,6 +490,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             );
             let backdrop = pane::shown(&spot, now);
 
+            if now_look.seen >= 1.0 && !covered {
+                outlines.push(body);
+            }
+
             // each card's ink follows the page behind it, for all the card builds
             let _ink = pane::inked(backdrop.as_ref());
             let roles = theme::island();
@@ -533,6 +540,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .space(Zone::Ignore)
         .namespace("kanade-banners")
         .visible(!placed.is_empty())
+        .blur(pane::blurred(outlines, (0.0, 0.0)))
         .input_region(areas)
         .child(
             // the input region is the Banners, so this is on while the pointer is on any of them

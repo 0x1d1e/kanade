@@ -1,16 +1,19 @@
-//! The Controls Surface: Wi-Fi, Bluetooth, the microphone, Do Not Disturb, the night
-//! light and, where the battery supports it, its charge limit as switches, the speaker's volume and the screen's brightness as levels, and the power profile.
+//! The Controls Surface: tiles for Wi-Fi, Bluetooth, caffeine, Do Not Disturb, the night light,
+//! Focus and, where the battery supports it, its charge limit, as `controls.tiles` orders and sizes
+//! them, the speaker's volume and the screen's brightness as levels, and the power profile.
 //! Each is one press or one drag, never a menu: it is not a settings app. What the machine does not
 //! have, or whose daemon is not running, keeps its place, faded, says so, and does nothing. Its
-//! header names the apps the privacy cluster stands for.
+//! header names the apps the privacy cluster stands for, and ends a PipeWire screen cast with Stop sharing.
 //!
 //! The Wi-Fi and Bluetooth switches' tiles each open a sub-surface in its place, their knobs still
 //! switching them: the networks in range, to join or leave, and the password a secured one asks
 //! for; or the Bluetooth devices, to pair, connect, disconnect or forget. The speaker's
-//! level ends in a chevron to the Audio sub-surface: the devices to play on and record from, and
-//! each app's level. A sub-surface goes back a level by its chevron or Escape. Every target
-//! is a key away, a ring on the one the arrows reach (`focus`).
+//! level ends in a chevron to the Audio sub-surface: the devices to play on and record from, the
+//! microphone's level and mute, and each app's level. A sub-surface goes back a level by its chevron or Escape. Every target
+//! is a key away, a ring on the one the arrows reach (`focus`). The pencil in the header arranges
+//! the tiles (`arrange`): move, resize, hide or bring back, saved by Done.
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::sources::brightness::Brightness;
@@ -31,23 +34,28 @@ use crate::island::activity::Uplink;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
+use crate::later::Later;
 use crate::modules;
 use crate::sources::audio::{self as sound, Direction, Mixer, Switching};
 use crate::sources::battery::Remaining;
 use crate::sources::bluetooth::{self as bluez, Adapter, Prompt, Request};
+use crate::sources::caffeine;
 use crate::sources::charge_limit::{self, ChargeLimit};
+use crate::sources::focus as quiet;
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
 use crate::sources::niri::Target;
 use crate::sources::notifications;
 use crate::sources::power::{self, Profile, Profiles};
-use crate::sources::privacy::Privacy;
+use crate::sources::privacy::{self, Privacy};
 use crate::sources::system::Radio;
 use crate::sources::wifi::{self as wireless, Failure, Join, Link, Networks, Security};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED};
+use crate::tiles::{self, Placed, Size, Tile};
 use crate::view::{bar, rise};
 
+mod arrange;
 mod audio;
 mod bluetooth;
 mod focus;
@@ -59,6 +67,9 @@ const WIDTH: f32 = geometry::CONTROLS.width - 2.0 * INSET;
 
 const HEADER: f32 = 20.0;
 const GAP: f32 = 8.0;
+
+// the Stop sharing pill
+const STOP: f32 = 96.0;
 
 // a switch, round ends concentric with its knob
 const SWITCH: f32 = 48.0;
@@ -89,13 +100,13 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
     let shape = geometry::CONTROLS;
     let focus = Focus::read().of(visit, held);
 
-    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let grid = targets(&focus);
     let focus = settled(focus, &grid);
     let ring = open.then(|| focus.ring(&grid)).flatten();
 
     let content = match &focus.sub {
         None => Column::new(children![
-            rise(0, header()),
+            rise(0, header(ring.as_ref())),
             rise(1, switches(dnd, ring.as_ref())),
             rise(2, levels(ring.as_ref())),
             rise(3, profiles(ring.as_ref()))
@@ -122,6 +133,7 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
         Some(Subsurface::Audio) => {
             audio::sound(&mixer(), *Switching::read(), focus.offset, ring.as_ref())
         }
+        Some(Subsurface::Arrange { draft, chosen }) => arrange::view(draft, *chosen, ring.as_ref()),
     };
 
     Rectangle::new()
@@ -132,16 +144,115 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
         .child(content)
 }
 
-// the targets a listing sub-surface lists under its header, or the switches' third row, read now
+// every target of `focus`'s level, read now
+fn targets(focus: &Focus) -> Vec<Vec<(At, f32)>> {
+    focus.grid(rows(focus.sub.as_ref()), sharing().is_some())
+}
+
+/*
+ * the sessions of the casts the header can stop, none while it does not name casts or no PipeWire
+ * one runs; a wlr-screencopy cast, like a recording or Kanade's own capture, cannot be stopped
+ */
+fn sharing() -> Option<BTreeSet<u64>> {
+    let named = modules::on("privacy") && cluster::on();
+
+    named
+        .then(|| Privacy::read().sessions.clone())
+        .filter(|sessions| !sessions.is_empty())
+}
+
+/*
+ * whether a tile has a place now: Focus needs its Module, the charge limit a battery that supports
+ * it. The rest keep their place, faded, when they cannot act
+ */
+fn visible(tile: Tile) -> bool {
+    match tile {
+        Tile::Focus => modules::on("focus"),
+        Tile::ChargeLimit => charge_limit().is_some(),
+        _ => true,
+    }
+}
+
+// the tiles that show, in the rows `controls.tiles` packs them into
+fn layout() -> Vec<Vec<Placed>> {
+    let list: Vec<Placed> = config::get()
+        .tiles
+        .iter()
+        .copied()
+        .filter(|placed| visible(placed.tile))
+        .collect();
+
+    tiles::rows(&list)
+}
+
+// the targets of the tiles' rows, at the middle of where `switches` draws each
+fn tile_rows() -> Vec<Vec<(At, f32)>> {
+    layout()
+        .iter()
+        .map(|row| {
+            let widths = tiles::widths(row, WIDTH, SWITCH_GAP, SWITCH);
+            let mut targets = Vec::new();
+            let mut left = 0.0;
+
+            for (placed, width) in row.iter().zip(widths) {
+                let at = |across: f32| (left + across) / WIDTH;
+
+                match placed.tile {
+                    Tile::Wifi | Tile::Bluetooth => {
+                        let (knob, tile) = if placed.tile == Tile::Wifi {
+                            (At::WifiSwitch, At::Wifi)
+                        } else {
+                            (At::BluetoothSwitch, At::Bluetooth)
+                        };
+
+                        targets.push((knob, at(KNOB_INSET + KNOB / 2.0)));
+                        targets.push((tile, at((KNOB_INSET + KNOB + width) / 2.0)));
+                    }
+                    tile => targets.push((target(tile), at(width / 2.0))),
+                }
+
+                left += width + SWITCH_GAP;
+            }
+
+            targets
+        })
+        .collect()
+}
+
+// what the ring is on for a tile that is one target
+fn target(tile: Tile) -> At {
+    match tile {
+        Tile::Wifi => At::Wifi,
+        Tile::Bluetooth => At::Bluetooth,
+        Tile::Caffeine => At::Caffeine,
+        Tile::Dnd => At::Dnd,
+        Tile::NightLight => At::NightLight,
+        Tile::Focus => At::Focus,
+        Tile::ChargeLimit => At::ChargeLimit,
+    }
+}
+
+// the icon a tile has, on the Surface and in its arrangement
+fn icon(tile: Tile) -> Icon {
+    match tile {
+        Tile::Wifi => Icon::Wifi,
+        Tile::Bluetooth => Icon::Bluetooth,
+        Tile::Caffeine => Icon::Cup,
+        Tile::Dnd => Icon::Moon,
+        Tile::NightLight => Icon::Sunset,
+        Tile::Focus => Icon::Focus,
+        Tile::ChargeLimit => Icon::BatteryLimit,
+    }
+}
+
+// the targets a listing sub-surface lists under its header, or the tiles', read now
 fn rows(sub: Option<&Subsurface>) -> Vec<Vec<(At, f32)>> {
     match sub {
-        None if charge_limit().is_some() => {
-            vec![vec![(At::NightLight, 0.25), (At::ChargeLimit, 0.75)]]
-        }
-        None => vec![vec![(At::NightLight, 0.25)]],
+        None => tile_rows(),
         Some(Subsurface::Wifi) => wifi::rows(Connectivity::read().wifi, &Networks::read()),
         Some(Subsurface::Bluetooth) => bluetooth::rows(&Adapter::read(), &Prompt::read()),
         Some(Subsurface::Audio) => audio::rows(&mixer()),
+        Some(Subsurface::Arrange { draft, chosen }) => arrange::rows(draft, *chosen),
         _ => Vec::new(),
     }
 }
@@ -155,7 +266,7 @@ fn mixer() -> Mixer {
     }
 }
 
-fn header() -> Row {
+fn header(ring: Option<&At>) -> Row {
     let mut header = children![
         Text::new("Controls")
             .size(theme::text::TITLE)
@@ -165,7 +276,7 @@ fn header() -> Row {
 
     // the dots only mark a capture, so the apps behind them are named here
     if modules::on("privacy") && cluster::on() {
-        header.extend(capturing(&Privacy::read()));
+        header.extend(capturing(&Privacy::read(), ring == Some(&At::Stop)));
     }
 
     // the time left at the header's end, over whatever room the capture leaves
@@ -185,6 +296,13 @@ fn header() -> Row {
         ));
     }
 
+    // the pencil at the end, over the room the capture or the time leaves
+    if header.len() == 1 {
+        header.push(Box::new(Rectangle::new().width(Parent).height(HEADER)));
+    }
+
+    header.push(Box::new(pencil(ring == Some(&At::Edit))));
+
     Row::new(header)
         .width(WIDTH)
         .height(HEADER)
@@ -192,11 +310,27 @@ fn header() -> Row {
         .align(Center)
 }
 
+// arranges the tiles
+fn pencil(ring: bool) -> Rectangle {
+    Rectangle::new()
+        .width(HEADER)
+        .height(HEADER)
+        .radius(HEADER / 2.0)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(|| {
+            click(Act::Press(At::Edit));
+        }))
+        .child(Icon::Sliders.on(14.0, theme::island().on_surface_variant))
+}
+
 /*
  * the cluster's glyphs, then the apps using a microphone or camera and what the screen casts
- * capture; niri cannot say who casts, so a cast is a window's or a screen's and no app's
+ * capture; niri cannot say who casts, so a cast is a window's or a screen's and no app's. At the
+ * end Stop sharing, only while a PipeWire cast runs, `ring` saying the ring is on it
  */
-fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
+fn capturing(privacy: &Privacy, ring: bool) -> Option<Box<dyn Widget>> {
     if !privacy.any() {
         return None;
     }
@@ -223,57 +357,96 @@ fn capturing(privacy: &Privacy) -> Option<Box<dyn Widget>> {
         ));
     }
 
+    if sharing().is_some() {
+        row.push(Box::new(Rectangle::new().width(Parent).height(HEADER)));
+        row.push(Box::new(stop(ring)));
+    }
+
     Some(Box::new(Row::new(row).width(Parent).gap(6.0).align(Center)))
 }
 
-// Wi-Fi and Bluetooth, then the microphone and Do Not Disturb, then the night light and charge limit
-fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
-    let wifi = self::wifi(&Connectivity::read());
-    let bluetooth = self::bluetooth(&Adapter::read());
-    let microphone =
-        self::microphone(modules::on("audio").then(|| Audio::read().microphone_muted()));
-    let dnd = self::dnd(dnd);
+// the pill that stops the PipeWire casts
+fn stop(ring: bool) -> Rectangle {
+    Rectangle::new()
+        .width(STOP)
+        .height(HEADER)
+        .radius(HEADER / 2.0)
+        .fill(theme::island().surface_container_high)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .cursor(Cursor::Pointer)
+        .on_click(super::on_left(|| {
+            click(Act::Press(At::Stop));
+        }))
+        .child(
+            Text::new("Stop sharing")
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
 
-    let width = (WIDTH - SWITCH_GAP) / 2.0;
+/*
+ * the tiles as `controls.tiles` arranges them: a half is a switch, a full one a switch across the
+ * row, an icon a round button
+ */
+fn switches(dnd: Option<bool>, ring: Option<&At>) -> Column {
+    let rows = layout()
+        .into_iter()
+        .map(|row| {
+            let widths = tiles::widths(&row, WIDTH, SWITCH_GAP, SWITCH);
+            let tiles = row
+                .iter()
+                .zip(widths)
+                .filter_map(|(placed, width)| tile(placed, width, dnd, ring))
+                .collect();
+
+            Box::new(Row::new(tiles).gap(SWITCH_GAP)) as Box<dyn Widget>
+        })
+        .collect();
+
+    Column::new(rows).gap(SWITCH_GAP)
+}
+
+// one tile, none for what has no place now
+fn tile(
+    placed: &Placed,
+    width: f32,
+    dnd: Option<bool>,
+    ring: Option<&At>,
+) -> Option<Box<dyn Widget>> {
     let on = |at: At| ring == Some(&at);
-    let row = |left: Rectangle, right: Rectangle| Row::new(children![left, right]).gap(SWITCH_GAP);
 
     // a radio's knob switches it, and the rest of its tile opens its sub-surface
-    let wifi = switch(
-        wifi,
-        width,
-        on(At::WifiSwitch),
-        on(At::Wifi),
-        Some(At::Wifi),
-    );
-    let bluetooth = switch(
-        bluetooth,
-        width,
-        on(At::BluetoothSwitch),
-        on(At::Bluetooth),
-        Some(At::Bluetooth),
-    );
-    let microphone = switch(microphone, width, false, on(At::Microphone), None);
-    let dnd = switch(dnd, width, false, on(At::Dnd), None);
-    let night = switch(self::night_light(), width, false, on(At::NightLight), None);
-    let mut third = children![night];
-
-    if let Some(limit) = self::charge_limit() {
-        third.push(Box::new(switch(
-            limit,
-            width,
+    let (item, knob, opens) = match placed.tile {
+        Tile::Wifi => (
+            self::wifi(&Connectivity::read()),
+            on(At::WifiSwitch),
+            Some(At::Wifi),
+        ),
+        Tile::Bluetooth => (
+            self::bluetooth(&Adapter::read()),
+            on(At::BluetoothSwitch),
+            Some(At::Bluetooth),
+        ),
+        Tile::Caffeine => (
+            self::caffeine(modules::on("caffeine").then(|| caffeine::newest().is_some())),
             false,
-            on(At::ChargeLimit),
             None,
-        )));
-    }
+        ),
+        Tile::Dnd => (self::dnd(dnd), false, None),
+        Tile::NightLight => (self::night_light(), false, None),
+        Tile::Focus => (self::focus(), false, None),
+        Tile::ChargeLimit => (self::charge_limit()?, false, None),
+    };
 
-    Column::new(children![
-        row(wifi, bluetooth),
-        row(microphone, dnd),
-        Row::new(third).gap(SWITCH_GAP)
-    ])
-    .gap(SWITCH_GAP)
+    let ring = on(target(placed.tile));
+
+    Some(if placed.size == Size::Icon {
+        Box::new(round(item, ring))
+    } else {
+        Box::new(switch(item, width, knob, ring, opens))
+    })
 }
 
 // one switch, as the Surface draws it
@@ -296,10 +469,11 @@ struct Switch {
 enum Press {
     Wifi(bool),
     Bluetooth { adapter: String, on: bool },
-    Microphone,
+    Caffeine(bool),
     Dnd(bool),
     NightLight(bool),
     ChargeLimit(bool),
+    Focus,
 }
 
 fn wifi(connectivity: &Connectivity) -> Switch {
@@ -308,7 +482,13 @@ fn wifi(connectivity: &Connectivity) -> Switch {
         _ => String::from("Not connected"),
     };
 
-    radio(Icon::Wifi, "Wi-Fi", connectivity.wifi, joined, Press::Wifi)
+    radio(
+        icon(Tile::Wifi),
+        "Wi-Fi",
+        connectivity.wifi,
+        joined,
+        Press::Wifi,
+    )
 }
 
 // the connected device by name, or the first and how many more
@@ -330,9 +510,13 @@ fn bluetooth(adapter: &Adapter) -> Switch {
 
     let path = adapter.path.clone();
 
-    radio(Icon::Bluetooth, "Bluetooth", adapter.radio, status, |on| {
-        Press::Bluetooth { adapter: path, on }
-    })
+    radio(
+        icon(Tile::Bluetooth),
+        "Bluetooth",
+        adapter.radio,
+        status,
+        |on| Press::Bluetooth { adapter: path, on },
+    )
 }
 
 // `status` says what an On radio is on; `press` asks for it on or off
@@ -358,24 +542,20 @@ fn radio(
     }
 }
 
-// none while `audio` is off, which leaves it unavailable
-fn microphone(muted: Option<bool>) -> Switch {
-    let status = match muted {
+// `on` is none while `caffeine` is off, which leaves it unavailable
+fn caffeine(on: Option<bool>) -> Switch {
+    let status = match on {
         None => "Unavailable",
-        Some(true) => "Muted",
-        Some(false) => "On",
+        Some(true) => "On",
+        Some(false) => "Off",
     };
 
     Switch {
-        icon: if muted == Some(true) {
-            Icon::MicrophoneMuted
-        } else {
-            Icon::Microphone
-        },
-        name: "Microphone",
+        icon: icon(Tile::Caffeine),
+        name: "Caffeine",
         status: String::from(status),
-        on: muted == Some(false),
-        press: muted.map(|_| Press::Microphone),
+        on: on == Some(true),
+        press: on.map(|on| Press::Caffeine(!on)),
     }
 }
 
@@ -387,7 +567,7 @@ fn dnd(on: Option<bool>) -> Switch {
     };
 
     Switch {
-        icon: Icon::Moon,
+        icon: icon(Tile::Dnd),
         name: "Do Not Disturb",
         status: String::from(status),
         on: on == Some(true),
@@ -419,13 +599,54 @@ fn night_light() -> Switch {
     };
 
     Switch {
-        icon: Icon::Sunset,
+        icon: icon(Tile::NightLight),
         name: "Night Light",
         status,
         on: on && shade.is_some(),
         press: shade
             .filter(|shade| !shade.missing)
             .map(|_| Press::NightLight(!on)),
+    }
+}
+
+// on while Focus holds what it turned on
+fn focus() -> Switch {
+    let on = quiet::Quiet::read().on;
+
+    Switch {
+        icon: icon(Tile::Focus),
+        name: "Focus",
+        status: String::from(if on { "On" } else { "Off" }),
+        on,
+        press: Some(Press::Focus),
+    }
+}
+
+// a switch as a round button, filled while on, faded and not pressable while unavailable
+fn round(item: Switch, ring: bool) -> Rectangle {
+    let (fill, ink) = if item.on {
+        (theme::island().primary, theme::island().on_primary)
+    } else {
+        (
+            theme::island().surface_container,
+            theme::island().on_surface,
+        )
+    };
+
+    let round = Rectangle::new()
+        .width(SWITCH)
+        .height(SWITCH)
+        .radius(SWITCH / 2.0)
+        .fill(fill)
+        .align_child(Center, Center)
+        .border_if(ring)
+        .child(item.icon.on(18.0, ink));
+
+    match item.press {
+        None => round.opacity(DISABLED),
+        Some(press) => round
+            .cursor(Cursor::Pointer)
+            .on_click(super::on_left(move || click_switch(press.clone()))),
     }
 }
 
@@ -447,7 +668,7 @@ fn charge_limit() -> Option<Switch> {
     };
 
     Some(Switch {
-        icon: Icon::BatteryLimit,
+        icon: icon(Tile::ChargeLimit),
         name: "Limit Charge",
         status,
         on: limit.enabled,
@@ -571,9 +792,17 @@ fn run(press: Press) {
     match press {
         Press::Wifi(on) => set_wifi(on),
         Press::Bluetooth { adapter, on } => bluez::power(adapter, on),
-        Press::Microphone => Audio::toggle_microphone_mute(),
+        Press::Caffeine(on) => caffeine::request(
+            if on {
+                caffeine::Request::On(None)
+            } else {
+                caffeine::Request::Off
+            },
+            Later::detached(),
+        ),
         Press::Dnd(on) => notifications::set_dnd(on, Instant::now()),
         Press::NightLight(on) => night_light::switch(on),
+        Press::Focus => quiet::toggle(),
         // refused at once only when it is no longer supported, which the switch then stops showing
         Press::ChargeLimit(on) => {
             let _ = charge_limit::ask(on, None);
@@ -840,7 +1069,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let focus = Focus::read().of(visit, held);
-    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let grid = targets(&focus);
 
     // read apart, as typing writes it
     let pin = matches!(*Prompt::read(), Prompt::Pin { .. });
@@ -963,7 +1192,7 @@ fn hide() -> u64 {
 fn scroll(pixels: f32) {
     let visit = IslandService::read().visit();
     let focus = Focus::read().of(visit, false);
-    let grid = focus.grid(rows(focus.sub.as_ref()));
+    let grid = targets(&focus);
     let mut focus = settled(focus, &grid);
 
     let most = list::ROOMY.most(grid.len().saturating_sub(1));
@@ -1019,10 +1248,17 @@ fn act(focus: Focus, act: Act, visit: u64) -> Focus {
  */
 fn press(focus: Focus, at: At, visit: u64) -> Focus {
     let switched = match at {
+        At::Stop => {
+            if let Some(sessions) = sharing() {
+                privacy::stop_sharing(&sessions);
+            }
+
+            None
+        }
         At::WifiSwitch => self::wifi(&Connectivity::read()).press,
         At::BluetoothSwitch => self::bluetooth(&Adapter::read()).press,
-        At::Microphone => {
-            microphone(modules::on("audio").then(|| Audio::read().microphone_muted())).press
+        At::Caffeine => {
+            caffeine(modules::on("caffeine").then(|| caffeine::newest().is_some())).press
         }
         At::Dnd => {
             let on = modules::on("notifications").then(|| IslandService::read().dnd());
@@ -1031,6 +1267,15 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         }
         At::NightLight => night_light().press,
         At::ChargeLimit => charge_limit().and_then(|limit| limit.press),
+        At::Focus => modules::on("focus").then_some(Press::Focus),
+        At::Edit => return focus.arrange(config::get().tiles.clone()),
+        At::Pick(_)
+        | At::Earlier
+        | At::Later
+        | At::Resize(_)
+        | At::Remove
+        | At::Add(_)
+        | At::Done => return arrange::press(focus, at),
         At::Wifi => {
             if Connectivity::read().wifi == Radio::Missing {
                 return focus;

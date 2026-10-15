@@ -10,11 +10,12 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead};
+use std::thread;
 
 use kanade_runtime::service::Service;
 
 use super::json::Json;
-use super::niri::{Niri, Target};
+use super::niri::{self, Acted, Niri, Target};
 use super::pipewire::{self, DUMP, LINK, NODE, Object};
 use super::wake;
 use crate::supervise;
@@ -28,6 +29,9 @@ pub struct Privacy {
     // what the casts niri has capture, besides Liquid Glass's own, paused ones included; niri says
     // what, a window or an output, never whose, so a cast is never a "Recording" or "Sharing"
     pub casts: BTreeSet<Target>,
+
+    // the sessions of the PipeWire ones, which niri can stop; none of a wlr-screencopy cast
+    pub sessions: BTreeSet<u64>,
 }
 
 impl Privacy {
@@ -50,13 +54,36 @@ impl Service for Privacy {
 
 // a watcher of `Niri`: what screen casts capture; the same again changes nothing
 pub fn follow_casts() {
-    let casts = Niri::read().seen.casts.clone();
+    let (casts, sessions) = {
+        let niri = Niri::read();
+
+        (niri.seen.casts.clone(), niri.seen.sessions.clone())
+    };
     let mut privacy = Privacy::write();
 
-    if privacy.casts == casts {
+    if privacy.casts == casts && privacy.sessions == sessions {
         privacy.quiet();
     } else {
         privacy.casts = casts;
+        privacy.sessions = sessions;
+    }
+}
+
+/*
+ * asks niri to stop the PipeWire casts, on a thread of their own, as niri may take seconds to
+ * answer; a screen share ends when its portal session does. A refusal, as from a niri without the
+ * action, is logged and leaves the cast as it was; an answer niri never gave is logged as unknown,
+ * the cast maybe stopped, and not asked again, as the privacy dots say what is still captured
+ */
+pub fn stop_sharing(sessions: &BTreeSet<u64>) {
+    for &session in sessions {
+        thread::spawn(move || match niri::stop(session) {
+            Ok(Acted::Done) => {}
+            Ok(Acted::Unknown(why)) => eprintln!(
+                "kanade: niri gave no clear answer to stopping a cast ({why}); it may be stopped, check the privacy dots"
+            ),
+            Err(error) => eprintln!("kanade: niri did not stop a cast ({error})"),
+        });
     }
 }
 

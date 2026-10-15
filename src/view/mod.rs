@@ -330,12 +330,13 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .as_ref()
         .zip(laid.as_ref())
         .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
+    let shown = capture_visible(out, sliding, merged_dock_visible, covered, raised);
     let captured = pane::place(
         monitor,
         ISLAND,
         place.anchor,
         scene.window(),
-        capture_visible(out, sliding, merged_dock_visible, covered, raised).then_some(captured),
+        shown.then_some(captured),
     );
 
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
@@ -450,6 +451,8 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .visible(!covered || raised)
         .space(Zone::Ignore)
         .namespace("kanade")
+        // the panes' outlines, the body drawn alone or united with the Dock's plate
+        .blur(pane::blurred(shown.then_some(pane_body), (0.0, 0.0)))
         .keyboard(keyboard)
         .on_key(move |key| self::key(&pressed, key))
         // empty under niri's overview, so the pointer reaches the overview beneath

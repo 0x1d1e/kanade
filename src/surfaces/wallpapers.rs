@@ -25,7 +25,7 @@ use kanade_runtime::{
 use crate::icon::Icon;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::sources::wallpaper::{self, From, Unset};
+use crate::sources::wallpaper::{self, From, Output, Unset};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::view;
@@ -394,7 +394,7 @@ fn name(path: &Path) -> String {
 
 // the view's own read of the visit, so this never reads IslandService again
 pub fn surface(monitor: &str, visit: u64) -> Rectangle {
-    let current = wallpaper::showing();
+    let current = wallpaper::showing_on(&Output::Named(monitor.to_owned()));
     let pick = Pick::read().of(visit);
     let found = found(&pick.query);
     let all = wallpaper::images().len();
@@ -500,7 +500,11 @@ fn tiles(monitor: &str, found: &[PathBuf], current: &[PathBuf], pick: &Pick) -> 
         .height(listed)
         .clip()
         .align_child(Start, Start)
-        .on_scroll(|Scroll { y, .. }| wheel(y))
+        .on_scroll({
+            let monitor = monitor.to_owned();
+
+            move |Scroll { y, .. }| wheel(&monitor, y)
+        })
         .child(
             Rectangle::new()
                 .width(width())
@@ -690,7 +694,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         return true;
     }
 
-    let current = wallpaper::showing();
+    let current = wallpaper::showing_on(&Output::Named(monitor.to_owned()));
     let pick = Pick::read().of(visit);
     let found = found(&pick.query);
 
@@ -745,11 +749,14 @@ fn run(monitor: &str, visit: u64, press: Press) {
         (from, done, set)
     };
 
+    // the monitor's own wallpaper, the others as they are, unless one is set for all
+    let output = wallpaper::picked_on(monitor);
+
     let started = match press {
-        Press::Set(path, _) => wallpaper::set(path.clone(), from, Some(done))
+        Press::Set(path, _) => wallpaper::set(path.clone(), output, from, Some(done))
             .map(|()| path)
             .map_err(|unset| String::from(unset.brief())),
-        Press::Shuffle => wallpaper::shuffle(from, Some(done)),
+        Press::Shuffle => wallpaper::shuffle(output, from, Some(done)),
     };
 
     let mut pick = Pick::write();
@@ -804,10 +811,10 @@ fn from(monitor: &str, x: f32, y: f32) -> Option<From> {
 }
 
 // down scrolls further down the grid
-fn wheel(lines: f32) {
+fn wheel(monitor: &str, lines: f32) {
     let visit = IslandService::read().visit();
 
-    let current = wallpaper::showing();
+    let current = wallpaper::showing_on(&Output::Named(monitor.to_owned()));
     let pick = Pick::read().of(visit);
     let found = found(&pick.query);
 

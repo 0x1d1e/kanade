@@ -507,8 +507,32 @@ pub struct Wakes {
     settling: Instant,
 }
 
+/*
+ * wakes a source for a change its announcers do not carry, like one made in this process: it reads
+ * again as if announced
+ */
+#[derive(Clone)]
+pub struct Waker(Sender<Message>);
+
+impl Waker {
+    pub fn wake(&self) {
+        drop(self.0.send(Message::Announced));
+    }
+}
+
 impl Wakes {
     pub fn new(pace: Pace, announcers: Vec<Announcer>) -> Wakes {
+        Wakes::start(pace, announcers).0
+    }
+
+    // as `new`, with a `Waker` for the source's other changes
+    pub fn woken(pace: Pace, announcers: Vec<Announcer>) -> (Wakes, Waker) {
+        let (wakes, send) = Wakes::start(pace, announcers);
+
+        (wakes, Waker(send))
+    }
+
+    fn start(pace: Pace, announcers: Vec<Announcer>) -> (Wakes, Sender<Message>) {
         let (send, messages) = mpsc::channel();
         let down = announcers.len();
         let mut stops = Vec::new();
@@ -523,13 +547,15 @@ impl Wakes {
             });
         }
 
-        Wakes {
+        let wakes = Wakes {
             pace,
             messages,
             stops,
             down,
             settling: Instant::now() + pace.settle,
-        }
+        };
+
+        (wakes, send)
     }
 
     /*

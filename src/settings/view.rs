@@ -10,8 +10,8 @@ use std::rc::Rc;
 use kanade_runtime::service::Service;
 use kanade_runtime::{
     Align, Button, Canvas, Center, Color, Column, Cursor, End, Gradient, Image, Padding, Parent,
-    Path, Rectangle, Reveal, Row, ScrollArea, Shape, Size, SpaceBetween, Start, Text, TextInput,
-    Widget, Window, children,
+    Path, Rectangle, Reveal, Row, ScrollArea, Shape, Size, SpaceBetween, Stack, Start, Text,
+    TextInput, Widget, Window, children,
 };
 use toml::Value;
 
@@ -19,9 +19,11 @@ use crate::config::{self, Choices, DayTime, Kind, Location, Setting};
 use crate::icon::Icon;
 use crate::look::{Along, Edge, ShellMode};
 use crate::modules::{self, CORE, Module};
+use crate::pane;
 use crate::sources::icons;
 use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
+use crate::tiles::{self, Placed};
 
 use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
 use super::ring::{self, Stop};
@@ -1200,6 +1202,7 @@ fn control(
                 setting,
                 (field.get)(read),
                 "Add a .desktop file id, then Enter",
+                None,
                 roles,
             )),
             false,
@@ -1209,6 +1212,27 @@ fn control(
                 setting,
                 (field.get)(read),
                 "Add a file or directory, then Enter",
+                None,
+                roles,
+            )),
+            false,
+        ),
+        Kind::Urls(field) => (
+            Box::new(list(
+                setting,
+                (field.get)(read),
+                "Add a feed address, then Enter",
+                None,
+                roles,
+            )),
+            false,
+        ),
+        Kind::Tiles(field) => (
+            Box::new(list(
+                setting,
+                (field.get)(read).iter().map(Placed::to_string).collect(),
+                "Add a tile, like focus or wifi:full, then Enter",
+                Some(tiles::cycled),
                 roles,
             )),
             false,
@@ -1710,6 +1734,7 @@ fn list(
     setting: &'static Setting,
     ids: Vec<String>,
     placeholder: &str,
+    cycle: Option<fn(&str) -> Option<String>>,
     roles: &ThemeRoles,
 ) -> Column {
     let key = setting.key;
@@ -1737,6 +1762,17 @@ fn list(
                 actions.push(text_button(
                     format!("down {key} {id}"),
                     "\u{2193}",
+                    roles,
+                    to(list),
+                ));
+            }
+
+            if let Some(next) = cycle.and_then(|cycle| cycle(id)) {
+                let mut list = ids.clone();
+                list[index] = next;
+                actions.push(text_button(
+                    format!("cycle {key} {id}"),
+                    "\u{21c4}",
                     roles,
                     to(list),
                 ));
@@ -2047,9 +2083,66 @@ fn theme_tone(option: &str) -> crate::look::Tone {
     crate::look::Tone::named(option)
 }
 
-// the Island in a finish over the wallpaper's colors
+// the Island in a finish over the wallpaper's colors; Blur's is translucent over a band it blurs
 fn finish_preview(option: &str) -> Box<dyn Widget> {
-    let roles = crate::appearance::island_roles(crate::look::Finish::named(option));
+    let finish = crate::look::Finish::named(option);
+    let roles = crate::appearance::island_roles(finish);
+    let blurs = finish == crate::look::Finish::Blur;
+
+    let pill = Rectangle::new()
+        .width(64.0)
+        .height(24.0)
+        .radius(12.0)
+        .fill(if blurs {
+            theme::faded(roles.surface, pane::BLUR_FILL)
+        } else {
+            roles.surface
+        })
+        .border(1.0, roles.outline)
+        .padding(sides(8.0))
+        .align_child(Start, Center)
+        .child(
+            Row::new(children![
+                Rectangle::new()
+                    .width(8.0)
+                    .height(8.0)
+                    .radius(4.0)
+                    .fill(roles.primary),
+                Rectangle::new()
+                    .width(24.0)
+                    .height(5.0)
+                    .radius(2.5)
+                    .fill(roles.on_surface),
+            ])
+            .gap(6.0)
+            .align(Center),
+        );
+
+    let mut layers: Vec<Box<dyn Widget>> = Vec::new();
+
+    // what lies behind, which a blurred pane softens
+    if blurs {
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(Parent)
+                .height(Parent)
+                .align_child(Center, Center)
+                .child(
+                    Rectangle::new()
+                        .width(Parent)
+                        .height(10.0)
+                        .fill(theme::faded(roles.primary, 0.7)),
+                ),
+        ));
+    }
+
+    layers.push(Box::new(
+        Rectangle::new()
+            .width(Parent)
+            .height(Parent)
+            .align_child(Center, Center)
+            .child(pill),
+    ));
 
     Box::new(
         Rectangle::new()
@@ -2057,33 +2150,8 @@ fn finish_preview(option: &str) -> Box<dyn Widget> {
             .height(Parent)
             .radius(radius::ROW - 2.0)
             .fill(backdrop())
-            .align_child(Center, Center)
-            .child(
-                Rectangle::new()
-                    .width(64.0)
-                    .height(24.0)
-                    .radius(12.0)
-                    .fill(roles.surface)
-                    .border(1.0, roles.outline)
-                    .padding(sides(8.0))
-                    .align_child(Start, Center)
-                    .child(
-                        Row::new(children![
-                            Rectangle::new()
-                                .width(8.0)
-                                .height(8.0)
-                                .radius(4.0)
-                                .fill(roles.primary),
-                            Rectangle::new()
-                                .width(24.0)
-                                .height(5.0)
-                                .radius(2.5)
-                                .fill(roles.on_surface),
-                        ])
-                        .gap(6.0)
-                        .align(Center),
-                    ),
-            ),
+            .clip()
+            .child(Stack::new(layers)),
     )
 }
 

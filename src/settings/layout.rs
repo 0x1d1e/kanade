@@ -84,6 +84,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "launcher",
             "caffeine",
             "night-light",
+            "focus",
             "clipboard",
             "clipboard-surface",
             "keys-surface",
@@ -98,6 +99,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "calendar-surface",
             "calendar-reminders",
             "google-calendar",
+            "calendar-subscriptions",
             "weather",
             "weather-surface",
         ],
@@ -206,7 +208,7 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Playing media",
-                rows: &[Row::Key("media.visualizer")],
+                rows: &[Row::Key("media.visualizer"), Row::Key("media.lyrics")],
             },
             Section {
                 title: "Launcher",
@@ -345,13 +347,19 @@ pub const PAGES: &[Page] = &[
                 title: "Wallpaper",
                 rows: &[
                     Row::Key("wallpaper.directory"),
+                    Row::Key("wallpaper.per_monitor"),
                     Row::Key("wallpaper.transition"),
                     Row::Key("wallpaper.transition_duration"),
                 ],
             },
             Section {
                 title: "Calendar",
-                rows: &[Row::Key("calendar.paths"), Row::Key("calendar.reminder")],
+                rows: &[
+                    Row::Key("calendar.paths"),
+                    Row::Key("calendar.reminder"),
+                    Row::Key("calendar.subscriptions"),
+                    Row::Key("calendar.subscription_interval"),
+                ],
             },
             Section {
                 title: "Weather",
@@ -366,7 +374,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "power",
         title: "Power & night light",
-        summary: "When the battery warns and what it does when critical; how warm the screen turns at night",
+        summary: "When the battery warns and what it does when critical; how warm the screen turns at night; what Focus turns on; which tiles Controls shows",
         group: "System",
         icon: Icon::Sunset,
         sections: &[
@@ -387,6 +395,18 @@ pub const PAGES: &[Page] = &[
                     Row::Key("night-light.sunrise"),
                 ],
             },
+            Section {
+                title: "Controls",
+                rows: &[Row::Key("controls.tiles")],
+            },
+            Section {
+                title: "Focus",
+                rows: &[
+                    Row::Key("focus.dnd"),
+                    Row::Key("focus.caffeine"),
+                    Row::Key("focus.night_light"),
+                ],
+            },
         ],
     },
     Page {
@@ -399,6 +419,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "",
                 rows: &[Row::Key("lock.backdrop")],
+            },
+            Section {
+                title: "Unlocking",
+                rows: &[Row::Key("lock.pam_service"), Row::Key("lock.grace")],
             },
             Section {
                 title: "When idle",

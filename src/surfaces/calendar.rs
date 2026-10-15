@@ -28,6 +28,7 @@ use crate::island::service::IslandService;
 use crate::modules;
 use crate::sources::calendar::{Calendars, Events, Occurrence, add};
 use crate::sources::google;
+use crate::sources::subscriptions::Subscriptions;
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 use crate::view::rise;
@@ -593,6 +594,13 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
                 .map(str::to_owned)
         })
         .flatten();
+    let feeds = modules::on("calendar-subscriptions")
+        .then(|| Subscriptions::read().brief())
+        .flatten();
+    let account = match (account, feeds) {
+        (Some(account), Some(feeds)) => Some(format!("{account} \u{b7} {feeds}")),
+        (account, feeds) => account.or(feeds),
+    };
     let account = account.as_deref();
 
     let agenda: Box<dyn Widget> = if let Some(text) = &adding.text {

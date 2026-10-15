@@ -44,12 +44,13 @@ use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
-    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, Magnify, Merge,
-    Placement, ShellMode, Tone, Visualizer,
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
+    Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
+use crate::tiles::{self, Placed};
 
 // a level change shows for 1000-1400 ms
 const OSD_TIME: Duration = Duration::from_millis(1200);
@@ -90,6 +91,9 @@ pub struct Config {
     // `wallpaper.transition` and `wallpaper.transition_duration`: how awww moves to a new wallpaper
     pub transition: Transition,
 
+    // a wallpaper picked in the shell is set on the monitor it was picked on, or on all of them
+    pub wallpaper_per_monitor: bool,
+
     // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
     // directory (ADR 0015)
     pub calendars: Vec<String>,
@@ -97,6 +101,13 @@ pub struct Config {
     // `calendar.reminder`: minutes before an event without alarms of its own that it is reminded
     // of, 0 for none (ADR 0043)
     pub reminder: u32,
+
+    // `calendar.subscriptions`: the https:// addresses of public iCalendar feeds, `webcal://` read
+    // as `https://` (ADR 0062). One may hold a secret: never logged, nor shown in `status`
+    pub subscriptions: Vec<String>,
+
+    // `calendar.subscription_interval`: minutes between fetches of each feed
+    pub subscription_interval: u32,
 
     // `weather.location`: where the weather is for; none fetches nothing (ADR 0017)
     pub location: Option<Location>,
@@ -132,8 +143,17 @@ pub struct Config {
     // `media.visualizer`
     pub visualizer: Visualizer,
 
+    // `media.lyrics`
+    pub lyrics: LyricsSource,
+
     // `lock.backdrop`
     pub lock_backdrop: LockBackdrop,
+
+    // `lock.pam_service`, none being the default service (`lock::PAM`)
+    pub lock_pam: Option<String>,
+
+    // `lock.grace`, whole seconds; 0 is none
+    pub lock_grace: u32,
 
     // `privacy.indicators`
     pub privacy_indicators: bool,
@@ -168,6 +188,12 @@ pub struct Config {
 
     // `night-light.*`: when and how warm the screen turns (ADR 0046)
     pub night_light: NightLight,
+
+    // `focus.*`: what Focus turns on
+    pub focus: Focus,
+
+    // `controls.tiles`: which switches the Controls Surface shows, in order and size (ADR 0067)
+    pub tiles: Vec<Placed>,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
     pub pomodoro: Pomodoro,
 
@@ -401,11 +427,12 @@ pub struct Transition {
 }
 
 impl Transition {
-    pub const KINDS: &[&str] = &["simple", "fade", "wipe", "grow", "outer"];
+    pub const KINDS: &[&str] = &["simple", "fade", "wipe", "grow", "outer", "random"];
 
-    // the two that grow or shrink a circle, from where the wallpaper was chosen
+    // those that grow or shrink a circle, from where the wallpaper was chosen; awww's "random" may
+    // pick one, and ignores the point when it picks another
     pub fn circle(self) -> bool {
-        matches!(self.kind, "grow" | "outer")
+        matches!(self.kind, "grow" | "outer" | "random")
     }
 }
 
@@ -438,8 +465,11 @@ impl Default for Config {
             pinned: Vec::new(),
             wallpapers: None,
             transition: Transition::default(),
+            wallpaper_per_monitor: true,
             calendars: Vec::new(),
             reminder: 0,
+            subscriptions: Vec::new(),
+            subscription_interval: 60,
             location: None,
             place: None,
             units: Units::default(),
@@ -462,7 +492,10 @@ impl Default for Config {
             shell: ShellConfig::default(),
             rest: Rest::default(),
             visualizer: Visualizer::default(),
+            lyrics: LyricsSource::default(),
             lock_backdrop: LockBackdrop::default(),
+            lock_pam: None,
+            lock_grace: 0,
             privacy_indicators: true,
             island_wheel: true,
             device_events: true,
@@ -480,6 +513,8 @@ impl Default for Config {
             live_stale: Duration::from_secs(30 * 60),
             battery: Battery::default(),
             night_light: NightLight::default(),
+            focus: Focus::default(),
+            tiles: tiles::DEFAULT.to_vec(),
             pomodoro: Pomodoro::default(),
             hooks: Commands::default(),
             outputs: BTreeMap::new(),
@@ -547,6 +582,24 @@ impl CriticalAction {
             "hibernate" => CriticalAction::Hibernate,
             "poweroff" => CriticalAction::PowerOff,
             _ => CriticalAction::None,
+        }
+    }
+}
+
+// `focus.*`: the pieces `kanade focus on` turns on, each restored by `off`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Focus {
+    pub dnd: bool,
+    pub caffeine: bool,
+    pub night_light: bool,
+}
+
+impl Default for Focus {
+    fn default() -> Self {
+        Focus {
+            dnd: true,
+            caffeine: true,
+            night_light: false,
         }
     }
 }
@@ -821,6 +874,10 @@ pub enum Kind {
     // replaces the list below
     Paths(Field<Vec<String>>),
 
+    // a list of public calendar feeds, `https://` or `webcal://` addresses (`feed`), each kept once;
+    // a layer replaces the list below. An error never repeats an address, which may hold a secret
+    Urls(Field<Vec<String>>),
+
     // a table of app id = `.desktop` file id, merged over the layers below by app id
     AppIds(Field<BTreeMap<String, String>>),
 
@@ -833,6 +890,9 @@ pub enum Kind {
     // a command as a list of strings, the program first, run without a shell (`hooks`); an empty
     // list is none, and a layer replaces the list below
     Argv(Field<Vec<String>>),
+
+    // the Controls tiles, `name` or `name:size` each, at least one; a layer replaces the list below
+    Tiles(Field<Vec<Placed>>),
 }
 
 impl Kind {
@@ -922,6 +982,28 @@ impl Kind {
 
                 (field.set)(config, paths);
             }
+            Kind::Urls(field) => {
+                let list = value.as_array().ok_or(FEEDS_EXPECTED)?;
+                let mut urls: Vec<String> = Vec::new();
+
+                for (at, url) in list.iter().enumerate() {
+                    let url = url
+                        .as_str()
+                        .ok_or(FEEDS_EXPECTED)
+                        .and_then(feed)
+                        .map_err(|why| format!("entry {}: {why}", at + 1))?;
+
+                    if !urls.contains(&url) {
+                        urls.push(url);
+                    }
+                }
+
+                if urls.len() > FEEDS {
+                    return Err(format!("at most {FEEDS} addresses"));
+                }
+
+                (field.set)(config, urls);
+            }
             Kind::AppIds(field) => {
                 let table = value
                     .as_table()
@@ -953,6 +1035,20 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::Tiles(field) => {
+                let list = value
+                    .as_array()
+                    .ok_or("expected a list of \"tile\"s or \"tile:size\"s")?
+                    .iter()
+                    .map(|tile| {
+                        tile.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("expected a \"tile\", found {tile}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                (field.set)(config, tiles::parse(&list)?);
+            }
             Kind::Argv(field) => {
                 let mut argv = hooks::argv(value)?;
 
@@ -987,7 +1083,10 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
             Kind::Location(field) => (field.get)(config)?.value(),
             Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
-            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Argv(field) => {
+            Kind::DesktopIds(field)
+            | Kind::Paths(field)
+            | Kind::Urls(field)
+            | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
             Kind::AppIds(field) => Value::Table(
@@ -1005,6 +1104,12 @@ impl Kind {
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
+            Kind::Tiles(field) => Value::Array(
+                (field.get)(config)
+                    .iter()
+                    .map(|placed| Value::String(placed.to_string()))
+                    .collect(),
+            ),
         };
 
         match &value {
@@ -1029,11 +1134,14 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
             Kind::DayTime(field) => field.copy(from, to),
-            Kind::DesktopIds(field) | Kind::Paths(field) => field.copy(from, to),
+            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Urls(field) => {
+                field.copy(from, to)
+            }
             Kind::AppIds(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
+            Kind::Tiles(field) => field.copy(from, to),
         }
     }
 
@@ -1242,7 +1350,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.finish",
         label: "Finish",
-        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around",
+        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around, or \"blur\", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is \"light\" (needs niri 26.04)",
         hint: Some("What the Island, Dock and Banners are made of"),
         kind: Kind::Choice(
             Choices::named(Finish::NAMES),
@@ -1739,9 +1847,22 @@ pub const WALLPAPER: &[Setting] = &[
         per_output: false,
     },
     Setting {
+        key: "wallpaper.per_monitor",
+        label: "Wallpaper per monitor",
+        help: "on, a wallpaper picked in the shell (the Wallpapers Surface, `kanade wallpaper shuffle`) is set on that monitor alone; off, on every monitor. `kanade wallpaper set --output` names one either way",
+        hint: Some("Pick a wallpaper for each monitor, or one for all"),
+        kind: Kind::Switch(Field {
+            get: |config| config.wallpaper_per_monitor,
+            set: |config, on| config.wallpaper_per_monitor = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
         key: "wallpaper.transition",
         label: "Transition",
-        help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle",
+        help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle, and \"random\" lets awww pick one each time",
         hint: Some("How the wallpaper changes to a new image"),
         kind: Kind::Choice(
             Choices::named(Transition::KINDS),
@@ -1876,6 +1997,53 @@ pub const REMINDERS: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+// how many feeds `calendar.subscriptions` takes
+pub const FEEDS: usize = 16;
+
+const FEEDS_EXPECTED: &str = "expected a list of https:// or webcal:// addresses";
+
+// how often a feed is fetched: from half an hour to a day
+pub const SUBSCRIPTION_INTERVAL: Range = Range {
+    least: 30,
+    most: 24 * 60,
+};
+
+pub const SUBSCRIPTIONS: &[Setting] = &[
+    Setting {
+        key: "calendar.subscriptions",
+        label: "Subscriptions",
+        help: "https:// (or webcal://) addresses of public iCalendar feeds, fetched into read-only \
+               calendars; an address may hold a secret, so none is logged or shown",
+        hint: Some("Add a calendar feed address, then Enter"),
+        kind: Kind::Urls(Field {
+            get: |config| config.subscriptions.clone(),
+            set: |config, urls| config.subscriptions = urls,
+        }),
+        example: Some("[\"https://example.org/holidays.ics\", \"webcal://example.org/team.ics\"]"),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "calendar.subscription_interval",
+        label: "Subscription interval",
+        help: "minutes between fetches of each subscription, at least 30",
+        hint: Some("Minutes between fetches of a feed"),
+        kind: Kind::Minutes(
+            SUBSCRIPTION_INTERVAL,
+            Field {
+                get: |config| Duration::from_secs(u64::from(config.subscription_interval) * 60),
+                set: |config, every| {
+                    config.subscription_interval =
+                        u32::try_from(every.as_secs() / 60).unwrap_or(u32::MAX)
+                },
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 pub const WEATHER: &[Setting] = &[
     Setting {
         key: "weather.location",
@@ -1936,22 +2104,40 @@ pub const WEATHER: &[Setting] = &[
     },
 ];
 
-pub const MEDIA: &[Setting] = &[Setting {
-    key: "media.visualizer",
-    label: "Media visualizer",
-    help: "what moves beside a playing track",
-    hint: Some("What moves beside a playing track"),
-    kind: Kind::Choice(
-        Choices::named(Visualizer::NAMES),
-        Field {
-            get: |config| config.visualizer.name(),
-            set: |config, name| config.visualizer = Visualizer::named(name),
-        },
-    ),
-    example: None,
-    restart: false,
-    per_output: false,
-}];
+pub const MEDIA: &[Setting] = &[
+    Setting {
+        key: "media.visualizer",
+        label: "Media visualizer",
+        help: "what moves beside a playing track",
+        hint: Some("What moves beside a playing track"),
+        kind: Kind::Choice(
+            Choices::named(Visualizer::NAMES),
+            Field {
+                get: |config| config.visualizer.name(),
+                set: |config, name| config.visualizer = Visualizer::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "media.lyrics",
+        label: "Synced lyrics",
+        help: "the current line of a playing track's synced lyrics on the Media Surface, from a .lrc file beside a local track, or also from LRCLIB, which is told the track's title, artist, album and length",
+        hint: Some("Show the current lyric line; lrclib asks the internet"),
+        kind: Kind::Choice(
+            Choices::named(LyricsSource::NAMES),
+            Field {
+                get: |config| config.lyrics.name(),
+                set: |config, name| config.lyrics = LyricsSource::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const LAUNCHER: &[Setting] = &[Setting {
     key: "launcher.actions",
@@ -1989,22 +2175,56 @@ pub const LIVE: &[Setting] = &[Setting {
     per_output: false,
 }];
 
-pub const LOCK: &[Setting] = &[Setting {
-    key: "lock.backdrop",
-    label: "Backdrop",
-    help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
-    hint: Some("What shows behind the lock screen clock"),
-    kind: Kind::Choice(
-        Choices::named(LockBackdrop::NAMES),
-        Field {
-            get: |config| config.lock_backdrop.name(),
-            set: |config, name| config.lock_backdrop = LockBackdrop::named(name),
-        },
-    ),
-    example: None,
-    restart: false,
-    per_output: false,
-}];
+// the longest `lock.grace`, so a lock the idle Module asked for is never open for long (ADR 0066)
+pub const LOCK_GRACE: Range = Range { least: 0, most: 30 };
+
+pub const LOCK: &[Setting] = &[
+    Setting {
+        key: "lock.backdrop",
+        label: "Backdrop",
+        help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
+        hint: Some("What shows behind the lock screen clock"),
+        kind: Kind::Choice(
+            Choices::named(LockBackdrop::NAMES),
+            Field {
+                get: |config| config.lock_backdrop.name(),
+                set: |config, name| config.lock_backdrop = LockBackdrop::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "lock.pam_service",
+        label: "PAM service",
+        help: "the PAM service that checks the password, a file of that name in /etc/pam.d; unset uses login. Letters, digits, dots, dashes and underscores. Only the first hidden prompt gets the password; an echoed or later one fails the check, and PAM's own messages show under the field. A name with no file refuses every lock",
+        hint: Some("PAM service that checks the lock screen password"),
+        kind: Kind::Text(Field {
+            get: |config| config.lock_pam.clone(),
+            set: |config, service| config.lock_pam = service,
+        }),
+        example: Some("\"login\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "lock.grace",
+        label: "Grace",
+        help: "seconds after the idle Module locks the session in which any key, click, scroll or pointer movement unlocks it without a password; never for `kanade lock`, a lock before sleep or a lock asked again after a failure; 0 is none",
+        hint: Some("Seconds after an idle lock when input unlocks without a password; 0 none"),
+        kind: Kind::Seconds(
+            LOCK_GRACE,
+            Field {
+                get: |config| config.lock_grace,
+                set: |config, seconds| config.lock_grace = seconds,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 // whole seconds each idle stage waits, up to a day, 0 being never
 pub const IDLE_SECONDS: Range = Range {
@@ -2213,6 +2433,62 @@ pub const NIGHT_LIGHT: &[Setting] = &[
     },
 ];
 
+pub const FOCUS: &[Setting] = &[
+    Setting {
+        key: "focus.dnd",
+        label: "Do Not Disturb",
+        help: "Focus turns Do Not Disturb on, and off again if it was off before",
+        hint: Some("Focus quiets the Banners"),
+        kind: Kind::Switch(Field {
+            get: |config| config.focus.dnd,
+            set: |config, on| config.focus.dnd = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "focus.caffeine",
+        label: "Caffeine",
+        help: "Focus keeps the session awake, and releases it again if it was not held before",
+        hint: Some("Focus keeps the session awake"),
+        kind: Kind::Switch(Field {
+            get: |config| config.focus.caffeine,
+            set: |config, on| config.focus.caffeine = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "focus.night_light",
+        label: "Night light",
+        help: "Focus warms the screen, and turns the night light off again if it was off before",
+        hint: Some("Focus warms the screen"),
+        kind: Kind::Switch(Field {
+            get: |config| config.focus.night_light,
+            set: |config, on| config.focus.night_light = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
+pub const CONTROLS: &[Setting] = &[Setting {
+    key: "controls.tiles",
+    label: "Controls tiles",
+    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
+    hint: Some("Their order and size; add one, like focus or wifi:full, then Enter"),
+    kind: Kind::Tiles(Field {
+        get: |config| config.tiles.clone(),
+        set: |config, tiles| config.tiles = tiles,
+    }),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
     match id.strip_suffix(".desktop") {
@@ -2261,6 +2537,51 @@ fn minutes(value: &Value, range: Range) -> Result<Duration, String> {
         .filter(|minutes| (range.least..=range.most).contains(minutes))
         .map(|minutes| Duration::from_secs(u64::from(minutes) * 60))
         .ok_or_else(|| format!("{minutes} is outside {}-{} min", range.least, range.most))
+}
+
+/*
+ * a feed address as the calendar fetches it: `webcal://` is `https://`, `http://` is refused, and
+ * nothing else is taken. The reasons never repeat the address, which may hold a secret
+ */
+pub fn feed(text: &str) -> Result<String, &'static str> {
+    const LONGEST: usize = 2048;
+
+    let text = text.trim();
+    let scheme = |name: &str| {
+        text.get(..name.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(name))
+    };
+
+    let rest = if scheme("https://") {
+        &text["https://".len()..]
+    } else if scheme("webcal://") {
+        &text["webcal://".len()..]
+    } else if scheme("http://") {
+        return Err("http:// is refused, as the feed would be read in the clear; use https://");
+    } else {
+        return Err("expected an https:// or webcal:// address");
+    };
+
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+
+    if text.len() > LONGEST {
+        return Err("the address is over 2048 bytes");
+    }
+    if host.is_empty() || host.starts_with(':') {
+        return Err("the address has no host");
+    }
+
+    let url = format!("https://{rest}");
+    if url
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b' ')
+        || url.parse::<ureq::http::Uri>().is_err()
+    {
+        return Err("not a valid address");
+    }
+
+    Ok(url)
 }
 
 fn kelvin(value: &Value, range: Range) -> Result<u32, String> {
@@ -3361,6 +3682,7 @@ mod tests {
                 "battery.critical",
                 "battery.critical_action",
                 "media.visualizer",
+                "media.lyrics",
                 "timer.pomodoro.work",
                 "timer.pomodoro.break",
                 "timer.pomodoro.long_break",
@@ -3369,12 +3691,16 @@ mod tests {
                 "osd.layout",
                 "notifications.sound",
                 "notifications.rules",
+                "controls.tiles",
                 "wallpaper.directory",
+                "wallpaper.per_monitor",
                 "wallpaper.transition",
                 "wallpaper.transition_duration",
                 "launcher.actions",
                 "calendar.paths",
                 "calendar.reminder",
+                "calendar.subscriptions",
+                "calendar.subscription_interval",
                 "weather.location",
                 "weather.place",
                 "weather.units",
@@ -3382,7 +3708,12 @@ mod tests {
                 "night-light.temperature",
                 "night-light.sunset",
                 "night-light.sunrise",
+                "focus.dnd",
+                "focus.caffeine",
+                "focus.night_light",
                 "lock.backdrop",
+                "lock.pam_service",
+                "lock.grace",
                 "idle.dim",
                 "idle.lock",
                 "idle.screen_off",
@@ -3881,6 +4212,47 @@ battery = false
         assert_eq!(
             one("calendar.paths = \"~/cal\"").1,
             said(&[(1, "calendar.paths: expected a list of \"path\"s")])
+        );
+    }
+
+    // a feed is https, `webcal://` read as it, and a refusal never repeats the address, which may
+    // hold a secret (ADR 0062)
+    #[test]
+    fn a_subscription_is_https_and_a_refusal_names_no_address() {
+        let (config, problems) = one(
+            "calendar.subscriptions = [\"webcal://example.org/a.ics?token=s3cret\", \"HTTPS://example.org/b.ics\", \"https://example.org/b.ics\"]\ncalendar.subscription_interval = 45",
+        );
+
+        assert_eq!(problems, vec![]);
+        assert_eq!(
+            config.subscriptions,
+            [
+                "https://example.org/a.ics?token=s3cret",
+                "https://example.org/b.ics"
+            ]
+        );
+        assert_eq!(config.subscription_interval, 45);
+
+        for bad in [
+            "http://example.org/s3cret.ics",
+            "ftp://example.org/s3cret.ics",
+            "https:///s3cret",
+            "https://exa mple.org/s3cret",
+            "s3cret",
+        ] {
+            let (config, problems) = one(&format!("calendar.subscriptions = [\"{bad}\"]"));
+
+            assert!(config.subscriptions.is_empty(), "{bad}");
+            assert_eq!(problems.len(), 1, "{bad}");
+            assert!(!problems[0].1.contains("s3cret"), "{}", problems[0].1);
+        }
+
+        assert_eq!(
+            one("calendar.subscription_interval = 10").1,
+            said(&[(
+                1,
+                "calendar.subscription_interval: 10 is outside 30-1440 min"
+            )])
         );
     }
 

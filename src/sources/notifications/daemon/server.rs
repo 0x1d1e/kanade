@@ -1,4 +1,4 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use kanade_runtime::service::Service;
 
@@ -58,7 +58,7 @@ fn notify(method: &Method) {
         body,
         actions,
         hints,
-        _timeout,
+        timeout,
     ] = method.arguments()
     else {
         method.reply(&[]);
@@ -93,6 +93,9 @@ fn notify(method: &Method) {
             name: String::from(hints.get("sound-name").text()),
         },
 
+        value: progress(hints.get("value")),
+        timeout: lasts(timeout.number()),
+
         received: SystemTime::now(),
 
         // add() picks it too
@@ -123,6 +126,23 @@ fn notify(method: &Method) {
     let id = Notifications::write().add(notification, replaces_id);
 
     method.reply(&[Argument::from(id)]);
+}
+
+/*
+ * the `value` hint, a progress from 0 to 100 that the spec does not list but senders like
+ * `notify-send -h int:value:40` give (ADR 0059); a number of any kind, out of range kept in it,
+ * anything else none
+ */
+fn progress(hint: &Value) -> Option<u8> {
+    match hint {
+        Value::Number(value) if value.is_finite() => Some(value.round().clamp(0.0, 100.0) as u8),
+        _ => None,
+    }
+}
+
+// `expire_timeout`: -1 leaves it to the server and 0 is never, so only a positive one is a time
+fn lasts(milliseconds: f64) -> Option<Duration> {
+    (milliseconds >= 1.0).then(|| Duration::from_millis(milliseconds as u64))
 }
 
 /*

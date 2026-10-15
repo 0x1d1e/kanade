@@ -54,6 +54,10 @@ choice! {
 
         // clear glass over the screen, its edge reflecting what lies around it, light text (ADR 0052)
         LiquidGlass = "liquid-glass",
+
+        // the tinted solid's ramp, or paper's while `appearance.tone` is light, translucent over the
+        // compositor's blur of what lies behind it, the windows too (ADR 0057)
+        Blur = "blur",
     }
 }
 
@@ -198,6 +202,20 @@ choice! {
         // stand in while it is missing or has not answered yet (ADR 0056)
         Audio = "audio",
         Off = "off",
+    }
+}
+
+choice! {
+    // where the Media Surface gets a track's synced lyrics, `media.lyrics` (ADR 0063)
+    LyricsSource {
+        // none are looked up
+        Off = "off",
+
+        // a `.lrc` file beside a local track, named like it
+        Local = "local",
+
+        // that, then LRCLIB, asked for the track's title, artist, album and length over https
+        Lrclib = "lrclib",
     }
 }
 

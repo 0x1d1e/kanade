@@ -24,8 +24,8 @@ use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
-    apps, bluetooth, caffeine, charge_limit, fullscreen, google, live, media, network, night_light,
-    power, reminders, session, wallpaper, weather,
+    apps, bluetooth, caffeine, charge_limit, focus, fullscreen, google, live, media, network,
+    night_light, power, reminders, session, subscriptions, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -40,7 +40,7 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         ))),
         Err(Unparsed::Invalid(invalid)) => Err(Reply::Refused(invalid.to_string())),
         Ok((module, _)) if !modules::on(module.name) => {
-            Err(Reply::Refused(format!("module {} is off", module.name)))
+            Err(Reply::Refused(cli::module_off(module.name)))
         }
         Ok((_, call)) => Ok(call),
     };
@@ -103,6 +103,8 @@ fn run(call: Call) -> Reply {
         Call::NightLight(request) => {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
+        // through the same: it is the Controls tile's press as well
+        Call::Focus(request) => focus::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
         // handed to the reminders' thread, so this answers at once
@@ -112,6 +114,10 @@ fn run(call: Call) -> Reply {
         // the fetch is on the weather's thread, so this answers at once
         Call::Weather(request) => {
             weather::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // likewise on the subscriptions' thread
+        Call::Subscriptions(request) => {
+            subscriptions::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),

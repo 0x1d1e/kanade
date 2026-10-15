@@ -1,13 +1,17 @@
 //! Live Activities from outside (ADR 0042): `kanade activity` lets a script, a build or a download
 //! show what it does on the Island. `start` posts a Persistent Ongoing Live Activity, `progress`
 //! and `detail` repost it, and `end` or `fail` turn it into a short Transient done or failed form,
-//! as a saved recording's. `run` wraps a command in all of it, on the client's side.
+//! as a saved recording's. `run` wraps a command in all of it, on the client's side, and `hook`
+//! turns an agent's hook events into the same verbs (`hook.rs`, ADR 0058).
 //!
-//! What comes in is another program's, so it is bounded: at most `MOST` live at once, ids from a
-//! small alphabet, titles and details one line of plain text cut to a length, a verb for an id that
-//! is not live refused. A live Activity its program stops talking to is withdrawn after `live.stale`
-//! (`config::LIVE`); `run` keeps its own alive while its command runs. Titles and details are never
-//! logged.
+//! What comes in is another program's, so it is bounded: at most `MOST` live at once, of which at
+//! most `NOTIFIED` are a notification's progress (ADR 0059), ids from a small alphabet that never
+//! begins with `NOTIFICATION`, titles and details one line of plain text cut to a length, a verb for
+//! an id that is not live refused. A live Activity its program stops talking to is withdrawn after
+//! `live.stale` (`config::LIVE`), a notification's after that at most; `run` keeps its own alive
+//! while its command runs. A change sooner than
+//! `REPOST` after the last post is held and posted as it falls due, one that changes nothing is not
+//! posted. Titles and details are never logged.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -29,14 +33,31 @@ use crate::island::activity::{
     Activity, Detail, Ended, Id, Interrupt, Job, Kind, Lifetime, Priority, Scope,
 };
 use crate::island::service::IslandService;
+pub use hook::{Agent, run as hook};
+
+mod hook;
 
 // how many may be live at once; another is refused until one ends
 pub const MOST: usize = 8;
+
+// the ids of a notification's progress begin so (ADR 0059); a client's never do
+pub const NOTIFICATION: &str = "notification.";
+
+// how many of the live ones may be a notification's, so clients keep at least `MOST - NOTIFIED`: a
+// new one past it takes the place of the oldest of them
+pub const NOTIFIED: usize = 3;
 
 // the longest id, title and detail, in characters
 pub const ID: usize = 64;
 pub const TITLE: usize = 80;
 pub const DETAIL: usize = 160;
+
+// a progress's full bar, in thousandths
+const FULL: u16 = 1000;
+
+// the least between two posts of one live Activity's changes: a client reposting in a loop redraws
+// the Island a few times a second, and what it said last is posted when the time is up
+const REPOST: Duration = Duration::from_millis(250);
 
 // how often `run` tells the shell its command still runs, well inside the least `live.stale`
 const TOUCH: Duration = Duration::from_secs(20);
@@ -81,11 +102,14 @@ pub enum Request {
         title: String,
         command: Vec<String>,
     },
+
+    // the client's own: one hook event of an agent on stdin, told as the verbs above
+    Hook(Agent),
 }
 
 impl Request {
     pub fn parse(arguments: &[&str]) -> Option<Request> {
-        let id = |id: &str| valid_id(id).then(|| id.to_owned());
+        let id = |id: &str| client_id(id).then(|| id.to_owned());
         let title = |words: &[&str]| Some(line(words, TITLE)).filter(|title| !title.is_empty());
 
         match arguments {
@@ -126,6 +150,7 @@ impl Request {
                     command: command.iter().map(|word| (*word).to_owned()).collect(),
                 })
             }
+            ["hook", agent] => Some(Request::Hook(Agent::parse(agent)?)),
             _ => None,
         }
     }
@@ -140,21 +165,29 @@ activity end|fail <id> [<text>]
 activity touch <id>
 activity list
 activity run <id> <title> -- <command>...
-  <id>: 1 to {ID} letters, digits, '.', '_' or '-'; it names one live Activity until it ends
+activity hook claude
+  <id>: 1 to {ID} letters, digits, '.', '_' or '-', not starting with '{NOTIFICATION}'; it names one live Activity until it ends
   <title>: what it is, one line, cut to {TITLE} characters
   <amount>: a percent like 40 or 40%, or a fraction like 0.4
   <text>: a line under the title, cut to {DETAIL} characters; detail with none clears it
   <command>: run with the Activity live, ended as done on exit status 0 and failed on any other, \
-which kanade exits with"
+which kanade exits with
+  hook: reads one Claude Code hook event as JSON on stdin and shows the session as a live Activity \
+(`docs/wiki/Agent-hooks.md`); it exits 0 or 1, never 2, which Claude Code takes as a block"
     )
 }
 
 // letters, digits, '.', '_' and '-', so an id never carries markup, spaces or control characters
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     (1..=ID).contains(&id.len())
         && id
             .chars()
             .all(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '.' | '_' | '-'))
+}
+
+// an id a client may use: a valid one that is not a notification's
+fn client_id(id: &str) -> bool {
+    valid_id(id) && !id.starts_with(NOTIFICATION)
 }
 
 /*
@@ -219,8 +252,30 @@ fn progress(amount: &str) -> Option<u16> {
 struct Entry {
     job: Job,
 
+    // when it started, which a notification's oldest is told by
+    started: Instant,
+
     // when its program last said anything of it
     heard: Instant,
+
+    // how long it may go unheard instead of `live.stale`, as a notification asks to show for
+    lasts: Option<Duration>,
+
+    // when it was last posted to the Island, and whether a change since waits to be
+    posted: Instant,
+    held: bool,
+}
+
+impl Entry {
+    // how long it may go unheard: as it asks, but never past `stale`
+    fn patience(&self, stale: Duration) -> Duration {
+        self.lasts.map_or(stale, |lasts| lasts.min(stale))
+    }
+}
+
+// whether `id` is a notification's progress
+fn notified(id: &str) -> bool {
+    id.starts_with(NOTIFICATION)
 }
 
 // the live Activities by id. Pure: time is given, never read
@@ -236,12 +291,37 @@ impl Board {
         }
     }
 
-    // a new one, or one live started again from scratch; refused past `MOST`
-    pub fn start(&mut self, id: &str, title: String, now: Instant) -> Result<Job, String> {
-        if !self.live.contains_key(id) && self.live.len() >= MOST {
+    /*
+     * a new one, or one live started again from scratch; refused past `MOST`. A new notification's
+     * past `NOTIFIED` of them takes the place of the oldest, whose id is returned to be withdrawn
+     */
+    pub fn start(
+        &mut self,
+        id: &str,
+        title: String,
+        now: Instant,
+    ) -> Result<(Job, Option<String>), String> {
+        let new = !self.live.contains_key(id);
+
+        let evicted = (new && notified(id))
+            .then(|| {
+                let theirs = || self.live.iter().filter(|(other, _)| notified(other));
+
+                (theirs().count() >= NOTIFIED)
+                    .then(|| theirs().min_by_key(|(_, entry)| entry.started))
+                    .flatten()
+                    .map(|(oldest, _)| oldest.clone())
+            })
+            .flatten();
+
+        if new && self.live.len() - usize::from(evicted.is_some()) >= MOST {
             return Err(format!(
                 "{MOST} live Activities already; end one before starting another"
             ));
+        }
+
+        if let Some(oldest) = &evicted {
+            self.live.remove(oldest);
         }
 
         let job = Job {
@@ -253,26 +333,78 @@ impl Board {
             id.to_owned(),
             Entry {
                 job: job.clone(),
+                started: now,
                 heard: now,
+                lasts: None,
+                posted: now,
+                held: false,
             },
         );
 
-        Ok(job)
+        Ok((job, evicted))
     }
 
-    // the live one named `id`, changed by `change` and heard from now
+    /*
+     * the live one named `id`, changed by `change` and heard from now. Its new form to post now: none
+     * when nothing changed, and none within `REPOST` of the last post, which `flush` posts when due
+     */
     pub fn change(
         &mut self,
         id: &str,
         now: Instant,
         change: impl FnOnce(&mut Job),
-    ) -> Result<Job, String> {
+    ) -> Result<Option<Job>, String> {
         let entry = self.live.get_mut(id).ok_or_else(|| unknown(id))?;
+        let before = entry.job.clone();
 
         change(&mut entry.job);
         entry.heard = now;
 
-        Ok(entry.job.clone())
+        if entry.job == before {
+            return Ok(None);
+        }
+
+        if now.saturating_duration_since(entry.posted) < REPOST {
+            entry.held = true;
+            return Ok(None);
+        }
+
+        entry.posted = now;
+        entry.held = false;
+
+        Ok(Some(entry.job.clone()))
+    }
+
+    // the held changes whose time is up, now posted
+    pub fn flush(&mut self, now: Instant) -> Vec<(String, Job)> {
+        self.live
+            .iter_mut()
+            .filter(|(_, entry)| entry.held && now >= entry.posted + REPOST)
+            .map(|(id, entry)| {
+                entry.posted = now;
+                entry.held = false;
+
+                (id.clone(), entry.job.clone())
+            })
+            .collect()
+    }
+
+    // when the first held change may be posted, none while nothing is held
+    pub fn held_until(&self) -> Option<Instant> {
+        self.live
+            .values()
+            .filter(|entry| entry.held)
+            .map(|entry| entry.posted + REPOST)
+            .min()
+    }
+
+    // no longer live, done at the full progress it reached, as a finished notification is
+    pub fn complete(&mut self, id: &str) -> Result<Job, String> {
+        let mut job = self.end(id, Ended::Done, None)?;
+
+        job.progress = Some(FULL);
+
+        Ok(job)
     }
 
     // no longer live, as it ended; its last form, done or failed
@@ -293,7 +425,9 @@ impl Board {
         let gone: Vec<String> = self
             .live
             .iter()
-            .filter(|(_, entry)| now.saturating_duration_since(entry.heard) >= stale)
+            .filter(|(_, entry)| {
+                now.saturating_duration_since(entry.heard) >= entry.patience(stale)
+            })
             .map(|(id, _)| id.clone())
             .collect();
 
@@ -306,7 +440,10 @@ impl Board {
 
     // when the next goes stale, none while nothing is live
     pub fn due(&self, stale: Duration) -> Option<Instant> {
-        self.live.values().map(|entry| entry.heard + stale).min()
+        self.live
+            .values()
+            .map(|entry| entry.heard + entry.patience(stale))
+            .min()
     }
 
     // a line each, by id: the id, how far along, the title, tab-separated
@@ -325,8 +462,11 @@ impl Board {
     }
 }
 
+// how a refusal for an id that is not live begins, which `hook` tells from any other
+const NOT_LIVE: &str = "no live Activity named ";
+
 fn unknown(id: &str) -> String {
-    format!("no live Activity named {id}; start it first")
+    format!("{NOT_LIVE}{id}; start it first")
 }
 
 static BOARD: Mutex<Board> = Mutex::new(Board::new());
@@ -341,8 +481,8 @@ pub fn request(request: Request) -> Result<String, String> {
 
     let (id, job) = match request {
         Request::Start { id, title } => {
-            let job = board.start(&id, title, now)?;
-            (id, job)
+            let (job, _) = board.start(&id, title, now)?;
+            (id, Some(job))
         }
         Request::Progress { id, progress } => {
             let job = board.change(&id, now, |job| job.progress = Some(progress))?;
@@ -354,29 +494,107 @@ pub fn request(request: Request) -> Result<String, String> {
         }
         Request::End { id, ended, detail } => {
             let job = board.end(&id, ended, detail)?;
-            (id, job)
+            (id, Some(job))
         }
         Request::Touch { id } => {
-            board.change(&id, now, |_| {})?;
-            CHANGED.notify_one();
-            return Ok(String::new());
+            let job = board.change(&id, now, |_| {})?;
+            (id, job)
         }
         Request::List => return Ok(board.list().join("\n")),
-        Request::Run { .. } => {
-            return Err(String::from(
-                "`activity run` runs its command in the client",
-            ));
+        Request::Run { .. } | Request::Hook(_) => {
+            return Err(String::from("`activity run` and `hook` run in the client"));
         }
     };
 
     // under the lock, so the thread withdrawing a stale one never comes between
-    IslandService::write().post(activity(&id, job), now);
+    if let Some(job) = job {
+        IslandService::write().post(activity(&id, job), now);
+    }
+
+    // it may hold a change, or end the one the thread waits on
     CHANGED.notify_one();
 
     Ok(String::new())
 }
 
-// the `live` Module's thread: withdraws each live Activity once it is stale; asleep while none is
+/*
+ * a progress from this process rather than a client, a notification's `value` hint (ADR 0059):
+ * starts the live Activity `id` unless it is live, then shows `title`, `detail` and `percent`.
+ * Unheard from for `lasts`, else `live.stale`, and never longer, it is withdrawn. Refused past `MOST`,
+ * as a client is; past `NOTIFIED` of them the oldest is withdrawn for it
+ */
+pub fn show(
+    id: &str,
+    title: &str,
+    detail: &str,
+    percent: u8,
+    lasts: Option<Duration>,
+) -> Result<(), String> {
+    let now = Instant::now();
+    let title = line(&[title], TITLE);
+    let detail = line(&[detail], DETAIL);
+    let mut board = BOARD.locked();
+
+    let fresh = !board.live.contains_key(id);
+
+    if fresh {
+        let (_, evicted) = board.start(id, title.clone(), now)?;
+
+        if let Some(oldest) = evicted {
+            IslandService::write().withdraw(&Id::new(Kind::Live, oldest), now);
+        }
+    }
+
+    let changed = board.change(id, now, |job| {
+        job.title = title;
+        job.detail = detail;
+        job.progress = Some(u16::from(percent) * 10);
+    })?;
+
+    let entry = board.live.get_mut(id);
+
+    // a new one is posted whole at once, not held back as a change within `REPOST` of its start
+    let job = entry.map(|entry| {
+        entry.lasts = lasts;
+        entry.held = entry.held && !fresh;
+
+        entry.job.clone()
+    });
+
+    if let Some(job) = job.filter(|_| fresh || changed.is_some()) {
+        IslandService::write().post(activity(id, job), now);
+    }
+
+    CHANGED.notify_one();
+
+    Ok(())
+}
+
+// ends the live Activity `id` as done at 100%, if it is live: a progress that jumps to its end
+// would otherwise end showing the last step it was told
+pub fn finish(id: &str) {
+    let now = Instant::now();
+    let mut board = BOARD.locked();
+
+    if let Ok(job) = board.complete(id) {
+        IslandService::write().post(activity(id, job), now);
+        CHANGED.notify_one();
+    }
+}
+
+// takes the live Activity `id` away at once, with no ended form, if it is live
+pub fn withdraw(id: &str) {
+    let now = Instant::now();
+    let mut board = BOARD.locked();
+
+    if board.live.remove(id).is_some() {
+        IslandService::write().withdraw(&Id::new(Kind::Live, id), now);
+        CHANGED.notify_one();
+    }
+}
+
+// the `live` Module's thread: withdraws each live Activity once it is stale and posts the changes
+// held back; asleep while none is live or held
 pub fn follow() {
     let mut board = BOARD.locked();
 
@@ -384,16 +602,25 @@ pub fn follow() {
         let stale = config::get().live_stale;
         let now = Instant::now();
         let gone = board.expire(now, stale);
+        let held = board.flush(now);
 
-        if !gone.is_empty() {
+        if !gone.is_empty() || !held.is_empty() {
             let mut island = IslandService::write();
 
             for id in gone {
                 island.withdraw(&Id::new(Kind::Live, id), now);
             }
+
+            for (id, job) in held {
+                island.post(activity(&id, job), now);
+            }
         }
 
-        board = match board.due(stale) {
+        board = match [board.due(stale), board.held_until()]
+            .into_iter()
+            .flatten()
+            .min()
+        {
             Some(due) => {
                 CHANGED
                     .wait_timeout(board, due.saturating_duration_since(now))
@@ -639,6 +866,76 @@ mod tests {
     }
 
     #[test]
+    fn notifications_keep_to_their_share_and_a_client_cannot_use_their_ids() {
+        let start = Instant::now();
+        let mut board = Board::new();
+        let notified = |index: usize| format!("{NOTIFICATION}app.{index}");
+
+        // each a second later than the one before, the oldest first
+        for index in 0..NOTIFIED {
+            let at = start + Duration::from_secs(index as u64);
+
+            assert_eq!(
+                board
+                    .start(&notified(index), String::from("t"), at)
+                    .map(|s| s.1),
+                Ok(None)
+            );
+        }
+
+        // one more takes the oldest's place
+        let later = start + Duration::from_secs(10);
+        let (_, evicted) = board
+            .start(&notified(9), String::from("t"), later)
+            .expect("room");
+
+        assert_eq!(evicted, Some(notified(0)));
+
+        // so the clients always have what is left
+        for index in 0..MOST - NOTIFIED {
+            assert!(
+                board
+                    .start(&format!("c{index}"), String::from("t"), later)
+                    .is_ok()
+            );
+        }
+
+        assert!(board.start("c-more", String::from("t"), later).is_err());
+        assert!(board.start(&notified(10), String::from("t"), later).is_ok());
+        assert_eq!(board.live.len(), MOST);
+
+        // one asked to last for ever lasts `stale` at most; a client's has no other bound
+        board.live.get_mut(&notified(9)).expect("live").lasts = Some(Duration::MAX);
+        let stale = Duration::from_secs(60);
+
+        assert_eq!(
+            board.due(stale),
+            Some(start + Duration::from_secs(2) + stale)
+        );
+
+        for id in ["notification.x.1", "notification.", "notification.a"] {
+            assert_eq!(Request::parse(&["start", id, "t"]), None, "{id}");
+            assert_eq!(Request::parse(&["end", id]), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn a_completed_progress_ends_at_the_full_bar_not_the_last_step() {
+        let now = Instant::now();
+        let mut board = Board::new();
+
+        board.start("a", String::from("t"), now).expect("room");
+        board
+            .change("a", now, |job| job.progress = Some(800))
+            .expect("live");
+
+        let job = board.complete("a").expect("live");
+
+        assert_eq!((job.progress, job.ended), (Some(1000), Some(Ended::Done)));
+        assert!(board.complete("a").is_err());
+    }
+
+    #[test]
     fn an_end_keeps_the_last_detail_unless_it_says_another() {
         let now = Instant::now();
         let mut board = Board::new();
@@ -656,6 +953,40 @@ mod tests {
         board.start("a", String::from("t"), now).expect("room");
 
         assert_eq!(board.end("a", Ended::Done, None).expect("live").detail, "");
+    }
+
+    #[test]
+    fn a_change_within_the_repost_time_is_held_and_one_that_changes_nothing_is_not_posted() {
+        let start = Instant::now();
+        let mut board = Board::new();
+        let progress = |thousandths| move |job: &mut Job| job.progress = Some(thousandths);
+
+        board.start("a", String::from("t"), start).expect("room");
+
+        // soon after the start: held, and nothing to post until the time is up
+        let soon = start + REPOST / 5;
+
+        assert_eq!(board.change("a", soon, progress(100)), Ok(None));
+        assert_eq!(board.change("a", soon, progress(200)), Ok(None));
+        assert_eq!(board.held_until(), Some(start + REPOST));
+        assert!(board.flush(soon).is_empty());
+
+        // the newest of the held is what is posted
+        let due = board.flush(start + REPOST);
+
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].1.progress, Some(200));
+        assert_eq!(board.held_until(), None);
+
+        // a repost of what shows is not posted, and one after the time is posted at once
+        let later = start + REPOST * 3;
+
+        assert_eq!(board.change("a", later, progress(200)), Ok(None));
+        assert_eq!(board.held_until(), None);
+        assert!(matches!(
+            board.change("a", later, progress(300)),
+            Ok(Some(_))
+        ));
     }
 
     #[test]

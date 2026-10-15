@@ -1,6 +1,6 @@
 # 25. The lock screen over its own connection
 
-Status: accepted. Amends ADR 0018, whose lock was Amane's `Lock`, ADR 0022, whose lock screen field did not repeat, ADR 0024, whose lock screen was an Amane window and whose panes kept capturing under it, and the `wayland-client` rule in `AGENTS.md` for one more crate, `crates/lock`. ADR 0048 supersedes the field and avatar rendering; lock isolation and CPU rendering remain.
+Status: accepted (amended by [ADR 0065](0065-pam-service-messages-and-the-waking-key.md) and [ADR 0066](0066-a-short-grace-after-an-idle-lock.md)). Amends ADR 0018, whose lock was Amane's `Lock`, ADR 0022, whose lock screen field did not repeat, ADR 0024, whose lock screen was an Amane window and whose panes kept capturing under it, and the `wayland-client` rule in `AGENTS.md` for one more crate, `crates/lock`. ADR 0048 supersedes the field and avatar rendering; lock isolation and CPU rendering remain.
 
 Validated on niri 26.04: `kanade lock` returns 57 ms after it is run, niri holding the lock with no red between, and the password unlocks it.
 
