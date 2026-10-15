@@ -3,7 +3,7 @@
 
 use wayland_client::protocol::wl_surface::WlSurface;
 
-use crate::input::focus;
+use crate::input::{focus, released};
 use crate::ui::{self, Act, Answer, Node, Request, Window};
 use crate::{Button, Key, Modifiers, Scroll};
 
@@ -277,6 +277,10 @@ impl WaylandState {
 
         for (key, modifiers) in keys {
             self.deliver_to(surface, key, modifiers, to_input);
+
+            // a sent key is a press and its release, so no press that counts only while the
+            // key is held (a hold to confirm) can be kept by it
+            released::send();
         }
 
         Ok("sent keys to")

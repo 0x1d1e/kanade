@@ -54,16 +54,6 @@ const MOST_ACTIONS: usize = 3;
 const ACTION_WIDTH: f32 = 120.0;
 const PILL_PADDING: f32 = 10.0;
 
-// the reply fields, one per pane: the runtime keeps a field's text under a fixed name
-const REPLY_FIELDS: [&str; 2 * MOST] = [
-    "banner-reply-0",
-    "banner-reply-1",
-    "banner-reply-2",
-    "banner-reply-3",
-    "banner-reply-4",
-    "banner-reply-5",
-];
-
 // the body wraps to at most this many lines, elided past them
 const BODY_LINES: usize = 2;
 
@@ -418,7 +408,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         pane::forget(&pane::Spot::new(&monitor.name, &self::pane(pane)));
 
         // what was typed there is not for the Banner that takes the pane next
-        TextInput::set_text(reply_field(pane), "");
+        TextInput::set_text(reply_field(&monitor.name, pane), "");
     }
 
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
@@ -546,7 +536,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                         &now_look,
                         backdrop,
                         card_height,
-                        reply_field(panes[&placed.banner.id]),
+                        reply_field(&monitor.name, panes[&placed.banner.id]),
                         &roles,
                     ),
                 ])
@@ -584,8 +574,16 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         )
 }
 
-fn reply_field(pane: usize) -> &'static str {
-    REPLY_FIELDS[pane % REPLY_FIELDS.len()]
+fn reply_field(monitor: &str, pane: usize) -> &'static str {
+    static NAMES: LazyLock<Mutex<HashMap<(String, usize), &'static str>>> =
+        LazyLock::new(Mutex::default);
+
+    // the runtime keeps a field's text under its name, which must be one per output and pane;
+    // a name lives as long as the shell, and there are few outputs and panes
+    NAMES
+        .locked()
+        .entry((monitor.to_owned(), pane))
+        .or_insert_with(|| Box::leak(format!("banner-reply-{monitor}-{pane}").into_boxed_str()))
 }
 
 // a pane's capture spot on an output, as a Banner draws in
@@ -1364,5 +1362,21 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
         if button == Button::Left {
             press();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reply_field;
+
+    // the runtime keeps a field's text under its name, so two outputs showing a reply must not share one
+    #[test]
+    fn a_reply_field_is_one_per_output_and_pane() {
+        assert_ne!(reply_field("eDP-1", 0), reply_field("HDMI-A-5", 0));
+        assert_ne!(reply_field("eDP-1", 0), reply_field("eDP-1", 1));
+        assert!(std::ptr::eq(
+            reply_field("eDP-1", 0),
+            reply_field("eDP-1", 0)
+        ));
     }
 }
