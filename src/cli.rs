@@ -568,9 +568,11 @@ pub fn call(arguments: &[String]) -> Result<Reply, String> {
 // as `call`, for a caller that cannot wait as long, like an agent's hook: connecting, writing and
 // the reply all fall within `patience`
 pub fn call_within(arguments: &[String], patience: Duration) -> Result<Reply, String> {
+    let deadline = Instant::now() + patience;
     let stream = connect(arguments, Some(patience))?;
+    let left = deadline.saturating_duration_since(Instant::now());
 
-    send(stream, &IpcCall::new(HANDLER, arguments), Some(patience))
+    send(stream, &IpcCall::new(HANDLER, arguments), Some(left))
 }
 
 // what `call` says when no shell listens
@@ -616,7 +618,8 @@ fn connect(arguments: &[String], patience: Option<Duration>) -> Result<UnixStrea
 
     thread::spawn(move || drop(sender.send(UnixStream::connect(socket))));
 
-    match receiver.recv_timeout(patience) {
+    // a shell with room answers at once, so a spent deadline still tells "no shell" from "full"
+    match receiver.recv_timeout(patience.max(Duration::from_millis(50))) {
         Ok(connected) => connected.map_err(|_| String::from(NO_SHELL)),
         Err(_) => Err(format!(
             "the shell did not take the call within {patience:?}"

@@ -24,7 +24,7 @@ Add this to `~/.claude/settings.json` (or a project's `.claude/settings.json`), 
 
 `kanade` must be on the `PATH` Claude Code runs with. Each hook reads its event from stdin, so there is nothing else to configure; use as few of the events as you like.
 
-`PreToolUse` fires before every tool call, so it is the one that could add latency to a busy turn; `"async": true` ([hooks reference](https://code.claude.com/docs/en/hooks), "Run hooks in the background") lets Claude Code go on without waiting for it. Claude Code then does not enforce `timeout` on it, which is why it has none here; the hook bounds itself to 2 s. Events can then arrive out of order, which is harmless: a tool detail for a session that has ended changes nothing. The other events are rare and stay synchronous.
+`PreToolUse` fires before every tool call, so it is the one that could add latency to a busy turn; `"async": true` ([hooks reference](https://code.claude.com/docs/en/hooks), "Run hooks in the background") lets Claude Code go on without waiting for it. Claude Code then does not enforce `timeout` on it, which is why it has none here; the hook bounds itself to 2 s. Events can then arrive out of order: a tool detail for a session that has ended changes nothing, and one that lands a few milliseconds after "Waiting for you" replaces that line until the next event. The other events are rare and stay synchronous.
 
 | Claude Code event | The Activity |
 |---|---|
