@@ -25,8 +25,8 @@ use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
-    apps, bluetooth, caffeine, charge_limit, focus, fullscreen, google, live, media, network,
-    night_light, power, reminders, session, subscriptions, wallpaper, weather,
+    apps, bluetooth, brightness, caffeine, charge_limit, focus, fullscreen, google, live, media,
+    network, night_light, power, reminders, session, subscriptions, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -125,6 +125,10 @@ fn run(call: Call) -> Reply {
         // likewise on the subscriptions' thread
         Call::Subscriptions(request) => {
             subscriptions::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // the level is set at once; the monitor's own write is on the ddc thread
+        Call::Brightness(request) => {
+            brightness::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),

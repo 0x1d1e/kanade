@@ -84,6 +84,7 @@ Rules:
 - Island Surfaces require `island`.
 - `notification-surface` → `island` + `notifications`; `banners` → `notifications`.
 - `dock` → `windows`, never `workspace`.
+- `brightness` sets the backlight, else (or as `brightness.backend` says) the external monitor on the focused output over DDC/CI, on a thread of its own (ADR 0082).
 - `osd` optionally reads `audio`/`brightness`, the keyboards' evdev devices (input group), `/dev/rfkill` and logind's `Active` (ADR 0021); typing and key repeat are the runtime's (ADR 0034).
 - `privacy` reads capture state independently from `audio` and `capture`.
 - `media.visualizer = audio` runs `cava` over the default sink's monitor, on demand only while a playing track's visualizer draws, so a paused or hidden one costs no process and no frame; without cava it draws the synthetic bars ([ADR 0056](adr/0056-audio-visualizer-through-cava.md)).

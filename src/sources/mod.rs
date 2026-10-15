@@ -16,6 +16,7 @@ pub mod capture;
 pub mod cava;
 pub mod charge_limit;
 pub mod clipboard;
+pub mod ddc;
 pub mod desktop;
 pub mod devices;
 pub mod focus;

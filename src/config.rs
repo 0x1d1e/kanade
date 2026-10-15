@@ -119,6 +119,9 @@ pub struct Config {
     // `weather.units`: how the Weather Surface reads temperatures and speeds
     pub units: Units,
 
+    // `brightness.backend`: what sets the screen's brightness (ADR 0082)
+    pub brightness_backend: Backend,
+
     // `appearance.*`: what the bodies are made of, and how they move
     pub appearance: Appearance,
 
@@ -489,6 +492,7 @@ impl Default for Config {
             location: None,
             place: None,
             units: Units::default(),
+            brightness_backend: Backend::default(),
             appearance: Appearance::default(),
             animation_speed: 100,
             island_place: Placement {
@@ -616,6 +620,35 @@ impl Default for Focus {
             dnd: true,
             caffeine: true,
             night_light: false,
+        }
+    }
+}
+
+// `brightness.backend`: the backlight, an external monitor over DDC/CI, or the first there is
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    #[default]
+    Auto,
+    Backlight,
+    Ddc,
+}
+
+impl Backend {
+    pub const NAMES: &[&str] = &["auto", "backlight", "ddcci"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Auto => "auto",
+            Backend::Backlight => "backlight",
+            Backend::Ddc => "ddcci",
+        }
+    }
+
+    pub fn named(name: &str) -> Backend {
+        match name {
+            "backlight" => Backend::Backlight,
+            "ddcci" => Backend::Ddc,
+            _ => Backend::Auto,
         }
     }
 }
@@ -2398,6 +2431,30 @@ pub const BATTERY: &[Setting] = &[
     },
 ];
 
+pub const BRIGHTNESS: &[Setting] = &[Setting {
+    key: "brightness.backend",
+    label: "Brightness backend",
+    help: "what sets the brightness: \"backlight\", an external monitor over \"ddcci\" (DDC/CI, needs the i2c-dev module and access to /dev/i2c-*), or \"auto\" for the backlight, else a monitor",
+    hint: Some("Backlight or an external monitor over DDC/CI"),
+    kind: Kind::Choice(
+        Choices::labeled(
+            Backend::NAMES,
+            &[
+                ("auto", "Automatic"),
+                ("backlight", "Backlight"),
+                ("ddcci", "Monitor (DDC/CI)"),
+            ],
+        ),
+        Field {
+            get: |config| config.brightness_backend.name(),
+            set: |config, name| config.brightness_backend = Backend::named(name),
+        },
+    ),
+    example: None,
+    restart: true,
+    per_output: false,
+}];
+
 pub const NIGHT_LIGHT: &[Setting] = &[
     Setting {
         key: "night-light.mode",
@@ -3731,6 +3788,7 @@ mod tests {
                 "timer.pomodoro.long_break",
                 "timer.pomodoro.rounds",
                 "live.stale",
+                "brightness.backend",
                 "osd.layout",
                 "notifications.sound",
                 "notifications.rules",
@@ -3776,7 +3834,7 @@ mod tests {
                 .filter(|setting| setting.restart)
                 .map(|setting| setting.key)
                 .collect::<Vec<_>>(),
-            ["appearance.font", "modules"]
+            ["appearance.font", "modules", "brightness.backend"]
         );
         assert_eq!(
             settings()

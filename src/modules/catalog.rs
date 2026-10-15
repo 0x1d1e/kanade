@@ -22,8 +22,9 @@ use crate::sources::system::Switch;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
-    focus, fullscreen, google, keys, launch, live, lyrics, media, network, night_light,
+    apps, audio, battery, bluetooth, brightness, caffeine, calendar, capture, charge_limit,
+    clipboard, devices, focus, fullscreen, google, keys, launch, live, lyrics, media, network,
+    night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -436,9 +437,25 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::BRIGHTNESS,
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "brightness",
+            about: "Set the brightness of the backlight or of the focused monitor",
+            usage: || {
+                String::from(
+                    "brightness set <percent>|up|down|status
+  <percent>: 1-100
+  up, down: 5 points
+  With DDC/CI (brightness.backend), the monitor on the focused output",
+                )
+            },
+            parse: |arguments| {
+                brightness::Request::parse(arguments)
+                    .map(Call::Brightness)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| app,
     },
     // with both of those off it shows only the lock lights, airplane mode and keyboard layouts
