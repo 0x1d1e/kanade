@@ -17,7 +17,7 @@ use crate::sources::bluetooth::Adapter;
 use crate::sources::calendar::Calendars;
 use crate::sources::clipboard::Clipboard;
 use crate::sources::network::Connectivity;
-use crate::sources::notifications::Daemon;
+use crate::sources::notifications::{Daemon, timed};
 use crate::sources::system::Switch;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
@@ -528,17 +528,36 @@ pub const ALL: &[Module] = &[
         // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
         // `notification-surface`'s
         hooks: Hooks {
-            status: Some(|| vec![Daemon::read().status()]),
+            status: Some(|| {
+                let mut lines = vec![Daemon::read().status()];
+
+                if timed::ends().is_some() {
+                    lines.push(format!("do not disturb {}", timed::status()));
+                }
+
+                lines
+            }),
             ..Hooks::NONE
         },
         verbs: &[Verb {
             name: "notifications",
             about: "Clear, set do not disturb, open the list",
-            usage: || String::from("notifications clear\nnotifications dnd on|off|toggle"),
+            usage: || {
+                String::from(
+                    "notifications clear
+notifications dnd on|off|toggle|status
+notifications dnd on <duration>
+notifications dnd on until <HH:MM>
+  <duration>: like 90s, 25m or 1h30m, up to 24h
+  <HH:MM>: the next time the clock reads it",
+                )
+            },
             parse: |arguments| {
                 let call = match arguments {
                     ["clear"] => Some(Call::ClearNotifications),
-                    ["dnd", dnd @ ..] => Command::dnd(dnd).map(Call::Island),
+                    ["dnd", dnd @ ..] => Command::dnd(dnd)
+                        .map(Call::Island)
+                        .or_else(|| timed::Request::parse(dnd).map(Call::Dnd)),
                     _ => None,
                 };
                 call.ok_or(Unparsed::Usage)

@@ -3,8 +3,8 @@
 //! notification stays in the daemon's list, the history, until it is dismissed or its sender closes
 //! it, which also takes its Banner down.
 //!
-//! DND (`notifications dnd toggle`) silences Banners, never the history. Banners never take the
-//! keyboard.
+//! DND (`notifications dnd toggle`) silences Banners, never the history, for as long as it is on or
+//! for a time it is given (`timed`). Banners never take the keyboard.
 //!
 //! A notification's rule (`rules`) may show it with no Banner or sound, under DND, for its own time,
 //! or keep it out of the history: then it closes as expired once its Banner is gone, or at once with none.
@@ -44,6 +44,7 @@ use crate::{banners, modules, supervise};
 
 mod daemon;
 pub mod rules;
+pub mod timed;
 
 pub use daemon::{Notification, Notifications, Urgency};
 
@@ -329,8 +330,18 @@ pub fn dnd_revision() -> u64 {
     DND_REVISION.load(Ordering::Relaxed)
 }
 
-// DND quiets the Banners, never the history, and the progress Live Activities it does not let show
+/*
+ * DND quiets the Banners, never the history, and the progress Live Activities it does not let show.
+ * Any setting of it ends a timed DND's timer (`timed`): the timer ends only what it turned on
+ */
 pub fn set_dnd(dnd: bool, now: Instant) {
+    let _timer = timed::cancel();
+
+    apply(dnd, now);
+}
+
+// sets DND, with the end of a timed one already dealt with by the caller, which holds its lock
+fn apply(dnd: bool, now: Instant) {
     DND_REVISION.fetch_add(1, Ordering::Relaxed);
     IslandService::write().set_dnd(dnd, now);
 

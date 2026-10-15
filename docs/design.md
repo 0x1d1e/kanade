@@ -262,7 +262,8 @@ bluetooth on|off|toggle|status
 power-profile set <profile>|cycle|status
 island collapse
 notifications open|close|toggle|clear
-notifications dnd on|off|toggle
+notifications dnd on|off|toggle|status
+notifications dnd on <dur>|until <HH:MM>
 clipboard open|close|toggle|clear
 calendar open|close|toggle
 reminders dismiss|status

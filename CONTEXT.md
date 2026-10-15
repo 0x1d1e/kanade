@@ -45,6 +45,7 @@ A notification card on the focused output, hanging from the Island on its edge a
 - **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
 - **Invariant:** the history is bounded: 20 notifications of one app and 100 in all, the oldest of the app, then of all, closing as expired when one arrives past them. The Notifications Surface shows an app's notifications as a stack, the newest with a count, once it has more than one; a stack is closed each time the Surface opens, opened by click, Enter or Space, and its cross or Backspace dismisses all it holds. Banners are not stacked.
 - **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
+- **Invariant:** a timed DND (`notifications dnd on 15m`, ADR 0075) ends only the DND it turned on: any other setting of DND cancels its end.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
 
 ## OSD
