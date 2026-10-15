@@ -114,6 +114,7 @@ pub const MODULES: &str = "modules";
 pub const EXTERNAL_KEYS: &[&str] = &[
     "dock.pinned",
     "notifications.rules",
+    "focus.auto",
     "hooks.lock",
     "hooks.unlock",
     "hooks.wallpaper",

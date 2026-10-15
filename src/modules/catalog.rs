@@ -1329,7 +1329,7 @@ notifications dnd on until <HH:MM>
         name: "focus",
         about: "Quiets the session with one switch",
         requires: &[CORE],
-        optional: &["notifications", "caffeine", "night-light"],
+        optional: &["notifications", "caffeine", "night-light", "privacy"],
         warns: None,
         needs: &[],
         settings: config::FOCUS,
@@ -1344,7 +1344,10 @@ notifications dnd on until <HH:MM>
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app,
+        start: |app| {
+            service::watch::<privacy::Privacy>(focus::follow_cast);
+            app
+        },
     },
     /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at

@@ -592,6 +592,9 @@ pub struct Focus {
     pub dnd: bool,
     pub caffeine: bool,
     pub night_light: bool,
+
+    // `focus.auto` has `cast`: a screen cast turns Focus on, and off again when it ends (ADR 0078)
+    pub cast: bool,
 }
 
 impl Default for Focus {
@@ -600,6 +603,7 @@ impl Default for Focus {
             dnd: true,
             caffeine: true,
             night_light: false,
+            cast: false,
         }
     }
 }
@@ -893,6 +897,9 @@ pub enum Kind {
 
     // the Controls tiles, `name` or `name:size` each, at least one; a layer replaces the list below
     Tiles(Field<Vec<Placed>>),
+
+    // a list of these names, each kept once, in the order given; a layer replaces the list below
+    Names(&'static [&'static str], Field<Vec<&'static str>>),
 }
 
 impl Kind {
@@ -1049,6 +1056,24 @@ impl Kind {
 
                 (field.set)(config, tiles::parse(&list)?);
             }
+            Kind::Names(known, field) => {
+                let expected = || format!("expected a list of {}", quoted(known));
+                let mut names: Vec<&'static str> = Vec::new();
+
+                for name in value.as_array().ok_or_else(expected)? {
+                    let name = name.as_str().ok_or_else(expected)?;
+                    let name = known
+                        .iter()
+                        .find(|&&known| known == name)
+                        .ok_or_else(|| format!("unknown name {name:?}, {}", expected()))?;
+
+                    if !names.contains(name) {
+                        names.push(name);
+                    }
+                }
+
+                (field.set)(config, names);
+            }
             Kind::Argv(field) => {
                 let mut argv = hooks::argv(value)?;
 
@@ -1104,6 +1129,12 @@ impl Kind {
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
+            Kind::Names(_, field) => Value::Array(
+                (field.get)(config)
+                    .into_iter()
+                    .map(|name| Value::String(name.to_owned()))
+                    .collect(),
+            ),
             Kind::Tiles(field) => Value::Array(
                 (field.get)(config)
                     .iter()
@@ -1141,6 +1172,7 @@ impl Kind {
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
+            Kind::Names(_, field) => field.copy(from, to),
             Kind::Tiles(field) => field.copy(from, to),
         }
     }
@@ -2433,6 +2465,18 @@ pub const NIGHT_LIGHT: &[Setting] = &[
     },
 ];
 
+// the names as `"a", "b"`, for what a key expects
+fn quoted(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+// what `focus.auto` takes
+const FOCUS_AUTO: &[&str] = &["cast"];
+
 pub const FOCUS: &[Setting] = &[
     Setting {
         key: "focus.dnd",
@@ -2470,6 +2514,28 @@ pub const FOCUS: &[Setting] = &[
             set: |config, on| config.focus.night_light = on,
         }),
         example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "focus.auto",
+        label: "Automatic Focus",
+        help: "what turns Focus on by itself, and off again when it ends, only if nobody turned Focus on or off meanwhile: \"cast\" is a screen cast running (needs the privacy Module); empty is never",
+        hint: None,
+        kind: Kind::Names(
+            FOCUS_AUTO,
+            Field {
+                get: |config| {
+                    if config.focus.cast {
+                        vec!["cast"]
+                    } else {
+                        Vec::new()
+                    }
+                },
+                set: |config, names| config.focus.cast = names.contains(&"cast"),
+            },
+        ),
+        example: Some("[\"cast\"]"),
         restart: false,
         per_output: false,
     },
@@ -3711,6 +3777,7 @@ mod tests {
                 "focus.dnd",
                 "focus.caffeine",
                 "focus.night_light",
+                "focus.auto",
                 "lock.backdrop",
                 "lock.pam_service",
                 "lock.grace",

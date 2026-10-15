@@ -7,6 +7,10 @@
 //! night light, kept in the settings file, then stays on until turned off.
 //!
 //! A piece whose Module is off is skipped, so Focus works with any of them.
+//!
+//! `focus.auto` may turn Focus on by itself (ADR 0078): a screen cast turns it on and its end turns
+//! it off again, but only the Focus the cast turned on. Any `on`, `off` or `toggle` meanwhile
+//! replaces it, or claims it, so it is the user's and stays.
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -19,6 +23,7 @@ use crate::config::{self, NightMode};
 use crate::island::service::IslandService;
 use crate::later::Later;
 use crate::modules;
+use crate::sources::privacy::Privacy;
 
 /*
  * what Focus turned on and how it left it, so `off` can tell a piece still as it left it from one
@@ -30,6 +35,9 @@ struct Held {
     dnd: Option<u64>,
     caffeine: Option<u64>,
     night_light: Option<u64>,
+
+    // turned on by a trigger and not touched by the user since, so its end may turn it off
+    auto: bool,
 }
 
 // what Focus turned on, none while it is off
@@ -46,6 +54,31 @@ fn turns_on(wanted: bool, was_off: bool) -> bool {
  */
 fn turns_off<S: PartialEq>(set: Option<S>, now: Option<S>) -> bool {
     set.is_some() && set == now
+}
+
+// what a request does to Focus
+#[derive(Debug, PartialEq, Eq)]
+enum Move {
+    Engage,
+
+    // the user's `on` while a trigger's Focus is on: it is theirs now
+    Claim,
+    Release,
+    Keep,
+}
+
+/*
+ * what turning Focus `on` or off does, given whether it is on and was turned on by a trigger
+ * (`held`), and whether a trigger asks (`by_trigger`). A trigger's end releases only a Focus a
+ * trigger turned on and the user has not touched
+ */
+fn next(held: Option<bool>, on: bool, by_trigger: bool) -> Move {
+    match (held, on) {
+        (None, true) => Move::Engage,
+        (Some(true), true) if !by_trigger => Move::Claim,
+        (Some(auto), false) if !by_trigger || auto => Move::Release,
+        _ => Move::Keep,
+    }
 }
 
 /*
@@ -121,6 +154,7 @@ pub fn status() -> String {
     let Some(held) = *HELD.locked() else {
         return String::from("off");
     };
+    let how = if held.auto { " (screen cast)" } else { "" };
     let pieces: Vec<&str> = [
         (held.dnd.is_some(), "do not disturb"),
         (held.caffeine.is_some(), "caffeine"),
@@ -131,28 +165,67 @@ pub fn status() -> String {
     .collect();
 
     if pieces.is_empty() {
-        String::from("on")
+        format!("on{how}")
     } else {
-        format!("on: {}", pieces.join(", "))
+        format!("on{how}: {}", pieces.join(", "))
     }
 }
 
 // turns Focus on or off, a no-op when it already is, and returns why a piece did not turn
 fn turn(on: bool) -> Vec<String> {
+    change(on, false)
+}
+
+// as `turn`, for a trigger when `by_trigger`
+fn change(on: bool, by_trigger: bool) -> Vec<String> {
     let mut held = HELD.locked();
     let mut problems = Vec::new();
 
-    if on {
-        if held.is_none() {
-            *held = Some(engage(&mut problems));
+    match next(held.as_ref().map(|held| held.auto), on, by_trigger) {
+        Move::Engage => {
+            *held = Some(Held {
+                auto: by_trigger,
+                ..engage(&mut problems)
+            });
         }
-    } else if let Some(turned) = held.take() {
-        release(turned, &mut problems);
+        Move::Claim => {
+            if let Some(held) = held.as_mut() {
+                held.auto = false;
+            }
+        }
+        Move::Release => {
+            if let Some(turned) = held.take() {
+                release(turned, &mut problems);
+            }
+        }
+        Move::Keep => {}
     }
 
     Quiet::write().on = held.is_some();
 
     problems
+}
+
+/*
+ * a watcher of `Privacy` for `focus.auto`: a screen cast turns Focus on when it starts and off when
+ * it ends, the latter only for a Focus it turned on itself. Not read again when the setting
+ * changes mid-cast, nor before the first change of `Privacy`
+ */
+pub fn follow_cast() {
+    let casting = Privacy::read().casting();
+    let problems = if casting {
+        if !config::get().focus.cast {
+            return;
+        }
+
+        change(true, true)
+    } else {
+        change(false, true)
+    };
+
+    for problem in problems {
+        eprintln!("kanade: focus: {problem}");
+    }
 }
 
 // turns on each piece `focus.*` wants that is available and off, and says which it did
@@ -162,6 +235,7 @@ fn engage(problems: &mut Vec<String>) -> Held {
         dnd: None,
         caffeine: None,
         night_light: None,
+        auto: false,
     };
 
     let dnd_off = !IslandService::read().dnd();
@@ -238,5 +312,23 @@ mod tests {
         // a user who turned DND or the night light off and on again moved the number twice, so the
         // piece is back at the value Focus set and is still theirs
         assert!(!turns_off(Some(3_u64), Some(5)));
+    }
+
+    // a cast ending turns off only the Focus a cast turned on, never one the user touched
+    #[test]
+    fn a_trigger_releases_only_the_focus_it_turned_on() {
+        // not on: a cast turns it on, its end does nothing
+        assert_eq!(next(None, true, true), Move::Engage);
+        assert_eq!(next(None, false, true), Move::Keep);
+
+        // on by a cast: its end releases it, the user's `on` claims it, their `off` releases it
+        assert_eq!(next(Some(true), false, true), Move::Release);
+        assert_eq!(next(Some(true), true, false), Move::Claim);
+        assert_eq!(next(Some(true), false, false), Move::Release);
+
+        // the user's own, or claimed: a cast ending leaves it, and another cast changes nothing
+        assert_eq!(next(Some(false), false, true), Move::Keep);
+        assert_eq!(next(Some(false), true, true), Move::Keep);
+        assert_eq!(next(Some(true), true, true), Move::Keep);
     }
 }
