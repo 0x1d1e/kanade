@@ -38,6 +38,7 @@ use super::sound::{self, Hints};
 use super::wake::{Announcer, Pace, Waker, Wakes};
 use crate::banners::{Banner, Banners};
 use crate::config;
+use crate::hooks::{self, Event};
 use crate::island::activity::Toast;
 use crate::island::service::IslandService;
 use crate::{banners, modules, supervise};
@@ -342,6 +343,9 @@ pub fn set_dnd(dnd: bool, now: Instant) {
 
 // sets DND, with the end of a timed one already dealt with by the caller, which holds its lock
 fn apply(dnd: bool, now: Instant) {
+    // a hook (ADR 0055) tells of a change, not of a setting that left it as it was
+    let changed = IslandService::read().dnd() != dnd;
+
     DND_REVISION.fetch_add(1, Ordering::Relaxed);
     IslandService::write().set_dnd(dnd, now);
 
@@ -351,6 +355,10 @@ fn apply(dnd: bool, now: Instant) {
 
     if let Some(waker) = WAKER.get() {
         waker.wake();
+    }
+
+    if changed {
+        hooks::fire_with(Event::Dnd, if dnd { "on" } else { "off" });
     }
 }
 

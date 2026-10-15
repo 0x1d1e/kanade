@@ -29,6 +29,7 @@ use zbus::blocking::Connection;
 use zbus::zvariant::ObjectPath;
 
 use super::capture::SHOWN;
+use crate::hooks::{self, Event};
 use crate::island::activity::{
     Action, Activity, Countdown, Detail, Ending, Id, Interrupt, Kind, Leave, Leaving, Lifetime,
     Priority, Scope,
@@ -555,12 +556,22 @@ fn end_now(serial: u64) {
     let _withdrawn = Withdrawn(serial);
     let leave = Leave::Ending(counting.end);
 
-    let call = move || match counting.end {
-        Ending::Restart => manager(&system()?, "Reboot"),
-        Ending::PowerOff => manager(&system()?, "PowerOff"),
-        Ending::LogOut => terminate(&system()?),
-        Ending::Suspend => manager(&system()?, "Suspend"),
-        Ending::Hibernate => manager(&system()?, "Hibernate"),
+    // the hook is waited for on the asking thread, never the draw thread a press of Now is on
+    let call = move || {
+        match counting.end {
+            Ending::Restart => hooks::fire_and_wait(Event::Reboot),
+            Ending::PowerOff => hooks::fire_and_wait(Event::Poweroff),
+            Ending::LogOut => hooks::fire_and_wait(Event::Logout),
+            Ending::Suspend | Ending::Hibernate => {}
+        }
+
+        match counting.end {
+            Ending::Restart => manager(&system()?, "Reboot"),
+            Ending::PowerOff => manager(&system()?, "PowerOff"),
+            Ending::LogOut => terminate(&system()?),
+            Ending::Suspend => manager(&system()?, "Suspend"),
+            Ending::Hibernate => manager(&system()?, "Hibernate"),
+        }
     };
 
     // refused, it shows on the island

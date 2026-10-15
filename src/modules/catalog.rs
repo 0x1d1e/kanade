@@ -1502,7 +1502,7 @@ notifications dnd on until <HH:MM>
      */
     Module {
         name: hooks::MODULE,
-        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend and resume",
+        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend, resume, start, Do Not Disturb, power profile, log out, restart and power off",
         requires: &[CORE],
         optional: &[],
         warns: None,
@@ -1513,6 +1513,10 @@ notifications dnd on until <HH:MM>
             ..Hooks::NONE
         },
         verbs: &[],
-        start: |app| app,
+        // last of the Modules, so every one that is on has started
+        start: |app| {
+            hooks::fire(hooks::Event::Started);
+            app
+        },
     },
 ];

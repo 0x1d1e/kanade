@@ -120,7 +120,7 @@ One kind of answer the Launcher finds for a query: apps, an app's own Desktop Ac
 - **Avoid:** plugin, source (a source posts to the island)
 
 ## Hook
-A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume. The Module that owns the fact fires it.
+A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume, started, dnd, power_profile, logout, reboot, poweroff (the last three fired just before logind is asked, and waited for up to `hooks.timeout`). The Module that owns the fact fires it.
 - **Invariant:** a hook never blocks a Service, a watcher or the draw thread; it runs as a bounded child that dies with Kanade, at most one per event at a time, and a fire while it runs is dropped.
 - **Invariant:** hooks are set in files, never through `kanade config set` or Settings. The payload is environment variables only; a failure logs the first line of the command's own error.
 - **Invariant:** a failing hook shows in `kanade status`, never as an Activity.
