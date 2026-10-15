@@ -6,7 +6,8 @@
 //! when the history is empty and when nothing matches. Text shows as its first words, and the
 //! selected entry's first lines in a pane below the rows, where the body is tall enough; an image as
 //! a thumbnail, once its preview is written to tmpfs (`sources::clipboard::preview`), else its kind
-//! and size. The history itself never leaves memory.
+//! and size. Only the pins are kept across restarts (ADR 0115); the rest of the history never leaves
+//! memory.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};

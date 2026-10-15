@@ -1,6 +1,6 @@
 # 114. Clipboard pins and previews live in memory and tmpfs
 
-Status: accepted. Builds on ADR 0019 (sensitive content) and ADR 0085 (confirm by holding); the first slice of a longer-lived Clipboard.
+Status: accepted; its memory-only decision for pins ("it is memory only", and the deferral of persisting pins and pictures) is superseded by [ADR 0115](0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md). Builds on ADR 0019 (sensitive content) and ADR 0085 (confirm by holding); the first slice of a longer-lived Clipboard.
 
 ## Context
 
@@ -8,7 +8,7 @@ The Clipboard history (ADR 0011) is bounded (50 entries, 64 MiB) and only in mem
 
 ## Decision
 
-- **A pin marks an entry; it is memory only.** `Entry` has `pinned`. A pin only marks an entry that is in the history, so one that already passed ADR 0019: no second filter, no heuristic, and a sensitive selection is still never read. Nothing about a pin or the history reaches disk.
+- **A pin marks an entry; it is memory only.** `Entry` has `pinned`. A pin only marks an entry that is in the history, so one that already passed ADR 0019: no second filter, no heuristic, and a sensitive selection is still never read. Nothing about a pin or the history reaches disk. (Superseded for pins by ADR 0115, which stores them.)
 - **Pinned entries sort first**, then the rest, each newest first. A copy of a pinned entry's content keeps its pin and id and moves it to the top of the pins; an unpinned one moves to the top of the rest. An unpin puts the entry at the top of the rest.
 - **The bounds never evict a pin.** A pin counts in `ENTRIES` and `TOTAL_BYTES`, which drop the oldest unpinned entry. Pins have their own caps: 20 pins and 16 MiB together. Pinning past either is refused, changes nothing, and the Surface says so until the next key.
 - **Clear all keeps the pins** (the Surface's held button and `kanade clipboard clear`); the footer says how many will be kept ("Hold Enter to clear 12, keeping 3 pinned, no undo") and the CLI replies `kept 3 pinned`. Removing an entry removes it whether pinned or not, without a hold. Ids are still never reused.
@@ -23,9 +23,9 @@ The Clipboard history (ADR 0011) is bounded (50 entries, 64 MiB) and only in mem
 
 These need the user's decision on plaintext at rest, so none is built here:
 
-- **Persistence of pins** (or of the history) across restarts.
+- **Persistence of pins** across restarts (done, ADR 0115) or **of the history** (still not built).
 - **Snippets and placeholders**: text kept on purpose and filled in when pasted, and any CLI verb that takes text.
-- **Image persistence**: a pinned picture surviving a restart, or a preview anywhere but tmpfs.
+- **Image persistence**: a pinned picture surviving a restart (done, ADR 0115), or a preview anywhere but tmpfs (not built).
 - **Sync** of the history or pins between machines.
 
 ## Alternatives
@@ -44,7 +44,7 @@ These need the user's decision on plaintext at rest, so none is built here:
 
 ## Consequences
 
-- A pin lasts as long as the shell runs; restarting forgets it with the history.
+- A pin lasted as long as the shell ran; restarting forgot it with the history (ADR 0115 now keeps pins across restarts).
 - A picture's preview is its full bytes on tmpfs (RAM) until its entry goes, up to the same 64 MiB as the history, and a decoded thumbnail lives in the runtime's cache until evicted there.
 - Previews are swept only at the next start: a Kanade that exits, cleanly or by SIGTERM, or is killed leaves them until then (or the session ends, tmpfs); the folder is 0700, the files 0600, the same user's.
 - A second Kanade started beside the running one sweeps at module start, before it finds the socket taken and stops, so the running one's previews can go. The preview layer treats a written preview whose file is gone as missing and writes it again on the next draw of its row; the sweep is not moved behind the single-instance check, which lives in the runtime.

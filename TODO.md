@@ -221,7 +221,12 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 - [ ] `activity wait` and `run --action cancel` poll every 250 ms: each ask is a connect and an IPC on the draw thread, about 4 shell wakeups a second while anyone waits (for `run`, the command's lifetime). A subscription or a longer-held call would cost less.
 
-## Clipboard pins and previews (ADR 0114, low-level, unfixed)
+## Clipboard pins and previews (ADR 0114, 0115, low-level, unfixed)
+
+- [ ] Pins persist (ADR 0115) as one file rewritten whole on each change, up to 16 MiB; one save thread per change, each taking the latest set, so a burst of pins writes more than needed.
+- [ ] A newer Kanade's pins file, or one that could not be read at start, turns saving off for the run; a damaged one is kept as `clipboard-pins.bak`, which Kanade never removes.
+- [ ] A pin change right before exit may not be saved: the save thread is detached.
+- [ ] Not run: a restart with pinned text and pictures on the session (pins back in order, thumbnails regenerated, Launcher `>`, unpin removes them from the file).
 
 - [ ] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
 - [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout); a second Kanade's start sweeps the running one's too, which the running one rewrites on the next draw.

@@ -10,7 +10,8 @@
 //! one wl-paste says is `data` is kept, and only a wl-paste that tells a sensitive one
 //! (`SENSITIVE_SINCE`) is started, checked before each start.
 //! An entry may be pinned (ADR 0114): it sorts first, the bounds never evict it and Clear all keeps
-//! it, still only in memory. The pictures' previews are files on tmpfs only, `preview`.
+//! it. Pins, and only pins, are kept in a private file across restarts (ADR 0115, `pins`); the rest
+//! of the history stays in memory. The pictures' previews are files on tmpfs only, `preview`.
 
 use std::env;
 use std::ffi::OsStr;
@@ -27,6 +28,7 @@ use kanade_runtime::{MutexExt, service::Service};
 use crate::sources::wake::{self, Failed};
 use crate::supervise;
 
+pub mod pins;
 pub mod preview;
 
 pub const PASTE: &str = "wl-paste";
@@ -107,6 +109,12 @@ pub const TOTAL_BYTES: usize = 64 << 20;
 // the most entries pinned, and the most bytes all of them together may have (ADR 0114)
 pub const PINS: usize = 20;
 pub const PIN_BYTES: usize = 16 << 20;
+
+// whether `mime` is a type a frame can carry: within MIME_BYTES, no space or control character
+fn framed(mime: &str) -> bool {
+    (1..=MIME_BYTES).contains(&mime.len())
+        && !mime.contains(|c: char| c.is_whitespace() || c.is_control())
+}
 
 // what text is restored as; wl-copy offers the other text types with it
 const TEXT: &str = "text/plain;charset=utf-8";
@@ -388,6 +396,48 @@ impl Clipboard {
         true
     }
 
+    // the ids of the pinned entries in order, which is what a store of the pins is a function of
+    fn pin_ids(&self) -> Vec<u64> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.pinned)
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    // adds the stored pins after the ones kept, in their order, each under a fresh id; one whose
+    // content a kept entry has, or past the pins' caps, is left out
+    fn adopt(&mut self, contents: Vec<Content>) {
+        for content in contents {
+            let bytes: usize = self
+                .entries
+                .iter()
+                .filter(|entry| entry.pinned)
+                .map(|entry| entry.content.len())
+                .sum();
+
+            if !(1..=ENTRY_BYTES).contains(&content.len())
+                || self.pins() >= PINS
+                || bytes + content.len() > PIN_BYTES
+                || self.entries.iter().any(|entry| entry.content == content)
+            {
+                continue;
+            }
+
+            self.next += 1;
+            let at = self.pins();
+
+            self.entries.insert(
+                at,
+                Entry {
+                    id: self.next,
+                    content,
+                    pinned: true,
+                },
+            );
+        }
+    }
+
     // forgets the entry `id`, pinned or not, if it is still kept; says whether it was
     fn remove(&mut self, id: u64) -> bool {
         let before = self.entries.len();
@@ -412,7 +462,7 @@ impl Clipboard {
  */
 pub fn remove(id: u64) {
     if Clipboard::read().has(id) {
-        Clipboard::write().remove(id);
+        editing(|clipboard| clipboard.remove(id));
         preview::reconcile();
     }
 }
@@ -437,7 +487,7 @@ pub fn pin(id: u64) -> Result<(), PinsFull> {
     match pinning {
         Pinning::Unchanged => Ok(()),
         Pinning::Full => Err(PinsFull),
-        Pinning::Changed => match Clipboard::write().pin(id) {
+        Pinning::Changed => match editing(|clipboard| clipboard.pin(id)) {
             Pinning::Full => Err(PinsFull),
             _ => Ok(()),
         },
@@ -452,8 +502,28 @@ pub fn unpin(id: u64) {
         .any(|entry| entry.id == id && entry.pinned);
 
     if pinned {
-        Clipboard::write().unpin(id);
+        editing(|clipboard| clipboard.unpin(id));
     }
+}
+
+/*
+ * changes the history, and saves the pins (ADR 0115) when that changed which are pinned or their
+ * order: a pin, an unpin, a pinned entry removed, or one copied again, which moves it first. The
+ * write is let go of before the save is asked for, and the save runs off this thread
+ */
+fn editing<R>(change: impl FnOnce(&mut Clipboard) -> R) -> R {
+    let mut clipboard = Clipboard::write();
+    let before = clipboard.pin_ids();
+    let changed = change(&mut clipboard);
+    let moved = clipboard.pin_ids() != before;
+
+    drop(clipboard);
+
+    if moved {
+        pins::save_soon();
+    }
+
+    changed
 }
 
 // asks the holder thread to restore
@@ -499,6 +569,9 @@ pub fn follow() {
 
     // the previews of a Kanade that ended without cleaning up
     preview::sweep();
+
+    // the stored pins, before the watcher records anything
+    pins::load();
 
     // wl-copy dies with the thread that started it, so this one lives as long as Kanade
     supervise::spawn("clipboard-copy", move || copy(&heard));
@@ -824,12 +897,7 @@ fn hand_over(
     let data = state.is_some_and(|state| state == "data");
     let mime = match mime.map(OsStr::to_str) {
         None => Ok(None),
-        Some(Some(mime))
-            if (1..=MIME_BYTES).contains(&mime.len())
-                && !mime.contains(|c: char| c.is_whitespace() || c.is_control()) =>
-        {
-            Ok(Some(mime))
-        }
+        Some(Some(mime)) if framed(mime) => Ok(Some(mime)),
         Some(_) => Err(()),
     };
 
@@ -927,7 +995,7 @@ fn record(content: Content) {
     announce(&content);
 
     if Clipboard::read().takes(&content) {
-        Clipboard::write().record(content);
+        editing(|clipboard| clipboard.record(content));
 
         // the oldest may have gone past the bounds
         preview::reconcile();
@@ -1155,6 +1223,84 @@ mod tests {
             clipboard.status(),
             "clipboard: 1 entries, 1 text, 0 images, 1 pinned"
         );
+    }
+
+    #[test]
+    fn stored_pins_load_in_order_under_fresh_ids_within_the_caps() {
+        let mut clipboard = Clipboard::default();
+        clipboard.adopt(vec![text("a"), image(3, 1), text("a"), text("b")]);
+
+        // the duplicate is left out; order kept; ids from 1
+        let loaded: Vec<(u64, Content, bool)> = clipboard
+            .entries
+            .iter()
+            .map(|entry| (entry.id, entry.content.clone(), entry.pinned))
+            .collect();
+        assert_eq!(
+            loaded,
+            [
+                (1, text("a"), true),
+                (2, image(3, 1), true),
+                (3, text("b"), true)
+            ]
+        );
+
+        // a copy of a loaded pin is that entry, not another; a new copy gets an id after them
+        assert!(clipboard.record(text("b")));
+        assert_eq!(clipboard.entries.len(), 3);
+        assert_eq!(clipboard.pin_ids(), [3, 1, 2]);
+        assert!(clipboard.record(text("new")));
+        assert_eq!(clipboard.entries[3].id, 4);
+        assert!(!clipboard.entries[3].pinned);
+
+        // the pins' own caps hold on load, and nothing empty or oversized comes in
+        let mut clipboard = Clipboard::default();
+        let many: Vec<Content> = (0..PINS + 5).map(|n| text(&format!("pin {n}"))).collect();
+        clipboard.adopt(many);
+        assert_eq!(clipboard.pins(), PINS);
+        assert_eq!(clipboard.entries[0].content, text("pin 0"));
+
+        let mut clipboard = Clipboard::default();
+        clipboard.adopt(vec![
+            text(""),
+            image(ENTRY_BYTES + 1, 0),
+            image(PIN_BYTES, 1),
+            text("over the bytes"),
+            image(PIN_BYTES, 2),
+        ]);
+        assert_eq!(clipboard.entries.len(), 1);
+        assert_eq!(clipboard.entries[0].content, image(PIN_BYTES, 1));
+    }
+
+    // what saves the pins: which are pinned and their order, nothing else
+    #[test]
+    fn the_pins_change_only_by_a_pin_an_unpin_a_removal_or_a_recopy() {
+        let mut clipboard = Clipboard::default();
+
+        for word in ["a", "b", "c"] {
+            clipboard.record(text(word));
+        }
+
+        clipboard.pin(1);
+        clipboard.pin(2);
+        assert_eq!(clipboard.pin_ids(), [2, 1]);
+
+        let before = clipboard.pin_ids();
+        clipboard.record(text("d"));
+        clipboard.clear();
+        assert_eq!(clipboard.pin_ids(), before, "a new copy or a clear");
+
+        clipboard.record(text("a"));
+        assert_eq!(
+            clipboard.pin_ids(),
+            [1, 2],
+            "a pin copied again moves first"
+        );
+
+        clipboard.unpin(1);
+        assert_eq!(clipboard.pin_ids(), [2]);
+        clipboard.remove(2);
+        assert!(clipboard.pin_ids().is_empty());
     }
 
     // the frames `hand_over` writes for each (state, type, content), as wl-paste runs it
