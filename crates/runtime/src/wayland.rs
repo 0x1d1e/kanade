@@ -16,6 +16,7 @@ mod socket;
 mod surface;
 mod toplevels;
 mod transfer;
+mod ui;
 mod update;
 mod wake;
 mod windows;

@@ -33,6 +33,7 @@ mod supervise;
 mod surfaces;
 mod theme;
 mod tiles;
+mod ui;
 mod view;
 
 use std::env;

@@ -183,3 +183,9 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] Wallpaper: `showing_on(Named)` falls back to the last image Kanade set when awww is not queried.
 - [ ] Focus: `status()` lists caffeine after it ended late; `night_light::turn(true)` that saved but did not reload leaves the mode unrecorded in `Held`; a user's DND off-then-on during Focus looks the same as untouched.
 - [ ] Notifications: four or more updating progress notifications rotate the three shown Activities (ADR 0059).
+
+## Semantic tree (#21, ADR 0095)
+
+- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard, Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
+  - A control whose click handler is on a parent of the annotated rectangle is not pressable by name.
+  - Not run: a live session pass of `kanade ui` (see the report for the steps).

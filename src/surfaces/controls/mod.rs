@@ -19,6 +19,7 @@ use std::time::Instant;
 use crate::sources::brightness::Brightness;
 use crate::sources::pulse::Audio;
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Color, Column, Cursor, End, Key, Padding, Parent, Rectangle, Row, Scroll, Start, Text,
     Widget, children,
@@ -651,11 +652,47 @@ fn round(item: Switch, ring: bool) -> Rectangle {
         .border_if(ring)
         .child(item.icon.on(18.0, ink));
 
+    let round = round.semantics(|| {
+        toggle(
+            Role::Toggle,
+            item.name,
+            &item.status,
+            item.on,
+            item.press.is_none(),
+        )
+    });
+
     match item.press {
         None => round.opacity(DISABLED),
         Some(press) => round
             .cursor(Cursor::Pointer)
             .on_click(super::on_left(move || click_switch(press.clone()))),
+    }
+}
+
+// a switch's node: named for the switch, its status being what a network or a device is called
+fn toggle(role: Role, name: &'static str, status: &str, on: bool, disabled: bool) -> Semantics {
+    let id = match name {
+        "Wi-Fi" => "wifi",
+        "Bluetooth" => "bluetooth",
+        "Caffeine" => "caffeine",
+        "Do Not Disturb" => "dnd",
+        "Night Light" => "night-light",
+        "Focus" => "focus",
+        "Power Profile" => "power-profile",
+        "Limit Charge" => "limit-charge",
+        _ => "switch",
+    };
+
+    let node = Semantics::new(role, id)
+        .label(name)
+        .content(status)
+        .disabled(disabled);
+
+    if role == Role::Toggle {
+        node.checked(on)
+    } else {
+        node
     }
 }
 
@@ -766,6 +803,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
     .width(width - KNOB_INSET - KNOB - ICON_GAP - right - chevron)
     .gap(2.0);
 
+    let on = item.on;
     let press = item.press;
 
     let knob = match (&press, &opens) {
@@ -773,6 +811,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
             let press = press.clone();
 
             knob.cursor(Cursor::Pointer)
+                .semantics(|| Semantics::new(Role::Toggle, "toggle").checked(on))
                 .on_click(super::on_left(move || {
                     click_switch(press.clone());
                 }))
@@ -801,6 +840,16 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
         })
         .align_child(Start, Center)
         .border_if(ring)
+        .semantics(|| {
+            // one that opens its list is a button, and its toggle is the knob inside it
+            let role = if opens.is_some() {
+                Role::Button
+            } else {
+                Role::Toggle
+            };
+
+            toggle(role, item.name, &item.status, on, press.is_none())
+        })
         .child(Row::new(parts).gap(ICON_GAP - HALO).align(Center));
 
     match (press, opens) {
@@ -938,6 +987,7 @@ fn chevron(ring: bool, on: bool) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .border_if(ring)
+        .semantics(|| Semantics::new(Role::Button, "sound").disabled(!on))
         .child(Icon::Forward.on(16.0, theme::island().on_surface_variant));
 
     if !on {
@@ -1066,6 +1116,12 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool, ring: bo
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .border_if(ring)
+        .semantics(|| {
+            Semantics::new(Role::Button, "profile")
+                .label(profile.label())
+                .selected(active)
+                .disabled(!available)
+        })
         .child(
             Text::new(profile.label())
                 .size(theme::text::LABEL_SMALL)

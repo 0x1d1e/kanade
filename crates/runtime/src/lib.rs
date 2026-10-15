@@ -31,6 +31,7 @@ pub mod backdrop;
 pub mod idle;
 pub mod queue;
 pub mod service;
+pub mod ui;
 pub mod worker;
 
 pub use animation::{Animation, Blend, Easing, request_frame};

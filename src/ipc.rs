@@ -30,6 +30,7 @@ use crate::sources::{
 };
 use crate::supervise;
 use crate::surfaces::launcher;
+use crate::ui;
 
 pub fn answer(arguments: &[String], reply: IpcReply) {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
@@ -60,6 +61,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(Call::PowerProfile(request)) => power::request(request, Later::new(reply)),
         Ok(Call::Wallpaper(request)) => wallpaper::request(request, Later::new(reply)),
         Ok(Call::Lock) => lock::request(Later::new(reply)),
+        // answered from the windows as they were last drawn, at once
+        Ok(Call::Ui(request)) => ui::request(request, reply),
         Ok(call) => reply.send(&run(call).encode()),
         Err(refused) => reply.send(&refused.encode()),
     }
@@ -85,6 +88,7 @@ fn run(call: Call) -> Reply {
         | Call::Bluetooth(_)
         | Call::PowerProfile(_)
         | Call::Wallpaper(_)
+        | Call::Ui(_)
         | Call::Lock => Reply::Refused(String::from("answered later, not by `run`")),
         Call::ClearNotifications => {
             Notifications::clear();

@@ -31,7 +31,7 @@ use crate::sources::{
 };
 use crate::{
     appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
-    reload, settings, shadow, supervise, surfaces, view,
+    reload, settings, shadow, supervise, surfaces, ui, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -1537,6 +1537,30 @@ notifications dnd on until <HH:MM>
             },
         }],
         start: |app| app,
+    },
+    // the windows' semantic tree and acts by name, for scripts, tests and agents (ADR 0095)
+    Module {
+        name: ui::MODULE,
+        about: "The windows as a named tree to read and press by name, with kanade ui",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::UI,
+        hooks: Hooks {
+            status: Some(ui::status),
+            reload: Some(ui::reread),
+        },
+        verbs: &[Verb {
+            name: "ui",
+            about: "Read the windows as a tree, press, type and wait by name",
+            usage: ui::usage,
+            parse: ui::parse,
+        }],
+        start: |app| {
+            ui::reread();
+            app
+        },
     },
     /*
      * commands the user lists for events (ADR 0055); the Module that owns an event fires it, so

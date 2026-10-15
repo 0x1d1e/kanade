@@ -70,6 +70,26 @@ impl Pointer {
             .and_then(Target::caret_in_window)
     }
 
+    // the last frame's targets, in the order they were collected
+    pub fn targets(&self) -> &[Target] {
+        &self.targets
+    }
+
+    // the target a press began on and the release has not come for
+    pub fn pressed_index(&self) -> Option<usize> {
+        self.pressed.and_then(|id| self.index(id))
+    }
+
+    // where the pointer last was in the window, and whether it is over the window
+    pub fn position(&self) -> (f32, f32, bool) {
+        (self.x, self.y, self.inside)
+    }
+
+    // the innermost target at a spot that a click would reach
+    pub fn clicked_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.find_topmost_at(x, y, |target| target.handlers.click.is_some())
+    }
+
     // where in the last frame an id is, if it still is
     fn index(&self, id: Id) -> Option<usize> {
         self.ids.iter().position(|other| *other == id)

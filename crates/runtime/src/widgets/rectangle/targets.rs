@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::graphics::Area;
 use crate::input::{Cursor, Handlers, Target, anchor, clip, nest};
+use crate::ui::{self, Semantics};
 use crate::{Button, Point, Rectangle, Scroll};
 
 use super::{child, transform};
@@ -30,6 +31,18 @@ impl Rectangle {
 
         identity.hash(&mut hasher);
         self.identity = Some(hasher.finish());
+
+        self
+    }
+
+    /*
+     * says what the rectangle is for `kanade ui` (ADR 0095). Asked for only while `ui.describe`
+     * keeps a tree, so with it off nothing is built, and the content a node shows is never read
+     */
+    pub fn semantics(mut self, semantics: impl FnOnce() -> Semantics) -> Self {
+        if ui::enabled() {
+            self.semantics = Some(semantics().scrubbed(ui::mode()));
+        }
 
         self
     }
@@ -93,6 +106,10 @@ pub fn collect_targets(rectangle: &Rectangle, area: Area, targets: &mut Vec<Targ
 
     collect_in_place(rectangle, area, targets);
 
+    if rectangle.semantics.is_some() {
+        targets[first].end = targets.len();
+    }
+
     if let Some(identity) = rectangle.identity {
         anchor(&mut targets[first..], identity);
     }
@@ -126,7 +143,15 @@ fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>
     }
 
     // added before the child, so the child wins where both react to the same thing
-    targets.push(Target::new(area, handlers));
+    let mut own_target = Target::new(area, handlers);
+
+    own_target.semantics = rectangle.semantics.clone().map(|mut semantics| {
+        semantics.disabled |= rectangle.inert;
+
+        semantics
+    });
+
+    targets.push(own_target);
     let own = targets.len();
 
     let Some(child) = &rectangle.child else {

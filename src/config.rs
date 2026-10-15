@@ -45,7 +45,7 @@ use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
     Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
-    Merge, Placement, ShellMode, Tone, Visualizer,
+    Merge, Placement, ShellMode, Tone, UiDescribe, Visualizer,
 };
 use crate::modules;
 use crate::sources::accessibility;
@@ -155,6 +155,9 @@ pub struct Config {
 
     // `media.lyrics`
     pub lyrics: LyricsSource,
+
+    // `ui.describe`
+    pub ui_describe: UiDescribe,
 
     // `lock.backdrop`
     pub lock_backdrop: LockBackdrop,
@@ -530,6 +533,7 @@ impl Default for Config {
             rest: Rest::default(),
             visualizer: Visualizer::default(),
             lyrics: LyricsSource::default(),
+            ui_describe: UiDescribe::default(),
             lock_backdrop: LockBackdrop::default(),
             lock_pam: None,
             lock_grace: 0,
@@ -2266,6 +2270,23 @@ pub const MEDIA: &[Setting] = &[
     },
 ];
 
+pub const UI: &[Setting] = &[Setting {
+    key: "ui.describe",
+    label: "UI tree",
+    help: "what `kanade ui describe` says of the windows, and so what an agent or script can read: \"structure\" is roles, names, states and places with every label and value `<redacted>`; \"content\" adds what notifications, the clipboard, the calendar and lyrics show (never a password), for debugging on this machine; \"off\" refuses `kanade ui` entirely",
+    hint: Some("What the UI tree says; content shows notification and clipboard text"),
+    kind: Kind::Choice(
+        Choices::named(UiDescribe::NAMES),
+        Field {
+            get: |config| config.ui_describe.name(),
+            set: |config, name| config.ui_describe = UiDescribe::named(name),
+        },
+    ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 pub const LAUNCHER: &[Setting] = &[Setting {
     key: "launcher.actions",
     label: "App actions",
@@ -3920,6 +3941,7 @@ mod tests {
                 "idle.lock",
                 "idle.screen_off",
                 "idle.suspend",
+                "ui.describe",
                 "hooks.lock",
                 "hooks.unlock",
                 "hooks.wallpaper",

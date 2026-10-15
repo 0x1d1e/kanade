@@ -22,6 +22,7 @@ use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor, Monitors,
     Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone, request_frame,
@@ -1942,6 +1943,16 @@ fn slot(
 
     let slot = slot
         .cursor(Cursor::Pointer)
+        .semantics(|| {
+            let app = Semantics::new(Role::Item, "app")
+                .selected(context.windows.iter().any(|window| window.focused));
+
+            match &context.app {
+                App::Desktop(entry) => app.label(entry.name.as_str()),
+                App::Unmatched(Some(app_id)) => app.label(app_id.as_str()),
+                App::Unmatched(None) => app,
+            }
+        })
         .on_click(move |button| match button {
             Button::Left => {
                 if let Some(press) = press.clone() {

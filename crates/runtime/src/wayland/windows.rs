@@ -74,6 +74,8 @@ impl WaylandState {
 
             input_region: None,
 
+            name: "",
+
             width: 0,
             height: 0,
 
