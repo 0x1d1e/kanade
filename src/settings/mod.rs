@@ -9,6 +9,7 @@
 
 mod file;
 mod fonts;
+mod health;
 mod layout;
 mod ring;
 mod view;
@@ -24,6 +25,7 @@ use kanade_runtime::service::Service;
 use toml::Value;
 
 use crate::config::{self, Config, Kind, Setting};
+use crate::doctor::Check;
 use crate::icon::Icon;
 use crate::modules;
 use crate::reload;
@@ -52,6 +54,11 @@ pub struct Settings {
     fonts_loading: bool,
     fonts_error: Option<String>,
     font_query: String,
+
+    // the Health page's checks, run off the draw thread when it shows (`health`)
+    health: Vec<Check>,
+    health_loaded: bool,
+    health_loading: bool,
 
     // what the Modules page's filter holds
     module_query: String,
@@ -171,6 +178,8 @@ pub fn refresh() {
     settings.skipped = snapshot.skipped;
 }
 
+pub use health::spawn_notice;
+
 // the pages, as `kanade settings open` names them
 pub fn pages() -> impl Iterator<Item = &'static str> {
     layout::PAGES.iter().map(|page| page.name)
@@ -266,6 +275,9 @@ pub fn open(page: Option<&'static str>) {
     }
 
     reset_inputs();
+    if Settings::read().page == health::PAGE {
+        health::load();
+    }
     kanade_runtime::open_window(WINDOW, view::window);
 }
 
@@ -374,6 +386,9 @@ fn turn_to(page: &'static str) {
     }
 
     TextInput::set_text(SEARCH, "");
+    if page == health::PAGE && !Settings::read().health_loaded {
+        health::load();
+    }
 }
 
 fn search(query: String) {

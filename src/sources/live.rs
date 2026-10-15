@@ -694,6 +694,27 @@ pub fn color_picked(hex: &str) {
     IslandService::write().post(activity(COLOR, job), Instant::now());
 }
 
+// the id of the first-start health notice; a space is outside a client's alphabet
+const HEALTH: &str = "health notice";
+
+/*
+ * the first start finds `waiting` checks that need attention (`settings::spawn_notice`, ADR 0088):
+ * the failed form of a Live Activity a while on the focused output, naming where to look
+ */
+pub fn health_attention(waiting: usize) {
+    let job = Job {
+        title: match waiting {
+            1 => String::from("1 check needs attention"),
+            _ => format!("{waiting} checks need attention"),
+        },
+        detail: String::from("open Settings, Health"),
+        progress: None,
+        ended: Some(Ended::Failed),
+    };
+
+    IslandService::write().post(activity(HEALTH, job), Instant::now());
+}
+
 /*
  * `kanade activity run`: starts the live Activity, runs `command` and ends it by how the command
  * ended, exiting as it did; 127 when it cannot start. The command runs without a shell to tell, as

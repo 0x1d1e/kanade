@@ -36,6 +36,9 @@ pub enum Row {
         edge: &'static str,
         align: &'static str,
     },
+
+    // `kanade doctor`'s checks, run in the shell (ADR 0088); it has no key
+    Health,
 }
 
 impl Row {
@@ -43,6 +46,7 @@ impl Row {
         match self {
             Row::Key(key) => vec![key],
             Row::Position { edge, align } => vec![edge, align],
+            Row::Health => Vec::new(),
         }
     }
 }
@@ -439,6 +443,23 @@ pub const PAGES: &[Page] = &[
                     Row::Key("idle.screen_off"),
                     Row::Key("idle.suspend"),
                 ],
+            },
+        ],
+    },
+    Page {
+        name: "health",
+        title: "Health",
+        summary: "What Kanade and its Modules need from the session, as kanade doctor checks it",
+        group: "System",
+        icon: Icon::Check,
+        sections: &[
+            Section {
+                title: "Checks",
+                rows: &[Row::Health],
+            },
+            Section {
+                title: "First start",
+                rows: &[Row::Key("settings.health_notice")],
             },
         ],
     },
