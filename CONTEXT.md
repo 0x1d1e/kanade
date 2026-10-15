@@ -126,6 +126,12 @@ A command the user lists in config (`hooks.<event>`, an argv list) that Kanade r
 - Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
 - **Avoid:** plugin, script event soup, subscription
 
+## Calendar subscription
+A public iCalendar feed, an `https://` address in `calendar.subscriptions` (`webcal://` read as `https://`), fetched into a read-only file the calendar reads beside the local ones (ADR 0062). A feed is named by its place in the list, never by address.
+- **Invariant:** the address may hold a secret: it is never logged, put in `kanade status` or an error, or named in a file name. Only https is spoken, redirects included.
+- **Invariant:** a failed feed keeps its last good copy and backs off; nothing is fetched without a feed or with `calendar-subscriptions` off.
+- Not a Hook (`hooks.<event>`), nor a Service's `watch`.
+
 ## Reminder
 An Activity saying a calendar event is coming: its title and how long until it starts, or ends for an alarm on its end, with Open and Dismiss, and Join while the event links to a video meeting (ADR 0043). Join opens the first `https` link of its URL, LOCATION or DESCRIPTION whose host `sources/meeting.rs` lists (Google Meet, Zoom, Teams, Webex, Jitsi, Whereby) with `xdg-open`, by argv with no shell, never logging it. It comes from the event's own `VALARM`s that display or play a sound, or `calendar.reminder` minutes before a timed event with none. Persistent, Ongoing, Global, interrupting nothing; it goes 5 minutes after its event starts, an hour after it went off at most, or on Open, Join or Dismiss.
 - **Invariant:** a reminder goes off once. Which went off is kept in a file under the state directory, keyed by event, occurrence and alarm, the default lead by a mark of its own, so a restart, a clock set or a new `calendar.reminder` never fires one again.

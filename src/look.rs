@@ -206,6 +206,20 @@ choice! {
 }
 
 choice! {
+    // where the Media Surface gets a track's synced lyrics, `media.lyrics` (ADR 0063)
+    LyricsSource {
+        // none are looked up
+        Off = "off",
+
+        // a `.lrc` file beside a local track, named like it
+        Local = "local",
+
+        // that, then LRCLIB, asked for the track's title, artist, album and length over https
+        Lrclib = "lrclib",
+    }
+}
+
+choice! {
     // what the lock screen shows behind the clock, `lock.backdrop`
     LockBackdrop {
         // the wallpaper shown on the output, softly blurred, like macOS

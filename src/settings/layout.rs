@@ -99,6 +99,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "calendar-surface",
             "calendar-reminders",
             "google-calendar",
+            "calendar-subscriptions",
             "weather",
             "weather-surface",
         ],
@@ -207,7 +208,7 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Playing media",
-                rows: &[Row::Key("media.visualizer")],
+                rows: &[Row::Key("media.visualizer"), Row::Key("media.lyrics")],
             },
             Section {
                 title: "Launcher",
@@ -352,7 +353,12 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Calendar",
-                rows: &[Row::Key("calendar.paths"), Row::Key("calendar.reminder")],
+                rows: &[
+                    Row::Key("calendar.paths"),
+                    Row::Key("calendar.reminder"),
+                    Row::Key("calendar.subscriptions"),
+                    Row::Key("calendar.subscription_interval"),
+                ],
             },
             Section {
                 title: "Weather",
@@ -408,6 +414,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "",
                 rows: &[Row::Key("lock.backdrop")],
+            },
+            Section {
+                title: "Unlocking",
+                rows: &[Row::Key("lock.pam_service"), Row::Key("lock.grace")],
             },
             Section {
                 title: "When idle",

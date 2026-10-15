@@ -24,7 +24,7 @@ use crate::modules::{self, Module};
 use crate::sources::system::Switch;
 use crate::sources::{
     caffeine, capture, charge_limit, focus, google, live, media, night_light, osd, power,
-    recording, reminders, timer, wallpaper, weather,
+    recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor};
@@ -76,6 +76,7 @@ pub enum Call {
     Google(google::Request),
     Reminders(reminders::Request),
     Weather(weather::Request),
+    Subscriptions(subscriptions::Request),
     Osd(osd::Asked),
     Lock,
     LockStatus,
@@ -465,13 +466,15 @@ pub fn run(arguments: &[String]) -> ExitCode {
 
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => match std::path::absolute(&path) {
-            Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path)),
-            Err(error) => {
-                complain(&format!("kanade: {}: {error}", path.display()));
-                return ExitCode::FAILURE;
+        Call::Wallpaper(wallpaper::Request::Set(path, output)) => {
+            match std::path::absolute(&path) {
+                Ok(path) => Call::Wallpaper(wallpaper::Request::Set(path, output)),
+                Err(error) => {
+                    complain(&format!("kanade: {}: {error}", path.display()));
+                    return ExitCode::FAILURE;
+                }
             }
-        },
+        }
         Call::Google(google::Request::SignIn(path)) => match std::path::absolute(&path) {
             Ok(path) => Call::Google(google::Request::SignIn(path)),
             Err(error) => {
@@ -482,11 +485,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
         asked => asked,
     };
     let arguments = match &asked {
-        Call::Wallpaper(wallpaper::Request::Set(path)) => vec![
-            String::from("wallpaper"),
-            String::from("set"),
-            path.to_string_lossy().into_owned(),
-        ],
+        Call::Wallpaper(request @ wallpaper::Request::Set(..)) => request.arguments(),
         Call::Google(google::Request::SignIn(path)) => vec![
             String::from("google-calendar"),
             String::from("sign-in"),
