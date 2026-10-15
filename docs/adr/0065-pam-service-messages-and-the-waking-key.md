@@ -28,3 +28,5 @@ The lock screen sees only what niri sends its surfaces and what the idle Module 
 - The wiki documents `lock.pam_service`; Settings shows it under Unlocking.
 - A service that sends no text messages behaves as before. A service that asks anything but one hidden prompt now fails every check, which is the safe side: the user sees the wrong-password status and the doctor line names the service.
 - The wake handling lives in `crates/lock` as a pure state (`wake.rs`) with time as an input, tested; the shell only says dark and lit.
+
+Risks kept. The service name is checked again where PAM is called, not only when the lock is asked, because the config reloads while locked. A PAM transaction cannot be cancelled, so a service whose module waits forever (a security key without a timeout) holds the one check at a time and the lock shows "Checking" until Kanade is restarted from a TTY or ssh; choose services whose modules time out. A stack in which two modules each prompt for a hidden secret no longer unlocks with one password, which fails closed.

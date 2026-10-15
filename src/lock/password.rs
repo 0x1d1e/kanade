@@ -104,7 +104,12 @@ pub(super) fn checked(check: u64, password: Zeroizing<String>) {
     // the account shown, by the uid, not whatever the environment names
     let accepted = panic::catch_unwind(AssertUnwindSafe(|| {
         let login = Who::read().login.clone();
-        clock::authenticate(&service(), &login, &password, &mut |note| told(check, note))
+        let service = service();
+
+        // the config reloads while locked: a name that is no file name in PAM's directories, or
+        // whose file is gone, unlocks nothing, as when the lock was asked
+        pam_file(&service).is_some()
+            && clock::authenticate(&service, &login, &password, &mut |note| told(check, note))
     }))
     // a check that panicked accepts nothing, and ends, so the next can begin
     .unwrap_or(false);

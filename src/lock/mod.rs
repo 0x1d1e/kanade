@@ -107,7 +107,7 @@ struct Requests {
 
     // until when input unlocks without a password (ADR 0066): set only for the lock the idle
     // Module asked for when none held, and gone with any later request, sleep, unlock or the end
-    grace: Option<Instant>,
+    grace: Option<Duration>,
 }
 
 impl Requests {
@@ -245,7 +245,7 @@ impl Requests {
     }
 
     // input unlocks the lock of request `asked`, once niri holds it, until `until`
-    fn grant(&mut self, asked: u64, until: Instant) {
+    fn grant(&mut self, asked: u64, until: Duration) {
         if self.newest == asked && self.confirmed == asked && self.holding() == Holding::Held {
             self.grace = Some(until);
         }
@@ -256,7 +256,7 @@ impl Requests {
      * here, at `now` as the caller reads it, so input handled late finds the grace gone. Not
      * while a password is being checked, sleep shuts the gate, or an unlock is under way
      */
-    fn touch(&mut self, now: Instant) -> bool {
+    fn touch(&mut self, now: Duration) -> bool {
         let Some(until) = self.grace else {
             return false;
         };
@@ -719,6 +719,19 @@ pub fn holds() -> bool {
 }
 
 /*
+ * the time since boot, suspend included, which `Instant` leaves out: a grace is a time of the
+ * user's presence, and a machine asleep for hours must not have 25 s of it left
+ */
+fn boot() -> Duration {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+
+    Duration::new(
+        time.tv_sec.unsigned_abs(),
+        time.tv_nsec.unsigned_abs() as u32,
+    )
+}
+
+/*
  * input on the lock screen, on its thread: unlocks as an accepted password does if a grace is
  * open (ADR 0066), else nothing. The same steps as `checked`: the unlock is asked under the
  * requests, so no request or sleep falls between the decision and the ask
@@ -726,7 +739,7 @@ pub fn holds() -> bool {
 fn touched() {
     let mut requests = requests();
 
-    if !requests.touch(Instant::now()) {
+    if !requests.touch(boot()) {
         return;
     }
 
@@ -813,17 +826,21 @@ fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
 
     // decided before this asks, under the requests: a lock held already, or an unlock on its way,
     // is not one this lock may open
-    let grace = grace.filter(|_| requests.graceable());
+    let mut grace = grace.filter(|_| requests.graceable());
 
     loop {
         match requests.next(asked) {
             Next::Done => {
                 if let (Some(grace), Some(asked)) = (grace, asked) {
-                    requests.grant(asked, Instant::now() + grace);
+                    requests.grant(asked, boot() + grace);
                 }
                 return Ok(());
             }
             Next::Ask => {
+                // asked again, after the first lock ended: that is no fresh lock for a grace
+                if asked.is_some() {
+                    grace = None;
+                }
                 asked = Some(request_lock(&mut requests, locker));
                 continue;
             }
@@ -1005,7 +1022,7 @@ mod tests {
     }
 
     // a lock held for a request, with a grace open until `until`
-    fn graced(until: Instant) -> Requests {
+    fn graced(until: Duration) -> Requests {
         let mut requests = Requests::new();
         assert!(requests.graceable());
 
@@ -1018,7 +1035,7 @@ mod tests {
     // ADR 0066: input unlocks inside the grace, once, as a password does
     #[test]
     fn input_in_the_grace_unlocks_once() {
-        let now = Instant::now();
+        let now = boot();
         let mut requests = graced(now + Duration::from_secs(5));
 
         assert!(requests.touch(now + Duration::from_secs(1)));
@@ -1029,7 +1046,7 @@ mod tests {
 
     #[test]
     fn input_after_the_grace_never_unlocks() {
-        let now = Instant::now();
+        let now = boot();
         let until = now + Duration::from_secs(5);
         let mut requests = graced(until);
 
@@ -1042,7 +1059,7 @@ mod tests {
     // a request, a sleep, the end of the lock and a password each close the grace
     #[test]
     fn the_grace_ends_with_anything_but_the_lock_it_was_given_for() {
-        let now = Instant::now();
+        let now = boot();
         let until = now + Duration::from_secs(5);
 
         let mut requests = graced(until);
@@ -1076,7 +1093,7 @@ mod tests {
     // only a lock asked for from fully unlocked and held for that request gets a grace
     #[test]
     fn only_a_fresh_confirmed_lock_gets_a_grace() {
-        let now = Instant::now();
+        let now = boot();
         let until = now + Duration::from_secs(5);
 
         // one already asked, held, or ended by a password

@@ -4,7 +4,7 @@ Status: accepted. Amends [ADR 0047](0047-idle-in-the-shell.md) (what the idle lo
 
 ## Context
 
-An idle lock that fires a few seconds before the user comes back to the keyboard costs a password for a session they never left. macOS and others give a "require password after" delay for that. A grace is also a password bypass, so it is allowed only where it cannot outlive its cause and cannot be reached by anything but the user's presence at the machine.
+An idle lock that fires a few seconds before the user comes back to the keyboard costs a password for a session they never left. macOS and others give a "require password after" delay for that. A grace is also a password bypass, so it is allowed only where it cannot outlive its cause and cannot be reached except by input at the machine: the user's, or an attacker's at the keyboard, or a process that injects input (`wtype`, uinput) while the window is open, which is why it is off by default and short.
 
 ## Decision
 
@@ -42,3 +42,5 @@ The gate: kill Kanade while locked, niri stays locked, systemd restarts it, the 
 - Per-input kinds (keys only, no pointer). One setting, one rule.
 - A grace for the lock before sleep, where the user is gone by definition.
 - Putting the grace in the lock crate. The crate reports touch; the shell decides, as with passwords.
+
+The window is measured in time since boot, suspend included (`CLOCK_BOOTTIME`), not in `Instant`, so a machine that slept through a missed sleep signal has no grace left on waking. The grace is also not granted to a lock asked again after the first ended.
