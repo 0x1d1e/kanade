@@ -15,6 +15,7 @@ use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::{
 };
 
 use crate::backdrop::{self, Call, Request, Spot};
+use crate::ui_scale;
 
 use super::WaylandState;
 
@@ -154,13 +155,16 @@ impl Captures {
             return;
         }
 
+        // the request is in the virtual space, the output's logical pixels are the compositor's
+        let ui = ui_scale::ui_scale();
+
         let frame = self.manager.capture_output_region(
             0,
             &pane.output,
-            region.x as i32,
-            region.y as i32,
-            region.width as i32,
-            region.height as i32,
+            (region.x * ui) as i32,
+            (region.y * ui) as i32,
+            (region.width * ui) as i32,
+            (region.height * ui) as i32,
             qh,
             spot.clone(),
         );
@@ -300,6 +304,23 @@ impl WaylandState {
             if !paused {
                 captures.capture(&spot, false, &self.qh);
             }
+        }
+    }
+
+    // the UI scale changed: every pane's region is another part of the output, copied again
+    pub(super) fn recapture_backdrops(&mut self) {
+        let Some(captures) = &mut self.captures else {
+            return;
+        };
+
+        let spots: Vec<Spot> = captures.panes.keys().cloned().collect();
+
+        for spot in spots {
+            if let Some(pane) = captures.panes.get_mut(&spot) {
+                pane.stop();
+            }
+
+            captures.capture(&spot, false, &self.qh);
         }
     }
 

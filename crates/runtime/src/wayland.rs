@@ -55,6 +55,7 @@ use wayland_client::{
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 
 use crate::ipc::IpcHandlers;
+use crate::ui_scale;
 use crate::window::Named;
 use crate::{Cursor, LayerWindow, Modifiers, Monitor};
 use backdrop::Captures;
@@ -144,6 +145,9 @@ impl WaylandApp {
         per_monitor: Vec<fn(&Monitor) -> LayerWindow>,
         handlers: IpcHandlers,
     ) -> Self {
+        // the scale asked before the runtime started is the one windows open at
+        ui_scale::adopt();
+
         let connection = connect();
 
         let event_loop = EventLoop::try_new().expect("failed to create event loop");

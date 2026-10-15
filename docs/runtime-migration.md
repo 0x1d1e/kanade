@@ -36,6 +36,8 @@ Runtime work, done when wanted.
       `done`'s preedit, commit and surrounding deletion are applied together, the preedit drawn
       inline. Not done: `input_method` (Kanade being an input method), a scrolling field's caret,
       and a check against a live fcitx5 or ibus.
+- [x] UI scale: `appearance.scale` is one multiplier at the runtime's scale seam (ADR 0091), virtual space
+      in, compositor pixels out. Not done: a scale per window or output, resizing an open normal window.
 - [x] Per-corner radius (`Rectangle::radius_top_left` and the other three, `Corners`), and the
       justify overflow spill. A drop shadow and the inner shadow of a rectangle with unequal
       corners still use the largest corner.

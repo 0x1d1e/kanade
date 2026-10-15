@@ -56,9 +56,12 @@ impl Fullscreen {
             return false;
         };
 
+        // niri's sizes are the output's logical pixels, the monitor's are in the UI scale's space
+        let ui = f64::from(kanade_runtime::ui_scale());
+
         // a logical size in whole pixels, a tile's rounded
-        let fills = shown.tile.0 >= f64::from(monitor.width) - 1.0
-            && shown.tile.1 >= f64::from(monitor.height) - 1.0;
+        let fills = shown.tile.0 >= f64::from(monitor.width) * ui - 1.0
+            && shown.tile.1 >= f64::from(monitor.height) * ui - 1.0;
 
         // The sources can be joined only by app id; output and size do not distinguish a
         // fullscreen window from an unrelated maximized-to-edges window.

@@ -61,6 +61,9 @@ fn main() -> ExitCode {
         return cli::run(&arguments);
     }
 
+    // the first window opens at it; a reload changes it live
+    kanade_runtime::set_ui_scale(config::get().appearance.ui_scale());
+
     supervise::follow_services();
     modules::start(theme::font(App::new())).run();
     ExitCode::SUCCESS

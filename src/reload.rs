@@ -91,6 +91,12 @@ pub fn reload() -> Outcome {
                     hooks::fire_with(Event::Tone, next.appearance.tone.name());
                 }
 
+                // the runtime draws every window again at it, and republishes the monitors the
+                // views lay out in, which resizes the Island and the Dock
+                if next.appearance.scale != running.appearance.scale {
+                    kanade_runtime::set_ui_scale(next.appearance.ui_scale());
+                }
+
                 if next.appearance.sync != running.appearance.sync
                     || next.appearance.sync && next.appearance.tone != running.appearance.tone
                 {

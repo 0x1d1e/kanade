@@ -11,6 +11,7 @@ use wayland_client::{
 use crate::TextInput;
 use crate::input::focus;
 use crate::input::ime::{Batch, Context};
+use crate::ui_scale;
 
 use super::WaylandState;
 
@@ -50,7 +51,7 @@ struct Sent {
     id: &'static str,
     context: Context,
 
-    // left, top, width and height in the surface's logical pixels
+    // left, top, width and height in the compositor's logical pixels for the surface
     caret: (i32, i32, i32, i32),
 }
 
@@ -200,14 +201,17 @@ impl WaylandState {
 
         let (x, y, width, height) = self.window(surface)?.pointer.caret(id)?;
 
+        // the box is in the virtual space, the compositor wants its logical pixels
+        let ui = ui_scale::ui_scale();
+
         Some(Sent {
             id,
             context: editor.context(),
             caret: (
-                x.floor() as i32,
-                y.floor() as i32,
-                width.ceil() as i32,
-                height.ceil() as i32,
+                (x * ui).floor() as i32,
+                (y * ui).floor() as i32,
+                (width * ui).ceil() as i32,
+                (height * ui).ceil() as i32,
             ),
         })
     }

@@ -157,6 +157,10 @@ pub const PAGES: &[Page] = &[
                 title: "Type",
                 rows: &[Row::Key("appearance.font")],
             },
+            Section {
+                title: "Size",
+                rows: &[Row::Key("appearance.scale")],
+            },
         ],
     },
     Page {
