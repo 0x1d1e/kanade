@@ -85,6 +85,9 @@ pub enum At {
     Input(Node),
     Stream(Node),
 
+    // the row under a playing app's level, pressed to move it to the next output
+    Route(Node),
+
     /*
      * the arrangement's: a tile to choose, what moves, resizes or takes out the chosen one, a tile
      * to bring back, and saving

@@ -136,7 +136,7 @@ Rules:
 - **Controls**: macOS pattern. Top-level quick tiles (Wi-Fi, Bluetooth, Caffeine, Do Not Disturb, Night Light, Focus and Limit Charge; which show, in what order and size is `controls.tiles`, arranged by the header's pencil or in Settings, ADR 0067) and sliders; the microphone's level and mute are in the Audio sub-surface; sub-surfaces for Wi-Fi (done, #130), Bluetooth (done, #131), audio (done, #133).
 - **Wi-Fi**: scan, connect/disconnect, network selection, state/error.
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
-- **Audio**: master volume/mute, input/output device selection, per-app mixer, mic state.
+- **Audio**: master volume/mute, input/output device selection, per-app mixer, and a row under each playing app to move it to another output (`target.object`, ADR 0081), mic state.
 - **Notifications**: history (20 per app, 100 in all), an app's notifications as a stack (newest and a count; opened and closed by click or keyboard, closed again at each opening), actions, dismiss, clear, DND, empty/error.
 - **Clipboard**: text + image history, search, copy, delete, clear; bounded; memory-only default; optional persistence later. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
 - **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.

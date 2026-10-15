@@ -1331,6 +1331,15 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
 
             None
         }
+        At::Route(node) => {
+            let mixer = mixer();
+
+            if let Some(stream) = mixer.streams.iter().find(|stream| stream.node == node) {
+                sound::ask_route(node, audio::next_route(stream, &mixer.outputs));
+            }
+
+            None
+        }
         At::Brightness => None,
         At::Profile(profile) => {
             let profiles = Profiles::read().clone();
