@@ -68,6 +68,7 @@ impl Renderer {
         radius: impl Into<Corners>,
         values: &[[f32; 4]],
         backdrop: Option<&Spot>,
+        presented: bool,
     ) {
         let radius = radius.into();
 
@@ -86,6 +87,7 @@ impl Renderer {
             shader: shader.to_path_buf(),
             values: values.to_vec(),
             backdrop: backdrop.cloned(),
+            presented,
             area,
             path,
             transform: self.transform,

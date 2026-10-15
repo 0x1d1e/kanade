@@ -19,6 +19,7 @@ use std::time::Instant;
 use crate::sources::brightness::Brightness;
 use crate::sources::pulse::Audio;
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Color, Column, Cursor, End, Key, Padding, Parent, Rectangle, Row, Scroll, Start, Text,
     Widget, children,
@@ -45,7 +46,7 @@ use crate::sources::focus as quiet;
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
 use crate::sources::niri::Target;
-use crate::sources::notifications;
+use crate::sources::notifications::{self, timed};
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::{self, Privacy};
 use crate::sources::system::Radio;
@@ -169,6 +170,7 @@ fn visible(tile: Tile) -> bool {
     match tile {
         Tile::Focus => modules::on("focus"),
         Tile::ChargeLimit => charge_limit().is_some(),
+        Tile::PowerProfile => modules::on("power"),
         _ => true,
     }
 }
@@ -229,6 +231,7 @@ fn target(tile: Tile) -> At {
         Tile::NightLight => At::NightLight,
         Tile::Focus => At::Focus,
         Tile::ChargeLimit => At::ChargeLimit,
+        Tile::PowerProfile => At::PowerProfile,
     }
 }
 
@@ -242,6 +245,7 @@ fn icon(tile: Tile) -> Icon {
         Tile::NightLight => Icon::Sunset,
         Tile::Focus => Icon::Focus,
         Tile::ChargeLimit => Icon::BatteryLimit,
+        Tile::PowerProfile => Icon::Bolt,
     }
 }
 
@@ -340,9 +344,10 @@ fn capturing(privacy: &Privacy, ring: bool) -> Option<Box<dyn Widget>> {
         .sensors
         .iter()
         .flat_map(|sensors| sensors.apps.clone());
+    let paused = if privacy.paused { " (paused)" } else { "" };
     let casts = privacy.casts.iter().filter_map(|target| match target {
-        Target::Screen => Some(String::from("Screen cast")),
-        Target::Window => Some(String::from("Window cast")),
+        Target::Screen => Some(format!("Screen cast{paused}")),
+        Target::Window => Some(format!("Window cast{paused}")),
         Target::Unknown => None,
     });
     let named: Vec<String> = apps.chain(casts).collect();
@@ -438,6 +443,7 @@ fn tile(
         Tile::NightLight => (self::night_light(), false, None),
         Tile::Focus => (self::focus(), false, None),
         Tile::ChargeLimit => (self::charge_limit()?, false, None),
+        Tile::PowerProfile => (self::power_profile(), false, None),
     };
 
     let ring = on(target(placed.tile));
@@ -473,6 +479,7 @@ enum Press {
     Dnd(bool),
     NightLight(bool),
     ChargeLimit(bool),
+    Profile(Profile),
     Focus,
 }
 
@@ -560,16 +567,19 @@ fn caffeine(on: Option<bool>) -> Switch {
 }
 
 fn dnd(on: Option<bool>) -> Switch {
+    // a timed one says when it ends
     let status = match on {
-        None => "Unavailable",
-        Some(true) => "On",
-        Some(false) => "Off",
+        None => String::from("Unavailable"),
+        Some(true) => timed::ends()
+            .and_then(timed::label)
+            .map_or_else(|| String::from("On"), |at| format!("Until {at}")),
+        Some(false) => String::from("Off"),
     };
 
     Switch {
         icon: icon(Tile::Dnd),
         name: "Do Not Disturb",
-        status: String::from(status),
+        status,
         on: on == Some(true),
         press: on.map(|on| Press::Dnd(!on)),
     }
@@ -642,11 +652,76 @@ fn round(item: Switch, ring: bool) -> Rectangle {
         .border_if(ring)
         .child(item.icon.on(18.0, ink));
 
+    let round = round.semantics(|| {
+        toggle(
+            Role::Toggle,
+            item.name,
+            &item.status,
+            item.on,
+            item.press.is_none(),
+        )
+    });
+
     match item.press {
         None => round.opacity(DISABLED),
         Some(press) => round
             .cursor(Cursor::Pointer)
             .on_click(super::on_left(move || click_switch(press.clone()))),
+    }
+}
+
+// a switch's node: named for the switch, its status being what a network or a device is called
+fn toggle(role: Role, name: &'static str, status: &str, on: bool, disabled: bool) -> Semantics {
+    let id = match name {
+        "Wi-Fi" => "wifi",
+        "Bluetooth" => "bluetooth",
+        "Caffeine" => "caffeine",
+        "Do Not Disturb" => "dnd",
+        "Night Light" => "night-light",
+        "Focus" => "focus",
+        "Power Profile" => "power-profile",
+        "Limit Charge" => "limit-charge",
+        _ => "switch",
+    };
+
+    let node = Semantics::new(role, id)
+        .label(name)
+        .content(status)
+        .disabled(disabled);
+
+    if role == Role::Toggle {
+        node.checked(on)
+    } else {
+        node
+    }
+}
+
+/*
+ * the active power profile, on while it is not Balanced; pressing it asks for the next one the
+ * machine has, as `kanade power-profile cycle` does (ADR 0084). Not pressable without the daemon
+ */
+fn power_profile() -> Switch {
+    let profiles = Profiles::read().clone();
+
+    let next = profiles.active.and_then(|active| {
+        let at = profiles.available.iter().position(|each| *each == active)?;
+
+        Some(profiles.available[(at + 1) % profiles.available.len()])
+    });
+
+    Switch {
+        icon: icon(Tile::PowerProfile),
+        name: "Power Profile",
+        status: profiles
+            .active
+            .map_or("Unavailable", Profile::label)
+            .to_owned(),
+        on: profiles
+            .active
+            .is_some_and(|active| active != Profile::Balanced),
+        press: next
+            .filter(|next| Some(*next) != profiles.active)
+            .map(Press::Profile),
     }
 }
 
@@ -728,6 +803,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
     .width(width - KNOB_INSET - KNOB - ICON_GAP - right - chevron)
     .gap(2.0);
 
+    let on = item.on;
     let press = item.press;
 
     let knob = match (&press, &opens) {
@@ -735,6 +811,7 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
             let press = press.clone();
 
             knob.cursor(Cursor::Pointer)
+                .semantics(|| Semantics::new(Role::Toggle, "toggle").checked(on))
                 .on_click(super::on_left(move || {
                     click_switch(press.clone());
                 }))
@@ -763,6 +840,16 @@ fn switch(item: Switch, width: f32, knob_ring: bool, ring: bool, opens: Option<A
         })
         .align_child(Start, Center)
         .border_if(ring)
+        .semantics(|| {
+            // one that opens its list is a button, and its toggle is the knob inside it
+            let role = if opens.is_some() {
+                Role::Button
+            } else {
+                Role::Toggle
+            };
+
+            toggle(role, item.name, &item.status, on, press.is_none())
+        })
         .child(Row::new(parts).gap(ICON_GAP - HALO).align(Center));
 
     match (press, opens) {
@@ -807,6 +894,7 @@ fn run(press: Press) {
         Press::ChargeLimit(on) => {
             let _ = charge_limit::ask(on, None);
         }
+        Press::Profile(profile) => power::set(profile),
     }
 }
 
@@ -899,6 +987,7 @@ fn chevron(ring: bool, on: bool) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .border_if(ring)
+        .semantics(|| Semantics::new(Role::Button, "sound").disabled(!on))
         .child(Icon::Forward.on(16.0, theme::island().on_surface_variant));
 
     if !on {
@@ -1027,6 +1116,12 @@ fn segment(profile: Profile, width: f32, active: bool, available: bool, ring: bo
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .border_if(ring)
+        .semantics(|| {
+            Semantics::new(Role::Button, "profile")
+                .label(profile.label())
+                .selected(active)
+                .disabled(!available)
+        })
         .child(
             Text::new(profile.label())
                 .size(theme::text::LABEL_SMALL)
@@ -1267,6 +1362,7 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         }
         At::NightLight => night_light().press,
         At::ChargeLimit => charge_limit().and_then(|limit| limit.press),
+        At::PowerProfile => power_profile().press,
         At::Focus => modules::on("focus").then_some(Press::Focus),
         At::Edit => return focus.arrange(config::get().tiles.clone()),
         At::Pick(_)
@@ -1326,6 +1422,15 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         At::Stream(node) => {
             if let Some(stream) = mixer().streams.iter().find(|stream| stream.node == node) {
                 sound::ask_muted(node, !stream.level.muted);
+            }
+
+            None
+        }
+        At::Route(node) => {
+            let mixer = mixer();
+
+            if let Some(stream) = mixer.streams.iter().find(|stream| stream.node == node) {
+                sound::ask_route(node, audio::next_route(stream, &mixer.outputs));
             }
 
             None

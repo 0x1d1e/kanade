@@ -2,7 +2,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::graphics::{Area, Transform};
+use crate::ui::Semantics;
 use crate::{Button, Cursor, Key, Point, Scroll};
+
+use super::ime::Caret;
 
 /*
  * shared, so the hit areas kept after a redraw
@@ -14,6 +17,7 @@ pub type ScrollHandler = Rc<dyn Fn(Scroll)>;
 pub type KeyHandler = Rc<dyn Fn(Key)>;
 pub type PointHandler = Rc<dyn Fn(Point)>;
 pub type DropHandler = Rc<dyn Fn(Vec<PathBuf>)>;
+pub type HoldHandler = Rc<dyn Fn(bool)>;
 
 #[derive(Clone, Default)]
 pub struct Handlers {
@@ -23,6 +27,7 @@ pub struct Handlers {
     pub drag: Option<PointHandler>,
     pub motion: Option<PointHandler>,
     pub drop: Option<DropHandler>,
+    pub hold: Option<HoldHandler>,
 
     // not a handler, but it belongs to the same spot the pointer is over
     pub cursor: Option<Cursor>,
@@ -44,6 +49,16 @@ pub struct Target {
      */
     pub key: u64,
 
+    // a text input's caret, for its input method; the area above is where it sits
+    pub caret: Option<Caret>,
+
+    // what the target is, for `kanade ui` (ADR 0095); none for the targets no view said anything of
+    pub semantics: Option<Semantics>,
+
+    // one past the last target collected inside this one, set where there are semantics, so a node
+    // finds its parent: the targets from the next one to here are in it
+    pub end: usize,
+
     // named by what it is (see `anchor`), so the places above it no longer change its key
     anchored: bool,
 }
@@ -55,6 +70,9 @@ impl Target {
             handlers,
             inverse: Transform::IDENTITY,
             key: 0,
+            caret: None,
+            semantics: None,
+            end: 0,
             anchored: false,
         }
     }
@@ -63,6 +81,54 @@ impl Target {
         let (local_x, local_y) = self.inverse.map(x, y);
 
         self.area.contains(local_x, local_y)
+    }
+
+    // the caret's box in the window, where parents have moved, scaled or turned it
+    pub fn caret_in_window(&self) -> Option<(f32, f32, f32, f32)> {
+        self.in_window(self.caret?.area)
+    }
+
+    // the target's own area in the window
+    pub fn bounds_in_window(&self) -> Option<(f32, f32, f32, f32)> {
+        self.in_window(self.area)
+    }
+
+    // a box of the target's space as the smallest upright box around it in the window
+    fn in_window(&self, area: Area) -> Option<(f32, f32, f32, f32)> {
+        let into_window = self.inverse.invert()?;
+
+        let Area {
+            x,
+            y,
+            width,
+            height,
+        } = area;
+
+        let corners = [
+            into_window.map(x, y),
+            into_window.map(x + width, y),
+            into_window.map(x, y + height),
+            into_window.map(x + width, y + height),
+        ];
+
+        let left = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(f32::MAX, f32::min);
+        let top = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(f32::MAX, f32::min);
+        let right = corners
+            .iter()
+            .map(|corner| corner.0)
+            .fold(f32::MIN, f32::max);
+        let bottom = corners
+            .iter()
+            .map(|corner| corner.1)
+            .fold(f32::MIN, f32::max);
+
+        Some((left, top, right - left, bottom - top))
     }
 
     // the position measured from the area's top-left corner

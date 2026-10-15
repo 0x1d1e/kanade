@@ -15,7 +15,7 @@ Backlog left from the `liquid-glass` branch (#208), and the full architecture re
 - [x] niri is a Service its readers watch (`sources/niri.rs`, ADR 0038)
   - Fullscreen, Privacy, Banners, the core and the workspace switch watch `Niri` in their own start; windows and screenshots take niri's events by `niri::on_windows` and `niri::on_screenshot`. `Posts` is gone.
   - `niri.rs` still imports `island::activity::Workspace` (the DTO a `Focused` holds), the one upward import left; move it into the source if full independence is the goal.
-  - Not run: losing the stream (restart niri). It should clear the dots and the shown windows, and they stay cleared: the stream is not reconnected.
+  - Not run: losing the stream (restart niri). It should clear the dots and the shown windows, and they stay cleared: the stream is not reconnected (`supervise::run` only restarts a panic; a lost stream ends the source for good, which `losing_the_stream_degrades_to_every_monitor_focused` pins). Restarting Kanade brings it back.
 - [x] Restart-surviving queues and poisoned locks: `kanade_runtime::queue::{Queue, Nudge}` and `MutexExt::locked`, `RwLockExt::{reading, writing}` (`unpoisoned.rs`)
   - Not folded in: `media.rs`'s `Feed`, which hands a clone of its sender to the bus watches while it is made; the two `Condvar` waits; `crates/lock`, which depends on no Kanade crate and has its own CPU renderer.
 - [x] The Island's content turning inert or swapping (#210): runtime targets carry a key (`input::nest`, by place in their containers) and `Pointer` follows hover, press and drag by it, not by position
@@ -86,6 +86,18 @@ Not worth changing, by this review:
 - [x] Over a bright page the light text on Liquid Glass is hard to read: a scrim, then paper's ink (ADR 0054). Tune by eye; the ink follows the mean light of a ring 12 px outside the body, so a page half bright and half dark may keep the wrong ink on one side.
 
 - [ ] The `unread` regions (`src/pane/capture.rs`) rest on the shader's read geometry (`glass.wgsl`), with no test tying the two; a merged outline's concave notch is the case to check by eye or by a test that samples the shader's offsets.
+
+## Panes (Satellites as one liquid shape, ADR 0101)
+
+- [ ] Not seen: the neck as a Satellite comes out and tucks back (tinted, paper, blur; a dot bringing in a second one; a dot sliding to another slot). Tune `pane::blob::REACH` by eye: the neck lasts the last quarter of a dot's travel.
+- [ ] Banners do not join the Island's body: they are a window of their own (ADR 0023).
+- [ ] Liquid Glass keeps plain dots; the neck there would feed the screen copy the edge reads.
+
+## Panes (Liquid Glass refraction, ADR 0100)
+
+- [ ] Not run on a GPU: `appearance.refraction = true` under `liquid-glass`. Check by eye: the edge of the Island at rest and open, the Dock and a Banner over a photo wallpaper and over a window with text; no flicker or colored fringe at the edge while the body morphs or a clock ticks (skew rejects should fall back to the outward look, not show a wrong color); 5 s at rest over a static page draws 0 frames; with it off, the look and idle frames are as before. A wgpu validation error at start (bind group, binding 6) would show in the log for every shader, with the setting off too.
+- [ ] If it holds: tune `pane::unmix::MAX_ALPHA` and `SLACK`; consider the inward read only where the outward one is weakest; take the ink's ring from the unmixed page only if a bright window under the body, not around it, ever needs it.
+- [ ] A copy of the output holds windows in higher layers and the cursor, which the unmix reads as page.
 
 ## Panes (Blur finish, ADR 0057)
 
@@ -183,3 +195,17 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] Wallpaper: `showing_on(Named)` falls back to the last image Kanade set when awww is not queried.
 - [ ] Focus: `status()` lists caffeine after it ended late; `night_light::turn(true)` that saved but did not reload leaves the mode unrecorded in `Held`; a user's DND off-then-on during Focus looks the same as untouched.
 - [ ] Notifications: four or more updating progress notifications rotate the three shown Activities (ADR 0059).
+
+## Semantic tree (#21, ADR 0095)
+
+- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard, Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
+  - A control whose click handler is on a parent of the annotated rectangle is not pressable by name.
+  - Not run: a live session pass of `kanade ui` (see the report for the steps).
+
+## From the research-improvements review (unfixed)
+
+- [ ] Session hooks: the wait on a `logout`, `reboot` or `poweroff` hook has no cap, so a hung hook delays the action.
+- [ ] D-Bus signals are not checked for their sender: the portal's `SettingChanged` (accessibility) and the Unity `LauncherEntry` signal (badges) can be sent by any session-bus client.
+- [ ] DDC: i2c bus numbers are kept from the first scan and go stale when a monitor is replugged.
+- [ ] Banners: the reply fields are named per pane (`banner-reply-0..5`) and the runtime keeps text under that name, so two outputs showing a reply-capable Banner at once would share a draft. Banners show on the focused output only, so it needs niri's focus unknown (`focused_output` none).
+- [ ] E2E not reached: IME against a live fcitx5/ibus (none installed), the lock-screen layout label (needs two layouts), hold-to-confirm for Session, portal reduced-motion, `focus.auto` with a real cast. DDC/CI works on a Dell P1917S when the bus is given, but an NVIDIA connector has no `ddc` link, so no monitor is found: a fallback matching the connector's EDID to the `/dev/i2c-*` buses is the fix.

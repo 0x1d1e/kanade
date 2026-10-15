@@ -3,7 +3,8 @@
 //! many times it opened, the focused workspace, whether anything casts and the window each output
 //! shows. It knows none of what reads it: a Module `watch`es `Niri` in its own start. Each window
 //! niri opens, closes or focuses and each keyboard layout switch are events, not state, so a
-//! Module takes those by `on_windows` and `on_layout`. `ask` sends
+//! Module takes those by `on_windows` and `on_layout`, and a failed load of niri's config by
+//! `on_config_failed`. `ask` sends
 //! niri one request on a connection of its own.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -39,6 +40,12 @@ pub struct Seen {
 
     // the sessions of those PipeWire carries, which niri can stop; a wlr-screencopy cast has none
     pub sessions: BTreeSet<u64>,
+
+    // some cast has a dynamic target, which `retarget` changes
+    pub dynamic: bool,
+
+    // casts run and every one has stopped streaming frames, as OBS does on another scene
+    pub paused: bool,
 
     // the window each output shows, by output; empty while unknown
     pub shown: BTreeMap<String, Showing>,
@@ -306,6 +313,8 @@ impl Known {
                 .values()
                 .filter_map(|cast| cast.session)
                 .collect(),
+            dynamic: self.casts.values().any(|cast| cast.dynamic),
+            paused: !self.casts.is_empty() && self.casts.values().all(|cast| !cast.active),
             shown,
         }
     }
@@ -348,6 +357,12 @@ struct Cast {
 
     // its session, only for a PipeWire cast, the one kind `stop` can end
     session: Option<u64>,
+
+    // whether `retarget` acts on it
+    dynamic: bool,
+
+    // streaming frames; a cast niri does not say is taken to be
+    active: bool,
 }
 
 // a cast's stream and what it captures; none for Kanade's own Liquid Glass backdrop capture
@@ -369,9 +384,16 @@ fn cast(cast: &Json) -> Option<(u64, Cast)> {
         .then(|| cast.get("session_id").and_then(Json::as_u64))
         .flatten();
 
+    let flag = |key, default| cast.get(key).and_then(Json::as_bool).unwrap_or(default);
+
     Some((
         cast.get("stream_id").and_then(Json::as_u64)?,
-        Cast { target, session },
+        Cast {
+            target,
+            session,
+            dynamic: flag("is_dynamic_target", false),
+            active: flag("is_active", true),
+        },
     ))
 }
 
@@ -385,6 +407,38 @@ pub fn stop(session: u64) -> io::Result<Acted> {
     act(&format!(
         r#"{{"Action":{{"StopCast":{{"session_id":{session}}}}}}}"#
     ))
+}
+
+/*
+ * what a dynamic cast target is set to: a window by id, none for the focused one; an output by
+ * name, none for the focused one; or nothing. An older niri without the actions answers an error,
+ * and the same as for `stop` otherwise
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Retarget {
+    Window(Option<u64>),
+    Output(Option<String>),
+    Clear,
+}
+
+pub fn retarget(to: &Retarget) -> io::Result<Acted> {
+    let action = match to {
+        Retarget::Window(id) => {
+            let id = id.map_or_else(|| String::from("null"), |id| id.to_string());
+
+            format!(r#""SetDynamicCastWindow":{{"id":{id}}}"#)
+        }
+        Retarget::Output(name) => {
+            let name = name
+                .as_deref()
+                .map_or_else(|| String::from("null"), json::quote);
+
+            format!(r#""SetDynamicCastMonitor":{{"output":{name}}}"#)
+        }
+        Retarget::Clear => String::from(r#""ClearDynamicCastTarget":{}"#),
+    };
+
+    act(&format!(r#"{{"Action":{{{action}}}}}"#))
 }
 
 // what a window event says; none for another event, and for those `windows` ignores, like layouts
@@ -486,11 +540,26 @@ impl Layouts {
 
         self.names.get(usize::try_from(index).ok()?).cloned()
     }
+
+    // the name of the layout in use; none with fewer than two, where there is nothing to switch
+    // between, and for an index the list does not have
+    fn in_use(&self) -> Option<String> {
+        if self.names.len() < 2 {
+            return None;
+        }
+
+        self.names.get(usize::try_from(self.current).ok()?).cloned()
+    }
 }
 
 // what a Module asked to hear, in the order asked; kept as `fn`s so a Module takes it in its start
 static WINDOWS: Mutex<Vec<fn(Heard)>> = Mutex::new(Vec::new());
 static LAYOUTS: Mutex<Vec<fn(String)>> = Mutex::new(Vec::new());
+static CONFIGS: Mutex<Vec<fn()>> = Mutex::new(Vec::new());
+static KEYBOARDS: Mutex<Vec<InUse>> = Mutex::new(Vec::new());
+
+// what hears the layout in use, none when there is no choice of one
+type InUse = fn(Option<String>);
 
 // set once `follow` runs, after which a Module can no longer ask to hear
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
@@ -519,6 +588,35 @@ pub fn on_layout(then: fn(String)) {
     LAYOUTS.locked().push(then);
 }
 
+/*
+ * `then` hears the layout in use, by the name XKB gives it, when it changes: as niri lists the
+ * layouts on connecting and on a change of config, and on each switch. None with fewer than two
+ * layouts. On the niri thread, so it must not block. Unlike `on_layout` it says what is in use
+ * before any switch, for what shows the layout rather than the change
+ */
+pub fn on_keyboard(then: InUse) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    KEYBOARDS.locked().push(then);
+}
+
+/*
+ * `then` hears each time niri says a load of its config failed, on the niri thread, so it must
+ * not block. That includes the failure of the last load when the stream connects, which a shell
+ * started after it would otherwise never hear of; a load that succeeded says nothing
+ */
+pub fn on_config_failed(then: fn()) {
+    assert!(
+        !FOLLOWING.load(Ordering::Relaxed),
+        "niri is already followed"
+    );
+
+    CONFIGS.locked().push(then);
+}
+
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
 pub fn follow() {
     FOLLOWING.store(true, Ordering::Relaxed);
@@ -545,6 +643,13 @@ pub fn follow() {
                     then(name.clone());
                 }
             },
+            || {
+                let hearing = CONFIGS.locked().clone();
+
+                for then in hearing {
+                    then();
+                }
+            },
         );
     });
 }
@@ -555,9 +660,17 @@ fn run(
     mut post: impl FnMut(&Seen, &Seen),
     mut hear: impl FnMut(Heard),
     mut switched: impl FnMut(String),
+    mut failed: impl FnMut(),
 ) {
     let lost = match stream {
-        Ok(stream) => watch(stream, posted, &mut post, &mut hear, &mut switched),
+        Ok(stream) => watch(
+            stream,
+            posted,
+            &mut post,
+            &mut hear,
+            &mut switched,
+            &mut failed,
+        ),
         Err(error) => error,
     };
 
@@ -588,6 +701,9 @@ fn socket() -> io::Result<String> {
 // how long niri may take to answer `ask` or `act`
 const PATIENCE: Duration = Duration::from_secs(2);
 
+// how long the user may take to pick a color
+const PICK: Duration = Duration::from_secs(60);
+
 // how a request niri was sent came out
 #[derive(Debug)]
 enum Exchange {
@@ -613,6 +729,17 @@ pub enum Acted {
  */
 pub fn ask(request: &str) -> io::Result<Json> {
     match exchange(UnixStream::connect(socket()?)?, request, PATIENCE)? {
+        Exchange::Answered(answer) => Ok(answer),
+        Exchange::Refused(error) | Exchange::Unclear(error) => Err(error),
+    }
+}
+
+/*
+ * what niri answers `"PickColor"`: its picker is on screen until the user clicks a pixel or leaves
+ * it, and only then does it answer, so this waits up to `PICK`, never on the draw thread
+ */
+pub fn pick() -> io::Result<Json> {
+    match exchange(UnixStream::connect(socket()?)?, "\"PickColor\"", PICK)? {
         Exchange::Answered(answer) => Ok(answer),
         Exchange::Refused(error) | Exchange::Unclear(error) => Err(error),
     }
@@ -706,6 +833,7 @@ fn watch(
     post: &mut impl FnMut(&Seen, &Seen),
     hear: &mut impl FnMut(Heard),
     switched: &mut impl FnMut(String),
+    failed: &mut impl FnMut(),
 ) -> io::Error {
     let mut lines = lines.lines();
     let mut niri = Known::default();
@@ -737,8 +865,26 @@ fn watch(
             hear(heard);
         }
 
+        let before = layouts.in_use();
         if let Some(name) = layouts.switch(&event) {
             switched(name);
+        }
+        let after = layouts.in_use();
+        if after != before {
+            let hearing = KEYBOARDS.locked().clone();
+
+            for then in hearing {
+                then(after.clone());
+            }
+        }
+
+        if event
+            .get("ConfigLoaded")
+            .and_then(|loaded| loaded.get("failed"))
+            .and_then(Json::as_bool)
+            == Some(true)
+        {
+            failed();
         }
 
         niri.apply(&event);
@@ -786,6 +932,7 @@ mod tests {
             },
             &mut drop,
             &mut drop,
+            &mut || {},
         );
 
         assert_eq!(posts.last().cloned().unwrap_or_default(), posted);
@@ -836,6 +983,7 @@ mod tests {
             &mut |_, _| {},
             &mut |told| heard.push(told),
             &mut drop,
+            &mut || {},
         );
 
         heard
@@ -929,6 +1077,39 @@ mod tests {
         );
     }
 
+    // a paused cast still counts as a cast, and a dynamic one can be retargeted
+    #[test]
+    fn a_cast_says_whether_it_is_paused_or_dynamic() {
+        let with = |stream: u64, dynamic: bool, active: bool| {
+            format!(
+                r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":{stream},"session_id":{stream},"kind":"PipeWire","target":{{"Nothing":{{}}}},"is_dynamic_target":{dynamic},"is_active":{active},"pid":null,"pw_node_id":null}}}}}}"#
+            )
+        };
+        let (posts, _) = posts(&[
+            OK,
+            &with(1, true, true),
+            &with(1, true, false),
+            &with(2, false, true),
+            &with(2, false, false),
+            &stopped(1),
+        ]);
+        let states: Vec<(bool, bool, bool)> = posts
+            .iter()
+            .map(|seen| (!seen.casts.is_empty(), seen.dynamic, seen.paused))
+            .collect();
+
+        assert_eq!(
+            states,
+            [
+                (true, true, false),
+                (true, true, true),
+                (true, true, false),
+                (true, true, true),
+                (true, false, true),
+            ]
+        );
+    }
+
     // only a PipeWire cast has a session niri can stop; a recording's wlr-screencopy one has none
     #[test]
     fn only_a_pipewire_cast_has_a_session_to_stop() {
@@ -999,6 +1180,33 @@ mod tests {
         assert_eq!(casting(&forgotten), [true, true]);
     }
 
+    // how many failed loads of its config this stream tells of
+    fn failures(lines: &[&str]) -> usize {
+        let text = [&[OK], lines].concat().join("\n");
+        let mut failures = 0;
+
+        watch(
+            text.as_bytes(),
+            &mut Seen::default(),
+            &mut |_, _| {},
+            &mut drop,
+            &mut drop,
+            &mut || failures += 1,
+        );
+
+        failures
+    }
+
+    #[test]
+    fn only_a_failed_config_load_is_told() {
+        let loaded = |failed| format!(r#"{{"ConfigLoaded":{{"failed":{failed}}}}}"#);
+
+        assert_eq!(failures(&[&loaded(false), WORKSPACES]), 0);
+        assert_eq!(failures(&[&loaded(true)]), 1);
+        assert_eq!(failures(&[&loaded(false), &loaded(true), &loaded(true)]), 2);
+        assert_eq!(failures(&[r#"{"ConfigLoaded":{}}"#]), 0);
+    }
+
     // the layouts each switch of this stream goes to
     fn switches(lines: &[&str]) -> Vec<String> {
         let text = [&[OK], lines].concat().join("\n");
@@ -1010,6 +1218,7 @@ mod tests {
             &mut |_, _| {},
             &mut drop,
             &mut |name| switches.push(name),
+            &mut || {},
         );
 
         switches
@@ -1064,6 +1273,25 @@ mod tests {
         );
     }
 
+    // what the lock screen shows is the layout in use, known from the list, before any switch
+    #[test]
+    fn the_layout_in_use_is_known_from_the_list_and_only_with_two() {
+        let mut layouts = Layouts::default();
+        let mut feed = |event: String| {
+            layouts.switch(&json::parse(&event).unwrap());
+            layouts.in_use()
+        };
+
+        assert_eq!(feed(switched(1)), None);
+        assert_eq!(
+            feed(self::layouts(&["English (US)", "Russian"], 1)).as_deref(),
+            Some("Russian")
+        );
+        assert_eq!(feed(switched(0)).as_deref(), Some("English (US)"));
+        assert_eq!(feed(switched(5)), None);
+        assert_eq!(feed(self::layouts(&["English (US)"], 0)), None);
+    }
+
     #[test]
     fn a_refused_request_ends_the_stream() {
         let (posts, lost) = posts(&[r#"{"Err":"nope"}"#, WORKSPACES]);
@@ -1084,6 +1312,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            || {},
         );
 
         // nobody can say a cast still runs, so its capture goes too
@@ -1099,6 +1328,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            || {},
         );
         run(
             Ok(OK.as_bytes()),
@@ -1106,6 +1336,7 @@ mod tests {
             |_, seen| posts.push(seen.clone()),
             drop,
             drop,
+            || {},
         );
 
         assert_eq!(posts, []);

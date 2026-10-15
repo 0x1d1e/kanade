@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use crate::{Button, Cursor, Scroll};
 
 use super::Target;
-use super::target::HoverHandler;
+use super::target::{HoldHandler, HoverHandler};
 
 /*
  * a target across frames: its key and, among the targets of the frame that share it, its order.
@@ -29,6 +29,9 @@ pub struct Pointer {
     hovered: Vec<(Id, HoverHandler)>,
     pressed: Option<Id>,
     dragged: Option<Id>,
+
+    // the target a press is held on, with the handler it was told by, which a redraw may not have
+    held: Option<(Id, HoldHandler)>,
 }
 
 impl Pointer {
@@ -49,6 +52,15 @@ impl Pointer {
             .collect();
         self.targets = targets;
 
+        // a target that went away mid-hold lets the hold go
+        if self
+            .held
+            .as_ref()
+            .is_some_and(|(id, _)| self.index(*id).is_none())
+        {
+            self.stop_hold();
+        }
+
         // the new frame's handler for each hovered target still there that has one
         for (id, handler) in &mut self.hovered {
             if let Some(new) = self
@@ -60,6 +72,34 @@ impl Pointer {
                 *handler = new;
             }
         }
+    }
+
+    // where the caret of the text input `id` was drawn, in the window: left, top, width, height
+    pub fn caret(&self, id: &str) -> Option<(f32, f32, f32, f32)> {
+        self.targets
+            .iter()
+            .find(|target| target.caret.is_some_and(|caret| caret.id == id))
+            .and_then(Target::caret_in_window)
+    }
+
+    // the last frame's targets, in the order they were collected
+    pub fn targets(&self) -> &[Target] {
+        &self.targets
+    }
+
+    // the target a press began on and the release has not come for
+    pub fn pressed_index(&self) -> Option<usize> {
+        self.pressed.and_then(|id| self.index(id))
+    }
+
+    // where the pointer last was in the window, and whether it is over the window
+    pub fn position(&self) -> (f32, f32, bool) {
+        (self.x, self.y, self.inside)
+    }
+
+    // the innermost target at a spot that a click would reach
+    pub fn clicked_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.find_topmost_at(x, y, |target| target.handlers.click.is_some())
     }
 
     // where in the last frame an id is, if it still is
@@ -97,6 +137,15 @@ impl Pointer {
         self.y = y;
         self.inside = true;
 
+        // a press held on a target ends where the pointer leaves it
+        if let Some((id, _)) = &self.held
+            && !self
+                .index(*id)
+                .is_some_and(|index| self.targets[index].contains(x, y))
+        {
+            self.stop_hold();
+        }
+
         let mut inside = Vec::new();
 
         for (index, target) in self.targets.iter().enumerate() {
@@ -115,8 +164,9 @@ impl Pointer {
         self.pressed = None;
         self.inside = false;
 
-        // the release will not reach this window, so the drag ends here
+        // the release will not reach this window, so the drag and the hold end here
         self.dragged = None;
+        self.stop_hold();
 
         self.update_hovered(Vec::new())
     }
@@ -245,6 +295,37 @@ impl Pointer {
         let point = target.point(self.x, self.y);
 
         drag(point);
+
+        true
+    }
+
+    // hold
+
+    // tells the innermost target under the pointer with a hold handler that a press is on it
+    pub fn start_hold(&mut self) -> bool {
+        self.stop_hold();
+
+        let Some(index) = self.find_topmost(|target| target.handlers.hold.is_some()) else {
+            return false;
+        };
+
+        let Some(hold) = self.targets[index].handlers.hold.clone() else {
+            return false;
+        };
+
+        hold(true);
+        self.held = Some((self.ids[index], hold));
+
+        true
+    }
+
+    // tells the target held that the press is over; false when none was held
+    pub fn stop_hold(&mut self) -> bool {
+        let Some((_, hold)) = self.held.take() else {
+            return false;
+        };
+
+        hold(false);
 
         true
     }

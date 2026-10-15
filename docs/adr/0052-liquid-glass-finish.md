@@ -1,6 +1,6 @@
 # 52. Liquid Glass, a third finish
 
-Status: accepted; its readability stance, edge thickness, corners and what makes a copy news are amended by ADR 0054. Amends ADR 0049 (the capture and the glass it removed come back, for this finish only) and ADR 0051 (a third `Finish`). The tinted solid stays the default (ADR 0050); a pane of any other finish captures nothing.
+Status: accepted; its readability stance, edge thickness, corners and what makes a copy news are amended by ADR 0054; its "no refraction" by ADR 0100 (experimental, off). Amends ADR 0049 (the capture and the glass it removed come back, for this finish only) and ADR 0051 (a third `Finish`). The tinted solid stays the default (ADR 0050); a pane of any other finish captures nothing.
 
 ## Context
 

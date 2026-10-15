@@ -32,10 +32,12 @@ use crate::later::{LATER, Later};
 use crate::pane;
 use crate::sources::sleep;
 
+mod keyboard;
 mod password;
 mod scene;
 mod who;
 
+pub use self::keyboard::heard as keyboard;
 use self::password::{PAM, PAM_DIRS, submit};
 pub use self::password::{pam, pam_file, service, service_of, valid};
 use self::scene::decode;

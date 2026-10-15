@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Color, Column, Cursor, Padding, Parent, Rectangle, Row, Size, Stack, Start,
     Text, Widget, children,
@@ -585,6 +586,7 @@ fn pill(action: &Action, pills: &Pills, main: bool) -> Rectangle {
         .fill(fill)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "action").content(action.label.as_str()))
         .on_click(move |button| {
             if button == Button::Left {
                 act(&key, &subject);

@@ -3,6 +3,7 @@ use wayland_client::{Connection, QueueHandle, protocol::wl_output::WlOutput};
 
 use crate::Monitor;
 use crate::monitor;
+use crate::ui_scale;
 
 use super::{WaylandState, surface::View};
 
@@ -65,7 +66,7 @@ impl OutputHandler for WaylandState {
 
 impl WaylandState {
     // every monitor there is, but one `gone`, to the Monitors Service
-    fn publish(&self, gone: Option<&WlOutput>) {
+    pub(super) fn publish(&self, gone: Option<&WlOutput>) {
         let all = self
             .output
             .outputs()
@@ -90,10 +91,19 @@ pub fn describe(info: &OutputInfo) -> Monitor {
         (None, None) => (0, 0),
     };
 
+    // the views see the output in the virtual space, rounded down so nothing laid out in it can
+    // be bigger than the output once the compositor's pixels are put back
+    let ui = ui_scale::ui_scale();
+
     Monitor {
         name,
 
-        width: width as u32,
-        height: height as u32,
+        width: floor(width, ui),
+        height: floor(height, ui),
     }
+}
+
+// a length over the scale, down to a whole pixel; the sliver keeps 1920 / 0.8 from falling to 2399
+fn floor(length: i32, ui: f32) -> u32 {
+    (length as f32 / ui + 0.001).floor() as u32
 }

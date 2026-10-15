@@ -38,6 +38,7 @@ use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::gesture;
 use crate::hooks::{self, Commands};
 use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
@@ -45,9 +46,10 @@ use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
     Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
-    Merge, Placement, ShellMode, Tone, Visualizer,
+    Merge, Placement, ShellMode, Tone, UiDescribe, Visualizer,
 };
 use crate::modules;
+use crate::sources::accessibility;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 use crate::tiles::{self, Placed};
@@ -61,6 +63,12 @@ pub const LONGEST: u64 = 60_000;
 pub const ANIMATION_SPEED: Range = Range {
     least: 25,
     most: 400,
+};
+
+// `appearance.scale`, whole percent: 0.8 to 2.0 times each output's own scale
+pub const UI_SCALE: Range = Range {
+    least: 80,
+    most: 200,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +89,9 @@ pub struct Config {
 
     // `windows.apps`: an app id to the `.desktop` file id its windows belong to (ADR 0014)
     pub apps: BTreeMap<String, String>,
+
+    // `gestures`: gesture name to the Kanade verb it runs (ADR 0106)
+    pub gestures: BTreeMap<String, String>,
 
     // `dock.pinned`: the `.desktop` file ids the Dock keeps, in its order
     pub pinned: Vec<String>,
@@ -118,6 +129,9 @@ pub struct Config {
     // `weather.units`: how the Weather Surface reads temperatures and speeds
     pub units: Units,
 
+    // `brightness.backend`: what sets the screen's brightness (ADR 0082)
+    pub brightness_backend: Backend,
+
     // `appearance.*`: what the bodies are made of, and how they move
     pub appearance: Appearance,
 
@@ -146,6 +160,9 @@ pub struct Config {
     // `media.lyrics`
     pub lyrics: LyricsSource,
 
+    // `ui.describe`
+    pub ui_describe: UiDescribe,
+
     // `lock.backdrop`
     pub lock_backdrop: LockBackdrop,
 
@@ -166,6 +183,9 @@ pub struct Config {
 
     // `launcher.actions`: the apps' Desktop Actions are rows of the Launcher
     pub launcher_actions: bool,
+
+    // `settings.health_notice`: the one-time first-start Peek of checks that need attention (ADR 0088)
+    pub health_notice: bool,
 
     // `idle.*`: after how long idle each stage fires (ADR 0047)
     pub idle: Stages,
@@ -204,7 +224,7 @@ pub struct Config {
     pub outputs: BTreeMap<String, Output>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Appearance {
     // Settings' and apps' tone; the Island, Dock and Banners follow `finish` whatever it is
     pub tone: Tone,
@@ -217,6 +237,37 @@ pub struct Appearance {
 
     // the family every label is set in, else Inter, else the system's sans-serif
     pub font: Option<String>,
+
+    // follow the desktop's reduced motion and higher contrast (ADR 0080)
+    pub accessibility: bool,
+
+    // Liquid Glass bends what lies under its edge, with the shell's own drawing taken out of the
+    // screen copy (experimental, ADR 0100)
+    pub refraction: bool,
+
+    // the UI scale in percent, on top of each output's own scale (ADR 0091)
+    pub scale: u32,
+}
+
+impl Appearance {
+    // the multiplier the runtime scales the whole UI by
+    pub fn ui_scale(&self) -> f32 {
+        self.scale.clamp(UI_SCALE.least, UI_SCALE.most) as f32 / 100.0
+    }
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            tone: Tone::default(),
+            finish: Finish::default(),
+            sync: false,
+            font: None,
+            accessibility: true,
+            refraction: false,
+            scale: 100,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +513,7 @@ impl Default for Config {
             // idle locking is hypridle's until this Module is turned on (ADR 0047)
             off: vec!["idle"],
             apps: BTreeMap::new(),
+            gestures: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
             transition: Transition::default(),
@@ -473,6 +525,7 @@ impl Default for Config {
             location: None,
             place: None,
             units: Units::default(),
+            brightness_backend: Backend::default(),
             appearance: Appearance::default(),
             animation_speed: 100,
             island_place: Placement {
@@ -493,6 +546,7 @@ impl Default for Config {
             rest: Rest::default(),
             visualizer: Visualizer::default(),
             lyrics: LyricsSource::default(),
+            ui_describe: UiDescribe::default(),
             lock_backdrop: LockBackdrop::default(),
             lock_pam: None,
             lock_grace: 0,
@@ -500,6 +554,7 @@ impl Default for Config {
             island_wheel: true,
             device_events: true,
             launcher_actions: true,
+            health_notice: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
                 lock: Some(Duration::from_secs(300)),
@@ -592,6 +647,9 @@ pub struct Focus {
     pub dnd: bool,
     pub caffeine: bool,
     pub night_light: bool,
+
+    // `focus.auto` has `cast`: a screen cast turns Focus on, and off again when it ends (ADR 0078)
+    pub cast: bool,
 }
 
 impl Default for Focus {
@@ -600,6 +658,36 @@ impl Default for Focus {
             dnd: true,
             caffeine: true,
             night_light: false,
+            cast: false,
+        }
+    }
+}
+
+// `brightness.backend`: the backlight, an external monitor over DDC/CI, or the first there is
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    #[default]
+    Auto,
+    Backlight,
+    Ddc,
+}
+
+impl Backend {
+    pub const NAMES: &[&str] = &["auto", "backlight", "ddcci"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Auto => "auto",
+            Backend::Backlight => "backlight",
+            Backend::Ddc => "ddcci",
+        }
+    }
+
+    pub fn named(name: &str) -> Backend {
+        match name {
+            "backlight" => Backend::Backlight,
+            "ddcci" => Backend::Ddc,
+            _ => Backend::Auto,
         }
     }
 }
@@ -881,6 +969,9 @@ pub enum Kind {
     // a table of app id = `.desktop` file id, merged over the layers below by app id
     AppIds(Field<BTreeMap<String, String>>),
 
+    // a table of gesture name = a Kanade verb (`gesture::check`), merged over the layers below by name
+    Gestures(Field<BTreeMap<String, String>>),
+
     // a table of Module name = true or false, merged by name; the Field holds the ones off
     Modules(Field<Vec<&'static str>>),
 
@@ -893,6 +984,9 @@ pub enum Kind {
 
     // the Controls tiles, `name` or `name:size` each, at least one; a layer replaces the list below
     Tiles(Field<Vec<Placed>>),
+
+    // a list of these names, each kept once, in the order given; a layer replaces the list below
+    Names(&'static [&'static str], Field<Vec<&'static str>>),
 }
 
 impl Kind {
@@ -1024,6 +1118,30 @@ impl Kind {
                 apps.extend(given);
                 (field.set)(config, apps);
             }
+            Kind::Gestures(field) => {
+                let table = value
+                    .as_table()
+                    .ok_or("expected a table of name = \"kanade verb\"")?;
+                let mut gestures = (field.get)(config);
+
+                // checked whole first, so a bad one keeps all of its file's below
+                let mut given = BTreeMap::new();
+                for (name, verb) in table {
+                    if !gesture::valid_name(name) {
+                        return Err(format!("{name}: a name is {}", gesture::NAME_RULE));
+                    }
+
+                    let verb = verb
+                        .as_str()
+                        .ok_or_else(|| format!("{name}: expected a \"kanade verb\""))?;
+                    let words = gesture::check(verb).map_err(|why| format!("{name}: {why}"))?;
+
+                    given.insert(name.clone(), words.join(" "));
+                }
+
+                gestures.extend(given);
+                (field.set)(config, gestures);
+            }
             Kind::Modules(field) => {
                 let table = value.as_table().ok_or("expected a table")?;
                 let mut off = (field.get)(config);
@@ -1048,6 +1166,24 @@ impl Kind {
                     .collect::<Result<Vec<_>, _>>()?;
 
                 (field.set)(config, tiles::parse(&list)?);
+            }
+            Kind::Names(known, field) => {
+                let expected = || format!("expected a list of {}", quoted(known));
+                let mut names: Vec<&'static str> = Vec::new();
+
+                for name in value.as_array().ok_or_else(expected)? {
+                    let name = name.as_str().ok_or_else(expected)?;
+                    let name = known
+                        .iter()
+                        .find(|&&known| known == name)
+                        .ok_or_else(|| format!("unknown name {name:?}, {}", expected()))?;
+
+                    if !names.contains(name) {
+                        names.push(name);
+                    }
+                }
+
+                (field.set)(config, names);
             }
             Kind::Argv(field) => {
                 let mut argv = hooks::argv(value)?;
@@ -1089,7 +1225,7 @@ impl Kind {
             | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
-            Kind::AppIds(field) => Value::Table(
+            Kind::AppIds(field) | Kind::Gestures(field) => Value::Table(
                 (field.get)(config)
                     .into_iter()
                     .map(|(app_id, id)| (app_id, Value::String(id)))
@@ -1104,6 +1240,12 @@ impl Kind {
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
+            Kind::Names(_, field) => Value::Array(
+                (field.get)(config)
+                    .into_iter()
+                    .map(|name| Value::String(name.to_owned()))
+                    .collect(),
+            ),
             Kind::Tiles(field) => Value::Array(
                 (field.get)(config)
                     .iter()
@@ -1137,17 +1279,18 @@ impl Kind {
             Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Urls(field) => {
                 field.copy(from, to)
             }
-            Kind::AppIds(field) => field.copy(from, to),
+            Kind::AppIds(field) | Kind::Gestures(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
+            Kind::Names(_, field) => field.copy(from, to),
             Kind::Tiles(field) => field.copy(from, to),
         }
     }
 
     // a table of its own keys, which a file writes as `[key]`
     pub fn table(&self) -> bool {
-        matches!(self, Kind::AppIds(_) | Kind::Modules(_))
+        matches!(self, Kind::AppIds(_) | Kind::Gestures(_) | Kind::Modules(_))
     }
 }
 
@@ -1364,6 +1507,19 @@ pub const ISLAND: &[Setting] = &[
         per_output: false,
     },
     Setting {
+        key: "appearance.refraction",
+        label: "Refraction (experimental)",
+        help: "Liquid Glass only: bend what lies under its edge, taking the shell's own drawing out of the copy of the screen, where that can be told apart, else the edge reflects what lies around as before; costs a copy of each frame of the window",
+        hint: Some("Experimental: Liquid Glass bends what is under its edge"),
+        kind: Kind::Switch(Field {
+            get: |config| config.appearance.refraction,
+            set: |config, refraction| config.appearance.refraction = refraction,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
         key: "appearance.sync",
         label: "Sync desktop appearance",
         help: "sets the desktop color preference and paired GTK theme; writes the wallpaper colors for GTK, qt5ct/qt6ct, KDE apps, niri, kitty and Pywalfox. Kvantum gives way to Darkly or Fusion; GTK and Qt apps need restart. Other apps are unchanged",
@@ -1371,6 +1527,19 @@ pub const ISLAND: &[Setting] = &[
         kind: Kind::Switch(Field {
             get: |config| config.appearance.sync,
             set: |config, sync| config.appearance.sync = sync,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.accessibility",
+        label: "Follow desktop accessibility",
+        help: "follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; turning it on takes a restart",
+        hint: Some("Reduce motion and raise contrast when the desktop asks"),
+        kind: Kind::Switch(Field {
+            get: |config| config.appearance.accessibility,
+            set: |config, follow| config.appearance.accessibility = follow,
         }),
         example: None,
         restart: false,
@@ -1421,6 +1590,22 @@ pub const ISLAND: &[Setting] = &[
 
         // the runtime takes the font as the app starts
         restart: true,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.scale",
+        label: "Interface size",
+        help: "the size of everything Kanade draws, on top of each output's own scale: 100% is unchanged, 125% a quarter larger. Windows already open keep their size; the lock screen is not scaled",
+        hint: Some("Make the whole shell smaller or larger; 100% is the default"),
+        kind: Kind::Percent(
+            UI_SCALE,
+            Field {
+                get: |config| config.appearance.scale,
+                set: |config, scale| config.appearance.scale = scale,
+            },
+        ),
+        example: None,
+        restart: false,
         per_output: false,
     },
     Setting {
@@ -1706,6 +1891,20 @@ pub const WINDOWS: &[Setting] = &[Setting {
         set: |config, apps| config.apps = apps,
     }),
     example: Some("{ jetbrains-idea = \"intellij-idea-ultimate-edition\" }"),
+    restart: false,
+    per_output: false,
+}];
+
+pub const GESTURES: &[Setting] = &[Setting {
+    key: "gestures",
+    label: "Gestures",
+    help: "gesture name = the Kanade verb it runs, like \"island collapse\"; record a gesture with `kanade gesture record <name>`; never a program, which a hook or a verb of yours runs; file only",
+    hint: None,
+    kind: Kind::Gestures(Field {
+        get: |config| config.gestures.clone(),
+        set: |config, gestures| config.gestures = gestures,
+    }),
+    example: Some("{ circle = \"launcher open\", check = \"island collapse\" }"),
     restart: false,
     per_output: false,
 }];
@@ -2139,6 +2338,23 @@ pub const MEDIA: &[Setting] = &[
     },
 ];
 
+pub const UI: &[Setting] = &[Setting {
+    key: "ui.describe",
+    label: "UI tree",
+    help: "what `kanade ui describe` says of the windows, and so what an agent or script can read: \"structure\" is roles, names, states and places with every label and value `<redacted>`; \"content\" adds what notifications, the clipboard, the calendar and lyrics show (never a password), for debugging on this machine; \"off\" refuses `kanade ui` entirely",
+    hint: Some("What the UI tree says; content shows notification and clipboard text"),
+    kind: Kind::Choice(
+        Choices::named(UiDescribe::NAMES),
+        Field {
+            get: |config| config.ui_describe.name(),
+            set: |config, name| config.ui_describe = UiDescribe::named(name),
+        },
+    ),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 pub const LAUNCHER: &[Setting] = &[Setting {
     key: "launcher.actions",
     label: "App actions",
@@ -2147,6 +2363,20 @@ pub const LAUNCHER: &[Setting] = &[Setting {
     kind: Kind::Switch(Field {
         get: |config| config.launcher_actions,
         set: |config, on| config.launcher_actions = on,
+    }),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
+pub const SETTINGS: &[Setting] = &[Setting {
+    key: "settings.health_notice",
+    label: "Health notice",
+    help: "tell once, at the first start with checks that need attention, to open Settings' Health page",
+    hint: Some("Tell once when checks need attention"),
+    kind: Kind::Switch(Field {
+        get: |config| config.health_notice,
+        set: |config, on| config.health_notice = on,
     }),
     example: None,
     restart: false,
@@ -2369,6 +2599,30 @@ pub const BATTERY: &[Setting] = &[
     },
 ];
 
+pub const BRIGHTNESS: &[Setting] = &[Setting {
+    key: "brightness.backend",
+    label: "Brightness backend",
+    help: "what sets the brightness: \"backlight\", an external monitor over \"ddcci\" (DDC/CI, needs the i2c-dev module and access to /dev/i2c-*), or \"auto\" for the backlight, else a monitor",
+    hint: Some("Backlight or an external monitor over DDC/CI"),
+    kind: Kind::Choice(
+        Choices::labeled(
+            Backend::NAMES,
+            &[
+                ("auto", "Automatic"),
+                ("backlight", "Backlight"),
+                ("ddcci", "Monitor (DDC/CI)"),
+            ],
+        ),
+        Field {
+            get: |config| config.brightness_backend.name(),
+            set: |config, name| config.brightness_backend = Backend::named(name),
+        },
+    ),
+    example: None,
+    restart: true,
+    per_output: false,
+}];
+
 pub const NIGHT_LIGHT: &[Setting] = &[
     Setting {
         key: "night-light.mode",
@@ -2433,6 +2687,18 @@ pub const NIGHT_LIGHT: &[Setting] = &[
     },
 ];
 
+// the names as `"a", "b"`, for what a key expects
+fn quoted(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+// what `focus.auto` takes
+const FOCUS_AUTO: &[&str] = &["cast"];
+
 pub const FOCUS: &[Setting] = &[
     Setting {
         key: "focus.dnd",
@@ -2473,12 +2739,34 @@ pub const FOCUS: &[Setting] = &[
         restart: false,
         per_output: false,
     },
+    Setting {
+        key: "focus.auto",
+        label: "Automatic Focus",
+        help: "what turns Focus on by itself, and off again when it ends, only if nobody turned Focus on or off meanwhile: \"cast\" is a screen cast running (needs the privacy Module); empty is never",
+        hint: None,
+        kind: Kind::Names(
+            FOCUS_AUTO,
+            Field {
+                get: |config| {
+                    if config.focus.cast {
+                        vec!["cast"]
+                    } else {
+                        Vec::new()
+                    }
+                },
+                set: |config, names| config.focus.cast = names.contains(&"cast"),
+            },
+        ),
+        example: Some("[\"cast\"]"),
+        restart: false,
+        per_output: false,
+    },
 ];
 
 pub const CONTROLS: &[Setting] = &[Setting {
     key: "controls.tiles",
     label: "Controls tiles",
-    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
+    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit, power-profile; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
     hint: Some("Their order and size; add one, like focus or wifi:full, then Enter"),
     kind: Kind::Tiles(Field {
         get: |config| config.tiles.clone(),
@@ -2874,6 +3162,18 @@ pub fn announce() {
 pub fn read() -> (Config, Vec<String>) {
     let (mut config, problems) = layers(true);
 
+    if config.appearance.accessibility {
+        let desktop = accessibility::current();
+
+        if desktop.reduced_motion {
+            config.island.motion = Mode::Reduced;
+        }
+
+        if desktop.higher_contrast {
+            config.appearance.finish = config.appearance.finish.solid(config.appearance.tone);
+        }
+    }
+
     if let Some(motion) = motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()) {
         config.island.motion = motion;
     }
@@ -2882,7 +3182,8 @@ pub fn read() -> (Config, Vec<String>) {
 }
 
 /*
- * the layers as `read` gives them but without KANADE_REDUCED_MOTION, which no file sets, and only
+ * the layers as `read` gives them but without KANADE_REDUCED_MOTION and the desktop's accessibility
+ * preferences (ADR 0080), which no file sets, and only
  * with the settings file for `settings`: without it is what a value there is compared with
  */
 pub fn layers(settings: bool) -> (Config, Vec<String>) {
@@ -3594,6 +3895,7 @@ mod tests {
                 clock: Hours::Twelve,
                 off: vec!["idle", "media"],
                 apps: BTreeMap::new(),
+                gestures: BTreeMap::new(),
                 pinned: Vec::new(),
                 wallpapers: None,
                 calendars: Vec::new(),
@@ -3649,10 +3951,13 @@ mod tests {
                 "shell.align",
                 "appearance.tone",
                 "appearance.finish",
+                "appearance.refraction",
                 "appearance.sync",
+                "appearance.accessibility",
                 "animation.speed",
                 "appearance.motion",
                 "appearance.font",
+                "appearance.scale",
                 "island.edge",
                 "island.align",
                 "island.width",
@@ -3688,6 +3993,7 @@ mod tests {
                 "timer.pomodoro.long_break",
                 "timer.pomodoro.rounds",
                 "live.stale",
+                "brightness.backend",
                 "osd.layout",
                 "notifications.sound",
                 "notifications.rules",
@@ -3704,6 +4010,7 @@ mod tests {
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "gestures",
                 "night-light.mode",
                 "night-light.temperature",
                 "night-light.sunset",
@@ -3711,6 +4018,7 @@ mod tests {
                 "focus.dnd",
                 "focus.caffeine",
                 "focus.night_light",
+                "focus.auto",
                 "lock.backdrop",
                 "lock.pam_service",
                 "lock.grace",
@@ -3718,6 +4026,8 @@ mod tests {
                 "idle.lock",
                 "idle.screen_off",
                 "idle.suspend",
+                "settings.health_notice",
+                "ui.describe",
                 "hooks.lock",
                 "hooks.unlock",
                 "hooks.wallpaper",
@@ -3725,6 +4035,12 @@ mod tests {
                 "hooks.charger",
                 "hooks.suspend",
                 "hooks.resume",
+                "hooks.started",
+                "hooks.dnd",
+                "hooks.power_profile",
+                "hooks.logout",
+                "hooks.reboot",
+                "hooks.poweroff",
                 "hooks.timeout",
             ]
         );
@@ -3733,7 +4049,7 @@ mod tests {
                 .filter(|setting| setting.restart)
                 .map(|setting| setting.key)
                 .collect::<Vec<_>>(),
-            ["appearance.font", "modules"]
+            ["appearance.font", "modules", "brightness.backend"]
         );
         assert_eq!(
             settings()

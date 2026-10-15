@@ -18,16 +18,18 @@ use kanade_runtime::{IpcCall, ipc_socket};
 mod completions;
 mod keys;
 
+use crate::gesture;
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
+use crate::sources::notifications::timed;
 use crate::sources::system::Switch;
 use crate::sources::{
-    caffeine, capture, charge_limit, focus, google, live, media, night_light, osd, power,
-    recording, reminders, subscriptions, timer, wallpaper, weather,
+    brightness, caffeine, capture, charge_limit, focus, google, live, media, night_light, niri,
+    osd, power, recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
-use crate::{config, doctor};
+use crate::{config, doctor, ui};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -63,21 +65,27 @@ pub enum Call {
     ClearNotifications,
     ClearClipboard,
     Screenshot(capture::Mode),
+    PickColor,
+    Gesture(gesture::Request),
     Record(recording::Request),
+    Cast(niri::Retarget),
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
     Focus(focus::Request),
+    Dnd(timed::Request),
     Battery(charge_limit::Request),
     Media(media::Transport),
     Wifi(Switch),
     Bluetooth(Switch),
     PowerProfile(power::Request),
+    Brightness(brightness::Request),
     Wallpaper(wallpaper::Request),
     Google(google::Request),
     Reminders(reminders::Request),
     Weather(weather::Request),
     Subscriptions(subscriptions::Request),
     Osd(osd::Asked),
+    Ui(ui::Request),
     Lock,
     LockStatus,
     IdleStatus,
@@ -464,6 +472,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return dmenu(asked.prompt);
     }
 
+    // the shell answers at once whether the node is there, and this asks again until it is
+    if let Call::Ui(ui::Request::Wait { name, timeout, .. }) = &asked {
+        return waited(arguments, name, *timeout);
+    }
+
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {
         Call::Wallpaper(wallpaper::Request::Set(path, output)) => {
@@ -494,7 +507,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         _ => arguments.to_vec(),
     };
 
-    let reply = call(&arguments);
+    // the user picks at their own pace
+    let reply = match asked {
+        Call::PickColor | Call::Gesture(gesture::Request::Record(_)) => call_waiting(&arguments),
+        _ => call(&arguments),
+    };
 
     match reply {
         Ok(Reply::Done(text)) if text.is_empty() => ExitCode::SUCCESS,
@@ -507,6 +524,29 @@ pub fn run(arguments: &[String]) -> ExitCode {
             complain(&format!("kanade: {text}"));
             ExitCode::from(3)
         }
+    }
+}
+
+// `kanade ui wait`: 0 once the node is there, 1 when `timeout` passes first or the shell refuses
+fn waited(arguments: &[String], name: &str, timeout: Duration) -> ExitCode {
+    let until = Instant::now() + timeout;
+
+    loop {
+        match call(arguments) {
+            Ok(Reply::Done(text)) if text == "present" => return ExitCode::SUCCESS,
+            Ok(Reply::Done(_)) => {}
+            Ok(Reply::Refused(text) | Reply::Unknown(text)) | Err(text) => {
+                complain(&format!("kanade: {text}"));
+                return ExitCode::FAILURE;
+            }
+        }
+
+        if Instant::now() >= until {
+            complain(&format!("kanade: timed out waiting for {name}"));
+            return ExitCode::FAILURE;
+        }
+
+        thread::sleep(Duration::from_millis(100));
     }
 }
 

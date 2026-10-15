@@ -8,6 +8,7 @@ use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
 
 use crate::cli::{self, Call, Reply};
+use crate::gesture;
 use crate::idle;
 use crate::island::command::{Command, Unparsed};
 use crate::island::presentation::Surface;
@@ -19,16 +20,18 @@ use crate::reload::{self, Outcome};
 use crate::settings;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard;
-use crate::sources::notifications;
+use crate::sources::niri::Acted;
+use crate::sources::notifications::{self, timed};
 use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
-    apps, bluetooth, caffeine, charge_limit, focus, fullscreen, google, live, media, network,
-    night_light, power, reminders, session, subscriptions, wallpaper, weather,
+    apps, bluetooth, brightness, caffeine, charge_limit, focus, fullscreen, google, live, media,
+    network, night_light, power, reminders, session, subscriptions, wallpaper, weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
+use crate::ui;
 
 pub fn answer(arguments: &[String], reply: IpcReply) {
     let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
@@ -48,6 +51,10 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
     match call {
         // answered once the user chooses or dismisses it, so the client waits on the user
         Ok(Call::Dmenu(asked)) => launcher::choose::choose(asked, reply),
+        // answered once the user has picked or left niri's picker, so the client waits on the user
+        Ok(Call::PickColor) => capture::pick(reply),
+        // answered once the three strokes are drawn or the overlay closes, so the client waits on the user
+        Ok(Call::Gesture(gesture::Request::Record(name))) => gesture::record(name, reply),
         // answered when the source is done, or unknown once `LATER` passes (`crate::later`)
         Ok(Call::Record(request)) => recording::request(request, Later::new(reply)),
         // on the draw thread, which systemd-inhibit dies with
@@ -59,6 +66,8 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(Call::PowerProfile(request)) => power::request(request, Later::new(reply)),
         Ok(Call::Wallpaper(request)) => wallpaper::request(request, Later::new(reply)),
         Ok(Call::Lock) => lock::request(Later::new(reply)),
+        // answered from the windows as they were last drawn, at once
+        Ok(Call::Ui(request)) => ui::request(request, reply),
         Ok(call) => reply.send(&run(call).encode()),
         Err(refused) => reply.send(&refused.encode()),
     }
@@ -74,6 +83,8 @@ fn run(call: Call) -> Reply {
             Reply::Done(String::new())
         }
         Call::Live(request) => live::request(request).map_or_else(Reply::Refused, Reply::Done),
+        // opens the overlay or answers from the state file; the user's stroke is no answer to this
+        Call::Gesture(request) => gesture::run(request),
         // `answer` keeps these waiting
         Call::Dmenu(_)
         | Call::Record(_)
@@ -84,6 +95,8 @@ fn run(call: Call) -> Reply {
         | Call::Bluetooth(_)
         | Call::PowerProfile(_)
         | Call::Wallpaper(_)
+        | Call::PickColor
+        | Call::Ui(_)
         | Call::Lock => Reply::Refused(String::from("answered later, not by `run`")),
         Call::ClearNotifications => {
             Notifications::clear();
@@ -99,11 +112,21 @@ fn run(call: Call) -> Reply {
             Ok(Asked::Unknown(why)) => Reply::Unknown(why),
             Err(error) => Reply::Refused(error),
         },
+        // niri answers at once, but the client may wait on it as on a screenshot
+        Call::Cast(to) => match capture::cast(&to) {
+            Ok(Acted::Done) => Reply::Done(String::new()),
+            Ok(Acted::Unknown(why)) => Reply::Unknown(why),
+            Err(error) => Reply::Refused(error),
+        },
         // through the settings file's writes, which the Settings window shares
         Call::NightLight(request) => {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // through the same: it is the Controls tile's press as well
+        // a timed Do Not Disturb ends on a thread of its own, so this answers at once
+        Call::Dnd(request) => {
+            timed::request(request, Instant::now()).map_or_else(Reply::Refused, Reply::Done)
+        }
         Call::Focus(request) => focus::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),
@@ -118,6 +141,10 @@ fn run(call: Call) -> Reply {
         // likewise on the subscriptions' thread
         Call::Subscriptions(request) => {
             subscriptions::request(request).map_or_else(Reply::Refused, Reply::Done)
+        }
+        // the level is set at once; the monitor's own write is on the ddc thread
+        Call::Brightness(request) => {
+            brightness::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         Call::LockStatus => Reply::Done(lock::status()),
         Call::IdleStatus => Reply::Done(idle::status()),

@@ -1,3 +1,4 @@
+use crate::input::ime::{Batch, Context, MOST_BYTES};
 use crate::{Key, Modifiers};
 
 // what a key asked of the input beyond moving the cursor
@@ -22,10 +23,34 @@ pub struct Field {
 
     // the other end of the selection, the cursor being the first; letters, like the cursor
     pub anchor: Option<usize>,
+
+    // what an input method is composing, shown at the cursor and not yet in the text
+    pub preedit: Option<Preedit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preedit {
+    // one line, like the text
+    pub text: String,
+
+    // the bytes of `text` the method marks as its cursor, none when it hides the cursor
+    pub cursor: Option<(usize, usize)>,
 }
 
 impl Field {
     pub fn apply(&mut self, key: Key, modifiers: Modifiers) -> Effect {
+        // the input method owns the keys while it composes; one that gets here was not taken by it
+        if self.preedit.is_some() {
+            // an input method that is gone leaves its preedit behind; these two let the user out
+            if matches!(key, Key::Escape | Key::Backspace) {
+                self.preedit = None;
+
+                return Effect::Changed;
+            }
+
+            return Effect::Unchanged;
+        }
+
         let Modifiers { shift, ctrl, .. } = modifiers;
 
         match key {
@@ -45,6 +70,10 @@ impl Field {
 
     // what was pasted goes where the cursor is, over the selection
     pub fn paste(&mut self, text: &str) -> Effect {
+        if self.preedit.is_some() {
+            return Effect::Unchanged;
+        }
+
         self.insert(&single_line(text))
     }
 
@@ -55,9 +84,148 @@ impl Field {
         (anchor != self.cursor).then(|| (anchor.min(self.cursor), anchor.max(self.cursor)))
     }
 
-    // the text up to `index` letters in
-    pub fn before(&self, index: usize) -> String {
-        self.text.chars().take(index).collect()
+    /*
+     * what an input method asked since its last `done`, in the order the protocol gives: the
+     * old preedit goes, the text around the cursor is deleted, the commit goes in at the cursor,
+     * then the new preedit is shown there. Every offset is the method's, in bytes, and is
+     * clamped to the text and to whole letters
+     */
+    pub fn apply_done(&mut self, batch: &Batch) -> Effect {
+        self.preedit = None;
+
+        let mut changed = false;
+
+        if batch.delete_before > 0 || batch.delete_after > 0 {
+            changed |= self.delete_around(batch.delete_before, batch.delete_after);
+        }
+
+        if let Some(commit) = batch
+            .commit
+            .as_ref()
+            .filter(|text| text.len() <= MOST_BYTES)
+        {
+            let line = single_line(commit);
+
+            if !line.is_empty() {
+                changed |= self.insert(&line) == Effect::Changed;
+            }
+        }
+
+        if let Some((text, begin, end)) = &batch.preedit {
+            changed |= self.compose(text, *begin, *end);
+        }
+
+        match changed {
+            true => Effect::Changed,
+            false => Effect::Unchanged,
+        }
+    }
+
+    // removes `before` bytes before the cursor and `after` after it, less if that splits a letter
+    fn delete_around(&mut self, before: u32, after: u32) -> bool {
+        let cursor = self.byte_index(self.cursor);
+
+        let start = cursor.saturating_sub(before as usize);
+        let start = (start..=cursor)
+            .find(|at| self.text.is_char_boundary(*at))
+            .unwrap_or(cursor);
+
+        let end = cursor.saturating_add(after as usize).min(self.text.len());
+        let end = (cursor..=end)
+            .rev()
+            .find(|at| self.text.is_char_boundary(*at))
+            .unwrap_or(cursor);
+
+        // the deletion is around the cursor, so a selection no longer stands
+        self.anchor = None;
+
+        if start == end {
+            return false;
+        }
+
+        let letters = self.text[..start].chars().count();
+
+        self.text.replace_range(start..end, "");
+        self.cursor = letters;
+
+        true
+    }
+
+    // shows `text` at the cursor as the preedit; whether it took a selection's text away
+    fn compose(&mut self, text: &str, begin: i32, end: i32) -> bool {
+        if text.len() > MOST_BYTES {
+            return false;
+        }
+
+        let line = single_line(text);
+
+        if line.is_empty() {
+            return false;
+        }
+
+        let marked = |at: i32| {
+            let at = usize::try_from(at).ok()?;
+
+            Some(floor_boundary(text, at))
+        };
+
+        // offsets are the method's, so they are carried over to the one-line text
+        let cursor = match (marked(begin), marked(end)) {
+            (Some(begin), Some(end)) => {
+                let kept = |at: usize| floor_boundary(&line, single_line(&text[..at]).len());
+
+                Some((kept(begin.min(end)), kept(begin.max(end))))
+            }
+
+            _ => None,
+        };
+
+        // typing over a selection replaces it, and so does composing
+        let replaced = self.selection().is_some() && self.insert("") == Effect::Changed;
+
+        self.preedit = Some(Preedit { text: line, cursor });
+
+        replaced
+    }
+
+    // what an input method may be told: a bounded part of the text around the cursor
+    pub fn context(&self, sensitive: bool) -> Context {
+        if sensitive {
+            return Context {
+                sensitive,
+                text: String::new(),
+                cursor: 0,
+                anchor: 0,
+            };
+        }
+
+        let cursor = self.byte_index(self.cursor);
+        let anchor = self.anchor.map_or(cursor, |anchor| self.byte_index(anchor));
+
+        // the window of at most MOST_BYTES that has the cursor at its middle where it can
+        let mut start = 0;
+        let mut end = self.text.len();
+
+        if end > MOST_BYTES {
+            start = cursor.saturating_sub(MOST_BYTES / 2);
+            end = (start + MOST_BYTES).min(self.text.len());
+            start = end - MOST_BYTES;
+
+            while !self.text.is_char_boundary(start) {
+                start += 1;
+            }
+
+            while !self.text.is_char_boundary(end) {
+                end -= 1;
+            }
+        }
+
+        Context {
+            sensitive,
+            text: self.text[start..end].to_string(),
+            cursor: cursor.clamp(start, end) - start,
+            anchor: anchor.clamp(start, end) - start,
+        }
     }
 
     // ctrl and a letter, which names the key by the letter it types without ctrl
@@ -160,12 +328,23 @@ impl Field {
     }
 
     // a String is indexed by bytes, and one letter can take several
-    fn byte_index(&self, index: usize) -> usize {
+    pub fn byte_index(&self, index: usize) -> usize {
         match self.text.char_indices().nth(index) {
             Some((byte, _)) => byte,
             None => self.text.len(),
         }
     }
+}
+
+// the largest index up to `at` that does not split a letter
+fn floor_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+
+    at
 }
 
 #[derive(PartialEq)]
@@ -267,6 +446,7 @@ mod tests {
             text: String::from(text),
             cursor,
             anchor: None,
+            preedit: None,
         }
     }
 
@@ -433,5 +613,146 @@ mod tests {
         assert_eq!(field.cursor, 3);
 
         assert_eq!(field.paste("\u{7}"), Effect::Unchanged);
+    }
+
+    fn done(
+        preedit: Option<(&str, i32, i32)>,
+        commit: Option<&str>,
+        before: u32,
+        after: u32,
+    ) -> Batch {
+        Batch {
+            preedit: preedit.map(|(text, begin, end)| (String::from(text), begin, end)),
+            commit: commit.map(String::from),
+            delete_before: before,
+            delete_after: after,
+        }
+    }
+
+    #[test]
+    fn a_done_applies_delete_then_commit_then_preedit_over_the_old_preedit() {
+        let mut field = field("ab cd", 2);
+
+        field.preedit = Some(Preedit {
+            text: String::from("old"),
+            cursor: None,
+        });
+
+        // "b" goes, "XY" is typed where it was, and "z" is composed after it
+        let batch = done(Some(("z", 1, 1)), Some("XY"), 1, 0);
+
+        assert_eq!(field.apply_done(&batch), Effect::Changed);
+        assert_eq!(field.text, "aXY cd");
+        assert_eq!(field.cursor, 3);
+
+        let preedit = field.preedit.as_ref().expect("a preedit");
+
+        assert_eq!(preedit.text, "z");
+        assert_eq!(preedit.cursor, Some((1, 1)));
+
+        // a batch without a preedit ends the composition, the text stays
+        assert_eq!(field.apply_done(&Batch::default()), Effect::Unchanged);
+        assert_eq!(field.preedit, None);
+        assert_eq!(field.text, "aXY cd");
+    }
+
+    #[test]
+    fn composing_alone_changes_no_text_and_a_selection_is_replaced() {
+        let mut composing = field("ab", 1);
+
+        assert_eq!(
+            composing.apply_done(&done(Some(("ni", 0, 2)), None, 0, 0)),
+            Effect::Unchanged
+        );
+        assert_eq!(composing.text, "ab");
+
+        let mut selected = field("hello", 5);
+
+        selected.apply(Key::Character('a'), CTRL);
+
+        assert_eq!(
+            selected.apply_done(&done(Some(("x", -1, -1)), None, 0, 0)),
+            Effect::Changed
+        );
+        assert_eq!(selected.text, "");
+        assert_eq!(selected.selection(), None);
+        assert_eq!(selected.preedit.expect("a preedit").cursor, None);
+    }
+
+    #[test]
+    fn offsets_from_the_method_are_clamped_to_the_text_and_to_whole_letters() {
+        // "é" is two bytes: a deletion that would split it takes less, never a half
+        let mut field = field("aébc", 2);
+
+        assert_eq!(field.apply_done(&done(None, None, 1, 0)), Effect::Unchanged);
+        assert_eq!(field.text, "aébc");
+
+        assert_eq!(field.apply_done(&done(None, None, 99, 99)), Effect::Changed);
+        assert_eq!(field.text, "");
+        assert_eq!(field.cursor, 0);
+
+        // preedit offsets past its end or inside a letter land on letter edges
+        let mut field = self::field("", 0);
+
+        field.apply_done(&done(Some(("éa", 1, 99)), None, 0, 0));
+
+        let preedit = field.preedit.expect("a preedit");
+
+        assert_eq!(preedit.cursor, Some((0, 3)));
+    }
+
+    #[test]
+    fn a_commit_is_one_line_and_an_oversized_one_is_dropped() {
+        let mut field = field("", 0);
+
+        assert_eq!(
+            field.apply_done(&done(None, Some("a\nb"), 0, 0)),
+            Effect::Changed
+        );
+        assert_eq!(field.text, "a b");
+
+        let long = "x".repeat(MOST_BYTES + 1);
+
+        assert_eq!(
+            field.apply_done(&done(None, Some(&long), 0, 0)),
+            Effect::Unchanged
+        );
+        assert_eq!(field.text, "a b");
+    }
+
+    #[test]
+    fn keys_wait_while_the_method_composes() {
+        let mut field = field("ab", 2);
+
+        field.apply_done(&done(Some(("k", 1, 1)), None, 0, 0));
+
+        assert_eq!(
+            field.apply(Key::Character('x'), Modifiers::default()),
+            Effect::Unchanged
+        );
+        assert_eq!(field.paste("y"), Effect::Unchanged);
+        assert_eq!(field.text, "ab");
+    }
+
+    #[test]
+    fn the_context_is_bounded_on_letter_edges_and_empty_for_a_password() {
+        let text = "é".repeat(MOST_BYTES);
+
+        let mut long = field(&text, MOST_BYTES / 2);
+
+        long.anchor = Some(0);
+
+        let context = long.context(false);
+
+        assert!(context.text.len() <= MOST_BYTES);
+        assert!(context.cursor <= context.text.len());
+        assert!(context.text.is_char_boundary(context.cursor));
+        assert!(context.text.is_char_boundary(context.anchor));
+        assert!(context.anchor <= context.cursor);
+
+        let secret = field("hunter2", 7).context(true);
+
+        assert!(secret.sensitive);
+        assert_eq!(secret.text, "");
     }
 }

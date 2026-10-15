@@ -3,6 +3,7 @@ mod compositor;
 mod data_device;
 mod effect;
 mod idle;
+mod ime;
 mod keyboard;
 mod layer;
 mod normal;
@@ -15,6 +16,7 @@ mod socket;
 mod surface;
 mod toplevels;
 mod transfer;
+mod ui;
 mod update;
 mod wake;
 mod windows;
@@ -54,10 +56,12 @@ use wayland_client::{
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 
 use crate::ipc::IpcHandlers;
+use crate::ui_scale;
 use crate::window::Named;
 use crate::{Cursor, LayerWindow, Modifiers, Monitor};
 use backdrop::Captures;
 pub use effect::blur_available;
+use ime::Ime;
 use toplevels::Toplevel;
 
 use surface::{OpenWindow, View};
@@ -92,6 +96,9 @@ struct WaylandState {
     // both are needed for fractional scales like 1.25, none when the compositor lacks one
     fractional_scale: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
+
+    // the compositor's input method for the focused text input, none without its text-input-v3
+    ime: Option<Ime>,
 
     // blur behind the panes of a layer window, none when the compositor has no `ext-background-effect`
     background_effect: Option<ExtBackgroundEffectManagerV1>,
@@ -139,6 +146,9 @@ impl WaylandApp {
         per_monitor: Vec<fn(&Monitor) -> LayerWindow>,
         handlers: IpcHandlers,
     ) -> Self {
+        // the scale asked before the runtime started is the one windows open at
+        ui_scale::adopt();
+
         let connection = connect();
 
         let event_loop = EventLoop::try_new().expect("failed to create event loop");
@@ -169,6 +179,7 @@ impl WaylandApp {
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
         let viewporter = globals.bind(&qh, 1..=1, ()).ok();
         let background_effect = globals.bind(&qh, 1..=1, ()).ok();
+        let ime = ime::bind(&globals, &qh);
 
         // windows per monitor are opened once the compositor describes each monitor
         let mut state = WaylandState {
@@ -195,6 +206,8 @@ impl WaylandApp {
             viewporter,
 
             background_effect,
+
+            ime,
 
             toplevel_manager,
             toplevels: HashMap::new(),

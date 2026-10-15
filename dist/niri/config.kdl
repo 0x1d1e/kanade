@@ -101,6 +101,16 @@ layer-rule {
     }
 }
 
+// Opt in: hide Banners, which show notification text, from screencasts (a share or OBS sees a black
+// rectangle). Only kanade-banners: the "kanade" namespace also draws the privacy dots, which must
+// stay visible. Use "screencast", never "screen-capture", which would also blank Kanade's own
+// screen copy for the liquid-glass finish
+// layer-rule {
+//     match namespace="^kanade-banners$"
+//
+//     block-out-from "screencast"
+// }
+
 overview {
     workspace-shadow {
         off
@@ -113,6 +123,8 @@ binds {
 
     Mod+comma { spawn-sh "kanade settings open"; }
     Mod+Space { spawn-sh "kanade launcher toggle"; }
+    // the pointer-gesture launcher (the `gesture` Module): draw a recorded stroke to run its verb
+    // Mod+G { spawn-sh "kanade gesture"; }
 
     XF86AudioRaiseVolume allow-when-locked=false { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02+ -l 1.0"; }
     XF86AudioLowerVolume allow-when-locked=false { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02-"; }

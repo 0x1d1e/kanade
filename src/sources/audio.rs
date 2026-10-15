@@ -111,6 +111,9 @@ pub struct Stream {
     pub plays: bool,
 
     pub level: Level,
+
+    // the output it was moved to, none while it follows the default or the one it names is gone
+    pub target: Option<Node>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +135,9 @@ const DEFAULT_INPUT: &str = "default.audio.source";
 // the defaults asked for, which the session manager follows while those devices are there
 const CONFIGURED_OUTPUT: &str = "default.configured.audio.sink";
 const CONFIGURED_INPUT: &str = "default.configured.audio.source";
+
+// the key a stream is moved to an output by: the output's serial, which the session manager obeys
+const TARGET: &str = "target.object";
 
 // how long a wpctl or pw-dump action may run before it is killed, so one that hangs holds up
 // neither the follower nor the asks after it
@@ -186,6 +192,9 @@ struct Graph {
     output: Option<String>,
     input: Option<String>,
     reread: bool,
+
+    // the output each stream was moved to, by stream id: the serial or node name the metadata names
+    targets: HashMap<u64, String>,
 }
 
 impl Graph {
@@ -203,6 +212,7 @@ impl Graph {
                 self.defaults = None;
                 self.output = None;
                 self.input = None;
+                self.targets.clear();
             }
 
             return;
@@ -242,6 +252,14 @@ impl Graph {
         if whole {
             self.output = None;
             self.input = None;
+            self.targets.clear();
+        }
+
+        for (stream, target) in targets(metadata) {
+            match target {
+                Some(target) => drop(self.targets.insert(stream, target)),
+                None => drop(self.targets.remove(&stream)),
+            }
         }
 
         for (key, name) in defaults(metadata) {
@@ -296,6 +314,18 @@ impl Graph {
                 title: entry.title.clone(),
                 plays: entry.role == Role::Playback,
                 level: entry.level,
+                target: self.targets.get(&id).and_then(|target| {
+                    self.nodes
+                        .iter()
+                        .find(|(_, output)| {
+                            output.role == Role::Output
+                                && (output.name == *target || output.serial.to_string() == *target)
+                        })
+                        .map(|(&id, output)| Node {
+                            id,
+                            serial: output.serial,
+                        })
+                }),
             })
             .collect();
 
@@ -394,6 +424,30 @@ fn defaults(metadata: &Json) -> impl Iterator<Item = (&str, Option<String>)> {
             let key = entry.get("key")?.as_str()?;
 
             Some((key, entry.get("value").and_then(default_name)))
+        })
+}
+
+// the streams the defaults' metadata moved, each with the output it names, a serial or a node name,
+// none once removed. `-1` is no target
+fn targets(metadata: &Json) -> impl Iterator<Item = (u64, Option<String>)> {
+    let entries = metadata.get("metadata").and_then(json::array);
+
+    entries
+        .unwrap_or_default()
+        .iter()
+        .filter(|entry| entry.get("key").and_then(Json::as_str) == Some(TARGET))
+        .filter_map(|entry| {
+            let stream = entry
+                .get("subject")?
+                .as_u64()
+                .filter(|&stream| stream != 0)?;
+            let target = match entry.get("value") {
+                Some(Json::Number(number)) => number.as_u64().map(|number| number.to_string()),
+                Some(Json::String(text)) => Some(text.clone()).filter(|text| !text.is_empty()),
+                _ => None,
+            };
+
+            Some((stream, target))
         })
 }
 
@@ -528,6 +582,14 @@ pub fn ask_default(device: &Device, direction: Direction) {
     ask(Ask::Default(device.clone(), direction));
 }
 
+/*
+ * asks for a playing `stream` moved to `output`, or back to following the default for none. The
+ * Mixer shows it once the session manager has relinked it
+ */
+pub fn ask_route(stream: Node, output: Option<Node>) {
+    ask(Ask::Route(stream, output));
+}
+
 // which list a device is in; a duplex device is in both
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -572,6 +634,7 @@ enum Ask {
     Volume(Node, u8),
     Muted(Node, bool),
     Default(Device, Direction),
+    Route(Node, Option<Node>),
 }
 
 impl Ask {
@@ -581,6 +644,7 @@ impl Ask {
             (Ask::Volume(node, _), Ask::Volume(other, _))
             | (Ask::Muted(node, _), Ask::Muted(other, _)) => node == other,
             (Ask::Default(_, direction), Ask::Default(_, other)) => direction == other,
+            (Ask::Route(stream, _), Ask::Route(other, _)) => stream == other,
             _ => false,
         }
     }
@@ -600,6 +664,11 @@ impl Ask {
             Ask::Volume(..) | Ask::Muted(..) => {
                 if let Err(why) = done {
                     eprintln!("kanade: cannot set a level: {why}");
+                }
+            }
+            Ask::Route(..) => {
+                if let Err(why) = done {
+                    eprintln!("kanade: cannot move an app: {why}");
                 }
             }
             Ask::Default(device, direction) => {
@@ -693,12 +762,19 @@ fn perform(
     dump: impl Fn(Option<u64>) -> Result<String, String>,
 ) -> Result<(), String> {
     let node = match ask {
-        Ask::Volume(node, _) | Ask::Muted(node, _) => *node,
+        Ask::Volume(node, _) | Ask::Muted(node, _) | Ask::Route(node, _) => *node,
         Ask::Default(device, _) => device.node,
     };
 
     if !shows(&dump(Some(node.id))?, node) {
         return Err(gone(ask));
+    }
+
+    // the output it is moved to, which a serial not shown any more would leave the app without
+    if let Ask::Route(_, Some(output)) = ask
+        && !shows(&dump(Some(output.id))?, *output)
+    {
+        return Err(format!("output {} is gone", output.id));
     }
 
     let (program, args) = command(ask);
@@ -738,7 +814,9 @@ fn perform(
 
 fn gone(ask: &Ask) -> String {
     match ask {
-        Ask::Volume(node, _) | Ask::Muted(node, _) => format!("node {} is gone", node.id),
+        Ask::Volume(node, _) | Ask::Muted(node, _) | Ask::Route(node, _) => {
+            format!("node {} is gone", node.id)
+        }
         Ask::Default(device, _) => format!("{} is gone", device.name),
     }
 }
@@ -779,7 +857,7 @@ fn configured(dump: &str, key: &str) -> Option<String> {
 
 /*
  * what carries `ask` out: wpctl for a level, and for a default but a duplex device's, which wpctl
- * turns down and is configured by name, as wpctl would
+ * turns down and is configured by name, as wpctl would; pw-metadata for moving an app
  */
 fn command(ask: &Ask) -> (&'static str, Vec<String>) {
     let wpctl = |args: &[&str]| (WPCTL, args.iter().map(|arg| arg.to_string()).collect());
@@ -795,6 +873,25 @@ fn command(ask: &Ask) -> (&'static str, Vec<String>) {
             &node.id.to_string(),
             if *muted { "1" } else { "0" },
         ]),
+        Ask::Route(stream, Some(output)) => (
+            pipewire::SET_METADATA,
+            [
+                "-n",
+                DEFAULTS,
+                &stream.id.to_string(),
+                TARGET,
+                &output.serial.to_string(),
+                "Spa:Id",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ),
+        Ask::Route(stream, None) => (
+            pipewire::SET_METADATA,
+            ["-n", DEFAULTS, "-d", &stream.id.to_string(), TARGET]
+                .map(String::from)
+                .to_vec(),
+        ),
         Ask::Default(device, _) => match &device.choice {
             Choice::Node => wpctl(&["set-default", &device.node.id.to_string()]),
             Choice::Configured { key, name } => {
@@ -1049,6 +1146,141 @@ mod tests {
                 performed(&ask, &replaced),
                 (Err("Built-in Microphone is gone".into()), vec![])
             );
+        }
+    }
+
+    // a stream moved to an output by the defaults' metadata, as pw-dump prints it
+    #[test]
+    fn a_moved_stream_names_its_output_by_serial_or_name_and_a_removal_clears_it() {
+        let stream = |id: u64, serial: u64| {
+            let props = format!(
+                r#""media.class": "Stream/Output/Audio", "node.name": "node{id}", "application.name": "pw-play""#
+            );
+
+            serialed(id, serial, &props, "1.0", false)
+        };
+        let metadata = |entries: &str| {
+            format!(
+                r#"  {{ "id": {DEFAULTS_ID}, "type": "{METADATA}", "props": {{ "metadata.name": "default" }},
+    "metadata": [ {entries} ] }}"#
+            )
+        };
+        let moved = |subject: u64, value: &str| {
+            format!(
+                r#"{{ "subject": {subject}, "key": "target.object", "type": "Spa:Id", "value": {value} }}"#
+            )
+        };
+
+        let machine = || {
+            [
+                device(
+                    SPEAKER,
+                    "Audio/Sink",
+                    "alsa_output.analog",
+                    "Built-in Audio",
+                    "1.0, 1.0",
+                ),
+                device(
+                    HEADPHONES,
+                    "Audio/Sink",
+                    "bluez_output.1",
+                    "Moondrop",
+                    "1.0, 1.0",
+                ),
+                stream(90, 1090),
+                stream(91, 1091),
+                stream(92, 1092),
+            ]
+        };
+        let targets = |entries: &[String]| {
+            let mut objects = machine().to_vec();
+            objects.push(metadata(&entries.join(", ")));
+
+            posts(&[print(&objects)])
+                .pop()
+                .unwrap()
+                .streams
+                .iter()
+                .map(|stream| (stream.node.id, stream.target.map(|node| node.id)))
+                .collect::<Vec<_>>()
+        };
+
+        // a serial, a name, an id that is no output and a stream moved nowhere, which a `-1` is
+        assert_eq!(
+            targets(&[
+                moved(90, &format!("{}", 1000 + HEADPHONES)),
+                moved(91, "\"alsa_output.analog\""),
+                moved(92, "-1"),
+                moved(93, "1000"),
+            ]),
+            [(90, Some(HEADPHONES)), (91, Some(SPEAKER)), (92, None)]
+        );
+
+        // an app moved to a gone output follows the default
+        assert_eq!(
+            targets(&[moved(90, "4242")]),
+            [(90, None), (91, None), (92, None)]
+        );
+
+        // the defaults' own keys are for no stream
+        assert_eq!(
+            targets(&[format!(
+                r#"{{ "subject": 0, "key": "target.object", "type": "Spa:Id", "value": {} }}"#,
+                1000 + SPEAKER
+            )]),
+            [(90, None), (91, None), (92, None)]
+        );
+    }
+
+    #[test]
+    fn moving_an_app_runs_pw_metadata_only_while_both_nodes_are_there() {
+        let stream = Node::of(90);
+        let output = Node::of(SPEAKER);
+        let graph = print(&[
+            serialed(
+                90,
+                stream.serial,
+                r#""media.class": "Stream/Output/Audio", "node.name": "n""#,
+                "1.0",
+                false,
+            ),
+            serialed(
+                SPEAKER,
+                output.serial,
+                r#""media.class": "Audio/Sink", "node.name": "s""#,
+                "1.0",
+                false,
+            ),
+        ]);
+
+        assert_eq!(
+            performed(&Ask::Route(stream, Some(output)), &graph),
+            (
+                Ok(()),
+                vec![vec![
+                    "pw-metadata".to_string(),
+                    "-n".into(),
+                    "default".into(),
+                    "90".into(),
+                    "target.object".into(),
+                    "1055".into(),
+                    "Spa:Id".into(),
+                ]]
+            )
+        );
+        assert_eq!(
+            performed(&Ask::Route(stream, None), &graph).1,
+            [["pw-metadata", "-n", "default", "-d", "90", "target.object"]]
+        );
+
+        for ask in [
+            Ask::Route(Node::of(91), None),
+            Ask::Route(stream, Some(output.again())),
+        ] {
+            let (done, ran) = performed(&ask, &graph);
+
+            assert!(done.is_err());
+            assert!(ran.is_empty());
         }
     }
 

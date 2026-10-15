@@ -20,6 +20,8 @@ Something happening that may deserve attention. Has identity, Kind, Priority, Li
 An Activity of Kind `Live` another program posts through `kanade activity` (ADR 0042): a build, a download, a script. It shows a title, a pulse or how far along it is, and on Peek a detail line and a bar. The `live` Module owns it; it has no Surface, so a click opens Controls.
 - While live it is Persistent Ongoing and Global, so it can be a Satellite; ended, as done or failed, it is a Transient Actionable on the focused output, as a saved recording is.
 - **Invariant:** what comes in is bounded: at most `MOST` (`src/sources/live.rs`) live at once, ids from a small alphabet, titles and details one line of plain text cut to a length. A verb for an id that is not live is refused. Titles and details are never logged.
+- An app's progress through its Unity launcher entry (`com.canonical.Unity.LauncherEntry`, ADR 0083) is one too, of the `launcher-entry` Module, id `launcher.<desktop file id>`, which no client can have; at most `LAUNCHED` of the live ones, the oldest giving way.
+- niri's own failed config load (`ConfigLoaded { failed: true }`, ADR 0071) shows as the failed form of one, id `niri config`, which no client can have: a Transient on the focused output, with no live phase. It follows the `live` Module; a load that succeeded shows nothing.
 - **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
 - **Invariant:** a repost is cheap: a change within `REPOST` (250 ms) of the Activity's last post is held and posted when due, the newest of those held, and one that changes nothing is never posted (ADR 0058).
 - `activity hook claude` is a client of these verbs, not another path to the Island: a Claude Code session's events become one Live Activity, and a late event never brings an ended one back (ADR 0058).
@@ -33,7 +35,7 @@ A Bluetooth device connecting or going, the charger plugged in or out, the defau
 - **Avoid:** notification, toast
 
 ## Privacy cluster
-The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps and says whether a screen cast captures a window or a screen, never whose, and ends a PipeWire cast with Stop sharing at the header's end, through niri's `stop-cast` by session (a wlr-screencopy cast, like a recording, has none); `privacy.indicators` turns it off.
+The microphone, camera and screen capture in use, a dot of its color and shape each (round microphone, square camera, ring screen cast; `theme::signals`) at the trailing end of the Island's body, inside it: in the small forms (Rest, Compact, Split, Peek) and, rising to the top corner as the body grows, every Surface (ADRs 0005, 0033). They fade in and out. In the small forms what is centered stands toward the start while they show. It takes no pointer; the Controls Surface names the apps and says whether a screen cast captures a window or a screen, never whose, says `(paused)` when every cast has stopped streaming frames (the dots stay: the cast is still open), and ends a PipeWire cast with Stop sharing at the header's end, through niri's `stop-cast` by session (a wlr-screencopy cast, like a recording, has none); `privacy.indicators` turns it off.
 - **Invariant:** never an Activity and never in the Arbiter. Capturing, the Island does not hide; under a fullscreen window it does not show. A Tray strip shows them past its last slot.
 - **Avoid:** privacy Activity, privacy Satellite, indicator (as a type name)
 
@@ -42,13 +44,15 @@ A notification card on the focused output, hanging from the Island on its edge a
 - Low shows 4 s, normal 6 s, Critical until closed. The pointer on any Banner pauses every timer. At most `MOST` (`src/banners/stack.rs`) show, newest nearest the Island; the rest queue, Critical first.
 - A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, play no sound, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
 - **Invariant:** a notification plays a sound only with `notifications.sound` on, only when new to the list (a replacement plays none), only if its rule and `suppress-sound` allow, and never under DND, a Critical one included. A sound is a helper (`pw-play`, else `canberra-gtk-play`) started without a shell, one at a time, for at most 5 s, from a `sound-file` hint that is an absolute existing regular file or a plain `sound-name`; Kanade links no audio library.
+- A notification whose sender asked for an inline reply (the KDE `inline-reply` action) gets a reply field on its Banner while the `banners` Module is on (ADR 0079). Enter sends the text to that sender only and closes the notification unless it is resident. A Banner with text typed in its field stays until sent or closed.
 - **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
 - **Invariant:** the history is bounded: 20 notifications of one app and 100 in all, the oldest of the app, then of all, closing as expired when one arrives past them. The Notifications Surface shows an app's notifications as a stack, the newest with a count, once it has more than one; a stack is closed each time the Surface opens, opened by click, Enter or Space, and its cross or Backspace dismisses all it holds. Banners are not stacked.
 - **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
+- **Invariant:** a timed DND (`notifications dnd on 15m`, ADR 0075) ends only the DND it turned on: any other setting of DND cancels its end.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
 
 ## OSD
-A volume, brightness, keyboard backlight or microphone mute level, a mode (Caps Lock, Num Lock, airplane mode), or a keyboard layout switch, shown as a Transient Activity of `Feedback` Priority on the focused output's Island, over any other Activity and its Satellites, and over an open Surface or a Peek as a capsule (ADR 0021). It shows on a change, and on a level key pressed even at a limit. The Island shows over a fullscreen window only while an OSD or a Surface does. The `osd` Module reads `audio` and `brightness` only while they are on, and shows nothing for one that is off.
+A volume, brightness, keyboard backlight or microphone mute level, a mode (Caps Lock, Num Lock, airplane mode), or a keyboard layout switch, shown as a Transient Activity of `Feedback` Priority on the focused output's Island, over any other Activity and its Satellites, and over an open Surface or a Peek as a capsule (ADR 0021). It shows on a change, and on a level key pressed even at a limit. The Island shows over a fullscreen window only while an OSD or a Surface does. The `osd` Module reads `audio` and `brightness` only while they are on, and shows nothing for one that is off. Brightness is one level: the backlight's, else that of the external monitor on the focused output over DDC/CI (ADR 0082).
 - A keyboard layout shows in a mode's place, as a lamp with its short label (like "US") and the name XKB gives it, while `osd.layout` is on: only when niri switches between two or more layouts, never for the list niri gives at start or on a change of its config.
 - **Invariant:** one OSD at a time: a change while one shows takes its place and starts its time (`osd` in the config) again, so a held key extends one OSD.
 - **Avoid:** popup, toast
@@ -101,7 +105,7 @@ Full interactive content of an Expanded island: `Media | Notifications | Control
 - **Avoid:** panel, page, view (a view is the runtime's build function)
 
 ## Sub-surface
-A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has five: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, Audio, from the speaker level's chevron, and the arrangement of its tiles (ADR 0067), from the header's pencil. In the Tray Surface an item's menu is one, from its chevron or its slot, and each submenu another below it.
+A level inside a Surface, entered from one of its targets and left by a back control or Escape. Controls has five: Wi-Fi, from the Wi-Fi tile's chevron, its password entry, from a network that needs one, Bluetooth, from the Bluetooth tile's chevron, Audio, from the speaker level's chevron (an app that plays has a Route row to move it to another output, ADR 0081), and the arrangement of its tiles (ADR 0067), from the header's pencil. In the Tray Surface an item's menu is one, from its chevron or its slot, and each submenu another below it.
 - **Invariant:** every target in a Surface and its sub-surfaces is a key away. Arrows move a ring between targets, Enter or Space presses, Escape leaves a sub-surface for the level it came from, ringed on the target that entered it, and collapses the island only from the top level.
 - **Invariant:** a hidden ring (a Surface opened by pointer, or its target gone) is shown by the first key that would act or move, which does nothing else; any other key does nothing. Session, Timer, Capture, Tray and Controls share it through `surfaces/ring.rs` (the first three through `surfaces/pad.rs`); Notifications keeps an equivalent local one.
 - **Invariant:** a sub-surface lasts one opening of its Surface. The Surface opens at its top level.
@@ -119,12 +123,20 @@ One kind of answer the Launcher finds for a query: apps, an app's own Desktop Ac
 - **Avoid:** plugin, source (a source posts to the island)
 
 ## Hook
-A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume. The Module that owns the fact fires it.
+A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume, started, dnd, power_profile, logout, reboot, poweroff (the last three fired just before logind is asked, and waited for up to `hooks.timeout`). The Module that owns the fact fires it.
 - **Invariant:** a hook never blocks a Service, a watcher or the draw thread; it runs as a bounded child that dies with Kanade, at most one per event at a time, and a fire while it runs is dropped.
 - **Invariant:** hooks are set in files, never through `kanade config set` or Settings. The payload is environment variables only; a failure logs the first line of the command's own error.
 - **Invariant:** a failing hook shows in `kanade status`, never as an Activity.
 - Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
 - **Avoid:** plugin, script event soup, subscription
+
+## Semantic tree
+The windows' interactive controls as named nodes (`id`, `parent`, `role`, `label`, `value`, states, `bounds`), read and acted on from outside with `kanade ui` (ADRs 0095 to 0099). It is the input targets of each window's last frame, with the role and name a view says where it builds them, not a second tree.
+- **Invariant:** a node's name is source text; what the user or the world wrote (a notification, a title, a track, the clipboard, a network, typed text) is content, `<redacted>` unless `ui.describe = "content"`, and a password is never stored in any mode.
+- **Invariant:** the lock screen is never in it and `kanade ui` is refused while the session is locked; `ui.describe = "off"` keeps no tree and refuses everything.
+- **Invariant:** an act goes through the runtime's pointer and keyboard path to the named node, never by coordinates, and leaves the user's pointer where it was.
+- Not an accessibility tree: shaped for an AccessKit or AT-SPI adapter, which does not exist.
+- **Avoid:** DOM, accessibility tree, UI automation API
 
 ## Calendar subscription
 A public iCalendar feed, an `https://` address in `calendar.subscriptions` (`webcal://` read as `https://`), fetched into a read-only file the calendar reads beside the local ones (ADR 0062). A feed is named by its place in the list, never by address.
@@ -142,7 +154,7 @@ An Activity saying a calendar event is coming: its title and how long until it s
 Small secondary indicator beside the primary island: timer, VPN, low battery, a Live Activity.
 - Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Stop.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary, and a playing Media Activity beside such a primary, so a song keeps its place beside a timer; it counts after the others and shows its cover. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
-- **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops.
+- **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops. Coming out or going, it is one liquid shape with the body: a neck stretches and snaps as it parts (ADR 0101), except under Liquid Glass and reduced motion.
 - While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.
 
 ## Hold
@@ -160,6 +172,12 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
 - **Avoid:** sticky, lock (lock is the screen locker)
 
+## Confirm hold
+How a Surface confirms a destructive press: the target fills while the pointer button or the key is held, and acts only when it is full after 700 ms (ADR 0085). Calendar remove (`d`) and the Clipboard's Clear all.
+- **Invariant:** a release before it is full acts on nothing, and drains the fill. Any key coming up, the next key going down, the pointer leaving the target or the window, or the Surface being visited anew ends it. It acts on a thread of its own, never in a view.
+- **Invariant:** reduced motion has no fill or drain, only the same wait.
+- **Avoid:** Hold (that is the island's keyboard), double press, arm
+
 ## Running app
 One app's open windows, as `windows` groups them for the Dock: those whose `app_id` matches one desktop entry (ADR 0014). Windows that match none group by `app_id`; a window without one stands alone.
 - **Invariant:** nothing of niri leaves `windows` but window ids. A window's title is asked of niri each time the Dock's menu opens and lives only as long as the menu.
@@ -172,8 +190,9 @@ Strip per monitor on the edge and side `dock.edge` and `dock.align` give it: pin
 - **Avoid:** taskbar, launcher (the Launcher is a Surface), panel
 
 ## Pane
-One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text), paper (light, dark ink) (ADR 0051), Liquid Glass (clear glass, the screen showing through, its edge reflecting what lies around it, light text that turns to dark ink over a bright page) (ADRs 0052, 0054) or Blur (the tinted solid, or paper's ramp while `appearance.tone` is light, translucent over what the compositor blurs behind the pane's outline) (ADR 0057). A merged Island and Dock are one pane with one outline (ADR 0031).
+One opaque piece of the shell, tinted toward the wallpaper's hue, with a top light edge and a rim: the Island's body, the Dock, or one Banner (ADR 0050). Its finish, `appearance.finish`, is the tinted solid (dark, light text), paper (light, dark ink) (ADR 0051), Liquid Glass (clear glass, the screen showing through, its edge reflecting what lies around it, or with `appearance.refraction` bending what lies under it where that can be told, light text that turns to dark ink over a bright page) (ADRs 0052, 0054, 0100) or Blur (the tinted solid, or paper's ramp while `appearance.tone` is light, translucent over what the compositor blurs behind the pane's outline) (ADR 0057). A merged Island and Dock are one pane with one outline (ADR 0031).
 - **Invariant:** tinted from the wallpaper's hue (a cool slate until Matugen answers), with text that suits its finish, whatever `appearance.tone` says (except Blur, which is paper's ramp while the tone is light); opaque, and nothing behind it read, except under Liquid Glass, the only finish that captures the screen, which stops when the finish changes or the session locks; Blur is translucent but copies nothing, the compositor blurs behind it, and it is opaque where the compositor cannot.
+- **Invariant:** the desktop's higher contrast (settings portal, `appearance.accessibility`) makes a liquid glass or blur Pane the solid finish of `appearance.tone` for as long as it asks, without changing the saved `appearance.finish` (ADR 0080).
 - **Avoid:** frost, material (the choice is the finish), glass for anything but the Liquid Glass finish, frosted (the Blur finish has no frost of its own), layer (a `pane::layer` widget), surface (a Surface is the Island's)
 
 ## Idle stage
@@ -183,6 +202,14 @@ What the `idle` Module does after the user has been idle for so long (ADR 0047):
 - **Invariant:** the stage scheduler takes time as an input, never reads a clock.
 - **Avoid:** screensaver, DPMS (niri powers monitors off), idle inhibit (an inhibitor is what holds the stages)
 
+## Gesture
+A stroke the user recorded under a name (`kanade gesture record NAME`, three strokes, kept normalized in the state file `gestures.toml`, ADR 0106) and mapped, in `gestures.<name>` of the config, to a Kanade verb. `kanade gesture` covers the focused output with an overlay that takes the pointer; the stroke drawn is matched by a $1 recognizer and a match runs its verb (ADR 0105 to 0109).
+- **Invariant:** a Gesture runs only a Kanade verb, through the shell's own socket, never a shell command; user commands go through a Hook. Verbs that wait on the user, run a program or end the session are refused when the config is read.
+- **Invariant:** the overlay always lets go of the pointer and keyboard: Escape, a right click, the end of the stroke, 8 s and a lock close it, and it never opens while locked.
+- **Invariant:** no match, or two Gestures too close to tell apart, runs nothing and shows a Transient "No gesture".
+- The templates are state (rewritten by `record`), the verbs are config (user-owned); neither holds the other.
+- **Avoid:** macro, shortcut, mouse gesture (a gesture here is drawn on an overlay, not a global pointer motion), Hook (runs a user command on an event)
+
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules/catalog.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.
@@ -190,6 +217,6 @@ A feature the user can turn off in `[modules]` of the config: `src/modules/catal
 - **Invariant:** a Module that is off starts no thread or helper process, opens no window, reads no Service, posts nothing and answers its verbs with `module <name> is off`. A Service only it reads stays cold.
 - **Invariant:** a Module whose requirement is off, or whose requirements loop, is off too, and stderr names why. One missing an optional Module runs without it.
 - A Module whose loss is easy to miss says so at every start while off (`privacy`: no capture indicators).
-- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable. The Night Light switch likewise belongs to `night-light`, and is unavailable without `wlsunset`; the Caffeine switch belongs to `caffeine`. The microphone's mute is in the Audio sub-surface, not a switch. Focus turns on Do Not Disturb, caffeine and optionally the night light together, through the Modules that own them, and turns off what it turned on; it belongs to `focus`, which runs with whichever of them are on. The Limit Charge switch belongs to `battery`, and shows only while UPower says the battery supports a charge limit. `kanade wifi`, `bluetooth` and `power-profile` belong to `network`, `bluetooth` and `power`, and `media play-pause|next|previous` to `media`; each answers once the daemon or player has it as asked, or refuses saying why.
+- Do Not Disturb belongs to `notifications`: with it off, the verb is refused and the Controls switch is unavailable. The Night Light switch likewise belongs to `night-light`, and is unavailable without `wlsunset`; the Caffeine switch belongs to `caffeine`. The microphone's mute is in the Audio sub-surface, not a switch. Focus turns on Do Not Disturb, caffeine and optionally the night light together, through the Modules that own them, and turns off what it turned on; it belongs to `focus`, which runs with whichever of them are on. The Limit Charge switch belongs to `battery`, and shows only while UPower says the battery supports a charge limit. The Power Profile switch belongs to `power`, and cycles the profiles the machine has. `kanade wifi`, `bluetooth` and `power-profile` belong to `network`, `bluetooth` and `power`, and `media play-pause|next|previous` to `media`; each answers once the daemon or player has it as asked, or refuses saying why.
 - Which Modules run is decided once at start; a change takes a restart.
 - **Avoid:** plugin (not built), feature flag, Service (a `Service` is shared state a Module reads)

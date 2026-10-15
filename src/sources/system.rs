@@ -16,6 +16,7 @@ use std::sync::{Once, mpsc};
 use std::{iter, mem, thread};
 
 use crate::bus::{Bus, Value};
+use crate::hooks::{self, Event};
 use kanade_runtime::service::Service;
 
 use super::{bluetooth, network, power, wifi};
@@ -396,7 +397,18 @@ fn refresh_all(daemons: Vec<Daemon>) {
     }
 
     if daemons.contains(&Daemon::PowerProfiles) {
+        let before = power::Profiles::read().active;
+
         refresh(power::read());
+
+        // a hook tells of a change (ADR 0055); the first reading and a daemon coming back are none
+        let after = power::Profiles::read().active;
+
+        if let (Some(before), Some(after)) = (before, after)
+            && before != after
+        {
+            hooks::fire_with(Event::PowerProfile, after.key());
+        }
     }
 }
 

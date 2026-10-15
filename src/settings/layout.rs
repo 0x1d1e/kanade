@@ -36,6 +36,9 @@ pub enum Row {
         edge: &'static str,
         align: &'static str,
     },
+
+    // `kanade doctor`'s checks, run in the shell (ADR 0088); it has no key
+    Health,
 }
 
 impl Row {
@@ -43,6 +46,7 @@ impl Row {
         match self {
             Row::Key(key) => vec![key],
             Row::Position { edge, align } => vec![edge, align],
+            Row::Health => Vec::new(),
         }
     }
 }
@@ -59,7 +63,10 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "workspace",
         ],
     ),
-    ("Activities", &["media", "timer", "live", "battery"]),
+    (
+        "Activities",
+        &["media", "timer", "live", "launcher-entry", "battery"],
+    ),
     (
         "Notifications & privacy",
         &[
@@ -90,6 +97,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "keys-surface",
             "timer-surface",
             "capture-surface",
+            "gesture",
         ],
     ),
     (
@@ -104,7 +112,10 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "weather-surface",
         ],
     ),
-    ("Session", &["lock", "idle", "session", "settings", "hooks"]),
+    (
+        "Session",
+        &["lock", "idle", "session", "settings", "ui", "hooks"],
+    ),
 ];
 
 pub const MODULES: &str = "modules";
@@ -113,7 +124,11 @@ pub const MODULES: &str = "modules";
 // still accepted in the config schema
 pub const EXTERNAL_KEYS: &[&str] = &[
     "dock.pinned",
+    "gestures",
     "notifications.rules",
+    "focus.auto",
+    // what an agent may read of the windows: set in a config file or `kanade config set`, not by a click
+    "ui.describe",
     "hooks.lock",
     "hooks.unlock",
     "hooks.wallpaper",
@@ -121,6 +136,12 @@ pub const EXTERNAL_KEYS: &[&str] = &[
     "hooks.charger",
     "hooks.suspend",
     "hooks.resume",
+    "hooks.started",
+    "hooks.dnd",
+    "hooks.power_profile",
+    "hooks.logout",
+    "hooks.reboot",
+    "hooks.poweroff",
     "hooks.timeout",
 ];
 
@@ -141,11 +162,18 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Finish",
-                rows: &[Row::Key("appearance.finish")],
+                rows: &[
+                    Row::Key("appearance.finish"),
+                    Row::Key("appearance.refraction"),
+                ],
             },
             Section {
                 title: "Type",
                 rows: &[Row::Key("appearance.font")],
+            },
+            Section {
+                title: "Size",
+                rows: &[Row::Key("appearance.scale")],
             },
         ],
     },
@@ -269,7 +297,10 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Accessibility",
-                rows: &[Row::Key("reduced_motion")],
+                rows: &[
+                    Row::Key("reduced_motion"),
+                    Row::Key("appearance.accessibility"),
+                ],
             },
             Section {
                 title: "Interaction timing",
@@ -374,7 +405,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "power",
         title: "Power & night light",
-        summary: "When the battery warns and what it does when critical; how warm the screen turns at night; what Focus turns on; which tiles Controls shows",
+        summary: "When the battery warns and what it does when critical; what sets the brightness; how warm the screen turns at night; what Focus turns on; which tiles Controls shows",
         group: "System",
         icon: Icon::Sunset,
         sections: &[
@@ -385,6 +416,10 @@ pub const PAGES: &[Page] = &[
                     Row::Key("battery.critical"),
                     Row::Key("battery.critical_action"),
                 ],
+            },
+            Section {
+                title: "Brightness",
+                rows: &[Row::Key("brightness.backend")],
             },
             Section {
                 title: "Night light",
@@ -432,6 +467,23 @@ pub const PAGES: &[Page] = &[
                     Row::Key("idle.screen_off"),
                     Row::Key("idle.suspend"),
                 ],
+            },
+        ],
+    },
+    Page {
+        name: "health",
+        title: "Health",
+        summary: "What Kanade and its Modules need from the session, as kanade doctor checks it",
+        group: "System",
+        icon: Icon::Check,
+        sections: &[
+            Section {
+                title: "Checks",
+                rows: &[Row::Health],
+            },
+            Section {
+                title: "First start",
+                rows: &[Row::Key("settings.health_notice")],
             },
         ],
     },

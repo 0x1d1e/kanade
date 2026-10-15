@@ -5,15 +5,21 @@ use smithay_client_toolkit::compositor::FrameCallbackData;
 use crate::frame;
 use crate::graphics::Renderer;
 use crate::timing::{self, Timing};
+use crate::ui_scale;
 
-use super::surface::OpenWindow;
+use super::surface::{OpenWindow, View};
 
 impl OpenWindow {
     // one frame: run the view, send its settings, draw it and show it
     pub fn redraw(&mut self) {
         let started = Instant::now();
 
-        let (content, reads) = frame::run_view(|| self.view.run(), self.width, self.height);
+        // views and drawing work in the virtual space, the compositor's pixels over the UI scale
+        let ui = ui_scale::ui_scale();
+
+        let (width, height) = (self.width as f32 / ui, self.height as f32 / ui);
+
+        let (content, reads) = frame::run_view(|| self.view.run(), width, height);
 
         // a later change to one of these services draws this window again
         self.reads = reads;
@@ -21,6 +27,11 @@ impl OpenWindow {
         let viewed = Instant::now();
 
         let name = content.name();
+
+        self.name = match &self.view {
+            View::Normal(shown, _) => shown,
+            _ => name,
+        };
 
         self.update_surface(&content);
 
@@ -38,7 +49,8 @@ impl OpenWindow {
             return;
         };
 
-        let frame = frame::build(root.as_ref(), self.width, self.height, self.scale);
+        // the output's scale times the UI scale puts the virtual space on the real pixels
+        let frame = frame::build(root.as_ref(), width, height, self.scale * ui);
 
         // some widgets read services while drawing
         self.reads.extend(frame.reads);
@@ -114,8 +126,9 @@ impl OpenWindow {
 
     /*
      * false when the gpu skipped the frame, so nothing was committed; the window
-     * is measured in logical pixels, the buffer in real ones, and the scale goes
-     * out with the commit that presenting the frame makes
+     * is measured in the compositor's logical pixels, the buffer in real ones, and the
+     * output's scale (not the UI scale, which is in the drawing) goes out with the commit
+     * that presenting the frame makes
      */
     fn present(&mut self, renderer: Renderer) -> bool {
         let (buffer_width, buffer_height) = match &self.fractional {

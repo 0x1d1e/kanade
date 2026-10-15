@@ -24,6 +24,13 @@ pub fn glass_shader() -> &'static PathBuf {
     PATH.get_or_init(|| write("glass", include_str!("../glass.wgsl")))
 }
 
+// the Satellites' shader, written once when first asked for
+pub fn blob_shader() -> &'static PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+
+    PATH.get_or_init(|| write("blob", include_str!("../blob.wgsl")))
+}
+
 // the files this shell holds locked while it runs, so another one starting leaves them be
 static HELD: Mutex<Vec<File>> = Mutex::new(Vec::new());
 
@@ -66,12 +73,17 @@ fn sweep(dir: &Path) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name();
         let shader = name.to_str().is_some_and(|name| {
-            (name.starts_with("pane-") || name.starts_with("glass-")) && name.ends_with(".wgsl")
+            ["pane-", "glass-", "blob-"]
+                .iter()
+                .any(|kind| name.starts_with(kind))
+                && name.ends_with(".wgsl")
         });
 
         // one being written may not be locked yet, while one left behind is long untouched
         let left = name.to_str().is_some_and(|name| {
-            (name.starts_with(".pane-") || name.starts_with(".glass-"))
+            [".pane-", ".glass-", ".blob-"]
+                .iter()
+                .any(|kind| name.starts_with(kind))
                 && name.ends_with(".writing")
         }) && entry
             .metadata()

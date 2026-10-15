@@ -134,6 +134,10 @@ pub struct Scene {
     // passwords refused so far: each one more shakes the field
     pub refused: u64,
 
+    // the keyboard layout in use as a short label, like "US", in the field beside Caps Lock; empty
+    // when the shell does not know it or there is only one, and then nothing is drawn
+    pub layout: String,
+
     pub palette: Palette,
     pub fonts: Fonts,
 }

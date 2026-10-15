@@ -29,7 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use kanade_runtime::{MutexExt, service::Service};
 use rustix::io::Errno;
-use rustix::ioctl::{self, Setter, opcode};
+use rustix::ioctl::{self, IntegerSetter, Setter, opcode};
 use rustix::process::{Pid, Signal, kill_process};
 use rustix::time::{
     Itimerspec, TimerfdClockId, TimerfdFlags, TimerfdTimerFlags, Timespec, timerfd_create,
@@ -201,6 +201,31 @@ pub fn mask_input(device: &File, codes: &[(u16, &[u16])]) -> io::Result<()> {
         )
     }
     .map_err(io::Error::from)
+}
+
+// I2C_SLAVE, <linux/i2c-dev.h>: the address the next reads and writes on the bus go to
+const I2C_SLAVE: ioctl::Opcode = opcode::none(0x07, 0x03);
+
+/*
+ * an i2c-dev bus opened for reads and writes to the device at `address`, for DDC/CI (ADR 0082).
+ * The caller names a bus its own discovery found; nothing here probes
+ */
+pub fn open_i2c(path: &std::path::Path, address: u16) -> io::Result<File> {
+    let bus = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+
+    // SAFETY: I2C_SLAVE takes the address as its integer argument
+    unsafe {
+        ioctl::ioctl(
+            &bus,
+            IntegerSetter::<I2C_SLAVE>::new_usize(usize::from(address)),
+        )
+    }
+    .map_err(io::Error::from)?;
+
+    Ok(bus)
 }
 
 // <linux/rfkill.h>, a struct rfkill_event as read in its first, fixed size

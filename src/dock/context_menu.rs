@@ -7,6 +7,7 @@ use crate::sources::niri::WindowId;
 use crate::sources::windows::{self, Titled};
 use crate::theme::{self, ThemeRoles, radius};
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Column, Cursor, Full, Horizontal, Key, Keyboard, Layer, LayerWindow, Monitor,
     Monitors, Padding, Parent, Rectangle, Row, Shadow, Start, Text, Vertical, Widget, Zone,
@@ -180,6 +181,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         )
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Menu, "menu"))
         .child(
             Rectangle::new()
                 .width(width - 2.0 * INSET)
@@ -295,7 +297,7 @@ fn rows(
         let Some(entry) = row(open, index) else {
             break;
         };
-        let (label, closable) = match entry {
+        let (label, closable) = match &entry {
             Entry::Pin if open.item.pinned() => ("Unpin from Dock".to_owned(), false),
             Entry::Pin => ("Pin to Dock".to_owned(), false),
             Entry::Window(window) if window.title.is_empty() => {
@@ -306,12 +308,12 @@ fn rows(
             Entry::Window(window) => (window.title.clone(), true),
             Entry::Action(action) => (
                 desktop(&open.item.app)
-                    .map_or_else(String::new, |entry| entry.actions[action].name.clone()),
+                    .map_or_else(String::new, |entry| entry.actions[*action].name.clone()),
                 false,
             ),
         };
 
-        rows.push(Box::new(action_row(
+        let row = action_row(
             index,
             &label,
             closable,
@@ -319,7 +321,21 @@ fn rows(
             width,
             roles,
             open.monitor.clone(),
-        )) as Box<dyn Widget>);
+        )
+        .semantics(|| {
+            let item = match entry {
+                Entry::Pin => Semantics::new(Role::MenuItem, "pin").label(label.as_str()),
+                // a window's title is the user's, an action's name the app's
+                Entry::Window(_) => {
+                    Semantics::new(Role::MenuItem, "window").content(label.as_str())
+                }
+                Entry::Action(_) => Semantics::new(Role::MenuItem, "action").label(label.as_str()),
+            };
+
+            item.selected(open.selected == Some(index))
+        });
+
+        rows.push(Box::new(row) as Box<dyn Widget>);
 
         if index == 0 && end > 1 {
             rows.push(Box::new(
@@ -368,6 +384,7 @@ fn action_row(
                 .radius(radius::ICON)
                 .cursor(Cursor::Pointer)
                 .identity(("dock-context-close", index))
+                .semantics(|| Semantics::new(Role::Button, "close"))
                 .on_click(move |button| {
                     if button == Button::Left {
                         close_window(&monitor, index);

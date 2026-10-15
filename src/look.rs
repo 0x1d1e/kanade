@@ -61,6 +61,18 @@ choice! {
     }
 }
 
+impl Finish {
+    // what the desktop's higher contrast leaves of it: Liquid Glass and Blur show what lies behind
+    // the pane, so they become the solid finish of their tone; the two solid ones are held at 7:1
+    pub fn solid(self, tone: Tone) -> Self {
+        match (self, tone) {
+            (Finish::LiquidGlass | Finish::Blur, Tone::Light) => Finish::Paper,
+            (Finish::LiquidGlass | Finish::Blur, Tone::Dark) => Finish::TintedSolid,
+            (finish, _) => finish,
+        }
+    }
+}
+
 choice! {
     // how the Island's and the Dock's springs settle, `appearance.motion`
     Bounce {
@@ -216,6 +228,21 @@ choice! {
 
         // that, then LRCLIB, asked for the track's title, artist, album and length over https
         Lrclib = "lrclib",
+    }
+}
+
+choice! {
+    // what `kanade ui describe` says of the windows, `ui.describe` (ADR 0096)
+    UiDescribe {
+        // roles, names, states and places; what a user or the world wrote is `<redacted>`
+        Structure = "structure",
+
+        // that, with the labels and values as they are: notification, clipboard, calendar and
+        // lyric text included, a password never
+        Content = "content",
+
+        // no tree and no acts: `kanade ui` is refused
+        Off = "off",
     }
 }
 

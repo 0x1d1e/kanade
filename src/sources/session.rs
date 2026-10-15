@@ -29,6 +29,7 @@ use zbus::blocking::Connection;
 use zbus::zvariant::ObjectPath;
 
 use super::capture::SHOWN;
+use crate::hooks::{self, Event};
 use crate::island::activity::{
     Action, Activity, Countdown, Detail, Ending, Id, Interrupt, Kind, Leave, Leaving, Lifetime,
     Priority, Scope,
@@ -46,6 +47,8 @@ pub const NOW: &str = "now";
 
 // the action of a refused restart, power off or log out
 pub const DISMISS: &str = "dismiss";
+
+pub mod warning;
 
 const LOGIND: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
@@ -517,6 +520,7 @@ fn start(end: Ending, now: Instant) -> Result<u64, String> {
     island.post(activity(counting), now);
     drop(island);
 
+    warning::look(counting.serial, end);
     wake();
     Ok(counting.serial)
 }
@@ -555,12 +559,22 @@ fn end_now(serial: u64) {
     let _withdrawn = Withdrawn(serial);
     let leave = Leave::Ending(counting.end);
 
-    let call = move || match counting.end {
-        Ending::Restart => manager(&system()?, "Reboot"),
-        Ending::PowerOff => manager(&system()?, "PowerOff"),
-        Ending::LogOut => terminate(&system()?),
-        Ending::Suspend => manager(&system()?, "Suspend"),
-        Ending::Hibernate => manager(&system()?, "Hibernate"),
+    // the hook is waited for on the asking thread, never the draw thread a press of Now is on
+    let call = move || {
+        match counting.end {
+            Ending::Restart => hooks::fire_and_wait(Event::Reboot),
+            Ending::PowerOff => hooks::fire_and_wait(Event::Poweroff),
+            Ending::LogOut => hooks::fire_and_wait(Event::Logout),
+            Ending::Suspend | Ending::Hibernate => {}
+        }
+
+        match counting.end {
+            Ending::Restart => manager(&system()?, "Reboot"),
+            Ending::PowerOff => manager(&system()?, "PowerOff"),
+            Ending::LogOut => terminate(&system()?),
+            Ending::Suspend => manager(&system()?, "Suspend"),
+            Ending::Hibernate => manager(&system()?, "Hibernate"),
+        }
     };
 
     // refused, it shows on the island

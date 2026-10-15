@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use kanade_runtime::MutexExt;
 use kanade_runtime::service::{Service, Write};
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Horizontal, Layer, LayerWindow, Monitor, Parent, Rectangle, Scroll, Stack,
     Start, Vertical, Widget, Zone, request_frame,
@@ -775,6 +776,7 @@ fn hover_target(
         .height(area.height)
         .translate(area.x, area.y)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Button, "island"))
         .on_hover(move |inside| hover(&hovered, inside, peeks))
         .on_move(move |point| tracked(area.x + point.x, area.y + point.y))
         .on_click(move |button| match button {

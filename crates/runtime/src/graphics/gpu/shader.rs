@@ -20,6 +20,7 @@ const WGSL_INPUTS: &str = "
 @group(0) @binding(3) var<uniform> values: array<vec4<f32>, 16>;
 @group(0) @binding(4) var backdrop: texture_2d<f32>;
 @group(0) @binding(5) var backdrop_sampler: sampler;
+@group(0) @binding(6) var canvas: texture_2d<f32>;
 ";
 
 const GLSL_INPUTS: &str = "#version 450
@@ -33,7 +34,8 @@ layout(set = 0, binding = 3) uniform Values { vec4 values[16]; };
 /*
  * a user's fragment shader over a rectangle: it gets uv from 0 to 1 across the rectangle,
  * size in logical pixels, time in seconds, the rectangle's values (16 is VALUE_ROWS) and, in wgsl,
- * the rectangle's backdrop as a texture and its sampler (transparent where it has none),
+ * the rectangle's backdrop as a texture and its sampler (transparent where it has none), and
+ * the window as last presented as `canvas` where the rectangle asks (one transparent texel else),
  * and returns a plain, not premultiplied, color
  */
 pub struct Shader {
@@ -79,6 +81,7 @@ impl Shader {
                 uniform(3, ShaderStages::FRAGMENT),
                 texture(4),
                 sampler(5),
+                texture(6),
             ],
         });
 

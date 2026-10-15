@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::graphics::Area;
 use crate::input::{Cursor, Handlers, Target, anchor, clip, nest};
+use crate::ui::{self, Semantics};
 use crate::{Button, Point, Rectangle, Scroll};
 
 use super::{child, transform};
@@ -34,6 +35,18 @@ impl Rectangle {
         self
     }
 
+    /*
+     * says what the rectangle is for `kanade ui` (ADR 0095). Asked for only while `ui.describe`
+     * keeps a tree, so with it off nothing is built, and the content a node shows is never read
+     */
+    pub fn semantics(mut self, semantics: impl FnOnce() -> Semantics) -> Self {
+        if ui::enabled() {
+            self.semantics = Some(semantics().scrubbed(ui::mode()));
+        }
+
+        self
+    }
+
     pub fn on_click(mut self, handler: impl Fn(Button) + 'static) -> Self {
         self.handlers.click = Some(Rc::new(handler));
 
@@ -59,6 +72,17 @@ impl Rectangle {
      */
     pub fn on_drag(mut self, handler: impl Fn(Point) + 'static) -> Self {
         self.handlers.drag = Some(Rc::new(handler));
+
+        self
+    }
+
+    /*
+     * true when the left button goes down on the rectangle, false when it comes up, the pointer
+     * leaves the rectangle or the window, or the rectangle goes away: for a press that counts only
+     * while it lasts. It sets no click, so a click set beneath it still gets the short press
+     */
+    pub fn on_hold(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.handlers.hold = Some(Rc::new(handler));
 
         self
     }
@@ -93,6 +117,10 @@ pub fn collect_targets(rectangle: &Rectangle, area: Area, targets: &mut Vec<Targ
 
     collect_in_place(rectangle, area, targets);
 
+    if rectangle.semantics.is_some() {
+        targets[first].end = targets.len();
+    }
+
     if let Some(identity) = rectangle.identity {
         anchor(&mut targets[first..], identity);
     }
@@ -126,7 +154,15 @@ fn collect_in_place(rectangle: &Rectangle, area: Area, targets: &mut Vec<Target>
     }
 
     // added before the child, so the child wins where both react to the same thing
-    targets.push(Target::new(area, handlers));
+    let mut own_target = Target::new(area, handlers);
+
+    own_target.semantics = rectangle.semantics.clone().map(|mut semantics| {
+        semantics.disabled |= rectangle.inert;
+
+        semantics
+    });
+
+    targets.push(own_target);
     let own = targets.len();
 
     let Some(child) = &rectangle.child else {
@@ -444,5 +480,57 @@ mod tests {
         pointer.release(Button::Left);
 
         assert_eq!(log.borrow().last().unwrap(), "click 1");
+    }
+
+    // a hold is told it began, and once, however it ends: the release, the pointer leaving the
+    // target or the window, or the target going away
+    #[test]
+    fn a_hold_ends_once_by_release_leaving_or_going_away() {
+        let events: Rc<std::cell::RefCell<Vec<bool>>> = Rc::default();
+        let frame = |present: bool| {
+            let events = events.clone();
+            let mut targets = Vec::new();
+
+            if present {
+                Rectangle::new()
+                    .width(50.0)
+                    .height(50.0)
+                    .on_hold(move |held| events.borrow_mut().push(held))
+                    .collect_targets(Area::new(0.0, 0.0, 50.0, 50.0), &mut targets);
+            }
+
+            targets
+        };
+        let mut pointer = Pointer::default();
+
+        pointer.set_targets(frame(true));
+        pointer.move_to(25.0, 25.0);
+
+        // a release
+        assert!(pointer.start_hold());
+        assert!(pointer.stop_hold());
+        assert!(!pointer.stop_hold());
+        assert_eq!(*events.borrow(), [true, false]);
+
+        // out of the target
+        events.borrow_mut().clear();
+        pointer.start_hold();
+        pointer.move_to(75.0, 25.0);
+        pointer.move_to(25.0, 25.0);
+        assert_eq!(*events.borrow(), [true, false]);
+
+        // out of the window
+        events.borrow_mut().clear();
+        pointer.start_hold();
+        pointer.leave();
+        assert_eq!(*events.borrow(), [true, false]);
+
+        // gone with the next frame
+        events.borrow_mut().clear();
+        pointer.move_to(25.0, 25.0);
+        pointer.start_hold();
+        pointer.set_targets(frame(false));
+        pointer.stop_hold();
+        assert_eq!(*events.borrow(), [true, false]);
     }
 }

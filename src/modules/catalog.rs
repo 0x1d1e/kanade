@@ -17,20 +17,21 @@ use crate::sources::bluetooth::Adapter;
 use crate::sources::calendar::Calendars;
 use crate::sources::clipboard::Clipboard;
 use crate::sources::network::Connectivity;
-use crate::sources::notifications::Daemon;
+use crate::sources::notifications::{Daemon, timed};
 use crate::sources::system::Switch;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
-    focus, fullscreen, google, keys, launch, live, lyrics, media, network, night_light,
+    apps, audio, battery, bluetooth, brightness, caffeine, calendar, capture, charge_limit,
+    clipboard, devices, focus, fullscreen, google, keys, launch, launcher_entry, live, lyrics,
+    media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
 };
 use crate::{
-    appearance, autohide, banners, cli, clock, cluster, config, dock, hooks, idle, ipc, lock,
-    reload, settings, shadow, supervise, surfaces, view,
+    appearance, autohide, banners, cli, clock, cluster, config, dock, gesture, hooks, idle, ipc,
+    lock, reload, settings, shadow, supervise, surfaces, ui, view,
 };
 
 use super::{CORE, Hooks, Module, Need, Provider, named, on, osd_reads, withheld};
@@ -390,6 +391,25 @@ pub const ALL: &[Module] = &[
         }],
         start: |app| {
             supervise::spawn("live", live::follow);
+
+            // a failed reload of niri's config shows as a failed one, heard from niri
+            niri::on_config_failed(live::niri_config_failed);
+            app
+        },
+    },
+    // an app's progress through the Unity launcher entry signal, shown as a live Activity (ADR 0083)
+    Module {
+        name: "launcher-entry",
+        about: "Progress apps report through their launcher entry, as live Activities",
+        requires: &[CORE, "live"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[],
+        start: |app| {
+            supervise::spawn("launcher-entry", launcher_entry::follow);
             app
         },
     },
@@ -433,9 +453,25 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::BRIGHTNESS,
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "brightness",
+            about: "Set the brightness of the backlight or of the focused monitor",
+            usage: || {
+                String::from(
+                    "brightness set <percent>|up|down|status
+  <percent>: 1-100
+  up, down: 5 points
+  With DDC/CI (brightness.backend), the monitor on the focused output",
+                )
+            },
+            parse: |arguments| {
+                brightness::Request::parse(arguments)
+                    .map(Call::Brightness)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| app,
     },
     // with both of those off it shows only the lock lights, airplane mode and keyboard layouts
@@ -528,17 +564,36 @@ pub const ALL: &[Module] = &[
         // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
         // `notification-surface`'s
         hooks: Hooks {
-            status: Some(|| vec![Daemon::read().status()]),
+            status: Some(|| {
+                let mut lines = vec![Daemon::read().status()];
+
+                if timed::ends().is_some() {
+                    lines.push(format!("do not disturb {}", timed::status()));
+                }
+
+                lines
+            }),
             ..Hooks::NONE
         },
         verbs: &[Verb {
             name: "notifications",
             about: "Clear, set do not disturb, open the list",
-            usage: || String::from("notifications clear\nnotifications dnd on|off|toggle"),
+            usage: || {
+                String::from(
+                    "notifications clear
+notifications dnd on|off|toggle|status
+notifications dnd on <duration>
+notifications dnd on until <HH:MM>
+  <duration>: like 90s, 25m or 1h30m, up to 24h
+  <HH:MM>: the next time the clock reads it",
+                )
+            },
             parse: |arguments| {
                 let call = match arguments {
                     ["clear"] => Some(Call::ClearNotifications),
-                    ["dnd", dnd @ ..] => Command::dnd(dnd).map(Call::Island),
+                    ["dnd", dnd @ ..] => Command::dnd(dnd)
+                        .map(Call::Island)
+                        .or_else(|| timed::Request::parse(dnd).map(Call::Dnd)),
                     _ => None,
                 };
                 call.ok_or(Unparsed::Usage)
@@ -1155,8 +1210,8 @@ pub const ALL: &[Module] = &[
         start: |app| app,
     },
     /*
-     * screenshots, by niri, whose own notification says when each is saved. Screen
-     * recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
+     * screenshots and the color picker, by niri, whose own notification says when each screenshot
+     * is saved. Screen recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
      */
     Module {
         name: "capture",
@@ -1171,7 +1226,7 @@ pub const ALL: &[Module] = &[
             },
             Need {
                 on: Provider::Program(clipboard::COPY),
-                without: "no copying a screenshot's path",
+                without: "no copying a screenshot's path or a picked color",
             },
             Need {
                 on: Provider::Program(capture::OPEN),
@@ -1186,18 +1241,22 @@ pub const ALL: &[Module] = &[
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "capture",
-            about: "Take a screenshot or record the screen",
+            about: "Take a screenshot, pick a color or record the screen",
             usage: || {
                 String::from(
-                    "capture screenshot area|window|output\ncapture record start|stop|status",
+                    "capture screenshot area|window|output\ncapture color\ncapture record start|stop|status\ncapture cast window [<id>]|monitor [<output>]|clear",
                 )
             },
             parse: |arguments| match arguments {
                 ["screenshot", mode] => capture::Mode::parse(mode)
                     .map(Call::Screenshot)
                     .ok_or(Unparsed::Usage),
+                ["color"] => Ok(Call::PickColor),
                 ["record", request] => recording::Request::parse(request)
                     .map(Call::Record)
+                    .ok_or(Unparsed::Usage),
+                ["cast", target @ ..] => capture::parse_cast(target)
+                    .map(Call::Cast)
                     .ok_or(Unparsed::Usage),
                 _ => Err(Unparsed::Usage),
             },
@@ -1225,6 +1284,40 @@ pub const ALL: &[Module] = &[
             },
         }],
         start: |app| app,
+    },
+    /*
+     * a stroke drawn with the pointer runs a verb of Kanade (ADR 0105 to 0109): the overlay opens
+     * only on `kanade gesture`, which the user binds, so Kanade grabs no key. Inert until a
+     * gesture is recorded
+     */
+    Module {
+        name: "gesture",
+        about: "Draw a pointer gesture to run a Kanade verb",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::GESTURES,
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "gesture",
+            about: "Draw a pointer gesture to run a verb, record or forget one",
+            usage: || {
+                format!(
+                    "gesture\ngesture record <name>\ngesture forget <name>\ngesture list\n  <name>: {}",
+                    gesture::NAME_RULE
+                )
+            },
+            parse: |arguments| {
+                gesture::Request::parse(arguments)
+                    .map(Call::Gesture)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| {
+            gesture::spawn();
+            app.window_per_monitor(gesture::window)
+        },
     },
     // keeps the session from going idle while on, by systemd-inhibit, which only it starts
     Module {
@@ -1310,7 +1403,7 @@ pub const ALL: &[Module] = &[
         name: "focus",
         about: "Quiets the session with one switch",
         requires: &[CORE],
-        optional: &["notifications", "caffeine", "night-light"],
+        optional: &["notifications", "caffeine", "night-light", "privacy"],
         warns: None,
         needs: &[],
         settings: config::FOCUS,
@@ -1325,7 +1418,10 @@ pub const ALL: &[Module] = &[
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app,
+        start: |app| {
+            service::watch::<privacy::Privacy>(focus::follow_cast);
+            app
+        },
     },
     /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at
@@ -1378,6 +1474,9 @@ pub const ALL: &[Module] = &[
         start: |app| {
             lock::relock();
             sleep::spawn();
+
+            // the layout in use shows in the password field; a hint, which the lock never needs
+            niri::on_keyboard(lock::keyboard);
             app.window_per_monitor(lock::scene)
         },
     },
@@ -1453,7 +1552,7 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::SETTINGS,
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "settings",
@@ -1475,7 +1574,34 @@ pub const ALL: &[Module] = &[
                 _ => Err(Unparsed::Usage),
             },
         }],
-        start: |app| app,
+        start: |app| {
+            settings::spawn_notice();
+            app
+        },
+    },
+    // the windows' semantic tree and acts by name, for scripts, tests and agents (ADR 0095)
+    Module {
+        name: ui::MODULE,
+        about: "The windows as a named tree to read and press by name, with kanade ui",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::UI,
+        hooks: Hooks {
+            status: Some(ui::status),
+            reload: Some(ui::reread),
+        },
+        verbs: &[Verb {
+            name: "ui",
+            about: "Read the windows as a tree, press, type and wait by name",
+            usage: ui::usage,
+            parse: ui::parse,
+        }],
+        start: |app| {
+            ui::reread();
+            app
+        },
     },
     /*
      * commands the user lists for events (ADR 0055); the Module that owns an event fires it, so
@@ -1483,7 +1609,7 @@ pub const ALL: &[Module] = &[
      */
     Module {
         name: hooks::MODULE,
-        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend and resume",
+        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend, resume, start, Do Not Disturb, power profile, log out, restart and power off",
         requires: &[CORE],
         optional: &[],
         warns: None,
@@ -1494,6 +1620,10 @@ pub const ALL: &[Module] = &[
             ..Hooks::NONE
         },
         verbs: &[],
-        start: |app| app,
+        // last of the Modules, so every one that is on has started
+        start: |app| {
+            hooks::fire(hooks::Event::Started);
+            app
+        },
     },
 ];

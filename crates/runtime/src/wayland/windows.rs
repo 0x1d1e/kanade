@@ -6,6 +6,7 @@ use wayland_client::{
 use crate::changes::{self, Reads};
 use crate::graphics::Gpu;
 use crate::input::Pointer;
+use crate::ui_scale;
 use crate::unpoisoned::MutexExt;
 use crate::window::OPEN;
 use crate::{frame, service};
@@ -14,6 +15,7 @@ use super::{
     WaylandState,
     effect::Blur,
     layer::{self, Settings},
+    output::describe,
     surface::{Content, OpenWindow, Role, View},
 };
 
@@ -26,14 +28,14 @@ impl WaylandState {
          * last ones; a window that starts hidden never gets a configure, so it never
          * draws, and what its first view read is all that can wake it to show
          */
-        let (content, reads) = frame::run_view(|| view.run(), 0, 0);
+        let (content, reads) = frame::run_view(|| view.run(), 0.0, 0.0);
 
         // normal windows open in open_normal
         let Content::Layer(window) = content else {
             unreachable!("only layer views open as layer windows");
         };
 
-        let settings = Settings::from(&window);
+        let settings = Settings::new(&window, ui_scale::ui_scale());
 
         let layer_surface = layer::create(
             &self.layer_shell,
@@ -72,6 +74,8 @@ impl WaylandState {
 
             input_region: None,
 
+            name: "",
+
             width: 0,
             height: 0,
 
@@ -100,6 +104,35 @@ impl WaylandState {
         self.windows.push(window);
     }
 
+    /*
+     * puts a changed UI scale (ADR 0091) into effect: the monitors the views see, every layer
+     * window's size, margin and regions, and the backdrop regions follow it as the windows draw
+     * again, so nothing is drawn at one scale and told to the compositor at another
+     */
+    pub fn follow_ui_scale(&mut self) {
+        if !ui_scale::adopt() {
+            return;
+        }
+
+        for window in &mut self.windows {
+            let Some(output) = &window.output else {
+                continue;
+            };
+
+            let Some(info) = self.output.info(output) else {
+                continue;
+            };
+
+            if let View::Monitor(_, current) = &mut window.view {
+                *current = describe(&info);
+            }
+        }
+
+        self.publish(None);
+        self.recapture_backdrops();
+        self.request_frames();
+    }
+
     // wayland events name the surface they are about, this finds its window
     pub fn window(&mut self, surface: &WlSurface) -> Option<&mut OpenWindow> {
         self.windows
@@ -113,6 +146,9 @@ impl WaylandState {
         if let Some(window) = self.window(surface) {
             window.redraw();
         }
+
+        // the caret is known once the window is drawn
+        self.sync_ime();
 
         self.refresh_cursor(surface);
     }

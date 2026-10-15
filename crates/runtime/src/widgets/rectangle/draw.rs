@@ -87,6 +87,7 @@ fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: Cor
             radius,
             &rectangle.shader_values,
             rectangle.backdrop.as_ref(),
+            rectangle.presented,
         );
 
         // the shader's time moves on, so the window keeps drawing new frames

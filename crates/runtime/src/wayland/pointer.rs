@@ -5,6 +5,7 @@ use smithay_client_toolkit::seat::pointer::{
 use wayland_client::{Connection, QueueHandle, protocol::wl_pointer::WlPointer};
 
 use crate::input::PIXELS_PER_LINE;
+use crate::ui_scale;
 use crate::{Button, Cursor, Scroll};
 
 use super::WaylandState;
@@ -46,11 +47,14 @@ impl WaylandState {
 
         let pointer = &mut window.pointer;
 
-        let (x, y) = event.position;
+        // the surface speaks the compositor's logical pixels, targets the virtual space
+        let ui = ui_scale::ui_scale();
+
+        let (x, y) = (event.position.0 as f32 / ui, event.position.1 as f32 / ui);
 
         match &event.kind {
             PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                let hovered = pointer.move_to(x as f32, y as f32);
+                let hovered = pointer.move_to(x, y);
                 let dragged = pointer.drag();
                 let moved = pointer.report_motion();
 
@@ -77,7 +81,9 @@ impl WaylandState {
                     return false;
                 }
 
-                pointer.start_drag()
+                let held = pointer.start_hold();
+
+                pointer.start_drag() || held
             }
 
             PointerEventKind::Release { button, .. } => {
@@ -86,11 +92,14 @@ impl WaylandState {
                     return false;
                 };
 
+                let mut held = false;
+
                 if button == Button::Left {
                     pointer.stop_drag();
+                    held = pointer.stop_hold();
                 }
 
-                pointer.release(button)
+                pointer.release(button) || held
             }
 
             PointerEventKind::Axis {

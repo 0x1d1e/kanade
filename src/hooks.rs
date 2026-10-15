@@ -32,6 +32,9 @@ const EVENT: &str = "KANADE_HOOK";
 const MOST_ARGUMENTS: usize = 32;
 const LONGEST_ARGUMENT: usize = 4096;
 
+// how long past `hooks.timeout` a wait for a command lasts, for it to be killed and reaped
+const SLACK: Duration = Duration::from_secs(2);
+
 // how much of a failure `status` and stderr say
 const BRIEF: usize = 120;
 
@@ -65,9 +68,24 @@ pub enum Event {
 
     // the machine woke, or a sleep failed
     Resume,
+
+    // the shell started, once every Module that is on has started
+    Started,
+
+    // Do Not Disturb went on or off, `KANADE_DND` "on" or "off"
+    Dnd,
+
+    // the active power profile changed, `KANADE_POWER_PROFILE` its name
+    PowerProfile,
+
+    // a log out, restart or power off is about to be asked of logind, whether it counted down or
+    // was asked at once; it is asked once the hook ended or `hooks.timeout` passed
+    Logout,
+    Reboot,
+    Poweroff,
 }
 
-const COUNT: usize = 7;
+const COUNT: usize = 13;
 
 impl Event {
     pub const fn name(self) -> &'static str {
@@ -79,6 +97,12 @@ impl Event {
             Event::Charger => "charger",
             Event::Suspend => "suspend",
             Event::Resume => "resume",
+            Event::Started => "started",
+            Event::Dnd => "dnd",
+            Event::PowerProfile => "power_profile",
+            Event::Logout => "logout",
+            Event::Reboot => "reboot",
+            Event::Poweroff => "poweroff",
         }
     }
 
@@ -88,7 +112,16 @@ impl Event {
             Event::Wallpaper => Some("KANADE_WALLPAPER"),
             Event::Tone => Some("KANADE_TONE"),
             Event::Charger => Some("KANADE_CHARGER"),
-            Event::Lock | Event::Unlock | Event::Suspend | Event::Resume => None,
+            Event::Dnd => Some("KANADE_DND"),
+            Event::PowerProfile => Some("KANADE_POWER_PROFILE"),
+            Event::Lock
+            | Event::Unlock
+            | Event::Suspend
+            | Event::Resume
+            | Event::Started
+            | Event::Logout
+            | Event::Reboot
+            | Event::Poweroff => None,
         }
     }
 
@@ -100,6 +133,12 @@ impl Event {
         Event::Charger,
         Event::Suspend,
         Event::Resume,
+        Event::Started,
+        Event::Dnd,
+        Event::PowerProfile,
+        Event::Logout,
+        Event::Reboot,
+        Event::Poweroff,
     ];
 }
 
@@ -226,6 +265,42 @@ pub const SETTINGS: &[Setting] = &[
         "On resume",
         Resume,
         "a command run when the machine wakes, or a sleep failed"
+    ),
+    hook!(
+        "hooks.started",
+        "On start",
+        Started,
+        "a command run when the shell has started, once every Module that is on has"
+    ),
+    hook!(
+        "hooks.dnd",
+        "On Do Not Disturb",
+        Dnd,
+        "a command run when Do Not Disturb goes on or off, \"on\" or \"off\" in KANADE_DND"
+    ),
+    hook!(
+        "hooks.power_profile",
+        "On power profile",
+        PowerProfile,
+        "a command run when the power profile changes, its name (power-saver, balanced or performance) in KANADE_POWER_PROFILE; not the one at start"
+    ),
+    hook!(
+        "hooks.logout",
+        "On log out",
+        Logout,
+        "a command run before logind is asked to end the session, after the countdown or at once; the log out waits for it up to hooks.timeout"
+    ),
+    hook!(
+        "hooks.reboot",
+        "On restart",
+        Reboot,
+        "a command run before logind is asked to restart, after the countdown or at once; the restart waits for it up to hooks.timeout"
+    ),
+    hook!(
+        "hooks.poweroff",
+        "On power off",
+        Poweroff,
+        "a command run before logind is asked to power off, after the countdown or at once; the power off waits for it up to hooks.timeout"
     ),
     Setting {
         key: "hooks.timeout",
@@ -496,6 +571,22 @@ fn send(event: Event, value: Option<&OsStr>) -> Option<Done> {
         value,
         Duration::from_secs(u64::from(config.hooks.timeout)),
     )
+}
+
+/*
+ * fires an event and waits for the command to end, for an action that must not begin before it;
+ * the child runner kills it at `hooks.timeout`, so this waits a little past that at most. Call it
+ * off the draw thread
+ */
+pub fn fire_and_wait(event: Event) {
+    let Some(done) = fire(event) else {
+        return;
+    };
+    let limit = Duration::from_secs(u64::from(config::get().hooks.timeout)) + SLACK;
+
+    if !done.wait(limit) {
+        eprintln!("kanade: the {} hook still runs", event.name());
+    }
 }
 
 // the lines `kanade status` adds

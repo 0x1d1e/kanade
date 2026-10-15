@@ -52,6 +52,7 @@ pub enum At {
     Dnd,
     NightLight,
     ChargeLimit,
+    PowerProfile,
     Focus,
     Speaker,
 
@@ -84,6 +85,9 @@ pub enum At {
     Output(Node),
     Input(Node),
     Stream(Node),
+
+    // the row under a playing app's level, pressed to move it to the next output
+    Route(Node),
 
     /*
      * the arrangement's: a tile to choose, what moves, resizes or takes out the chosen one, a tile

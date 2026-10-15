@@ -2,7 +2,9 @@
 //! the Island on its edge and side: each comes out of the Island's body, as its twin stretching
 //! into a card, and goes back into it. UI over `notifications`, which keeps the bus, the history
 //! and DND; closing a Banner leaves the notification in the history. Plain text only, and an
-//! action runs only on a click, never from the keyboard.
+//! action runs only on a click, never from the keyboard. The one place a Banner takes the keyboard
+//! is its reply field (ADR 0079), when the sender asked for one: a click on the field gives the
+//! window the keyboard, Enter sends.
 
 mod motion;
 mod stack;
@@ -18,9 +20,9 @@ use crate::sources::niri::Niri;
 use crate::sources::notifications::{Notification, Notifications, Urgency};
 use kanade_runtime::queue::Nudge;
 use kanade_runtime::{
-    Button, Center, Column, Cursor, Horizontal, InputArea, Layer, LayerWindow, Monitor, Monitors,
-    Padding, Rectangle, Row, Size, Stack as Layers, Start, Text, Vertical, Widget, Zone, children,
-    request_frame,
+    Button, Center, Column, Cursor, Horizontal, InputArea, Keyboard, Layer, LayerWindow, Monitor,
+    Monitors, Padding, Rectangle, Row, Size, Stack as Layers, Start, Text, TextInput, Vertical,
+    Widget, Zone, children, request_frame,
 };
 use kanade_runtime::{MutexExt, service::Service};
 
@@ -227,6 +229,7 @@ impl Banner {
                 .take(MOST_ACTIONS)
                 .map(|action| (action.key().to_owned(), action.label().to_owned()))
                 .collect(),
+            reply: notification.reply().map(str::to_owned),
             history: notification.effects().history,
             bypass_dnd: notification.effects().bypass_dnd,
             timeout: notification.effects().timeout,
@@ -353,6 +356,13 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     };
     let shown = fitting(shown, &heights, from, lane.end, hang);
 
+    // only a reply field needs the keyboard; the rest of the time the window never takes it
+    let keyboard = if shown.iter().any(|banner| banner.reply.is_some()) {
+        Keyboard::OnDemand
+    } else {
+        Keyboard::None
+    };
+
     let (placed, later, moving) = {
         let mut motions = MOTIONS.locked();
         let motion = motions.entry(monitor.name.clone()).or_default();
@@ -396,6 +406,9 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     for pane in freed {
         pane::forget(&pane::Spot::new(&monitor.name, &self::pane(pane)));
+
+        // what was typed there is not for the Banner that takes the pane next
+        TextInput::set_text(reply_field(&monitor.name, pane), "");
     }
 
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
@@ -518,7 +531,14 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                         .align_child(Start, Start)
                         .opacity(now_look.shadow)
                         .child(Layers::new(shadow)),
-                    drawn(&placed.banner, &now_look, backdrop, card_height, &roles),
+                    drawn(
+                        &placed.banner,
+                        &now_look,
+                        backdrop,
+                        card_height,
+                        reply_field(&monitor.name, panes[&placed.banner.id]),
+                        &roles,
+                    ),
                 ])
                 .width(width)
                 .height(height),
@@ -539,6 +559,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .layer(Layer::Top)
         .space(Zone::Ignore)
         .namespace("kanade-banners")
+        .keyboard(keyboard)
         .visible(!placed.is_empty())
         .blur(pane::blurred(outlines, (0.0, 0.0)))
         .input_region(areas)
@@ -551,6 +572,18 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .on_hover(hover)
                 .child(Layers::new(cards).width(width).height(height)),
         )
+}
+
+fn reply_field(monitor: &str, pane: usize) -> &'static str {
+    static NAMES: LazyLock<Mutex<HashMap<(String, usize), &'static str>>> =
+        LazyLock::new(Mutex::default);
+
+    // the runtime keeps a field's text under its name, which must be one per output and pane;
+    // a name lives as long as the shell, and there are few outputs and panes
+    NAMES
+        .locked()
+        .entry((monitor.to_owned(), pane))
+        .or_insert_with(|| Box::leak(format!("banner-reply-{monitor}-{pane}").into_boxed_str()))
 }
 
 // a pane's capture spot on an output, as a Banner draws in
@@ -981,6 +1014,7 @@ fn drawn(
     look: &Look,
     backdrop: Option<pane::Seen>,
     height: f32,
+    field: &'static str,
     roles: &ThemeRoles,
 ) -> Rectangle {
     let at = look.at;
@@ -993,7 +1027,7 @@ fn drawn(
             united: None,
             backdrop,
         })),
-        Box::new(card(banner, height, roles).opacity(look.says)),
+        Box::new(card(banner, height, field, roles).opacity(look.says)),
     ];
 
     Rectangle::new()
@@ -1028,7 +1062,7 @@ fn close(id: u32) {
 
 // what a Banner says: the sender's picture, who sent it, the summary, the body and a close, then
 // the actions
-fn card(banner: &Banner, height: f32, roles: &ThemeRoles) -> Rectangle {
+fn card(banner: &Banner, height: f32, field: &'static str, roles: &ThemeRoles) -> Rectangle {
     let words = words();
 
     let sender = Text::new(&banner.toast.app)
@@ -1071,6 +1105,16 @@ fn card(banner: &Banner, height: f32, roles: &ThemeRoles) -> Rectangle {
 
     if !banner.actions.is_empty() {
         parts.push(Box::new(actions(banner, words + TARGET, roles)));
+    }
+
+    if let Some(placeholder) = &banner.reply {
+        parts.push(Box::new(reply(
+            banner.id,
+            placeholder,
+            field,
+            words + TARGET,
+            roles,
+        )));
     }
 
     let id = banner.id;
@@ -1146,7 +1190,13 @@ fn card_height(banner: &Banner) -> f32 {
         GAP + TARGET
     };
 
-    2.0 * INSET + text.max(TILE) + actions
+    let reply = if banner.reply.is_some() {
+        GAP + TARGET
+    } else {
+        0.0
+    };
+
+    2.0 * INSET + text.max(TILE) + actions + reply
 }
 
 // how tall a Text lays out in the text column
@@ -1166,6 +1216,7 @@ fn tallest() -> f32 {
         urgency: Urgency::Normal,
         default: false,
         actions: vec![(String::new(), String::new())],
+        reply: Some(String::new()),
         history: true,
         bypass_dnd: false,
         timeout: None,
@@ -1219,6 +1270,67 @@ fn actions(banner: &Banner, width: f32, roles: &ThemeRoles) -> Row {
     .gap(TILE_GAP)
 }
 
+/*
+ * the reply field under the text: a click on it, or on the pill around it, gives it the keyboard,
+ * and Enter sends. Sending closes the Banner; what is typed is held while it is not empty
+ */
+fn reply(id: u32, placeholder: &str, field: &'static str, width: f32, roles: &ThemeRoles) -> Row {
+    let placeholder = if placeholder.is_empty() {
+        "Reply"
+    } else {
+        placeholder
+    };
+
+    let input = TextInput::new(field)
+        .width(width - 2.0 * PILL_PADDING - 2.0)
+        .size(theme::text::LABEL_SMALL)
+        .color(roles.on_surface)
+        .placeholder(placeholder)
+        .on_change(move |text| draft(id, !text.is_empty()))
+        .on_submit(move |text| send(id, field, &text));
+
+    Row::new(children![
+        Rectangle::new().width(TILE).height(TARGET),
+        Rectangle::new()
+            .width(width)
+            .height(TARGET)
+            .radius(TARGET / 2.0)
+            .padding(Padding {
+                top: 0.0,
+                right: PILL_PADDING,
+                bottom: 0.0,
+                left: PILL_PADDING,
+            })
+            .border(1.0, roles.surface_container_high)
+            .align_child(Start, Center)
+            .cursor(Cursor::Text)
+            .on_click(on_left(move || TextInput::focus(field)))
+            .child(input),
+    ])
+    .gap(TILE_GAP)
+}
+
+// the reply typed on a Banner goes to the sender, and the Banner is done
+fn send(id: u32, field: &'static str, text: &str) {
+    if Notifications::reply(id, text) {
+        TextInput::set_text(field, "");
+        TextInput::blur();
+        close(id);
+    }
+}
+
+// a reply is being typed on a Banner, or its field is empty again
+fn draft(id: u32, drafting: bool) {
+    let now = Instant::now();
+
+    // checked first, as a write wakes every Banners window
+    if Banners::read().stack.drafting(id) != drafting
+        && Banners::write().stack.draft(id, drafting, now)
+    {
+        nudge();
+    }
+}
+
 // centered while it fits, elided only when it does not, since elided text fills its width
 fn label_in(label: &str, width: f32, roles: &ThemeRoles) -> Text {
     let text = Text::new(label)
@@ -1250,5 +1362,21 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
         if button == Button::Left {
             press();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reply_field;
+
+    // the runtime keeps a field's text under its name, so two outputs showing a reply must not share one
+    #[test]
+    fn a_reply_field_is_one_per_output_and_pane() {
+        assert_ne!(reply_field("eDP-1", 0), reply_field("HDMI-A-5", 0));
+        assert_ne!(reply_field("eDP-1", 0), reply_field("eDP-1", 1));
+        assert!(std::ptr::eq(
+            reply_field("eDP-1", 0),
+            reply_field("eDP-1", 0)
+        ));
     }
 }

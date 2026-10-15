@@ -83,6 +83,11 @@ pub struct Gpu {
     // finished window-sized textures waiting to be reused
     spare: Vec<Texture>,
 
+    // the last frame this window presented, kept only while a shader asks for it (`presented`), and
+    // whether one did this frame
+    presented: Option<Texture>,
+    presenting: bool,
+
     // last frame's vello results in the order they were painted, and how far this frame got
     painted: Vec<Option<painted::Painted>>,
     painting: usize,
@@ -137,6 +142,8 @@ impl Gpu {
             backdrops,
             shaders: HashMap::new(),
             spare: Vec::new(),
+            presented: None,
+            presenting: false,
 
             painted: Vec::new(),
             painting: 0,

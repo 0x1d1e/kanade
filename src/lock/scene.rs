@@ -14,6 +14,7 @@ use crate::look::LockBackdrop;
 use crate::sources::wallpaper;
 use crate::{clock, config, theme};
 
+use super::keyboard::Keyboard;
 use super::who::Who;
 use super::{Said, Status, locker};
 
@@ -88,6 +89,9 @@ fn scened(monitor: &Monitor) -> Scene {
         },
     };
 
+    // reading subscribes the scene to the layout in use
+    let layout = Keyboard::read().label.clone();
+
     // the date and status are English, in the face
     let fonts = fonts_for(&who.name);
 
@@ -110,6 +114,7 @@ fn scened(monitor: &Monitor) -> Scene {
         status: String::from(status),
         critical,
         refused: said.wrong,
+        layout,
         palette: Palette {
             text: color(roles.on_surface),
             muted: color(roles.on_surface_variant),

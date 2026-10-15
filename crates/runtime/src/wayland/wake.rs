@@ -9,6 +9,8 @@ pub fn insert(handle: &LoopHandle<'static, WaylandState>) {
 
     handle
         .insert_source(source, |_, _, state| {
+            state.follow_ui_scale();
+
             state.open_requested();
 
             state.close_requested();

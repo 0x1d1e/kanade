@@ -1,5 +1,6 @@
 use crate::allocator;
 use crate::graphics::font;
+use crate::input::released;
 use crate::ipc::{IpcHandlers, IpcReply};
 use crate::wayland::WaylandApp;
 use crate::window::Named;
@@ -14,6 +15,7 @@ pub struct App {
     per_monitor: Vec<fn(&Monitor) -> LayerWindow>,
 
     handlers: IpcHandlers,
+    on_key_release: Option<fn()>,
 }
 
 impl App {
@@ -56,6 +58,16 @@ impl App {
         self
     }
 
+    /*
+     * tells when any key goes up, or the keyboard leaves its window, for a press that counts only
+     * while the key is held. It does not say which key: a hold that any release ends fails safe
+     */
+    pub fn on_key_release(mut self, handler: fn()) -> Self {
+        self.on_key_release = Some(handler);
+
+        self
+    }
+
     pub fn run(self) {
         let no_windows = self.windows.is_empty() && self.normal_windows.is_empty();
 
@@ -64,6 +76,10 @@ impl App {
         }
 
         allocator::limit();
+
+        if let Some(handler) = self.on_key_release {
+            released::set(handler);
+        }
 
         if let Some(family) = &self.font {
             font::set_default(family);

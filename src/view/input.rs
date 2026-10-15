@@ -98,6 +98,9 @@ pub(crate) fn pin() {
  * the open Surface that takes it, else Escape collapses the island
  */
 pub fn key(monitor: &str, key: Key) {
+    // a key held to confirm ends with the next key, which may start another
+    surfaces::confirm::release();
+
     // a Surface whose Module is off never opens, so its keys read nothing. Controls, the
     // Tray and the Calendar go first, as Escape in a sub-surface or the agenda goes back a
     // level rather than closing

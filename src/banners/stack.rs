@@ -34,6 +34,9 @@ pub struct Banner {
     // key and label
     pub actions: Vec<(String, String)>,
 
+    // the sender takes a typed reply (ADR 0079): the placeholder of the field under the actions
+    pub reply: Option<String>,
+
     // from its notification's rule: kept in the history once the Banner is gone, shown under DND,
     // and how long it shows over its urgency's time
     pub history: bool,
@@ -74,6 +77,9 @@ enum Timer {
 struct Shown {
     banner: Banner,
     timer: Timer,
+
+    // a reply is being typed, so it stays until sent or closed, however long that takes
+    drafting: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -117,7 +123,14 @@ impl Stack {
             .iter_mut()
             .find(|shown| shown.banner.id == banner.id)
         {
-            shown.timer = timer(&banner, self.hovered, now);
+            // a replacement under a draft keeps it, unless the new version takes no reply or is
+            // from another sender, whose text the draft must not be sent to
+            shown.drafting &= banner.reply.is_some() && banner.toast.app == shown.banner.toast.app;
+            shown.timer = if shown.drafting {
+                Timer::Sticky
+            } else {
+                timer(&banner, self.hovered, now)
+            };
             shown.banner = banner;
             return;
         }
@@ -217,6 +230,35 @@ impl Stack {
         true
     }
 
+    pub fn drafting(&self, id: u32) -> bool {
+        self.shown
+            .iter()
+            .any(|shown| shown.banner.id == id && shown.drafting)
+    }
+
+    // a reply is being typed on the Banner or not any more (its field is empty), which holds its
+    // time or starts it afresh; false when nothing changed
+    pub fn draft(&mut self, id: u32, drafting: bool, now: Instant) -> bool {
+        let hovered = self.hovered;
+
+        let Some(shown) = self
+            .shown
+            .iter_mut()
+            .find(|shown| shown.banner.id == id && shown.drafting != drafting)
+        else {
+            return false;
+        };
+
+        shown.drafting = drafting;
+        shown.timer = if drafting {
+            Timer::Sticky
+        } else {
+            timer(&shown.banner, hovered, now)
+        };
+
+        true
+    }
+
     // takes down every Banner whose time ran out, and shows queued ones in their place
     pub fn expire(&mut self, now: Instant) {
         let over = |shown: &Shown| matches!(shown.timer, Timer::Running(until) if until <= now);
@@ -274,7 +316,11 @@ impl Stack {
         {
             let timer = timer(&banner, self.hovered, now);
 
-            self.shown.push(Shown { banner, timer });
+            self.shown.push(Shown {
+                banner,
+                timer,
+                drafting: false,
+            });
         }
 
         // with nothing showing, nothing is under the pointer
@@ -305,6 +351,7 @@ mod tests {
             urgency,
             default: false,
             actions: Vec::new(),
+            reply: None,
             history: true,
             bypass_dnd: false,
             timeout: None,
@@ -422,5 +469,36 @@ mod tests {
         assert_eq!(stack.deadline(), Some(now + Duration::from_secs(2)));
         stack.expire(now + Duration::from_secs(2));
         assert_eq!(ids(&stack), [1]);
+    }
+
+    // a reply being typed is never lost to the clock, a replacement included; once the field is
+    // empty again the Banner has its time afresh
+    #[test]
+    fn a_banner_with_a_draft_stays_until_the_draft_ends() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(60);
+        let mut stack = Stack::default();
+        let replying = |id| Banner {
+            reply: Some(String::new()),
+            ..banner(id, Urgency::Normal)
+        };
+
+        stack.arrive(replying(1), false, now);
+        assert!(stack.draft(1, true, now));
+        assert!(!stack.draft(1, true, now));
+
+        stack.expire(later);
+        assert!(stack.contains(1));
+
+        // a new version keeps the draft while it takes a reply, and lets go when it does not
+        stack.arrive(replying(1), false, later);
+        assert_eq!(stack.deadline(), None);
+        stack.arrive(banner(1, Urgency::Normal), false, later);
+        assert_eq!(stack.deadline(), Some(later + NORMAL));
+
+        stack.arrive(replying(2), false, later);
+        stack.draft(2, true, later);
+        assert!(stack.draft(2, false, later));
+        assert_eq!(stack.deadline(), Some(later + NORMAL));
     }
 }

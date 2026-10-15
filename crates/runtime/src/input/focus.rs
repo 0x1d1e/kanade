@@ -4,6 +4,8 @@ use std::rc::Rc;
 
 use crate::{Key, Modifiers};
 
+use super::ime::Editor;
+
 // a window's on_key is not given modifiers, a text input needs them for its shortcuts
 pub type FocusHandler = Rc<dyn Fn(Key, Modifiers)>;
 
@@ -11,6 +13,9 @@ pub type FocusHandler = Rc<dyn Fn(Key, Modifiers)>;
 struct Focus {
     id: &'static str,
     on_key: FocusHandler,
+
+    // how the input method reaches it
+    editor: Rc<dyn Editor>,
 }
 
 thread_local! {
@@ -30,8 +35,17 @@ pub fn wanted(id: &'static str) -> bool {
     WANTED.with_borrow_mut(|wanted| wanted.take_if(|wanted| *wanted == id).is_some())
 }
 
-pub fn set(id: &'static str, on_key: FocusHandler) {
-    FOCUS.set(Some(Focus { id, on_key }));
+pub fn set(id: &'static str, on_key: FocusHandler, editor: Rc<dyn Editor>) {
+    FOCUS.set(Some(Focus { id, on_key, editor }));
+}
+
+// the focused text input and how to edit it for the input method
+pub fn editor() -> Option<(&'static str, Rc<dyn Editor>)> {
+    FOCUS.with_borrow(|focus| {
+        focus
+            .as_ref()
+            .map(|focus| (focus.id, Rc::clone(&focus.editor)))
+    })
 }
 
 pub fn clear() {

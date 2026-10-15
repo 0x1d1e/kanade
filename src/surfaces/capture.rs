@@ -1,7 +1,8 @@
-//! The Capture Surface: a screenshot of an area, the focused window or the focused output, and the
-//! screen recording, each a tile; while one records, the last tile is Stop. It asks what
-//! `kanade capture` asks, so a recording shows on the island and a screenshot by niri's
-//! notification. A screenshot waits for the island to leave the screen first, or it would be in it.
+//! The Capture Surface: a screenshot of an area, the focused window or the focused output, a color
+//! picked from the screen, and the screen recording, each a tile; while one records, the last tile
+//! is Stop. It asks what `kanade capture` asks, so a recording and a picked color show on the island
+//! and a screenshot by niri's notification. A screenshot or a pick waits for the island to leave
+//! the screen first, or it would be in it.
 //! The arrows move a ring between the tiles, Enter or Space presses it.
 
 use std::thread;
@@ -25,6 +26,7 @@ const CLEAR: Duration = Duration::from_millis(400);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum At {
     Shot(Mode),
+    Color,
     Record,
     Stop,
 }
@@ -43,6 +45,7 @@ fn grid(recording: bool) -> Vec<Vec<(At, f32)>> {
         At::Shot(Mode::Area),
         At::Shot(Mode::Window),
         At::Shot(Mode::Output),
+        At::Color,
         if recording { At::Stop } else { At::Record },
     ];
     let count = row.len() as f32;
@@ -86,6 +89,7 @@ fn look(at: At) -> (Icon, &'static str) {
         At::Shot(Mode::Area) => (Icon::Grid, "Area"),
         At::Shot(Mode::Window) => (Icon::Picture, "Window"),
         At::Shot(Mode::Output) => (Icon::Capture, "Screen"),
+        At::Color => (Icon::Palette, "Color"),
         At::Record => (Icon::Camera, "Record"),
         At::Stop => (Icon::Dismiss, "Stop"),
     }
@@ -116,19 +120,19 @@ fn press(focus: Focus<At>, at: At) -> Focus<At> {
         At::Shot(mode) => {
             pad::close();
 
-            let taken = thread::Builder::new()
-                .name(String::from("capture-surface"))
-                .spawn(move || {
-                    thread::sleep(CLEAR);
-
-                    if let Err(why) = capture::screenshot(mode) {
-                        eprintln!("capture: {why}");
-                    }
-                });
-
-            if let Err(error) = taken {
-                eprintln!("capture: {error}");
-            }
+            spawn("capture-surface", move || {
+                if let Err(why) = capture::screenshot(mode) {
+                    eprintln!("capture: {why}");
+                }
+            });
+        }
+        At::Color => {
+            pad::close();
+            spawn("capture-color", || match capture::color() {
+                // the picker left, which is no failure
+                Ok(_) => {}
+                Err(why) => eprintln!("capture: {why}"),
+            });
         }
         At::Record => {
             pad::close();
@@ -141,6 +145,20 @@ fn press(focus: Focus<At>, at: At) -> Focus<At> {
     }
 
     focus
+}
+
+// runs `take` on a thread of its own once the island is gone, so what it takes does not hold it
+fn spawn(name: &str, take: impl FnOnce() + Send + 'static) {
+    let spawned = thread::Builder::new()
+        .name(String::from(name))
+        .spawn(move || {
+            thread::sleep(CLEAR);
+            take();
+        });
+
+    if let Err(error) = spawned {
+        eprintln!("capture: {error}");
+    }
 }
 
 // the path of the recording to stop, none if it ended since the tile was drawn

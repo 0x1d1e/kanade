@@ -12,6 +12,7 @@ mod cluster;
 mod config;
 mod dock;
 mod doctor;
+mod gesture;
 mod hooks;
 mod icon;
 mod idle;
@@ -33,6 +34,7 @@ mod supervise;
 mod surfaces;
 mod theme;
 mod tiles;
+mod ui;
 mod view;
 
 use std::env;
@@ -61,7 +63,12 @@ fn main() -> ExitCode {
         return cli::run(&arguments);
     }
 
+    // the first window opens at it; a reload changes it live
+    kanade_runtime::set_ui_scale(config::get().appearance.ui_scale());
+
     supervise::follow_services();
-    modules::start(theme::font(App::new())).run();
+    modules::start(theme::font(App::new()))
+        .on_key_release(surfaces::confirm::release)
+        .run();
     ExitCode::SUCCESS
 }

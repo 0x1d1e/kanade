@@ -21,6 +21,7 @@ mod placement;
 mod style;
 mod timing;
 mod toplevels;
+mod ui_scale;
 mod unpoisoned;
 mod wayland;
 mod widgets;
@@ -30,6 +31,7 @@ pub mod backdrop;
 pub mod idle;
 pub mod queue;
 pub mod service;
+pub mod ui;
 pub mod worker;
 
 pub use animation::{Animation, Blend, Easing, request_frame};
@@ -62,5 +64,6 @@ pub use widgets::{
 pub use placement::Justify::{SpaceAround, SpaceBetween, SpaceEvenly};
 pub use placement::Size::Parent;
 pub use toplevels::{FullscreenWindow, Toplevels};
+pub use ui_scale::{set_ui_scale, ui_scale};
 pub use wayland::blur_available;
 pub use window::{Window, close_window, open_window, window_open, window_size};

@@ -1,6 +1,7 @@
 // produce Activities from system state, or the Services the views read; may read Services and
 // post through Island::write()
 
+pub mod accessibility;
 pub mod apps;
 pub mod audio;
 pub mod battery;
@@ -15,6 +16,7 @@ pub mod capture;
 pub mod cava;
 pub mod charge_limit;
 pub mod clipboard;
+pub mod ddc;
 pub mod desktop;
 pub mod devices;
 pub mod focus;
@@ -25,6 +27,7 @@ pub mod icons;
 pub mod json;
 pub mod keys;
 pub mod launch;
+pub mod launcher_entry;
 pub mod live;
 pub mod lyrics;
 pub mod media;

@@ -11,6 +11,7 @@ use std::thread;
 use std::time::Instant;
 
 use kanade_runtime::service::{self, Service};
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Size, Stack,
     Start, Text, Widget, children,
@@ -42,6 +43,7 @@ mod destinations;
 mod emoji;
 mod history;
 mod provider;
+mod units;
 pub mod windows;
 
 use apps::{Actions, Apps as AppsProvider};
@@ -539,6 +541,11 @@ fn field(query: &str, placeholder: &str) -> Rectangle {
             left: FIELD_INSET,
         })
         .align_child(Start, Center)
+        .semantics(|| {
+            Semantics::new(Role::TextInput, "search")
+                .text(query)
+                .focused(true)
+        })
         .child(
             Row::new(vec![
                 Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
@@ -653,6 +660,7 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
         .height(listed(found.len()))
         .clip()
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::List, "results"))
         .on_scroll(|Scroll { y, .. }| wheel(y))
         .child(
             Rectangle::new()
@@ -750,6 +758,11 @@ fn row(
     let action = answer.action.clone();
 
     row.identity(&answer.action)
+        .semantics(|| {
+            Semantics::new(Role::Item, "result")
+                .content(answer.title.as_str())
+                .selected(selected)
+        })
         .on_click(super::on_left(move || {
             press(&monitor, visit, action.clone());
         }))

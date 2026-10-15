@@ -24,10 +24,11 @@ pub enum Tile {
     NightLight,
     Focus,
     ChargeLimit,
+    PowerProfile,
 }
 
 impl Tile {
-    pub const ALL: [Tile; 7] = [
+    pub const ALL: [Tile; 8] = [
         Tile::Wifi,
         Tile::Bluetooth,
         Tile::Caffeine,
@@ -35,6 +36,7 @@ impl Tile {
         Tile::NightLight,
         Tile::Focus,
         Tile::ChargeLimit,
+        Tile::PowerProfile,
     ];
 
     // as the config names it
@@ -47,6 +49,7 @@ impl Tile {
             Tile::NightLight => "night-light",
             Tile::Focus => "focus",
             Tile::ChargeLimit => "charge-limit",
+            Tile::PowerProfile => "power-profile",
         }
     }
 
@@ -60,6 +63,7 @@ impl Tile {
             Tile::NightLight => "Night Light",
             Tile::Focus => "Focus",
             Tile::ChargeLimit => "Limit Charge",
+            Tile::PowerProfile => "Power Profile",
         }
     }
 

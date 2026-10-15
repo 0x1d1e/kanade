@@ -119,7 +119,10 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
             json!({ "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } })
         }
         Kind::Argv(_) => json!({ "type": "array", "items": { "type": "string" } }),
-        Kind::AppIds(_) => {
+        Kind::Names(known, _) => {
+            json!({ "type": "array", "uniqueItems": true, "items": { "enum": known } })
+        }
+        Kind::AppIds(_) | Kind::Gestures(_) => {
             json!({ "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } })
         }
         Kind::Modules(_) => json!({

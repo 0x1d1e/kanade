@@ -3,7 +3,7 @@ use wayland_client::{
     protocol::wl_region::{self, WlRegion},
 };
 
-use crate::LayerWindow;
+use crate::{InputArea, LayerWindow, ui_scale};
 
 use super::{
     WaylandState,
@@ -23,8 +23,9 @@ impl OpenWindow {
 
         self.update_input_region(window);
 
+        // a region in the compositor's logical pixels, so a changed UI scale resends it
         self.blur.set(
-            &window.blur,
+            &compositor_pixels(&window.blur),
             self.role.wl_surface(),
             &self.compositor,
             &self.qh,
@@ -39,7 +40,7 @@ impl OpenWindow {
             return;
         };
 
-        let settings = Settings::from(window);
+        let settings = Settings::new(window, ui_scale::ui_scale());
 
         if settings == *current {
             return;
@@ -69,11 +70,13 @@ impl OpenWindow {
 
     // only a changed region is sent, it takes effect with the next commit like the rest
     pub fn update_input_region(&mut self, window: &LayerWindow) {
-        if window.input_region == self.input_region {
+        let region = window.input_region.as_deref().map(compositor_pixels);
+
+        if region == self.input_region {
             return;
         }
 
-        self.input_region = window.input_region.clone();
+        self.input_region = region;
 
         let surface = self.role.wl_surface();
 
@@ -109,6 +112,28 @@ impl OpenWindow {
         // a frame callback asked for before hiding may never come
         self.frame_requested = false;
     }
+}
+
+// areas of the virtual space in the compositor's logical pixels, grown to whole ones
+fn compositor_pixels(areas: &[InputArea]) -> Vec<InputArea> {
+    let ui = ui_scale::ui_scale();
+
+    areas
+        .iter()
+        .map(|area| {
+            let left = (area.x as f32 * ui).floor() as i32;
+            let top = (area.y as f32 * ui).floor() as i32;
+            let right = ((area.x + area.width) as f32 * ui).ceil() as i32;
+            let bottom = ((area.y + area.height) as f32 * ui).ceil() as i32;
+
+            InputArea {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            }
+        })
+        .collect()
 }
 
 // a region never sends events, but wayland-client still needs somewhere to send them

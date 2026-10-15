@@ -8,6 +8,7 @@ use smithay_client_toolkit::shell::{
 use wayland_client::{Connection, QueueHandle};
 
 use crate::Window;
+use crate::ui_scale;
 use crate::unpoisoned::MutexExt;
 use crate::window::{CLOSING, OPEN, REQUESTED};
 
@@ -30,14 +31,19 @@ impl WaylandState {
         xdg_window.set_title(window.title.clone());
         xdg_window.set_app_id("kanade");
 
-        let size = (window.width.round() as u32, window.height.round() as u32);
+        // a window asks in the virtual space and opens at the UI scale it was opened under
+        let ui = ui_scale::ui_scale();
+
+        let up = |length: f32| (length * ui).round() as u32;
+
+        let size = (up(window.width), up(window.height));
 
         // the same smallest and biggest size is how a window says it cannot be resized
         if !window.resizable {
             xdg_window.set_min_size(Some(size));
             xdg_window.set_max_size(Some(size));
         } else if let Some((width, height)) = window.min_size {
-            xdg_window.set_min_size(Some((width.round() as u32, height.round() as u32)));
+            xdg_window.set_min_size(Some((up(width), up(height))));
         }
 
         // the compositor answers the first commit with a configure, drawing starts there
