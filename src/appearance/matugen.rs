@@ -120,10 +120,18 @@ pub fn roles(tone: Tone) -> ThemeRoles {
         })
 }
 
-// the ramp of the wallpaper's source color in a finish; slate while there is none (ADRs 0050, 0051)
+/*
+ * the ramp of the wallpaper's source color in a finish; slate while there is none (ADRs 0050, 0051).
+ * Blur follows `appearance.tone`: the dark ramp, or paper's while it is light (ADR 0057)
+ */
 pub fn island_roles(finish: Finish) -> ThemeRoles {
     static SLATE: LazyLock<[ThemeRoles; 2]> =
         LazyLock::new(|| [tint::roles(tint::NEUTRAL), tint::paper(tint::NEUTRAL)]);
+
+    let finish = match finish {
+        Finish::Blur if crate::config::get().appearance.tone == Tone::Light => Finish::Paper,
+        finish => finish,
+    };
 
     match (Generated::read().palettes, finish) {
         (Some(palettes), Finish::TintedSolid | Finish::Blur) => palettes.island,

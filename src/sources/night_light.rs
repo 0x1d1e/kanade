@@ -13,11 +13,12 @@
 use std::collections::VecDeque;
 use std::io;
 use std::process::{Child, ExitStatus};
-use std::sync::LazyLock;
 use std::sync::mpsc::RecvTimeoutError;
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kanade_runtime::MutexExt;
 use kanade_runtime::queue::Queue;
 use kanade_runtime::service::Service;
 use toml::Value;
@@ -191,8 +192,28 @@ fn said(night: &NightLight) -> String {
     }
 }
 
+// the mode last seen and how many times it has changed since Kanade started
+static MODE: Mutex<(NightMode, u64)> = Mutex::new((NightMode::Off, 0));
+
+/*
+ * which change of the mode is the last, for what turns the night light on and later wants to know
+ * whether it is still as it left it: a mode the user changed and changed back is told from none
+ */
+pub fn revision() -> u64 {
+    MODE.locked().1
+}
+
 // the config was read again; one that changed the night light starts wlsunset again
 pub fn reread() {
+    let mode = config::get().night_light.mode;
+    let mut seen = MODE.locked();
+
+    if seen.0 != mode {
+        *seen = (mode, seen.1 + 1);
+    }
+
+    drop(seen);
+
     QUEUE.send(Message::Reread);
 }
 

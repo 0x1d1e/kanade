@@ -59,10 +59,16 @@ const SIGNALS_LIGHT: SemanticColors = SemanticColors {
 // the colors that mean something on the Island: the bright ones on a dark finish, the darker hues on paper
 pub fn signals() -> SemanticColors {
     match finish() {
-        Finish::TintedSolid | Finish::Blur => SEMANTIC,
+        Finish::TintedSolid => SEMANTIC,
+        Finish::Blur if !blur_light() => SEMANTIC,
         Finish::LiquidGlass if INK.get() < 0.5 => SEMANTIC,
-        Finish::LiquidGlass | Finish::Paper => SIGNALS_LIGHT,
+        Finish::Blur | Finish::LiquidGlass | Finish::Paper => SIGNALS_LIGHT,
     }
+}
+
+// whether Blur is paper's ramp: `appearance.tone` is light (ADR 0057)
+fn blur_light() -> bool {
+    crate::config::get().appearance.tone == crate::look::Tone::Light
 }
 
 fn finish() -> Finish {
@@ -225,15 +231,17 @@ pub const PAPER_OUTLINE: Color = Color::rgba(30, 30, 50, 89);
 // the pane's top light edge and rim in the finish
 pub fn pane_edge() -> Color {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass | Finish::Blur => PANE_EDGE,
-        Finish::Paper => PAPER_EDGE,
+        Finish::TintedSolid | Finish::LiquidGlass => PANE_EDGE,
+        Finish::Blur if !blur_light() => PANE_EDGE,
+        Finish::Blur | Finish::Paper => PAPER_EDGE,
     }
 }
 
 pub fn pane_rim() -> Color {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass | Finish::Blur => PANE_RIM,
-        Finish::Paper => PAPER_RIM,
+        Finish::TintedSolid | Finish::LiquidGlass => PANE_RIM,
+        Finish::Blur if !blur_light() => PANE_RIM,
+        Finish::Blur | Finish::Paper => PAPER_RIM,
     }
 }
 

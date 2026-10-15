@@ -377,14 +377,14 @@ fn cast(cast: &Json) -> Option<(u64, Cast)> {
 
 /*
  * asks niri to stop the PipeWire cast of `session`, every stream of it; one niri cannot stop, or an
- * older niri without the action, answers an error. Blocks up to `PATIENCE`, so never on the draw
- * thread
+ * older niri without the action, answers an error, and a missing or unclear answer is `Unknown`,
+ * the cast maybe stopped, so never asked again for it. Blocks up to `PATIENCE`, so never on the
+ * draw thread
  */
-pub fn stop(session: u64) -> io::Result<()> {
+pub fn stop(session: u64) -> io::Result<Acted> {
     act(&format!(
         r#"{{"Action":{{"StopCast":{{"session_id":{session}}}}}}}"#
     ))
-    .map(|_| ())
 }
 
 // what a window event says; none for another event, and for those `windows` ignores, like layouts

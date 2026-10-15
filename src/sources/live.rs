@@ -52,6 +52,9 @@ pub const ID: usize = 64;
 pub const TITLE: usize = 80;
 pub const DETAIL: usize = 160;
 
+// a progress's full bar, in thousandths
+const FULL: u16 = 1000;
+
 // the least between two posts of one live Activity's changes: a client reposting in a loop redraws
 // the Island a few times a second, and what it said last is posted when the time is up
 const REPOST: Duration = Duration::from_millis(250);
@@ -395,6 +398,15 @@ impl Board {
             .min()
     }
 
+    // no longer live, done at the full progress it reached, as a finished notification is
+    pub fn complete(&mut self, id: &str) -> Result<Job, String> {
+        let mut job = self.end(id, Ended::Done, None)?;
+
+        job.progress = Some(FULL);
+
+        Ok(job)
+    }
+
     // no longer live, as it ended; its last form, done or failed
     pub fn end(&mut self, id: &str, ended: Ended, detail: Option<String>) -> Result<Job, String> {
         let mut job = self.live.remove(id).ok_or_else(|| unknown(id))?.job;
@@ -558,13 +570,16 @@ pub fn show(
     Ok(())
 }
 
-// ends the live Activity `id` as done, if it is live
+// ends the live Activity `id` as done at 100%, if it is live: a progress that jumps to its end
+// would otherwise end showing the last step it was told
 pub fn finish(id: &str) {
-    let _ = request(Request::End {
-        id: id.to_owned(),
-        ended: Ended::Done,
-        detail: None,
-    });
+    let now = Instant::now();
+    let mut board = BOARD.locked();
+
+    if let Ok(job) = board.complete(id) {
+        IslandService::write().post(activity(id, job), now);
+        CHANGED.notify_one();
+    }
 }
 
 // takes the live Activity `id` away at once, with no ended form, if it is live
@@ -902,6 +917,22 @@ mod tests {
             assert_eq!(Request::parse(&["start", id, "t"]), None, "{id}");
             assert_eq!(Request::parse(&["end", id]), None, "{id}");
         }
+    }
+
+    #[test]
+    fn a_completed_progress_ends_at_the_full_bar_not_the_last_step() {
+        let now = Instant::now();
+        let mut board = Board::new();
+
+        board.start("a", String::from("t"), now).expect("room");
+        board
+            .change("a", now, |job| job.progress = Some(800))
+            .expect("live");
+
+        let job = board.complete("a").expect("live");
+
+        assert_eq!((job.progress, job.ended), (Some(1000), Some(Ended::Done)));
+        assert!(board.complete("a").is_err());
     }
 
     #[test]

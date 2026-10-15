@@ -15,7 +15,7 @@ use std::thread;
 use kanade_runtime::service::Service;
 
 use super::json::Json;
-use super::niri::{self, Niri, Target};
+use super::niri::{self, Acted, Niri, Target};
 use super::pipewire::{self, DUMP, LINK, NODE, Object};
 use super::wake;
 use crate::supervise;
@@ -72,14 +72,17 @@ pub fn follow_casts() {
 /*
  * asks niri to stop the PipeWire casts, on a thread of their own, as niri may take seconds to
  * answer; a screen share ends when its portal session does. A refusal, as from a niri without the
- * action, is logged and leaves the cast as it was
+ * action, is logged and leaves the cast as it was; an answer niri never gave is logged as unknown,
+ * the cast maybe stopped, and not asked again, as the privacy dots say what is still captured
  */
 pub fn stop_sharing(sessions: &BTreeSet<u64>) {
     for &session in sessions {
-        thread::spawn(move || {
-            if let Err(error) = niri::stop(session) {
-                eprintln!("kanade: niri did not stop a cast ({error})");
-            }
+        thread::spawn(move || match niri::stop(session) {
+            Ok(Acted::Done) => {}
+            Ok(Acted::Unknown(why)) => eprintln!(
+                "kanade: niri gave no clear answer to stopping a cast ({why}); it may be stopped, check the privacy dots"
+            ),
+            Err(error) => eprintln!("kanade: niri did not stop a cast ({error})"),
         });
     }
 }

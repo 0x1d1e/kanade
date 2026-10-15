@@ -1,7 +1,8 @@
 //! Focus (ADR 0060): one switch for the pieces that quiet the session, Do Not Disturb, caffeine and
 //! the night light, as `focus.*` chooses. It owns no thread and no state of its own beyond what it
 //! turned on: each piece that was already on is left alone, and `off` turns off only a piece still
-//! as `on` left it, so a caffeine or night light mode the user changed meanwhile is theirs. What it
+//! as `on` left it, so a Do Not Disturb, caffeine or night light mode the user set meanwhile is
+//! theirs, even one set back to what Focus left. What it
 //! turned on is kept in memory, so a restart forgets it and leaves those pieces as they are; the
 //! night light, kept in the settings file, then stays on until turned off.
 //!
@@ -21,13 +22,14 @@ use crate::modules;
 
 /*
  * what Focus turned on and how it left it, so `off` can tell a piece still as it left it from one
- * the user changed since: caffeine by its holder's serial, the night light by its mode
+ * the user changed since: each by a number that changes whenever the piece does, even back to the
+ * value it had: DND's setting, caffeine's holder serial, the night light's mode change
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Held {
-    dnd: bool,
+    dnd: Option<u64>,
     caffeine: Option<u64>,
-    night_light: Option<NightMode>,
+    night_light: Option<u64>,
 }
 
 // what Focus turned on, none while it is off
@@ -103,7 +105,7 @@ pub fn status() -> String {
         return String::from("off");
     };
     let pieces: Vec<&str> = [
-        (held.dnd, "do not disturb"),
+        (held.dnd.is_some(), "do not disturb"),
         (held.caffeine.is_some(), "caffeine"),
         (held.night_light.is_some(), "night light"),
     ]
@@ -138,7 +140,7 @@ fn turn(on: bool) -> Vec<String> {
 fn engage(problems: &mut Vec<String>) -> Held {
     let wanted = config::get().focus;
     let mut held = Held {
-        dnd: false,
+        dnd: None,
         caffeine: None,
         night_light: None,
     };
@@ -147,7 +149,7 @@ fn engage(problems: &mut Vec<String>) -> Held {
 
     if modules::on("notifications") && turns_on(wanted.dnd, dnd_off) {
         notifications::set_dnd(true, Instant::now());
-        held.dnd = true;
+        held.dnd = Some(notifications::dnd_revision());
     }
 
     // starting counts as on, as the user's own `on` may be about to hold
@@ -168,7 +170,7 @@ fn engage(problems: &mut Vec<String>) -> Held {
 
     if modules::on("night-light") && turns_on(wanted.night_light, light_off) {
         match night_light::turn(true) {
-            Ok(()) => held.night_light = Some(config::get().night_light.mode),
+            Ok(()) => held.night_light = Some(night_light::revision()),
             Err(why) => problems.push(format!("night light: {why}")),
         }
     }
@@ -178,7 +180,7 @@ fn engage(problems: &mut Vec<String>) -> Held {
 
 // turns off the pieces Focus turned on that are still as it left them
 fn release(held: Held, problems: &mut Vec<String>) {
-    if held.dnd && IslandService::read().dnd() {
+    if turns_off(held.dnd, Some(notifications::dnd_revision())) {
         notifications::set_dnd(false, Instant::now());
     }
 
@@ -186,7 +188,7 @@ fn release(held: Held, problems: &mut Vec<String>) {
         caffeine::request(caffeine::Request::Off, Later::detached());
     }
 
-    if turns_off(held.night_light, Some(config::get().night_light.mode))
+    if turns_off(held.night_light, Some(night_light::revision()))
         && let Err(why) = night_light::turn(false)
     {
         problems.push(format!("night light: {why}"));
@@ -205,7 +207,8 @@ mod tests {
         assert!(!turns_on(true, false));
         assert!(!turns_on(false, true));
 
-        // off: caffeine still the holder Focus started
+        // off: a piece still as Focus left it, by the number it gave: a holder's serial, or the
+        // count of times DND was set or the night light's mode changed
         assert!(turns_off(Some(3_u64), Some(3)));
 
         // never turned on by Focus, ended on its own or turned off, or the user's own `on` since
@@ -213,10 +216,8 @@ mod tests {
         assert!(!turns_off(Some(3_u64), None));
         assert!(!turns_off(Some(3_u64), Some(4)));
 
-        // the night light still in the mode Focus wrote, or one the user changed to
-        assert!(turns_off(Some(NightMode::On), Some(NightMode::On)));
-        assert!(!turns_off(Some(NightMode::On), Some(NightMode::Schedule)));
-        assert!(!turns_off(Some(NightMode::On), Some(NightMode::Off)));
-        assert!(!turns_off(None, Some(NightMode::Off)));
+        // a user who turned DND or the night light off and on again moved the number twice, so the
+        // piece is back at the value Focus set and is still theirs
+        assert!(!turns_off(Some(3_u64), Some(5)));
     }
 }

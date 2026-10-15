@@ -23,6 +23,8 @@
 
 use std::collections::HashMap;
 use std::process;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::bus::Bus;
@@ -33,7 +35,7 @@ use super::bus;
 use super::icons;
 use super::live;
 use super::sound::{self, Hints};
-use super::wake::{Announcer, Pace, Wakes};
+use super::wake::{Announcer, Pace, Waker, Wakes};
 use crate::banners::{Banner, Banners};
 use crate::config;
 use crate::island::activity::Toast;
@@ -313,18 +315,65 @@ fn announces(line: &str) -> bool {
     )
 }
 
-// DND quiets the Banners, never the history
+// wakes `follow` for a change of DND, which no announcement on the bus carries
+static WAKER: OnceLock<Waker> = OnceLock::new();
+
+// how many times DND has been set since Kanade started, whether it changed or not
+static DND_REVISION: AtomicU64 = AtomicU64::new(0);
+
+/*
+ * which setting of DND is the last, for what turns it on and later wants to know whether it is still
+ * as it left it: a user who sets it again is told from no one having touched it
+ */
+pub fn dnd_revision() -> u64 {
+    DND_REVISION.load(Ordering::Relaxed)
+}
+
+// DND quiets the Banners, never the history, and the progress Live Activities it does not let show
 pub fn set_dnd(dnd: bool, now: Instant) {
+    DND_REVISION.fetch_add(1, Ordering::Relaxed);
     IslandService::write().set_dnd(dnd, now);
 
     if dnd {
         banners::silence(now);
     }
+
+    if let Some(waker) = WAKER.get() {
+        waker.wake();
+    }
+}
+
+/*
+ * the progress steps for one read: for each of `candidates` that the step is wanted of, by id. The
+ * ones that arrived or were replaced are the candidates, and every notification in the list when DND
+ * changed, as that alone moves a progress that did not
+ */
+fn steps(
+    list: &[Notification],
+    posted: &[Version],
+    dnd_changed: bool,
+    dnd: bool,
+    tracked: &HashMap<u32, String>,
+) -> Vec<(u32, Step)> {
+    list.iter()
+        .filter(|notification| {
+            dnd_changed || posted.contains(&(notification.id(), notification.version()))
+        })
+        .filter_map(|notification| {
+            // a progress shows as its rule lets a Banner show, and under DND only a loud one
+            let loud =
+                notification.urgency() == Urgency::Critical || notification.effects().bypass_dnd;
+            let allowed = notification.effects().banner && (!dnd || loud);
+            let tracked = tracked.get(&notification.id()).map(String::as_str);
+
+            progress(notification, allowed, tracked).map(|step| (notification.id(), step))
+        })
+        .collect()
 }
 
 // runs on its own thread for good
 pub fn follow() {
-    let mut wakes = Wakes::new(PACE, vec![BUS]);
+    let (mut wakes, waker) = Wakes::woken(PACE, vec![BUS]);
     let mut before: Vec<Version> = Vec::new();
     let mut daemon = Daemon::Starting;
     let shows_banners = modules::on("banners");
@@ -332,6 +381,11 @@ pub fn follow() {
 
     // the progress Live Activities, by notification id, as the live ids they are
     let mut tracked: HashMap<u32, String> = HashMap::new();
+
+    // DND as the last read had it, for the read that finds it changed
+    let mut seen_dnd = IslandService::read().dnd();
+
+    drop(WAKER.set(waker));
 
     supervise::run("notifications", || {
         loop {
@@ -395,23 +449,19 @@ pub fn follow() {
                 Vec::new()
             };
 
-            // a progress shows as its rule lets a Banner show, and under DND only a loud one
             let steps: Vec<(u32, Step)> = if shows_progress {
-                arrived
-                    .iter()
-                    .filter_map(|notification| {
-                        let loud = notification.urgency() == Urgency::Critical
-                            || notification.effects().bypass_dnd;
-                        let allowed = notification.effects().banner && (!dnd || loud);
-                        let tracked = tracked.get(&notification.id()).map(String::as_str);
-
-                        progress(notification, allowed, tracked)
-                            .map(|step| (notification.id(), step))
-                    })
-                    .collect()
+                steps(
+                    notifications.list(),
+                    &posted,
+                    dnd != seen_dnd,
+                    dnd,
+                    &tracked,
+                )
             } else {
                 Vec::new()
             };
+
+            seen_dnd = dnd;
 
             drop(notifications);
 
@@ -595,6 +645,45 @@ mod tests {
         assert_eq!(step(Some(40), false, live), Some(Step::Withdraw(id())));
         assert_eq!(step(Some(40), false, None), None);
         assert_eq!(step(None, true, None), None);
+    }
+
+    // DND changing moves a progress that did not change: under it takes the Activity away, and out
+    // of it brings one back
+    #[test]
+    fn a_change_of_dnd_moves_every_progress_not_only_the_ones_that_arrived() {
+        let list = [notification("Files", 7, Some(40))];
+        let posted = [(7, 1)];
+        let live = HashMap::from([(7, String::from("notification.files.7"))]);
+
+        // nothing arrived, DND still as it was: no step
+        assert!(steps(&list, &[], false, false, &live).is_empty());
+
+        // DND on: the Activity is taken away
+        assert_eq!(
+            steps(&list, &[], true, true, &live),
+            [(7, Step::Withdraw(String::from("notification.files.7")))]
+        );
+
+        // DND off again, the Activity gone: it comes back at its value
+        assert!(matches!(
+            steps(&list, &[], true, false, &HashMap::new()).as_slice(),
+            [(7, Step::Show { percent: 40, .. })]
+        ));
+
+        // a notification that arrived is stepped, DND changed or not
+        assert_eq!(
+            steps(&list, &posted, false, false, &HashMap::new()).len(),
+            1
+        );
+
+        // a loud one stays under DND
+        let mut loud = notification("Files", 7, Some(40));
+        loud.urgency = Urgency::Critical;
+
+        assert!(matches!(
+            steps(&[loud], &[], true, true, &HashMap::new()).as_slice(),
+            [(7, Step::Show { .. })]
+        ));
     }
 
     // a replacement may name another app: the Activity it had is the one that is moved or ended
