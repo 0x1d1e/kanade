@@ -618,6 +618,8 @@ mod tests {
             urgency: Urgency::Normal,
             actions: Vec::new(),
             has_default: false,
+            reply: None,
+            sender: String::new(),
             resident: false,
             sound: Hints::default(),
             value,

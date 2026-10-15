@@ -30,6 +30,13 @@ pub struct Notification {
 
     pub(crate) has_default: bool,
 
+    // the placeholder of the reply field when the sender asked for an inline reply (the KDE
+    // "inline-reply" action; ADR 0079), empty for the default one
+    pub(crate) reply: Option<String>,
+
+    // the sender's unique bus name, who hears the reply; empty when unknown
+    pub(crate) sender: String,
+
     // stays open after an action, until it is dismissed or the sender closes it
     pub(crate) resident: bool,
 
@@ -111,6 +118,11 @@ impl Notification {
     // the buttons to show, in the order the sender gave them
     pub fn actions(&self) -> &[Action] {
         &self.actions
+    }
+
+    // whether the sender takes a typed reply, and the field's placeholder, see Notifications::reply
+    pub fn reply(&self) -> Option<&str> {
+        self.reply.as_deref()
     }
 
     // whether clicking the notification itself does something, see Notifications::click
