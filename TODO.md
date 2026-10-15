@@ -200,7 +200,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## Semantic tree (#21, ADR 0095)
 
-- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard, Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
+- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard (its rows, `pin`, `delete`, `clear` and the search are named, the detail pane is not), Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
   - A control whose click handler is on a parent of the annotated rectangle is not pressable by name.
   - Not run: a live session pass of `kanade ui` (see the report for the steps).
 
@@ -220,3 +220,14 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 ## Live actions (ADR 0110, review, low-level, unfixed)
 
 - [ ] `activity wait` and `run --action cancel` poll every 250 ms: each ask is a connect and an IPC on the draw thread, about 4 shell wakeups a second while anyone waits (for `run`, the command's lifetime). A subscription or a longer-held call would cost less.
+
+## Clipboard pins and previews (ADR 0114, low-level, unfixed)
+
+- [ ] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
+- [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout); a second Kanade's start sweeps the running one's too, which the running one rewrites on the next draw.
+- [ ] The runtime's thumbnail cache keeps a decoded thumbnail of a deleted preview until it evicts it (512 copies, 128 MiB).
+- [ ] At the default 400 px body the pane leaves about 2.8 rows instead of about 5.3; the pane could size to the excerpt's lines, or hold back unless at least 4 rows are left.
+- [ ] A preview decodes arbitrary copied image bytes (up to 16 MiB) in the runtime's decoder, whose dimension limits are unchecked (decompression-bomb risk).
+- [ ] `kanade ui press` closing the Surface is older than this change.
+- [ ] An unpin puts the entry at the top of the rest, not where its age would; entries keep no time.
+- [ ] Not run: the Surface (thumbnails, the pin stop and button, the pane, the footer copy) and the idle numbers with a history of pictures.

@@ -1,6 +1,6 @@
 /*
  * the clipboard history, as a Launcher provider: a query starting with `>` searches what was
- * copied, newest first, and pressing an entry puts it back on the clipboard. Only on that prefix, so a
+ * copied, the pinned first, then newest first, and pressing an entry puts it back on the clipboard. Only on that prefix, so a
  * search for apps never shows what was copied
  */
 
@@ -33,7 +33,11 @@ impl LauncherProvider for History<'_> {
                 Answer {
                     fit: Fit::Anywhere,
                     title: summary.title,
-                    detail: summary.detail,
+                    detail: if entry.pinned {
+                        format!("Pinned, {}", summary.detail)
+                    } else {
+                        summary.detail
+                    },
                     mark: Mark::Icon(Icon::Clipboard),
                     action: Action::Paste(entry.id),
                 }
@@ -52,6 +56,7 @@ mod tests {
         Entry {
             id,
             content: Content::Text(text.into()),
+            pinned: false,
         }
     }
 

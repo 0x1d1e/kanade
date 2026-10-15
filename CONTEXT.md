@@ -133,6 +133,15 @@ A command the user lists in config (`hooks.<event>`, an argv list) that Kanade r
 - Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
 - **Avoid:** plugin, script event soup, subscription
 
+## Clipboard
+The history of what was copied, text and images, kept by the `clipboard` Module and shown by the Clipboard Surface (ADR 0011, ADR 0019, ADR 0114). Newest first, the pinned entries before the rest.
+- **Entry**: one item of the history: an `id`, its content (text, or an image with its type) and whether it is pinned. The id is never reused, and a copy of its content again keeps it. **Avoid:** item, clip, snippet (a snippet is text kept on purpose and filled in, not built, ADR 0114).
+- **Pin**, of an entry (not the Island's Pin above): marks an entry to stay. It sorts first and the bounds (50 entries, 64 MiB) never evict it, though it counts in them; pins have their own caps, 20 and 16 MiB together, and one past them is refused with a line in the footer. Memory only.
+- **Invariant:** a pin marks an entry that is already in the history, so one that passed the sensitive gate (ADR 0019): a selection marked sensitive is never read, never kept and so never pinned. A pin adds no filter of its own and no heuristic.
+- **Invariant:** Clear all (the held button, `kanade clipboard clear`) keeps the pins and says how many; removing an entry removes it, pinned or not. Nothing about the history or a pin is written to disk.
+- **Invariant:** a picture's preview is a file under `$XDG_RUNTIME_DIR/kanade-clipboard` (tmpfs, the directory 0700, the file 0600), named by the entry's id and an extension from a fixed table, written only for a row that shows, deleted when its entry is removed, evicted or cleared and swept at the next start only, so they also stay after a clean exit or SIGTERM until then (tmpfs, 0600, same user). With no runtime directory there is no preview. What was copied and where a preview is are never logged.
+- **Avoid:** favorite, star, sticky (for a pin of an entry)
+
 ## Dictation
 Speech turned into text by the `dictation` Module: the user starts a recording, stops it, and one request to the Gemini API returns the text, which is then inserted (copied by default).
 - **Invariant:** nothing records or is sent unless a key is in the Secret Service and the user's consent to the disclosure is recorded (audio goes to Google; on the free tier it may be used to improve Google's products). Audio is kept in memory only and capped at 120 s (ADR 0111).
@@ -188,7 +197,7 @@ A right click keeps an island's Peek or open Surface up after the pointer leaves
 - **Invariant:** a pin lasts only for its current raised Presentation. Collapsing or replacing it clears the pin: collapse, a click expanding the Peek, another Surface opening, the overview, another island expanding. The peeked Activity leaving both the primary and the top Satellite clears a pinned Peek; Preempt clears a pinned Surface, unless it is its own. Nothing pinned is remembered.
 - **Invariant:** a pinned island never holds. Pinning a held island gives the keyboard back; a press on the island takes it again.
 - No per-Activity context action on right click: a click already opens the Activity's Surface, where its actions are, and a hidden action would run before it could be seen.
-- **Avoid:** sticky, lock (lock is the screen locker)
+- **Avoid:** sticky, lock (lock is the screen locker). A pinned Clipboard entry is another thing (see Clipboard).
 
 ## Confirm hold
 How a Surface confirms a destructive press: the target fills while the pointer button or the key is held, and acts only when it is full after 700 ms (ADR 0085). Calendar remove (`d`) and the Clipboard's Clear all.

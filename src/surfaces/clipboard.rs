@@ -1,9 +1,12 @@
 //! The Clipboard Surface: the clipboard history, newest first, searched as it is typed.
 //! It opens only from IPC or a keybind, so it always holds the keyboard, like the Launcher: typing
-//! searches, the arrow keys move a ring over each entry, its delete and Clear all, and Enter
+//! searches, the arrow keys move a ring over each entry, its pin, its delete and Clear all, and Enter
 //! presses what the ring is on. Pressing an entry copies it and closes the island once it is on the
-//! clipboard, or says it was not copied. It says when the history is empty and when nothing matches. Text shows as its first words; an image only as its
-//! kind and size, since the runtime draws images from files and the history never leaves memory.
+//! clipboard, or says it was not copied; pressing its pin pins it, or unpins it (ADR 0114). It says
+//! when the history is empty and when nothing matches. Text shows as its first words, and the
+//! selected entry's first lines in a pane below the rows, where the body is tall enough; an image as
+//! a thumbnail, once its preview is written to tmpfs (`sources::clipboard::preview`), else its kind
+//! and size. The history itself never leaves memory.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -11,8 +14,8 @@ use std::time::Instant;
 
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, Size, SpaceBetween,
-    Stack, Start, Text, Widget, children,
+    Center, Column, Cursor, Image, ImageState, Key, Padding, Parent, Rectangle, Row, Scroll, Size,
+    SpaceBetween, Stack, Start, Text, Widget, children,
 };
 use kanade_runtime::{
     MutexExt,
@@ -23,7 +26,7 @@ use crate::icon::Icon;
 use crate::island::geometry;
 use crate::island::presentation::{Presentation, Surface};
 use crate::island::service::IslandService;
-use crate::sources::clipboard::{self, Clipboard, Content, Entry};
+use crate::sources::clipboard::{self, Clipboard, Content, Entry, PIN_BYTES, PINS, preview};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, DISABLED, radius};
 use crate::view;
@@ -43,11 +46,33 @@ const GAP: f32 = 12.0;
 
 // what the rows scroll in, as tall as the largest body (`island.height`) leaves
 fn room() -> f32 {
-    view::largest().height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP
+    view::largest().height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP - pane_space()
 }
 
 // what a state, as an empty history, takes of the list
 const STATE: f32 = 120.0;
+
+/*
+ * the pane of the selected entry's first lines under the rows, shown where the body is as tall as the
+ * default (`island.height`); a smaller one keeps its rows
+ */
+const PANE_FROM: f32 = geometry::DEFAULT_LARGEST.height;
+const PANE_LINES: usize = 6;
+const PANE_CHARS: usize = 400;
+// a line's height with room over: the font's own is not known here, and a line a little taller
+// than this one would clip the last
+const PANE_LINE: f32 = 18.0;
+const PANE_INSET: f32 = 8.0;
+const PANE: f32 = PANE_LINES as f32 * PANE_LINE + 2.0 * PANE_INSET;
+
+// what the pane takes of the body, with its gap, or nothing where it is not shown
+fn pane_space() -> f32 {
+    if view::largest().height >= PANE_FROM {
+        PANE + GAP
+    } else {
+        0.0
+    }
+}
 
 // `ROWS` at a time in the least largest body, more in a taller one
 const LEAST_LIST: f32 = geometry::CALENDAR.height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP;
@@ -57,8 +82,13 @@ const ROW_GAP: f32 = 6.0;
 const ROW: f32 = (LEAST_LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 const ROW_INSET: f32 = 8.0;
 
-const ICON: f32 = 28.0;
+// a row's mark, a kind icon or a picture's thumbnail, and the thumbnail's corners
+const ICON: f32 = 32.0;
 const ICON_GAP: f32 = 12.0;
+const THUMB_RADIUS: f32 = 6.0;
+
+// the pixels a thumbnail is kept at per point, as the Wallpapers' tiles
+const SCALE: f32 = 2.0;
 
 // the typed text's size, and the caret after it
 const QUERY: f32 = theme::text::TITLE;
@@ -86,8 +116,8 @@ pub struct Search {
     // in the entries the query finds
     selected: usize,
 
-    // the ring is on the selected entry's delete rather than the entry
-    delete: bool,
+    // where the ring is on the selected entry: the entry, its pin or its delete
+    stop: Stop,
 
     // the ring is on Clear all, below the rows
     clear: bool,
@@ -96,6 +126,34 @@ pub struct Search {
     offset: f32,
 
     copying: Copying,
+
+    // a pin was refused, the pins being at their cap; said until the next key
+    full: bool,
+}
+
+// the ring's stops on an entry, in the order Right and Tab go
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Stop {
+    #[default]
+    Entry,
+    Pin,
+    Delete,
+}
+
+impl Stop {
+    fn next(self) -> Stop {
+        match self {
+            Stop::Entry => Stop::Pin,
+            Stop::Pin | Stop::Delete => Stop::Delete,
+        }
+    }
+
+    fn previous(self) -> Stop {
+        match self {
+            Stop::Entry | Stop::Pin => Stop::Entry,
+            Stop::Delete => Stop::Pin,
+        }
+    }
 }
 
 // an entry's copy, from its press until it is on the clipboard or failed
@@ -119,6 +177,9 @@ impl Service for Search {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Press {
     Copy(Entry),
+
+    // pins the entry, or unpins it if it is
+    Pin(u64),
     Remove(u64),
     Clear,
 }
@@ -140,7 +201,8 @@ impl Search {
     /*
      * the search after a key and whether it presses what the ring is on, none when the key is not
      * for the Surface. `count` is how many entries the query finds and `any` whether the history
-     * has any, before the key. Space types, as in the Launcher, so only Enter presses
+     * has any to clear (all but the pinned), before the key. Space types, as in the Launcher, so
+     * only Enter presses
      */
     fn step(mut self, key: Key, count: usize, any: bool) -> Option<(Search, bool)> {
         let last = count.saturating_sub(1);
@@ -162,22 +224,22 @@ impl Search {
             Key::Down if self.clear => {}
             Key::Down if self.selected < last => self.selected += 1,
             Key::Down => self.clear = any,
-            Key::Left if !self.clear => self.delete = false,
-            Key::Right if !self.clear && count > 0 => self.delete = true,
+            Key::Left if !self.clear => self.stop = self.stop.previous(),
+            Key::Right if !self.clear && count > 0 => self.stop = self.stop.next(),
             Key::Left | Key::Right => {}
             Key::Tab if self.clear => {
                 self.clear = false;
                 self.selected = 0;
-                self.delete = false;
+                self.stop = Stop::Entry;
             }
-            Key::Tab if !self.delete && count > 0 => self.delete = true,
+            Key::Tab if self.stop != Stop::Delete && count > 0 => self.stop = self.stop.next(),
             Key::Tab if self.selected < last => {
                 self.selected += 1;
-                self.delete = false;
+                self.stop = Stop::Entry;
             }
             Key::Tab => {
                 self.clear = any;
-                self.delete = false;
+                self.stop = Stop::Entry;
             }
             Key::Home => {
                 self.clear = false;
@@ -207,7 +269,7 @@ impl Search {
         }
 
         self.selected = 0;
-        self.delete = false;
+        self.stop = Stop::Entry;
         self.clear = false;
         self.offset = 0.0;
 
@@ -227,19 +289,47 @@ impl Search {
     }
 
     /*
-     * what the view draws; fewer entries found leave the selection on the last, and an empty
-     * history the ring on nothing, as there is nothing to clear
+     * what the view draws; fewer entries found leave the selection on the last, and a history of
+     * only pins the ring on nothing, as there is nothing to clear
      */
     fn bounded(mut self, count: usize, any: bool) -> Search {
         self.selected = self.selected.min(count.saturating_sub(1));
-        self.delete = self.delete && count > 0;
+
+        if count == 0 {
+            self.stop = Stop::Entry;
+        }
+
         self.clear = self.clear && any;
         self.offset = self.offset.clamp(0.0, most(count));
 
         self
     }
 
-    // what Enter presses, from the entries the query finds; Clear all is held to act
+    /*
+     * the ring on the entry `id` among the entries found, at its pin: a pin or an unpin moves the
+     * entry (to the top of the pins, or of the rest), and the ring goes with it. Where it is no
+     * longer found, the ring stays on the entry at its place, or the last
+     */
+    fn following(mut self, found: &[Entry], id: u64) -> Search {
+        match found.iter().position(|entry| entry.id == id) {
+            Some(at) => {
+                self.selected = at;
+                self.stop = Stop::Pin;
+                self.clear = false;
+                self.offset = reveal(self.offset.clamp(0.0, most(found.len())), at);
+            }
+            None => {
+                self.selected = self.selected.min(found.len().saturating_sub(1));
+                self.stop = Stop::Entry;
+                self.offset = self.offset.clamp(0.0, most(found.len()));
+            }
+        }
+
+        self
+    }
+
+    // what Enter presses, from the entries the query finds; Clear all is held to act, and `any` is
+    // whether there is anything for it to clear
     fn press(&self, found: &[Entry], any: bool) -> Option<Press> {
         if self.clear {
             return any.then_some(Press::Clear);
@@ -247,10 +337,10 @@ impl Search {
 
         let entry = found.get(self.selected)?;
 
-        Some(if self.delete {
-            Press::Remove(entry.id)
-        } else {
-            Press::Copy(entry.clone())
+        Some(match self.stop {
+            Stop::Entry => Press::Copy(entry.clone()),
+            Stop::Pin => Press::Pin(entry.id),
+            Stop::Delete => Press::Remove(entry.id),
         })
     }
 }
@@ -266,7 +356,11 @@ fn content(count: usize) -> f32 {
 
 // how tall `count` entries found ask the body to be, or a state for none; the island caps it (ADR 0030)
 fn asks(count: usize) -> f32 {
-    let list = if count == 0 { STATE } else { content(count) };
+    let list = if count == 0 {
+        STATE
+    } else {
+        content(count) + pane_space()
+    };
 
     2.0 * INSET + FIELD + list + FOOTER + 2.0 * GAP
 }
@@ -429,6 +523,9 @@ pub(super) struct Summary {
     pub(super) title: String,
     pub(super) detail: String,
 
+    // a text's first lines, for the pane; none for an image
+    excerpt: Vec<String>,
+
     // the title says what the entry is rather than showing it, like "Image"
     named: bool,
 }
@@ -482,12 +579,14 @@ fn summarize(content: &Content) -> Summary {
                 Summary {
                     title: String::from("Blank text"),
                     detail,
+                    excerpt: Vec::new(),
                     named: true,
                 }
             } else {
                 Summary {
                     title,
                     detail,
+                    excerpt: excerpt(text),
                     named: false,
                 }
             }
@@ -499,10 +598,46 @@ fn summarize(content: &Content) -> Summary {
             Summary {
                 title: String::from("Image"),
                 detail: format!("{}, {}", kind.to_uppercase(), size(bytes.len())),
+                excerpt: Vec::new(),
                 named: true,
             }
         }
     }
+}
+
+/*
+ * the first `PANE_LINES` lines of a text within `PANE_CHARS` characters, a control character a space,
+ * and an ellipsis ending what is cut; a text may be megabytes, so only that much is read
+ */
+fn excerpt(text: &str) -> Vec<String> {
+    let mut left = PANE_CHARS;
+    let mut lines: Vec<String> = Vec::new();
+    let mut cut = false;
+
+    for (number, line) in text.lines().enumerate() {
+        if number == PANE_LINES || left == 0 {
+            cut = true;
+            break;
+        }
+
+        let line = line.trim_end();
+        let shown: String = line
+            .chars()
+            .take(left)
+            .map(|letter| if letter.is_control() { ' ' } else { letter })
+            .collect();
+        let taken = shown.chars().count();
+
+        cut |= line.chars().nth(taken).is_some();
+        left -= taken;
+        lines.push(shown);
+    }
+
+    if cut && let Some(last) = lines.last_mut() {
+        last.push('\u{2026}');
+    }
+
+    lines
 }
 
 fn plural(count: usize, word: &str) -> String {
@@ -527,7 +662,8 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
     let entries = Clipboard::read().entries().to_vec();
     let search = Search::read().of(visit);
     let found = found(&entries, &search.query);
-    let search = search.bounded(found.len(), !entries.is_empty());
+    let pinned = entries.iter().filter(|entry| entry.pinned).count();
+    let search = search.bounded(found.len(), entries.len() > pinned);
 
     let list: Box<dyn Widget> = if entries.is_empty() {
         Box::new(state("Clipboard is empty", "What you copy shows here"))
@@ -542,21 +678,77 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let shape = view::largest();
 
+    let mut sections = vec![
+        Box::new(view::rise(0, field(&search.query))) as Box<dyn Widget>,
+        Box::new(view::rise(1, list)),
+    ];
+
+    // under the rows, where there are some and the body has the room
+    if let (true, Some(entry)) = (pane_space() > 0.0, found.get(search.selected)) {
+        sections.push(Box::new(view::rise(2, pane(entry))));
+    }
+
+    sections.push(Box::new(view::rise(
+        3,
+        footer(&search, found.len(), entries.len(), pinned),
+    )));
+
     Rectangle::new()
         .width(shape.width)
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
         .semantics(|| Semantics::new(Role::Region, "clipboard"))
-        .child(
-            Column::new(vec![
-                Box::new(view::rise(0, field(&search.query))) as Box<dyn Widget>,
-                Box::new(view::rise(1, list)),
-                Box::new(view::rise(2, footer(&search, found.len(), entries.len()))),
-            ])
-            .width(width())
-            .gap(GAP),
-        )
+        .child(Column::new(sections).width(width()).gap(GAP))
+}
+
+/*
+ * the selected entry's first lines, one line each and each elided to the width, in a pane of a fixed
+ * height; an image has its kind and size. Drawn only where the body has the room for it
+ */
+fn pane(entry: &Entry) -> Rectangle {
+    let summary = summary(entry);
+
+    let line = |shown: &str, ink| {
+        Text::new(shown)
+            .size(theme::text::LABEL_SMALL)
+            .color(ink)
+            .weight(theme::text::MEDIUM)
+            .elide()
+    };
+
+    let lines: Vec<Box<dyn Widget>> = if summary.excerpt.is_empty() {
+        vec![Box::new(line(
+            &summary.detail,
+            theme::island().on_surface_variant,
+        ))]
+    } else {
+        summary
+            .excerpt
+            .iter()
+            .map(|shown| {
+                // a blank line keeps its height
+                let shown = if shown.is_empty() { " " } else { shown };
+
+                Box::new(line(shown, theme::island().on_surface)) as Box<dyn Widget>
+            })
+            .collect()
+    };
+
+    Rectangle::new()
+        .width(width())
+        .height(PANE)
+        .radius(radius::ROW)
+        .fill(theme::island().surface_container)
+        .clip()
+        .padding(Padding {
+            top: PANE_INSET,
+            right: ROW_INSET,
+            bottom: PANE_INSET,
+            left: ROW_INSET,
+        })
+        .align_child(Start, Start)
+        .child(Column::new(lines).width(Parent).gap(0.0))
 }
 
 /*
@@ -682,12 +874,17 @@ fn state(title: &str, detail: &str) -> Rectangle {
 fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
     let (first, end) = shown(search.offset, found.len());
 
+    // only the rows any part of shows get a preview written
+    for entry in &found[first..end] {
+        preview::request(entry);
+    }
+
     let column = Column::new(
         found[first..end]
             .iter()
             .zip(first..)
             .map(|(entry, index)| {
-                let ring = (index == search.selected && !search.clear).then_some(search.delete);
+                let ring = (index == search.selected && !search.clear).then_some(search.stop);
 
                 Box::new(row(monitor, search.visit, entry, ring)) as Box<dyn Widget>
             })
@@ -736,16 +933,12 @@ fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
 }
 
 /*
- * the entry's kind, what it holds and how much, and a delete at the end. `ring` is where the ring
- * is when it is on this row: on its delete, or on the entry. Pressing the entry copies it
+ * the entry's kind or thumbnail, what it holds and how much, and a pin and a delete at the end.
+ * `ring` is where the ring is when it is on this row: on the entry, its pin or its delete. Pressing
+ * the entry copies it
  */
-fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangle {
+fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<Stop>) -> Rectangle {
     let summary = summary(entry);
-
-    let kind = match entry.content {
-        Content::Text(_) => Icon::Text,
-        Content::Image { .. } => Icon::Picture,
-    };
 
     let title = Text::new(&summary.title)
         .size(theme::text::BODY)
@@ -777,13 +970,10 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
         .cursor(Cursor::Pointer)
         .child(
             Row::new(children![
-                Rectangle::new()
-                    .width(ICON)
-                    .height(ICON)
-                    .align_child(Center, Center)
-                    .child(kind.on(20.0, theme::island().on_surface_variant)),
+                mark(entry),
                 Column::new(children![title, detail]).width(Parent).gap(1.0),
-                delete(entry.id, ring == Some(true)),
+                pin(monitor, visit, entry, ring == Some(Stop::Pin)),
+                delete(entry.id, ring == Some(Stop::Delete)),
             ])
             .width(Parent)
             .gap(ICON_GAP)
@@ -795,7 +985,7 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
     } else {
         row
     };
-    let row = row.border_if(ring == Some(false));
+    let row = row.border_if(ring == Some(Stop::Entry));
 
     let monitor = monitor.to_owned();
     let entry = entry.clone();
@@ -805,6 +995,67 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
         .on_click(super::on_left(move || {
             run(&monitor, visit, Press::Copy(entry.clone()));
         }))
+}
+
+/*
+ * what stands for the entry at the start of its row: the kind's icon, or for a picture its
+ * thumbnail once the preview is written and decoded, a quiet tile while it decodes
+ */
+fn mark(entry: &Entry) -> Rectangle {
+    let icon = |kind: Icon| {
+        Rectangle::new()
+            .width(ICON)
+            .height(ICON)
+            .align_child(Center, Center)
+            .child(kind.on(20.0, theme::island().on_surface_variant))
+    };
+
+    let Content::Image { .. } = entry.content else {
+        return icon(Icon::Text);
+    };
+
+    let Some(path) = preview::path(entry.id) else {
+        return icon(Icon::Picture);
+    };
+
+    let picture = Image::cover(path).thumbnail((ICON * SCALE) as u32, (ICON * SCALE) as u32);
+
+    let tile = Rectangle::new()
+        .width(ICON)
+        .height(ICON)
+        .radius(THUMB_RADIUS)
+        .fill(theme::island().surface_container_high);
+
+    match picture.state() {
+        ImageState::Ready => tile.fill(picture),
+        ImageState::Loading => tile,
+        ImageState::Failed => icon(Icon::Picture),
+    }
+}
+
+// a round target with a pin, filled while the entry is pinned; pressed to pin it or unpin it
+fn pin(monitor: &str, visit: u64, entry: &Entry, ring: bool) -> Rectangle {
+    let (id, pinned) = (entry.id, entry.pinned);
+    let monitor = monitor.to_owned();
+
+    let (icon, ink) = if pinned {
+        (Icon::Pinned, theme::island().on_surface)
+    } else {
+        (Icon::Pin, theme::island().on_surface_variant)
+    };
+
+    Rectangle::new()
+        .width(TARGET)
+        .height(TARGET)
+        .radius(TARGET / 2.0)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "pin").checked(pinned))
+        .on_click(super::on_left(move || {
+            run(&monitor, visit, Press::Pin(id));
+        }))
+        .child(icon.on(20.0, ink))
+        .border_if(ring)
 }
 
 // a round target with a cross, pressed to forget the entry
@@ -821,17 +1072,33 @@ fn delete(id: u64, ring: bool) -> Rectangle {
         .border_if(ring)
 }
 
+// what Clear all clears: every entry, or all but the pinned, which it says it keeps
+fn clearing(all: usize, pinned: usize) -> String {
+    if pinned == 0 {
+        format!("all {all}")
+    } else {
+        format!("{}, keeping {pinned} pinned", all - pinned)
+    }
+}
+
 /*
  * how many entries there are, of how many while searching, and Clear all, which clears the whole
- * history whatever is found, faded while there is nothing to clear
+ * history but the pinned whatever is found, faded while there is nothing to clear
  */
-fn footer(search: &Search, found: usize, all: usize) -> Row {
+fn footer(search: &Search, found: usize, all: usize, pinned: usize) -> Row {
+    let clearable = all - pinned;
+
     let count = match all {
         _ if search.copying == Copying::Failed => String::from("The entry was not copied"),
-        _ if confirm::fill(CLEAR) > 0.0 => format!("Keep holding to clear all {all}"),
-        _ if search.clear => format!("Hold Enter to clear all {all}, no undo"),
+        _ if search.full => format!("Pins are full: at most {PINS}, {} MiB", PIN_BYTES >> 20),
+        _ if confirm::fill(CLEAR) > 0.0 => {
+            format!("Keep holding to clear {}", clearing(all, pinned))
+        }
+        _ if search.clear => format!("Hold Enter to clear {}, no undo", clearing(all, pinned)),
         0 => String::from("0 entries"),
         _ if !search.query.trim().is_empty() => format!("{found} of {all}"),
+        1 if pinned > 0 => String::from("1 entry, pinned"),
+        all if pinned > 0 => format!("{all} entries, {pinned} pinned"),
         1 => String::from("1 entry"),
         all => format!("{all} entries"),
     };
@@ -869,9 +1136,9 @@ fn footer(search: &Search, found: usize, all: usize) -> Row {
     };
 
     // kept for the hold, so a press by name, which is a tap, clears nothing
-    let pill = pill.semantics(|| Semantics::new(Role::Button, "clear").disabled(all == 0));
+    let pill = pill.semantics(|| Semantics::new(Role::Button, "clear").disabled(clearable == 0));
 
-    let pill = if all > 0 {
+    let pill = if clearable > 0 {
         confirm::target(
             pill.cursor(Cursor::Pointer),
             CLEAR,
@@ -910,7 +1177,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let entries = Clipboard::read().entries().to_vec();
-    let any = !entries.is_empty();
+    let any = entries.iter().any(|entry| !entry.pinned);
     let search = Search::read().of(visit);
     let found = found(&entries, &search.query);
 
@@ -921,10 +1188,12 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
     let press = presses.then(|| search.press(&found, any)).flatten();
 
-    // a failed copy is said until the next key
+    // a failed copy and a refused pin are said until the next key
     if search.copying == Copying::Failed {
         search.copying = Copying::Idle;
     }
+
+    search.full = false;
 
     store(search);
 
@@ -939,7 +1208,8 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
 /*
  * a copied entry goes back on the clipboard to be pasted elsewhere, so the island closes out of
- * the way once it is there; a delete or Clear all leaves it open on what is left. One copy at a time
+ * the way once it is there; a pin, a delete or Clear all leaves it open on what is left. One copy at
+ * a time
  */
 fn run(monitor: &str, visit: u64, press: Press) {
     match press {
@@ -958,9 +1228,37 @@ fn run(monitor: &str, visit: u64, press: Press) {
             let monitor = monitor.to_owned();
             clipboard::restore(&entry, move |done| copied(&monitor, visit, done));
         }
+        Press::Pin(id) => toggle(visit, id),
         Press::Remove(id) => clipboard::remove(id),
         Press::Clear => confirm::press(CLEAR, Arc::new(clipboard::clear)),
     }
+}
+
+/*
+ * pins the entry, or unpins it if it is; a pin past the caps is refused, which the footer says until
+ * the next key
+ */
+fn toggle(visit: u64, id: u64) {
+    let pinned = Clipboard::read()
+        .entries()
+        .iter()
+        .any(|entry| entry.id == id && entry.pinned);
+
+    let full = if pinned {
+        clipboard::unpin(id);
+        false
+    } else {
+        clipboard::pin(id).is_err()
+    };
+
+    // read apart, since `store` writes; the entry moved, so the ring follows it
+    let search = Search::read().of(visit);
+    let found = found(Clipboard::read().entries(), &search.query);
+
+    store(Search {
+        full,
+        ..search.following(&found, id)
+    });
 }
 
 /*
@@ -1000,12 +1298,9 @@ fn wheel(lines: f32) {
     let entries = Clipboard::read().entries().to_vec();
     let search = Search::read().of(visit);
     let count = found(&entries, &search.query).len();
+    let any = entries.iter().any(|entry| !entry.pinned);
 
-    store(
-        search
-            .bounded(count, !entries.is_empty())
-            .wheel(lines, count),
-    );
+    store(search.bounded(count, any).wheel(lines, count));
 }
 
 #[cfg(test)]
@@ -1016,6 +1311,7 @@ mod tests {
         Entry {
             id,
             content: Content::Text(text.into()),
+            pinned: false,
         }
     }
 

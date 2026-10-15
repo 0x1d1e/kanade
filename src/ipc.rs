@@ -107,7 +107,12 @@ fn run(call: Call) -> Reply {
         }
         Call::ClearClipboard => {
             clipboard::clear();
-            Reply::Done(String::new())
+
+            // the pins stay, which the caller is told
+            Reply::Done(match clipboard::pinned() {
+                0 => String::new(),
+                kept => format!("kept {kept} pinned"),
+            })
         }
         // niri answers at once; an area is saved later, once the user picks it
         Call::Screenshot(mode) => match capture::screenshot(mode) {

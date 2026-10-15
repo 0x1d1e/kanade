@@ -61,6 +61,8 @@ const CHECK: &str = include_str!("icons/check.svg");
 const CLIPBOARD: &str = include_str!("icons/clipboard.svg");
 const TEXT: &str = include_str!("icons/text.svg");
 const PICTURE: &str = include_str!("icons/picture.svg");
+const PIN: &str = include_str!("icons/pin.svg");
+const PINNED: &str = include_str!("icons/pinned.svg");
 const CALENDAR: &str = include_str!("icons/calendar.svg");
 const CLOUD: &str = include_str!("icons/cloud.svg");
 const CLOUD_HIGH: &str = include_str!("icons/cloud-high.svg");
@@ -162,6 +164,10 @@ pub(crate) enum Icon {
     Clipboard,
     Text,
     Picture,
+
+    // an entry of the history kept past the bounds: a pin outlined to pin it, filled while pinned
+    Pin,
+    Pinned,
 
     // the calendar, while it has no calendars to show
     Calendar,
@@ -306,6 +312,8 @@ impl Icon {
             Icon::Clipboard => &[CLIPBOARD],
             Icon::Text => &[TEXT],
             Icon::Picture => &[PICTURE],
+            Icon::Pin => &[PIN],
+            Icon::Pinned => &[PINNED],
             Icon::Calendar => &[CALENDAR],
             Icon::Cloud => &[CLOUD],
             Icon::PartlyCloudy => &[PARTLY_CLOUDY],
