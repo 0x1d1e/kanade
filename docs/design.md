@@ -181,7 +181,7 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 
 ### Focus
 
-`kanade focus on|off|toggle|status` and the round button at the end of the Controls switches turn on Do Not Disturb (`focus.dnd`), caffeine (`focus.caffeine`) and the night light (`focus.night_light`, off by default) through the calls their own verbs make, and `off` turns off only what Focus turned on, so a session that had caffeine on keeps it. A piece whose Module is off is skipped; `focus` lists the three as optional. It has no Activity: caffeine's, when on, already shows, and Do Not Disturb and the night light have none. What it turned on is kept in memory only (ADR 0060).
+`kanade focus on|off|toggle|status` and the round button at the end of the Controls switches turn on Do Not Disturb (`focus.dnd`), caffeine (`focus.caffeine`) and the night light (`focus.night_light`, off by default) through the calls their own verbs make, and `off` turns off only what Focus turned on and is still as it left it, so a session that had caffeine on, or a caffeine or night light mode changed during Focus, keeps it. A piece whose Module is off is skipped; `focus` lists the three as optional. It has no Activity: caffeine's, when on, already shows, and Do Not Disturb and the night light have none. What it turned on is kept in memory only (ADR 0060).
 
 ### Battery
 

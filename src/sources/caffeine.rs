@@ -118,6 +118,20 @@ pub fn holding() -> bool {
 }
 
 /*
+ * the serial of the newest holder, one still starting or the one holding; none while caffeine is
+ * off. A serial is never given again, so it names one `on`, and another `on` or an end changes it
+ */
+pub fn newest() -> Option<u64> {
+    let caffeine = CAFFEINE.locked();
+
+    caffeine
+        .starting
+        .as_ref()
+        .or(caffeine.holding.as_ref())
+        .map(|holder| holder.serial)
+}
+
+/*
  * does what `request` asks and answers `later` with how caffeine is left, an `on` once its holder
  * holds the inhibitor. Call it from the draw thread, which lives as long as Kanade: systemd-inhibit
  * dies with the thread that started it
