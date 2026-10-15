@@ -145,9 +145,11 @@ fn changes(before: &[Version], now: &[Version]) -> (Vec<Version>, Vec<u32>) {
 // what a notification's `value` hint does to its progress Live Activity (ADR 0059)
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
-    // shows it, started when it is not live
+    // shows it, started when it is not live; `moved` is the live id it had under another app name,
+    // to take away first
     Show {
         id: String,
+        moved: Option<String>,
         title: String,
         detail: String,
         percent: u8,
@@ -163,7 +165,8 @@ enum Step {
 
 /*
  * the live id of a notification's progress: its app and its id, which is the sender's replaces_id
- * for every version of it. The app is cut to letters and digits, so the id fits `live`'s alphabet
+ * for every version of it. The app is cut to letters and digits, so the id fits `live`'s alphabet.
+ * A replacement may name another app, so a live id in use is kept in `tracked`, never derived again
  */
 fn live_id(notification: &Notification) -> String {
     let app: String = notification
@@ -174,15 +177,16 @@ fn live_id(notification: &Notification) -> String {
         .collect::<String>()
         .to_ascii_lowercase();
 
-    format!("notification.{app}.{}", notification.id())
+    format!("{}{app}.{}", live::NOTIFICATION, notification.id())
 }
 
 /*
  * the step for a notification that arrived or was replaced: `allowed` says its rule, Do Not
- * Disturb and the `live` Module let it show, `tracked` that its progress is live. A value under 100
- * shows while allowed; 100 ends it; none, or no longer allowed, takes it away
+ * Disturb and the `live` Module let it show, `tracked` the live id its progress has, if any. A value
+ * under 100 shows while allowed; 100 ends it; none, or no longer allowed, takes it away. All three
+ * act on the tracked id, which a replacement under another app name does not change
  */
-fn progress(notification: &Notification, allowed: bool, tracked: bool) -> Option<Step> {
+fn progress(notification: &Notification, allowed: bool, tracked: Option<&str>) -> Option<Step> {
     let id = live_id(notification);
 
     match notification.value() {
@@ -191,6 +195,7 @@ fn progress(notification: &Notification, allowed: bool, tracked: bool) -> Option
             let app = notification.app_name();
 
             Some(Step::Show {
+                moved: tracked.filter(|old| *old != id).map(str::to_owned),
                 id,
                 title: if summary.is_empty() {
                     app.to_owned()
@@ -206,9 +211,8 @@ fn progress(notification: &Notification, allowed: bool, tracked: bool) -> Option
                 lasts: notification.timeout(),
             })
         }
-        Some(100..) if tracked => Some(Step::Finish(id)),
-        _ if tracked => Some(Step::Withdraw(id)),
-        _ => None,
+        Some(100..) => tracked.map(|old| Step::Finish(old.to_owned())),
+        _ => tracked.map(|old| Step::Withdraw(old.to_owned())),
     }
 }
 
@@ -399,7 +403,7 @@ pub fn follow() {
                         let loud = notification.urgency() == Urgency::Critical
                             || notification.effects().bypass_dnd;
                         let allowed = notification.effects().banner && (!dnd || loud);
-                        let tracked = tracked.contains_key(&notification.id());
+                        let tracked = tracked.get(&notification.id()).map(String::as_str);
 
                         progress(notification, allowed, tracked)
                             .map(|step| (notification.id(), step))
@@ -415,11 +419,17 @@ pub fn follow() {
                 match step {
                     Step::Show {
                         id: live_id,
+                        moved,
                         title,
                         detail,
                         percent,
                         lasts,
                     } => {
+                        if let Some(old) = moved {
+                            tracked.remove(&id);
+                            live::withdraw(&old);
+                        }
+
                         // refused past the bound on what is live, which is no reason to stop
                         if live::show(&live_id, &title, &detail, percent, lasts).is_ok() {
                             tracked.insert(id, live_id);
@@ -558,23 +568,53 @@ mod tests {
             assert!(live::valid_id(&id), "{id}");
         }
 
+        let live = Some("notification.files.7");
         let step =
             |value, allowed, tracked| progress(&notification("Files", 7, value), allowed, tracked);
         let id = || String::from("notification.files.7");
 
         assert!(matches!(
-            step(Some(40), true, false),
-            Some(Step::Show { percent: 40, .. })
+            step(Some(40), true, None),
+            Some(Step::Show {
+                percent: 40,
+                moved: None,
+                ..
+            })
         ));
         assert!(matches!(
-            step(Some(0), true, true),
-            Some(Step::Show { percent: 0, .. })
+            step(Some(0), true, live),
+            Some(Step::Show {
+                percent: 0,
+                moved: None,
+                ..
+            })
         ));
-        assert_eq!(step(Some(100), true, true), Some(Step::Finish(id())));
-        assert_eq!(step(Some(100), true, false), None);
-        assert_eq!(step(None, true, true), Some(Step::Withdraw(id())));
-        assert_eq!(step(Some(40), false, true), Some(Step::Withdraw(id())));
-        assert_eq!(step(Some(40), false, false), None);
-        assert_eq!(step(None, true, false), None);
+        assert_eq!(step(Some(100), true, live), Some(Step::Finish(id())));
+        assert_eq!(step(Some(100), true, None), None);
+        assert_eq!(step(None, true, live), Some(Step::Withdraw(id())));
+        assert_eq!(step(Some(40), false, live), Some(Step::Withdraw(id())));
+        assert_eq!(step(Some(40), false, None), None);
+        assert_eq!(step(None, true, None), None);
+    }
+
+    // a replacement may name another app: the Activity it had is the one that is moved or ended
+    #[test]
+    fn a_replacement_under_another_app_name_acts_on_the_live_id_it_had() {
+        let live = Some("notification.files.7");
+        let renamed = |value| progress(&notification("Other", 7, value), true, live);
+
+        assert!(matches!(
+            renamed(Some(40)),
+            Some(Step::Show { id, moved: Some(old), .. })
+                if id == "notification.other.7" && old == "notification.files.7"
+        ));
+        assert_eq!(
+            renamed(Some(100)),
+            Some(Step::Finish(String::from("notification.files.7")))
+        );
+        assert_eq!(
+            renamed(None),
+            Some(Step::Withdraw(String::from("notification.files.7")))
+        );
     }
 }

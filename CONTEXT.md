@@ -23,7 +23,7 @@ An Activity of Kind `Live` another program posts through `kanade activity` (ADR 
 - **Invariant:** one its program stops talking to is withdrawn after `live.stale`; `activity run` keeps its own alive while its command runs.
 - **Invariant:** a repost is cheap: a change within `REPOST` (250 ms) of the Activity's last post is held and posted when due, the newest of those held, and one that changes nothing is never posted (ADR 0058).
 - `activity hook claude` is a client of these verbs, not another path to the Island: a Claude Code session's events become one Live Activity, and a late event never brings an ended one back (ADR 0058).
-- A notification with a `value` hint under 100 is also a Live Activity of the `notifications` Module, id `notification.<app>.<id>`: the same policy, in the same 8, kept while the notification lasts, ended as done at 100, and withdrawn when it closes or is replaced without the hint. It follows the notification's rule and Do Not Disturb as its Banner does (ADR 0059).
+- A notification with a `value` hint under 100 is also a Live Activity of the `notifications` Module, id `notification.<app>.<id>`: the same policy, in the same 8 but at most 3 of them, the oldest giving way, kept while the notification lasts, ended as done at 100, and withdrawn when it closes or is replaced without the hint. It follows the notification's rule and Do Not Disturb as its Banner does (ADR 0059).
 - **Avoid:** job, task (as the type; `Job` is its Detail), progress notification
 
 ## Device event
