@@ -70,6 +70,8 @@ syn = { version = "2", features = ["full", "visit"] }
 proc-macro2 = "1"
 # the launch test talks to a mock app over a socket pair, with no bus between
 zbus = { version = "5", features = ["p2p"] }
+# the test of an answer that gzip expands past its limit
+flate2 = "1"
 
 # unoptimised dependencies are too slow for smooth animation; Kanade itself stays
 # unoptimised so a save rebuilds quickly

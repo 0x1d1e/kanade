@@ -6,6 +6,7 @@ pub mod audio;
 pub mod battery;
 pub mod binds;
 pub mod bluetooth;
+pub mod body;
 pub mod brightness;
 pub mod bus;
 pub mod caffeine;

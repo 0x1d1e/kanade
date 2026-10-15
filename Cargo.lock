@@ -971,6 +971,7 @@ dependencies = [
  "crc32fast",
  "emojis",
  "enumflags2",
+ "flate2",
  "fontconfig",
  "inotify",
  "kanade-lock",

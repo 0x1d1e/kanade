@@ -26,7 +26,7 @@ use kanade_runtime::queue::Queue;
 use ring::digest;
 use ureq::Agent;
 
-use super::media;
+use super::{body, media};
 use crate::atomic::{self, Mode};
 use crate::backoff::Backoff;
 use crate::config;
@@ -447,12 +447,7 @@ fn fetch(agent: &Agent, endpoint: &str, wanted: &Wanted) -> Answer {
         _ => return Answer::Later(Duration::ZERO, "server error"),
     }
 
-    let Ok(body) = response
-        .body_mut()
-        .with_config()
-        .limit(BODY)
-        .read_to_string()
-    else {
+    let Ok(body) = body::text(response.body_mut(), BODY) else {
         return Answer::Later(Duration::ZERO, "bad answer");
     };
 
@@ -569,6 +564,10 @@ struct Worker {
 
     // when to try a failed look-up again
     retry: Option<Instant>,
+
+    // the failed track and when to ask for it again, kept past a Stop, so closing the Surface or
+    // a skip back does not skip a `Retry-After`
+    penalty: Option<(String, Instant)>,
     backoff: Backoff,
     last_request: Option<Instant>,
 }
@@ -583,6 +582,7 @@ impl Worker {
             playing: false,
             resolved: false,
             retry: None,
+            penalty: None,
             backoff: Backoff::new(RETRY, RETRY_LONGEST),
             last_request: None,
         }
@@ -592,18 +592,19 @@ impl Worker {
         match message {
             Message::Want(wanted) => {
                 if self.current.as_ref() != Some(&*wanted) {
+                    self.retry = self
+                        .penalty
+                        .as_ref()
+                        .filter(|(key, until)| *key == wanted.key && *until > Instant::now())
+                        .map(|(_, until)| *until);
                     self.current = Some(*wanted);
                     self.resolved = false;
-                    self.retry = None;
                     self.backoff.reset();
                 }
 
                 self.playing = true;
             }
-            Message::Pause => {
-                self.playing = false;
-                self.retry = None;
-            }
+            Message::Pause => self.playing = false,
             Message::Stop => {
                 self.current = None;
                 self.playing = false;
@@ -628,13 +629,17 @@ impl Worker {
         let (found, outcome) = match self.look_up(&wanted) {
             Ok(found) => found,
             Err((wait, outcome)) => {
-                self.retry = Some(Instant::now() + wait.max(self.backoff.failed()));
+                let until = Instant::now() + wait.max(self.backoff.failed());
+
+                self.retry = Some(until);
+                self.penalty = Some((wanted.key, until));
                 *OUTCOME.locked() = outcome;
                 return;
             }
         };
 
         self.backoff.reset();
+        self.penalty = None;
         self.resolved = true;
         *OUTCOME.locked() = outcome;
 

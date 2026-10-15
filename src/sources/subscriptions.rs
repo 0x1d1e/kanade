@@ -23,7 +23,7 @@ use kanade_runtime::{queue::Queue, service::Service};
 use ring::digest;
 use ureq::Agent;
 
-use super::{calendar, mirror};
+use super::{body, calendar, mirror};
 use crate::backoff::Backoff;
 use crate::{clock, config};
 
@@ -326,12 +326,7 @@ fn fetch(agent: &Agent, url: &str, known: Option<&Validators>) -> Result<Fetched
         etag: validator(&response, "etag"),
         modified: validator(&response, "last-modified"),
     };
-    let text = response
-        .body_mut()
-        .with_config()
-        .limit(BODY)
-        .read_to_string()
-        .map_err(unreached)?;
+    let text = body::text(response.body_mut(), BODY).map_err(unreached)?;
 
     if !calendar_text(&text) {
         return Err(Problem::NotCalendar);
@@ -660,6 +655,23 @@ mod tests {
         assert!(asked[1].contains("if-none-match: \"v1\""));
         assert!(asked[1].contains("if-modified-since: tue, 06 oct 2026 10:00:00 gmt"));
         assert!(asked[1].contains(concat!("user-agent: kanade/", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn an_answer_gzip_expands_past_the_limit_is_too_big() {
+        use std::io::Write;
+
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(&vec![b'x'; BODY as usize * 2]).unwrap();
+        let bomb = gzip.finish().unwrap();
+        assert!((bomb.len() as u64) < BODY);
+
+        let (url, _) = serve(vec![answer("200 OK", "Content-Encoding: gzip\r\n", &bomb)]);
+
+        assert_eq!(
+            fetch(&agent(false), &url, None).err(),
+            Some(Problem::TooLarge)
+        );
     }
 
     #[test]

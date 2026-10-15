@@ -48,7 +48,7 @@ use ureq::Agent;
 
 use self::oauth::{Access, Client, Pending};
 use self::secret::Credentials;
-use super::{calendar, mirror};
+use super::{body, calendar, mirror};
 use crate::backoff::Backoff;
 use crate::{clock, config};
 
@@ -1024,11 +1024,7 @@ impl Api<'_> {
                 .map_err(unreached)?;
 
             let status = response.status().as_u16();
-            let body: Value = response
-                .body_mut()
-                .with_config()
-                .limit(BODY)
-                .read_to_string()
+            let body: Value = body::text(response.body_mut(), BODY)
                 .map_err(unreached)
                 .map(|text| serde_json::from_str(&text).unwrap_or(Value::Null))?;
 

@@ -23,6 +23,7 @@ use kanade_runtime::{queue::Queue, service::Service};
 use serde_json::Value;
 use ureq::Agent;
 
+use super::body;
 use crate::backoff::Backoff;
 use crate::clock;
 use crate::config::{self, Location};
@@ -592,11 +593,7 @@ fn fetch(agent: &Agent, location: Location) -> Result<Forecast, Problem> {
         .map_err(unreached)?;
 
     let status = answer.status().as_u16();
-    let body: Value = answer
-        .body_mut()
-        .with_config()
-        .limit(BODY)
-        .read_to_string()
+    let body: Value = body::text(answer.body_mut(), BODY)
         .map_err(unreached)
         .map(|text| serde_json::from_str(&text).unwrap_or(Value::Null))?;
 
