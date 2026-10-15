@@ -704,6 +704,31 @@ pub fn color_picked(hex: &str) {
     IslandService::write().post(activity(COLOR, job), Instant::now());
 }
 
+// the id of a gesture's outcome; a space is outside a client's alphabet
+const GESTURE: &str = "gesture outcome";
+
+/*
+ * a gesture that ran nothing (`gesture`, ADR 0107): not recognized, or its verb failed. The
+ * failed form of a Live Activity a while on the focused output. `detail` is a verb's refusal,
+ * kept to a line
+ */
+pub fn gesture(title: &str, detail: &str) {
+    let job = Job {
+        title: title.to_owned(),
+        detail: detail
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        progress: None,
+        ended: Some(Ended::Failed),
+    };
+
+    IslandService::write().post(activity(GESTURE, job), Instant::now());
+}
+
 // the id of the first-start health notice; a space is outside a client's alphabet
 const HEALTH: &str = "health notice";
 

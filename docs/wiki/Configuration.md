@@ -207,6 +207,11 @@ subscription_interval = 60
 # °C and km/h, or °F and mph
 units = "metric"
 
+[gestures]
+# gesture name = the Kanade verb it runs, like "island collapse"; record a gesture with `kanade gesture record <name>`; never a program, which a hook or a verb of yours runs; file only
+# check = "island collapse"
+# circle = "launcher open"
+
 [night-light]
 # warms the screen through wlsunset: "off", "on" all day, or on a "schedule" from sunset to sunrise
 mode = "off"

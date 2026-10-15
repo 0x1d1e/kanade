@@ -97,6 +97,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "keys-surface",
             "timer-surface",
             "capture-surface",
+            "gesture",
         ],
     ),
     (
@@ -120,6 +121,7 @@ pub const MODULES: &str = "modules";
 // still accepted in the config schema
 pub const EXTERNAL_KEYS: &[&str] = &[
     "dock.pinned",
+    "gestures",
     "notifications.rules",
     "focus.auto",
     "hooks.lock",

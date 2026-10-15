@@ -484,6 +484,7 @@ fn reset_inputs() {
             | Kind::Paths(_)
             | Kind::Urls(_)
             | Kind::AppIds(_)
+            | Kind::Gestures(_)
             | Kind::Tiles(_) => String::new(),
             _ => continue,
         };

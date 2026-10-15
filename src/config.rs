@@ -38,6 +38,7 @@ use toml::Value;
 use toml::de::{DeTable, DeValue, ValueDeserializer};
 
 use crate::clock::Hours;
+use crate::gesture;
 use crate::hooks::{self, Commands};
 use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
@@ -88,6 +89,9 @@ pub struct Config {
 
     // `windows.apps`: an app id to the `.desktop` file id its windows belong to (ADR 0014)
     pub apps: BTreeMap<String, String>,
+
+    // `gestures`: gesture name to the Kanade verb it runs (ADR 0106)
+    pub gestures: BTreeMap<String, String>,
 
     // `dock.pinned`: the `.desktop` file ids the Dock keeps, in its order
     pub pinned: Vec<String>,
@@ -506,6 +510,7 @@ impl Default for Config {
             // idle locking is hypridle's until this Module is turned on (ADR 0047)
             off: vec!["idle"],
             apps: BTreeMap::new(),
+            gestures: BTreeMap::new(),
             pinned: Vec::new(),
             wallpapers: None,
             transition: Transition::default(),
@@ -960,6 +965,9 @@ pub enum Kind {
     // a table of app id = `.desktop` file id, merged over the layers below by app id
     AppIds(Field<BTreeMap<String, String>>),
 
+    // a table of gesture name = a Kanade verb (`gesture::check`), merged over the layers below by name
+    Gestures(Field<BTreeMap<String, String>>),
+
     // a table of Module name = true or false, merged by name; the Field holds the ones off
     Modules(Field<Vec<&'static str>>),
 
@@ -1106,6 +1114,30 @@ impl Kind {
                 apps.extend(given);
                 (field.set)(config, apps);
             }
+            Kind::Gestures(field) => {
+                let table = value
+                    .as_table()
+                    .ok_or("expected a table of name = \"kanade verb\"")?;
+                let mut gestures = (field.get)(config);
+
+                // checked whole first, so a bad one keeps all of its file's below
+                let mut given = BTreeMap::new();
+                for (name, verb) in table {
+                    if !gesture::valid_name(name) {
+                        return Err(format!("{name}: a name is {}", gesture::NAME_RULE));
+                    }
+
+                    let verb = verb
+                        .as_str()
+                        .ok_or_else(|| format!("{name}: expected a \"kanade verb\""))?;
+                    let words = gesture::check(verb).map_err(|why| format!("{name}: {why}"))?;
+
+                    given.insert(name.clone(), words.join(" "));
+                }
+
+                gestures.extend(given);
+                (field.set)(config, gestures);
+            }
             Kind::Modules(field) => {
                 let table = value.as_table().ok_or("expected a table")?;
                 let mut off = (field.get)(config);
@@ -1189,7 +1221,7 @@ impl Kind {
             | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
-            Kind::AppIds(field) => Value::Table(
+            Kind::AppIds(field) | Kind::Gestures(field) => Value::Table(
                 (field.get)(config)
                     .into_iter()
                     .map(|(app_id, id)| (app_id, Value::String(id)))
@@ -1243,7 +1275,7 @@ impl Kind {
             Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Urls(field) => {
                 field.copy(from, to)
             }
-            Kind::AppIds(field) => field.copy(from, to),
+            Kind::AppIds(field) | Kind::Gestures(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
@@ -1254,7 +1286,7 @@ impl Kind {
 
     // a table of its own keys, which a file writes as `[key]`
     pub fn table(&self) -> bool {
-        matches!(self, Kind::AppIds(_) | Kind::Modules(_))
+        matches!(self, Kind::AppIds(_) | Kind::Gestures(_) | Kind::Modules(_))
     }
 }
 
@@ -1855,6 +1887,20 @@ pub const WINDOWS: &[Setting] = &[Setting {
         set: |config, apps| config.apps = apps,
     }),
     example: Some("{ jetbrains-idea = \"intellij-idea-ultimate-edition\" }"),
+    restart: false,
+    per_output: false,
+}];
+
+pub const GESTURES: &[Setting] = &[Setting {
+    key: "gestures",
+    label: "Gestures",
+    help: "gesture name = the Kanade verb it runs, like \"island collapse\"; record a gesture with `kanade gesture record <name>`; never a program, which a hook or a verb of yours runs; file only",
+    hint: None,
+    kind: Kind::Gestures(Field {
+        get: |config| config.gestures.clone(),
+        set: |config, gestures| config.gestures = gestures,
+    }),
+    example: Some("{ circle = \"launcher open\", check = \"island collapse\" }"),
     restart: false,
     per_output: false,
 }];
@@ -3828,6 +3874,7 @@ mod tests {
                 clock: Hours::Twelve,
                 off: vec!["idle", "media"],
                 apps: BTreeMap::new(),
+                gestures: BTreeMap::new(),
                 pinned: Vec::new(),
                 wallpapers: None,
                 calendars: Vec::new(),
@@ -3942,6 +3989,7 @@ mod tests {
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "gestures",
                 "night-light.mode",
                 "night-light.temperature",
                 "night-light.sunset",
