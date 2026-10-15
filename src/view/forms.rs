@@ -11,14 +11,14 @@ use kanade_runtime::{
 
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Awake, Clip, Detail, Hardware, Leave, Leaving, Reminder, Track,
+    Action, Activity, Awake, Clip, Detail, Dictation, Hardware, Leave, Leaving, Reminder, Track,
 };
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
 use crate::island::presentation::{Content, Presentation, Surface};
 use crate::island::service::IslandService;
 use crate::modules;
-use crate::sources::{caffeine, capture, recording, reminders, session};
+use crate::sources::{caffeine, capture, dictation, recording, reminders, session};
 use crate::surfaces;
 use crate::theme;
 
@@ -263,6 +263,11 @@ pub(super) fn small_form(
 
             caffeine(presentation, awake, actions)
         }
+        (presentation, Some(Detail::Dictation(dictation))) => {
+            let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
+
+            self::dictation(presentation, dictation, actions)
+        }
         (presentation, Some(Detail::Session(leaving))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 
@@ -347,6 +352,42 @@ pub(super) fn caffeine(
             actions,
             subject,
             act: caffeine::act,
+        },
+    )
+}
+
+// the microphone, then how long it has heard, that it transcribes, or the text or why it failed
+fn dictation(
+    presentation: Presentation,
+    dictation: &Dictation,
+    actions: &[Action],
+) -> Option<Rectangle> {
+    let (title, line, subject) = match dictation {
+        Dictation::Recording { serial, seconds } => {
+            ("Dictating", format!("{seconds} s heard"), serial.as_str())
+        }
+        Dictation::Transcribing { serial } => (
+            "Transcribing",
+            String::from("Sending to Gemini"),
+            serial.as_str(),
+        ),
+        // "Copied; the window changed" is a title and why it fell back to the clipboard
+        Dictation::Done { how, text } => match how.split_once("; ") {
+            Some((title, why)) => (title, format!("{why}: {text}"), ""),
+            None => (how.as_str(), text.clone(), ""),
+        },
+        Dictation::Failed { why } => ("Dictation failed", why.clone(), ""),
+    };
+
+    titled(
+        presentation,
+        (Icon::Microphone, theme::island().on_surface),
+        title,
+        &line,
+        Pills {
+            actions,
+            subject,
+            act: dictation::run::act,
         },
     )
 }

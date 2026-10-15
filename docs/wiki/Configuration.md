@@ -104,7 +104,8 @@ indicators = true
 entrance = "morph"
 
 [modules]
-# every Module is on unless set to false here; idle is off unless set to true, takes a restart
+# every Module is on unless set to false here; idle and dictation are off unless set to true, takes a restart
+dictation = false
 idle = false
 
 [windows.apps]
@@ -211,6 +212,12 @@ units = "metric"
 # gesture name = the Kanade verb it runs, like "island collapse"; record a gesture with `kanade gesture record <name>`; never a program, which a hook or a verb of yours runs; file only
 # check = "island collapse"
 # circle = "launcher open"
+
+[dictate]
+# where a dictation's text goes: "copy" puts it on the clipboard, "paste" puts it there and sends Ctrl+V to the focused window, "type" types it with wtype. Either of the last two falls back to the clipboard, marked sensitive, when the window in front is not the one you started in, is in dictate.never_in, or wtype fails
+insert = "copy"
+# app ids, as niri names them (`niri msg windows`), whose windows only ever get the clipboard, like a password manager
+# never_in = ["org.keepassxc.KeePassXC"]
 
 [night-light]
 # warms the screen through wlsunset: "off", "on" all day, or on a "schedule" from sunset to sunrise

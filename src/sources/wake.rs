@@ -307,6 +307,67 @@ pub fn query_within(program: &str, args: &[&str], limit: Duration) -> Result<Str
     .map_err(Failed::Said)
 }
 
+/*
+ * an action that is fed `input` on its stdin, as `act_within` runs it. `input` is never in the
+ * errors, so text that is private can go this way
+ */
+pub fn feed_within(
+    program: &str,
+    args: &[&str],
+    input: &[u8],
+    limit: Duration,
+) -> Result<(), Failed> {
+    let command = [program, args.join(" ").as_str()].join(" ");
+    let cannot = |error: io::Error| Failed::Said(format!("cannot run `{command}`: {error}"));
+
+    let mut child = guarded(program, args, KILL, |command| {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    })
+    .map_err(cannot)?;
+
+    // closed once written, which is how the program knows the input is all there
+    let written = child
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut stdin| io::Write::write_all(&mut stdin, input));
+
+    if let Err(error) = written {
+        drop(child.kill());
+        drop(child.wait());
+
+        return Err(cannot(error));
+    }
+
+    let deadline = Instant::now() + limit;
+
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(cannot)? {
+            break status;
+        }
+
+        let left = deadline.saturating_duration_since(Instant::now());
+
+        if left.is_zero() {
+            drop(child.kill());
+            drop(child.wait());
+
+            return Err(Failed::Overran(limit));
+        }
+
+        thread::sleep(left.min(EXITING));
+    };
+
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(NOT_FOUND) => Err(Failed::Said(format!("{program} not found"))),
+        _ => Err(Failed::Said(format!("`{command}` failed ({status})"))),
+    }
+}
+
 // how often an action that closed its pipes is checked for having exited
 const EXITING: Duration = Duration::from_millis(10);
 
@@ -375,6 +436,21 @@ pub fn hold_file(program: &str, args: &[&str]) -> io::Result<Child> {
         clock::default_sigint(command)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+    })
+}
+
+/*
+ * starts `program` as a holder whose stdout is a stream the caller reads, like a recorder's audio,
+ * which nothing is left to finish when Kanade dies: it is killed. Its stderr is piped, for why it
+ * ended
+ */
+pub fn hold_stream(program: &str, args: &[&str]) -> io::Result<Child> {
+    guarded(program, args, KILL, |command| {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
     })
@@ -652,4 +728,36 @@ fn follow(output: impl BufRead, announces: fn(&str) -> bool, send: &Sender<Messa
     }
 
     io::ErrorKind::UnexpectedEof.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the text of a dictation reaches the program on stdin, and is in no error when it fails
+    #[test]
+    fn fed_input_arrives_on_stdin_and_is_never_in_an_error() {
+        let wait = Duration::from_secs(5);
+
+        assert_eq!(
+            feed_within(
+                "sh",
+                &["-c", r#"test "$(cat)" = "private words""#],
+                b"private words",
+                wait
+            ),
+            Ok(())
+        );
+
+        let Err(Failed::Said(error)) = feed_within(
+            "sh",
+            &["-c", "cat >/dev/null; exit 3"],
+            b"private words",
+            wait,
+        ) else {
+            panic!("expected a failure");
+        };
+
+        assert!(!error.contains("private"));
+    }
 }

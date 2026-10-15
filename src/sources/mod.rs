@@ -19,6 +19,7 @@ pub mod clipboard;
 pub mod ddc;
 pub mod desktop;
 pub mod devices;
+pub mod dictation;
 pub mod focus;
 pub mod fullscreen;
 pub mod google;

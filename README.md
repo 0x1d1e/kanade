@@ -94,6 +94,7 @@ Per-feature detail is in [Installation](docs/wiki/Installation.md).
 - [CLI](docs/wiki/CLI.md): every `kanade <verb>`.
 - [Configuration](docs/wiki/Configuration.md): config layers and every key.
 - [Agent hooks](docs/wiki/Agent-hooks.md): a Claude Code session as a live Activity.
+- [Dictation](docs/wiki/Dictation.md): speech to text with the Gemini API, and what it sends to Google.
 - [Google Calendar](docs/wiki/Google-Calendar.md): signing in with your own OAuth client.
 - [Keyboard](docs/wiki/Keyboard.md): niri keybinds and keys inside each Surface.
 - [Limitations](docs/wiki/Limitations.md): known gaps.

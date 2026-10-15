@@ -481,6 +481,7 @@ fn reset_inputs() {
                 .map(|at| format!("{}, {}", at.latitude, at.longitude))
                 .unwrap_or_default(),
             Kind::DesktopIds(_)
+            | Kind::Words(_)
             | Kind::Paths(_)
             | Kind::Urls(_)
             | Kind::AppIds(_)

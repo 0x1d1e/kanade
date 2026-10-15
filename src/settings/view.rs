@@ -1322,6 +1322,16 @@ fn control(
             )),
             false,
         ),
+        Kind::Words(field) => (
+            Box::new(list(
+                setting,
+                (field.get)(read),
+                "Add an app id, then Enter",
+                None,
+                roles,
+            )),
+            false,
+        ),
         Kind::Paths(field) => (
             Box::new(list(
                 setting,

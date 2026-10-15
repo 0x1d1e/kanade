@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use kanade_runtime::{IpcCall, ipc_socket};
 
 mod completions;
+mod dictate;
 mod keys;
 
 use crate::gesture;
@@ -25,8 +26,8 @@ use crate::modules::{self, Module};
 use crate::sources::notifications::timed;
 use crate::sources::system::Switch;
 use crate::sources::{
-    brightness, caffeine, capture, charge_limit, focus, google, live, media, night_light, niri,
-    osd, power, recording, reminders, subscriptions, timer, wallpaper, weather,
+    brightness, caffeine, capture, charge_limit, dictation, focus, google, live, media,
+    night_light, niri, osd, power, recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
 use crate::{config, doctor, ui};
@@ -70,6 +71,7 @@ pub enum Call {
     Record(recording::Request),
     Cast(niri::Retarget),
     Caffeine(caffeine::Request),
+    Dictate(dictation::Request),
     NightLight(night_light::Request),
     Focus(focus::Request),
     Dnd(timed::Request),
@@ -466,6 +468,13 @@ pub fn run(arguments: &[String]) -> ExitCode {
     // a press is read once, and none is no error to say: exit 1 and nothing
     if let Call::Live(live::Request::Pressed { id }) = &asked {
         return live::pressed(id);
+    }
+
+    // the key and the consent never leave this process
+    if let Call::Dictate(request) = asked
+        && request.local()
+    {
+        return dictate::run(request);
     }
 
     // the shell never holds a call, so this asks again until there is a press

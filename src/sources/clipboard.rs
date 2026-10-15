@@ -416,6 +416,54 @@ pub fn put(text: &str) -> io::Result<()> {
 }
 
 /*
+ * as `put`, but `text` goes to wl-copy on its stdin rather than its arguments, which any process
+ * of the user's can read while it runs: for text that is private, like a dictation. `sensitive`
+ * marks it so a clipboard history leaves it out
+ */
+pub fn put_private(text: &str, sensitive: bool) -> io::Result<()> {
+    // an older wl-copy does not know `--sensitive` and fails; the text is still wanted, so it goes
+    // without the mark, as the copy of a dictation that could not be inserted
+    if sensitive && put_with(text, &["--type", TEXT, "--sensitive"]).is_ok() {
+        return Ok(());
+    }
+
+    put_with(text, &["--type", TEXT])
+}
+
+fn put_with(text: &str, args: &[&str]) -> io::Result<()> {
+    let mut child = Command::new(COPY)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => io::Error::new(error.kind(), "wl-copy not found"),
+            _ => error,
+        })?;
+
+    // closed once written, which is how wl-copy knows the text is all there
+    let written = child
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut stdin| stdin.write_all(text.as_bytes()));
+
+    if let Err(error) = written {
+        drop(child.kill());
+        drop(child.wait());
+
+        return Err(error);
+    }
+
+    let status = ended(child, Instant::now() + PUT)?;
+
+    match status.success() {
+        true => Ok(()),
+        false => Err(io::Error::other(format!("wl-copy failed ({status})"))),
+    }
+}
+
+/*
  * how `child` ended, looking every `PUT_LOOK`; one still running at `deadline`, like a wl-copy
  * that never got the selection, is killed and reaped
  */

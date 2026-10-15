@@ -212,6 +212,9 @@ pub struct Config {
     // `focus.*`: what Focus turns on
     pub focus: Focus,
 
+    // `dictate.*`: where a dictation's text goes (ADR 0111)
+    pub dictate: Dictate,
+
     // `controls.tiles`: which switches the Controls Surface shows, in order and size (ADR 0067)
     pub tiles: Vec<Placed>,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
@@ -510,8 +513,9 @@ impl Default for Config {
             osd: OSD_TIME,
             palette: None,
             clock: Hours::default(),
-            // idle locking is hypridle's until this Module is turned on (ADR 0047)
-            off: vec!["idle"],
+            // idle locking is hypridle's until this Module is turned on (ADR 0047); dictation sends
+            // audio to Google, so it is the user's choice (ADR 0111)
+            off: vec!["dictation", "idle"],
             apps: BTreeMap::new(),
             gestures: BTreeMap::new(),
             pinned: Vec::new(),
@@ -569,6 +573,7 @@ impl Default for Config {
             battery: Battery::default(),
             night_light: NightLight::default(),
             focus: Focus::default(),
+            dictate: Dictate::default(),
             tiles: tiles::DEFAULT.to_vec(),
             pomodoro: Pomodoro::default(),
             hooks: Commands::default(),
@@ -688,6 +693,49 @@ impl Backend {
             "backlight" => Backend::Backlight,
             "ddcci" => Backend::Ddc,
             _ => Backend::Auto,
+        }
+    }
+}
+
+// `dictate.*`
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dictate {
+    pub insert: Insertion,
+
+    // app ids whose windows only ever get the text on the clipboard
+    pub never_in: Vec<String>,
+}
+
+// how a dictation's text reaches the window in front
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Insertion {
+    // on the clipboard, for the user to paste
+    #[default]
+    Copy,
+
+    // on the clipboard, then the paste chord (Ctrl+V) sent to the focused window
+    Paste,
+
+    // typed into the focused window, key by key
+    Type,
+}
+
+impl Insertion {
+    pub const NAMES: &[&str] = &["copy", "paste", "type"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Insertion::Copy => "copy",
+            Insertion::Paste => "paste",
+            Insertion::Type => "type",
+        }
+    }
+
+    pub fn named(name: &str) -> Insertion {
+        match name {
+            "paste" => Insertion::Paste,
+            "type" => Insertion::Type,
+            _ => Insertion::Copy,
         }
     }
 }
@@ -962,6 +1010,9 @@ pub enum Kind {
     // replaces the list below
     Paths(Field<Vec<String>>),
 
+    // a list of words as given, like app ids, none empty, each kept once; a layer replaces the list below
+    Words(Field<Vec<String>>),
+
     // a list of public calendar feeds, `https://` or `webcal://` addresses (`feed`), each kept once;
     // a layer replaces the list below. An error never repeats an address, which may hold a secret
     Urls(Field<Vec<String>>),
@@ -1057,6 +1108,24 @@ impl Kind {
                 }
 
                 (field.set)(config, ids);
+            }
+            Kind::Words(field) => {
+                let list = value.as_array().ok_or("expected a list of \"app id\"s")?;
+                let mut words: Vec<String> = Vec::new();
+
+                for word in list {
+                    let word = word
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|word| !word.is_empty())
+                        .ok_or_else(|| format!("expected an \"app id\", found {word}"))?;
+
+                    if !words.iter().any(|kept| kept == word) {
+                        words.push(word.to_owned());
+                    }
+                }
+
+                (field.set)(config, words);
             }
             Kind::Paths(field) => {
                 let list = value.as_array().ok_or("expected a list of \"path\"s")?;
@@ -1222,6 +1291,7 @@ impl Kind {
             Kind::DesktopIds(field)
             | Kind::Paths(field)
             | Kind::Urls(field)
+            | Kind::Words(field)
             | Kind::Argv(field) => {
                 Value::Array((field.get)(config).into_iter().map(Value::String).collect())
             }
@@ -1276,9 +1346,10 @@ impl Kind {
             Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
             Kind::DayTime(field) => field.copy(from, to),
-            Kind::DesktopIds(field) | Kind::Paths(field) | Kind::Urls(field) => {
-                field.copy(from, to)
-            }
+            Kind::DesktopIds(field)
+            | Kind::Paths(field)
+            | Kind::Urls(field)
+            | Kind::Words(field) => field.copy(from, to),
             Kind::AppIds(field) | Kind::Gestures(field) => field.copy(from, to),
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
@@ -1822,7 +1893,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "modules",
         label: "Modules",
-        help: "every Module is on unless set to false here; idle is off unless set to true",
+        help: "every Module is on unless set to false here; idle and dictation are off unless set to true",
         hint: None,
         kind: Kind::Modules(Field {
             get: |config| config.off.clone(),
@@ -2622,6 +2693,41 @@ pub const BRIGHTNESS: &[Setting] = &[Setting {
     restart: true,
     per_output: false,
 }];
+
+pub const DICTATE: &[Setting] = &[
+    Setting {
+        key: "dictate.insert",
+        label: "Insert dictation",
+        help: "where a dictation's text goes: \"copy\" puts it on the clipboard, \"paste\" puts it there and sends Ctrl+V to the focused window, \"type\" types it with wtype. Either of the last two falls back to the clipboard, marked sensitive, when the window in front is not the one you started in, is in dictate.never_in, or wtype fails",
+        hint: Some("What to do with the text"),
+        kind: Kind::Choice(
+            Choices::labeled(
+                Insertion::NAMES,
+                &[("copy", "Copy"), ("paste", "Paste"), ("type", "Type")],
+            ),
+            Field {
+                get: |config| config.dictate.insert.name(),
+                set: |config, name| config.dictate.insert = Insertion::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "dictate.never_in",
+        label: "Never insert into",
+        help: "app ids, as niri names them (`niri msg windows`), whose windows only ever get the clipboard, like a password manager",
+        hint: None,
+        kind: Kind::Words(Field {
+            get: |config| config.dictate.never_in.clone(),
+            set: |config, apps| config.dictate.never_in = apps,
+        }),
+        example: Some("[\"org.keepassxc.KeePassXC\"]"),
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const NIGHT_LIGHT: &[Setting] = &[
     Setting {
@@ -3893,7 +3999,7 @@ mod tests {
                 osd: ms(1000),
                 palette: Some(String::from("/home/you/Pictures/wall # 1.jpg")),
                 clock: Hours::Twelve,
-                off: vec!["idle", "media"],
+                off: vec!["dictation", "idle", "media"],
                 apps: BTreeMap::new(),
                 gestures: BTreeMap::new(),
                 pinned: Vec::new(),
@@ -4011,6 +4117,8 @@ mod tests {
                 "weather.place",
                 "weather.units",
                 "gestures",
+                "dictate.insert",
+                "dictate.never_in",
                 "night-light.mode",
                 "night-light.temperature",
                 "night-light.sunset",
@@ -4185,7 +4293,7 @@ mod tests {
 
         let next = restarted(&running, read);
         assert_eq!(next.clock, Hours::Twelve);
-        assert_eq!(next.off, ["idle", "media", "timer"]);
+        assert_eq!(next.off, ["dictation", "idle", "media", "timer"]);
     }
 
     /*
@@ -4313,7 +4421,7 @@ HDMI-A-1 = "12h"
         assert_eq!(problems, vec![]);
         assert_eq!(config.island.hover, ms(90));
         assert_eq!(config.palette.as_deref(), Some("a \"b\" \\c\t"));
-        assert_eq!(config.off, ["idle", "media"]);
+        assert_eq!(config.off, ["dictation", "idle", "media"]);
     }
 
     // a later file wins key by key; a table it leaves out keeps what is below
@@ -4330,7 +4438,7 @@ HDMI-A-1 = "12h"
         assert_eq!(config.island.hover, ms(100));
         assert_eq!(config.island.expand, ms(300));
         assert_eq!(config.palette.as_deref(), Some("/a.png"));
-        assert_eq!(config.off, ["idle", "media", "battery"]);
+        assert_eq!(config.off, ["dictation", "idle", "media", "battery"]);
     }
 
     // what a bad key would have set stays as the layers below left it
@@ -4364,7 +4472,7 @@ battery = false
         assert_eq!(config.osd, ms(1000));
         assert_eq!(config.palette, None);
         assert_eq!(config.clock, Hours::TwentyFour);
-        assert_eq!(config.off, ["idle", "battery"]);
+        assert_eq!(config.off, ["dictation", "idle", "battery"]);
         assert_eq!(
             problems[1],
             said(&[

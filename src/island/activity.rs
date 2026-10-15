@@ -32,10 +32,13 @@ pub enum Kind {
 
     // a calendar event about to start (ADR 0043)
     Reminder,
+
+    // speech being turned into text (ADR 0111)
+    Dictation,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 16] = [
+    pub const ALL: [Kind; 17] = [
         Kind::Media,
         Kind::Notification,
         Kind::Volume,
@@ -52,6 +55,7 @@ impl Kind {
         Kind::Live,
         Kind::NightLight,
         Kind::Reminder,
+        Kind::Dictation,
     ];
 
     // as IPC names it
@@ -73,6 +77,7 @@ impl Kind {
             Kind::Live => "live",
             Kind::NightLight => "night-light",
             Kind::Reminder => "reminder",
+            Kind::Dictation => "dictation",
         }
     }
 
@@ -264,6 +269,7 @@ pub enum Detail {
     // why the night light's wlsunset is not running
     NightLight(String),
     Reminder(Reminder),
+    Dictation(Dictation),
 
     // a device that connected, went or took over, whatever Kind posts it
     Hardware(Hardware),
@@ -288,6 +294,7 @@ impl Detail {
             Detail::Live(_) => Some(Kind::Live),
             Detail::NightLight(_) => Some(Kind::NightLight),
             Detail::Reminder(_) => Some(Kind::Reminder),
+            Detail::Dictation(_) => Some(Kind::Dictation),
             Detail::Hardware(_) => None,
         }
     }
@@ -308,7 +315,8 @@ impl Detail {
             | Detail::Workspace(_)
             | Detail::Mode(_)
             | Detail::Layout(_)
-            | Detail::Reminder(_) => true,
+            | Detail::Reminder(_)
+            | Detail::Dictation(Dictation::Recording { .. }) => true,
             Detail::Live(job) => job.ended.is_none(),
             _ => false,
         }
@@ -501,6 +509,25 @@ pub enum Awake {
     Failed {
         why: String,
     },
+}
+
+/*
+ * where a dictation stands (ADR 0111): what the island says of it, never the audio. `serial` names
+ * this recording, so a stale Stop never reaches a newer one. The seconds are of audio heard, which
+ * is also what the 120 s cap counts
+ */
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dictation {
+    Recording { serial: String, seconds: u32 },
+
+    // sent, or about to be, and waiting for the text
+    Transcribing { serial: String },
+
+    // the text, which is also on the clipboard
+    // what was done with the text (typed, pasted or copied, and why copied if not asked for), and the text
+    Done { how: String, text: String },
+
+    Failed { why: String },
 }
 
 // what the Session menu asks: a lock or sleep at once, an `Ending` only after a countdown

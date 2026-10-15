@@ -26,8 +26,9 @@ use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
 use crate::sources::{
-    apps, bluetooth, brightness, caffeine, charge_limit, focus, fullscreen, google, live, media,
-    network, night_light, power, reminders, session, subscriptions, wallpaper, weather,
+    apps, bluetooth, brightness, caffeine, charge_limit, dictation, focus, fullscreen, google,
+    live, media, network, night_light, power, reminders, session, subscriptions, wallpaper,
+    weather,
 };
 use crate::supervise;
 use crate::surfaces::launcher;
@@ -59,6 +60,7 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(Call::Record(request)) => recording::request(request, Later::new(reply)),
         // on the draw thread, which systemd-inhibit dies with
         Ok(Call::Caffeine(request)) => caffeine::request(request, Later::new(reply)),
+        Ok(Call::Dictate(request)) => dictation::run::request(request, Later::new(reply)),
         Ok(Call::Battery(request)) => charge_limit::request(request, Later::new(reply)),
         Ok(Call::Media(transport)) => media::request(transport, Later::new(reply)),
         Ok(Call::Wifi(switch)) => network::request(switch, Later::new(reply)),
@@ -89,6 +91,7 @@ fn run(call: Call) -> Reply {
         Call::Dmenu(_)
         | Call::Record(_)
         | Call::Caffeine(_)
+        | Call::Dictate(_)
         | Call::Battery(_)
         | Call::Media(_)
         | Call::Wifi(_)

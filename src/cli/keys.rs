@@ -112,7 +112,7 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
             "type": "string",
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
         }),
-        Kind::DesktopIds(_) | Kind::Paths(_) | Kind::Urls(_) => {
+        Kind::DesktopIds(_) | Kind::Paths(_) | Kind::Urls(_) | Kind::Words(_) => {
             json!({ "type": "array", "items": { "type": "string", "minLength": 1 } })
         }
         Kind::Tiles(_) => {

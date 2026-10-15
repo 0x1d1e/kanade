@@ -76,6 +76,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "privacy",
             "osd",
             "capture",
+            "dictation",
         ],
     ),
     (
@@ -333,6 +334,10 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "Privacy",
                 rows: &[Row::Key("privacy.indicators")],
+            },
+            Section {
+                title: "Dictation",
+                rows: &[Row::Key("dictate.insert"), Row::Key("dictate.never_in")],
             },
             Section {
                 title: "Live Activities",

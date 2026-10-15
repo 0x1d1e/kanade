@@ -382,7 +382,7 @@ Need design before commitment:
 
 - **Plugins**: likely after Module/Service/Activity/Surface/LauncherProvider contracts stabilize. No plugin ABI/runtime yet.
 - **Hooks/event automation**: resolved by [ADR 0055](adr/0055-hooks-run-user-commands.md): a closed event set, argv commands from config, env payload, bounded child, one in flight per event, failures in `status` only. Arbitrary events and plugins stay deferred.
-- **ASR dictation**: speech → text; modes: copy to clipboard, paste into focused input. Need engine boundary, microphone/privacy semantics, focus-safe paste path, cancellation, offline/remote policy.
+- **Dictation**: resolved by [ADR 0111](adr/0111-voice-dictation-through-the-gemini-api.md): the Gemini API only, one request after the recording stops, audio in memory, a key in the Secret Service and a recorded consent (the free tier may train on what is sent) before anything records. Insertion by copy (default), type or paste. Local models and streaming stay deferred.
 
 ## Roadmap
 
@@ -399,7 +399,7 @@ Need design before commitment:
 
 - Track/test the privacy dots at each small form and beside a side edge.
 - Native polkit waits for safe helper stdin integration.
-- Plugins/ASR remain deferred design decisions.
+- Plugins remain a deferred design decision; dictation's local-model and streaming variants too (ADR 0111).
 
 ## Fixed
 

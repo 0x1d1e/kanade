@@ -96,6 +96,7 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
     match activity.detail() {
         Detail::Recording(_) => label(String::from("Rec"), theme::signals().capture),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
+        Detail::Dictation(_) => Box::new(Icon::Microphone.draw(14.0)),
         Detail::Media(track) => Box::new(super::media::disc(track, 20.0, now)),
         Detail::Live(job) => super::live::satellite(job),
         Detail::NightLight(_) => Box::new(Icon::Sunset.draw(14.0)),
@@ -168,6 +169,7 @@ pub(super) fn abbreviation(kind: Kind) -> &'static str {
         Kind::Timer => "T",
         Kind::Recording => "Rec",
         Kind::Caffeine => "Cf",
+        Kind::Dictation => "Dc",
         Kind::Session => "Ss",
         Kind::Mode => "Md",
         Kind::Live => "Lv",

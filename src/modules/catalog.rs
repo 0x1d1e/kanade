@@ -23,8 +23,8 @@ use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
     apps, audio, battery, bluetooth, brightness, caffeine, calendar, capture, charge_limit,
-    clipboard, devices, focus, fullscreen, google, keys, launch, launcher_entry, live, lyrics,
-    media, network, night_light,
+    clipboard, devices, dictation, focus, fullscreen, google, keys, launch, launcher_entry, live,
+    lyrics, media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -1350,6 +1350,59 @@ notifications dnd on until <HH:MM>
             parse: |arguments| {
                 caffeine::Request::parse(arguments)
                     .map(Call::Caffeine)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
+    /*
+     * speech to text through the Gemini API (ADR 0111): off by default, as the audio goes to Google.
+     * Nothing records or sends without a key in the Secret Service and the user's consent, both
+     * given with `kanade dictate`, which runs in the user's terminal
+     */
+    Module {
+        name: "dictation",
+        about: "Turns speech into text with the Gemini API",
+        requires: &[CORE],
+        optional: &["privacy"],
+        warns: None,
+        needs: &[
+            Need {
+                on: Provider::Program(dictation::run::RECORDER),
+                without: "no dictation, which records with it",
+            },
+            Need {
+                on: Provider::Program(wake::SETPRIV),
+                without: "the recorder could outlive Kanade, keeping the microphone open",
+            },
+            Need {
+                on: Provider::SessionService(google::SECRETS),
+                without: "no dictation, which keeps the API key there",
+            },
+            Need {
+                on: Provider::Program(clipboard::COPY),
+                without: "the text cannot be put on the clipboard",
+            },
+        ],
+        settings: config::DICTATE,
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "dictate",
+            about: "Dictate: speech to text through the Gemini API",
+            usage: || {
+                String::from(
+                    "dictate toggle|cancel|status|key|consent|forget
+  toggle: starts recording, or stops it and transcribes; needs a key and your consent; refused while the session is locked
+  cancel: before the stop, drops the recording; after it the upload is under way and cannot be recalled, so this only discards what comes back
+  status: how it stands, and whether the key and the consent are in place
+  key: reads the Gemini API key from stdin (typed hidden at a terminal) into the Secret Service
+  consent: shows what dictation sends to Google, and records that you accept it; needs a terminal
+  forget: deletes the key and withdraws the consent; a recording not yet sent is then not sent",
+                )
+            },
+            parse: |arguments| {
+                dictation::Request::parse(arguments)
+                    .map(Call::Dictate)
                     .ok_or(Unparsed::Usage)
             },
         }],

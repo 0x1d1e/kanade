@@ -132,6 +132,15 @@ A command the user lists in config (`hooks.<event>`, an argv list) that Kanade r
 - Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
 - **Avoid:** plugin, script event soup, subscription
 
+## Dictation
+Speech turned into text by the `dictation` Module: the user starts a recording, stops it, and one request to the Gemini API returns the text, which is then inserted (copied by default).
+- **Invariant:** nothing records or is sent unless a key is in the Secret Service and the user's consent to the disclosure is recorded (audio goes to Google; on the free tier it may be used to improve Google's products). Audio is kept in memory only and capped at 120 s (ADR 0111).
+- The microphone indicator is the privacy cluster's, read from the PipeWire graph; dictation adds none.
+- Text is typed or pasted only into the window the recording started in, not in `dictate.never_in`, and not while the session is locked, as far as a check just before the keys can tell (focus can still move after it); any doubt falls back to a sensitive copy, and the Activity says which. The audio cannot be recalled once the recording is stopped: Cancel then only discards the result. A recording not yet stopped is cancelled when the session locks.
+- A transcript is not a Notification and not a clipboard entry until inserted. Its Activity (Kind `Dictation`) shows the seconds heard, that it transcribes, then the text or why it failed; it has no Surface of its own.
+- **Invariant:** the key and the consent are handled only by `kanade dictate key|consent|forget`, in the user's terminal: the key by stdin, never an argument, and the consent only from a typed phrase at a terminal. Neither passes through the shell's socket.
+- **Avoid:** ASR, STT, voice input, voice typing, speech widget
+
 ## Semantic tree
 The windows' interactive controls as named nodes (`id`, `parent`, `role`, `label`, `value`, states, `bounds`), read and acted on from outside with `kanade ui` (ADRs 0095 to 0099). It is the input targets of each window's last frame, with the role and name a view says where it builds them, not a second tree.
 - **Invariant:** a node's name is source text; what the user or the world wrote (a notification, a title, a track, the clipboard, a network, typed text) is content, `<redacted>` unless `ui.describe = "content"`, and a password is never stored in any mode.
