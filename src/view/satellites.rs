@@ -8,6 +8,7 @@ use crate::icon::Icon;
 use crate::island::activity::{Activity, Class, Detail, Kind, Leaving};
 use crate::island::geometry::{self, Canvas, Hang, Rect, Shape};
 use crate::island::satellites::{Mark, Satellites};
+use crate::pane;
 use crate::sources::{session, timer};
 use crate::theme;
 
@@ -28,7 +29,7 @@ pub(super) fn satellites(
         return Vec::new();
     }
 
-    satellites
+    let placed: Vec<_> = satellites
         .shown(now)
         .into_iter()
         .map(|shown| {
@@ -38,8 +39,50 @@ pub(super) fn satellites(
             };
             let at = geometry::satellite(body, hang, canvas, shown.slot, shown.presence);
 
-            Box::new(dot(at, mark).opacity(opacity * shown.opacity)) as Box<dyn Widget>
+            (shown.slot, at, mark, opacity * shown.opacity)
         })
+        .collect();
+
+    /*
+     * one liquid shape with the body, whose neck stretches and snaps as a dot comes out, where the
+     * finish and motion allow it; else each dot its own fill
+     */
+    let mut by_slot: Vec<_> = placed
+        .iter()
+        .map(|(slot, at, _, opacity)| (*slot, *at, *opacity))
+        .collect();
+
+    by_slot.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let blob = pane::blob(
+        pane::Body {
+            x: body.x,
+            y: body.y,
+            width: body.width,
+            height: body.height,
+            radius: shape.radius,
+            join: None,
+        },
+        geometry::SATELLITE_GAP,
+        &by_slot
+            .into_iter()
+            .map(|(_, at, opacity)| pane::Dot {
+                x: at.x,
+                y: at.y,
+                diameter: at.width,
+                opacity,
+            })
+            .collect::<Vec<_>>(),
+    );
+    let joined = blob.is_some();
+
+    blob.map(|blob| Box::new(blob) as Box<dyn Widget>)
+        .into_iter()
+        .chain(placed.into_iter().map(|(_, at, mark, opacity)| {
+            let dot = dot(at, mark, !joined);
+
+            Box::new(dot.opacity(opacity)) as Box<dyn Widget>
+        }))
         .collect()
 }
 
@@ -93,13 +136,20 @@ pub(super) fn label(text: String, tone: Color) -> Box<dyn Widget> {
     )
 }
 
-pub(super) fn dot(at: Rect, mark: Box<dyn Widget>) -> Rectangle {
-    Rectangle::new()
+// a Satellite's dot; without its own fill when the liquid shape under it draws that
+pub(super) fn dot(at: Rect, mark: Box<dyn Widget>, filled: bool) -> Rectangle {
+    let dot = Rectangle::new()
         .width(at.width)
         .height(at.height)
-        .radius(at.width / 2.0)
-        .fill(theme::island().surface_container_high)
-        .align_child(Center, Center)
+        .radius(at.width / 2.0);
+
+    let dot = if filled {
+        dot.fill(theme::island().surface_container_high)
+    } else {
+        dot
+    };
+
+    dot.align_child(Center, Center)
         .translate(at.x, at.y)
         .child(Row::new(vec![mark]))
 }

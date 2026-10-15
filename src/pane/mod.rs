@@ -4,6 +4,7 @@
 //! draws clear glass over the screen, its content's ink following the light around it (`glass`, `ink`);
 //! Blur is the tinted solid, translucent, over what the compositor blurs behind it (`blur`, ADR 0057).
 
+mod blob;
 mod blur;
 mod body;
 mod capture;
@@ -13,6 +14,7 @@ mod shader;
 
 use std::time::Duration;
 
+pub use self::blob::{Dot, blob};
 pub use self::blur::{FILL as BLUR_FILL, behind as blurred};
 pub use self::body::{Body, Join, ahead};
 pub use self::capture::{forget, locked, origin, place, shown};

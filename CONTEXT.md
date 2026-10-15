@@ -146,7 +146,7 @@ An Activity saying a calendar event is coming: its title and how long until it s
 Small secondary indicator beside the primary island: timer, VPN, low battery, a Live Activity.
 - Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Stop.
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary, and a playing Media Activity beside such a primary, so a song keeps its place beside a timer; it counts after the others and shows its cover. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
-- **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops.
+- **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops. Coming out or going, it is one liquid shape with the body: a neck stretches and snaps as it parts (ADR 0101), except under Liquid Glass and reduced motion.
 - While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.
 
 ## Hold
