@@ -12,7 +12,8 @@
 //! title, artist, album and length, so no file name tells what was played; a miss is kept for
 //! `NEGATIVE` only, and at most `CACHE_FILES` files stay. A request that fails waits twice as long
 //! after each failure in a row (`Backoff`) or what `Retry-After` says if longer, and two requests
-//! are `GAP` apart. A 429 holds every track back, not only the one asked. The request says `Kanade/<version>` and nothing else of this machine. Neither
+//! are `GAP` apart. A 429 holds every request back, for any track, but not a file beside a track
+//! or the cache. The request says `Kanade/<version>` and nothing else of this machine. Neither
 //! the lyrics nor the track are logged or shown in `status`.
 
 use std::fs;
@@ -599,18 +600,15 @@ impl Worker {
         match message {
             Message::Want(wanted) => {
                 if self.current.as_ref() != Some(&*wanted) {
-                    let now = Instant::now();
-                    let lrclib = wanted.mode == LyricsSource::Lrclib;
-                    let track = self
+                    self.retry = self
                         .penalty
                         .as_ref()
-                        .filter(|(key, _)| *key == wanted.key)
+                        .filter(|(key, until)| {
+                            *key == wanted.key
+                                && wanted.mode == LyricsSource::Lrclib
+                                && *until > Instant::now()
+                        })
                         .map(|(_, until)| *until);
-
-                    self.retry = lrclib
-                        .then(|| track.into_iter().chain(self.cooldown).max())
-                        .flatten()
-                        .filter(|until| *until > now);
                     self.current = Some(*wanted);
                     self.resolved = false;
                     self.backoff.reset();
@@ -643,7 +641,16 @@ impl Worker {
         let (found, outcome) = match self.look_up(&wanted) {
             Ok(found) => found,
             Err((wait, outcome)) => {
-                let until = Instant::now() + wait.max(self.backoff.failed());
+                let now = Instant::now();
+
+                // held back by the cooldown, which is no failure of this track's
+                let held = self.cooldown.is_some_and(|until| until > now);
+                let until = now
+                    + if held {
+                        wait
+                    } else {
+                        wait.max(self.backoff.failed())
+                    };
 
                 self.retry = Some(until);
                 self.penalty = Some((wanted.key, until));
@@ -698,6 +705,15 @@ impl Worker {
             Some(Cached::Found(text)) => return Ok((parse(&text), "found in the cache")),
             Some(Cached::Missing) => return Ok((Vec::new(), "none found, remembered")),
             None => {}
+        }
+
+        // the files and the cache above answer through a rate limit; only a request waits for it
+        if let Some(wait) = self
+            .cooldown
+            .map(|until| until.saturating_duration_since(Instant::now()))
+            .filter(|wait| !wait.is_zero())
+        {
+            return Err((wait, RATE_LIMITED));
         }
 
         if let Some(last) = self.last_request {
@@ -1090,10 +1106,7 @@ mod tests {
         assert_eq!(again.retry, Some(until));
         assert!(!again.due());
 
-        // a 429 is LRCLIB's: another track waits for it too, but a local one does not
-        again.apply(Message::Stop);
-        again.penalty = None;
-        again.cooldown = Some(until);
+        // a 429 is LRCLIB's: another track's request waits for it, but its cache answers at once
         let third = Wanted::new(
             LyricsSource::Lrclib,
             "",
@@ -1102,11 +1115,21 @@ mod tests {
             "Album",
             Duration::from_secs(150),
         );
-        again.apply(Message::Want(Box::new(third)));
-        assert_eq!(again.retry, Some(until));
-        assert!(!again.due());
-        again.apply(Message::Want(Box::new(wanted(LyricsSource::Local, "/x"))));
-        assert_eq!(again.retry, None);
+        let cooled = Instant::now() + Duration::from_secs(60);
+        let mut held = Worker::new(agent(false), "http://127.0.0.1:9/", Some(dir.join("cache")));
+
+        held.cooldown = Some(cooled);
+        held.apply(Message::Want(Box::new(third.clone())));
+        assert!(held.due());
+        held.resolve();
+        assert!(!held.resolved);
+        assert!(held.retry.is_some_and(|until| until >= cooled));
+        assert_eq!(held.backoff.failed(), RETRY);
+
+        held.apply(Message::Want(Box::new(track.clone())));
+        held.retry = None;
+        held.resolve();
+        assert!(held.resolved);
 
         drop(fs::remove_dir_all(&dir));
     }

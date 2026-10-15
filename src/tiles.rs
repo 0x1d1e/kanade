@@ -7,9 +7,13 @@ use std::fmt;
 // the Surface has room for this many rows of switches (ADR 0030)
 pub const ROWS: usize = 3;
 
-// a row holds two halves' worth of room, and the round buttons that fit beside them
+/*
+ * a row holds two halves' worth of room, and the round buttons that fit beside them: three beside a
+ * full tile, but one beside a half, or a half is under 160 px of the 400 and its words go unread
+ */
 const ROOM: u32 = 2;
 const MOST_ICONS: usize = 3;
+const MOST_ICONS_BESIDE_HALF: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tile {
@@ -220,14 +224,17 @@ pub fn pack(list: &[Placed]) -> Vec<Vec<Placed>> {
 }
 
 fn room(row: &[Placed], next: Placed) -> bool {
-    let weight: u32 = row.iter().map(|placed| placed.size.weight()).sum();
-    let icons = row
-        .iter()
-        .filter(|placed| placed.size == Size::Icon)
-        .count();
+    let all = || row.iter().chain(std::iter::once(&next));
+    let weight: u32 = all().map(|placed| placed.size.weight()).sum();
+    let icons = all().filter(|placed| placed.size == Size::Icon).count();
+    let halves = all().any(|placed| placed.size == Size::Half);
+    let most = if halves {
+        MOST_ICONS_BESIDE_HALF
+    } else {
+        MOST_ICONS
+    };
 
-    weight + next.size.weight() <= ROOM
-        && icons + usize::from(next.size == Size::Icon) <= MOST_ICONS
+    weight <= ROOM && icons <= most
 }
 
 // whether all of `list` has a place
@@ -385,11 +392,34 @@ mod tests {
         );
         let sizes: Vec<usize> = packed.iter().map(Vec::len).collect();
 
-        assert_eq!(sizes, [2, 3]);
+        assert_eq!(sizes, [2, 2, 1]);
 
         let packed = pack(&parse(&list(&["wifi:full", "dnd", "focus"])).unwrap());
 
         assert_eq!(packed.len(), 2);
+    }
+
+    // a half beside round buttons keeps the width its words need, the radios' too
+    #[test]
+    fn a_half_keeps_room_for_its_words() {
+        let list = parse(&list(&[
+            "wifi",
+            "bluetooth",
+            "caffeine:icon",
+            "dnd:icon",
+            "focus:icon",
+            "night-light:icon",
+        ]))
+        .unwrap();
+
+        for row in pack(&list) {
+            for (placed, width) in row.iter().zip(widths(&row, 400.0, 8.0, 48.0)) {
+                assert!(placed.size != Size::Half || width >= 160.0);
+            }
+        }
+
+        // the three icons of a row with no half
+        assert_eq!(pack(&list).last().map(Vec::len), Some(3));
     }
 
     #[test]
