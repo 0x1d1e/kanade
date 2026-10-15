@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use crate::backdrop::Spot;
 use crate::graphics::{Color, VALUE_ROWS};
 use crate::input::Handlers;
+use crate::ui::Semantics;
 use crate::{Align, Fill, Padding, Radius, Shadow, Size};
 
 use super::Widget;
@@ -38,6 +39,7 @@ pub struct Rectangle {
     pub(crate) handlers: Handlers,
     pub(crate) inert: bool,
     pub(crate) identity: Option<u64>,
+    pub(crate) semantics: Option<Semantics>,
 }
 
 pub struct RectangleNeedsWidth;
@@ -231,6 +233,7 @@ impl RectangleNeedsHeight {
             handlers: Handlers::default(),
             inert: false,
             identity: None,
+            semantics: None,
         }
     }
 }

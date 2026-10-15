@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::graphics::{Area, Transform};
+use crate::ui::Semantics;
 use crate::{Button, Cursor, Key, Point, Scroll};
 
 use super::ime::Caret;
@@ -51,6 +52,13 @@ pub struct Target {
     // a text input's caret, for its input method; the area above is where it sits
     pub caret: Option<Caret>,
 
+    // what the target is, for `kanade ui` (ADR 0095); none for the targets no view said anything of
+    pub semantics: Option<Semantics>,
+
+    // one past the last target collected inside this one, set where there are semantics, so a node
+    // finds its parent: the targets from the next one to here are in it
+    pub end: usize,
+
     // named by what it is (see `anchor`), so the places above it no longer change its key
     anchored: bool,
 }
@@ -63,6 +71,8 @@ impl Target {
             inverse: Transform::IDENTITY,
             key: 0,
             caret: None,
+            semantics: None,
+            end: 0,
             anchored: false,
         }
     }
@@ -75,7 +85,16 @@ impl Target {
 
     // the caret's box in the window, where parents have moved, scaled or turned it
     pub fn caret_in_window(&self) -> Option<(f32, f32, f32, f32)> {
-        let caret = self.caret?;
+        self.in_window(self.caret?.area)
+    }
+
+    // the target's own area in the window
+    pub fn bounds_in_window(&self) -> Option<(f32, f32, f32, f32)> {
+        self.in_window(self.area)
+    }
+
+    // a box of the target's space as the smallest upright box around it in the window
+    fn in_window(&self, area: Area) -> Option<(f32, f32, f32, f32)> {
         let into_window = self.inverse.invert()?;
 
         let Area {
@@ -83,7 +102,7 @@ impl Target {
             y,
             width,
             height,
-        } = caret.area;
+        } = area;
 
         let corners = [
             into_window.map(x, y),

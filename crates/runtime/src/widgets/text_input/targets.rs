@@ -4,6 +4,7 @@ use crate::graphics::Area;
 use crate::input::focus::FocusHandler;
 use crate::input::ime::{self, Batch, Caret, Context};
 use crate::input::{Cursor, Handlers, Target, focus, paste};
+use crate::ui::{self, Role, Semantics};
 use crate::{Button, Key, Modifiers};
 
 use super::field::Effect;
@@ -46,6 +47,18 @@ pub fn collect_targets(text_input: &TextInput, area: Area, targets: &mut Vec<Tar
             id,
             area: text_input.caret_area(&fields::get(id), area),
         });
+    }
+
+    // named by its own id, which is fixed in the source; its text is content, a password's is none
+    if ui::enabled() {
+        let text = fields::get(id).text;
+
+        target.semantics = Some(
+            Semantics::new(Role::TextInput, id)
+                .input(id, &text, text_input.password, focus::has(id))
+                .scrubbed(ui::mode()),
+        );
+        target.end = targets.len() + 1;
     }
 
     targets.push(target);

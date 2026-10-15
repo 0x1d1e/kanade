@@ -111,7 +111,10 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "weather-surface",
         ],
     ),
-    ("Session", &["lock", "idle", "session", "settings", "hooks"]),
+    (
+        "Session",
+        &["lock", "idle", "session", "settings", "ui", "hooks"],
+    ),
 ];
 
 pub const MODULES: &str = "modules";
@@ -122,6 +125,8 @@ pub const EXTERNAL_KEYS: &[&str] = &[
     "dock.pinned",
     "notifications.rules",
     "focus.auto",
+    // what an agent may read of the windows: set in a config file or `kanade config set`, not by a click
+    "ui.describe",
     "hooks.lock",
     "hooks.unlock",
     "hooks.wallpaper",

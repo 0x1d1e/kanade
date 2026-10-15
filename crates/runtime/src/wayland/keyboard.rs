@@ -114,13 +114,24 @@ impl WaylandState {
             return;
         };
 
+        self.deliver_to(&surface, key, modifiers, true);
+    }
+
+    // a key for a window; `to_input` is whether the focused text input is to have it first
+    pub(super) fn deliver_to(
+        &mut self,
+        surface: &WlSurface,
+        key: Key,
+        modifiers: Modifiers,
+        to_input: bool,
+    ) {
         // a focused text input takes the key before the window's on_key sees it
-        if focus::send(key, modifiers) {
+        if to_input && focus::send(key, modifiers) {
             if let Some(done) = paste::take() {
-                self.paste(done, &surface);
+                self.paste(done, surface);
             }
 
-            self.request_frame_on(&surface);
+            self.request_frame_on(surface);
 
             return;
         }
@@ -131,7 +142,7 @@ impl WaylandState {
             key => key,
         };
 
-        let Some(window) = self.window(&surface) else {
+        let Some(window) = self.window(surface) else {
             return;
         };
 
@@ -142,7 +153,7 @@ impl WaylandState {
         on_key(key);
 
         // a service the handler changed wakes its own readers, this window redraws for the rest
-        self.request_frame_on(&surface);
+        self.request_frame_on(surface);
     }
 }
 

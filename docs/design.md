@@ -76,7 +76,7 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
 | Utilities | `capture`, `caffeine`, `night-light`, `focus`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
-| Session | `lock`, `idle`, `session`, `settings`, `hooks` |
+| Session | `lock`, `idle`, `session`, `settings`, `hooks`, `ui` |
 
 Rules:
 
@@ -92,6 +92,7 @@ Rules:
 - `privacy` default on; disable warns indicators disappear.
 - `calendar` network/account sync optional; local calendar still works without it. `google-calendar` → `calendar`. `calendar-subscriptions` → `calendar`: public iCalendar feeds mirrored read-only, https only, conditional requests, 5 MiB cap, no address ever logged or shown, nothing fetched without a feed ([ADR 0062](adr/0062-calendar-subscriptions.md)). `calendar-reminders` → `calendar`, optionally `calendar-surface`; sleeps on a wall-clock timer armed to the next reminder, no polling (ADR 0043); Join opens an allowlisted meeting link from the event with `xdg-open`.
 - `weather` network-backed; no polling when disabled or without a location; bounded refresh when enabled ([ADR 0017](adr/0017-weather-from-open-meteo.md)). `weather-surface` → `weather`.
+- `ui` (the semantic tree and `kanade ui`, [ADR 0095](adr/0095-semantic-tree-from-input-targets.md) to [0099](adr/0099-ui-module-and-cli.md)): the input targets of each window's last frame with the role, name and state views say where they build them; read by `describe`, acted on by name through the runtime's pointer and keyboard path. `ui.describe` is `structure` (content `<redacted>`), `content` or `off`. Never describes the lock screen, refused while locked, socket 0600. Shaped for a later AccessKit/AT-SPI adapter, which is not added.
 - module toggle requires restart while the runtime registers windows only at startup.
 
 `notifications` owns bus/state/history; UI separate. `windows` owns normalized niri running-window/app state; `app_id` ↔ `.desktop` matching + overrides: [ADR 0014](adr/0014-running-apps-from-desktop-entries.md). Dock never consumes raw niri objects.
@@ -262,6 +263,12 @@ media play-pause|next|previous
 wifi on|off|toggle|status
 bluetooth on|off|toggle|status
 power-profile set <profile>|cycle|status
+ui describe [--window W]
+ui press|focus <name>
+ui type <name> <text>
+ui key <name> <key>
+ui scroll <name> <lines>
+ui wait <name> [--timeout S]
 island collapse
 notifications open|close|toggle|clear
 notifications dnd on|off|toggle|status
@@ -343,6 +350,7 @@ Nested-niri E2E checks idle/morph each release.
 - polkit credentials stay external.
 - privacy dots inside the Island; not shown over fullscreen (ADR 0033).
 - lock shows no notification content.
+- `kanade ui describe` redacts everything a user or the world wrote unless `ui.describe = "content"`, never stores a password, never describes the lock screen, and is refused while locked ([ADR 0096](adr/0096-ui-describe-privacy-modes.md), [0098](adr/0098-ui-is-refused-while-locked-and-the-socket-is-user-only.md)).
 
 Lock ship gate: kill Kanade while locked → compositor remains locked → systemd restart → lock UI reacquired → auth succeeds. Any failure → split `kanade-lock`. Passed on niri 26.04 with a temporary test build (#153): lock stays in the shell. Passed again in #154 on the production binary and the installed `kanade.service` unit ([ADR 0018](adr/0018-lock-stays-in-the-shell.md)).
 

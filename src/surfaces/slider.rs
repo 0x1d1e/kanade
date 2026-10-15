@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::sources::brightness::Brightness;
 use crate::sources::pulse::Audio;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{Center, Color, Cursor, Rectangle, Start};
 use kanade_runtime::{MutexExt, service::Service};
 
@@ -61,6 +62,16 @@ impl Slider {
             .height(TARGET)
             .align_child(Start, Center)
             .cursor(Cursor::Pointer)
+            .semantics(|| {
+                let name = match self {
+                    Slider::Speaker => "volume",
+                    Slider::Brightness => "brightness",
+                    Slider::Microphone => "microphone",
+                    Slider::Stream(_) => "stream",
+                };
+
+                Semantics::new(Role::Slider, name).level(fraction)
+            })
             .on_drag(move |point| {
                 crate::view::claim();
                 self.set((point.x / width * 100.0).round().clamp(0.0, 100.0) as u8);

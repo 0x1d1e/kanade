@@ -130,6 +130,14 @@ A command the user lists in config (`hooks.<event>`, an argv list) that Kanade r
 - Not `modules::Hooks`, the `status` and `reload` callbacks of a Module's descriptor.
 - **Avoid:** plugin, script event soup, subscription
 
+## Semantic tree
+The windows' interactive controls as named nodes (`id`, `parent`, `role`, `label`, `value`, states, `bounds`), read and acted on from outside with `kanade ui` (ADRs 0095 to 0099). It is the input targets of each window's last frame, with the role and name a view says where it builds them, not a second tree.
+- **Invariant:** a node's name is source text; what the user or the world wrote (a notification, a title, a track, the clipboard, a network, typed text) is content, `<redacted>` unless `ui.describe = "content"`, and a password is never stored in any mode.
+- **Invariant:** the lock screen is never in it and `kanade ui` is refused while the session is locked; `ui.describe = "off"` keeps no tree and refuses everything.
+- **Invariant:** an act goes through the runtime's pointer and keyboard path to the named node, never by coordinates, and leaves the user's pointer where it was.
+- Not an accessibility tree: shaped for an AccessKit or AT-SPI adapter, which does not exist.
+- **Avoid:** DOM, accessibility tree, UI automation API
+
 ## Calendar subscription
 A public iCalendar feed, an `https://` address in `calendar.subscriptions` (`webcal://` read as `https://`), fetched into a read-only file the calendar reads beside the local ones (ADR 0062). A feed is named by its place in the list, never by address.
 - **Invariant:** the address may hold a secret: it is never logged, put in `kanade status` or an error, or named in a file name. Only https is spoken, redirects included.

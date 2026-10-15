@@ -28,7 +28,7 @@ use crate::sources::{
     osd, power, recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
-use crate::{config, doctor};
+use crate::{config, doctor, ui};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -83,6 +83,7 @@ pub enum Call {
     Weather(weather::Request),
     Subscriptions(subscriptions::Request),
     Osd(osd::Asked),
+    Ui(ui::Request),
     Lock,
     LockStatus,
     IdleStatus,
@@ -469,6 +470,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         return dmenu(asked.prompt);
     }
 
+    // the shell answers at once whether the node is there, and this asks again until it is
+    if let Call::Ui(ui::Request::Wait { name, timeout, .. }) = &asked {
+        return waited(arguments, name, *timeout);
+    }
+
     // the shell runs elsewhere, so a path goes to it whole
     let asked = match asked {
         Call::Wallpaper(wallpaper::Request::Set(path, output)) => {
@@ -516,6 +522,29 @@ pub fn run(arguments: &[String]) -> ExitCode {
             complain(&format!("kanade: {text}"));
             ExitCode::from(3)
         }
+    }
+}
+
+// `kanade ui wait`: 0 once the node is there, 1 when `timeout` passes first or the shell refuses
+fn waited(arguments: &[String], name: &str, timeout: Duration) -> ExitCode {
+    let until = Instant::now() + timeout;
+
+    loop {
+        match call(arguments) {
+            Ok(Reply::Done(text)) if text == "present" => return ExitCode::SUCCESS,
+            Ok(Reply::Done(_)) => {}
+            Ok(Reply::Refused(text) | Reply::Unknown(text)) | Err(text) => {
+                complain(&format!("kanade: {text}"));
+                return ExitCode::FAILURE;
+            }
+        }
+
+        if Instant::now() >= until {
+            complain(&format!("kanade: timed out waiting for {name}"));
+            return ExitCode::FAILURE;
+        }
+
+        thread::sleep(Duration::from_millis(100));
     }
 }
 

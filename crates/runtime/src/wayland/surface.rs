@@ -30,6 +30,9 @@ pub struct OpenWindow {
     // the input region last sent, so only a real change is sent again
     pub input_region: Option<Vec<InputArea>>,
 
+    // what `kanade ui` calls the window: the layer's namespace or the normal window's name, as last drawn
+    pub name: &'static str,
+
     pub width: u32,
     pub height: u32,
 

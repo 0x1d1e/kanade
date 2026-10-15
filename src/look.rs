@@ -232,6 +232,21 @@ choice! {
 }
 
 choice! {
+    // what `kanade ui describe` says of the windows, `ui.describe` (ADR 0096)
+    UiDescribe {
+        // roles, names, states and places; what a user or the world wrote is `<redacted>`
+        Structure = "structure",
+
+        // that, with the labels and values as they are: notification, clipboard, calendar and
+        // lyric text included, a password never
+        Content = "content",
+
+        // no tree and no acts: `kanade ui` is refused
+        Off = "off",
+    }
+}
+
+choice! {
     // what the lock screen shows behind the clock, `lock.backdrop`
     LockBackdrop {
         // the wallpaper shown on the output, softly blurred, like macOS

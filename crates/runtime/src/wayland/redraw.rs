@@ -7,7 +7,7 @@ use crate::graphics::Renderer;
 use crate::timing::{self, Timing};
 use crate::ui_scale;
 
-use super::surface::OpenWindow;
+use super::surface::{OpenWindow, View};
 
 impl OpenWindow {
     // one frame: run the view, send its settings, draw it and show it
@@ -27,6 +27,11 @@ impl OpenWindow {
         let viewed = Instant::now();
 
         let name = content.name();
+
+        self.name = match &self.view {
+            View::Normal(shown, _) => shown,
+            _ => name,
+        };
 
         self.update_surface(&content);
 
