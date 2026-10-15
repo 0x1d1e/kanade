@@ -315,10 +315,10 @@ pub fn removed(list: &[Placed], at: usize) -> Option<Vec<Placed>> {
     let mut list = list.to_vec();
 
     list.remove(at);
-    Some(list)
+    fits(&list).then_some(list)
 }
 
-// `tile` at the end, as large as there is room for
+// `tile` at the end, at half width, else as an icon, whichever fits first
 pub fn added(list: &[Placed], tile: Tile) -> Option<Vec<Placed>> {
     if list.iter().any(|placed| placed.tile == tile) {
         return None;

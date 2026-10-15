@@ -346,21 +346,29 @@ pub fn press(focus: Focus, at: At) -> Focus {
             }
             None => focus,
         },
-        At::Done => {
-            save(&draft);
-            focus.out()
-        }
+        // a draft that did not save stays, so the layout is not left looking saved
+        At::Done => match save(&draft) {
+            Ok(()) => focus.out(),
+            Err(why) => {
+                eprintln!("kanade: controls: tiles not saved: {why}");
+                focus
+            }
+        },
         _ => focus,
     }
 }
 
-// the draft into the settings file, or the file's own default back when it is the default
-fn save(draft: &[Placed]) {
+/*
+ * the draft into the settings file, or no override when it is what the files below give, which are
+ * the layout without it
+ */
+fn save(draft: &[Placed]) -> Result<(), String> {
     if draft == config::get().tiles {
-        return;
+        return Ok(());
     }
 
-    let value = (draft != tiles::DEFAULT).then(|| {
+    let (below, _) = config::layers(false);
+    let value = (draft != below.tiles).then(|| {
         Value::Array(
             draft
                 .iter()
@@ -369,8 +377,12 @@ fn save(draft: &[Placed]) {
         )
     });
 
-    match settings::set(&["controls", "tiles"], value) {
-        Ok(()) => drop(reload::reload()),
-        Err(why) => eprintln!("kanade: controls: tiles not saved: {why}"),
+    settings::set(&["controls", "tiles"], value).map_err(|why| why.to_string())?;
+
+    match reload::reload() {
+        reload::Outcome::Valid(_) => Ok(()),
+        reload::Outcome::Invalid(_) => Err(String::from(
+            "saved, but the config did not reload, see `kanade status`",
+        )),
     }
 }
