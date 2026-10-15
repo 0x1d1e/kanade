@@ -676,6 +676,24 @@ pub fn niri_config_failed() {
     IslandService::write().post(activity(NIRI_CONFIG, job), Instant::now());
 }
 
+// the id of a picked color; a space is outside a client's alphabet, so no client has it
+const COLOR: &str = "picked color";
+
+/*
+ * a color picked on the screen (`capture::color`) and copied: its hex, shown as the done form of a
+ * Live Activity a while on the focused output. Nothing is live, so there is nothing to end
+ */
+pub fn color_picked(hex: &str) {
+    let job = Job {
+        title: hex.to_owned(),
+        detail: String::from("copied"),
+        progress: None,
+        ended: Some(Ended::Done),
+    };
+
+    IslandService::write().post(activity(COLOR, job), Instant::now());
+}
+
 /*
  * `kanade activity run`: starts the live Activity, runs `command` and ends it by how the command
  * ended, exiting as it did; 127 when it cannot start. The command runs without a shell to tell, as

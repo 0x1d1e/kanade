@@ -164,6 +164,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 - screenshots: niri-native IPC actions cover all three modes, so no external screenshot backend; `doctor` names a missing niri. External backend only for recording (#140);
 - recording: `wf-recorder` through niri's wlr-screencopy, so `privacy` sees it as a cast; `h264_vaapi` to `~/Videos/Screencasts`, no fallback encoder; start/stop/status; a Persistent Ongoing Activity with Stop while it records, then the same Transient Activity as a screenshot (done, #140, [ADR 0013](adr/0013-screen-recording-with-wf-recorder.md));
 - completion: a screenshot is shown by niri's own notification as a Banner, not in the Island; a recording's end emits a Transient Activity + copy/open path actions (done, #139);
+- color picker: niri's `PickColor` request (its own on-screen picker, which answers when the user clicks a pixel, or null when they leave it) through `kanade capture color` and a Color tile in the Capture Surface. The `#rrggbb` goes on the clipboard through `wl-copy`, plain text without ADR 0019's sensitive hint, and shows as a Transient Live Activity under a Kind-neutral id; leaving the picker shows and copies nothing, and the verb refuses with "no color picked" ([ADR 0086](adr/0086-color-picker-through-niri.md));
 - no OCR, reverse-image search, annotation editor, upload service.
 
 ### Caffeine

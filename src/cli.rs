@@ -64,6 +64,7 @@ pub enum Call {
     ClearNotifications,
     ClearClipboard,
     Screenshot(capture::Mode),
+    PickColor,
     Record(recording::Request),
     Cast(niri::Retarget),
     Caffeine(caffeine::Request),
@@ -497,7 +498,11 @@ pub fn run(arguments: &[String]) -> ExitCode {
         _ => arguments.to_vec(),
     };
 
-    let reply = call(&arguments);
+    // the user picks at their own pace
+    let reply = match asked {
+        Call::PickColor => call_waiting(&arguments),
+        _ => call(&arguments),
+    };
 
     match reply {
         Ok(Reply::Done(text)) if text.is_empty() => ExitCode::SUCCESS,

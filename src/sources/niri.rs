@@ -672,6 +672,9 @@ fn socket() -> io::Result<String> {
 // how long niri may take to answer `ask` or `act`
 const PATIENCE: Duration = Duration::from_secs(2);
 
+// how long the user may take to pick a color
+const PICK: Duration = Duration::from_secs(60);
+
 // how a request niri was sent came out
 #[derive(Debug)]
 enum Exchange {
@@ -697,6 +700,17 @@ pub enum Acted {
  */
 pub fn ask(request: &str) -> io::Result<Json> {
     match exchange(UnixStream::connect(socket()?)?, request, PATIENCE)? {
+        Exchange::Answered(answer) => Ok(answer),
+        Exchange::Refused(error) | Exchange::Unclear(error) => Err(error),
+    }
+}
+
+/*
+ * what niri answers `"PickColor"`: its picker is on screen until the user clicks a pixel or leaves
+ * it, and only then does it answer, so this waits up to `PICK`, never on the draw thread
+ */
+pub fn pick() -> io::Result<Json> {
+    match exchange(UnixStream::connect(socket()?)?, "\"PickColor\"", PICK)? {
         Exchange::Answered(answer) => Ok(answer),
         Exchange::Refused(error) | Exchange::Unclear(error) => Err(error),
     }
