@@ -374,7 +374,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "power",
         title: "Power & night light",
-        summary: "When the battery warns and what it does when critical; how warm the screen turns at night; what Focus turns on",
+        summary: "When the battery warns and what it does when critical; how warm the screen turns at night; what Focus turns on; which tiles Controls shows",
         group: "System",
         icon: Icon::Sunset,
         sections: &[

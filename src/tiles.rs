@@ -393,6 +393,14 @@ mod tests {
     }
 
     #[test]
+    fn a_size_button_walks_the_sizes_a_tile_has() {
+        assert_eq!(cycled("focus").as_deref(), Some("focus:full"));
+        assert_eq!(cycled("focus:icon").as_deref(), Some("focus"));
+        assert_eq!(cycled("wifi:full").as_deref(), Some("wifi"));
+        assert_eq!(cycled("nope"), None);
+    }
+
+    #[test]
     fn a_row_fills_its_width() {
         let row =
             pack(&parse(&list(&["night-light", "charge-limit", "focus:icon"])).unwrap()).remove(0);
