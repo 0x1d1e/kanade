@@ -54,4 +54,16 @@ kanade activity progress agent-1 40%            # how far along, if it knows
 kanade activity end agent-1                     # done; `fail agent-1 "why"` for a failure
 ```
 
+### Buttons
+
+An agent can ask on the Island and hear the answer. It sets up to 3 buttons and reads the press back; Kanade runs nothing for it.
+
+```sh
+kanade activity actions agent-1 allow=Allow deny=Deny   # buttons on Peek
+key=$(kanade activity wait agent-1 --timeout 60)        # prints allow or deny; exits 1 on timeout
+kanade activity actions agent-1                         # take them off
+```
+
+The agent does the work for the key it reads. A pressed button shows `...` until the agent's next `detail`, `progress`, `end`, `fail` or `actions`, or 10 s. They end with the Activity. The buttons show on Peek only and answer to the pointer; no key reaches them yet. Labels are cut to 24 characters and are never `Cancel`, `Now`, `Dismiss`, `Stop` or `Confirm`. `activity run ... --action cancel=<label>` ends the command with SIGTERM sent to the command itself, not its process group, so a `sh -c` wrapper dies and what it started may live on. The Claude Code hook (`activity hook claude`) sets none: Claude Code's own permission prompt stays where it is.
+
 An id is 1 to 64 letters, digits, `.`, `_` or `-`; give each session its own. Whatever the agent's hook feeds in must come from its documentation. Kanade reads only Claude Code's own events and does not guess at other formats.

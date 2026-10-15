@@ -209,3 +209,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] DDC: i2c bus numbers are kept from the first scan and go stale when a monitor is replugged.
 - [ ] Banners: the reply fields are named per pane (`banner-reply-0..5`) and the runtime keeps text under that name, so two outputs showing a reply-capable Banner at once would share a draft. Banners show on the focused output only, so it needs niri's focus unknown (`focused_output` none).
 - [ ] E2E not reached: IME against a live fcitx5/ibus (none installed), the lock-screen layout label (needs two layouts), hold-to-confirm for Session, portal reduced-motion, `focus.auto` with a real cast. DDC/CI works on a Dell P1917S when the bus is given, but an NVIDIA connector has no `ddc` link, so no monitor is found: a fallback matching the connector's EDID to the `/dev/i2c-*` buses is the fix.
+
+## Live actions (ADR 0110, review, low-level, unfixed)
+
+- [ ] `activity wait` and `run --action cancel` poll every 250 ms: each ask is a connect and an IPC on the draw thread, about 4 shell wakeups a second while anyone waits (for `run`, the command's lifetime). A subscription or a longer-held call would cost less.

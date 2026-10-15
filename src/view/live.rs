@@ -6,11 +6,12 @@ use kanade_runtime::{
 };
 
 use crate::icon::Icon;
-use crate::island::activity::{Ended, Job};
+use crate::island::activity::{Action, Ended, Job};
 use crate::island::presentation::Presentation;
+use crate::sources::live;
 use crate::theme;
 
-use super::forms::sized;
+use super::forms::{Pills, capped_pill, pill_width, sized};
 use super::satellites::label;
 use super::shape::{shape, upright};
 use super::standing::stacked;
@@ -55,11 +56,22 @@ fn line(job: &Job) -> String {
     }
 }
 
+// the least the title keeps when pills share its Peek
+const TITLE: f32 = 72.0;
+
 /*
  * the mark, the title, then how far along; Peek puts the detail under the title and a bar under
- * that. The amount has a fixed width, so a percent going by redraws it in place
+ * that. The amount has a fixed width, so a percent going by redraws it in place. A Peek with
+ * `actions` (ADR 0110) trades the amount for a pill each, as many as leave the title `TITLE`; the
+ * first is cut with an ellipsis to leave it too, so the title never has no width; a press is queued
+ * for the program that posted the Activity, nothing more
  */
-pub(super) fn live(presentation: Presentation, job: &Job) -> Option<Rectangle> {
+pub(super) fn live(
+    presentation: Presentation,
+    job: &Job,
+    actions: &[Action],
+    id: &str,
+) -> Option<Rectangle> {
     let (icon, ink) = mark(job);
     let percent = percent(job);
 
@@ -77,8 +89,38 @@ pub(super) fn live(presentation: Presentation, job: &Job) -> Option<Rectangle> {
     };
 
     let gap = 11.0;
+    let room = shape(presentation).width - 2.0 * inset - side - gap;
+
+    // the most a pill takes, so the title keeps `TITLE` beside even the first
+    let cap = (room - gap - TITLE).max(0.0);
+
+    let (pills, percent) = if presentation == Presentation::Peek && !actions.is_empty() {
+        let mut taken = 0.0;
+        let shown = actions
+            .iter()
+            .take_while(|action| {
+                let next = taken + pill_width(action).min(cap) + gap;
+                let fits = room - next >= TITLE;
+
+                if fits {
+                    taken = next;
+                }
+
+                fits
+            })
+            .count();
+
+        (&actions[..shown], None)
+    } else {
+        (&actions[..0], percent)
+    };
+
     let amount = if percent.is_some() { number + gap } else { 0.0 };
-    let width = shape(presentation).width - 2.0 * inset - side - gap - amount;
+    let beside: f32 = pills
+        .iter()
+        .map(|action| pill_width(action).min(cap) + gap)
+        .sum();
+    let width = room - amount - beside;
 
     let mut words = children![
         Text::new(&job.title)
@@ -111,6 +153,20 @@ pub(super) fn live(presentation: Presentation, job: &Job) -> Option<Rectangle> {
     }
 
     let mut row = children![icon.on(side, ink), Column::new(words).width(width).gap(4.0)];
+
+    let subject = format!("{id}#{}", job.serial);
+    let held = Pills {
+        actions: pills,
+        subject: &subject,
+        act: live::act,
+    };
+
+    // always the neutral pill, whatever the program says: it cannot pass for a control of the shell
+    row.extend(
+        pills
+            .iter()
+            .map(|action| Box::new(capped_pill(action, &held, cap)) as Box<dyn Widget>),
+    );
 
     if let Some(percent) = percent {
         row.push(Box::new(

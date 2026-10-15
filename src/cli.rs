@@ -453,8 +453,24 @@ pub fn run(arguments: &[String]) -> ExitCode {
     };
 
     // runs here, telling the shell as it goes
-    if let Call::Live(live::Request::Run { id, title, command }) = &asked {
-        return live::run(id, title, command);
+    if let Call::Live(live::Request::Run {
+        id,
+        title,
+        actions,
+        command,
+    }) = &asked
+    {
+        return live::run(id, title, actions, command);
+    }
+
+    // a press is read once, and none is no error to say: exit 1 and nothing
+    if let Call::Live(live::Request::Pressed { id }) = &asked {
+        return live::pressed(id);
+    }
+
+    // the shell never holds a call, so this asks again until there is a press
+    if let Call::Live(live::Request::Wait { id, timeout }) = &asked {
+        return live::wait(id, *timeout);
     }
 
     // the agent's event comes on stdin, never the arguments

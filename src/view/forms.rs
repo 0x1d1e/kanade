@@ -246,7 +246,13 @@ pub(super) fn small_form(
 
             self::timer(presentation, countdown, round.as_ref(), actions, now)
         }
-        (presentation, Some(Detail::Live(job))) => super::live::live(presentation, job),
+        (presentation, Some(Detail::Live(job))) => {
+            let activity = content.activity.as_ref();
+            let actions = activity.map_or(&[][..], Activity::actions);
+            let id = activity.map_or("", |activity| activity.id().key());
+
+            super::live::live(presentation, job, actions, id)
+        }
         (presentation, Some(Detail::Recording(clip))) => {
             let actions = content.activity.as_ref().map_or(&[][..], Activity::actions);
 
@@ -554,33 +560,52 @@ fn lead_tile((icon, ink): Lead, side: f32, radius: f32) -> Box<dyn Widget> {
 
 // an action, run on a left click before the click reaches the island
 pub(super) fn action_pill(action: &Action, pills: &Pills) -> Rectangle {
-    pill(action, pills, false)
+    pill(action, pills, false, f32::INFINITY)
+}
+
+// as `action_pill`, at most `most` wide, its label cut with an ellipsis to fit
+pub(super) fn capped_pill(action: &Action, pills: &Pills, most: f32) -> Rectangle {
+    pill(action, pills, false, most)
 }
 
 // the one action among several the form is for, filled in the island's ink
 pub(super) fn main_pill(action: &Action, pills: &Pills) -> Rectangle {
-    pill(action, pills, true)
+    pill(action, pills, true, f32::INFINITY)
 }
 
-fn pill(action: &Action, pills: &Pills, main: bool) -> Rectangle {
+// a pill's label, in the ink it is drawn in
+fn pill_label(action: &Action, ink: Color) -> Text {
+    Text::new(&action.label)
+        .size(theme::text::LABEL_SMALL)
+        .color(ink)
+        .weight(theme::text::SEMIBOLD)
+}
+
+// how wide an action's pill is
+pub(super) fn pill_width(action: &Action) -> f32 {
+    match pill_label(action, theme::island().on_surface).width() {
+        Size::Fixed(natural) => (natural + 20.0).ceil(),
+        _ => theme::space::TARGET,
+    }
+}
+
+fn pill(action: &Action, pills: &Pills, main: bool, most: f32) -> Rectangle {
     let island = theme::island();
     let (fill, ink) = if main {
         (island.primary, island.on_primary)
     } else {
         (island.surface_container_high, island.on_surface)
     };
-    let label = Text::new(&action.label)
-        .size(theme::text::LABEL_SMALL)
-        .color(ink)
-        .weight(theme::text::SEMIBOLD);
-    let width = match label.width() {
-        Size::Fixed(natural) => natural + 20.0,
-        _ => theme::space::TARGET,
+    let width = pill_width(action);
+    let (label, width) = if width > most {
+        (pill_label(action, ink).elide(), most)
+    } else {
+        (pill_label(action, ink), width)
     };
     let (key, subject, act) = (action.key.clone(), pills.subject.to_owned(), pills.act);
 
     Rectangle::new()
-        .width(width.ceil())
+        .width(width)
         .height(theme::space::TARGET)
         .radius(theme::space::TARGET / 2.0)
         .fill(fill)

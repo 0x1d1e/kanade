@@ -573,6 +573,10 @@ pub struct Job {
 
     // none while it runs
     pub ended: Option<Ended>,
+
+    // which start of its id this is, 0 for one the shell posts itself; a pill's press names it, so a
+    // press of an earlier start's is ignored (ADR 0110)
+    pub serial: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
