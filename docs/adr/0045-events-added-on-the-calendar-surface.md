@@ -1,6 +1,6 @@
 # 45. Events added on the Calendar Surface, and CalDAV removed
 
-Status: accepted. Amends ADR 0015 (Kanade never writes a calendar) and removes ADR 0044 (CalDAV accounts).
+Status: accepted. Amends ADR 0015 (Kanade never writes a calendar) and removes ADR 0044 (CalDAV accounts). Amended by ADR 0113: a change keeps what the file holds, and refuses one changed elsewhere; Edit and Remove on the row.
 
 ## Context
 
@@ -22,6 +22,6 @@ The Calendar Surface could only show events. Someone with no calendar app, no vd
 
 ## Consequences
 
-- Editing writes the file whole, so anything added to it by hand (a place, a reminder) is lost on the next change from the Surface. A removed event's reminder already shown stays until dismissed (TODO).
-- Changing and removing are by key only; the rows take no click for them.
+- Changed by ADR 0113: editing wrote the file whole, so anything added to it by hand (a place, a reminder) was lost, and changing and removing were by key only. Now a change keeps it, and the row has Edit and Remove.
+- A removed event's reminder already shown stays until dismissed (TODO).
 - No recurrence, location or reminder can be typed; `calendar.reminder` still reminds of a timed event.

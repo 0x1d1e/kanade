@@ -160,7 +160,9 @@ Not worth changing, by this review:
 - The idle dim stays dark while a lock that failed is asked again; a click to wake reaches the window under the dim.
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 
-- Calendar Surface: events added there are changed (`e`) and removed (`d` twice) by key only, with no click and no undo (ADR 0045); recurrence, place and a reminder cannot be typed.
+- Calendar Surface: no undo for a removed event, and recurrence, place and a reminder cannot be typed (a file that holds them keeps them, ADR 0113); a change is read, checked and written in separate steps, so another writer between them wins.
+- Calendar Surface: after "Changed elsewhere" the open field keeps its old baseline until Escape; the pointer hold on an event's Remove shows the key wording "Keep holding d to remove".
+- Text fields: Ctrl+A does not select all (pre-existing, not from ADR 0113). An open Calendar edit field survives the Surface collapsing and reopening (pre-existing). A `kanade ui press` is followed by the Surface collapsing after about 0.5 s (pre-existing).
 
 ## Design audit (not done)
 

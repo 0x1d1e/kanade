@@ -150,6 +150,12 @@ The windows' interactive controls as named nodes (`id`, `parent`, `role`, `label
 - Not an accessibility tree: shaped for an AccessKit or AT-SPI adapter, which does not exist.
 - **Avoid:** DOM, accessibility tree, UI automation API
 
+## Owned event
+A calendar event Kanade wrote from the Calendar Surface: a file `<name>.ics` in `$XDG_DATA_HOME/kanade/events` whose one event has UID `<name>@kanade` (ADR 0045). Only an owned event is changed or removed from the Surface, and every other event is read-only there. A change rewrites only its SUMMARY, DTSTART and DTEND (ADR 0113); its times are floating.
+- **Invariant:** a name or UID that is not of this form never names a path, so a copy of a file elsewhere, a vdir's file or Google's mirror is never owned.
+- **Invariant:** a change or removal is written only if the file still holds the title, start and end the Surface showed; otherwise it says "Changed elsewhere" and writes nothing. A file Kanade cannot change without losing something is refused, not rewritten: another UID's event in it, a repeat, a zoned time, or an event the typed form cannot say (several days, an end on a later day, a timed event with no end, seconds, an all-day title that starts like a time). Removal also needs every event in the file to be this one's.
+- **Avoid:** local event, own calendar
+
 ## Calendar subscription
 A public iCalendar feed, an `https://` address in `calendar.subscriptions` (`webcal://` read as `https://`), fetched into a read-only file the calendar reads beside the local ones (ADR 0062). A feed is named by its place in the list, never by address.
 - **Invariant:** the address may hold a secret: it is never logged, put in `kanade status` or an error, or named in a file name. Only https is spoken, redirects included.

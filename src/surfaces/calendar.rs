@@ -3,7 +3,9 @@
 //! or a keybind, so it holds the keyboard: the arrow keys move the chosen day, by a day or a week,
 //! `n` and `p` turn to the next and the previous month, Home or `t` goes back to today, and Tab
 //! moves the ring into the agenda, where Up and Down walk its events, and back, and `a` types a new
-//! event for the chosen day into a file of its own (ADR 0045). Weeks start on Monday (ADR 0015). It says when there are no calendars, when the
+//! event for the chosen day into a file of its own (ADR 0045); `e` or an event's Edit changes one
+//! added here, in place and keeping what its file holds, and holding `d` or its Remove removes it
+//! (ADR 0113). Weeks start on Monday (ADR 0015). It says when there are no calendars, when the
 //! day has no events, and while the month's events are expanded, which is off the draw thread.
 
 use std::mem;
@@ -142,14 +144,24 @@ pub struct Adding {
     visit: u64,
     text: Option<String>,
 
-    // the file of the event `text` replaces, none for a new one
-    replacing: Option<String>,
+    // the event `text` replaces, none for a new one
+    replacing: Option<Replacing>,
 
     // what the last Enter could not save
     problem: Option<String>,
 
     // the save that is writing the file, which keeps the text as it is until it says how it went
     saving: Option<u64>,
+}
+
+/*
+ * the event being changed: its file, and the event as the Surface showed it, which the file must
+ * still hold when the change is written (ADR 0113)
+ */
+#[derive(Debug, Clone, PartialEq)]
+struct Replacing {
+    stem: String,
+    was: Occurrence,
 }
 
 impl Service for Adding {
@@ -617,7 +629,13 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         ))
     } else {
         Box::new(agenda(
-            monitor, day, today, &month, pending, &browse, account,
+            monitor,
+            day,
+            today,
+            &month,
+            pending,
+            &browse,
+            (account, adding.problem.as_deref()),
         ))
     };
 
@@ -799,7 +817,7 @@ fn agenda(
     month: &Month,
     pending: Option<Pending>,
     browse: &Browse,
-    account: Option<&str>,
+    (account, problem): (Option<&str>, Option<&str>),
 ) -> Column {
     let events = month.on(day);
     let partial = month.events.partial;
@@ -867,7 +885,7 @@ fn agenda(
                                 let ring = browse.agenda && at == browse.selected;
                                 let event = &month.events.occurrences[event];
 
-                                Box::new(row(event, day, ring)) as Box<dyn Widget>
+                                Box::new(row(monitor, event, day, ring)) as Box<dyn Widget>
                             })
                             .collect(),
                     )
@@ -914,6 +932,11 @@ fn agenda(
         Some(problem) => format!("{count} \u{b7} {problem}"),
         None => count,
     };
+    // what the last removal could not do
+    let (count, ink) = match problem {
+        Some(problem) => (problem.to_owned(), theme::signals().warning),
+        None => (count, theme::island().on_surface_variant),
+    };
 
     Column::new(vec![
         Box::new(header) as Box<dyn Widget>,
@@ -921,7 +944,7 @@ fn agenda(
         Box::new(
             Text::new(count)
                 .size(theme::text::LABEL_SMALL)
-                .color(theme::island().on_surface_variant)
+                .color(ink)
                 .weight(theme::text::MEDIUM)
                 .elide(),
         ),
@@ -997,7 +1020,10 @@ fn entry(
         Some(problem) => hint(problem, theme::signals().warning),
         None => hint("Enter saves, Esc cancels", quiet),
     });
-    lines.push(hint("14:30 or 9:00-10:30 first; else all day", quiet));
+    lines.push(hint(
+        "2026-10-15 moves it; 14:30 or 9:00-10:30; else all day",
+        quiet,
+    ));
 
     Column::new(vec![
         Box::new(header) as Box<dyn Widget>,
@@ -1008,8 +1034,35 @@ fn entry(
     .gap(GAP)
 }
 
-// what it is and when on `day`, and where
-fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
+// the room an owned event's Edit and Remove pills take at the end of its row
+const CHIP_WIDTH: f32 = 52.0;
+const CHIP_HEIGHT: f32 = 21.0;
+const CHIP_GAP: f32 = 4.0;
+
+// a pill of an owned event's row, named for `kanade ui`
+fn chip(label: &str, node: &'static str, ink: kanade_runtime::Color) -> Rectangle {
+    Rectangle::new()
+        .width(CHIP_WIDTH)
+        .height(CHIP_HEIGHT)
+        .radius(CHIP_HEIGHT / 2.0)
+        .border(1.0, ink)
+        .clip()
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, node))
+        .child(
+            Text::new(label)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
+}
+
+/*
+ * what it is and when on `day`, and where. An event added here also has Edit, as `e`, and Remove,
+ * which is held like `d` (ADR 0085): pressed by name or tapped it removes nothing
+ */
+fn row(monitor: &str, event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
     let title = if event.title.is_empty() {
         "Untitled event"
     } else {
@@ -1021,8 +1074,15 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
         None => when(event, day),
     };
 
+    let owned = event.added.is_some();
+    let reach = if owned {
+        AGENDA - CHIP_WIDTH - ROW_INSET
+    } else {
+        AGENDA
+    };
+
     let text = Rectangle::new()
-        .width(AGENDA)
+        .width(reach)
         .height(ROW)
         .padding(Padding {
             top: 0.0,
@@ -1048,6 +1108,39 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
             .gap(2.0),
         );
 
+    let content: Box<dyn Widget> = match &event.added {
+        Some(stem) => {
+            let (monitor, was, stem) = (monitor.to_owned(), event.clone(), stem.clone());
+            let quiet = theme::island().outline;
+
+            let edit = chip("Edit", "edit", quiet).on_click(super::on_left({
+                let (monitor, was) = (monitor.clone(), was.clone());
+
+                move || edit(&monitor, &was)
+            }));
+            let remove = confirm::target(
+                chip("Remove", "remove", theme::signals().critical),
+                ("calendar remove", stem.clone()),
+                {
+                    let visit = IslandService::read().visit();
+
+                    Arc::new(move || remove(visit, &stem, &was))
+                },
+            );
+
+            Box::new(
+                Row::new(children![
+                    text,
+                    Column::new(children![edit, remove]).gap(CHIP_GAP),
+                ])
+                .width(AGENDA)
+                .height(ROW)
+                .align(Center),
+            )
+        }
+        None => Box::new(text),
+    };
+
     // the fill of a removal being held grows behind the text
     Rectangle::new()
         .width(AGENDA)
@@ -1060,7 +1153,7 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
             AGENDA,
             ROW,
             theme::signals().critical,
-            text,
+            content,
         ))
         .border_if(ring)
         .semantics(|| {
@@ -1152,6 +1245,14 @@ pub fn key(monitor: &str, key: Key) -> bool {
     if adding.text.is_some() {
         return typing(monitor, adding, key);
     }
+
+    // what a removal could not do is said until the next key
+    if adding.problem.is_some() {
+        store(Adding {
+            problem: None,
+            ..adding
+        });
+    }
     if key == Key::Character('a') {
         start(monitor);
         return true;
@@ -1237,7 +1338,7 @@ fn save(adding: Adding) -> (Adding, Option<Write>) {
 struct Write {
     visit: u64,
     id: u64,
-    replacing: Option<String>,
+    replacing: Option<Replacing>,
     event: add::Event,
 }
 
@@ -1252,15 +1353,11 @@ impl Write {
 
         let write = move || {
             let written = match &self.replacing {
-                Some(stem) => add::replace(stem, &self.event),
+                Some(Replacing { stem, was }) => add::replace(stem, &self.event, was),
                 None => add::save(&self.event),
             };
 
-            settled(
-                visit,
-                id,
-                written.map_err(|error| format!("Could not save: {error}")),
-            );
+            settled(visit, id, written.map_err(|error| add::say(&error, "save")));
         };
 
         if let Err(error) = thread::Builder::new()
@@ -1294,8 +1391,8 @@ fn start(monitor: &str) {
     change(monitor, String::new(), None);
 }
 
-// `text` to type on the visit open now, in place of the event in file `replacing`, if any
-fn change(monitor: &str, text: String, replacing: Option<String>) {
+// `text` to type on the visit open now, in place of the event `replacing`, if any
+fn change(monitor: &str, text: String, replacing: Option<Replacing>) {
     store(Adding {
         visit: IslandService::read().visit(),
         text: Some(text),
@@ -1321,23 +1418,47 @@ fn added(monitor: &str, key: Key) -> bool {
     let Some(event) = ringed(&browse) else {
         return false;
     };
-    let Some(stem) = event.added.clone() else {
+    if event.added.is_none() {
         return false;
-    };
+    }
 
     match key {
-        Key::Character('e') => change(monitor, add::text(&event), Some(stem)),
-        Key::Character('d') => {
-            confirm::press(
-                ("calendar remove", stem.clone()),
-                Arc::new(move || remove(&stem)),
-            );
-            IslandService::write().attend(monitor, Instant::now());
-        }
+        Key::Character('e') => edit(monitor, &event),
+        Key::Character('d') => hold(monitor, event),
         _ => return false,
     }
 
     true
+}
+
+// opens the field with `event` as typed, to change it; as `e` does, for an event added here
+fn edit(monitor: &str, event: &Occurrence) {
+    let Some(stem) = event.added.clone() else {
+        return;
+    };
+
+    change(
+        monitor,
+        add::text(event),
+        Some(Replacing {
+            stem,
+            was: event.clone(),
+        }),
+    );
+}
+
+// starts holding the removal of `event`, which a release before `HOLD` drops (ADR 0085)
+fn hold(monitor: &str, event: Occurrence) {
+    let Some(stem) = event.added.clone() else {
+        return;
+    };
+
+    // once kept, the file is removed if it is still the event shown, else the agenda says so
+    let visit = IslandService::read().visit();
+    let what = ("calendar remove", stem.clone());
+
+    confirm::press(what, Arc::new(move || remove(visit, &stem, &event)));
+    IslandService::write().attend(monitor, Instant::now());
 }
 
 // what holding `d` on an event is held as, so the fill shows on its own row
@@ -1348,10 +1469,25 @@ fn removal(event: &Occurrence) -> (&'static str, &str) {
     )
 }
 
-// the file of an event removed, on the thread that held `d`
-fn remove(stem: &str) {
-    if let Err(error) = add::remove(stem) {
-        eprintln!("kanade: calendar: could not remove the event ({error})");
+// the file of an event removed, on the thread that held `d` or the pointer
+fn remove(visit: u64, stem: &str, event: &Occurrence) {
+    let Err(error) = add::remove(stem, event) else {
+        return;
+    };
+
+    // what failed, never the event
+    eprintln!(
+        "kanade: calendar: could not remove an event ({})",
+        error.kind()
+    );
+
+    let mut adding = Adding::write();
+
+    if adding.visit != visit {
+        *adding = Adding::begin(visit);
+    }
+    if adding.text.is_none() {
+        adding.problem = Some(add::say(&error, "remove"));
     }
 }
 
