@@ -1315,7 +1315,7 @@ pub const ALL: &[Module] = &[
         warns: None,
         needs: &[
             Need {
-                on: Provider::Pam(lock::PAM),
+                on: Provider::Pam,
                 without: "no password unlocks, so `kanade lock` refuses",
             },
             Need {
@@ -1337,7 +1337,7 @@ pub const ALL: &[Module] = &[
         ],
         settings: config::LOCK,
         hooks: Hooks {
-            status: Some(|| vec![sleep::status()]),
+            status: Some(lock::lines),
             ..Hooks::NONE
         },
         verbs: &[Verb {

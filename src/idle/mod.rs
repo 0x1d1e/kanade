@@ -112,6 +112,9 @@ fn follow(looks: &mpsc::Receiver<()>) {
             if seen.is_some() {
                 let actions = schedule.resumed();
                 act(&mut schedule, actions, now);
+
+                // input, which lit the monitors if they were off
+                lock::display(false);
             }
 
             if let Some(at) = idled {
@@ -160,7 +163,10 @@ fn act(schedule: &mut Schedule, actions: Vec<Action>, now: Instant) {
             }
             Action::Undim => overlay::undim(),
             Action::Lock => {
-                if let Err(why) = locked() {
+                // a lock asked again after one failed has no grace (ADR 0066)
+                let retry = SEEN.locked().failed.is_some();
+
+                if let Err(why) = locked(retry) {
                     eprintln!("kanade: idle did not lock, asking again: {why}");
                     SEEN.locked().failed = Some(why);
                     schedule.lock_failed(Instant::now());
@@ -169,11 +175,12 @@ fn act(schedule: &mut Schedule, actions: Vec<Action>, now: Instant) {
                     schedule.lock_held();
                 }
             }
-            Action::ScreenOff => {
-                if let Err(error) = niri::act(POWER_OFF_MONITORS) {
-                    eprintln!("kanade: idle did not power the monitors off: {error}");
-                }
-            }
+            Action::ScreenOff => match niri::act(POWER_OFF_MONITORS) {
+                // the first key after this is what wakes them, which the lock does not type
+                Ok(niri::Acted::Done) => lock::display(true),
+                Ok(niri::Acted::Unknown(_)) => {}
+                Err(error) => eprintln!("kanade: idle did not power the monitors off: {error}"),
+            },
             Action::Suspend => {
                 if !modules::on("session") {
                     eprintln!("kanade: idle did not suspend: module session is off");
@@ -185,8 +192,11 @@ fn act(schedule: &mut Schedule, actions: Vec<Action>, now: Instant) {
     }
 }
 
-// the lock as `kanade lock` asks it, held once niri says so; one already held is kept
-fn locked() -> Result<(), String> {
+/*
+ * the lock as `kanade lock` asks it, held once niri says so; one already held is kept. With
+ * `lock.grace` it opens a grace when none held, unless this asks again after a failure (`retry`)
+ */
+fn locked(retry: bool) -> Result<(), String> {
     if !modules::on("lock") {
         return Err(String::from("module lock is off"));
     }
@@ -195,7 +205,7 @@ fn locked() -> Result<(), String> {
         return Ok(());
     }
 
-    lock::hold(PATIENCE)
+    lock::hold_idle(PATIENCE, lock::grace().filter(|_| !retry))
 }
 
 fn seconds(after: Option<Duration>) -> String {

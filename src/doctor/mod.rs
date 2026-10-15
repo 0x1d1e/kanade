@@ -486,7 +486,10 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                     bus::owner(Bus::session(), name).map(bus::process),
                     running,
                 ),
-                Provider::Pam(service) => pam_found(service, lock::pam()),
+                Provider::Pam => {
+                    let service = lock::service_of(config);
+                    pam_found(service, lock::pam_file(service))
+                }
                 Provider::Niri => niri_found(niri_version()),
                 Provider::Paste => match clipboard::paste_version() {
                     Ok(version) => Found::Present(version),
@@ -526,6 +529,21 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
                 "{daemon} runs while module idle is on, so both act on idle; stop {daemon} or set `[modules] idle = false`"
             )));
         }
+    }
+
+    // a grace is a window with no password, so it is said where the lock is checked (ADR 0066)
+    if resolved.on("lock")
+        && let Some(grace) = lock::grace_of(config)
+    {
+        checks.push(Check::warn(format!(
+            "lock.grace is {} s: any input unlocks without a password for that long after a lock the idle Module asked for{}",
+            grace.as_secs(),
+            if resolved.on("idle") {
+                ""
+            } else {
+                " (module idle is off, so it never applies)"
+            }
+        )));
     }
 
     checks
@@ -608,6 +626,9 @@ fn program_found(program: &str, path: Option<impl AsRef<OsStr>>) -> Found {
 fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
     match file {
         Some(file) => Found::Present(format!("PAM service {service} at {}", file.display())),
+        None if !lock::valid(service) => Found::Absent(format!(
+            "lock.pam_service {service:?} is no PAM service file name (letters, digits, dots, dashes and underscores)"
+        )),
         None => Found::Absent(format!("no PAM service {service}")),
     }
 }

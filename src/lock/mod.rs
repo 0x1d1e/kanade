@@ -25,6 +25,8 @@ use kanade_lock::{Locker, News};
 use kanade_runtime::{MutexExt, service::Service};
 
 use crate::cli::Reply;
+use crate::clock::Note;
+use crate::config::{self, Config};
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::pane;
@@ -34,8 +36,8 @@ mod password;
 mod scene;
 mod who;
 
-pub use self::password::{PAM, pam};
-use self::password::{PAM_DIRS, submit};
+use self::password::{PAM, PAM_DIRS, submit};
+pub use self::password::{pam, pam_file, service, service_of, valid};
 use self::scene::decode;
 pub use self::scene::scene;
 use self::who::look_up;
@@ -99,6 +101,13 @@ struct Requests {
 
     // the sleep logind is being asked whether it ended (`awake`), one at a time
     asking: Option<u64>,
+
+    // what PAM last said during the check under way, or the error it ended on (ADR 0065)
+    note: Option<Note>,
+
+    // until when input unlocks without a password (ADR 0066): set only for the lock the idle
+    // Module asked for when none held, and gone with any later request, sleep, unlock or the end
+    grace: Option<Instant>,
 }
 
 impl Requests {
@@ -120,6 +129,8 @@ impl Requests {
             failed: false,
             dropped: false,
             asking: None,
+            note: None,
+            grace: None,
         }
     }
 
@@ -129,6 +140,9 @@ impl Requests {
             self.sleeping = true;
             self.sleeps += 1;
         }
+
+        self.note = None;
+        self.grace = None;
 
         if std::mem::take(&mut self.checking) {
             self.refused = true;
@@ -183,7 +197,18 @@ impl Requests {
         self.pam = true;
         self.failed = false;
         self.dropped = false;
+        self.note = None;
         Some(self.check)
+    }
+
+    // what PAM said during the check `check`; whether it is shown, which it is not once dropped
+    fn noted(&mut self, check: u64, note: Note) -> bool {
+        if !self.checking || self.check != check {
+            return false;
+        }
+
+        self.note = Some(note);
+        true
     }
 
     // whether the check `check` ended stands, so an accepted one unlocks; not once dropped
@@ -196,12 +221,65 @@ impl Requests {
         self.checking = false;
         self.failed = !accepted;
 
+        // a prompt PAM showed is over; an error it ended on stays to be read
+        if accepted || matches!(self.note, Some(Note::Info(_))) {
+            self.note = None;
+        }
+
         if accepted {
             self.unlocking = true;
             self.confirmed = 0;
+            self.grace = None;
         } else {
             self.wrong += 1;
         }
+        true
+    }
+
+    /*
+     * whether a lock now may be asked for with a grace: none is held, on its way, ended but for
+     * its unlock, or in the way of a sleep
+     */
+    fn graceable(&self) -> bool {
+        !self.locked && !self.sleeping && self.holding() == Holding::Unlocked
+    }
+
+    // input unlocks the lock of request `asked`, once niri holds it, until `until`
+    fn grant(&mut self, asked: u64, until: Instant) {
+        if self.newest == asked && self.confirmed == asked && self.holding() == Holding::Held {
+            self.grace = Some(until);
+        }
+    }
+
+    /*
+     * input at `now` on the lock screen: whether it unlocks, as an accepted password does. Decided
+     * here, at `now` as the caller reads it, so input handled late finds the grace gone. Not
+     * while a password is being checked, sleep shuts the gate, or an unlock is under way
+     */
+    fn touch(&mut self, now: Instant) -> bool {
+        let Some(until) = self.grace else {
+            return false;
+        };
+
+        if now >= until {
+            self.grace = None;
+            return false;
+        }
+
+        if !self.locked
+            || self.sleeping
+            || self.checking
+            || self.pam
+            || self.unlocking
+            || self.holding() != Holding::Held
+            || self.confirmed != self.newest
+        {
+            return false;
+        }
+
+        self.grace = None;
+        self.unlocking = true;
+        self.confirmed = 0;
         true
     }
 
@@ -218,6 +296,8 @@ impl Requests {
         self.denied = false;
         self.dropped |= std::mem::take(&mut self.checking);
         self.confirmed = 0;
+        self.note = None;
+        self.grace = None;
         self.newest
     }
 
@@ -240,6 +320,7 @@ impl Requests {
             News::Unlocked(request) => {
                 self.locked = false;
                 self.confirmed = 0;
+                self.grace = None;
 
                 // else a request came after the unlock, and its lock is on its way
                 if request == self.newest {
@@ -251,11 +332,13 @@ impl Requests {
             News::Finished(request) if request != self.newest => {
                 self.locked = false;
                 self.confirmed = 0;
+                self.grace = None;
             }
             News::Finished(_) | News::Gone => {
                 let was = std::mem::take(&mut self.locked);
                 self.unlocking = false;
                 self.confirmed = 0;
+                self.grace = None;
 
                 if was {
                     self.ended = true;
@@ -333,6 +416,7 @@ impl Requests {
 
         Said {
             status,
+            note: self.note.clone(),
             wrong: self.wrong,
             // until niri unlocks: the surface shows the time while it waits for that
             locked: self.locked || matches!(self.holding(), Holding::Held | Holding::Checking),
@@ -445,7 +529,9 @@ pub fn relock() {
     // known before the first lock, which may come just before sleep, so it shows them from its first frame
     look_up();
 
-    let started = LOCKER.get_or_init(|| Locker::start(decode, Box::new(submit), Box::new(heard)));
+    let started = LOCKER.get_or_init(|| {
+        Locker::start(decode, Box::new(submit), Box::new(heard), Box::new(touched))
+    });
     if let Err(error) = started {
         eprintln!("kanade: no lock screen: {error}");
     }
@@ -459,7 +545,10 @@ pub fn relock() {
     if locked(session) == Some(true) {
         eprintln!("kanade: the session is locked, locking it again");
         if pam().is_none() {
-            eprintln!("kanade: no PAM service {PAM}, so no password will unlock");
+            eprintln!(
+                "kanade: no PAM service {}, so no password will unlock",
+                service()
+            );
         }
         if let Ok(locker) = started {
             request_lock(&mut requests(), locker);
@@ -504,7 +593,8 @@ pub fn request(later: Later) {
 pub fn start() -> Result<u64, String> {
     if pam().is_none() {
         return Err(format!(
-            "no PAM service {PAM} in {}, so no password would unlock",
+            "no PAM service {} in {}, so no password would unlock",
+            service(),
             PAM_DIRS.join(", ")
         ));
     }
@@ -629,14 +719,91 @@ pub fn holds() -> bool {
 }
 
 /*
+ * input on the lock screen, on its thread: unlocks as an accepted password does if a grace is
+ * open (ADR 0066), else nothing. The same steps as `checked`: the unlock is asked under the
+ * requests, so no request or sleep falls between the decision and the ask
+ */
+fn touched() {
+    let mut requests = requests();
+
+    if !requests.touch(Instant::now()) {
+        return;
+    }
+
+    if let Ok(locker) = locker() {
+        locker.unlock();
+    }
+    say(&requests);
+    drop(requests);
+    HEARD.notify_all();
+}
+
+/*
+ * the idle Module powered the monitors off (`dark`), or input lit them: the first key after they
+ * went off is what woke them, so the lock screen does not type it (ADR 0065). Only while a lock
+ * holds; the lock cannot know of monitors powered off any other way
+ */
+pub fn display(dark: bool) {
+    if (!dark || holds())
+        && let Ok(locker) = locker()
+    {
+        locker.dark(dark);
+    }
+}
+
+// `lock.grace` in `config`, none while it is 0
+pub fn grace_of(config: &Config) -> Option<Duration> {
+    let seconds = config.lock_grace.min(config::LOCK_GRACE.most);
+
+    (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)))
+}
+
+// `lock.grace` in effect
+pub fn grace() -> Option<Duration> {
+    grace_of(&config::get())
+}
+
+// the lines of `kanade status`: the sleep gate, and what the lock options change from the defaults
+pub fn lines() -> Vec<String> {
+    let mut lines = vec![sleep::status()];
+    let service = service();
+
+    if service != PAM {
+        lines.push(format!("lock: password checked with PAM service {service}"));
+    }
+    if let Some(grace) = grace() {
+        lines.push(format!(
+            "lock: grace {} s: input unlocks a lock the idle Module asks for, without a password",
+            grace.as_secs()
+        ));
+    }
+
+    lines
+}
+
+/*
  * locks the session before it sleeps (`crate::sleep`), after `sleeping` shut the gate and dropped
  * a check; only logind opens and shuts it, so a wake heard before this runs stays heard. Asks for
  * a lock and waits until niri holds it, for at most `patience`, so the sleep thread hears logind
  * again by then
  */
 pub fn hold(patience: Duration) -> Result<(), String> {
+    held(patience, None)
+}
+
+/*
+ * the lock of idle (`crate::idle`), as `hold` does it, and with `grace` (ADR 0066) if it is some
+ * and no lock held or was on its way: input unlocks it, without a password, until `grace` after
+ * niri holds it. The caller gives none for a lock asked again after one failed. The grace is the
+ * lock of this request alone, and ends with any other request, a sleep, an unlock or the lock
+ */
+pub fn hold_idle(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
+    held(patience, grace)
+}
+
+fn held(patience: Duration, grace: Option<Duration>) -> Result<(), String> {
     if pam().is_none() {
-        return Err(format!("no PAM service {PAM}, so no lock is asked"));
+        return Err(format!("no PAM service {}, so no lock is asked", service()));
     }
 
     let locker = locker()?;
@@ -644,9 +811,18 @@ pub fn hold(patience: Duration) -> Result<(), String> {
     let mut requests = requests();
     let mut asked = None;
 
+    // decided before this asks, under the requests: a lock held already, or an unlock on its way,
+    // is not one this lock may open
+    let grace = grace.filter(|_| requests.graceable());
+
     loop {
         match requests.next(asked) {
-            Next::Done => return Ok(()),
+            Next::Done => {
+                if let (Some(grace), Some(asked)) = (grace, asked) {
+                    requests.grant(asked, Instant::now() + grace);
+                }
+                return Ok(());
+            }
             Next::Ask => {
                 asked = Some(request_lock(&mut requests, locker));
                 continue;
@@ -737,9 +913,12 @@ fn requests() -> MutexGuard<'static, Requests> {
  * what the lock screens say under the field, and how many passwords were refused; written from the
  * requests (`say`), so the scenes, which read it, never take them
  */
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Said {
     status: Status,
+
+    // what PAM said during the check, which the screen shows in place of the status
+    note: Option<Note>,
     wrong: u64,
 
     // whether a lock holds or is on its way: the scenes read the clock only then
@@ -823,6 +1002,149 @@ mod tests {
         assert!(requests.checked(check, false));
         assert_eq!(requests.next(asked), Next::Done);
         assert_eq!(requests.wrong, 1);
+    }
+
+    // a lock held for a request, with a grace open until `until`
+    fn graced(until: Instant) -> Requests {
+        let mut requests = Requests::new();
+        assert!(requests.graceable());
+
+        let asked = requests.request();
+        requests.heard(News::Locked(asked));
+        requests.grant(asked, until);
+        requests
+    }
+
+    // ADR 0066: input unlocks inside the grace, once, as a password does
+    #[test]
+    fn input_in_the_grace_unlocks_once() {
+        let now = Instant::now();
+        let mut requests = graced(now + Duration::from_secs(5));
+
+        assert!(requests.touch(now + Duration::from_secs(1)));
+        assert!(requests.unlocking);
+        assert_eq!(requests.holding(), Holding::Unlocked);
+        assert!(!requests.touch(now + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn input_after_the_grace_never_unlocks() {
+        let now = Instant::now();
+        let until = now + Duration::from_secs(5);
+        let mut requests = graced(until);
+
+        // input handled late is late, whatever it was when it happened
+        assert!(!requests.touch(until));
+        assert!(!requests.touch(now));
+        assert_eq!(requests.grace, None);
+    }
+
+    // a request, a sleep, the end of the lock and a password each close the grace
+    #[test]
+    fn the_grace_ends_with_anything_but_the_lock_it_was_given_for() {
+        let now = Instant::now();
+        let until = now + Duration::from_secs(5);
+
+        let mut requests = graced(until);
+        requests.request();
+        assert!(!requests.touch(now));
+
+        let mut requests = graced(until);
+        requests.sleep();
+        assert!(!requests.touch(now));
+
+        let mut requests = graced(until);
+        requests.heard(News::Unlocked(1));
+        assert!(!requests.touch(now));
+
+        let mut requests = graced(until);
+        requests.heard(News::Gone);
+        assert!(!requests.touch(now));
+
+        let mut requests = graced(until);
+        requests.heard(News::Finished(1));
+        assert!(!requests.touch(now));
+
+        // a password being checked is not interrupted, and once accepted leaves no grace
+        let mut requests = graced(until);
+        let check = requests.check().unwrap();
+        assert!(!requests.touch(now));
+        assert!(requests.checked(check, true));
+        assert_eq!(requests.grace, None);
+    }
+
+    // only a lock asked for from fully unlocked and held for that request gets a grace
+    #[test]
+    fn only_a_fresh_confirmed_lock_gets_a_grace() {
+        let now = Instant::now();
+        let until = now + Duration::from_secs(5);
+
+        // one already asked, held, or ended by a password
+        let mut requests = Requests::new();
+        let asked = requests.request();
+        assert!(!requests.graceable());
+        requests.heard(News::Locked(asked));
+        assert!(!requests.graceable());
+        let check = requests.check().unwrap();
+        assert!(requests.checked(check, true));
+        assert!(!requests.graceable());
+
+        // not yet confirmed, or confirmed for an older request
+        let mut requests = Requests::new();
+        let old = requests.request();
+        let new = requests.request();
+        requests.heard(News::Locked(old));
+        requests.grant(old, until);
+        requests.grant(new, until);
+        assert_eq!(requests.grace, None);
+
+        // asleep
+        let mut requests = Requests::new();
+        requests.sleep();
+        assert!(!requests.graceable());
+    }
+
+    // ADR 0065: PAM's messages show for the check under way; its error stays until the next try
+    #[test]
+    fn pam_messages_show_for_the_check_under_way() {
+        let mut requests = Requests::new();
+        let asked = requests.request();
+        requests.heard(News::Locked(asked));
+
+        assert!(!requests.noted(1, Note::Info(String::from("early"))));
+        let check = requests.check().unwrap();
+        assert!(!requests.noted(check + 1, Note::Info(String::from("other"))));
+        assert!(requests.noted(check, Note::Info(String::from("Place your finger"))));
+        assert_eq!(
+            requests.note,
+            Some(Note::Info(String::from("Place your finger")))
+        );
+        assert!(requests.checked(check, false));
+        assert_eq!(requests.note, None);
+
+        let check = requests.check().unwrap();
+        assert!(requests.noted(check, Note::Error(String::from("Too many tries"))));
+        assert!(requests.checked(check, false));
+        assert_eq!(
+            requests.note,
+            Some(Note::Error(String::from("Too many tries")))
+        );
+
+        requests.sleep();
+        assert_eq!(requests.note, None);
+    }
+
+    #[test]
+    fn a_pam_service_is_a_file_name_not_a_path() {
+        assert!(valid("login"));
+        assert!(valid("kanade-lock_2.x"));
+        for bad in [
+            "", ".hidden", "-x", "../login", "a/b", "a b", "login\n", "é",
+        ] {
+            assert!(!valid(bad), "{bad:?}");
+        }
+        assert!(!valid(&"a".repeat(65)));
+        assert_eq!(pam_file("../../etc/passwd"), None);
     }
 
     #[test]

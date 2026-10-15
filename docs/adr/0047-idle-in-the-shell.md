@@ -1,6 +1,6 @@
 # 47. Idle in the shell, with a dim grace
 
-Status: accepted; amends [ADR 0011](0011-kanade-adapters-where-amane-lacks-a-capability.md) (caffeine) and [ADR 0025](0025-the-lock-screen-over-its-own-connection.md) (what asks for the lock).
+Status: accepted (amended by [ADR 0065](0065-pam-service-messages-and-the-waking-key.md) and [ADR 0066](0066-a-short-grace-after-an-idle-lock.md)); amends [ADR 0011](0011-kanade-adapters-where-amane-lacks-a-capability.md) (caffeine) and [ADR 0025](0025-the-lock-screen-over-its-own-connection.md) (what asks for the lock).
 
 ## Context
 

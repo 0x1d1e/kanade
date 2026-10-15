@@ -407,6 +407,10 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("lock.backdrop")],
             },
             Section {
+                title: "Unlocking",
+                rows: &[Row::Key("lock.pam_service"), Row::Key("lock.grace")],
+            },
+            Section {
                 title: "When idle",
                 rows: &[
                     Row::Key("idle.dim"),

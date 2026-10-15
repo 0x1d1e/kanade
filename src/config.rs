@@ -145,6 +145,12 @@ pub struct Config {
     // `lock.backdrop`
     pub lock_backdrop: LockBackdrop,
 
+    // `lock.pam_service`, none being the default service (`lock::PAM`)
+    pub lock_pam: Option<String>,
+
+    // `lock.grace`, whole seconds; 0 is none
+    pub lock_grace: u32,
+
     // `privacy.indicators`
     pub privacy_indicators: bool,
 
@@ -476,6 +482,8 @@ impl Default for Config {
             visualizer: Visualizer::default(),
             lyrics: LyricsSource::default(),
             lock_backdrop: LockBackdrop::default(),
+            lock_pam: None,
+            lock_grace: 0,
             privacy_indicators: true,
             island_wheel: true,
             device_events: true,
@@ -2098,22 +2106,56 @@ pub const LIVE: &[Setting] = &[Setting {
     per_output: false,
 }];
 
-pub const LOCK: &[Setting] = &[Setting {
-    key: "lock.backdrop",
-    label: "Backdrop",
-    help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
-    hint: Some("What shows behind the lock screen clock"),
-    kind: Kind::Choice(
-        Choices::named(LockBackdrop::NAMES),
-        Field {
-            get: |config| config.lock_backdrop.name(),
-            set: |config, name| config.lock_backdrop = LockBackdrop::named(name),
-        },
-    ),
-    example: None,
-    restart: false,
-    per_output: false,
-}];
+// the longest `lock.grace`, so a lock the idle Module asked for is never open for long (ADR 0066)
+pub const LOCK_GRACE: Range = Range { least: 0, most: 30 };
+
+pub const LOCK: &[Setting] = &[
+    Setting {
+        key: "lock.backdrop",
+        label: "Backdrop",
+        help: "what the lock screen shows behind the clock: the wallpaper awww shows on that output \"blurred\", sharp as \"wallpaper\", \"dimmed\", or \"solid\"; solid also stands in for a wallpaper that is not png, jpeg, webp, gif or svg",
+        hint: Some("What shows behind the lock screen clock"),
+        kind: Kind::Choice(
+            Choices::named(LockBackdrop::NAMES),
+            Field {
+                get: |config| config.lock_backdrop.name(),
+                set: |config, name| config.lock_backdrop = LockBackdrop::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "lock.pam_service",
+        label: "PAM service",
+        help: "the PAM service that checks the password, a file of that name in /etc/pam.d; unset uses login. Letters, digits, dots, dashes and underscores. Only the first hidden prompt gets the password; an echoed or later one fails the check, and PAM's own messages show under the field. A name with no file refuses every lock",
+        hint: Some("PAM service that checks the lock screen password"),
+        kind: Kind::Text(Field {
+            get: |config| config.lock_pam.clone(),
+            set: |config, service| config.lock_pam = service,
+        }),
+        example: Some("\"login\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "lock.grace",
+        label: "Grace",
+        help: "seconds after the idle Module locks the session in which any key, click, scroll or pointer movement unlocks it without a password; never for `kanade lock`, a lock before sleep or a lock asked again after a failure; 0 is none",
+        hint: Some("Seconds after an idle lock when input unlocks without a password; 0 none"),
+        kind: Kind::Seconds(
+            LOCK_GRACE,
+            Field {
+                get: |config| config.lock_grace,
+                set: |config, seconds| config.lock_grace = seconds,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 // whole seconds each idle stage waits, up to a day, 0 being never
 pub const IDLE_SECONDS: Range = Range {
@@ -3540,6 +3582,8 @@ mod tests {
                 "night-light.sunset",
                 "night-light.sunrise",
                 "lock.backdrop",
+                "lock.pam_service",
+                "lock.grace",
                 "idle.dim",
                 "idle.lock",
                 "idle.screen_off",

@@ -88,8 +88,8 @@ pub enum Provider {
     // a session bus service, running or started on demand, like the Secret Service
     SessionService(&'static str),
 
-    // a PAM service file, which checks a password
-    Pam(&'static str),
+    // the PAM service file `lock.pam_service` names, which checks a password
+    Pam,
 
     // niri's IPC, which the Module cannot work without
     Niri,
