@@ -41,6 +41,13 @@ impl Field {
     pub fn apply(&mut self, key: Key, modifiers: Modifiers) -> Effect {
         // the input method owns the keys while it composes; one that gets here was not taken by it
         if self.preedit.is_some() {
+            // an input method that is gone leaves its preedit behind; these two let the user out
+            if matches!(key, Key::Escape | Key::Backspace) {
+                self.preedit = None;
+
+                return Effect::Changed;
+            }
+
             return Effect::Unchanged;
         }
 

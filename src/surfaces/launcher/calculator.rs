@@ -67,6 +67,7 @@ fn parse(query: &str) -> Option<(f64, usize)> {
     let mut parser = Parser {
         tokens: tokens(query)?,
         at: 0,
+        depth: 0,
         operators: 0,
     };
 
@@ -231,9 +232,14 @@ fn radix(letter: char) -> Option<u32> {
     }
 }
 
+const DEPTH: usize = 64;
+
 struct Parser {
     tokens: Vec<Token>,
     at: usize,
+
+    // how deep in parentheses and signs, so a long query cannot overflow the stack
+    depth: usize,
 
     // how many operators stood between two values, a number in a base counting as one
     operators: usize,
@@ -259,6 +265,19 @@ impl Parser {
             self.operators += 1;
             token
         })
+    }
+
+    // `parse` one level deeper, none past `DEPTH`
+    fn nested(&mut self, parse: fn(&mut Self) -> Option<f64>) -> Option<f64> {
+        if self.depth == DEPTH {
+            return None;
+        }
+
+        self.depth += 1;
+        let value = parse(self);
+        self.depth -= 1;
+
+        value
     }
 
     fn sum(&mut self) -> Option<f64> {
@@ -300,11 +319,11 @@ impl Parser {
 
     fn signed(&mut self) -> Option<f64> {
         if self.next_if(Token::Minus) {
-            return Some(-self.signed()?);
+            return Some(-self.nested(Self::signed)?);
         }
 
         if self.next_if(Token::Plus) {
-            return self.signed();
+            return self.nested(Self::signed);
         }
 
         self.power()
@@ -319,7 +338,7 @@ impl Parser {
         };
 
         if self.operator(&[Token::Power]).is_some() {
-            return Some(base.powf(self.signed()?));
+            return Some(base.powf(self.nested(Self::signed)?));
         }
 
         Some(base)
@@ -338,7 +357,7 @@ impl Parser {
             }
             Token::Open => {
                 self.at += 1;
-                let value = self.sum()?;
+                let value = self.nested(Self::sum)?;
 
                 self.next_if(Token::Close).then_some(value)
             }

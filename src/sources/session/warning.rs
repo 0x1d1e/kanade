@@ -86,14 +86,21 @@ fn blocking(listed: Vec<Listed>) -> Vec<Blocker> {
         .collect()
 }
 
-// `text` on one line without control characters, cut to `most` characters
+// zero-width and bidi controls (Unicode Cf), which could reorder or hide what a blocker says
+fn is_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E007F}')
+}
+
+// `text` on one line without control or format characters, cut to `most` characters
 fn clean(text: &str, most: usize) -> String {
     let one: String = text
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_format(*c))
         .collect();
 
     if one.chars().count() > most {

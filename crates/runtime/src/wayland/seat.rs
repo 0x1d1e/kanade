@@ -87,10 +87,10 @@ impl SeatHandler for WaylandState {
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlSeat) {
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
         self.data_device = None;
 
-        self.forget_ime();
+        self.forget_ime_of(&seat);
         self.forget_idle();
         self.follow_idle();
     }

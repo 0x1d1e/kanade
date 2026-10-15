@@ -201,3 +201,9 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard, Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
   - A control whose click handler is on a parent of the annotated rectangle is not pressable by name.
   - Not run: a live session pass of `kanade ui` (see the report for the steps).
+
+## From the research-improvements review (unfixed)
+
+- [ ] Session hooks: the wait on a `logout`, `reboot` or `poweroff` hook has no cap, so a hung hook delays the action.
+- [ ] D-Bus signals are not checked for their sender: the portal's `SettingChanged` (accessibility) and the Unity `LauncherEntry` signal (badges) can be sent by any session-bus client.
+- [ ] DDC: i2c bus numbers are kept from the first scan and go stale when a monitor is replugged.

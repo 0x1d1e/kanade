@@ -27,6 +27,9 @@ pub struct Ime {
     // on the first seat with a keyboard
     input: Option<ZwpTextInputV3>,
 
+    // the seat `input` was made for
+    seat: Option<WlSeat>,
+
     // the surface the compositor gave text input to, which is the one with the keyboard
     entered: Option<WlSurface>,
 
@@ -62,6 +65,7 @@ pub fn bind(globals: &GlobalList, qh: &QueueHandle<WaylandState>) -> Option<Ime>
     Some(Ime {
         manager,
         input: None,
+        seat: None,
         entered: None,
         sent: None,
         commits: 0,
@@ -89,6 +93,18 @@ impl WaylandState {
 
         if ime.input.is_none() {
             ime.input = Some(ime.manager.get_text_input(seat, qh, ()));
+            ime.seat = Some(seat.clone());
+        }
+    }
+
+    // a seat that goes only takes the text input made for it
+    pub(super) fn forget_ime_of(&mut self, seat: &WlSeat) {
+        if self
+            .ime
+            .as_ref()
+            .is_some_and(|ime| ime.seat.as_ref() == Some(seat))
+        {
+            self.forget_ime();
         }
     }
 
@@ -100,6 +116,8 @@ impl WaylandState {
         if let Some(input) = ime.input.take() {
             input.destroy();
         }
+
+        ime.seat = None;
 
         ime.entered = None;
         ime.forget();
@@ -128,6 +146,9 @@ impl WaylandState {
         };
 
         let Some(wanted) = wanted else {
+            // a disable gets no `done` to clear an old one's mark
+            ime.stale = false;
+
             if ime.sent.take().is_some() {
                 input.disable();
                 input.commit();

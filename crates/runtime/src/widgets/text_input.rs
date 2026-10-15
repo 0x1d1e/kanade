@@ -251,7 +251,11 @@ impl TextInput {
             .or_else(|| Self::composing(field).map(|composing| composing.to))
             .unwrap_or(field.cursor);
 
-        let offset = self.offset(&text, at, area).min(area.width);
+        // a password's caret would tell its length to the input method, so it stays at the start
+        let offset = match self.password {
+            true => 0.0,
+            false => self.offset(&text, at, area).min(area.width),
+        };
 
         Area::new(area.x + offset, area.y, 1.0, area.height)
     }

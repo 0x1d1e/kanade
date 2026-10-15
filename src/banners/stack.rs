@@ -123,8 +123,9 @@ impl Stack {
             .iter_mut()
             .find(|shown| shown.banner.id == banner.id)
         {
-            // a replacement under a draft keeps it, unless the new version takes no reply
-            shown.drafting &= banner.reply.is_some();
+            // a replacement under a draft keeps it, unless the new version takes no reply or is
+            // from another sender, whose text the draft must not be sent to
+            shown.drafting &= banner.reply.is_some() && banner.toast.app == shown.banner.toast.app;
             shown.timer = if shown.drafting {
                 Timer::Sticky
             } else {
