@@ -23,8 +23,8 @@ use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
     apps, audio, battery, bluetooth, brightness, caffeine, calendar, capture, charge_limit,
-    clipboard, devices, focus, fullscreen, google, keys, launch, live, lyrics, media, network,
-    night_light,
+    clipboard, devices, focus, fullscreen, google, keys, launch, launcher_entry, live, lyrics,
+    media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -394,6 +394,22 @@ pub const ALL: &[Module] = &[
 
             // a failed reload of niri's config shows as a failed one, heard from niri
             niri::on_config_failed(live::niri_config_failed);
+            app
+        },
+    },
+    // an app's progress through the Unity launcher entry signal, shown as a live Activity (ADR 0083)
+    Module {
+        name: "launcher-entry",
+        about: "Progress apps report through their launcher entry, as live Activities",
+        requires: &[CORE, "live"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[],
+        start: |app| {
+            supervise::spawn("launcher-entry", launcher_entry::follow);
             app
         },
     },

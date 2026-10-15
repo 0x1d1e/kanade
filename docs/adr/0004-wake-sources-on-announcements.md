@@ -62,3 +62,13 @@ An announcer that cannot run, or is between restarts, leaves its source blind, a
 - `pactl` (libpulse or pipewire-pulse), `udevadm` (systemd) and `dbus-monitor` (dbus) are optional runtime tools. Without one, its source polls as before.
 - Four more child processes run, each blocked on a read.
 - A backlight that firmware changes without the kernel driver raising a uevent shows no brightness Transient. Drivers report hotkey changes through `backlight_force_update`, and sysfs writes always raise one, so this needs a driver that does neither.
+
+## Later wake sources
+
+A source that blocks on a D-Bus signal adds no idle wakeup of its own: its thread sleeps in the connection's receive until the bus delivers a matching message. It still shares the session connection's reader, so each signal costs one wake while apps send them.
+
+| Source | Waits on | Idle wakeups |
+|---|---|---|
+| `accessibility::follow` (ADR 0080) | portal `Settings.SettingChanged` | 0; a change is a user's setting |
+| `launcher_entry::follow` (ADR 0083) | `com.canonical.Unity.LauncherEntry.Update` from any sender | 0; one wake per signal, sent by an app when its progress changes |
+| `ddc` thread (ADR 0082) | a channel | 0; started on first use, never polls the bus |

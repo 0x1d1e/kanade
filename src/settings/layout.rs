@@ -59,7 +59,10 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "workspace",
         ],
     ),
-    ("Activities", &["media", "timer", "live", "battery"]),
+    (
+        "Activities",
+        &["media", "timer", "live", "launcher-entry", "battery"],
+    ),
     (
         "Notifications & privacy",
         &[

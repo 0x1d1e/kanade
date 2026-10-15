@@ -43,9 +43,15 @@ pub const MOST: usize = 8;
 // the ids of a notification's progress begin so (ADR 0059); a client's never do
 pub const NOTIFICATION: &str = "notification.";
 
-// how many of the live ones may be a notification's, so clients keep at least `MOST - NOTIFIED`: a
-// new one past it takes the place of the oldest of them
+// how many of the live ones may be a notification's, so clients keep at least
+// `MOST - NOTIFIED - LAUNCHED`: a new one past it takes the place of the oldest of them
 pub const NOTIFIED: usize = 3;
+
+// the ids of an app's progress, from its launcher entry, begin so (ADR 0083); a client's never do
+pub const LAUNCHER: &str = "launcher.";
+
+// how many of the live ones may be an app's launcher entry
+pub const LAUNCHED: usize = 2;
 
 // the longest id, title and detail, in characters
 pub const ID: usize = 64;
@@ -166,7 +172,7 @@ activity touch <id>
 activity list
 activity run <id> <title> -- <command>...
 activity hook claude
-  <id>: 1 to {ID} letters, digits, '.', '_' or '-', not starting with '{NOTIFICATION}'; it names one live Activity until it ends
+  <id>: 1 to {ID} letters, digits, '.', '_' or '-', not starting with '{NOTIFICATION}' or '{LAUNCHER}'; it names one live Activity until it ends
   <title>: what it is, one line, cut to {TITLE} characters
   <amount>: a percent like 40 or 40%, or a fraction like 0.4
   <text>: a line under the title, cut to {DETAIL} characters; detail with none clears it
@@ -187,7 +193,7 @@ pub(crate) fn valid_id(id: &str) -> bool {
 
 // an id a client may use: a valid one that is not a notification's
 fn client_id(id: &str) -> bool {
-    valid_id(id) && !id.starts_with(NOTIFICATION)
+    valid_id(id) && !id.starts_with(NOTIFICATION) && !id.starts_with(LAUNCHER)
 }
 
 /*
@@ -273,9 +279,11 @@ impl Entry {
     }
 }
 
-// whether `id` is a notification's progress
-fn notified(id: &str) -> bool {
-    id.starts_with(NOTIFICATION)
+// the ids a source of this process keeps to, and how many of the live ones they may be
+fn share(id: &str) -> Option<(&'static str, usize)> {
+    [(NOTIFICATION, NOTIFIED), (LAUNCHER, LAUNCHED)]
+        .into_iter()
+        .find(|(prefix, _)| id.starts_with(prefix))
 }
 
 // the live Activities by id. Pure: time is given, never read
@@ -293,7 +301,7 @@ impl Board {
 
     /*
      * a new one, or one live started again from scratch; refused past `MOST`. A new notification's
-     * past `NOTIFIED` of them takes the place of the oldest, whose id is returned to be withdrawn
+     * or launcher entry's past its share of them takes the place of the oldest, whose id is returned to be withdrawn
      */
     pub fn start(
         &mut self,
@@ -303,16 +311,18 @@ impl Board {
     ) -> Result<(Job, Option<String>), String> {
         let new = !self.live.contains_key(id);
 
-        let evicted = (new && notified(id))
-            .then(|| {
-                let theirs = || self.live.iter().filter(|(other, _)| notified(other));
+        let evicted = share(id).filter(|_| new).and_then(|(prefix, most)| {
+            let theirs = || {
+                self.live
+                    .iter()
+                    .filter(|(other, _)| other.starts_with(prefix))
+            };
 
-                (theirs().count() >= NOTIFIED)
-                    .then(|| theirs().min_by_key(|(_, entry)| entry.started))
-                    .flatten()
-                    .map(|(oldest, _)| oldest.clone())
-            })
-            .flatten();
+            (theirs().count() >= most)
+                .then(|| theirs().min_by_key(|(_, entry)| entry.started))
+                .flatten()
+                .map(|(oldest, _)| oldest.clone())
+        });
 
         if new && self.live.len() - usize::from(evicted.is_some()) >= MOST {
             return Err(format!(
@@ -932,7 +942,35 @@ mod tests {
             Some(start + Duration::from_secs(2) + stale)
         );
 
-        for id in ["notification.x.1", "notification.", "notification.a"] {
+        // nor the launcher entries' (ADR 0083), which keep to their share too
+        let launched = |index: usize| format!("{LAUNCHER}app.{index}");
+        let mut board = Board::new();
+
+        for index in 0..LAUNCHED {
+            let at = start + Duration::from_secs(index as u64);
+
+            assert_eq!(
+                board
+                    .start(&launched(index), String::from("t"), at)
+                    .map(|s| s.1),
+                Ok(None)
+            );
+        }
+
+        assert_eq!(
+            board
+                .start(&launched(9), String::from("t"), later)
+                .map(|s| s.1),
+            Ok(Some(launched(0)))
+        );
+
+        for id in [
+            "notification.x.1",
+            "notification.",
+            "notification.a",
+            "launcher.a.desktop",
+            "launcher.",
+        ] {
             assert_eq!(Request::parse(&["start", id, "t"]), None, "{id}");
             assert_eq!(Request::parse(&["end", id]), None, "{id}");
         }
