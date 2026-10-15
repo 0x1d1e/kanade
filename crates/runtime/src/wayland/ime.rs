@@ -245,7 +245,8 @@ impl WaylandState {
 
         let batch = std::mem::take(&mut ime.pending);
 
-        ime.stale = serial != ime.commits;
+        // none is waited on while disabled, and a late `done` there answers nothing
+        ime.stale = ime.sent.is_some() && serial != ime.commits;
 
         let (Some(surface), Some(sent)) = (ime.entered.clone(), &ime.sent) else {
             return;

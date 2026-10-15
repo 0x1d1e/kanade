@@ -21,6 +21,7 @@ use kanade_runtime::{
 
 use crate::cli::{self, Call, Reply};
 use crate::config;
+use crate::island::activity::Leave;
 use crate::island::motion::Mode as Motion;
 use crate::lock;
 use crate::sources::live;
@@ -75,9 +76,10 @@ impl Request {
 }
 
 /*
- * the words of a config's verb, if a gesture may run it: any verb of Kanade except those that
- * run a program or wait on the user (ADR 0107). The gesture is data, so it can only ever name
- * what the CLI already does
+ * the words of a config's verb, if a gesture may run it (ADR 0107): the verbs that act on the
+ * shell or the session's state, from an allow-list, so a verb added to the CLI later is refused
+ * until named here. Not those that run a program, type or press into a window, sign in, wait on
+ * the user or end the session. The gesture is data, so it can only ever name what the CLI does
  */
 pub fn check(verb: &str) -> Result<Vec<String>, String> {
     if verb.chars().count() > LONGEST_VERB {
@@ -99,13 +101,35 @@ pub fn check(verb: &str) -> Result<Vec<String>, String> {
         Call::Dmenu(_) | Call::PickColor | Call::Gesture(_) => {
             Err(String::from("waits on you, which a gesture cannot"))
         }
-        Call::Live(live::Request::Run { .. } | live::Request::Hook(_)) => {
-            Err(String::from("runs a program, which a gesture never does"))
-        }
-        Call::Session(crate::island::activity::Leave::Ending(_)) => {
+        Call::Session(Leave::Ending(_)) => {
             Err(String::from("ends the session, which a gesture does not"))
         }
-        _ => Ok(words.into_iter().map(str::to_owned).collect()),
+        Call::Island(_)
+        | Call::Timer(_)
+        | Call::ClearNotifications
+        | Call::ClearClipboard
+        | Call::Screenshot(_)
+        | Call::Cast(_)
+        | Call::Caffeine(_)
+        | Call::NightLight(_)
+        | Call::Focus(_)
+        | Call::Dnd(_)
+        | Call::Battery(_)
+        | Call::Media(_)
+        | Call::Wifi(_)
+        | Call::Bluetooth(_)
+        | Call::PowerProfile(_)
+        | Call::Brightness(_)
+        | Call::Wallpaper(_)
+        | Call::Weather(_)
+        | Call::Osd(_)
+        | Call::Lock
+        | Call::Session(_)
+        | Call::Settings(_)
+        | Call::CloseSettings => Ok(words.into_iter().map(str::to_owned).collect()),
+        _ => Err(String::from(
+            "not a verb a gesture may run; `kanade help` lists the rest",
+        )),
     }
 }
 
@@ -229,7 +253,16 @@ pub fn run(request: Request) -> Reply {
 
 // `kanade gesture record <name>`: answers when the third stroke is stored, or the overlay closes
 pub fn record(name: String, reply: IpcReply) {
-    *REPLY.locked() = Some(reply);
+    let mut waiting = REPLY.locked();
+
+    // the first recording keeps its client
+    if waiting.is_some() {
+        reply.send(&Reply::Refused(String::from("a gesture is being recorded")).encode());
+        return;
+    }
+
+    *waiting = Some(reply);
+    drop(waiting);
 
     let mode = Mode::Record {
         name,
@@ -710,4 +743,44 @@ fn scene(stroke: &[Point], level: f32, reduced: bool, hint: Option<String>) -> S
     }
 
     Stack::new(layers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check;
+
+    // the verbs a gesture may run are named, so none that types, runs a program, waits or ends
+    // the session gets through, nor one the CLI gains later
+    #[test]
+    fn a_gesture_runs_only_the_verbs_it_names() {
+        for verb in [
+            "island collapse",
+            "launcher open",
+            "lock",
+            "notifications dnd toggle",
+        ] {
+            assert!(check(verb).is_ok(), "{verb}");
+        }
+
+        for verb in [
+            "",
+            "   ",
+            "dmenu",
+            "capture color",
+            "gesture",
+            "gesture record x",
+            "activity run x",
+            "activity hook x",
+            "ui type hello",
+            "ui key Return",
+            "ui press result#1",
+            "session logout",
+            "session poweroff",
+            "no-such-verb",
+        ] {
+            assert!(check(verb).is_err(), "{verb}");
+        }
+
+        assert!(check(&"island collapse ".repeat(40)).is_err());
+    }
 }
