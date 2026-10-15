@@ -61,6 +61,18 @@ choice! {
     }
 }
 
+impl Finish {
+    // what the desktop's higher contrast leaves of it: Liquid Glass and Blur show what lies behind
+    // the pane, so they become the solid finish of their tone; the two solid ones are held at 7:1
+    pub fn solid(self, tone: Tone) -> Self {
+        match (self, tone) {
+            (Finish::LiquidGlass | Finish::Blur, Tone::Light) => Finish::Paper,
+            (Finish::LiquidGlass | Finish::Blur, Tone::Dark) => Finish::TintedSolid,
+            (finish, _) => finish,
+        }
+    }
+}
+
 choice! {
     // how the Island's and the Dock's springs settle, `appearance.motion`
     Bounce {

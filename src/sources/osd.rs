@@ -353,14 +353,23 @@ const BACKLIGHTS: &str = "/sys/class/backlight";
  * finds nothing new redraws nothing
  */
 fn brightness() -> Option<u8> {
-    let (present, shared) = {
+    let (present, shared, file) = {
         let brightness = Brightness::read();
 
-        (brightness.present(), brightness.percent())
+        (
+            brightness.present(),
+            brightness.percent(),
+            brightness.backlight(),
+        )
     };
 
     if !present {
         return None;
+    }
+
+    // a monitor over DDC/CI has no file; its level is the one `Brightness` keeps (ADR 0082)
+    if !file {
+        return Some(shared);
     }
 
     let percent = backlight().unwrap_or(shared);

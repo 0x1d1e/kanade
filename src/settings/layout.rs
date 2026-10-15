@@ -59,7 +59,10 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "workspace",
         ],
     ),
-    ("Activities", &["media", "timer", "live", "battery"]),
+    (
+        "Activities",
+        &["media", "timer", "live", "launcher-entry", "battery"],
+    ),
     (
         "Notifications & privacy",
         &[
@@ -276,7 +279,10 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Accessibility",
-                rows: &[Row::Key("reduced_motion")],
+                rows: &[
+                    Row::Key("reduced_motion"),
+                    Row::Key("appearance.accessibility"),
+                ],
             },
             Section {
                 title: "Interaction timing",
@@ -381,7 +387,7 @@ pub const PAGES: &[Page] = &[
     Page {
         name: "power",
         title: "Power & night light",
-        summary: "When the battery warns and what it does when critical; how warm the screen turns at night; what Focus turns on; which tiles Controls shows",
+        summary: "When the battery warns and what it does when critical; what sets the brightness; how warm the screen turns at night; what Focus turns on; which tiles Controls shows",
         group: "System",
         icon: Icon::Sunset,
         sections: &[
@@ -392,6 +398,10 @@ pub const PAGES: &[Page] = &[
                     Row::Key("battery.critical"),
                     Row::Key("battery.critical_action"),
                 ],
+            },
+            Section {
+                title: "Brightness",
+                rows: &[Row::Key("brightness.backend")],
             },
             Section {
                 title: "Night light",

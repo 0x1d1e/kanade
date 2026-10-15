@@ -22,8 +22,9 @@ use crate::sources::system::Switch;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
 use crate::sources::{
-    apps, audio, battery, bluetooth, caffeine, calendar, capture, charge_limit, clipboard, devices,
-    focus, fullscreen, google, keys, launch, live, lyrics, media, network, night_light,
+    apps, audio, battery, bluetooth, brightness, caffeine, calendar, capture, charge_limit,
+    clipboard, devices, focus, fullscreen, google, keys, launch, launcher_entry, live, lyrics,
+    media, network, night_light,
     niri::{self, Niri},
     notifications, osd, pipewire, power, privacy, radios, recording, reminders, seat, session,
     sleep, subscriptions, system, timer, tray, wake, wallpaper, weather, windows, workspace,
@@ -396,6 +397,22 @@ pub const ALL: &[Module] = &[
             app
         },
     },
+    // an app's progress through the Unity launcher entry signal, shown as a live Activity (ADR 0083)
+    Module {
+        name: "launcher-entry",
+        about: "Progress apps report through their launcher entry, as live Activities",
+        requires: &[CORE, "live"],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[],
+        start: |app| {
+            supervise::spawn("launcher-entry", launcher_entry::follow);
+            app
+        },
+    },
     // Audio: the default speaker and microphone in Controls and Media, and their OSD.
     // Kanade's own adapter adds the devices and app streams (ADR 0011); while it is off nothing
     // reads Audio
@@ -436,9 +453,25 @@ pub const ALL: &[Module] = &[
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::BRIGHTNESS,
         hooks: Hooks::NONE,
-        verbs: &[],
+        verbs: &[Verb {
+            name: "brightness",
+            about: "Set the brightness of the backlight or of the focused monitor",
+            usage: || {
+                String::from(
+                    "brightness set <percent>|up|down|status
+  <percent>: 1-100
+  up, down: 5 points
+  With DDC/CI (brightness.backend), the monitor on the focused output",
+                )
+            },
+            parse: |arguments| {
+                brightness::Request::parse(arguments)
+                    .map(Call::Brightness)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
         start: |app| app,
     },
     // with both of those off it shows only the lock lights, airplane mode and keyboard layouts

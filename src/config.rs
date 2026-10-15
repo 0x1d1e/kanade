@@ -48,6 +48,7 @@ use crate::look::{
     Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
+use crate::sources::accessibility;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 use crate::tiles::{self, Placed};
@@ -117,6 +118,9 @@ pub struct Config {
 
     // `weather.units`: how the Weather Surface reads temperatures and speeds
     pub units: Units,
+
+    // `brightness.backend`: what sets the screen's brightness (ADR 0082)
+    pub brightness_backend: Backend,
 
     // `appearance.*`: what the bodies are made of, and how they move
     pub appearance: Appearance,
@@ -204,7 +208,7 @@ pub struct Config {
     pub outputs: BTreeMap<String, Output>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Appearance {
     // Settings' and apps' tone; the Island, Dock and Banners follow `finish` whatever it is
     pub tone: Tone,
@@ -217,6 +221,21 @@ pub struct Appearance {
 
     // the family every label is set in, else Inter, else the system's sans-serif
     pub font: Option<String>,
+
+    // follow the desktop's reduced motion and higher contrast (ADR 0080)
+    pub accessibility: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            tone: Tone::default(),
+            finish: Finish::default(),
+            sync: false,
+            font: None,
+            accessibility: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +492,7 @@ impl Default for Config {
             location: None,
             place: None,
             units: Units::default(),
+            brightness_backend: Backend::default(),
             appearance: Appearance::default(),
             animation_speed: 100,
             island_place: Placement {
@@ -604,6 +624,35 @@ impl Default for Focus {
             caffeine: true,
             night_light: false,
             cast: false,
+        }
+    }
+}
+
+// `brightness.backend`: the backlight, an external monitor over DDC/CI, or the first there is
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    #[default]
+    Auto,
+    Backlight,
+    Ddc,
+}
+
+impl Backend {
+    pub const NAMES: &[&str] = &["auto", "backlight", "ddcci"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Auto => "auto",
+            Backend::Backlight => "backlight",
+            Backend::Ddc => "ddcci",
+        }
+    }
+
+    pub fn named(name: &str) -> Backend {
+        match name {
+            "backlight" => Backend::Backlight,
+            "ddcci" => Backend::Ddc,
+            _ => Backend::Auto,
         }
     }
 }
@@ -1403,6 +1452,19 @@ pub const ISLAND: &[Setting] = &[
         kind: Kind::Switch(Field {
             get: |config| config.appearance.sync,
             set: |config, sync| config.appearance.sync = sync,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.accessibility",
+        label: "Follow desktop accessibility",
+        help: "follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; turning it on takes a restart",
+        hint: Some("Reduce motion and raise contrast when the desktop asks"),
+        kind: Kind::Switch(Field {
+            get: |config| config.appearance.accessibility,
+            set: |config, follow| config.appearance.accessibility = follow,
         }),
         example: None,
         restart: false,
@@ -2401,6 +2463,30 @@ pub const BATTERY: &[Setting] = &[
     },
 ];
 
+pub const BRIGHTNESS: &[Setting] = &[Setting {
+    key: "brightness.backend",
+    label: "Brightness backend",
+    help: "what sets the brightness: \"backlight\", an external monitor over \"ddcci\" (DDC/CI, needs the i2c-dev module and access to /dev/i2c-*), or \"auto\" for the backlight, else a monitor",
+    hint: Some("Backlight or an external monitor over DDC/CI"),
+    kind: Kind::Choice(
+        Choices::labeled(
+            Backend::NAMES,
+            &[
+                ("auto", "Automatic"),
+                ("backlight", "Backlight"),
+                ("ddcci", "Monitor (DDC/CI)"),
+            ],
+        ),
+        Field {
+            get: |config| config.brightness_backend.name(),
+            set: |config, name| config.brightness_backend = Backend::named(name),
+        },
+    ),
+    example: None,
+    restart: true,
+    per_output: false,
+}];
+
 pub const NIGHT_LIGHT: &[Setting] = &[
     Setting {
         key: "night-light.mode",
@@ -2544,7 +2630,7 @@ pub const FOCUS: &[Setting] = &[
 pub const CONTROLS: &[Setting] = &[Setting {
     key: "controls.tiles",
     label: "Controls tiles",
-    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
+    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit, power-profile; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
     hint: Some("Their order and size; add one, like focus or wifi:full, then Enter"),
     kind: Kind::Tiles(Field {
         get: |config| config.tiles.clone(),
@@ -2940,6 +3026,18 @@ pub fn announce() {
 pub fn read() -> (Config, Vec<String>) {
     let (mut config, problems) = layers(true);
 
+    if config.appearance.accessibility {
+        let desktop = accessibility::current();
+
+        if desktop.reduced_motion {
+            config.island.motion = Mode::Reduced;
+        }
+
+        if desktop.higher_contrast {
+            config.appearance.finish = config.appearance.finish.solid(config.appearance.tone);
+        }
+    }
+
     if let Some(motion) = motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()) {
         config.island.motion = motion;
     }
@@ -2948,7 +3046,8 @@ pub fn read() -> (Config, Vec<String>) {
 }
 
 /*
- * the layers as `read` gives them but without KANADE_REDUCED_MOTION, which no file sets, and only
+ * the layers as `read` gives them but without KANADE_REDUCED_MOTION and the desktop's accessibility
+ * preferences (ADR 0080), which no file sets, and only
  * with the settings file for `settings`: without it is what a value there is compared with
  */
 pub fn layers(settings: bool) -> (Config, Vec<String>) {
@@ -3716,6 +3815,7 @@ mod tests {
                 "appearance.tone",
                 "appearance.finish",
                 "appearance.sync",
+                "appearance.accessibility",
                 "animation.speed",
                 "appearance.motion",
                 "appearance.font",
@@ -3754,6 +3854,7 @@ mod tests {
                 "timer.pomodoro.long_break",
                 "timer.pomodoro.rounds",
                 "live.stale",
+                "brightness.backend",
                 "osd.layout",
                 "notifications.sound",
                 "notifications.rules",
@@ -3806,7 +3907,7 @@ mod tests {
                 .filter(|setting| setting.restart)
                 .map(|setting| setting.key)
                 .collect::<Vec<_>>(),
-            ["appearance.font", "modules"]
+            ["appearance.font", "modules", "brightness.backend"]
         );
         assert_eq!(
             settings()

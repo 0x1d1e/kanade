@@ -1,7 +1,8 @@
 //! The Controls Surface's Audio sub-surface: the default speaker's level, then the outputs to play
 //! on; the default microphone's level, then the inputs to record from; then each app's level, those
-//! playing first. A device pressed becomes the default of its list, and says so while it switches
-//! or once it failed to. A level's icon, or Enter on it, mutes it; Left and Right move it, as a
+//! playing first, each with a row under it, while there are two outputs, saying where it plays and
+//! moving it to the next output when pressed. A device pressed becomes the default of its list, and
+//! says so while it switches or once it failed to. A level's icon, or Enter on it, mutes it; Left and Right move it, as a
 //! press or drag along its bar does. The wheel scrolls the rows, so it moves no level here.
 
 use kanade_runtime::service::Service as _;
@@ -13,7 +14,7 @@ use super::WIDTH;
 use super::focus::{Act, At};
 use super::list::{self, GAP, ICON, ICON_GAP, ROW_INSET};
 use crate::icon::Icon;
-use crate::sources::audio::{Device, Direction, Level, Mixer, Stream, Switching};
+use crate::sources::audio::{Device, Direction, Level, Mixer, Node, Stream, Switching};
 use crate::surfaces::slider::Slider;
 use crate::theme;
 use crate::theme::space::TARGET;
@@ -31,6 +32,9 @@ enum Line<'a> {
     Microphone,
     Device(&'a Device, Direction),
     Stream(&'a Stream),
+
+    // where a playing app plays: the default output or the one it was moved to
+    Route(&'a Stream),
 }
 
 impl Line<'_> {
@@ -42,6 +46,7 @@ impl Line<'_> {
             Line::Device(device, Direction::Output) => (2, Some(device.node)),
             Line::Device(device, Direction::Input) => (3, Some(device.node)),
             Line::Stream(stream) => (4, Some(stream.node)),
+            Line::Route(stream) => (5, Some(stream.node)),
         }
     }
 
@@ -52,6 +57,7 @@ impl Line<'_> {
             Line::Device(device, Direction::Output) => At::Output(device.node),
             Line::Device(device, Direction::Input) => At::Input(device.node),
             Line::Stream(stream) => At::Stream(stream.node),
+            Line::Route(stream) => At::Route(stream.node),
         }
     }
 }
@@ -70,7 +76,15 @@ fn lines(mixer: &Mixer) -> Vec<Line<'_>> {
         }
     }
 
-    lines.extend(mixer.streams.iter().map(Line::Stream));
+    // an app that plays can be moved with a second output to move it to
+    for stream in &mixer.streams {
+        lines.push(Line::Stream(stream));
+
+        if stream.plays && mixer.outputs.len() > 1 {
+            lines.push(Line::Route(stream));
+        }
+    }
+
     lines
 }
 
@@ -102,7 +116,14 @@ pub fn sound(mixer: &Mixer, switching: Switching, offset: f32, ring: Option<&At>
             let line = lines[index];
 
             Box::new(
-                row(line, &defaults, switching, ring == Some(&line.at())).identity(line.identity()),
+                row(
+                    line,
+                    &mixer.outputs,
+                    &defaults,
+                    switching,
+                    ring == Some(&line.at()),
+                )
+                .identity(line.identity()),
             )
         }))
     };
@@ -113,6 +134,49 @@ pub fn sound(mixer: &Mixer, switching: Switching, offset: f32, ring: Option<&At>
     ])
     .width(WIDTH)
     .gap(GAP)
+}
+
+/*
+ * the output an app plays on, under its level: where it was moved to, else the default output.
+ * Pressing moves it to the next, the default after the last
+ */
+fn route(stream: &Stream, outputs: &[Device], at: At, ring: bool) -> Rectangle {
+    let target = stream
+        .target
+        .and_then(|node| outputs.iter().find(|output| output.node == node));
+    let (name, status) = match target {
+        Some(output) => (output.name.as_str(), "Moved to"),
+        None => (
+            outputs
+                .iter()
+                .find(|output| output.default)
+                .map_or("Default output", |output| output.name.as_str()),
+            "Plays on the default output",
+        ),
+    };
+
+    list::row(
+        Box::new(Icon::Speaker(100).on(ICON, theme::island().on_surface_variant)),
+        name,
+        Some((status, false)),
+        Vec::new(),
+        ring,
+        Some(at),
+    )
+}
+
+// the output after the one `stream` was moved to, none (the default) after the last, so repeated
+// presses visit every output once
+pub fn next_route(stream: &Stream, outputs: &[Device]) -> Option<Node> {
+    let at = stream
+        .target
+        .and_then(|node| outputs.iter().position(|output| output.node == node));
+
+    match at {
+        None => outputs.first(),
+        Some(at) => outputs.get(at + 1),
+    }
+    .map(|output| output.node)
 }
 
 // the default speaker's and microphone's levels, read once for every row
@@ -138,7 +202,13 @@ impl Defaults {
     }
 }
 
-fn row(line: Line, defaults: &Defaults, switching: Switching, ring: bool) -> Rectangle {
+fn row(
+    line: Line,
+    outputs: &[Device],
+    defaults: &Defaults,
+    switching: Switching,
+    ring: bool,
+) -> Rectangle {
     let at = line.at();
 
     match line {
@@ -159,6 +229,7 @@ fn row(line: Line, defaults: &Defaults, switching: Switching, ring: bool) -> Rec
             ring,
         ),
         Line::Device(device, direction) => self::device(device, direction, switching, at, ring),
+        Line::Route(stream) => route(stream, outputs, at, ring),
         Line::Stream(stream) => {
             let icon = if stream.plays {
                 speaker(stream.level)

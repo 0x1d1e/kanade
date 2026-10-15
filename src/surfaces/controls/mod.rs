@@ -169,6 +169,7 @@ fn visible(tile: Tile) -> bool {
     match tile {
         Tile::Focus => modules::on("focus"),
         Tile::ChargeLimit => charge_limit().is_some(),
+        Tile::PowerProfile => modules::on("power"),
         _ => true,
     }
 }
@@ -229,6 +230,7 @@ fn target(tile: Tile) -> At {
         Tile::NightLight => At::NightLight,
         Tile::Focus => At::Focus,
         Tile::ChargeLimit => At::ChargeLimit,
+        Tile::PowerProfile => At::PowerProfile,
     }
 }
 
@@ -242,6 +244,7 @@ fn icon(tile: Tile) -> Icon {
         Tile::NightLight => Icon::Sunset,
         Tile::Focus => Icon::Focus,
         Tile::ChargeLimit => Icon::BatteryLimit,
+        Tile::PowerProfile => Icon::Bolt,
     }
 }
 
@@ -439,6 +442,7 @@ fn tile(
         Tile::NightLight => (self::night_light(), false, None),
         Tile::Focus => (self::focus(), false, None),
         Tile::ChargeLimit => (self::charge_limit()?, false, None),
+        Tile::PowerProfile => (self::power_profile(), false, None),
     };
 
     let ring = on(target(placed.tile));
@@ -474,6 +478,7 @@ enum Press {
     Dnd(bool),
     NightLight(bool),
     ChargeLimit(bool),
+    Profile(Profile),
     Focus,
 }
 
@@ -655,6 +660,35 @@ fn round(item: Switch, ring: bool) -> Rectangle {
 }
 
 /*
+ * the active power profile, on while it is not Balanced; pressing it asks for the next one the
+ * machine has, as `kanade power-profile cycle` does (ADR 0084). Not pressable without the daemon
+ */
+fn power_profile() -> Switch {
+    let profiles = Profiles::read().clone();
+
+    let next = profiles.active.and_then(|active| {
+        let at = profiles.available.iter().position(|each| *each == active)?;
+
+        Some(profiles.available[(at + 1) % profiles.available.len()])
+    });
+
+    Switch {
+        icon: icon(Tile::PowerProfile),
+        name: "Power Profile",
+        status: profiles
+            .active
+            .map_or("Unavailable", Profile::label)
+            .to_owned(),
+        on: profiles
+            .active
+            .is_some_and(|active| active != Profile::Balanced),
+        press: next
+            .filter(|next| Some(*next) != profiles.active)
+            .map(Press::Profile),
+    }
+}
+
+/*
  * on while UPower stops charging short of full, saying where, or that UPower is being asked, or why
  * it refused; none, so not drawn, while the battery cannot limit its charge or its Module is off
  */
@@ -811,6 +845,7 @@ fn run(press: Press) {
         Press::ChargeLimit(on) => {
             let _ = charge_limit::ask(on, None);
         }
+        Press::Profile(profile) => power::set(profile),
     }
 }
 
@@ -1271,6 +1306,7 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         }
         At::NightLight => night_light().press,
         At::ChargeLimit => charge_limit().and_then(|limit| limit.press),
+        At::PowerProfile => power_profile().press,
         At::Focus => modules::on("focus").then_some(Press::Focus),
         At::Edit => return focus.arrange(config::get().tiles.clone()),
         At::Pick(_)
@@ -1330,6 +1366,15 @@ fn press(focus: Focus, at: At, visit: u64) -> Focus {
         At::Stream(node) => {
             if let Some(stream) = mixer().streams.iter().find(|stream| stream.node == node) {
                 sound::ask_muted(node, !stream.level.muted);
+            }
+
+            None
+        }
+        At::Route(node) => {
+            let mixer = mixer();
+
+            if let Some(stream) = mixer.streams.iter().find(|stream| stream.node == node) {
+                sound::ask_route(node, audio::next_route(stream, &mixer.outputs));
             }
 
             None
