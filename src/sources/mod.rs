@@ -1,6 +1,7 @@
 // produce Activities from system state, or the Services the views read; may read Services and
 // post through Island::write()
 
+pub mod accessibility;
 pub mod apps;
 pub mod audio;
 pub mod battery;

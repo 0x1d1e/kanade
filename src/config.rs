@@ -48,6 +48,7 @@ use crate::look::{
     Merge, Placement, ShellMode, Tone, Visualizer,
 };
 use crate::modules;
+use crate::sources::accessibility;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
 use crate::tiles::{self, Placed};
@@ -204,7 +205,7 @@ pub struct Config {
     pub outputs: BTreeMap<String, Output>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Appearance {
     // Settings' and apps' tone; the Island, Dock and Banners follow `finish` whatever it is
     pub tone: Tone,
@@ -217,6 +218,21 @@ pub struct Appearance {
 
     // the family every label is set in, else Inter, else the system's sans-serif
     pub font: Option<String>,
+
+    // follow the desktop's reduced motion and higher contrast (ADR 0080)
+    pub accessibility: bool,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            tone: Tone::default(),
+            finish: Finish::default(),
+            sync: false,
+            font: None,
+            accessibility: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1371,6 +1387,19 @@ pub const ISLAND: &[Setting] = &[
         kind: Kind::Switch(Field {
             get: |config| config.appearance.sync,
             set: |config, sync| config.appearance.sync = sync,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "appearance.accessibility",
+        label: "Follow desktop accessibility",
+        help: "follow the desktop's reduced motion and higher contrast preferences (the settings portal): the first turns reduced_motion on, the second makes the Island, Dock and Banners a solid finish, with nothing written to your files; reduced_motion = true or KANADE_REDUCED_MOTION=1 win over a desktop that does not ask, KANADE_REDUCED_MOTION=0 over one that does; turning it on takes a restart",
+        hint: Some("Reduce motion and raise contrast when the desktop asks"),
+        kind: Kind::Switch(Field {
+            get: |config| config.appearance.accessibility,
+            set: |config, follow| config.appearance.accessibility = follow,
         }),
         example: None,
         restart: false,
@@ -2874,6 +2903,18 @@ pub fn announce() {
 pub fn read() -> (Config, Vec<String>) {
     let (mut config, problems) = layers(true);
 
+    if config.appearance.accessibility {
+        let desktop = accessibility::current();
+
+        if desktop.reduced_motion {
+            config.island.motion = Mode::Reduced;
+        }
+
+        if desktop.higher_contrast {
+            config.appearance.finish = config.appearance.finish.solid(config.appearance.tone);
+        }
+    }
+
     if let Some(motion) = motion(env::var_os("KANADE_REDUCED_MOTION").as_deref()) {
         config.island.motion = motion;
     }
@@ -2882,7 +2923,8 @@ pub fn read() -> (Config, Vec<String>) {
 }
 
 /*
- * the layers as `read` gives them but without KANADE_REDUCED_MOTION, which no file sets, and only
+ * the layers as `read` gives them but without KANADE_REDUCED_MOTION and the desktop's accessibility
+ * preferences (ADR 0080), which no file sets, and only
  * with the settings file for `settings`: without it is what a value there is compared with
  */
 pub fn layers(settings: bool) -> (Config, Vec<String>) {
@@ -3650,6 +3692,7 @@ mod tests {
                 "appearance.tone",
                 "appearance.finish",
                 "appearance.sync",
+                "appearance.accessibility",
                 "animation.speed",
                 "appearance.motion",
                 "appearance.font",

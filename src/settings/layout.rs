@@ -269,7 +269,10 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Accessibility",
-                rows: &[Row::Key("reduced_motion")],
+                rows: &[
+                    Row::Key("reduced_motion"),
+                    Row::Key("appearance.accessibility"),
+                ],
             },
             Section {
                 title: "Interaction timing",

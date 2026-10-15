@@ -12,7 +12,7 @@ Sources of truth: tracker = work/status; `CONTEXT.md` = domain; ADRs = durable r
 - Niri owns layout, focus, Alt-Tab, Overview. No Mission Control clone.
 - No desktop widgets/full DE.
 - English-only UI.
-- Surfaces keyboard-complete; reduced motion supported.
+- Surfaces keyboard-complete; reduced motion supported, and the desktop's reduced-motion and higher-contrast preferences followed from the settings portal (`appearance.accessibility`, [ADR 0080](adr/0080-desktop-accessibility-from-the-settings-portal.md)).
 - Privacy default on; mic/cam/capture as dots inside the Island; not over fullscreen; `privacy.indicators` turns them off.
 - Every feature module disableable. Disabled = no windows/subscriptions/IPC/side effects; unread Services stay cold.
 - awww renders wallpaper. External polkit agent for now.
