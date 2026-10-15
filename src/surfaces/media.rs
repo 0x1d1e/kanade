@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::sources::pulse::Audio;
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Color, Column, Cursor, End, Key, Padding, Rectangle, Row, Scroll, SpaceBetween,
     Stack, Start, Text, Widget, children, request_frame,
@@ -115,6 +116,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, now: Instant) 
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "media"))
         .child(
             Column::new(children![
                 rise(
@@ -288,6 +290,15 @@ fn chip(label: &str, width: f32, selected: bool, ring: bool, control: Control) -
         })
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| {
+            // a player is called as it names itself, "+N" turns the page
+            match control {
+                Control::Page(_) => Semantics::new(Role::Button, "more").label(label),
+                _ => Semantics::new(Role::Button, "player")
+                    .content(label)
+                    .selected(selected),
+            }
+        })
         .on_click(pointed(move || {
             media::control(control.clone());
         }))
@@ -434,6 +445,11 @@ fn timeline(deck: Option<&Deck>, accent: Color, width: f32, now: Instant, ring: 
         })
         .align_child(Start, Start)
         .border_if(ring)
+        .semantics(|| {
+            Semantics::new(Role::Slider, "timeline")
+                .level(fraction)
+                .disabled(seek.is_none())
+        })
         .child(
             Column::new(children![
                 Stack::new(track).width(inner).height(THUMB),
@@ -547,6 +563,7 @@ fn to_controls(monitor: &str, ring: bool) -> Rectangle {
         .align_child(Center, Center)
         .border_if(ring)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "controls"))
         .on_click(pointed(move || {
             crate::view::open(&monitor, Surface::Controls, false);
         }))
@@ -602,6 +619,16 @@ fn button(
         .height(side)
         .radius(side / 2.0)
         .align_child(Center, Center)
+        .semantics(|| {
+            let name = match glyph {
+                Transport::Previous => "previous",
+                Transport::Play => "play",
+                Transport::Pause => "pause",
+                Transport::Next => "next",
+            };
+
+            Semantics::new(Role::Button, name).disabled(control.is_none())
+        })
         .child(glyph.draw(side * 0.5, tone));
 
     let button = match fill {
@@ -670,6 +697,7 @@ fn volume(width: f32, accent: Color, ring: bool) -> Rectangle {
         .height(TARGET)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Toggle, "mute").checked(muted))
         .on_click(pointed(|| {
             Audio::toggle_mute();
         }))

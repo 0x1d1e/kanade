@@ -6,6 +6,7 @@
 //! press or drag along its bar does. The wheel scrolls the rows, so it moves no level here.
 
 use kanade_runtime::service::Service as _;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{Center, Column, Cursor, End, Parent, Rectangle, Row, Text, Widget, children};
 
 use crate::sources::pulse::Audio;
@@ -163,6 +164,7 @@ fn route(stream: &Stream, outputs: &[Device], at: At, ring: bool) -> Rectangle {
         ring,
         Some(at),
     )
+    .semantics(|| Semantics::new(Role::Button, "route").content(name))
 }
 
 // the output after the one `stream` was moved to, none (the default) after the last, so repeated
@@ -289,6 +291,7 @@ fn level(
         .height(TARGET)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Toggle, "mute").checked(muted))
         .on_click(super::super::on_left(move || {
             super::click(Act::Press(at.clone()));
         }))
@@ -331,13 +334,15 @@ fn level(
                 .weight(theme::text::SEMIBOLD),
         );
 
-    list::ROOMY.frame(
-        Row::new(children![icon, middle, number])
-            .width(Parent)
-            .gap(ICON_GAP)
-            .align(Center),
-        ring,
-    )
+    list::ROOMY
+        .frame(
+            Row::new(children![icon, middle, number])
+                .width(Parent)
+                .gap(ICON_GAP)
+                .align(Center),
+            ring,
+        )
+        .semantics(|| Semantics::new(Role::Item, "row").content(name))
 }
 
 // what a device's row says under its name, and whether that is an error

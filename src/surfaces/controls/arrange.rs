@@ -4,6 +4,7 @@
 //! in the Surface's focus, so leaving the Surface drops it too. An edit that would not fit the
 //! Surface's rows is not offered.
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Padding, Rectangle, Row, SpaceBetween, Start, Text, Widget, children,
 };
@@ -178,7 +179,11 @@ pub fn view(draft: &[Placed], chosen: usize, ring: Option<&At>) -> Column {
     ];
 
     for (tile, fits) in tray(draft) {
-        let button = round(icon(tile), on(At::Add(tile)), At::Add(tile));
+        let button = round(icon(tile), on(At::Add(tile)), At::Add(tile)).semantics(|| {
+            Semantics::new(Role::Button, "new")
+                .label(tile.label())
+                .disabled(!fits)
+        });
 
         hidden.push(Box::new(if fits {
             button
@@ -195,6 +200,21 @@ pub fn view(draft: &[Placed], chosen: usize, ring: Option<&At>) -> Column {
     ])
     .width(WIDTH)
     .gap(SWITCH_GAP)
+}
+
+// what `kanade ui` names a button of the arrangement
+fn node(at: &At) -> &'static str {
+    match at {
+        At::Earlier => "earlier",
+        At::Later => "later",
+        At::Resize(Size::Half) => "half",
+        At::Resize(Size::Full) => "full",
+        At::Resize(Size::Icon) => "icon",
+        At::Remove => "hide",
+        At::Add(_) => "new",
+        At::Done => "done",
+        _ => "button",
+    }
 }
 
 fn label(size: Size) -> &'static str {
@@ -224,6 +244,11 @@ fn face(placed: &Placed, width: f32, chosen: bool, ring: bool) -> Rectangle {
         .fill(fill)
         .border_if(ring)
         .cursor(Cursor::Pointer)
+        .semantics(|| {
+            Semantics::new(Role::Button, "tile")
+                .label(tile.label())
+                .selected(chosen)
+        })
         .on_click(on_left(move || click(Act::Press(At::Pick(tile)))));
 
     if placed.size == Size::Icon {
@@ -268,12 +293,13 @@ fn round(icon: Icon, ring: bool, at: At) -> Rectangle {
         .align_child(Center, Center)
         .border_if(ring)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, node(&at)))
         .on_click(on_left(move || click(Act::Press(at.clone()))))
         .child(icon.draw(16.0))
 }
 
 // words in a pill, filled while `current`
-fn pill(text: &str, width: f32, current: bool, ring: bool, at: Option<At>) -> Rectangle {
+fn pill(text: &'static str, width: f32, current: bool, ring: bool, at: Option<At>) -> Rectangle {
     let (fill, ink) = if current {
         (theme::island().primary, theme::island().on_primary)
     } else {
@@ -300,6 +326,11 @@ fn pill(text: &str, width: f32, current: bool, ring: bool, at: Option<At>) -> Re
     match at {
         Some(at) => pill
             .cursor(Cursor::Pointer)
+            .semantics(|| {
+                Semantics::new(Role::Button, node(&at))
+                    .label(text)
+                    .selected(current)
+            })
             .on_click(on_left(move || click(Act::Press(at.clone())))),
         None => pill,
     }

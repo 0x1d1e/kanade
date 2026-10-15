@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Align, Button, Canvas, Center, Color, Column, Cursor, End, Gradient, Image, Padding, Parent,
     Path, Rectangle, Reveal, Row, ScrollArea, Shape, Size, SpaceBetween, Stack, Start, Text,
@@ -299,6 +300,11 @@ fn nav(
         .padding(sides(10.0))
         .align_child(Start, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| {
+            Semantics::new(Role::Tab, name)
+                .label(page.title)
+                .selected(shown)
+        })
         .on_click(left(move || turn_to(name)))
         .child(
             Row::new(children![
@@ -376,6 +382,7 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         .radius(radius::ROW)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Toggle, "inspect").checked(settings.inspect))
         .on_click(left(inspect))
         .child(
             Row::new(children![
@@ -464,6 +471,7 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
             .radius(radius::ROW)
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
+            .semantics(|| Semantics::new(Role::Button, "undo"))
             .on_click(left(undo))
             .child(
                 Row::new(children![
@@ -763,6 +771,10 @@ fn found_heading(page: &'static Page, title: &str, roles: &ThemeRoles) -> Box<dy
             .padding(sides(8.0))
             .align_child(Start, Center)
             .cursor(Cursor::Pointer)
+            .semantics(|| {
+                Semantics::new(Role::Button, "open")
+                    .label(format!("{} {title}", page.title).trim().to_owned())
+            })
             .on_click(left(move || turn_to(name)))
             .child(row),
         ring::register(Stop::new(format!("open {name} {title}")).press(move || turn_to(name))),
@@ -865,7 +877,13 @@ fn health_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         roles.on_surface
     };
 
-    let again = link("check again".into(), "Check again", roles, health::load);
+    let again = link(
+        "check again".into(),
+        "check-again",
+        "Check again",
+        roles,
+        health::load,
+    );
     let mut items = children![
         Row::new(children![
             Text::new(summary)
@@ -925,6 +943,8 @@ fn health_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
 
 // a row's label over its help, with its marks, and what Inspect shows
 struct Label {
+    // the setting it is for, which names the row: the first of them when it sets more than one
+    node: &'static str,
     title: String,
     help: String,
     marks: Vec<Box<dyn Widget>>,
@@ -959,6 +979,7 @@ fn label(
     if !paths.is_empty() {
         marks.push(link(
             format!("reset {}", shown[0].key),
+            "reset",
             "Reset",
             roles,
             move || change_all(paths.iter().map(|path| (path.clone(), None)).collect()),
@@ -997,6 +1018,7 @@ fn label(
     });
 
     Label {
+        node: shown[0].key,
         title: title.to_owned(),
         help: help.to_owned(),
         marks,
@@ -1094,6 +1116,8 @@ fn labeled(
 
     let height = fixed(content.height()) + 2.0 * ROW_INSET;
 
+    let node = label.node;
+
     Box::new(
         Rectangle::new()
             .width(inner())
@@ -1104,6 +1128,7 @@ fn labeled(
                 bottom: ROW_INSET,
                 left: 0.0,
             })
+            .semantics(|| Semantics::new(Role::Region, node))
             .align_child(Start, Center)
             .child(Column::new(vec![content]).width(inner())),
     )
@@ -1337,6 +1362,7 @@ fn control(
                     let actions = if settings.set_here(&entry) {
                         children![icon_button(
                             format!("remove {key} {app_id}"),
+                            "remove",
                             Icon::Dismiss,
                             roles,
                             move || change(entry.clone(), None)
@@ -1484,6 +1510,11 @@ fn font_choice(
         .height(34.0)
         .radius(radius::ROW - 4.0)
         .padding(sides(10.0))
+        .semantics(|| {
+            Semantics::new(Role::Button, "font")
+                .content(name)
+                .selected(selected)
+        })
         .align_child(Start, Center)
         .child(text);
     let row = if selected {
@@ -1706,6 +1737,7 @@ fn module_line(
     Rectangle::new()
         .width(inner())
         .height(height)
+        .semantics(|| Semantics::new(Role::Region, "module").label(name))
         .align_child(Start, Center)
         .child(
             Row::new(vec![Box::new(text), action])
@@ -1762,6 +1794,11 @@ fn position(
             .width(cell_width)
             .height(cell_height)
             .radius(7.0)
+            .semantics(|| {
+                Semantics::new(Role::Button, spot(to))
+                    .selected(here)
+                    .disabled(!selectable)
+            })
             .align_child(Center, Center)
             .child(
                 Rectangle::new()
@@ -1821,6 +1858,20 @@ fn position(
         )
 }
 
+// a place's name: the corner or side of the screen it stands for
+fn spot((edge, along): (&str, &str)) -> &'static str {
+    match (edge, along) {
+        ("top", "left") => "top-left",
+        ("top", "center") => "top-center",
+        ("top", "right") => "top-right",
+        ("bottom", "left") => "bottom-left",
+        ("bottom", "center") => "bottom-center",
+        ("bottom", "right") => "bottom-right",
+        ("left", _) => "left",
+        _ => "right",
+    }
+}
+
 // a list key's entries, each with Up, Down and Remove, and a field that adds one at the end
 fn list(
     setting: &'static Setting,
@@ -1843,6 +1894,7 @@ fn list(
                 list.swap(index - 1, index);
                 actions.push(text_button(
                     format!("up {key} {id}"),
+                    "up",
                     "\u{2191}",
                     roles,
                     to(list),
@@ -1853,6 +1905,7 @@ fn list(
                 list.swap(index, index + 1);
                 actions.push(text_button(
                     format!("down {key} {id}"),
+                    "down",
                     "\u{2193}",
                     roles,
                     to(list),
@@ -1864,6 +1917,7 @@ fn list(
                 list[index] = next;
                 actions.push(text_button(
                     format!("cycle {key} {id}"),
+                    "cycle",
                     "\u{21c4}",
                     roles,
                     to(list),
@@ -1874,6 +1928,7 @@ fn list(
             without.remove(index);
             actions.push(icon_button(
                 format!("remove {key} {id}"),
+                "remove",
                 Icon::Dismiss,
                 roles,
                 to(without),
@@ -1911,6 +1966,7 @@ fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> 
         .radius(radius::ROW)
         .fill(roles.surface)
         .padding(sides(12.0))
+        .semantics(|| Semantics::new(Role::Item, "entry").content(text))
         .align_child(Start, Center)
         .child(
             Row::new(children![
@@ -1952,13 +2008,16 @@ fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) 
         )
     };
 
-    let track = track.align_child(end, Center).child(
-        Rectangle::new()
-            .width(KNOB)
-            .height(KNOB)
-            .radius(KNOB / 2.0)
-            .fill(knob),
-    );
+    let track = track
+        .semantics(|| Semantics::new(Role::Toggle, "switch").checked(on))
+        .align_child(end, Center)
+        .child(
+            Rectangle::new()
+                .width(KNOB)
+                .height(KNOB)
+                .radius(KNOB / 2.0)
+                .fill(knob),
+        );
 
     pressed(track, id, press, TARGET / 2.0, roles)
 }
@@ -1995,6 +2054,11 @@ fn segmented(
                 .width(width)
                 .height(HEIGHT)
                 .radius(HEIGHT / 2.0)
+                .semantics(|| {
+                    Semantics::new(Role::Tab, option)
+                        .selected(here)
+                        .disabled(!enabled)
+                })
                 .align_child(Center, Center);
             let segment = if enabled {
                 segment
@@ -2074,6 +2138,7 @@ fn cards(
                 .height(THUMB.1 + 2.0 * CARD + 22.0)
                 .radius(radius::ROW + 2.0)
                 .padding(CARD)
+                .semantics(|| Semantics::new(Role::Tab, option).selected(here))
                 .cursor(Cursor::Pointer)
                 .on_click(left(move || choose(option)))
                 .child(
@@ -2331,10 +2396,11 @@ fn stepper(
     let middle = NUMBER + 4.0 + fixed(Widget::width(&unit)) + 2.0 * 8.0;
     let inside = FIELD - 2.0;
 
-    let side = |sign: &str, value: u64| {
+    let side = |node: &'static str, sign: &str, value: u64| {
         Rectangle::new()
             .width(SIDE)
             .height(inside)
+            .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
             .on_click(left(to(value)))
@@ -2374,7 +2440,7 @@ fn stepper(
             .align_child(Center, Center)
             .child(
                 Row::new(children![
-                    side("\u{2212}", value.saturating_sub(step)),
+                    side("less", "\u{2212}", value.saturating_sub(step)),
                     divider(),
                     Rectangle::new()
                         .width(middle)
@@ -2401,7 +2467,7 @@ fn stepper(
                             .align(Center),
                         ),
                     divider(),
-                    side("+", value + step),
+                    side("more", "+", value + step),
                 ])
                 .align(Center),
             ),
@@ -2434,6 +2500,7 @@ fn field_with_hint(
 // a square button with a sign
 fn text_button(
     id: String,
+    node: &'static str,
     label: &str,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
@@ -2443,6 +2510,7 @@ fn text_button(
             .width(28.0)
             .height(28.0)
             .radius(radius::ROW - 4.0)
+            .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .child(
                 Text::new(label)
@@ -2459,6 +2527,7 @@ fn text_button(
 
 fn icon_button(
     id: String,
+    node: &'static str,
     icon: Icon,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
@@ -2468,6 +2537,7 @@ fn icon_button(
             .width(28.0)
             .height(28.0)
             .radius(radius::ROW - 4.0)
+            .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .child(icon.on(14.0, roles.on_surface_variant)),
         id,
@@ -2480,6 +2550,7 @@ fn icon_button(
 // a word in the primary color that acts when pressed
 fn link(
     id: String,
+    node: &'static str,
     label: &str,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
@@ -2495,6 +2566,7 @@ fn link(
             .width(width)
             .height(20.0)
             .radius(5.0)
+            .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .child(text),
         id,

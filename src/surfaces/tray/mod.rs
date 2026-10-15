@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 use kanade_runtime::service::{self, Service};
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Column, Cursor, Image, Key, Parent, Rectangle, Row, Scroll, Stack, Start, Text,
     Widget, children,
@@ -103,6 +104,7 @@ fn slot(monitor: &str, item: &Item) -> Rectangle {
         .align_child(Center, Center)
         .identity(item.key())
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "slot").content(item.title.as_str()))
         .on_click(move |button| {
             let (monitor, item) = &clicked;
 
@@ -147,6 +149,7 @@ fn more(monitor: &str, count: usize) -> Rectangle {
         .height(TRAY_SLOT)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "more"))
         .on_click(move |button| {
             if button == Button::Left {
                 view::open(&monitor, Surface::Tray, false);
@@ -270,6 +273,7 @@ pub fn surface(open: bool, visit: u64, held: bool) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "tray"))
         .child(content)
 }
 
@@ -331,6 +335,7 @@ fn item_row(item: &Item, ring: Option<&At>) -> Rectangle {
                 .align_child(Center, Center)
                 .cursor(Cursor::Pointer)
                 .border_if(ring == Some(&At::Menu(key)))
+                .semantics(|| Semantics::new(Role::Button, "menu"))
                 .on_click(super::on_left(move || click(Act::Press(At::Menu(key)))))
                 .child(Icon::Forward.draw(18.0)),
         ));
@@ -346,6 +351,7 @@ fn item_row(item: &Item, ring: Option<&At>) -> Rectangle {
         )
         .identity(key)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Item, "item").content(item.title.as_str()))
         .on_click(super::on_left(move || click(Act::Press(At::Item(key)))))
 }
 
@@ -369,6 +375,7 @@ fn menu_listing(
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
             .border_if(ring == Some(&At::Back))
+            .semantics(|| Semantics::new(Role::Button, "back"))
             .on_click(super::on_left(|| click(Act::Press(At::Back))))
             .child(Icon::Back.draw(18.0)),
         Text::new(title)
@@ -481,6 +488,16 @@ fn entry_row(entry: &Entry, ruled: bool, ring: Option<&At>) -> Rectangle {
         .height(COMPACT.row)
         .identity(id)
         .align_child(Start, Start)
+        .semantics(|| {
+            let node = Semantics::new(Role::MenuItem, "entry")
+                .content(entry.label.as_str())
+                .disabled(!entry.enabled);
+
+            match entry.toggle {
+                Toggle::Check(on) | Toggle::Radio(on) => node.checked(on),
+                Toggle::None => node,
+            }
+        })
         .child(Stack::new(layers).width(WIDTH).height(COMPACT.row));
 
     if !entry.enabled {

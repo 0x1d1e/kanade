@@ -13,6 +13,7 @@ use std::thread;
 use std::time::Instant;
 
 use chrono::{Datelike, Days, Months, NaiveDate, NaiveTime};
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Start,
     Text, Widget, children,
@@ -625,6 +626,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "calendar"))
         .child(
             Row::new(vec![
                 Box::new(rise(0, grid(monitor, day, today, &month, &browse))) as Box<dyn Widget>,
@@ -642,9 +644,9 @@ fn grid(monitor: &str, day: NaiveDate, today: NaiveDate, month: &Month, browse: 
         .weight(theme::text::SEMIBOLD);
 
     let header = Row::new(children![
-        turn(monitor, Icon::Back, 'p'),
+        turn(monitor, "previous", Icon::Back, 'p'),
         title,
-        turn(monitor, Icon::Forward, 'n'),
+        turn(monitor, "next", Icon::Forward, 'n'),
     ])
     .width(MONTH)
     .height(HEADER)
@@ -695,7 +697,7 @@ fn grid(monitor: &str, day: NaiveDate, today: NaiveDate, month: &Month, browse: 
 }
 
 // a chevron that turns the month, as `n` and `p` do
-fn turn(monitor: &str, icon: Icon, key: char) -> Rectangle {
+fn turn(monitor: &str, node: &'static str, icon: Icon, key: char) -> Rectangle {
     let monitor = monitor.to_owned();
 
     Rectangle::new()
@@ -704,6 +706,7 @@ fn turn(monitor: &str, icon: Icon, key: char) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, node))
         .on_click(super::on_left(move || {
             pressed(&monitor, Key::Character(key));
         }))
@@ -773,6 +776,12 @@ fn cell(
         .height(WEEK)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| {
+            // the date is the shell's own: `2026-10-15`
+            Semantics::new(Role::Button, "day")
+                .label(date.to_string())
+                .selected(chosen)
+        })
         .on_click(super::on_left(move || choose(&monitor, date)))
         .child(disc)
 }
@@ -847,6 +856,7 @@ fn agenda(
                 .width(AGENDA)
                 .height(LIST)
                 .align_child(Start, Start)
+                .semantics(|| Semantics::new(Role::List, "events"))
                 .on_scroll(|Scroll { y, .. }| wheel(y))
                 .child(
                     Column::new(
@@ -935,6 +945,7 @@ fn add_pill(monitor: &str) -> Rectangle {
         .border(1.0, theme::island().outline)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "new"))
         .on_click(super::on_left(move || start(&monitor)))
         .child(
             Text::new("+ Add")
@@ -1052,6 +1063,11 @@ fn row(event: &Occurrence, day: NaiveDate, ring: bool) -> Rectangle {
             text,
         ))
         .border_if(ring)
+        .semantics(|| {
+            Semantics::new(Role::Item, "event")
+                .content(title)
+                .selected(ring)
+        })
 }
 
 // "Today", "Tomorrow", "Yesterday", else the weekday and the date

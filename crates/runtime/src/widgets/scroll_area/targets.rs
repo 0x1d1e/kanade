@@ -3,6 +3,7 @@ use std::rc::Rc;
 use crate::Scroll;
 use crate::graphics::Area;
 use crate::input::{Handlers, PIXELS_PER_LINE, Target, clip, nest};
+use crate::ui::{self, Role, Semantics};
 
 use super::{ScrollArea, offsets};
 
@@ -25,7 +26,15 @@ pub fn collect_targets(scroll_area: &ScrollArea, area: Area, targets: &mut Vec<T
     };
 
     // added before the child, so a child with its own on_scroll still wins
-    targets.push(Target::new(area, handlers));
+    let mut own = Target::new(area, handlers);
+
+    // named by its own id, which is fixed in the source, so `kanade ui scroll` can wheel it
+    if ui::enabled() {
+        own.semantics = Some(Semantics::new(Role::List, id).scrubbed(ui::mode()));
+    }
+
+    let at = targets.len();
+    targets.push(own);
 
     let first = targets.len();
 
@@ -37,4 +46,8 @@ pub fn collect_targets(scroll_area: &ScrollArea, area: Area, targets: &mut Vec<T
 
     // the parts scrolled out of view don't react to the pointer
     clip(&mut targets[first..], area);
+
+    if targets[at].semantics.is_some() {
+        targets[at].end = targets.len();
+    }
 }

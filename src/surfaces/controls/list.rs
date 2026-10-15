@@ -2,6 +2,7 @@
 //! with a back chevron, a title and a radio's switch, then rows that scroll under it, or what it
 //! means while there are none.
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Stack, Start,
     Text, Widget, children,
@@ -155,6 +156,7 @@ impl Rows {
             .height(LIST)
             .clip()
             .align_child(Start, Start)
+            .semantics(|| Semantics::new(Role::List, "list"))
             .on_scroll(move |Scroll { y, .. }| scroll(y * WHEEL))
             .child(
                 Rectangle::new()
@@ -272,6 +274,7 @@ pub fn back(ring: bool) -> Rectangle {
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
         .border_if(ring)
+        .semantics(|| Semantics::new(Role::Button, "back"))
         .on_click(super::super::on_left(|| {
             super::click(Act::Press(At::Back));
         }))
@@ -325,6 +328,7 @@ fn toggle(radio: Radio, ring: bool) -> Rectangle {
 
     toggle
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Toggle, "radio").checked(radio == Radio::On))
         .on_click(super::super::on_left(|| {
             super::click(Act::Press(At::Radio));
         }))
@@ -376,6 +380,9 @@ pub fn row(
         ring,
     );
 
+    // the name is a network, a device or a program's: content
+    let row = row.semantics(|| Semantics::new(Role::Item, "row").content(name));
+
     let Some(at) = press else {
         return row;
     };
@@ -395,7 +402,13 @@ pub fn label(text: &str) -> Text {
 }
 
 // outlined, the ring in place of the outline; none to press leaves it faded and not pressable
-pub fn pill(child: Text, width: f32, ring: bool, act: Option<Act>) -> Rectangle {
+pub fn pill(
+    node: &'static str,
+    child: Text,
+    width: f32,
+    ring: bool,
+    act: Option<Act>,
+) -> Rectangle {
     let pill = Rectangle::new()
         .width(width)
         .height(PILL)
@@ -407,6 +420,7 @@ pub fn pill(child: Text, width: f32, ring: bool, act: Option<Act>) -> Rectangle 
             left: PILL_PADDING,
         })
         .align_child(Center, Center)
+        .semantics(|| Semantics::new(Role::Button, node).disabled(act.is_none()))
         .child(child);
 
     let pill = if ring {

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Cursor, End, Image, ImageState, Key, Parent, Rectangle, Row, Scroll, Stack, Start,
     Text, Widget, children,
@@ -421,6 +422,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "wallpapers"))
         .child(
             Column::new(vec![
                 Box::new(view::rise(
@@ -500,6 +502,7 @@ fn tiles(monitor: &str, found: &[PathBuf], current: &[PathBuf], pick: &Pick) -> 
         .height(listed)
         .clip()
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::List, "pictures"))
         .on_scroll({
             let monitor = monitor.to_owned();
 
@@ -587,6 +590,11 @@ fn tile(
     tile.border_if(ring)
         .cursor(Cursor::Pointer)
         .identity(&path)
+        .semantics(|| {
+            Semantics::new(Role::Item, "picture")
+                .content(name(&path))
+                .selected(current)
+        })
         .on_click(super::on_left(move || {
             run(&monitor, visit, Press::Set(path.clone(), index));
         }))
@@ -635,6 +643,8 @@ fn footer(monitor: &str, pick: &Pick, found: &[PathBuf], all: usize) -> Row {
     };
 
     // another than the one showing needs two
+    let pill = pill.semantics(|| Semantics::new(Role::Button, "shuffle").disabled(all <= 1));
+
     let pill = if all > 1 {
         let monitor = monitor.to_owned();
         let visit = pick.visit;

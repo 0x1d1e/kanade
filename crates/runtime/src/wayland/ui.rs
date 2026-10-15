@@ -200,13 +200,13 @@ impl WaylandState {
         Ok(format!("{done} {}", node.id))
     }
 
-    // a click at the middle of the node, if a click there reaches the node or what is in it
+    // a press at the middle of the node, if a click or drag there reaches the node or what is in it
     fn press(&mut self, at: usize, node: &Node) -> Result<&'static str, String> {
         let (x, y) = middle(node)?;
         let pointer = &mut self.windows[at].pointer;
 
         let reached = pointer
-            .clicked_at(x, y)
+            .pressed_at(x, y)
             .ok_or_else(|| format!("nothing at {} takes a click", node.id))?;
 
         let end = pointer.targets()[node.target].end.max(node.target + 1);

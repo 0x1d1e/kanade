@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, End, Key, Padding, Parent, Rectangle, Row, Scroll, Size, Stack, Start, Text,
     Widget, children,
@@ -397,6 +398,7 @@ pub fn surface(_monitor: &str, visit: u64) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "keys"))
         .child(
             Column::new(vec![
                 Box::new(view::rise(
@@ -437,6 +439,7 @@ fn list(laid: &Laid, lookup: &Lookup) -> Stack {
         .height(listed)
         .clip()
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::List, "binds"))
         .on_scroll(|Scroll { y, .. }| wheel(y))
         .child(Stack::new(shown).width(width()).height(listed));
 

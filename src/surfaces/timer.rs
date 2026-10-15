@@ -103,6 +103,7 @@ fn tiles(ring: Option<At>) -> Rectangle {
             let at = At::Preset(place);
 
             Box::new(pad::tile(
+                "preset",
                 Icon::Stopwatch,
                 name,
                 width,
@@ -113,6 +114,7 @@ fn tiles(ring: Option<At>) -> Rectangle {
         .collect();
 
     row.push(Box::new(pad::tile(
+        "pomodoro",
         Icon::Pulse,
         "Pomodoro",
         width,
@@ -144,11 +146,30 @@ fn reading(
         grid(Some(&(*countdown, round)))
             .remove(0)
             .into_iter()
-            .map(|(at, _)| Box::new(pad::pill(label(at), ring == Some(at), move || click(at))) as _)
+            .map(|(at, _)| {
+                Box::new(pad::pill(
+                    node(at),
+                    label(at),
+                    ring == Some(at),
+                    move || click(at),
+                )) as _
+            })
             .collect(),
     );
 
     pad::stacked(said, pills)
+}
+
+// what `kanade ui` names its pill
+fn node(at: At) -> &'static str {
+    match at {
+        At::Preset(_) => "preset",
+        At::Pomodoro => "pomodoro",
+        At::Pause => "pause",
+        At::Resume => "resume",
+        At::Skip => "skip",
+        At::Cancel => "cancel",
+    }
 }
 
 fn label(at: At) -> &'static str {

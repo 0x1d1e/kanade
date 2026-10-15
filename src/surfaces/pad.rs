@@ -5,6 +5,7 @@
 use std::time::Instant;
 
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Rectangle, Row, Start, Text, Widget, children,
 };
@@ -177,7 +178,7 @@ pub fn close() {
 }
 
 // the title over `body`, which is `BODY` tall
-pub fn frame(title: &str, body: impl Widget + 'static) -> Rectangle {
+pub fn frame(title: &'static str, body: impl Widget + 'static) -> Rectangle {
     let shape = geometry::PAD;
 
     let header = Row::new(children![
@@ -195,6 +196,7 @@ pub fn frame(title: &str, body: impl Widget + 'static) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "pad").label(title))
         .child(
             Column::new(vec![Box::new(rise(0, header)), Box::new(rise(1, body))])
                 .width(WIDTH)
@@ -216,10 +218,11 @@ pub fn tiles(row: Vec<Box<dyn Widget>>) -> Rectangle {
         .child(Row::new(row).gap(TILE_GAP))
 }
 
-// its icon in a knob, then its name; filled while the ring is on it
+// its icon in a knob, then its name; filled while the ring is on it. `node` is what `kanade ui` names it
 pub fn tile(
+    node: &'static str,
     icon: Icon,
-    name: &str,
+    name: &'static str,
     width: f32,
     ring: bool,
     press: impl Fn() + 'static,
@@ -238,6 +241,7 @@ pub fn tile(
         .radius(radius::TILE)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, node).label(name))
         .on_click(super::on_left(press))
         .child(
             Column::new(children![
@@ -258,8 +262,13 @@ pub fn tile(
     }
 }
 
-// outlined, the ring in place of the outline
-pub fn pill(label: &str, ring: bool, press: impl Fn() + 'static) -> Rectangle {
+// outlined, the ring in place of the outline. `node` is what `kanade ui` names it
+pub fn pill(
+    node: &'static str,
+    label: &'static str,
+    ring: bool,
+    press: impl Fn() + 'static,
+) -> Rectangle {
     let pill = Rectangle::new()
         .width(PILL_WIDTH)
         .height(PILL)
@@ -272,6 +281,7 @@ pub fn pill(label: &str, ring: bool, press: impl Fn() + 'static) -> Rectangle {
         })
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, node).label(label))
         .on_click(super::on_left(press))
         .child(
             Text::new(label)

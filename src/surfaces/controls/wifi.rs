@@ -2,6 +2,7 @@
 //! saved ones, and the password a secured one asks for. Each network says how it is joined, or why
 //! its last join failed. A password shows as dots only.
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, End, Padding, Rectangle, Row, Size, Stack, Start, Text, Widget, children,
 };
@@ -116,6 +117,7 @@ fn row(network: &wifi::Network, join: &Join, ring: bool) -> Rectangle {
 
     if joined {
         trailing.push(Box::new(list::pill(
+            "disconnect",
             list::label("Disconnect"),
             96.0,
             ring,
@@ -178,12 +180,14 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
 
     let buttons = Row::new(children![
         list::pill(
+            "cancel",
             list::label("Cancel"),
             84.0,
             false,
             Some(Act::Press(At::Back))
         ),
         list::pill(
+            "join",
             list::label("Join"),
             84.0,
             false,
@@ -249,6 +253,11 @@ fn field(secret: &Secret) -> Rectangle {
             left: FIELD_INSET,
         })
         .align_child(Start, Center)
+        .semantics(|| {
+            Semantics::new(Role::TextInput, "password")
+                .secret()
+                .focused(true)
+        })
         .child(
             Row::new(vec![
                 Box::new(Icon::Lock.on(TARGET, theme::island().on_surface_variant))

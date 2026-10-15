@@ -206,6 +206,14 @@ impl Semantics {
         self
     }
 
+    // for a field of the view's own that holds a secret, like a password: it is never said, nor its text
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
+        self.text = None;
+
+        self
+    }
+
     // a text input of the runtime: its text is content, and none at all for a password
     pub(crate) fn input(
         mut self,

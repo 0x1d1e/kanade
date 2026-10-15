@@ -97,9 +97,12 @@ impl Pointer {
         (self.x, self.y, self.inside)
     }
 
-    // the innermost target at a spot that a click would reach
-    pub fn clicked_at(&self, x: f32, y: f32) -> Option<usize> {
-        self.find_topmost_at(x, y, |target| target.handlers.click.is_some())
+    // the innermost target at a spot that a press would reach: one that takes a click, or a drag
+    // (a slider's bar takes only a drag, and a click on a parent behind it does not cover it)
+    pub fn pressed_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.find_topmost_at(x, y, |target| {
+            target.handlers.click.is_some() || target.handlers.drag.is_some()
+        })
     }
 
     // where in the last frame an id is, if it still is
@@ -368,5 +371,47 @@ impl Pointer {
         drop(files);
 
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::graphics::Area;
+    use crate::input::target::Handlers;
+
+    // a bar that takes only a drag, in a parent that takes a click: `kanade ui press` reaches the
+    // bar, since a real press drags it, and not what lies over it
+    #[test]
+    fn a_drag_only_target_is_reached_by_a_press() {
+        let click = Handlers {
+            click: Some(Rc::new(|_| {})),
+            ..Handlers::default()
+        };
+        let drag = Handlers {
+            drag: Some(Rc::new(|_| {})),
+            ..Handlers::default()
+        };
+
+        let mut pointer = Pointer::default();
+
+        pointer.set_targets(vec![
+            Target::new(Area::new(0.0, 0.0, 100.0, 100.0), click.clone()),
+            Target::new(Area::new(10.0, 10.0, 50.0, 10.0), drag),
+            Target::new(Area::new(10.0, 50.0, 50.0, 10.0), Handlers::default()),
+            Target::new(Area::new(30.0, 10.0, 10.0, 10.0), click),
+        ]);
+
+        // the bar's left part; the parent's click is behind it
+        assert_eq!(pointer.pressed_at(15.0, 15.0), Some(1));
+
+        // a click-taking target over the bar covers it
+        assert_eq!(pointer.pressed_at(35.0, 15.0), Some(3));
+
+        // no handler of a press: the parent
+        assert_eq!(pointer.pressed_at(15.0, 55.0), Some(0));
+        assert_eq!(pointer.pressed_at(200.0, 200.0), None);
     }
 }

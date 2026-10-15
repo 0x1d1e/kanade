@@ -12,6 +12,7 @@ use std::time::{Instant, SystemTime};
 
 use crate::sources::notifications::{Notification, Notifications, Urgency};
 use kanade_runtime::service::{self, Service};
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Rectangle, Row, Scroll, Size, SpaceBetween, Stack, Start,
     Text, Widget, children,
@@ -615,6 +616,7 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "notifications"))
         .child(
             Column::new(vec![
                 Box::new(view::rise(0, header(count(&cards)))) as Box<dyn Widget>,
@@ -731,6 +733,7 @@ fn list(
         .height(listed(shapes))
         .clip()
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::List, "cards"))
         .on_scroll(move |Scroll { y, .. }| wheel(&scrolled, y))
         .child(
             Rectangle::new()
@@ -875,6 +878,7 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
         .align_child(Start, Start)
         .identity(card.id)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Item, "card").content(card.toast.summary.as_str()))
         .on_click(super::on_left(move || {
             click(&monitor, press.clone());
         }))
@@ -917,6 +921,7 @@ fn stack(monitor: &str, group: &Group, ring: Option<usize>) -> Stack {
         .align_child(Start, Start)
         .identity(("stack", group.key))
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Item, "stack").content(card.toast.app.as_str()))
         .on_click(super::on_left(move || {
             click(&clicked, press.clone());
         }))
@@ -991,22 +996,23 @@ fn head(monitor: &str, group: &Group, ring: Option<usize>) -> Rectangle {
     let press = Press::Toggle(group.key);
     let clicked = monitor.to_owned();
 
-    head.on_click(super::on_left(move || {
-        click(&clicked, press.clone());
-    }))
-    .child(
-        Row::new(children![
-            Column::new(children![label]).width(words),
-            less,
-            dismiss(
-                monitor,
-                Press::DismissAll(group.ids.clone()),
-                ring == Some(1)
-            ),
-        ])
-        .gap(TILE_GAP)
-        .align(Center),
-    )
+    head.semantics(|| Semantics::new(Role::Button, "head").content(group.front.toast.app.as_str()))
+        .on_click(super::on_left(move || {
+            click(&clicked, press.clone());
+        }))
+        .child(
+            Row::new(children![
+                Column::new(children![label]).width(words),
+                less,
+                dismiss(
+                    monitor,
+                    Press::DismissAll(group.ids.clone()),
+                    ring == Some(1)
+                ),
+            ])
+            .gap(TILE_GAP)
+            .align(Center),
+        )
 }
 
 // a pill per action, as wide as fits, under the text
@@ -1021,13 +1027,16 @@ fn actions(monitor: &str, card: &Card, ring: Option<usize>, width: f32) -> Row {
         .map(|(index, (_, label))| {
             let press = card.press(Part::Action(index));
 
-            Box::new(pill(
-                monitor,
-                label_in(label, each - 2.0 * PILL_PADDING),
-                (each, TARGET),
-                ring == Some(index + 1),
-                Some(press),
-            )) as Box<dyn Widget>
+            Box::new(
+                pill(
+                    monitor,
+                    label_in(label, each - 2.0 * PILL_PADDING),
+                    (each, TARGET),
+                    ring == Some(index + 1),
+                    Some(press),
+                )
+                .semantics(|| Semantics::new(Role::Button, "action").content(label.as_str())),
+            ) as Box<dyn Widget>
         })
         .collect();
 
@@ -1065,6 +1074,7 @@ fn dismiss(monitor: &str, press: Press, ring: bool) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "dismiss"))
         .on_click(super::on_left(move || {
             click(&monitor, press.clone());
         }))
@@ -1121,7 +1131,8 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
         (170.0, FOOTER),
         ring == Some(0),
         Some(Press::Dnd),
-    );
+    )
+    .semantics(|| Semantics::new(Role::Toggle, "dnd").checked(dnd));
 
     let clear = pill(
         monitor,
@@ -1132,7 +1143,8 @@ fn footer(monitor: &str, dnd: bool, any: bool, ring: Option<usize>) -> Row {
         (84.0, FOOTER),
         ring == Some(1),
         any.then_some(Press::Clear),
-    );
+    )
+    .semantics(|| Semantics::new(Role::Button, "clear").disabled(!any));
 
     Row::new(children![dnd, clear])
         .width(width())

@@ -323,6 +323,7 @@ fn pencil(ring: bool) -> Rectangle {
         .align_child(Center, Center)
         .border_if(ring)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "edit"))
         .on_click(super::on_left(|| {
             click(Act::Press(At::Edit));
         }))
@@ -380,6 +381,7 @@ fn stop(ring: bool) -> Rectangle {
         .align_child(Center, Center)
         .border_if(ring)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "stop"))
         .on_click(super::on_left(|| {
             click(Act::Press(At::Stop));
         }))
@@ -926,6 +928,7 @@ fn levels(ring: Option<&At>) -> Column {
         Some((volume, muted)) => {
             let icon = icon
                 .cursor(Cursor::Pointer)
+                .semantics(|| Semantics::new(Role::Toggle, "mute").checked(muted))
                 .on_click(super::on_left(|| {
                     Audio::toggle_mute();
                 }))

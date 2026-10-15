@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::sources::niri::Niri;
 use crate::sources::notifications::{Notification, Notifications, Urgency};
 use kanade_runtime::queue::Nudge;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Button, Center, Column, Cursor, Horizontal, InputArea, Keyboard, Layer, LayerWindow, Monitor,
     Monitors, Padding, Rectangle, Row, Size, Stack as Layers, Start, Text, TextInput, Vertical,
@@ -1127,6 +1128,7 @@ fn card(banner: &Banner, height: f32, field: &'static str, roles: &ThemeRoles) -
         .align_child(Start, Start)
         .identity(id)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Item, "banner").content(banner.toast.summary.as_str()))
         .on_click(on_left(move || {
             // the daemon runs the default action; without one the click only puts the Banner away
             if default {
@@ -1252,6 +1254,7 @@ fn actions(banner: &Banner, width: f32, roles: &ThemeRoles) -> Row {
                     .border(1.0, roles.surface_container_high)
                     .align_child(Center, Center)
                     .cursor(Cursor::Pointer)
+                    .semantics(|| Semantics::new(Role::Button, "action").content(label.as_str()))
                     .on_click(on_left(move || {
                         // the daemon closes the notification unless its sender keeps it
                         Notifications::invoke(id, &key);
@@ -1352,6 +1355,7 @@ fn dismiss(id: u32, roles: &ThemeRoles) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "dismiss"))
         .on_click(on_left(move || close(id)))
         .child(Icon::Dismiss.on(20.0, roles.on_surface_variant))
 }

@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, Size, SpaceBetween,
     Stack, Start, Text, Widget, children,
@@ -546,6 +547,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "clipboard"))
         .child(
             Column::new(vec![
                 Box::new(view::rise(0, field(&search.query))) as Box<dyn Widget>,
@@ -596,6 +598,11 @@ fn field(query: &str) -> Rectangle {
             left: FIELD_INSET,
         })
         .align_child(Start, Center)
+        .semantics(|| {
+            Semantics::new(Role::TextInput, "search")
+                .text(query)
+                .focused(true)
+        })
         .child(
             Row::new(vec![
                 Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
@@ -694,6 +701,7 @@ fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
         .height(listed(found.len()))
         .clip()
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::List, "entries"))
         .on_scroll(|Scroll { y, .. }| wheel(y))
         .child(
             Rectangle::new()
@@ -792,9 +800,11 @@ fn row(monitor: &str, visit: u64, entry: &Entry, ring: Option<bool>) -> Rectangl
     let monitor = monitor.to_owned();
     let entry = entry.clone();
 
-    row.identity(entry.id).on_click(super::on_left(move || {
-        run(&monitor, visit, Press::Copy(entry.clone()));
-    }))
+    row.identity(entry.id)
+        .semantics(|| Semantics::new(Role::Item, "entry").content(summary.title.as_str()))
+        .on_click(super::on_left(move || {
+            run(&monitor, visit, Press::Copy(entry.clone()));
+        }))
 }
 
 // a round target with a cross, pressed to forget the entry
@@ -805,6 +815,7 @@ fn delete(id: u64, ring: bool) -> Rectangle {
         .radius(TARGET / 2.0)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "delete"))
         .on_click(super::on_left(move || clipboard::remove(id)))
         .child(Icon::Dismiss.on(20.0, theme::island().on_surface_variant))
         .border_if(ring)
@@ -856,6 +867,9 @@ fn footer(search: &Search, found: usize, all: usize) -> Row {
     } else {
         pill.border(1.0, theme::island().surface_container_high)
     };
+
+    // kept for the hold, so a press by name, which is a tap, clears nothing
+    let pill = pill.semantics(|| Semantics::new(Role::Button, "clear").disabled(all == 0));
 
     let pill = if all > 0 {
         confirm::target(

@@ -146,6 +146,7 @@ fn row(device: &Device, request: &Request, ring: Option<&At>) -> Rectangle {
 
     if device.connected {
         trailing.push(Box::new(list::pill(
+            "disconnect",
             list::label("Disconnect"),
             DISCONNECT,
             ring == Some(&at),
@@ -155,6 +156,7 @@ fn row(device: &Device, request: &Request, ring: Option<&At>) -> Rectangle {
 
     if device.paired {
         trailing.push(Box::new(list::pill(
+            "forget",
             list::label("Forget"),
             FORGET,
             ring == Some(&forget),
@@ -214,6 +216,7 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
     };
 
     let mut buttons = children![list::pill(
+        "cancel",
         list::label("Cancel"),
         84.0,
         ring == Some(&At::Cancel),
@@ -222,6 +225,7 @@ fn prompt(adapter: &Adapter, prompt: &Prompt, ring: Option<&At>) -> Rectangle {
 
     if let Some(ready) = pairs {
         buttons.push(Box::new(list::pill(
+            "pair",
             list::label("Pair"),
             84.0,
             ring == Some(&At::Confirm),

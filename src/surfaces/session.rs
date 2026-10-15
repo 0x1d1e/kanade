@@ -91,6 +91,7 @@ fn tiles(ring: Option<At>) -> Rectangle {
         .into_iter()
         .map(|leave| {
             Box::new(pad::tile(
+                node(leave),
                 icon(leave),
                 name(leave),
                 width,
@@ -115,8 +116,11 @@ fn countdown(counting: &Counting, ring: Option<At>) -> impl kanade_runtime::Widg
     let (cancel, now) = (At::Cancel(*counting), At::Now(*counting));
 
     let pills = pad::pills(children![
-        pad::pill("Cancel", ring == Some(cancel), move || click(cancel)),
+        pad::pill("cancel", "Cancel", ring == Some(cancel), move || click(
+            cancel
+        )),
         pad::pill(
+            "now",
             session::at_once(counting.end),
             ring == Some(now),
             move || click(now)
@@ -134,6 +138,18 @@ pub fn icon(leave: Leave) -> Icon {
         Leave::Ending(Ending::PowerOff) => Icon::Power,
         Leave::Ending(Ending::LogOut) => Icon::LogOut,
         Leave::Ending(Ending::Suspend | Ending::Hibernate) => Icon::Moon,
+    }
+}
+
+// what `kanade ui` names its tile
+fn node(leave: Leave) -> &'static str {
+    match leave {
+        Leave::Lock => "lock",
+        Leave::Sleep | Leave::Ending(Ending::Suspend) => "sleep",
+        Leave::Ending(Ending::Restart) => "restart",
+        Leave::Ending(Ending::PowerOff) => "power-off",
+        Leave::Ending(Ending::LogOut) => "log-out",
+        Leave::Ending(Ending::Hibernate) => "hibernate",
     }
 }
 

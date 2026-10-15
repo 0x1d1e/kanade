@@ -75,13 +75,30 @@ pub fn surface(open: bool, visit: u64, held: bool, recording: bool) -> Rectangle
         .map(|&(at, _)| {
             let (icon, name) = look(at);
 
-            Box::new(pad::tile(icon, name, width, ring == Some(at), move || {
-                click(at)
-            })) as _
+            Box::new(pad::tile(
+                node(at),
+                icon,
+                name,
+                width,
+                ring == Some(at),
+                move || click(at),
+            )) as _
         })
         .collect();
 
     pad::frame("Capture", pad::tiles(row))
+}
+
+// what `kanade ui` names its tile
+fn node(at: At) -> &'static str {
+    match at {
+        At::Shot(Mode::Area) => "area",
+        At::Shot(Mode::Window) => "window",
+        At::Shot(Mode::Output) => "screen",
+        At::Color => "color",
+        At::Record => "record",
+        At::Stop => "stop",
+    }
 }
 
 fn look(at: At) -> (Icon, &'static str) {

@@ -13,7 +13,7 @@ A script or an agent could drive the shell only by coordinates (`ydotool`) and k
 - A `Node` is `id`, `parent`, `role`, `label`, `value`, `bounds`, states: the shape an AccessKit or AT-SPI adapter needs. This crate has neither and adds neither.
 - An id is the path of the names of the nodes it is in, then its own (`controls/wifi`), and a later sibling of the same name is numbered (`item#2`), so an id holds while earlier ones stay. Names are `&'static str`: never text a user or program wrote.
 - Roles: region, button, toggle, slider, textinput, list, item, menu, menuitem, tab. Bounds are in the window's logical pixels before the compositor's scale (after [ADR 0091](0091-ui-scale-at-the-runtime-seam.md)'s division).
-- Coverage is what views have said: the Island body (hover, action pill), the Dock and its menu, the Launcher, Controls (switches, levels, profiles) and every runtime text input. Other Surfaces have no nodes until their views say so; a node needs one `.semantics` call.
+- Coverage is what views have said: since this was written, every Surface, Banners, the Controls sub-surfaces and the Settings window have said theirs (one `.semantics` call each); what has none is listed in the wiki's Limitations page. A hold to confirm cannot be completed by `press` or `key`.
 
 ## Consequences
 

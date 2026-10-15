@@ -8,6 +8,7 @@
 use chrono::{Datelike, NaiveDate};
 use kanade_runtime::Key;
 use kanade_runtime::service::Service;
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Padding, Rectangle, Row, SpaceBetween, Start, Text, Widget, children,
 };
@@ -78,6 +79,7 @@ pub fn surface(monitor: &str) -> Rectangle {
         .height(shape.height)
         .padding(INSET)
         .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Region, "weather"))
         .child(Row::new(vec![content]))
 }
 

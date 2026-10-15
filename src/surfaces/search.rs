@@ -1,6 +1,7 @@
 //! What a Surface searched as it is typed shows: the field the query goes in and the state that
 //! stands where nothing is listed. Drawn as the Clipboard and the Launcher draw their own.
 
+use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, Padding, Rectangle, Row, Size, Start, Text, Widget, children,
 };
@@ -56,6 +57,11 @@ pub fn field(icon: Icon, query: &str, placeholder: &str, width: f32) -> Rectangl
             left: FIELD_INSET,
         })
         .align_child(Start, Center)
+        .semantics(|| {
+            Semantics::new(Role::TextInput, "search")
+                .text(query)
+                .focused(true)
+        })
         .child(
             Row::new(vec![
                 Box::new(icon.on(TARGET, theme::island().on_surface_variant)) as Box<dyn Widget>,
@@ -162,6 +168,7 @@ pub fn settings_pill(monitor: &str, page: &'static str) -> Rectangle {
         .border(1.0, theme::island().outline)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "settings"))
         .on_click(super::on_left(move || open_settings(&monitor, page)))
         .child(
             Text::new("Open Settings")
