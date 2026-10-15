@@ -164,6 +164,8 @@ sound = false
 [wallpaper]
 # the images the Wallpapers Surface shows, else ~/Pictures/Wallpapers
 # directory = "~/Pictures/Wallpapers"
+# on, a wallpaper picked in the shell (the Wallpapers Surface, `kanade wallpaper shuffle`) is set on that monitor alone; off, on every monitor. `kanade wallpaper set --output` names one either way
+per_monitor = true
 # how awww moves to a new wallpaper: "simple" fades at its own pace, "fade" fades, "wipe" sweeps across, "grow" opens a circle and "outer" closes one, from the tile chosen on the Wallpapers Surface, else the middle, and "random" lets awww pick one each time
 transition = "simple"
 # how long a transition other than "simple" takes, ms 1-60000
@@ -271,6 +273,7 @@ timeout = 10
 - `windows.apps`: which `.desktop` file a window's app id belongs to, for an app Kanade matches wrongly or not at all (see `kanade status`). Kanade otherwise matches the file id, then `StartupWMClass`, then either ignoring case, then the file id's last part (ADR 0014).
 - `live.stale`: how many minutes a live Activity from `kanade activity` stays on the Island after its program last said anything of it; then it is withdrawn, as for a script that died before `end`. `kanade activity run` keeps its own alive while its command runs. A changed value applies from the next `kanade activity` call or withdrawal.
 - `wallpaper.directory`: the folder of images the Wallpapers Surface shows and `kanade wallpaper shuffle` picks from, not its subfolders. With several monitors, the Wallpapers Surface sets the wallpaper of the monitor it is on and marks what that monitor shows; `kanade wallpaper set` and `shuffle` take `--output`. Which wallpapers show persists in awww's own cache, not in Kanade. The shell colors follow the monitor that was focused at Kanade's last pick, else the focused one.
+- `wallpaper.per_monitor`: on (the default), a wallpaper picked on the Wallpapers Surface or shuffled is set on that monitor alone and the palette follows the monitor focused at the pick; off, every pick sets all monitors. `kanade wallpaper set <path>` sets all unless `--output NAME` says one, whatever this is.
 - `wallpaper.transition` and `wallpaper.transition_duration`: how awww moves to a wallpaper Kanade sets. "grow" and "outer" start from the picture pressed on the Wallpapers Surface, else the middle of the output, and "random" has awww pick another transition for each wallpaper, a circle among them; "simple" ignores the length.
 - `calendar.paths`: the local calendars, as `.ics` files or directories of them (a vdir, as vdirsyncer writes), read recursively and followed as they change. These are read only; the calendar fetches nothing (ADR 0015); a Google account syncs through `google-calendar` and public feeds through `calendar-subscriptions` instead. Events added on the Calendar Surface are kept apart, in `$XDG_DATA_HOME/kanade/events`, one `.ics` file each, always read, and the only ones the Surface changes or removes (ADR 0045).
 - `calendar.reminder`: a reminder for each timed event that has none of its own, this many minutes before it starts; `0`, the default, gives none. An event's own reminders (its `VALARM`s that display or play a sound) always go off, and a change to this key never sets off again a reminder that already went off (ADR 0043).

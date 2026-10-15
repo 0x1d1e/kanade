@@ -277,6 +277,16 @@ fn focused() -> Option<String> {
     super::niri::Niri::read().seen.focused_output.clone()
 }
 
+// where a wallpaper picked on `monitor` lands: that monitor alone, or every one by
+// `wallpaper.per_monitor`
+pub fn picked_on(monitor: &str) -> Output {
+    if config::get().wallpaper_per_monitor {
+        Output::Named(monitor.to_owned())
+    } else {
+        Output::All
+    }
+}
+
 /*
  * asks awww to show the image at `path` on `output`, the others as they were, answering at once;
  * `done` is told how it went. A circle transition centers on `from`, else the middle. Refused at
@@ -336,7 +346,11 @@ pub fn request(request: Request, later: Later) {
         )),
         Request::Set(path, output) => set(path, output.unwrap_or(Output::All)),
         Request::Shuffle(output) => {
-            let output = output.unwrap_or_else(|| focused().map_or(Output::All, Output::Named));
+            let output = output.unwrap_or_else(|| {
+                focused()
+                    .filter(|_| config::get().wallpaper_per_monitor)
+                    .map_or(Output::All, Output::Named)
+            });
 
             pick_other(&output).and_then(|path| set(path, output))
         }

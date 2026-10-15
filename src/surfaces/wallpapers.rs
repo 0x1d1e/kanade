@@ -749,8 +749,8 @@ fn run(monitor: &str, visit: u64, press: Press) {
         (from, done, set)
     };
 
-    // the monitor's own wallpaper, the others as they are
-    let output = Output::Named(monitor.to_owned());
+    // the monitor's own wallpaper, the others as they are, unless one is set for all
+    let output = wallpaper::picked_on(monitor);
 
     let started = match press {
         Press::Set(path, _) => wallpaper::set(path.clone(), output, from, Some(done))

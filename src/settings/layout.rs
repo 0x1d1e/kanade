@@ -347,6 +347,7 @@ pub const PAGES: &[Page] = &[
                 title: "Wallpaper",
                 rows: &[
                     Row::Key("wallpaper.directory"),
+                    Row::Key("wallpaper.per_monitor"),
                     Row::Key("wallpaper.transition"),
                     Row::Key("wallpaper.transition_duration"),
                 ],

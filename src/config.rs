@@ -90,6 +90,9 @@ pub struct Config {
     // `wallpaper.transition` and `wallpaper.transition_duration`: how awww moves to a new wallpaper
     pub transition: Transition,
 
+    // a wallpaper picked in the shell is set on the monitor it was picked on, or on all of them
+    pub wallpaper_per_monitor: bool,
+
     // `calendar.paths`: the iCalendar files and directories the calendar reads, else the default
     // directory (ADR 0015)
     pub calendars: Vec<String>,
@@ -458,6 +461,7 @@ impl Default for Config {
             pinned: Vec::new(),
             wallpapers: None,
             transition: Transition::default(),
+            wallpaper_per_monitor: true,
             calendars: Vec::new(),
             reminder: 0,
             subscriptions: Vec::new(),
@@ -1810,6 +1814,19 @@ pub const WALLPAPER: &[Setting] = &[
             set: |config, wallpapers| config.wallpapers = wallpapers,
         }),
         example: Some("\"~/Pictures/Wallpapers\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "wallpaper.per_monitor",
+        label: "Wallpaper per monitor",
+        help: "on, a wallpaper picked in the shell (the Wallpapers Surface, `kanade wallpaper shuffle`) is set on that monitor alone; off, on every monitor. `kanade wallpaper set --output` names one either way",
+        hint: Some("Pick a wallpaper for each monitor, or one for all"),
+        kind: Kind::Switch(Field {
+            get: |config| config.wallpaper_per_monitor,
+            set: |config, on| config.wallpaper_per_monitor = on,
+        }),
+        example: None,
         restart: false,
         per_output: false,
     },
@@ -3632,6 +3649,7 @@ mod tests {
                 "notifications.sound",
                 "notifications.rules",
                 "wallpaper.directory",
+                "wallpaper.per_monitor",
                 "wallpaper.transition",
                 "wallpaper.transition_duration",
                 "launcher.actions",
