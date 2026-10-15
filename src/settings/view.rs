@@ -16,6 +16,7 @@ use kanade_runtime::{
 use toml::Value;
 
 use crate::config::{self, Choices, DayTime, Kind, Location, Setting};
+use crate::doctor::Verdict;
 use crate::icon::Icon;
 use crate::look::{Along, Edge, ShellMode};
 use crate::modules::{self, CORE, Module};
@@ -25,6 +26,7 @@ use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
 use crate::tiles::{self, Placed};
 
+use super::health;
 use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
 use super::ring::{self, Stop};
 use super::{
@@ -795,6 +797,7 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
                 roles,
             )
         }
+        Line::Health => health_view(settings, roles),
         Line::Position { edge, align } => {
             let edge = setting(edge).expect("the layout's keys are the schema's");
             let align = setting(align).expect("the layout's keys are the schema's");
@@ -831,6 +834,93 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
             )
         }
     }
+}
+
+// the width of a check's verdict, "warn" at the label size
+const VERDICT: f32 = 40.0;
+
+/*
+ * the Health page's checks as doctor words them, each with its verdict and detail lines under it,
+ * over how many need attention and Check again. Read-only: the checks ran off the draw thread
+ */
+fn health_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
+    let signals = theme::window_signals();
+    let waiting = health::needing(&settings.health);
+
+    let summary = if settings.health_loading {
+        String::from("Checking\u{2026}")
+    } else if !settings.health_loaded {
+        String::from("Not checked yet")
+    } else if waiting == 0 {
+        format!("All {} checks pass", settings.health.len())
+    } else {
+        format!(
+            "{waiting} of {} checks need attention",
+            settings.health.len()
+        )
+    };
+    let ink = if waiting > 0 && !settings.health_loading {
+        signals.warning
+    } else {
+        roles.on_surface
+    };
+
+    let again = link("check again".into(), "Check again", roles, health::load);
+    let mut items = children![
+        Row::new(children![
+            Text::new(summary)
+                .size(theme::text::BODY)
+                .color(ink)
+                .weight(theme::text::SEMIBOLD),
+            again,
+        ])
+        .width(inner())
+        .justify(SpaceBetween)
+        .align(Center),
+    ];
+
+    let body = inner() - VERDICT - 10.0;
+    for check in &settings.health {
+        let (word, ink) = match check.verdict {
+            Verdict::Ok => ("ok", roles.on_surface_variant),
+            Verdict::Warn => ("warn", signals.warning),
+            Verdict::Fail => ("fail", signals.critical),
+        };
+
+        let mut lines = children![wrapped(
+            Text::new(check.text.clone())
+                .size(theme::text::LABEL)
+                .color(roles.on_surface)
+                .weight(theme::text::MEDIUM),
+            body,
+        )];
+        for line in &check.detail {
+            lines.push(Box::new(wrapped(
+                Text::new(line.clone())
+                    .size(theme::text::LABEL_SMALL)
+                    .color(roles.on_surface_variant)
+                    .weight(theme::text::MEDIUM),
+                body,
+            )));
+        }
+
+        items.push(Box::new(hairline(inner(), roles)));
+        items.push(Box::new(
+            Row::new(children![
+                Rectangle::new().width(VERDICT).height(18.0).child(
+                    Text::new(word)
+                        .size(theme::text::LABEL)
+                        .color(ink)
+                        .weight(theme::text::SEMIBOLD),
+                ),
+                Column::new(lines).width(body).gap(2.0),
+            ])
+            .width(inner())
+            .gap(10.0),
+        ));
+    }
+
+    Box::new(Column::new(items).width(inner()).gap(10.0))
 }
 
 // a row's label over its help, with its marks, and what Inspect shows

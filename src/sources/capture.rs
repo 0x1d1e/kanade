@@ -10,16 +10,19 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use kanade_runtime::MutexExt;
 use kanade_runtime::service::Service;
+use kanade_runtime::{IpcReply, MutexExt};
 
 use super::clipboard;
 use super::json::{self, Json};
+use super::live;
 use super::niri::{self, Acted, Niri, Retarget};
 use super::recording;
+use crate::cli::Reply;
 use crate::clock;
 
 // what opens a recording, in the user's viewer
@@ -61,6 +64,9 @@ impl Mode {
     }
 }
 
+// whether niri's picker is on screen: it takes one pick at a time
+static PICKING: AtomicBool = AtomicBool::new(false);
+
 // what came of asking niri for a screenshot
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Asked {
@@ -96,6 +102,86 @@ pub fn screenshot(mode: Mode) -> Result<Asked, String> {
         Acted::Unknown(why) => Ok(Asked::Unknown(format!(
             "niri got the request, but {why}; the screenshot may still be saved at {path}"
         ))),
+    }
+}
+
+/*
+ * lets the user pick a pixel of the screen with niri's own picker, which this waits on, so never
+ * on the draw thread. The color goes on the clipboard as `#rrggbb` and is shown by a Transient
+ * Activity; none when the user leaves the picker. Plain text, unlike a password manager's copy, so
+ * ADR 0019's sensitive hint is not set and the clipboard history may keep it
+ */
+pub fn color() -> Result<Option<String>, String> {
+    if PICKING.swap(true, Ordering::AcqRel) {
+        return Err(String::from("a color is already being picked"));
+    }
+
+    let picked = niri::pick().map_err(backend);
+
+    PICKING.store(false, Ordering::Release);
+
+    let Some(hex) = picked.and_then(|answer| hex(&answer))? else {
+        return Ok(None);
+    };
+
+    clipboard::put(&hex).map_err(|error| format!("copying the color: {error}"))?;
+    live::color_picked(&hex);
+
+    Ok(Some(hex))
+}
+
+/*
+ * `#rrggbb` of what niri answers a pick with: `{"PickedColor":{"rgb":[r,g,b]}}`, each from 0 to
+ * 1, or null for a picker the user left; an error for any other answer
+ */
+fn hex(answer: &Json) -> Result<Option<String>, String> {
+    let unexpected = || String::from("niri answered the color pick unexpectedly");
+    let picked = answer.get("PickedColor").ok_or_else(unexpected)?;
+
+    if picked.is_null() {
+        return Ok(None);
+    }
+
+    let rgb = picked
+        .get("rgb")
+        .and_then(json::array)
+        .filter(|rgb| rgb.len() == 3)
+        .ok_or_else(unexpected)?;
+
+    let mut text = String::from("#");
+
+    for channel in rgb {
+        let value = channel.as_f64().ok_or_else(unexpected)?;
+
+        // rounded to the nearest of 256, as an 8-bit pixel was read
+        text.push_str(&format!(
+            "{:02x}",
+            (value.clamp(0.0, 1.0) * 255.0).round() as u8
+        ));
+    }
+
+    Ok(Some(text))
+}
+
+/*
+ * `kanade capture color`: answers on the user's pick, so the client waits on them; the color, or
+ * a refusal when they leave the picker
+ */
+pub fn pick(reply: IpcReply) {
+    let spawned = thread::Builder::new()
+        .name(String::from("capture-color"))
+        .spawn(move || {
+            let answer = match color() {
+                Ok(Some(hex)) => Reply::Done(hex),
+                Ok(None) => Reply::Refused(String::from("no color picked")),
+                Err(why) => Reply::Refused(why),
+            };
+
+            reply.send(&answer.encode());
+        });
+
+    if let Err(error) = spawned {
+        eprintln!("capture: {error}");
     }
 }
 
@@ -257,5 +343,40 @@ fn open(path: &str) {
         Ok(status) if !status.success() => eprintln!("capture: {OPEN} failed ({status})"),
         Ok(_) => {}
         Err(error) => eprintln!("capture: {OPEN}: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picked(text: &str) -> Result<Option<String>, String> {
+        hex(&json::parse(text).expect("a fixture is JSON"))
+    }
+
+    #[test]
+    fn a_pick_reads_as_hex_and_a_cancel_as_none() {
+        assert_eq!(
+            picked(r#"{"PickedColor":{"rgb":[1.0,0.0,0.5]}}"#),
+            Ok(Some(String::from("#ff0080")))
+        );
+        // out of range is held to it, as a float error could push a channel past 1
+        assert_eq!(
+            picked(r#"{"PickedColor":{"rgb":[1.0000001,-0.1,0.2]}}"#),
+            Ok(Some(String::from("#ff0033")))
+        );
+        assert_eq!(picked(r#"{"PickedColor":null}"#), Ok(None));
+    }
+
+    #[test]
+    fn an_answer_that_is_no_pick_is_an_error() {
+        for text in [
+            r#"{"Handled":null}"#,
+            r#"{"PickedColor":{"rgb":[1.0,0.0]}}"#,
+            r#"{"PickedColor":{"rgb":[1.0,0.0,"x"]}}"#,
+            r#"{"PickedColor":{}}"#,
+        ] {
+            assert!(picked(text).is_err(), "{text}");
+        }
     }
 }

@@ -686,6 +686,45 @@ pub fn niri_config_failed() {
     IslandService::write().post(activity(NIRI_CONFIG, job), Instant::now());
 }
 
+// the id of a picked color; a space is outside a client's alphabet, so no client has it
+const COLOR: &str = "picked color";
+
+/*
+ * a color picked on the screen (`capture::color`) and copied: its hex, shown as the done form of a
+ * Live Activity a while on the focused output. Nothing is live, so there is nothing to end
+ */
+pub fn color_picked(hex: &str) {
+    let job = Job {
+        title: hex.to_owned(),
+        detail: String::from("copied"),
+        progress: None,
+        ended: Some(Ended::Done),
+    };
+
+    IslandService::write().post(activity(COLOR, job), Instant::now());
+}
+
+// the id of the first-start health notice; a space is outside a client's alphabet
+const HEALTH: &str = "health notice";
+
+/*
+ * the first start finds `waiting` checks that need attention (`settings::spawn_notice`, ADR 0088):
+ * the failed form of a Live Activity a while on the focused output, naming where to look
+ */
+pub fn health_attention(waiting: usize) {
+    let job = Job {
+        title: match waiting {
+            1 => String::from("1 check needs attention"),
+            _ => format!("{waiting} checks need attention"),
+        },
+        detail: String::from("open Settings, Health"),
+        progress: None,
+        ended: Some(Ended::Failed),
+    };
+
+    IslandService::write().post(activity(HEALTH, job), Instant::now());
+}
+
 /*
  * `kanade activity run`: starts the live Activity, runs `command` and ends it by how the command
  * ended, exiting as it did; 127 when it cannot start. The command runs without a shell to tell, as

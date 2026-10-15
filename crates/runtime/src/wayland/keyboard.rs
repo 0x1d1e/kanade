@@ -6,7 +6,7 @@ use wayland_client::{
     protocol::{wl_keyboard::WlKeyboard, wl_surface::WlSurface},
 };
 
-use crate::input::{focus, paste};
+use crate::input::{focus, paste, released};
 use crate::{Key, Modifiers};
 
 use super::WaylandState;
@@ -37,8 +37,9 @@ impl KeyboardHandler for WaylandState {
         self.keyboard_focus = None;
         self.modifiers = Modifiers::default();
 
-        // keys stop arriving, so no text input can stay focused
+        // keys stop arriving, so no text input can stay focused, and no key is held
         focus::clear();
+        released::send();
 
         self.request_frame_on(surface);
     }
@@ -73,6 +74,7 @@ impl KeyboardHandler for WaylandState {
         _: u32,
         _: KeyEvent,
     ) {
+        released::send();
     }
 
     // the state keys are read with, kept here since a key event does not carry it

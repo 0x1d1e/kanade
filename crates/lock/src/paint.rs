@@ -27,6 +27,10 @@ const BODY: f32 = 14.0;
 const ABOVE: f32 = 0.09;
 const BELOW: f32 = 0.08;
 
+// the layout label's size, and the room it takes at the field's end (three capitals and a gap)
+const LAYOUT: f32 = 12.0;
+const LAYOUT_ROOM: f32 = 32.0;
+
 // a dot of the password, and how far apart they are
 const DOT: f32 = 3.5;
 const PITCH: f32 = 11.0;
@@ -305,6 +309,11 @@ fn dots(look: &Look, field: Body) -> usize {
             caps + 6.0
         } else {
             0.0
+        }
+        - if look.scene.layout.is_empty() {
+            0.0
+        } else {
+            LAYOUT_ROOM
         };
     let fit = ((room - DOT * 2.0) / PITCH).floor().max(0.0) as usize + 1;
 
@@ -377,11 +386,28 @@ fn typed(pixmap: &mut Pixmap, look: &Look, field: Body) {
     }
 
     // caps lock on, as macOS's arrow at the field's end
+    let mut right = field.x + field.width - inset;
     if look.field.caps_lock {
-        let right = field.x + field.width - inset;
         if let Some(path) = caps_lock(right - caps, middle - caps / 2.0, caps, scale) {
             fill(pixmap, &path, palette.muted);
         }
+        right -= caps + 6.0;
+    }
+
+    // the keyboard layout in use, right-aligned before it; nothing without text
+    if !look.scene.layout.is_empty()
+        && let Some(faces) = look.faces
+    {
+        let font = faces.covering(&faces.semibold, &look.scene.layout);
+        let line = font.shape(&look.scene.layout, LAYOUT * scale, false);
+        let x = right - line.width / scale;
+        font.draw(
+            pixmap,
+            &line,
+            (x * scale, (middle + line.cap / scale / 2.0) * scale),
+            palette.muted,
+            1.0,
+        );
     }
 }
 

@@ -16,6 +16,7 @@ pub type ScrollHandler = Rc<dyn Fn(Scroll)>;
 pub type KeyHandler = Rc<dyn Fn(Key)>;
 pub type PointHandler = Rc<dyn Fn(Point)>;
 pub type DropHandler = Rc<dyn Fn(Vec<PathBuf>)>;
+pub type HoldHandler = Rc<dyn Fn(bool)>;
 
 #[derive(Clone, Default)]
 pub struct Handlers {
@@ -25,6 +26,7 @@ pub struct Handlers {
     pub drag: Option<PointHandler>,
     pub motion: Option<PointHandler>,
     pub drop: Option<DropHandler>,
+    pub hold: Option<HoldHandler>,
 
     // not a handler, but it belongs to the same spot the pointer is over
     pub cursor: Option<Cursor>,

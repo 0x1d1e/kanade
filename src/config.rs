@@ -177,6 +177,9 @@ pub struct Config {
     // `launcher.actions`: the apps' Desktop Actions are rows of the Launcher
     pub launcher_actions: bool,
 
+    // `settings.health_notice`: the one-time first-start Peek of checks that need attention (ADR 0088)
+    pub health_notice: bool,
+
     // `idle.*`: after how long idle each stage fires (ADR 0047)
     pub idle: Stages,
 
@@ -537,6 +540,7 @@ impl Default for Config {
             island_wheel: true,
             device_events: true,
             launcher_actions: true,
+            health_notice: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
                 lock: Some(Duration::from_secs(300)),
@@ -2280,6 +2284,20 @@ pub const LAUNCHER: &[Setting] = &[Setting {
     per_output: false,
 }];
 
+pub const SETTINGS: &[Setting] = &[Setting {
+    key: "settings.health_notice",
+    label: "Health notice",
+    help: "tell once, at the first start with checks that need attention, to open Settings' Health page",
+    hint: Some("Tell once when checks need attention"),
+    kind: Kind::Switch(Field {
+        get: |config| config.health_notice,
+        set: |config, on| config.health_notice = on,
+    }),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 pub const LIVE_STALE: Range = Range {
     least: 1,
     most: 1440,
@@ -3920,6 +3938,7 @@ mod tests {
                 "idle.lock",
                 "idle.screen_off",
                 "idle.suspend",
+                "settings.health_notice",
                 "hooks.lock",
                 "hooks.unlock",
                 "hooks.wallpaper",

@@ -42,6 +42,7 @@ mod destinations;
 mod emoji;
 mod history;
 mod provider;
+mod units;
 pub mod windows;
 
 use apps::{Actions, Apps as AppsProvider};

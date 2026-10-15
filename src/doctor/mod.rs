@@ -3,6 +3,7 @@
 //! Modules it turns on and what each needs outside Kanade. Runs without a shell, which may be what
 //! is wrong, so it reads everything itself. A failure means Kanade, or a Module that is on, cannot work; a
 //! warning, that it runs worse. There is no fix mode yet: Kanade owns no state a fix could touch.
+//! Settings' Health page shows the same checks from inside the shell (`in_shell`), read-only too.
 
 mod wayland;
 
@@ -28,19 +29,19 @@ use crate::sources::{binds, bus, cava, clipboard, keys, niri, pipewire, radios, 
 const NIRI: (u32, u32) = (26, 4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Verdict {
+pub enum Verdict {
     Ok,
     Warn,
     Fail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Check {
-    verdict: Verdict,
-    text: String,
+pub struct Check {
+    pub verdict: Verdict,
+    pub text: String,
 
     // lines under it, like each config problem
-    detail: Vec<String>,
+    pub detail: Vec<String>,
 }
 
 impl Check {
@@ -80,8 +81,42 @@ impl Check {
 
 // fails when any check does
 pub fn run() -> ExitCode {
-    let (config, problems) = config::read();
     let (shell, pid) = shell();
+    let checks = gather(shell, pid);
+
+    let report: String = checks
+        .iter()
+        .map(|check| format!("{}\n", check.render()))
+        .collect();
+
+    cli::print(
+        &report,
+        match checks.iter().any(|check| check.verdict == Verdict::Fail) {
+            true => ExitCode::FAILURE,
+            false => ExitCode::SUCCESS,
+        },
+    )
+}
+
+/*
+ * the checks of the shell this runs in, for Settings' Health page (ADR 0088): the same as
+ * `kanade doctor`, which would only ask this shell about itself. Slow and blocking, so off the draw
+ * thread
+ */
+pub fn in_shell() -> Vec<Check> {
+    let pid = std::process::id();
+    let shell = Check::ok(format!(
+        "shell: running kanade {}, protocol {}, pid {pid}",
+        env!("CARGO_PKG_VERSION"),
+        cli::PROTOCOL
+    ));
+
+    gather(shell, Some(pid))
+}
+
+// every check, with `shell` the check of the shell and `pid` its pid when it runs and is talked to
+fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
+    let (config, problems) = config::read();
     let running = pid.is_some();
 
     let mut checks = vec![
@@ -106,18 +141,7 @@ pub fn run() -> ExitCode {
     checks.extend(screencast_check(&config));
     checks.extend(sounds(&config));
 
-    let report: String = checks
-        .iter()
-        .map(|check| format!("{}\n", check.render()))
-        .collect();
-
-    cli::print(
-        &report,
-        match checks.iter().any(|check| check.verdict == Verdict::Fail) {
-            true => ExitCode::FAILURE,
-            false => ExitCode::SUCCESS,
-        },
-    )
+    checks
 }
 
 /*

@@ -1210,8 +1210,8 @@ notifications dnd on until <HH:MM>
         start: |app| app,
     },
     /*
-     * screenshots, by niri, whose own notification says when each is saved. Screen
-     * recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
+     * screenshots and the color picker, by niri, whose own notification says when each screenshot
+     * is saved. Screen recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
      */
     Module {
         name: "capture",
@@ -1226,7 +1226,7 @@ notifications dnd on until <HH:MM>
             },
             Need {
                 on: Provider::Program(clipboard::COPY),
-                without: "no copying a screenshot's path",
+                without: "no copying a screenshot's path or a picked color",
             },
             Need {
                 on: Provider::Program(capture::OPEN),
@@ -1241,16 +1241,17 @@ notifications dnd on until <HH:MM>
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "capture",
-            about: "Take a screenshot or record the screen",
+            about: "Take a screenshot, pick a color or record the screen",
             usage: || {
                 String::from(
-                    "capture screenshot area|window|output\ncapture record start|stop|status\ncapture cast window [<id>]|monitor [<output>]|clear",
+                    "capture screenshot area|window|output\ncapture color\ncapture record start|stop|status\ncapture cast window [<id>]|monitor [<output>]|clear",
                 )
             },
             parse: |arguments| match arguments {
                 ["screenshot", mode] => capture::Mode::parse(mode)
                     .map(Call::Screenshot)
                     .ok_or(Unparsed::Usage),
+                ["color"] => Ok(Call::PickColor),
                 ["record", request] => recording::Request::parse(request)
                     .map(Call::Record)
                     .ok_or(Unparsed::Usage),
@@ -1439,6 +1440,9 @@ notifications dnd on until <HH:MM>
         start: |app| {
             lock::relock();
             sleep::spawn();
+
+            // the layout in use shows in the password field; a hint, which the lock never needs
+            niri::on_keyboard(lock::keyboard);
             app.window_per_monitor(lock::scene)
         },
     },
@@ -1514,7 +1518,7 @@ notifications dnd on until <HH:MM>
         optional: &[],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::SETTINGS,
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "settings",
@@ -1536,7 +1540,10 @@ notifications dnd on until <HH:MM>
                 _ => Err(Unparsed::Usage),
             },
         }],
-        start: |app| app,
+        start: |app| {
+            settings::spawn_notice();
+            app
+        },
     },
     /*
      * commands the user lists for events (ADR 0055); the Module that owns an event fires it, so
