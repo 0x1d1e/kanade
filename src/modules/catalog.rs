@@ -17,7 +17,7 @@ use crate::sources::bluetooth::Adapter;
 use crate::sources::calendar::Calendars;
 use crate::sources::clipboard::Clipboard;
 use crate::sources::network::Connectivity;
-use crate::sources::notifications::Daemon;
+use crate::sources::notifications::{Daemon, timed};
 use crate::sources::system::Switch;
 use crate::sources::tray::Tray;
 use crate::sources::windows::Windows;
@@ -531,17 +531,36 @@ pub const ALL: &[Module] = &[
         // Do Not Disturb only quiets notifications, so it goes with them; opening their Surface is
         // `notification-surface`'s
         hooks: Hooks {
-            status: Some(|| vec![Daemon::read().status()]),
+            status: Some(|| {
+                let mut lines = vec![Daemon::read().status()];
+
+                if timed::ends().is_some() {
+                    lines.push(format!("do not disturb {}", timed::status()));
+                }
+
+                lines
+            }),
             ..Hooks::NONE
         },
         verbs: &[Verb {
             name: "notifications",
             about: "Clear, set do not disturb, open the list",
-            usage: || String::from("notifications clear\nnotifications dnd on|off|toggle"),
+            usage: || {
+                String::from(
+                    "notifications clear
+notifications dnd on|off|toggle|status
+notifications dnd on <duration>
+notifications dnd on until <HH:MM>
+  <duration>: like 90s, 25m or 1h30m, up to 24h
+  <HH:MM>: the next time the clock reads it",
+                )
+            },
             parse: |arguments| {
                 let call = match arguments {
                     ["clear"] => Some(Call::ClearNotifications),
-                    ["dnd", dnd @ ..] => Command::dnd(dnd).map(Call::Island),
+                    ["dnd", dnd @ ..] => Command::dnd(dnd)
+                        .map(Call::Island)
+                        .or_else(|| timed::Request::parse(dnd).map(Call::Dnd)),
                     _ => None,
                 };
                 call.ok_or(Unparsed::Usage)
@@ -1316,7 +1335,7 @@ pub const ALL: &[Module] = &[
         name: "focus",
         about: "Quiets the session with one switch",
         requires: &[CORE],
-        optional: &["notifications", "caffeine", "night-light"],
+        optional: &["notifications", "caffeine", "night-light", "privacy"],
         warns: None,
         needs: &[],
         settings: config::FOCUS,
@@ -1331,7 +1350,10 @@ pub const ALL: &[Module] = &[
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app,
+        start: |app| {
+            service::watch::<privacy::Privacy>(focus::follow_cast);
+            app
+        },
     },
     /*
      * the lock screen (ADR 0018), drawn by `kanade-lock` (ADR 0025), in the shell process; at
@@ -1489,7 +1511,7 @@ pub const ALL: &[Module] = &[
      */
     Module {
         name: hooks::MODULE,
-        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend and resume",
+        about: "Runs your commands on lock, unlock, wallpaper, tone, charger, suspend, resume, start, Do Not Disturb, power profile, log out, restart and power off",
         requires: &[CORE],
         optional: &[],
         warns: None,
@@ -1500,6 +1522,10 @@ pub const ALL: &[Module] = &[
             ..Hooks::NONE
         },
         verbs: &[],
-        start: |app| app,
+        // last of the Modules, so every one that is on has started
+        start: |app| {
+            hooks::fire(hooks::Event::Started);
+            app
+        },
     },
 ];

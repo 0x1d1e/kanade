@@ -166,6 +166,40 @@ impl Notifications {
         }
     }
 
+    /*
+     * a reply typed on a notification that asked for one (ADR 0079): told to its sender alone,
+     * then closed unless it is resident. The text is cut to `REPLY_LIMIT` characters, kept
+     * nowhere and never logged. False when there is nothing to reply to, text empty or no field
+     */
+    pub fn reply(id: u32, text: &str) -> bool {
+        Self::write().send_reply(id, text)
+    }
+
+    fn send_reply(&mut self, id: u32, text: &str) -> bool {
+        let text: String = text.trim().chars().take(server::REPLY_LIMIT).collect();
+
+        if text.is_empty() {
+            return false;
+        }
+
+        let Some(notification) = self
+            .list
+            .iter()
+            .find(|notification| notification.id == id)
+            .filter(|notification| notification.reply.is_some() && !notification.sender.is_empty())
+        else {
+            return false;
+        };
+
+        server::announce_reply(&notification.sender, id, &text);
+
+        if !notification.resident {
+            self.close(id, Reason::Dismissed);
+        }
+
+        true
+    }
+
     // the spec closes a notification once an action ran, unless it asked to stay
     fn run_action(&mut self, id: u32, key: &str) {
         let Some(notification) = self.list.iter().find(|notification| notification.id == id) else {
@@ -254,6 +288,8 @@ mod tests {
             urgency: Urgency::Normal,
             actions: Vec::new(),
             has_default: false,
+            reply: None,
+            sender: String::new(),
             resident: false,
             sound: Hints::default(),
             value: None,
@@ -293,6 +329,41 @@ mod tests {
         let many: Vec<_> = (1..=101).map(|id| from(id, &id.to_string())).collect();
         assert_eq!(oldest(&many, "101", 101), vec![1]);
         assert!(oldest(&many[..100], "100", 100).is_empty());
+    }
+
+    // a reply reaches only a notification that asked for one and whose sender is known, is never
+    // empty, and closes it unless it is resident
+    #[test]
+    fn a_reply_needs_a_field_a_sender_and_text() {
+        let mut notifications = Notifications::new();
+        let replying = |resident| Notification {
+            reply: Some(String::new()),
+            sender: String::from(":1.5"),
+            resident,
+            ..notification(true)
+        };
+
+        let plain = notifications.add(notification(true), 0);
+        let anonymous = notifications.add(
+            Notification {
+                sender: String::new(),
+                ..replying(false)
+            },
+            0,
+        );
+        let asking = notifications.add(replying(false), 0);
+        let staying = notifications.add(replying(true), 0);
+
+        assert!(!notifications.send_reply(plain, "hi"));
+        assert!(!notifications.send_reply(anonymous, "hi"));
+        assert!(!notifications.send_reply(asking, " \n "));
+        assert!(!notifications.send_reply(99, "hi"));
+
+        assert!(notifications.send_reply(asking, "hi"));
+        assert!(notifications.send_reply(staying, "hi"));
+
+        let ids: Vec<u32> = notifications.list.iter().map(|n| n.id).collect();
+        assert_eq!(ids, [plain, anonymous, staying]);
     }
 
     // an expiry of a version a replacement took over closes nothing, whatever the new one's rule

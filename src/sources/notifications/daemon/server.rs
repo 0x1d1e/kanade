@@ -8,6 +8,7 @@ use super::{Notification, Notifications, Urgency};
 
 use super::{Action, Reason, image_hint};
 use crate::config;
+use crate::modules;
 use crate::sources::notifications::rules::{self, Fields};
 use crate::sources::sound::Hints;
 
@@ -19,6 +20,20 @@ const INTERFACE: &str = "org.freedesktop.Notifications";
 
 // the key of what clicking the notification itself does
 pub const DEFAULT_ACTION: &str = "default";
+
+// the KDE extension for a typed reply (ADR 0079): this action key is a field, not a button
+const REPLY_ACTION: &str = "inline-reply";
+
+// the hint with the field's placeholder
+const REPLY_PLACEHOLDER: &str = "x-kde-reply-placeholder-text";
+
+// longest reply sent, in characters
+pub const REPLY_LIMIT: usize = 2000;
+
+// the reply field lives on a Banner, so it is offered only while Banners are
+fn replies() -> bool {
+    modules::on("banners")
+}
 
 pub fn run() {
     let bus = Bus::session();
@@ -66,7 +81,9 @@ fn notify(method: &Method) {
         return;
     };
 
-    let (actions, has_default) = read_actions(actions);
+    let (actions, has_default, wants_reply) = read_actions(actions, replies());
+
+    let reply = wants_reply.then(|| String::from(hints.get(REPLY_PLACEHOLDER).text()));
 
     let mut notification = Notification {
         // add() picks the real id
@@ -84,6 +101,8 @@ fn notify(method: &Method) {
 
         actions,
         has_default,
+        reply,
+        sender: method.sender(),
 
         resident: hints.get("resident").bool(),
 
@@ -147,11 +166,13 @@ fn lasts(milliseconds: f64) -> Option<Duration> {
 
 /*
  * actions come as one flat list: key, label, key, label;
- * the "default" one is what clicking the notification itself does
+ * the "default" one is what clicking the notification itself does, and with `replies` the
+ * "inline-reply" one is a field to type in, not a button
  */
-fn read_actions(list: &Value) -> (Vec<Action>, bool) {
+fn read_actions(list: &Value, replies: bool) -> (Vec<Action>, bool, bool) {
     let mut actions = Vec::new();
     let mut has_default = false;
+    let mut has_reply = false;
 
     for [key, label] in list.list().as_chunks::<2>().0 {
         let key = key.text();
@@ -163,13 +184,19 @@ fn read_actions(list: &Value) -> (Vec<Action>, bool) {
             continue;
         }
 
+        if replies && key == REPLY_ACTION {
+            has_reply = true;
+
+            continue;
+        }
+
         actions.push(Action {
             key: String::from(key),
             label: String::from(label),
         });
     }
 
-    (actions, has_default)
+    (actions, has_default, has_reply)
 }
 
 fn close(method: &Method) {
@@ -188,6 +215,10 @@ fn send_capabilities(method: &Method) {
         String::from("body"),
         String::from("icon-static"),
     ];
+
+    if replies() {
+        capabilities.push(String::from(REPLY_ACTION));
+    }
 
     // so a sender that can play its own sound knows Kanade does
     if config::get().notification_sound {
@@ -215,8 +246,43 @@ pub fn announce_action(id: u32, key: &str) {
     Bus::session().emit(PATH, INTERFACE, "ActionInvoked", &arguments);
 }
 
+// the typed reply goes to the one program that sent the notification, never to everyone
+pub fn announce_reply(sender: &str, id: u32, text: &str) {
+    let arguments = [Argument::from(id), Argument::from(text)];
+
+    Bus::session().emit_to(sender, PATH, INTERFACE, "NotificationReplied", &arguments);
+}
+
 pub fn announce_closed(id: u32, reason: Reason) {
     let arguments = [Argument::from(id), Argument::from(reason as u32)];
 
     Bus::session().emit(PATH, INTERFACE, "NotificationClosed", &arguments);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(keys: &[&str]) -> Value {
+        Value::List(
+            keys.iter()
+                .flat_map(|key| [Value::Text((*key).into()), Value::Text(String::new())])
+                .collect(),
+        )
+    }
+
+    // the reply action is a field only while Banners can show one; otherwise a sender gets what it
+    // always got, a button
+    #[test]
+    fn the_reply_action_is_a_field_only_when_replies_are_offered() {
+        let actions = list(&["inline-reply", "default", "open"]);
+
+        let (buttons, has_default, has_reply) = read_actions(&actions, true);
+        assert_eq!(buttons.len(), 1);
+        assert!(has_default && has_reply);
+
+        let (buttons, _, has_reply) = read_actions(&actions, false);
+        assert_eq!(buttons.len(), 2);
+        assert!(!has_reply);
+    }
 }

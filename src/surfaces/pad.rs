@@ -30,6 +30,7 @@ pub const BODY: f32 = geometry::PAD.height - 2.0 * INSET - HEADER - GAP;
 const TILE: f32 = 92.0;
 const TILE_GAP: f32 = 8.0;
 const KNOB: f32 = 40.0;
+const NOTE: f32 = 16.0;
 
 pub const PILL: f32 = 32.0;
 const PILL_WIDTH: f32 = 140.0;
@@ -296,21 +297,41 @@ pub fn pills(row: Vec<Box<dyn Widget>>) -> Row {
  * as the time left or what is doing
  */
 pub fn reading(icon: Icon, line: String) -> Rectangle {
+    noted(icon, line, Vec::new())
+}
+
+// a reading with short `notes` under it, each on a line of its own, cut where it does not fit
+pub fn noted(icon: Icon, line: String, notes: Vec<String>) -> Rectangle {
+    let mut column: Vec<Box<dyn Widget>> = vec![
+        Box::new(icon.on(28.0, theme::island().on_surface_variant)),
+        Box::new(
+            Text::new(line)
+                .size(theme::text::BODY)
+                .color(theme::island().on_surface)
+                .weight(theme::text::SEMIBOLD),
+        ),
+    ];
+
+    column.extend(notes.into_iter().map(|note| {
+        Box::new(
+            Rectangle::new()
+                .width(WIDTH - 2.0 * INSET)
+                .height(NOTE)
+                .align_child(Center, Center)
+                .child(
+                    Text::new(note)
+                        .size(theme::text::LABEL_SMALL)
+                        .color(theme::island().on_surface_variant)
+                        .elide(),
+                ),
+        ) as Box<dyn Widget>
+    }));
+
     Rectangle::new()
         .width(WIDTH)
         .height(BODY - PILL)
         .align_child(Center, Center)
-        .child(
-            Column::new(children![
-                icon.on(28.0, theme::island().on_surface_variant),
-                Text::new(line)
-                    .size(theme::text::BODY)
-                    .color(theme::island().on_surface)
-                    .weight(theme::text::SEMIBOLD)
-            ])
-            .gap(6.0)
-            .align(Center),
-        )
+        .child(Column::new(column).gap(4.0).align(Center))
 }
 
 // the reading and its pills, one under the other

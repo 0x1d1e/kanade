@@ -43,9 +43,11 @@ A notification card on the focused output, hanging from the Island on its edge a
 - Low shows 4 s, normal 6 s, Critical until closed. The pointer on any Banner pauses every timer. At most `MOST` (`src/banners/stack.rs`) show, newest nearest the Island; the rest queue, Critical first.
 - A notification rule (`notifications.rules`) matches a notification as it arrives, by app, desktop entry, category or a piece of its summary, ignoring case, every one it gives; the first matching wins, and none keeps the above. It may show no Banner, play no sound, keep it out of history, bypass DND, give its Banner its own time (a Critical one too) or change its urgency.
 - **Invariant:** a notification plays a sound only with `notifications.sound` on, only when new to the list (a replacement plays none), only if its rule and `suppress-sound` allow, and never under DND, a Critical one included. A sound is a helper (`pw-play`, else `canberra-gtk-play`) started without a shell, one at a time, for at most 5 s, from a `sound-file` hint that is an absolute existing regular file or a plain `sound-name`; Kanade links no audio library.
+- A notification whose sender asked for an inline reply (the KDE `inline-reply` action) gets a reply field on its Banner while the `banners` Module is on (ADR 0079). Enter sends the text to that sender only and closes the notification unless it is resident. A Banner with text typed in its field stays until sent or closed.
 - **Invariant:** an action runs only on a click, and closes the notification unless it is resident. A Banner closed with no action run (its X, its timer, a click with no default action) leaves the notification in history, unless its rule keeps it out: then it closes as expired, as one whose rule shows no Banner does at once.
 - **Invariant:** the history is bounded: 20 notifications of one app and 100 in all, the oldest of the app, then of all, closing as expired when one arrives past them. The Notifications Surface shows an app's notifications as a stack, the newest with a count, once it has more than one; a stack is closed each time the Surface opens, opened by click, Enter or Space, and its cross or Backspace dismisses all it holds. Banners are not stacked.
 - **Invariant:** under DND only Critical Banners show, and those whose rule says `bypass_dnd`; DND coming on drops the rest, queued too.
+- **Invariant:** a timed DND (`notifications dnd on 15m`, ADR 0075) ends only the DND it turned on: any other setting of DND cancels its end.
 - **Avoid:** toast (as the window; `Toast` is the text a Banner shows), popup
 
 ## OSD
@@ -120,7 +122,7 @@ One kind of answer the Launcher finds for a query: apps, an app's own Desktop Ac
 - **Avoid:** plugin, source (a source posts to the island)
 
 ## Hook
-A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume. The Module that owns the fact fires it.
+A command the user lists in config (`hooks.<event>`, an argv list) that Kanade runs on one of a closed set of events: lock, unlock, wallpaper, tone, charger, suspend, resume, started, dnd, power_profile, logout, reboot, poweroff (the last three fired just before logind is asked, and waited for up to `hooks.timeout`). The Module that owns the fact fires it.
 - **Invariant:** a hook never blocks a Service, a watcher or the draw thread; it runs as a bounded child that dies with Kanade, at most one per event at a time, and a fire while it runs is dropped.
 - **Invariant:** hooks are set in files, never through `kanade config set` or Settings. The payload is environment variables only; a failure logs the first line of the command's own error.
 - **Invariant:** a failing hook shows in `kanade status`, never as an Activity.

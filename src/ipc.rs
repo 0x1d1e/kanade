@@ -20,7 +20,7 @@ use crate::settings;
 use crate::sources::capture::{self, Asked};
 use crate::sources::clipboard;
 use crate::sources::niri::Acted;
-use crate::sources::notifications;
+use crate::sources::notifications::{self, timed};
 use crate::sources::osd;
 use crate::sources::recording;
 use crate::sources::timer;
@@ -111,6 +111,10 @@ fn run(call: Call) -> Reply {
             night_light::request(request).map_or_else(Reply::Refused, Reply::Done)
         }
         // through the same: it is the Controls tile's press as well
+        // a timed Do Not Disturb ends on a thread of its own, so this answers at once
+        Call::Dnd(request) => {
+            timed::request(request, Instant::now()).map_or_else(Reply::Refused, Reply::Done)
+        }
         Call::Focus(request) => focus::request(request).map_or_else(Reply::Refused, Reply::Done),
         // the sign-in and the sync are on threads of their own, so this answers at once
         Call::Google(request) => google::request(request).map_or_else(Reply::Refused, Reply::Done),

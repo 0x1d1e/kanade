@@ -45,7 +45,7 @@ use crate::sources::focus as quiet;
 use crate::sources::network::{Connectivity, set_wifi};
 use crate::sources::night_light::{self, Shade};
 use crate::sources::niri::Target;
-use crate::sources::notifications;
+use crate::sources::notifications::{self, timed};
 use crate::sources::power::{self, Profile, Profiles};
 use crate::sources::privacy::{self, Privacy};
 use crate::sources::system::Radio;
@@ -561,16 +561,19 @@ fn caffeine(on: Option<bool>) -> Switch {
 }
 
 fn dnd(on: Option<bool>) -> Switch {
+    // a timed one says when it ends
     let status = match on {
-        None => "Unavailable",
-        Some(true) => "On",
-        Some(false) => "Off",
+        None => String::from("Unavailable"),
+        Some(true) => timed::ends()
+            .and_then(timed::label)
+            .map_or_else(|| String::from("On"), |at| format!("Until {at}")),
+        Some(false) => String::from("Off"),
     };
 
     Switch {
         icon: icon(Tile::Dnd),
         name: "Do Not Disturb",
-        status: String::from(status),
+        status,
         on: on == Some(true),
         press: on.map(|on| Press::Dnd(!on)),
     }

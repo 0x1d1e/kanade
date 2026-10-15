@@ -221,14 +221,37 @@ impl Bus {
 
     /// A signal from Kanade's object at `path`, to whoever listens.
     pub fn emit(&self, path: &str, interface: &str, name: &str, arguments: &[Argument]) {
+        self.send(None, path, interface, name, arguments);
+    }
+
+    /// A signal from Kanade's object at `path`, to the one program at the unique name `to`.
+    pub fn emit_to(
+        &self,
+        to: &str,
+        path: &str,
+        interface: &str,
+        name: &str,
+        arguments: &[Argument],
+    ) {
+        self.send(Some(to), path, interface, name, arguments);
+    }
+
+    fn send(
+        &self,
+        to: Option<&str>,
+        path: &str,
+        interface: &str,
+        name: &str,
+        arguments: &[Argument],
+    ) {
         let Some(connection) = self.connection else {
             return;
         };
 
         let _ = if arguments.is_empty() {
-            connection.emit_signal(None::<&str>, path, interface, name, &())
+            connection.emit_signal(to, path, interface, name, &())
         } else {
-            connection.emit_signal(None::<&str>, path, interface, name, &body(arguments))
+            connection.emit_signal(to, path, interface, name, &body(arguments))
         };
     }
 
@@ -283,6 +306,15 @@ impl Signal {
 impl Method {
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The caller's unique name like :1.42, empty when the bus gave none.
+    pub fn sender(&self) -> String {
+        self.message
+            .header()
+            .sender()
+            .map(ToString::to_string)
+            .unwrap_or_default()
     }
 
     pub fn arguments(&self) -> &[Value] {

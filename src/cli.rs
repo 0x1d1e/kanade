@@ -21,6 +21,7 @@ mod keys;
 use crate::island::activity::Leave;
 use crate::island::command::{Command, Unparsed};
 use crate::modules::{self, Module};
+use crate::sources::notifications::timed;
 use crate::sources::system::Switch;
 use crate::sources::{
     caffeine, capture, charge_limit, focus, google, live, media, night_light, niri, osd, power,
@@ -68,6 +69,7 @@ pub enum Call {
     Caffeine(caffeine::Request),
     NightLight(night_light::Request),
     Focus(focus::Request),
+    Dnd(timed::Request),
     Battery(charge_limit::Request),
     Media(media::Transport),
     Wifi(Switch),
