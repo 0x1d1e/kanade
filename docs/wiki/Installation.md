@@ -57,6 +57,16 @@ layer-rule {
 }
 ```
 
+A Banner shows a notification's text, and a screencast (a browser share, OBS) shows the Banner too. To hide Banners from screencasts, add a layer rule for `kanade-banners`; niri draws them as a black rectangle there. It is off by default, because a viewer then never sees a Banner you wanted to show, and the installer's config has it commented out. Use `"screencast"`, not `"screen-capture"`, which would also blank Kanade's own screen copy for the `liquid-glass` finish. Leave the `kanade` namespace alone: the Island draws the privacy dots, which must stay visible. `kanade doctor` says whether the rule is set while the `banners` Module runs, and never warns about it. See [ADR 0070](../adr/0070-banners-out-of-screencasts.md).
+
+```kdl
+layer-rule {
+    match namespace="^kanade-banners$"
+
+    block-out-from "screencast"
+}
+```
+
 Only one Kanade runs per session. A second one stops at start with `failed to listen: kanade is already running`.
 
 ## Run

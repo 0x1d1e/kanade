@@ -161,6 +161,9 @@ struct Found {
 
     // each layer rule's say on xray, in file order, with its namespace pattern as above
     xrays: Vec<(Option<String>, bool)>,
+
+    // the namespace pattern of each layer rule that blocks its layers out of screencasts
+    blocks: Vec<Option<String>>,
 }
 
 /*
@@ -245,6 +248,26 @@ pub fn xrayed<'a>(
         .collect())
 }
 
+/*
+ * whether a layer rule of the config at `path`, or a file it includes, blocks the layer of
+ * `namespace` out of screencasts (`block-out-from`): niri draws it as a black rectangle there
+ */
+pub fn blocked_from_screencasts(
+    path: &Path,
+    namespace: &str,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+) -> Result<bool, Unread> {
+    let mut found = Found::default();
+
+    walk(path, false, &mut Vec::new(), read, &mut found)?;
+
+    Ok(found.blocks.iter().any(|pattern| {
+        pattern
+            .as_deref()
+            .is_none_or(|pattern| matches(pattern, namespace))
+    }))
+}
+
 fn walk(
     path: &Path,
     optional: bool,
@@ -319,6 +342,15 @@ fn walk(
 
                 if placed == Some(true) {
                     found.backdrops.extend(patterns());
+                }
+
+                let blocked = named("block-out-from")
+                    .next_back()
+                    .and_then(|child| child.get(0))
+                    .and_then(KdlValue::as_string);
+
+                if matches!(blocked, Some("screencast" | "screen-capture")) {
+                    found.blocks.extend(patterns());
                 }
 
                 let xray = named("background-effect")
@@ -797,6 +829,33 @@ mod tests {
             Ok(vec!["kanade-dock"])
         );
         assert_eq!(xrayed(&rule("^kanade(-dock)?$", false)), Ok(vec![]));
+    }
+
+    // a Banner shows a notification's text, so the opt-in rule hides it from a screencast
+    #[test]
+    fn a_layer_rule_blocks_the_layers_it_matches_from_screencasts() {
+        let blocked = |text: &str| {
+            let config = files(&[("/c/config.kdl", text)]);
+
+            blocked_from_screencasts(Path::new("/c/config.kdl"), "kanade-banners", &mut |file| {
+                config
+                    .get(file)
+                    .cloned()
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+            })
+        };
+
+        assert_eq!(blocked("binds { }"), Ok(false));
+        assert_eq!(
+            blocked("layer-rule { match namespace=\"^kanade$\"; block-out-from \"screencast\"; }"),
+            Ok(false)
+        );
+        assert_eq!(
+            blocked(
+                "layer-rule { match namespace=\"^kanade-banners$\"; block-out-from \"screencast\"; }"
+            ),
+            Ok(true)
+        );
     }
 
     #[test]

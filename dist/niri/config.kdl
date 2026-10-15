@@ -101,6 +101,16 @@ layer-rule {
     }
 }
 
+// Opt in: hide Banners, which show notification text, from screencasts (a share or OBS sees a black
+// rectangle). Only kanade-banners: the "kanade" namespace also draws the privacy dots, which must
+// stay visible. Use "screencast", never "screen-capture", which would also blank Kanade's own
+// screen copy for the liquid-glass finish
+// layer-rule {
+//     match namespace="^kanade-banners$"
+//
+//     block-out-from "screencast"
+// }
+
 overview {
     workspace-shadow {
         off

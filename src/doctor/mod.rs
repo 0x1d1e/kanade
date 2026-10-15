@@ -103,6 +103,7 @@ pub fn run() -> ExitCode {
     checks.extend(modules(&config, running));
     checks.extend(backdrop(&config));
     checks.extend(blur.then(blur_check).flatten());
+    checks.extend(screencast_check(&config));
     checks.extend(sounds(&config));
 
     let report: String = checks
@@ -713,6 +714,46 @@ fn blur_check() -> Option<Check> {
         },
         Err(unread) => Check::warn(format!(
             "niri: cannot tell whether the finish blur blurs the windows behind the panes: {}: {}",
+            unread.file.display(),
+            unread.why
+        )),
+    })
+}
+
+/*
+ * whether Banners, which show a notification's text, are hidden from screencasts: only by an
+ * opt-in layer rule in the config Kanade never edits, never a warning (ADR 0070). Asked only
+ * while the `banners` Module runs
+ */
+fn screencast_check(config: &Config) -> Option<Check> {
+    if !modules::resolve(modules::ALL, |name| config.off(name)).on("banners") {
+        return None;
+    }
+
+    let path = binds::config()?;
+    let found = binds::blocked_from_screencasts(&path, "kanade-banners", &mut |file| {
+        fs::read_to_string(file)
+    });
+
+    Some(match found {
+        Ok(true) => Check::ok(String::from(
+            "niri: a layer rule blocks Banners out of screencasts",
+        )),
+        Ok(false) => Check {
+            detail: vec![
+                String::from(
+                    "opt in with this rule in niri's config.kdl, see docs/wiki/Installation.md:",
+                ),
+                String::from(
+                    "layer-rule { match namespace=\"^kanade-banners$\"; block-out-from \"screencast\"; }",
+                ),
+            ],
+            ..Check::ok(String::from(
+                "niri: Banners show on screencasts (opt-in layer rule not set)",
+            ))
+        },
+        Err(unread) => Check::warn(format!(
+            "niri: cannot tell whether Banners are blocked out of screencasts: {}: {}",
             unread.file.display(),
             unread.why
         )),
