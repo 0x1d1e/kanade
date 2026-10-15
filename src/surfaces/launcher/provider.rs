@@ -77,6 +77,9 @@ pub enum Action {
     // opens another Surface or Settings, as the island does
     Open(Destination),
 
+    // runs this Kanade verb through the shell's own socket, as the CLI does (ADR 0112)
+    Run(&'static [&'static str]),
+
     // answers the dmenu waiting with the place of the line chosen
     Choose(usize),
 }

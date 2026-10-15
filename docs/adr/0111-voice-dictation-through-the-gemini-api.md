@@ -49,6 +49,7 @@ No live key was available when this was written. None of the following has run a
 - the free tier's quota and its 429 behavior;
 - that `wtype` types into the focused window of the user's compositor and sends Ctrl+V as written (not run for this slice: a keymap change by `wtype` can race, and the first characters may be lost, as the key-sending notes in AGENTS.md describe for tests);
 - that the recorder, started from the long-lived gate thread, survives between toggles in a live session (the structure follows ADR 0027; no stand-in test or live run covers it);
+- that a recording stopped just before the session locks captures no audio after the lock: the recorder is told to stop and killed only after `STOPPING` (3 s), so it can hear until it exits;
 - that `lock::holds()` is true for the whole of a lock, from the first request to the unlock (read, not exercised with a dictation);
 - that `wl-copy --sensitive` is honored by the clipboard managers in use;
 - how `pw-record` behaves when its output is a pipe closed early (it is stopped with SIGINT, which was checked to end it with its audio intact, not against every PipeWire version).

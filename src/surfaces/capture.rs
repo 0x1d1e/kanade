@@ -20,7 +20,7 @@ use crate::sources::capture::{self, Mode};
 use crate::sources::recording::{self, Request};
 
 // the island's collapse and the compositor's frame after it, so a screenshot does not catch it
-const CLEAR: Duration = Duration::from_millis(400);
+pub const CLEAR: Duration = Duration::from_millis(400);
 
 // what the ring can be on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

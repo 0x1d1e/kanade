@@ -184,6 +184,9 @@ pub struct Config {
     // `launcher.actions`: the apps' Desktop Actions are rows of the Launcher
     pub launcher_actions: bool,
 
+    // `launcher.commands`: Kanade's own verbs, like Toggle Caffeine, are rows of the Launcher (ADR 0112)
+    pub launcher_commands: bool,
+
     // `settings.health_notice`: the one-time first-start Peek of checks that need attention (ADR 0088)
     pub health_notice: bool,
 
@@ -558,6 +561,7 @@ impl Default for Config {
             island_wheel: true,
             device_events: true,
             launcher_actions: true,
+            launcher_commands: true,
             health_notice: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
@@ -2426,19 +2430,34 @@ pub const UI: &[Setting] = &[Setting {
     per_output: false,
 }];
 
-pub const LAUNCHER: &[Setting] = &[Setting {
-    key: "launcher.actions",
-    label: "App actions",
-    help: "an app's own actions, like a browser's New Private Window, are rows of the Launcher once two letters are typed",
-    hint: Some("List an app's own actions in the Launcher"),
-    kind: Kind::Switch(Field {
-        get: |config| config.launcher_actions,
-        set: |config, on| config.launcher_actions = on,
-    }),
-    example: None,
-    restart: false,
-    per_output: false,
-}];
+pub const LAUNCHER: &[Setting] = &[
+    Setting {
+        key: "launcher.actions",
+        label: "App actions",
+        help: "an app's own actions, like a browser's New Private Window, are rows of the Launcher once two letters are typed",
+        hint: Some("List an app's own actions in the Launcher"),
+        kind: Kind::Switch(Field {
+            get: |config| config.launcher_actions,
+            set: |config, on| config.launcher_actions = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "launcher.commands",
+        label: "Commands",
+        help: "Kanade's own commands, like Toggle Caffeine or Screenshot Area, are rows of the Launcher once two letters of their name are typed; pressing one runs it",
+        hint: Some("List Kanade's own commands in the Launcher"),
+        kind: Kind::Switch(Field {
+            get: |config| config.launcher_commands,
+            set: |config, on| config.launcher_commands = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const SETTINGS: &[Setting] = &[Setting {
     key: "settings.health_notice",
@@ -4109,6 +4128,7 @@ mod tests {
                 "wallpaper.transition",
                 "wallpaper.transition_duration",
                 "launcher.actions",
+                "launcher.commands",
                 "calendar.paths",
                 "calendar.reminder",
                 "calendar.subscriptions",

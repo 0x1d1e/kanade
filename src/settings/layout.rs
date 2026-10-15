@@ -241,7 +241,7 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Launcher",
-                rows: &[Row::Key("launcher.actions")],
+                rows: &[Row::Key("launcher.actions"), Row::Key("launcher.commands")],
             },
             Section {
                 title: "Feedback",

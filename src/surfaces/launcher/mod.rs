@@ -4,7 +4,7 @@
 //! It opens only from IPC or a keybind, so it always holds the keyboard: typing searches, the arrow
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
 //! starts and the island closes; a value or an emoji is copied, and the island
-//! closes once it is, or says it was not. It says when the apps are still being found and when
+//! closes once it is, or says it was not; a command (`commands`, Kanade's own verbs) runs through the socket and closes the island once answered, or says `Not run`. It says when the apps are still being found and when
 //! nothing matches. `kanade dmenu` opens it on a script's lines alone (`choose`).
 
 use std::thread;
@@ -28,17 +28,18 @@ use crate::sources::bluetooth::Adapter;
 use crate::sources::network::Connectivity;
 use crate::sources::niri::{self, Acted};
 use crate::sources::system::Radio;
-use crate::sources::{self, clipboard};
+use crate::sources::{self, clipboard, live};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
 
 use super::visit::Visited;
-use super::{Outline, controls, store};
+use super::{Outline, capture, controls, store};
 
 mod apps;
 mod calculator;
 pub mod choose;
+mod commands;
 mod destinations;
 mod emoji;
 mod history;
@@ -49,6 +50,7 @@ pub mod windows;
 use apps::{Actions, Apps as AppsProvider};
 use calculator::Calculator;
 use choose::{Choices, Choosing};
+use commands::Commands;
 use destinations::{Destination, Destinations};
 use emoji::Emoji;
 use history::History;
@@ -157,6 +159,8 @@ impl Search {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Paste(_) => Some(String::from("Not copied")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
+            // `dispatch` worded it, as it knows whether the verb may have run
+            Action::Run(_) => Some(why.clone()),
             Action::Launch(..) | Action::Perform(..) | Action::Focus(_) | Action::Choose(_) => None,
         }
     }
@@ -395,6 +399,29 @@ fn destinations() -> Destinations {
     }
 }
 
+// the verbs that exist now: their Module is on and, for a radio, the machine has one
+fn commands(offered: bool) -> Commands {
+    if !offered {
+        return Commands::default();
+    }
+
+    let radios = Radios::read();
+
+    Commands {
+        caffeine: modules::on("caffeine"),
+        night_light: modules::on("night-light"),
+        focus: modules::on("focus"),
+        notifications: modules::on("notifications"),
+        wifi: radios.wifi,
+        bluetooth: radios.bluetooth,
+        power: modules::on("power"),
+        capture: modules::on("capture"),
+        lock: modules::on("lock"),
+        wallpaper: modules::on("wallpaper"),
+        dictation: modules::on("dictation"),
+    }
+}
+
 // what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit
 fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
     if let Some((_, choices)) = choose::of(visit) {
@@ -418,6 +445,7 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
             &Actions(apps, config::get().launcher_actions),
             &windows::Titles(&titles),
             &destinations,
+            &commands(config::get().launcher_commands),
             &Emoji,
             &History { entries: &entries },
         ],
@@ -844,8 +872,8 @@ pub fn key(monitor: &str, key: Key) -> bool {
 }
 
 /*
- * what starts, is copied or set is in the way of nothing, so the island closes; a copy or a
- * wallpaper once it is done. One of those at a time
+ * what starts, is copied or set is in the way of nothing, so the island closes; a copy, a wallpaper
+ * or a verb once it is done. One of those at a time
  */
 fn press(monitor: &str, visit: u64, action: Action) {
     if let Action::Choose(index) = action {
@@ -881,6 +909,13 @@ fn press(monitor: &str, visit: u64, action: Action) {
         });
 
         view::collapse(monitor);
+        return;
+    }
+
+    if let Action::Run(verb) = &action
+        && commands::clears_island(verb)
+    {
+        run_cleared(monitor, verb);
         return;
     }
 
@@ -927,6 +962,7 @@ fn press(monitor: &str, visit: u64, action: Action) {
     let started = match &action {
         Action::Copy(text) => copy(text.clone(), done),
         Action::Paste(id) => paste(*id, done),
+        Action::Run(verb) => run(verb, done),
         Action::Launch(..)
         | Action::Perform(..)
         | Action::Focus(_)
@@ -1024,6 +1060,50 @@ fn copy(
             eprintln!("kanade: cannot copy a Launcher answer ({error})");
             error.to_string()
         })
+}
+
+/*
+ * runs a Kanade verb of the table (`commands`) through the shell's own socket, as the CLI and a
+ * gesture do (ADR 0107, 0112), so its Module gate and parse apply; the Launcher never calls a
+ * source itself. Off the view thread, as the shell answers it there. Told to `done` once answered,
+ * with the words its row shows if it was not
+ */
+fn run(
+    verb: &'static [&'static str],
+    done: impl FnOnce(Result<(), String>) + Send + 'static,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("launcher-verb".into())
+        .spawn(move || done(commands::dispatch(verb)))
+        .map(drop)
+        .map_err(|error| {
+            eprintln!("launcher: cannot run {verb:?} ({error})");
+            commands::not_run(&error.to_string())
+        })
+}
+
+/*
+ * a verb that would catch the island in what it takes (`commands::clears_island`): the island
+ * collapses, and the verb runs once it and the compositor's frame after it are gone, as the
+ * Capture Surface does. The row is gone by then, so a failure shows as a failed Activity, as a
+ * gesture's does
+ */
+fn run_cleared(monitor: &str, verb: &'static [&'static str]) {
+    view::collapse(monitor);
+
+    let spawned = thread::Builder::new()
+        .name("launcher-verb".into())
+        .spawn(move || {
+            thread::sleep(capture::CLEAR);
+
+            if let Err(why) = commands::dispatch(verb) {
+                live::gesture(commands::title(verb), &why);
+            }
+        });
+
+    if let Err(error) = spawned {
+        eprintln!("launcher: cannot run {verb:?} ({error})");
+    }
 }
 
 // puts the history's entry back on the clipboard; it is gone if the history dropped it since the row was drawn
