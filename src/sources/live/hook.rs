@@ -4,25 +4,26 @@
 //! Only Claude Code's hooks are read, as its documentation gives them (`docs/wiki/Agent-hooks.md`).
 //!
 //! It runs in the client, inside the agent's own loop, so it is bounded: a document is read to a
-//! limit, the shell is waited for `PATIENCE`, and the exit status is 0 or 1, never 2, which Claude
+//! limit, the shell is waited for `PATIENCE` in all, and the exit status is 0 or 1, never 2, which Claude
 //! Code takes as a block. No shell, or the `live` Module off, is no error: the agent runs on
 //! machines where Kanade does not. What the document says is never logged; the title and the
 //! detail are cut as any other, by the shell.
 
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ring::digest;
 use serde::Deserialize;
 
-use super::{ID, NOT_LIVE, TITLE, line, valid_id};
+use super::{DETAIL, ID, NOT_LIVE, TITLE, line, valid_id};
 use crate::cli::{self, Reply};
 
 // the longest document read; a prompt or a reply may be long, the rest is a few hundred bytes
 const LIMIT: u64 = 8 * 1024 * 1024;
 
-// how long the shell may take to answer each verb, so a stuck one never holds the agent for long
+// how long the shell may take over all the verbs of one hook, so a stuck one never holds the agent
+// for long: a failure that starts the Activity first says three, within this together
 const PATIENCE: Duration = Duration::from_secs(2);
 
 // the agents whose hooks are read
@@ -89,7 +90,11 @@ fn plan(agent: Agent, document: &[u8]) -> Result<Option<Plan>, String> {
 
     let action = match event.hook_event_name.as_str() {
         "UserPromptSubmit" => Action::Start,
-        "PreToolUse" => Action::Detail(event.tool_name.unwrap_or_default()),
+        // cut here, before it goes over the socket, as the shell cuts it again
+        "PreToolUse" => Action::Detail(line(
+            &[event.tool_name.as_deref().unwrap_or_default()],
+            DETAIL,
+        )),
         "PermissionRequest" => Action::Detail(String::from(WAITING)),
         // an idle prompt comes after the turn ended, and the rest say nothing of waiting
         "Notification" => match event.notification_type.as_deref() {
@@ -120,6 +125,7 @@ fn plan(agent: Agent, document: &[u8]) -> Result<Option<Plan>, String> {
         .cwd
         .as_deref()
         .and_then(|cwd| cwd.trim_end_matches('/').rsplit('/').next())
+        .map(|name| line(&[name], TITLE))
         .filter(|name| !name.is_empty());
 
     Ok(Some(Plan {
@@ -137,7 +143,7 @@ const WAITING: &str = "Waiting for you";
 
 // an error type like `rate_limit` as a line: `Rate limit`
 fn failure(error: Option<&str>) -> String {
-    let text = error.unwrap_or("failed").replace('_', " ");
+    let text = line(&[&error.unwrap_or("failed").replace('_', " ")], DETAIL);
     let mut letters = text.chars();
 
     letters
@@ -227,6 +233,7 @@ fn read(input: impl Read) -> io::Result<Vec<u8>> {
 
 // `kanade activity hook`: 0 when it is told or needs no telling, 1 with a line on stderr otherwise
 pub fn run(agent: Agent) -> ExitCode {
+    let deadline = Instant::now() + PATIENCE;
     let told = read(io::stdin().lock())
         .map_err(|error| format!("stdin: {error}"))
         .and_then(|document| plan(agent, &document))
@@ -234,7 +241,7 @@ pub fn run(agent: Agent) -> ExitCode {
             Some(plan) => carry_out(&plan, &mut |words| {
                 let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
 
-                cli::call_within(&words, PATIENCE)
+                cli::call_within(&words, deadline.saturating_duration_since(Instant::now()))
             }),
             None => Ok(()),
         });

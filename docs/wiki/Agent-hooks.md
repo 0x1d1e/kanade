@@ -12,7 +12,7 @@ Add this to `~/.claude/settings.json` (or a project's `.claude/settings.json`), 
 {
   "hooks": {
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude", "timeout": 5 }] }],
-    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude", "timeout": 5 }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude", "async": true }] }],
     "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude", "timeout": 5 }] }],
     "Notification": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude", "timeout": 5 }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "kanade activity hook claude", "timeout": 5 }] }],
@@ -23,6 +23,8 @@ Add this to `~/.claude/settings.json` (or a project's `.claude/settings.json`), 
 ```
 
 `kanade` must be on the `PATH` Claude Code runs with. Each hook reads its event from stdin, so there is nothing else to configure; use as few of the events as you like.
+
+`PreToolUse` fires before every tool call, so it is the one that could add latency to a busy turn; `"async": true` ([hooks reference](https://code.claude.com/docs/en/hooks), "Run hooks in the background") lets Claude Code go on without waiting for it. Claude Code then does not enforce `timeout` on it, which is why it has none here; the hook bounds itself to 2 s. Events can then arrive out of order, which is harmless: a tool detail for a session that has ended changes nothing. The other events are rare and stay synchronous.
 
 | Claude Code event | The Activity |
 |---|---|
@@ -39,7 +41,7 @@ What it does and does not do:
 - A tool, wait or end event for a session that is not live changes nothing, so a late event never brings an ended session back. Restarting Kanade mid-turn loses the Activity until your next prompt. A turn you interrupt sends no `Stop`; `SessionEnd`, or `live.stale` (30 min), ends it.
 - The `Waiting for you` line stays until the next tool or the end, as no event says you answered.
 - Many calls a second are held to about 4 posts a second per session, so a busy agent does not redraw the Island for each.
-- The hook is bounded so it cannot hold the agent: it waits at most 2 s for the shell. It exits 0 when it told the shell, when the event needs nothing shown, and when no shell is running or `live` is off (Claude Code runs on machines without Kanade). It exits 1, with one line on stderr that holds none of the document, for something not a Claude Code event, an event it does not map, or a refusal like the 8 live. It never exits 2, which Claude Code takes as a block; Claude Code shows a non-zero exit as a hook error and goes on.
+- The hook is bounded so it cannot hold the agent: it waits at most 2 s in all, connecting, writing and reading the answer together, even when it has to say three things to show a failure. It exits 0 when it told the shell, when the event needs nothing shown, and when no shell is running or `live` is off (Claude Code runs on machines without Kanade). It exits 1, with one line on stderr that holds none of the document, for something not a Claude Code event, an event it does not map, or a refusal like the 8 live. It never exits 2, which Claude Code takes as a block; Claude Code shows a non-zero exit as a hook error and goes on.
 
 ## Other agents
 

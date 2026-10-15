@@ -9,6 +9,8 @@ use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::process::ExitCode;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{IpcCall, ipc_socket};
@@ -564,9 +566,10 @@ pub fn call(arguments: &[String]) -> Result<Reply, String> {
     call_within(arguments, PATIENCE)
 }
 
-// as `call`, for a caller that cannot wait as long, like an agent's hook
+// as `call`, for a caller that cannot wait as long, like an agent's hook: connecting, writing and
+// the reply all fall within `patience`
 pub fn call_within(arguments: &[String], patience: Duration) -> Result<Reply, String> {
-    let stream = connect(arguments)?;
+    let stream = connect(arguments, Some(patience))?;
 
     send(stream, &IpcCall::new(HANDLER, arguments), Some(patience))
 }
@@ -581,13 +584,17 @@ pub fn module_off(name: &str) -> String {
 
 // as `call`, waiting as long as the shell takes, as on the user
 fn call_waiting(arguments: &[String]) -> Result<Reply, String> {
-    let stream = connect(arguments)?;
+    let stream = connect(arguments, None)?;
 
     send(stream, &IpcCall::new(HANDLER, arguments), None)
 }
 
-// the running shell to send `arguments` to
-fn connect(arguments: &[String]) -> Result<UnixStream, String> {
+/*
+ * the running shell to send `arguments` to. A connect to a shell whose queue is full waits, so
+ * with a `patience` it is made on a thread that is left behind when the time is up: the caller
+ * exits soon after, and the thread ends with it
+ */
+fn connect(arguments: &[String], patience: Option<Duration>) -> Result<UnixStream, String> {
     // a newline would split one argument into two on the shell's side
     if arguments.iter().any(|argument| argument.contains('\n')) {
         return Err(String::from("an argument cannot hold a newline"));
@@ -600,7 +607,22 @@ fn connect(arguments: &[String]) -> Result<UnixStream, String> {
         ));
     }
 
-    UnixStream::connect(ipc_socket()).map_err(|_| String::from(NO_SHELL))
+    let socket = ipc_socket();
+
+    let Some(patience) = patience else {
+        return UnixStream::connect(socket).map_err(|_| String::from(NO_SHELL));
+    };
+
+    let (sender, receiver) = mpsc::channel();
+
+    thread::spawn(move || drop(sender.send(UnixStream::connect(socket))));
+
+    match receiver.recv_timeout(patience) {
+        Ok(connected) => connected.map_err(|_| String::from(NO_SHELL)),
+        Err(_) => Err(format!(
+            "the shell did not take the call within {patience:?}"
+        )),
+    }
 }
 
 /*
@@ -729,12 +751,19 @@ fn send(
     let deadline = patience.map(|patience| Instant::now() + patience);
     let late = || format!("did not answer within {:?}", patience.unwrap_or_default());
 
-    let sent = call
-        .write(&mut stream)
+    // a shell that reads no more must not hold the writer either
+    let sent = stream
+        .set_write_timeout(patience.map(|patience| patience.max(Duration::from_millis(1))))
+        .and_then(|()| call.write(&mut stream))
         // closing our side is how the shell knows the call is complete
         .and_then(|()| stream.shutdown(Shutdown::Write));
 
-    sent.map_err(|error| format!("the shell closed the connection: {error}"))?;
+    sent.map_err(|error| match error.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+            String::from("the shell did not take the call in time")
+        }
+        _ => format!("the shell closed the connection: {error}"),
+    })?;
 
     let mut reply = Vec::new();
     let mut read = [0; 4096];
