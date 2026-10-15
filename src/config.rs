@@ -420,11 +420,12 @@ pub struct Transition {
 }
 
 impl Transition {
-    pub const KINDS: &[&str] = &["simple", "fade", "wipe", "grow", "outer"];
+    pub const KINDS: &[&str] = &["simple", "fade", "wipe", "grow", "outer", "random"];
 
-    // the two that grow or shrink a circle, from where the wallpaper was chosen
+    // those that grow or shrink a circle, from where the wallpaper was chosen; awww's "random" may
+    // pick one, and ignores the point when it picks another
     pub fn circle(self) -> bool {
-        matches!(self.kind, "grow" | "outer")
+        matches!(self.kind, "grow" | "outer" | "random")
     }
 }
 
@@ -1815,7 +1816,7 @@ pub const WALLPAPER: &[Setting] = &[
     Setting {
         key: "wallpaper.transition",
         label: "Transition",
-        help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle",
+        help: "how awww moves to a new wallpaper: \"simple\" fades at its own pace, \"fade\" fades, \"wipe\" sweeps across, \"grow\" opens a circle and \"outer\" closes one, from the tile chosen on the Wallpapers Surface, else the middle, and \"random\" lets awww pick one each time",
         hint: Some("How the wallpaper changes to a new image"),
         kind: Kind::Choice(
             Choices::named(Transition::KINDS),
