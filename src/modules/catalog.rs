@@ -743,7 +743,7 @@ pub const ALL: &[Module] = &[
         ],
         warns: None,
         needs: &[],
-        settings: &[],
+        settings: config::CONTROLS,
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "controls",

@@ -23,6 +23,7 @@ use crate::pane;
 use crate::sources::icons;
 use crate::theme::space::TARGET;
 use crate::theme::{self, ThemeRoles, radius};
+use crate::tiles::{self, Placed};
 
 use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
 use super::ring::{self, Stop};
@@ -1201,6 +1202,7 @@ fn control(
                 setting,
                 (field.get)(read),
                 "Add a .desktop file id, then Enter",
+                None,
                 roles,
             )),
             false,
@@ -1210,6 +1212,7 @@ fn control(
                 setting,
                 (field.get)(read),
                 "Add a file or directory, then Enter",
+                None,
                 roles,
             )),
             false,
@@ -1219,6 +1222,17 @@ fn control(
                 setting,
                 (field.get)(read),
                 "Add a feed address, then Enter",
+                None,
+                roles,
+            )),
+            false,
+        ),
+        Kind::Tiles(field) => (
+            Box::new(list(
+                setting,
+                (field.get)(read).iter().map(Placed::to_string).collect(),
+                "Add a tile, like focus or wifi:full, then Enter",
+                Some(tiles::cycled),
                 roles,
             )),
             false,
@@ -1720,6 +1734,7 @@ fn list(
     setting: &'static Setting,
     ids: Vec<String>,
     placeholder: &str,
+    cycle: Option<fn(&str) -> Option<String>>,
     roles: &ThemeRoles,
 ) -> Column {
     let key = setting.key;
@@ -1747,6 +1762,17 @@ fn list(
                 actions.push(text_button(
                     format!("down {key} {id}"),
                     "\u{2193}",
+                    roles,
+                    to(list),
+                ));
+            }
+
+            if let Some(next) = cycle.and_then(|cycle| cycle(id)) {
+                let mut list = ids.clone();
+                list[index] = next;
+                actions.push(text_button(
+                    format!("cycle {key} {id}"),
+                    "\u{21c4}",
                     roles,
                     to(list),
                 ));

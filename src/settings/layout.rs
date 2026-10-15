@@ -396,6 +396,10 @@ pub const PAGES: &[Page] = &[
                 ],
             },
             Section {
+                title: "Controls",
+                rows: &[Row::Key("controls.tiles")],
+            },
+            Section {
                 title: "Focus",
                 rows: &[
                     Row::Key("focus.dnd"),

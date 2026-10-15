@@ -1,6 +1,6 @@
 # 60. Focus is one switch over the Modules that already quiet the session
 
-Status: accepted. Builds on ADR 0046 (night light), ADR 0007 (Banners), ADR 0030 (the Controls canvas).
+Status: accepted. Builds on ADR 0046 (night light), ADR 0007 (Banners), ADR 0030 (the Controls canvas). Amended by [ADR 0067](0067-arrangeable-controls-tiles.md): Focus is a labelled tile, and the layout is configurable.
 
 ## Context
 

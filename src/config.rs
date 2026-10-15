@@ -50,6 +50,7 @@ use crate::look::{
 use crate::modules;
 use crate::sources::notifications::rules::Rule;
 use crate::sources::weather::Units;
+use crate::tiles::{self, Placed};
 
 // a level change shows for 1000-1400 ms
 const OSD_TIME: Duration = Duration::from_millis(1200);
@@ -190,6 +191,9 @@ pub struct Config {
 
     // `focus.*`: what Focus turns on
     pub focus: Focus,
+
+    // `controls.tiles`: which switches the Controls Surface shows, in order and size (ADR 0067)
+    pub tiles: Vec<Placed>,
     // `timer.pomodoro.*`: what `kanade timer pomodoro` runs when not told
     pub pomodoro: Pomodoro,
 
@@ -510,6 +514,7 @@ impl Default for Config {
             battery: Battery::default(),
             night_light: NightLight::default(),
             focus: Focus::default(),
+            tiles: tiles::DEFAULT.to_vec(),
             pomodoro: Pomodoro::default(),
             hooks: Commands::default(),
             outputs: BTreeMap::new(),
@@ -885,6 +890,9 @@ pub enum Kind {
     // a command as a list of strings, the program first, run without a shell (`hooks`); an empty
     // list is none, and a layer replaces the list below
     Argv(Field<Vec<String>>),
+
+    // the Controls tiles, `name` or `name:size` each, at least one; a layer replaces the list below
+    Tiles(Field<Vec<Placed>>),
 }
 
 impl Kind {
@@ -1027,6 +1035,20 @@ impl Kind {
                 (field.set)(config, off);
             }
             Kind::Rules(field) => (field.set)(config, Rule::read_all(value)?),
+            Kind::Tiles(field) => {
+                let list = value
+                    .as_array()
+                    .ok_or("expected a list of \"tile\"s or \"tile:size\"s")?
+                    .iter()
+                    .map(|tile| {
+                        tile.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("expected a \"tile\", found {tile}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                (field.set)(config, tiles::parse(&list)?);
+            }
             Kind::Argv(field) => {
                 let mut argv = hooks::argv(value)?;
 
@@ -1082,6 +1104,12 @@ impl Kind {
             Kind::Rules(field) => {
                 Value::Array((field.get)(config).iter().map(Rule::value).collect())
             }
+            Kind::Tiles(field) => Value::Array(
+                (field.get)(config)
+                    .iter()
+                    .map(|placed| Value::String(placed.to_string()))
+                    .collect(),
+            ),
         };
 
         match &value {
@@ -1113,6 +1141,7 @@ impl Kind {
             Kind::Modules(field) => field.copy(from, to),
             Kind::Rules(field) => field.copy(from, to),
             Kind::Argv(field) => field.copy(from, to),
+            Kind::Tiles(field) => field.copy(from, to),
         }
     }
 
@@ -2446,6 +2475,20 @@ pub const FOCUS: &[Setting] = &[
     },
 ];
 
+pub const CONTROLS: &[Setting] = &[Setting {
+    key: "controls.tiles",
+    label: "Tiles",
+    help: "the switches the Controls Surface shows, in order, each \"name\" or \"name:size\" (wifi, bluetooth, caffeine, dnd, night-light, focus, charge-limit; half, full or icon, where wifi and bluetooth have no icon); at most three rows, a tile this machine cannot use, like the charge limit without a battery that has one, is left out; the pencil in Controls edits them",
+    hint: Some("Add a tile, then Enter"),
+    kind: Kind::Tiles(Field {
+        get: |config| config.tiles.clone(),
+        set: |config, tiles| config.tiles = tiles,
+    }),
+    example: None,
+    restart: false,
+    per_output: false,
+}];
+
 // a desktop file id, given with or without its `.desktop`
 fn desktop(id: &str) -> String {
     match id.strip_suffix(".desktop") {
@@ -3648,6 +3691,7 @@ mod tests {
                 "osd.layout",
                 "notifications.sound",
                 "notifications.rules",
+                "controls.tiles",
                 "wallpaper.directory",
                 "wallpaper.per_monitor",
                 "wallpaper.transition",
