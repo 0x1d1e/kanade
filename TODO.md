@@ -200,7 +200,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## Semantic tree (#21, ADR 0095)
 
-- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard (its rows, `pin`, `delete`, `clear` and the search are named, the detail pane is not), Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
+- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard (its rows, `pin`, `delete`, `clear` and the search are named), Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
   - A control whose click handler is on a parent of the annotated rectangle is not pressable by name.
   - Not run: a live session pass of `kanade ui` (see the report for the steps).
 
@@ -231,11 +231,10 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
 - [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout); a second Kanade's start sweeps the running one's too, which the running one rewrites on the next draw.
 - [ ] The runtime's thumbnail cache keeps a decoded thumbnail of a deleted preview until it evicts it (512 copies, 128 MiB).
-- [ ] At the default 400 px body the pane leaves about 2.8 rows instead of about 5.3; the pane could size to the excerpt's lines, or hold back unless at least 4 rows are left.
 - [ ] A preview decodes arbitrary copied image bytes (up to 16 MiB) in the runtime's decoder, whose dimension limits are unchecked (decompression-bomb risk).
 - [ ] `kanade ui press` closing the Surface is older than this change.
 - [ ] An unpin puts the entry at the top of the rest, not where its age would; entries keep no time.
-- [ ] Not run: the Surface (thumbnails, the pin stop and button, the pane, the footer copy) and the idle numbers with a history of pictures.
+- [ ] Not run: the Surface (thumbnails, the pin stop and button, the footer copy) and the idle numbers with a history of pictures.
 
 ## Recording targets, audio and pause (ADR 0116, unfixed)
 - [x] Window recording (ADR 0117).
@@ -274,9 +273,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - Validate with `niri validate`, keep comments, write atomically, undo.
 - [ ] SDDM: ask the user whether they want it; if so take a theme from qylock (check the actual repo and its licence before using any of it) or create our own.
 - [ ] Notification sound customization: per app and urgency, a chosen sound file, volume, or off; in the notifications Module and its config.
-- [ ] Dock click behaviour: left click focuses the app, middle click opens a new instance, right click opens the application's actions (Desktop Entry actions).
-  - Now (`src/dock.rs`, `on_click`): left focuses the app's window, the next one if it has the focus already, or launches the app if it is not running; right opens the context menu (pin or unpin, close, and the declared Desktop Entry actions); middle does nothing (`Button::Middle => {}`).
-  - Delta: middle must launch a new instance (`Launch::run`, as for an app that is not running, even when it runs); decide whether left should keep cycling windows or only focus; right already has the actions.
-- [ ] Clipboard Surface: remove the preview box (the large box that shows the full text of the selected entry, ADR 0114).
-  - Decide whether the list rows keep their one-line preview.
-  - When done, update ADR 0114 and the wiki (`docs/wiki/`) to match.
+- [x] Dock click behaviour: left click focuses the app, middle click opens a new instance, right click opens the application's actions (Desktop Entry actions).
+  - Done: middle runs `Launch::run` through `dock::new_instance` (nothing for an app with no `.desktop` entry); left keeps cycling; right was already the menu with the actions. Not run on the session: the middle click.
+- [x] Clipboard Surface: remove the preview box (the large box that shows the full text of the selected entry, ADR 0114).
+  - Done: the box is gone for text and images; rows keep their one-line preview and thumbnails and take its room; ADR 0114, the wiki and the design are updated. Not run on the session: the Surface's layout.

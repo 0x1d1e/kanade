@@ -3,8 +3,7 @@
 //! searches, the arrow keys move a ring over each entry, its pin, its delete and Clear all, and Enter
 //! presses what the ring is on. Pressing an entry copies it and closes the island once it is on the
 //! clipboard, or says it was not copied; pressing its pin pins it, or unpins it (ADR 0114). It says
-//! when the history is empty and when nothing matches. Text shows as its first words, and the
-//! selected entry's first lines in a pane below the rows, where the body is tall enough; an image as
+//! when the history is empty and when nothing matches. Text shows as its first words; an image as
 //! a thumbnail, once its preview is written to tmpfs (`sources::clipboard::preview`), else its kind
 //! and size. Only the pins are kept across restarts (ADR 0115); the rest of the history never leaves
 //! memory.
@@ -47,33 +46,11 @@ const GAP: f32 = 12.0;
 
 // what the rows scroll in, as tall as the largest body (`island.height`) leaves
 fn room() -> f32 {
-    view::largest().height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP - pane_space()
+    view::largest().height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP
 }
 
 // what a state, as an empty history, takes of the list
 const STATE: f32 = 120.0;
-
-/*
- * the pane of the selected entry's first lines under the rows, shown where the body is as tall as the
- * default (`island.height`); a smaller one keeps its rows
- */
-const PANE_FROM: f32 = geometry::DEFAULT_LARGEST.height;
-const PANE_LINES: usize = 6;
-const PANE_CHARS: usize = 400;
-// a line's height with room over: the font's own is not known here, and a line a little taller
-// than this one would clip the last
-const PANE_LINE: f32 = 18.0;
-const PANE_INSET: f32 = 8.0;
-const PANE: f32 = PANE_LINES as f32 * PANE_LINE + 2.0 * PANE_INSET;
-
-// what the pane takes of the body, with its gap, or nothing where it is not shown
-fn pane_space() -> f32 {
-    if view::largest().height >= PANE_FROM {
-        PANE + GAP
-    } else {
-        0.0
-    }
-}
 
 // `ROWS` at a time in the least largest body, more in a taller one
 const LEAST_LIST: f32 = geometry::CALENDAR.height - 2.0 * INSET - FIELD - FOOTER - 2.0 * GAP;
@@ -357,11 +334,7 @@ fn content(count: usize) -> f32 {
 
 // how tall `count` entries found ask the body to be, or a state for none; the island caps it (ADR 0030)
 fn asks(count: usize) -> f32 {
-    let list = if count == 0 {
-        STATE
-    } else {
-        content(count) + pane_space()
-    };
+    let list = if count == 0 { STATE } else { content(count) };
 
     2.0 * INSET + FIELD + list + FOOTER + 2.0 * GAP
 }
@@ -524,9 +497,6 @@ pub(super) struct Summary {
     pub(super) title: String,
     pub(super) detail: String,
 
-    // a text's first lines, for the pane; none for an image
-    excerpt: Vec<String>,
-
     // the title says what the entry is rather than showing it, like "Image"
     named: bool,
 }
@@ -580,14 +550,12 @@ fn summarize(content: &Content) -> Summary {
                 Summary {
                     title: String::from("Blank text"),
                     detail,
-                    excerpt: Vec::new(),
                     named: true,
                 }
             } else {
                 Summary {
                     title,
                     detail,
-                    excerpt: excerpt(text),
                     named: false,
                 }
             }
@@ -599,46 +567,10 @@ fn summarize(content: &Content) -> Summary {
             Summary {
                 title: String::from("Image"),
                 detail: format!("{}, {}", kind.to_uppercase(), size(bytes.len())),
-                excerpt: Vec::new(),
                 named: true,
             }
         }
     }
-}
-
-/*
- * the first `PANE_LINES` lines of a text within `PANE_CHARS` characters, a control character a space,
- * and an ellipsis ending what is cut; a text may be megabytes, so only that much is read
- */
-fn excerpt(text: &str) -> Vec<String> {
-    let mut left = PANE_CHARS;
-    let mut lines: Vec<String> = Vec::new();
-    let mut cut = false;
-
-    for (number, line) in text.lines().enumerate() {
-        if number == PANE_LINES || left == 0 {
-            cut = true;
-            break;
-        }
-
-        let line = line.trim_end();
-        let shown: String = line
-            .chars()
-            .take(left)
-            .map(|letter| if letter.is_control() { ' ' } else { letter })
-            .collect();
-        let taken = shown.chars().count();
-
-        cut |= line.chars().nth(taken).is_some();
-        left -= taken;
-        lines.push(shown);
-    }
-
-    if cut && let Some(last) = lines.last_mut() {
-        last.push('\u{2026}');
-    }
-
-    lines
 }
 
 fn plural(count: usize, word: &str) -> String {
@@ -679,20 +611,14 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
 
     let shape = view::largest();
 
-    let mut sections = vec![
+    let sections = vec![
         Box::new(view::rise(0, field(&search.query))) as Box<dyn Widget>,
         Box::new(view::rise(1, list)),
+        Box::new(view::rise(
+            2,
+            footer(&search, found.len(), entries.len(), pinned),
+        )),
     ];
-
-    // under the rows, where there are some and the body has the room
-    if let (true, Some(entry)) = (pane_space() > 0.0, found.get(search.selected)) {
-        sections.push(Box::new(view::rise(2, pane(entry))));
-    }
-
-    sections.push(Box::new(view::rise(
-        3,
-        footer(&search, found.len(), entries.len(), pinned),
-    )));
 
     Rectangle::new()
         .width(shape.width)
@@ -701,55 +627,6 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
         .align_child(Start, Start)
         .semantics(|| Semantics::new(Role::Region, "clipboard"))
         .child(Column::new(sections).width(width()).gap(GAP))
-}
-
-/*
- * the selected entry's first lines, one line each and each elided to the width, in a pane of a fixed
- * height; an image has its kind and size. Drawn only where the body has the room for it
- */
-fn pane(entry: &Entry) -> Rectangle {
-    let summary = summary(entry);
-
-    let line = |shown: &str, ink| {
-        Text::new(shown)
-            .size(theme::text::LABEL_SMALL)
-            .color(ink)
-            .weight(theme::text::MEDIUM)
-            .elide()
-    };
-
-    let lines: Vec<Box<dyn Widget>> = if summary.excerpt.is_empty() {
-        vec![Box::new(line(
-            &summary.detail,
-            theme::island().on_surface_variant,
-        ))]
-    } else {
-        summary
-            .excerpt
-            .iter()
-            .map(|shown| {
-                // a blank line keeps its height
-                let shown = if shown.is_empty() { " " } else { shown };
-
-                Box::new(line(shown, theme::island().on_surface)) as Box<dyn Widget>
-            })
-            .collect()
-    };
-
-    Rectangle::new()
-        .width(width())
-        .height(PANE)
-        .radius(radius::ROW)
-        .fill(theme::island().surface_container)
-        .clip()
-        .padding(Padding {
-            top: PANE_INSET,
-            right: ROW_INSET,
-            bottom: PANE_INSET,
-            left: ROW_INSET,
-        })
-        .align_child(Start, Start)
-        .child(Column::new(lines).width(Parent).gap(0.0))
 }
 
 /*

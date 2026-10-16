@@ -239,7 +239,7 @@ impl ContextTarget {
  */
 fn press(item: &Item) -> Option<Press> {
     let Some(first) = item.windows.first() else {
-        return desktop(&item.app)?.launch.clone().map(Press::Launch);
+        return new_instance(item);
     };
 
     let next = item
@@ -250,6 +250,12 @@ fn press(item: &Item) -> Option<Press> {
         .unwrap_or(first);
 
     Some(Press::Focus(next.id))
+}
+
+// a new instance of the app, as for one not running, even while it runs. None for an app without
+// an entry or a command
+fn new_instance(item: &Item) -> Option<Press> {
+    desktop(&item.app)?.launch.clone().map(Press::Launch)
 }
 
 // off the view thread, as niri's or the bus's answer may take its patience
@@ -1889,6 +1895,7 @@ fn slot(
     }
 
     let press = press(item);
+    let fresh = new_instance(item);
 
     let (width, height) = axes.size(side, side + DOT_ROOM);
     // by the app, as the icons before it come and go with the apps that open and close
@@ -1960,7 +1967,11 @@ fn slot(
                 }
             }
             Button::Right => context_menu::open(&target.monitor, &context, target.at, target.edge),
-            Button::Middle => {}
+            Button::Middle => {
+                if let Some(press) = fresh.clone() {
+                    carry_out(press);
+                }
+            }
         });
 
     // only an app whose `Exec` has a file code takes files, so a drag over any other is turned down

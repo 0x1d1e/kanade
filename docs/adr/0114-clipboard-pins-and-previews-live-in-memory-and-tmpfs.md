@@ -1,6 +1,6 @@
 # 114. Clipboard pins and previews live in memory and tmpfs
 
-Status: accepted; its memory-only decision for pins ("it is memory only", and the deferral of persisting pins and pictures) is superseded by [ADR 0115](0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md). Builds on ADR 0019 (sensitive content) and ADR 0085 (confirm by holding); the first slice of a longer-lived Clipboard.
+Status: accepted; its memory-only decision for pins ("it is memory only", and the deferral of persisting pins and pictures) is superseded by [ADR 0115](0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md). The text pane of the Decision ("Text previews") was removed: the user did not want the box, so the Surface shows rows only, which take its room; image thumbnails stay in the rows. Builds on ADR 0019 (sensitive content) and ADR 0085 (confirm by holding); the first slice of a longer-lived Clipboard.
 
 ## Context
 
@@ -15,7 +15,7 @@ The Clipboard history (ADR 0011) is bounded (50 entries, 64 MiB) and only in mem
 - **The Surface gets a ring stop** between the entry and its delete (Right, Tab), and Enter on it pins or unpins, and the ring follows the entry to where it moves. The pin is also a button, named `pin` for `kanade ui`, with a checked state; it draws filled while pinned. `entry#N` names are unchanged. A press from the pointer goes through the same press as the key and calls `clipboard::pin` or `unpin` from its callback, never writing the Service from a view.
 - **Previews of images are files on tmpfs, nowhere else.** The runtime draws images from files, so the bytes of a picture are written, only for a row the Surface builds, off the draw thread, to `$XDG_RUNTIME_DIR/kanade-clipboard/<id>.<ext>` through `atomic::write` with `Mode::Private` (the directory 0700, the file 0600). The name is the entry's id and an extension from a fixed table (`image/png` png, `image/jpeg` jpg, `image/webp` webp, `image/gif` gif); nothing the copy says is part of a path, and a type outside the table has none. With no usable `$XDG_RUNTIME_DIR` there is no preview: no fallback to another directory. The row draws a thumbnail as the Wallpapers' tiles do; while it decodes a quiet tile, and if it cannot be drawn the picture icon.
 - **A preview goes with its entry.** After every change of the history (an entry removed, evicted by the bounds, or cleared) the files of entries no longer kept are deleted, and the folder is deleted at start, so what a Kanade that ended without cleaning up left does not stay. Writing and deleting take turns, so a preview is not deleted as it is written or registered after.
-- **Text previews.** Rows stay one line. Where the body is as tall as the default (`island.height` 400 or more) a pane under the rows shows the selected text entry's first 6 lines, within 400 characters, from the same memo as the row; a smaller body keeps all its rows and no pane. An image's pane says its kind and size.
+- **Text previews. (Removed: the pane below is no longer built, and the rows take the room it had; the user did not want it.)** Rows stay one line. Where the body is as tall as the default (`island.height` 400 or more) a pane under the rows shows the selected text entry's first 6 lines, within 400 characters, from the same memo as the row; a smaller body keeps all its rows and no pane. An image's pane says its kind and size.
 - **The Launcher `>` changes in order only:** pinned entries come first (the history's own order), and their detail starts with "Pinned". No new prefix, verb or action.
 - **No content in logs.** A preview that cannot be written logs its error kind only; a pin and an entry's `Debug` print neither the content nor a path. `kanade status` adds a pinned count, nothing of what was copied.
 
@@ -40,7 +40,7 @@ These need the user's decision on plaintext at rest, so none is built here:
 
 **Previews in `$XDG_CACHE_HOME` or `/tmp`.** Both are disk, or world-visible directory names; the runtime directory is the user's, 0700 and tmpfs.
 
-**A pane that always shows.** It would take rows from the smallest body, which keeps four; the pane is shown only where the body is as tall as the default.
+**A pane that always shows.** It would take rows from the smallest body, which keeps four; the pane was shown only where the body is as tall as the default, and was removed altogether afterwards.
 
 ## Consequences
 
@@ -49,4 +49,4 @@ These need the user's decision on plaintext at rest, so none is built here:
 - Previews are swept only at the next start: a Kanade that exits, cleanly or by SIGTERM, or is killed leaves them until then (or the session ends, tmpfs); the folder is 0700, the files 0600, the same user's.
 - A second Kanade started beside the running one sweeps at module start, before it finds the socket taken and stops, so the running one's previews can go. The preview layer treats a written preview whose file is gone as missing and writes it again on the next draw of its row; the sweep is not moved behind the single-instance check, which lives in the runtime.
 - Only the rows the Surface builds ask for a preview, so a long history of pictures writes only what was scrolled to.
-- Not tested live here: the thumbnails, the pin ring stop and button, the pane and the footer copy need a run on the session.
+- Not tested live here: the thumbnails, the pin ring stop and button, the footer copy needed a run on the session.
