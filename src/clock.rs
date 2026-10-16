@@ -495,6 +495,15 @@ pub fn interrupt(child: &Child) -> io::Result<()> {
     signal_process(child.id(), Signal::INT)
 }
 
+/*
+ * sends the process `pid` SIGTERM, for a child another thread waits on and so owns: the caller makes
+ * sure it is not reaped, as `interrupt` says. SIGTERM, not SIGINT: a child started without
+ * `default_sigint` inherits Kanade's ignored SIGINT, which this ends all the same
+ */
+pub fn terminate_pid(pid: u32) -> io::Result<()> {
+    signal_process(pid, Signal::TERM)
+}
+
 // sends `pid` SIGUSR1, which a terminal like kitty takes as reloading its config
 pub fn user_signal(pid: u32) -> io::Result<()> {
     signal_process(pid, Signal::USR1)

@@ -164,7 +164,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 
 - screenshot: area crop, window, fullscreen/output;
 - screenshots: niri-native IPC actions cover all three modes, so no external screenshot backend; `doctor` names a missing niri. External backend only for recording (#140);
-- recording: `wf-recorder` through niri's wlr-screencopy, so `privacy` sees it as a cast; `h264_vaapi` to `~/Videos/Screencasts`, no fallback encoder; start/stop/status; a Persistent Ongoing Activity with Stop while it records, then the same Transient Activity as a screenshot (done, #140, [ADR 0013](adr/0013-screen-recording-with-wf-recorder.md));
+- recording: `wf-recorder` through niri's wlr-screencopy, so `privacy` sees it as a cast; `h264_vaapi` to `~/Videos/Screencasts`, no fallback encoder; start/pause/resume/stop/status; the focused output or an area (`slurp`, or a given rectangle), with no sound, the system's or the microphone's (an explicit choice per start, never a default); pause ends a segment and stop joins them with `ffmpeg`; locking the session stops and saves; a Persistent Ongoing Activity with Pause/Resume and Stop while it records, then the same Transient Activity as a screenshot (done, #140, [ADR 0013](adr/0013-screen-recording-with-wf-recorder.md), [ADR 0116](adr/0116-recording-targets-audio-and-pause.md)); window recording is later (niri gives no tiled window's rectangle; it needs a PipeWire cast);
 - completion: a screenshot is shown by niri's own notification as a Banner, not in the Island; a recording's end emits a Transient Activity + copy/open path actions (done, #139);
 - color picker: niri's `PickColor` request (its own on-screen picker, which answers when the user clicks a pixel, or null when they leave it) through `kanade capture color` and a Color tile in the Capture Surface. The `#rrggbb` goes on the clipboard through `wl-copy`, plain text without ADR 0019's sensitive hint, and shows as a Transient Live Activity under a Kind-neutral id; leaving the picker shows and copies nothing, and the verb refuses with "no color picked" ([ADR 0086](adr/0086-color-picker-through-niri.md));
 - no OCR, reverse-image search, annotation editor, upload service.
@@ -286,7 +286,7 @@ activity start <id> <title>|progress <id> <amount>|detail <id> [text]
 activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 activity hook claude
 capture screenshot area|window|output
-capture record start|stop|status
+capture record start [screen|area [<x,y WxH>]] [none|system|mic] | pause | resume | stop | status
 gesture | gesture record <name> | gesture forget <name> | gesture list
 caffeine on|off|toggle [duration]|status
 night-light on|off|toggle|status

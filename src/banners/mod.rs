@@ -1327,9 +1327,10 @@ fn draft(id: u32, drafting: bool) {
     let now = Instant::now();
 
     // checked first, as a write wakes every Banners window
-    if Banners::read().stack.drafting(id) != drafting
-        && Banners::write().stack.draft(id, drafting, now)
-    {
+    // the read is let go before the write: a guard in the first operand lives through the second
+    let changed = Banners::read().stack.drafting(id) != drafting;
+
+    if changed && Banners::write().stack.draft(id, drafting, now) {
         nudge();
     }
 }

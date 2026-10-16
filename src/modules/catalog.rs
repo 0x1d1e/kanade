@@ -1236,6 +1236,14 @@ notifications dnd on until <HH:MM>
                 on: Provider::Program(recording::RECORDER),
                 without: "no screen recording",
             },
+            Need {
+                on: Provider::Program(recording::PICKER),
+                without: "no choosing an area to record (give it as x,y WxH)",
+            },
+            Need {
+                on: Provider::Program(recording::JOINER),
+                without: "no pausing a screen recording",
+            },
         ],
         settings: &[],
         hooks: Hooks::NONE,
@@ -1244,7 +1252,7 @@ notifications dnd on until <HH:MM>
             about: "Take a screenshot, pick a color or record the screen",
             usage: || {
                 String::from(
-                    "capture screenshot area|window|output\ncapture color\ncapture record start|stop|status\ncapture cast window [<id>]|monitor [<output>]|clear",
+                    "capture screenshot area|window|output\ncapture color\ncapture record start|pause|resume|stop|status\n  start [screen|area [<x,y WxH>]] [none|system|mic]: none is the default; mic is recorded only when asked for\ncapture cast window [<id>]|monitor [<output>]|clear",
                 )
             },
             parse: |arguments| match arguments {
@@ -1252,7 +1260,7 @@ notifications dnd on until <HH:MM>
                     .map(Call::Screenshot)
                     .ok_or(Unparsed::Usage),
                 ["color"] => Ok(Call::PickColor),
-                ["record", request] => recording::Request::parse(request)
+                ["record", words @ ..] => recording::Request::parse(words)
                     .map(Call::Record)
                     .ok_or(Unparsed::Usage),
                 ["cast", target @ ..] => capture::parse_cast(target)

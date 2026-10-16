@@ -69,7 +69,11 @@ pub(super) fn surface(
             island.held(monitor),
             modules::on("notifications").then(|| island.dnd()),
         )),
-        Surface::Launcher => Some(surfaces::launcher::surface(monitor, island.visit())),
+        Surface::Launcher => Some(surfaces::launcher::surface(
+            monitor,
+            island.visit(),
+            surfaces::launcher::recorded(island),
+        )),
         Surface::Tray => Some(surfaces::tray::surface(
             open,
             island.visit(),
@@ -94,7 +98,7 @@ pub(super) fn surface(
             open,
             island.visit(),
             island.held(monitor),
-            recording::recording(island).is_some(),
+            recording::standing(island),
         )),
     }
 }
@@ -293,22 +297,37 @@ pub(super) fn recording(
     actions: &[Action],
 ) -> Option<Rectangle> {
     let (title, line) = match clip {
-        Clip::Recording { output, .. } => ("Recording", output.as_str()),
+        Clip::Recording {
+            output,
+            audio,
+            paused,
+            ..
+        } => (
+            match paused {
+                true => "Paused",
+                false => "Recording",
+            },
+            match audio {
+                Some(audio) => format!("{output}, {audio}"),
+                None => output.clone(),
+            },
+        ),
+        Clip::Saving { path } => ("Saving", file_name(path).to_owned()),
         Clip::Saved { path, copied } => (
             match copied {
                 true => "Path copied",
                 false => "Saved",
             },
-            file_name(path),
+            file_name(path).to_owned(),
         ),
-        Clip::Failed { why, .. } => ("Recording failed", why.as_str()),
+        Clip::Failed { why, .. } => ("Recording failed", why.clone()),
     };
 
     titled(
         presentation,
         (Icon::Capture, theme::signals().capture),
         title,
-        line,
+        &line,
         Pills {
             actions,
             subject: clip.path(),

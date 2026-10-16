@@ -33,4 +33,5 @@ Web search and recent files are not rows of this provider. A web search sends wh
 - Other verbs keep the island open while they answer (a lock waits for niri to hold it, up to `later::LATER`), unlike a gesture, whose overlay closes first (ADR 0107).
 - A refusal shows on the row until the next key, like any failed press.
 - `dictate toggle` from the Launcher may only copy the text: the focused window is unknown while the Launcher holds the keyboard, so `dictate.insert = "paste"` or `"type"` falls back to a clipboard-only copy (ADR 0111, `FocusUnknown`) when the recording starts from it. Not verified on a session.
+- The four recording rows follow how the recording stands (ADR 0116): Start and Record Area while none runs, Pause while one runs and can pause, Resume while paused, Stop while any exists. The table stays closed and static; only which rows are offered changes.
 - The capture path and the clear are not verified on a session.

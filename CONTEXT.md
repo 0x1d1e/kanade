@@ -177,9 +177,18 @@ An Activity saying a calendar event is coming: its title and how long until it s
 - **Invariant:** a missed reminder goes off only until 5 minutes after its event starts; past that it is dropped, never shown late.
 - **Avoid:** alarm (the `VALARM` it comes from), alert, notification
 
+## Recording
+Kanade's own screen recording (`wf-recorder` through niri's wlr-screencopy, ADR 0013, 0116): the focused output or an area, with no sound, the system's or the microphone's, as an Activity of Kind Recording while it runs and a saved file in `~/Videos/Screencasts`.
+- A **Segment** is one `wf-recorder` run. Pausing ends the segment (SIGINT, a playable mp4) and resuming starts the next; Stop joins them (`ffmpeg`, copying) into the one file. The first segment is written to the file itself, so a recording never paused is the file from its first frame, with nothing to move or join; the segments after a pause live in the hidden folder `.Screencast from <stamp>.parts/` beside the file until saved. While they are joined the Activity says Saving.
+- **Invariant:** the microphone is recorded only when the user chose it for that start; it is never a config default or a persisted choice (the Capture Surface remembers the last choice in memory only), and the Launcher cannot start it.
+- **Invariant:** locking the session while recording stops and saves it, and a start or resume is refused while locked.
+- **Invariant:** Kanade deletes only the segments, list and joined file it made, and only after the recording was saved (an empty file the recorder left is no recording and goes at once); on a failure they are kept and the Activity names the file and the folder. A crash after a resume leaves the file with the first segment and the folder with the rest, which Kanade never deletes.
+- **Invariant:** saving never replaces a file: a name taken meanwhile keeps its file and the recording is left in the folder.
+- **Avoid:** screencast (the file's name, not the term), clip (a Clip is an Activity's detail)
+
 ## Satellite
 Small secondary indicator beside the primary island: timer, VPN, low battery, a Live Activity.
-- Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Stop.
+- Capture the privacy cluster sees is no Satellite: the cluster shows it, as dots inside the body. Kanade's own recording is an Activity like any other, so it can be one, carrying Pause or Resume and Stop (a paused one shows a Pause icon).
 - **Invariant:** only Persistent Ongoing or Critical Activities that are not the primary, and a playing Media Activity beside such a primary, so a song keeps its place beside a timer; it counts after the others and shows its cover. At most `SATELLITES` (`src/island/arbiter.rs`) show, highest first; the rest are a count.
 - **Rule:** a Satellite comes out from under the body and tucks back under it, fading; one that changes place slides. None pops. Coming out or going, it is one liquid shape with the body: a neck stretches and snaps as it parts (ADR 0101), except under Liquid Glass and reduced motion.
 - While the island is Split, or a Peek out of one, the top Satellite is the trailing segment, not a dot; it counts toward `SATELLITES`. The other dots and the count take no pointer.

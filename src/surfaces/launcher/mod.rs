@@ -28,7 +28,7 @@ use crate::sources::bluetooth::Adapter;
 use crate::sources::network::Connectivity;
 use crate::sources::niri::{self, Acted};
 use crate::sources::system::Radio;
-use crate::sources::{self, clipboard, live};
+use crate::sources::{self, clipboard, live, recording};
 use crate::theme::space::{INSET, TARGET};
 use crate::theme::{self, radius};
 use crate::{modules, view};
@@ -50,7 +50,7 @@ pub mod windows;
 use apps::{Actions, Apps as AppsProvider};
 use calculator::Calculator;
 use choose::{Choices, Choosing};
-use commands::Commands;
+use commands::{Commands, Rec};
 use destinations::{Destination, Destinations};
 use emoji::Emoji;
 use history::History;
@@ -272,7 +272,11 @@ fn listed(count: usize) -> f32 {
  */
 pub fn fit() {
     let _ordered = super::fitting();
-    let visit = IslandService::read().visit();
+    let (visit, rec) = {
+        let island = IslandService::read();
+
+        (island.visit(), recorded(&island))
+    };
 
     let (fresh, open) = {
         let apps = Apps::read();
@@ -281,7 +285,7 @@ pub fn fit() {
         // a new visit lists every app
         (
             asks(apps.list().len()),
-            asks(found(visit, apps.list(), &query).len()),
+            asks(found(visit, apps.list(), &query, rec).len()),
         )
     };
 
@@ -400,7 +404,7 @@ fn destinations() -> Destinations {
 }
 
 // the verbs that exist now: their Module is on and, for a radio, the machine has one
-fn commands(offered: bool) -> Commands {
+fn commands(offered: bool, recording: Rec) -> Commands {
     if !offered {
         return Commands::default();
     }
@@ -419,11 +423,25 @@ fn commands(offered: bool) -> Commands {
         lock: modules::on("lock"),
         wallpaper: modules::on("wallpaper"),
         dictation: modules::on("dictation"),
+        recording,
+    }
+}
+
+// how the recording stands, from the island the caller already holds: a view never reads it again
+pub fn recorded(island: &IslandService) -> Rec {
+    let standing = recording::standing(island);
+
+    match (standing.path, standing.paused) {
+        (None, _) => Rec::Idle,
+        (Some(_), true) => Rec::Paused,
+        (Some(_), false) => Rec::Running {
+            pausable: standing.pausable,
+        },
     }
 }
 
 // what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit
-fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
+fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Vec<Answer> {
     if let Some((_, choices)) = choose::of(visit) {
         return provider::ranked(&[&Choices(&choices)], query);
     }
@@ -445,7 +463,7 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
             &Actions(apps, config::get().launcher_actions),
             &windows::Titles(&titles),
             &destinations,
-            &commands(config::get().launcher_commands),
+            &commands(config::get().launcher_commands, recording),
             &Emoji,
             &History { entries: &entries },
         ],
@@ -453,11 +471,11 @@ fn found(visit: u64, apps: &[App], query: &str) -> Vec<Answer> {
     )
 }
 
-// the view's own read of the visit, so this never reads IslandService again
-pub fn surface(monitor: &str, visit: u64) -> Rectangle {
+// the view's own read of the visit and the recording, so this never reads IslandService again
+pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     let apps = Apps::read();
     let search = Search::read().of(visit);
-    let found = found(visit, apps.list(), &search.query);
+    let found = found(visit, apps.list(), &search.query, recording);
     let search = search.bounded(found.len());
     let choosing = choose::of(visit);
 
@@ -834,18 +852,18 @@ fn mark(mark: &Mark) -> Box<dyn Widget> {
  * own keys then get. A key it uses keeps the held island open for another hold
  */
 pub fn key(monitor: &str, key: Key) -> bool {
-    let visit = {
+    let (visit, rec) = {
         let island = IslandService::read();
 
         if island.presentation(monitor) != Presentation::Expanded(Surface::Launcher) {
             return false;
         }
 
-        island.visit()
+        (island.visit(), recorded(&island))
     };
 
     let search = Search::read().of(visit);
-    let found = found(visit, Apps::read().list(), &search.query);
+    let found = found(visit, Apps::read().list(), &search.query, rec);
 
     let Some((mut search, presses)) = search.bounded(found.len()).step(key, found.len()) else {
         return false;
@@ -1141,10 +1159,14 @@ fn pressed(monitor: &str, visit: u64, action: Action, done: Result<(), String>) 
 
 // down scrolls further down the list
 fn wheel(lines: f32) {
-    let visit = IslandService::read().visit();
+    let (visit, rec) = {
+        let island = IslandService::read();
+
+        (island.visit(), recorded(&island))
+    };
 
     let search = Search::read().of(visit);
-    let count = found(visit, Apps::read().list(), &search.query).len();
+    let count = found(visit, Apps::read().list(), &search.query, rec).len();
 
     store(search.bounded(count).wheel(lines, count));
 }

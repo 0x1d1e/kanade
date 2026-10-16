@@ -1,0 +1,395 @@
+//! What a recording is told (ADR 0116), as pure data and text: the rectangle of an area, the audio
+//! source, the arguments of `wf-recorder`, `slurp` and `ffmpeg`, and the list that joins the segments.
+//! Nothing here runs a program or reads a file.
+
+use std::fmt;
+
+// the recorder, the area picker and the program that joins the segments of a paused recording
+pub const RECORDER: &str = "wf-recorder";
+pub const PICKER: &str = "slurp";
+pub const JOINER: &str = "ffmpeg";
+
+// H.264 on the GPU through VA-API (ADR 0013)
+const CODEC: &str = "h264_vaapi";
+
+// what `slurp` prints for the area picked: `x,y WxH`, which `Rect::parse` reads and the recorder takes
+pub const PICKED: &str = "%x,%y %wx%h";
+
+// the largest side of an area, far past any screen, so a mistyped one is caught
+const LARGEST: u32 = 16384;
+
+// the list the segments are joined by, and the file it joins them into, both in the parts folder
+pub const LIST: &str = "segments.txt";
+pub const JOINED: &str = "joined.mp4";
+
+/*
+ * a rectangle of the screen in the compositor's layout coordinates, as `slurp` gives it; the origin
+ * may be negative, as an output may sit left of or above the first
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Rect {
+    /*
+     * `x,y WxH`, as `slurp -f` prints it and the CLI takes it, in one word or two. Only the form:
+     * `fitted` says whether the recorder can take it
+     */
+    pub fn parse(text: &str) -> Option<Rect> {
+        let (origin, size) = text.trim().split_once(char::is_whitespace)?;
+        let (x, y) = origin.split_once(',')?;
+        let (width, height) = size.trim().split_once(['x', 'X'])?;
+
+        Some(Rect {
+            x: x.trim().parse().ok()?,
+            y: y.trim().parse().ok()?,
+            width: width.trim().parse().ok()?,
+            height: height.trim().parse().ok()?,
+        })
+    }
+
+    /*
+     * the rectangle the encoder takes: each side rounded down to an even number of pixels, as
+     * VA-API's chroma planes are half size. Refused when a side is left under 2, or is absurd
+     */
+    pub fn fitted(self) -> Result<Rect, String> {
+        let (width, height) = (self.width & !1, self.height & !1);
+
+        if width < 2 || height < 2 {
+            return Err(format!(
+                "the area {}x{} is too small to record",
+                self.width, self.height
+            ));
+        }
+
+        if self.width > LARGEST || self.height > LARGEST {
+            return Err(format!(
+                "the area {}x{} is larger than {LARGEST} pixels a side",
+                self.width, self.height
+            ));
+        }
+
+        Ok(Rect {
+            width,
+            height,
+            ..self
+        })
+    }
+}
+
+// `x,y WxH`, the recorder's geometry
+impl fmt::Display for Rect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{},{} {}x{}", self.x, self.y, self.width, self.height)
+    }
+}
+
+/*
+ * what a recording hears: nothing, what the speakers play, or the microphone. One source, as the
+ * recorder takes one. The microphone is chosen anew for each recording, never a default
+ */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Audio {
+    #[default]
+    None,
+
+    // the default output's monitor
+    System,
+
+    Mic,
+}
+
+impl Audio {
+    pub fn parse(word: &str) -> Option<Audio> {
+        match word {
+            "none" => Some(Audio::None),
+            "system" => Some(Audio::System),
+            "mic" => Some(Audio::Mic),
+            _ => None,
+        }
+    }
+
+    // the one a press on the Surface's choice moves to
+    pub fn next(self) -> Audio {
+        match self {
+            Audio::None => Audio::System,
+            Audio::System => Audio::Mic,
+            Audio::Mic => Audio::None,
+        }
+    }
+
+    // the choice as the Surface words it
+    pub fn choice(self) -> &'static str {
+        match self {
+            Audio::None => "Audio: none",
+            Audio::System => "Audio: system",
+            Audio::Mic => "Audio: mic",
+        }
+    }
+
+    // what the Activity says it hears, none for no sound
+    pub fn heard(self) -> Option<&'static str> {
+        match self {
+            Audio::None => None,
+            Audio::System => Some("system audio"),
+            Audio::Mic => Some("microphone"),
+        }
+    }
+
+    // the recorder's flag; the server resolves the default names, so a changed default is followed
+    fn flag(self) -> Option<&'static str> {
+        match self {
+            Audio::None => None,
+            Audio::System => Some("--audio=@DEFAULT_MONITOR@"),
+            Audio::Mic => Some("--audio=@DEFAULT_SOURCE@"),
+        }
+    }
+}
+
+// what a recording captures
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    // a whole output, by name
+    Output(String),
+
+    Area(Rect),
+}
+
+impl Source {
+    // what the Activity says is recorded
+    pub fn said(&self) -> String {
+        match self {
+            Source::Output(name) => name.clone(),
+            Source::Area(rect) => format!("area {}x{}", rect.width, rect.height),
+        }
+    }
+}
+
+/*
+ * the arguments of `wf-recorder` for one segment. Damage tracked (no `-D`), as only that is a cast
+ * to niri, so the privacy cluster shows it. An area is named by its geometry alone: the recorder
+ * finds the output it lies on
+ */
+pub fn recorder(source: &Source, audio: Audio, file: &str) -> Vec<String> {
+    let mut arguments = vec![String::from("-c"), String::from(CODEC)];
+
+    match source {
+        Source::Output(name) => arguments.extend([String::from("-o"), name.clone()]),
+        Source::Area(rect) => arguments.extend([String::from("-g"), rect.to_string()]),
+    }
+
+    arguments.extend(audio.flag().map(String::from));
+    arguments.extend([String::from("-f"), file.to_owned()]);
+    arguments
+}
+
+// the arguments of `slurp`: the area's dimensions shown as it is drawn, printed as `PICKED`
+pub fn picker() -> [&'static str; 3] {
+    ["-d", "-f", PICKED]
+}
+
+// the name of segment `number` (from 1): its file in the parts folder, when it is kept there
+pub fn segment(number: u32) -> String {
+    format!("{number:03}.mp4")
+}
+
+// whether `name` is one Kanade gives to a file of its parts folder, which only it may delete
+pub fn made(name: &str) -> bool {
+    name == LIST
+        || name == JOINED
+        || name
+            .strip_suffix(".mp4")
+            .is_some_and(|number| number.len() >= 3 && number.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/*
+ * the list `ffmpeg`'s concat demuxer reads: one `file` line per segment, by its name in the parts
+ * folder, which the demuxer reads relative to the list. A name is single-quoted, a quote in it
+ * closed, escaped and opened again, as the demuxer's quoting says
+ */
+pub fn list(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("file {}\n", quote(name)))
+        .collect()
+}
+
+fn quote(name: &str) -> String {
+    format!("'{}'", name.replace('\'', r"'\''"))
+}
+
+// the arguments of `ffmpeg` that join the segments `list` names, copying what they hold
+pub fn joiner<'a>(list: &'a str, joined: &'a str) -> [&'a str; 15] {
+    [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list,
+        "-c",
+        "copy",
+        "-map",
+        "0",
+        joined,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_area_reads_as_slurp_prints_it() {
+        let area = Rect {
+            x: 100,
+            y: 200,
+            width: 800,
+            height: 600,
+        };
+
+        assert_eq!(Rect::parse("100,200 800x600"), Some(area));
+        assert_eq!(Rect::parse("100,200 800x600\n"), Some(area));
+        // two words, as the shell may split it
+        assert_eq!(Rect::parse("100,200   800x600"), Some(area));
+        // an output left of the first has a negative origin
+        assert_eq!(
+            Rect::parse("-1920,-30 1920x1080").map(|rect| (rect.x, rect.y)),
+            Some((-1920, -30))
+        );
+
+        for bad in [
+            "",
+            "100,200",
+            "100 200 800x600",
+            "100,200 800",
+            "a,b 1x1",
+            "1,2 -3x4",
+        ] {
+            assert_eq!(Rect::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    // VA-API's chroma planes are half size: an odd side is rounded down, never up past the screen
+    #[test]
+    fn an_area_is_rounded_to_even_sides() {
+        let rect = |width, height| Rect {
+            x: -5,
+            y: 7,
+            width,
+            height,
+        };
+
+        assert_eq!(rect(801, 601).fitted(), Ok(rect(800, 600)));
+        assert_eq!(rect(800, 600).fitted(), Ok(rect(800, 600)));
+        assert_eq!(rect(3, 2).fitted(), Ok(rect(2, 2)));
+        assert!(rect(1, 600).fitted().is_err());
+        assert!(rect(800, 0).fitted().is_err());
+        assert!(rect(16385, 600).fitted().is_err());
+        assert_eq!(
+            rect(801, 601).fitted().map(|fitted| fitted.to_string()),
+            Ok(String::from("-5,7 800x600"))
+        );
+    }
+
+    #[test]
+    fn the_recorder_gets_its_source_and_one_audio_source() {
+        let screen = Source::Output(String::from("DP-1"));
+        let area = Source::Area(Rect {
+            x: 10,
+            y: 20,
+            width: 640,
+            height: 480,
+        });
+
+        assert_eq!(
+            recorder(&screen, Audio::None, "/v/a.mp4"),
+            ["-c", "h264_vaapi", "-o", "DP-1", "-f", "/v/a.mp4"]
+        );
+        assert_eq!(
+            recorder(&area, Audio::System, "/v/a.mp4"),
+            [
+                "-c",
+                "h264_vaapi",
+                "-g",
+                "10,20 640x480",
+                "--audio=@DEFAULT_MONITOR@",
+                "-f",
+                "/v/a.mp4"
+            ]
+        );
+        assert_eq!(
+            recorder(&screen, Audio::Mic, "/v/a.mp4"),
+            [
+                "-c",
+                "h264_vaapi",
+                "-o",
+                "DP-1",
+                "--audio=@DEFAULT_SOURCE@",
+                "-f",
+                "/v/a.mp4"
+            ]
+        );
+
+        // no argument turns damage tracking off, which would hide the recording from niri's casts
+        for audio in [Audio::None, Audio::System, Audio::Mic] {
+            assert!(
+                !recorder(&screen, audio, "f")
+                    .iter()
+                    .any(|argument| argument == "-D" || argument == "--no-damage")
+            );
+        }
+    }
+
+    #[test]
+    fn the_audio_choice_cycles_through_all_three_and_defaults_to_none() {
+        assert_eq!(Audio::default(), Audio::None);
+        assert_eq!(Audio::None.next(), Audio::System);
+        assert_eq!(Audio::System.next(), Audio::Mic);
+        assert_eq!(Audio::Mic.next(), Audio::None);
+
+        for audio in [Audio::None, Audio::System, Audio::Mic] {
+            let word = match audio {
+                Audio::None => "none",
+                Audio::System => "system",
+                Audio::Mic => "mic",
+            };
+
+            assert_eq!(Audio::parse(word), Some(audio));
+        }
+    }
+
+    // only Kanade's own files in the parts folder are ever deleted
+    #[test]
+    fn only_kanades_own_names_are_its_files() {
+        for made_here in [segment(1).as_str(), "012.mp4", LIST, JOINED] {
+            assert!(made(made_here), "{made_here}");
+        }
+
+        for not_mine in ["", "a.mp4", "01.mp4", "001.mkv", "notes.txt", "001.mp4.bak"] {
+            assert!(!made(not_mine), "{not_mine}");
+        }
+    }
+
+    // the list is read by ffmpeg, so a name with a quote or a space must not end its line early
+    #[test]
+    fn the_list_quotes_every_name() {
+        assert_eq!(
+            list(&[segment(1), segment(12)]),
+            "file '001.mp4'\nfile '012.mp4'\n"
+        );
+        assert_eq!(
+            list(&[String::from("it's a file.mp4")]),
+            "file 'it'\\''s a file.mp4'\n"
+        );
+        assert_eq!(list(&[String::from("a b.mp4")]), "file 'a b.mp4'\n");
+    }
+}

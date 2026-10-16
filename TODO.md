@@ -49,7 +49,7 @@ Not worth changing, by this review:
 
 - [x] Slow CLI calls (lock, caffeine, battery limit, wallpaper, recording) are answered by the shell when done, or unknown after 5 s (`later.rs`); the five serial-numbered `settle_*` protocols and the CLI's 50 ms status polling are gone.
   - A shell that restarts mid-call now reads as "closed the connection without answering" (exit 3), not the old per-feature "lost" messages.
-  - `capture record start` still polls for the first frame's file every 50 ms for up to 5 s; wf-recorder has no event for it.
+  - `capture record start` and `resume` still poll for the first frame's file every 50 ms, only while the request is open (at most 5 s); wf-recorder has no event for it (ADR 0116).
 - [x] One bounded-child runner for the appearance adapters and Matugen (`appearance/child.rs`); the adapters' output is now read as it is written and capped at 1 MiB.
 - [x] Modules carry `hooks.status` and `hooks.reload`; `kanade status` and a config reload walk the Modules that are on. `modules::on("<name>")` stays string-keyed at its other 60 call sites; `boundary::module_names_are_in_the_catalog` fails on a name the catalog lacks.
   - Not done: replacing the central `Call` enum with a per-Verb `run`; `kanade status` lists the Modules' lines in catalog order, not the old hand-kept order.
@@ -171,7 +171,7 @@ Not worth changing, by this review:
 - The Session Surface treats Lock and the counted-down Restart, Power off and Log out alike in weight; the countdown with Cancel is the guard.
 - ADR numbers skip 0045.
 
-- Capture Surface: a failed screenshot or recording start is only logged to stderr, as the island is already closed; Record starts as the island collapses.
+- Capture Surface: a failed screenshot is only logged to stderr, as the island is already closed; a failed recording start now shows a Failed Activity (ADR 0116).
 
 - Settings: the header title sits at the window's left padding while the page column is centered; in a window maximized under the Island a long title runs under it.
 - Settings: stepper step sizes are fixed per kind, not adaptive to the range; its `-`/`+` buttons are pointer-only (Up/Down cover the keyboard).
@@ -236,3 +236,17 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] `kanade ui press` closing the Surface is older than this change.
 - [ ] An unpin puts the entry at the top of the rest, not where its age would; entries keep no time.
 - [ ] Not run: the Surface (thumbnails, the pin stop and button, the pane, the footer copy) and the idle numbers with a history of pictures.
+
+## Recording targets, audio and pause (ADR 0116, unfixed)
+- [ ] Window recording: niri gives no tiled window's rectangle; it needs a PipeWire cast of the window.
+- [ ] A system and microphone mix (one source at a time now).
+- [ ] Kanade's own region overlay in place of `slurp`.
+- [ ] Not verified live: that `wf-recorder` takes `--audio=@DEFAULT_MONITOR@` and `--audio=@DEFAULT_SOURCE@`, that `slurp` runs with a null stdin, and A/V sync and timestamps across the joined segments.
+- [ ] Each resumed segment pays the recorder's first-frame delay (the file appears only at the first frame).
+- [ ] A crash after a resume leaves the file with the first segment and a `.Screencast from <stamp>.parts/` folder with the rest (during the join, no file at the name and every segment in the folder); nothing offers to join or sweep them.
+- [ ] A `slurp` that ignores SIGTERM would hold the worker thread (and so every later recording job) until it ends; no kill escalation.
+- [ ] The Launcher's recording rows read the recording's standing (Rec) once per frame: they are recomputed on each fit, key, wheel and render, so a recording that ends while it is open shows at most one frame late.
+- [ ] Not verified live: that the Failed Activity (preempting, for a start that fails) is seen over the Capture Surface when `slurp` is missing; a failure from a join or a recorder that ends does not preempt.
+- [ ] `capture record stop` on a static screen may wait for wf-recorder's next damage frame, past the CLI's 5 s reply. Live check pending: needs a still screen.
+- [ ] The join's 600 s limit can outlast the CLI's 5 s, which then answers unknown while the file still lands.
+- [ ] Not run: the Surface, the Launcher, the lock rule and the area picker on a session (no E2E in the change).

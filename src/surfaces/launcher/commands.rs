@@ -12,7 +12,7 @@ use crate::cli::{self, Call, Reply};
 use crate::icon::Icon;
 use crate::island::activity::Leave;
 use crate::lock;
-use crate::sources::live;
+use crate::sources::{live, recording};
 
 use super::destinations::WALLPAPER;
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
@@ -49,6 +49,22 @@ pub struct Commands {
     pub lock: bool,
     pub wallpaper: bool,
     pub dictation: bool,
+
+    // how a recording stands, which the four recording rows follow
+    pub recording: Rec,
+}
+
+// whether a recording runs, for the rows that start, pause, resume or stop it
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Rec {
+    #[default]
+    Idle,
+
+    Running {
+        pausable: bool,
+    },
+
+    Paused,
 }
 
 // the flag of `Commands` a row needs
@@ -177,6 +193,30 @@ const TABLE: &[Command] = &[
     Command {
         gate: Gate::Capture,
         icon: Icon::Camera,
+        title: "Record Area",
+        detail: "Pick an area to record",
+        aliases: &["record area", "area recording", "region recording"],
+        verb: &["capture", "record", "start", "area"],
+    },
+    Command {
+        gate: Gate::Capture,
+        icon: Icon::Pause,
+        title: "Pause Recording",
+        detail: "Pause the screen recording",
+        aliases: &["pause recording", "pause record"],
+        verb: &["capture", "record", "pause"],
+    },
+    Command {
+        gate: Gate::Capture,
+        icon: Icon::Camera,
+        title: "Resume Recording",
+        detail: "Go on with the paused recording",
+        aliases: &["resume recording", "resume record"],
+        verb: &["capture", "record", "resume"],
+    },
+    Command {
+        gate: Gate::Capture,
+        icon: Icon::Camera,
         title: "Stop Recording",
         detail: "End the screen recording",
         aliases: &["stop recording", "stop record"],
@@ -228,6 +268,17 @@ impl Commands {
             Gate::Dictation => self.dictation,
         }
     }
+
+    // whether a recording row fits how the recording stands; every other row always does
+    fn suits(&self, verb: &[&str]) -> bool {
+        match verb {
+            ["capture", "record", "start", ..] => self.recording == Rec::Idle,
+            ["capture", "record", "pause"] => self.recording == Rec::Running { pausable: true },
+            ["capture", "record", "resume"] => self.recording == Rec::Paused,
+            ["capture", "record", "stop"] => self.recording != Rec::Idle,
+            _ => true,
+        }
+    }
 }
 
 impl LauncherProvider for Commands {
@@ -245,7 +296,7 @@ impl LauncherProvider for Commands {
 
         TABLE
             .iter()
-            .filter(|command| self.offers(command.gate))
+            .filter(|command| self.offers(command.gate) && self.suits(command.verb))
             .filter_map(|command| {
                 let title = command.title.to_lowercase();
                 let fit = command
@@ -284,7 +335,7 @@ pub fn title(verb: &[&str]) -> &'static str {
 pub fn clears_island(verb: &[&str]) -> bool {
     matches!(
         verb,
-        ["capture", "screenshot", _] | ["capture", "record", "start"]
+        ["capture", "screenshot", _] | ["capture", "record", "start", ..]
     )
 }
 
@@ -343,7 +394,8 @@ pub fn dispatch(verb: &'static [&'static str]) -> Result<(), String> {
 /*
  * whether a verb is never run from the Launcher: it types or presses into windows (`ui`), runs a
  * program (`activity run|hook`), ends the session (`session logout|reboot|poweroff`), or waits on
- * the user (`dmenu`, `gesture`, `capture color`); or it is no verb. The table holds none, and
+ * the user (`dmenu`, `gesture`, `capture color`); records the microphone (`capture record start
+ * ... mic`, which is only ever asked for by name, ADR 0116); or it is no verb. The table holds none, and
  * `press` checks again
  */
 pub fn denied(words: &[&str]) -> bool {
@@ -359,6 +411,10 @@ pub fn denied(words: &[&str]) -> bool {
             | Call::Dmenu(_)
             | Call::Gesture(_)
             | Call::PickColor
+            | Call::Record(recording::Request::Start(recording::Start {
+                audio: recording::Audio::Mic,
+                ..
+            }))
     )
 }
 
@@ -382,6 +438,7 @@ mod tests {
             lock: true,
             wallpaper: true,
             dictation: true,
+            recording: Rec::Idle,
         }
     }
 
@@ -410,6 +467,8 @@ mod tests {
             &["dmenu"],
             &["gesture"],
             &["capture", "color"],
+            &["capture", "record", "start", "mic"],
+            &["capture", "record", "start", "area", "mic"],
             &["not-a-verb"],
         ] {
             assert!(denied(words), "{words:?}");
@@ -440,6 +499,28 @@ mod tests {
         assert_eq!(only.find("caffeine").len(), 1);
         assert!(only.find("wifi").is_empty());
         assert!(!all().find("caffeine").is_empty());
+    }
+
+    #[test]
+    fn the_recording_rows_follow_how_it_stands() {
+        let titles = |recording| -> Vec<String> {
+            Commands { recording, ..all() }
+                .find("recording")
+                .into_iter()
+                .map(|answer| answer.title)
+                .collect()
+        };
+
+        assert!(titles(Rec::Idle).contains(&String::from("Start Recording")));
+        assert!(!titles(Rec::Idle).contains(&String::from("Stop Recording")));
+        assert!(!titles(Rec::Idle).contains(&String::from("Pause Recording")));
+        assert!(titles(Rec::Running { pausable: true }).contains(&String::from("Pause Recording")));
+        assert!(
+            !titles(Rec::Running { pausable: false }).contains(&String::from("Pause Recording"))
+        );
+        assert!(titles(Rec::Running { pausable: false }).contains(&String::from("Stop Recording")));
+        assert!(titles(Rec::Paused).contains(&String::from("Resume Recording")));
+        assert!(!titles(Rec::Paused).contains(&String::from("Start Recording")));
     }
 
     #[test]
@@ -477,7 +558,11 @@ mod tests {
     fn no_command_fits_better_than_a_prefix() {
         for command in TABLE {
             for name in command.aliases.iter().copied().chain([command.title]) {
-                let found = all().find(name);
+                // a recording row shows only in the state it fits
+                let found: Vec<Answer> = [Rec::Idle, Rec::Running { pausable: true }, Rec::Paused]
+                    .into_iter()
+                    .flat_map(|recording| Commands { recording, ..all() }.find(name))
+                    .collect();
                 let row = found
                     .iter()
                     .find(|answer| answer.title == command.title)

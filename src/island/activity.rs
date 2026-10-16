@@ -473,22 +473,43 @@ pub struct Toast {
 // a screen recording Kanade started, at its file's absolute path
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Clip {
-    // still recording the output named
-    Recording { path: String, output: String },
+    /*
+     * still recording what `output` names (an output, or an area), hearing `audio` if anything
+     * (a microphone is always said), `paused` between two segments; `pausable` when it can be
+     */
+    Recording {
+        path: String,
+        output: String,
+        audio: Option<String>,
+        paused: bool,
+        pausable: bool,
+    },
+
+    // ended, and its segments being joined into the file: nothing more to pause or stop
+    Saving {
+        path: String,
+    },
 
     // finished; `copied` once its path is on the clipboard, by the Activity's action
-    Saved { path: String, copied: bool },
+    Saved {
+        path: String,
+        copied: bool,
+    },
 
     // ended without saving anything, for why
-    Failed { path: String, why: String },
+    Failed {
+        path: String,
+        why: String,
+    },
 }
 
 impl Clip {
     pub fn path(&self) -> &str {
         match self {
-            Clip::Recording { path, .. } | Clip::Saved { path, .. } | Clip::Failed { path, .. } => {
-                path
-            }
+            Clip::Recording { path, .. }
+            | Clip::Saving { path }
+            | Clip::Saved { path, .. }
+            | Clip::Failed { path, .. } => path,
         }
     }
 }

@@ -218,6 +218,19 @@ pub fn tiles(row: Vec<Box<dyn Widget>>) -> Rectangle {
         .child(Row::new(row).gap(TILE_GAP))
 }
 
+// the tiles with pills under them, together in the middle of the body
+pub fn tiled(row: Vec<Box<dyn Widget>>, pills: Row) -> Rectangle {
+    Rectangle::new()
+        .width(WIDTH)
+        .height(BODY)
+        .align_child(Center, Center)
+        .child(
+            Column::new(vec![Box::new(Row::new(row).gap(TILE_GAP)), Box::new(pills)])
+                .gap(PILL_GAP)
+                .align(Center),
+        )
+}
+
 // its icon in a knob, then its name; filled while the ring is on it. `node` is what `kanade ui` names it
 pub fn tile(
     node: &'static str,

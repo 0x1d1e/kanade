@@ -240,6 +240,7 @@ mod tests {
         assert!(completes(&["google-calendar"], "sign-in"));
         assert!(completes(&["capture"], "screenshot"));
         assert!(completes(&["capture", "screenshot"], "window"));
+        assert!(completes(&["capture", "record"], "pause"));
         assert!(completes(&["notifications", "dnd"], "toggle"));
         assert!(completes(&["power-profile"], "cycle"));
         assert!(completes(&["help"], "wifi"));

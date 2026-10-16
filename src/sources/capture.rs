@@ -2,7 +2,7 @@
 //! all an area, a window or an output needs, so there is no other backend to choose. `kanade
 //! capture screenshot` asks niri to save one under `~/Pictures/Screenshots`, named as niri names its
 //! own. niri announces each screenshot it saves by its own notification, whoever asked for it; the
-//! Island shows none. The actions here copy a recording's path or open it.
+//! Island shows none. The actions here pause, resume or stop a recording, copy its path or open it.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -308,6 +308,12 @@ pub fn act(key: &str, path: &str) {
         recording::STOP => thread::Builder::new()
             .name(String::from("capture-stop"))
             .spawn(move || recording::stop_at(&path)),
+        recording::PAUSE => thread::Builder::new()
+            .name(String::from("capture-pause"))
+            .spawn(move || recording::pause_at(&path)),
+        recording::RESUME => thread::Builder::new()
+            .name(String::from("capture-resume"))
+            .spawn(move || recording::resume_at(&path)),
         COPY => thread::Builder::new()
             .name(String::from("capture-copy"))
             .spawn(move || copy(path)),

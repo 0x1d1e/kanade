@@ -362,7 +362,10 @@ impl Holder {
                 return self.start();
             }
 
-            return self.publish(self.running.is_some(), Shade::read().failed.clone());
+            // the read is let go before `publish` writes the same service
+            let failed = Shade::read().failed.clone();
+
+            return self.publish(self.running.is_some(), failed);
         }
 
         self.running = None;

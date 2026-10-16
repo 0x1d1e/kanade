@@ -5,7 +5,7 @@ use std::time::Instant;
 use kanade_runtime::{Center, Color, Rectangle, Row, Text, Widget};
 
 use crate::icon::Icon;
-use crate::island::activity::{Activity, Class, Detail, Kind, Leaving};
+use crate::island::activity::{Activity, Class, Clip, Detail, Kind, Leaving};
 use crate::island::geometry::{self, Canvas, Hang, Rect, Shape};
 use crate::island::satellites::{Mark, Satellites};
 use crate::pane;
@@ -94,6 +94,10 @@ pub(super) fn satellites(
  */
 pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
+        // the mark of a paused recording is the pause, as a label that long would not fit
+        Detail::Recording(Clip::Recording { paused: true, .. }) => {
+            Box::new(Icon::Pause.on(14.0, theme::signals().capture))
+        }
         Detail::Recording(_) => label(String::from("Rec"), theme::signals().capture),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
         Detail::Dictation(_) => Box::new(Icon::Microphone.draw(14.0)),
