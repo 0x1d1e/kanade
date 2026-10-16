@@ -5,7 +5,7 @@
 <h1 align="center">Kanade</h1>
 
 <p align="center">
-  An adaptive activity island and desktop shell for niri.
+  One island that changes shape for what is happening: a desktop shell for niri, in Rust.
 </p>
 
 <p align="center">
@@ -15,27 +15,37 @@
 > [!WARNING]
 > Kanade is in a very immature phase. Expect bugs, missing pieces and breaking changes to config, CLI and behavior until 1.0. See [Limitations](docs/wiki/Limitations.md) for known gaps.
 
-## About
+<!-- TODO screenshots: a strip of the Island's forms (Rest, a Compact track, a Split with a Satellite, an Expanded Surface) and the Dock; see the report for the shots wanted. -->
 
-Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri), written in Rust on its own Wayland and GPU runtime. Its center is the Island: one pill at the top center of each monitor that changes shape for what is happening. At rest it shows the clock. Activities such as the playing track, volume, brightness, Caps Lock, Num Lock, airplane mode, workspace changes, notifications, battery and a timer take it over for as long as they last.
+## The idea
 
-It is also the session's notification daemon, a Dock, and a lock screen.
+There is no bar. Each monitor has one Island, by default at the top center. At Rest it shows the clock. When something happens, such as a playing track, a volume change, a notification, a low battery or a timer, it takes the Island over and the Island morphs to fit it, then settles back. Hover to peek; click to open a Surface, a full interface for that thing (thirteen of them, from Media to the Launcher), all reachable by keyboard. Things that last, like a timer or a script's job, stay beside it as Satellites.
+
+Around the Island, Kanade is the session's notification daemon, a Dock and a lock screen. It is written in Rust on its own Wayland and GPU runtime, and at Rest it draws one frame a minute, for the clock.
 
 ## Features
 
-- **Island**: hovering it while it shows something peeks; a click expands it into one of thirteen Surfaces: Media, Notifications, Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Session, Timer and Capture.
-- **Tray**: hovering the Island at rest shows the apps' tray items beside the clock. Left click activates one, middle click is its secondary action, the wheel scrolls it, and right click opens its menu.
-- **Notifications**: Kanade is the notification daemon. Banners come out of the Island, with Do Not Disturb; one app's notifications group, and a progress hint shows as a live Activity.
-- **Privacy indicators**: dots at the Island's trailing end, or its top corner in a Surface, show a microphone, camera or screen capture in use, and the Controls Surface names the apps and ends a screen share with Stop sharing. A fullscreen window covers them, and `privacy.indicators` turns them off.
-- **Dock**: on each monitor, at the edge and side set in `dock.edge` and `dock.align`, left click launches or focuses an app, middle click starts a new instance, right click opens its menu (pin, windows, actions).
-- **Finishes**: tinted solid, paper, liquid glass, and blur, which blurs the wallpaper and the windows behind the Island, Dock and Banners (needs a niri layer rule, see [Installation](docs/wiki/Installation.md)).
-- **Appearance**: with Matugen installed, Kanade derives light and dark shell colors from the wallpaper awww shows, however it was set, then renders configured app targets for the selected tone; `appearance.sync` carries them to GTK, Qt, KDE apps, niri's window borders, kitty, and Firefox or Zen live through Pywalfox.
-- **Lock screen**: `kanade lock` shows the date, the time, who is signed in and a password field over the wallpaper, and no notification. The session also locks before the machine sleeps, and, with the `idle` Module on, after a dim grace when idle.
-- **Capture**: screenshots and a screen color picker through niri and screen recording of the output, an area or a window, with sound if you ask and a pause, through `wf-recorder`, a saved recording shown on the Island, a saved screenshot by niri's notification.
-- **Calendar and weather**: local iCalendar files and events you add, Google Calendar, read-only `https` calendar subscriptions, a Join action for a meeting link, and the forecast from Open-Meteo.
-- **Live Activities**: scripts and agents (a Claude Code hook recipe in [Agent hooks](docs/wiki/Agent-hooks.md)) show what they do on the Island with `kanade activity`; Focus quiets the session in one press.
-- **Settings window**: task-based pages with search, Inspect and Undo; changes apply live unless marked Restart.
-- **Idle cost**: at rest the Island draws one frame a minute, for the clock, and nothing else.
+**The Island**
+- Activities take it over for as long as they last: media, volume and brightness, Caps and Num Lock, airplane mode, workspace changes, battery, timers, and what your own scripts post with `kanade activity` (a Claude Code hook recipe is in [Agent hooks](docs/wiki/Agent-hooks.md)).
+- Thirteen Surfaces: Media, Notifications, Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Session, Timer and Capture.
+- Tray items appear beside the clock on hover. Left click activates, middle is the secondary action, the wheel scrolls, right opens the menu.
+- Privacy dots show a microphone, camera or screen cast in use. Controls names the apps and ends a share with Stop sharing.
+
+**The session**
+- Notifications: Kanade is the daemon. Banners come out of the Island, with Do Not Disturb, grouping and live progress.
+- Dock on each monitor: left click launches or focuses, middle click starts a new instance, right click opens the menu.
+- Lock screen (`kanade lock`), locking before sleep, and idle stages with the `idle` Module (off by default).
+- Focus quiets the session in one press; Caffeine and Night light are switches.
+
+**Capture and time**
+- Screenshots, a screen color picker, and recording of an output, an area or a window, with sound if you ask and a pause.
+- Calendar from iCalendar files, Google Calendar and read-only subscriptions, with a Join action for meeting links; weather from Open-Meteo; a Timer with pomodoro.
+
+**Looks and control**
+- Four finishes: tinted solid, paper, liquid glass, and blur (needs a niri layer rule, see [Installation](docs/wiki/Installation.md)).
+- With Matugen, shell colors follow the wallpaper awww shows, and `appearance.sync` carries them to GTK, Qt, KDE apps, niri's borders, kitty and Firefox or Zen.
+- A Settings window with search, Inspect and Undo; changes apply live unless marked Restart. Every feature but the Island is a Module you can turn off, and then it starts nothing.
+- Scriptable: a `kanade` CLI, `kanade ui` to drive the shell by control name, and `kanade doctor` to check your setup.
 
 ## Scope
 
