@@ -24,7 +24,7 @@ The Clipboard history (ADR 0011) is bounded (50 entries, 64 MiB) and only in mem
 These need the user's decision on plaintext at rest, so none is built here:
 
 - **Persistence of pins** across restarts (done, ADR 0115) or **of the history** (still not built).
-- **Snippets and placeholders**: text kept on purpose and filled in when pasted, and any CLI verb that takes text.
+- **Snippets and placeholders**: text kept on purpose and filled in when pasted, and any CLI verb that takes text. Declined (user decision after this ADR), not deferred: they are not planned, see ADR 0115.
 - **Image persistence**: a pinned picture surviving a restart (done, ADR 0115), or a preview anywhere but tmpfs (not built).
 - **Sync** of the history or pins between machines.
 

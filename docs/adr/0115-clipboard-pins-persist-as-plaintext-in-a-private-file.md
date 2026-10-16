@@ -25,6 +25,7 @@ ADR 0114 left persistence of pins undecided because an entry that passed ADR 001
   - A newer Kanade's file is held like an unreadable one; a damaged file is kept as `.bak` (above), not rewritten in place. A later damage replaces an older `.bak` (the latest remains are what the user last had, and one bounded file stays at rest, not one per damage).
   - A save that fails (disk full, no permission) logs its error kind; the pins stay in memory and the next change tries again.
 - **`kanade clipboard clear` and Clear all keep the pins** and the file, and the reply `kept N pinned` stays right.
+- **Snippets and placeholders are declined.** The user decided against them (ADR 0114 listed them as deferred); a pin is kept text, not a template, and they are not planned.
 
 ## Alternatives
 

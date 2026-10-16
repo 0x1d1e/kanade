@@ -69,12 +69,12 @@ Runtime:    policy/state · Service readers/subscriptions · windows
 | Group | Modules |
 | --- | --- |
 | Core | `island` |
-| Activities | `media`, `timer`, `live`, `battery`, `workspace` |
+| Activities | `media`, `timer`, `live`, `launcher-entry`, `battery`, `workspace` |
 | Sources | `notifications`, `tray`, `audio`, `brightness`, `network`, `bluetooth`, `power`, `windows`, `clipboard`, `calendar`, `google-calendar`, `calendar-subscriptions`, `calendar-reminders`, `weather` |
 | Overlays | `privacy`, `banners` |
 | Island Transients | `osd` |
 | Surfaces | `controls`, `launcher`, `notification-surface`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface` |
-| Utilities | `capture`, `gesture`, `caffeine`, `night-light`, `focus`, `doctor` |
+| Utilities | `capture`, `gesture`, `caffeine`, `dictation`, `night-light`, `focus`, `doctor` |
 | Desktop | `dock`, `wallpaper` |
 | Session | `lock`, `idle`, `session`, `settings`, `hooks`, `ui` |
 
@@ -140,7 +140,7 @@ Rules:
 - **Bluetooth**: scan, pair, connect/disconnect, device selection, state/error.
 - **Audio**: master volume/mute, input/output device selection, per-app mixer, and a row under each playing app to move it to another output (`target.object`, ADR 0081), mic state.
 - **Notifications**: history (20 per app, 100 in all), an app's notifications as a stack (newest and a count; opened and closed by click or keyboard, closed again at each opening), actions, dismiss, clear, DND, empty/error.
-- **Clipboard**: text + image history, search, copy, delete, clear (held to act, ADR 0085); bounded; the history is memory only. Entries can be pinned (first, never evicted by the bounds though counted in them, own caps of 20 and 16 MiB, kept by Clear all; the pins, text and images, persist across restarts as plaintext in a private file, [ADR 0115](adr/0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md)), image rows show a thumbnail from a preview file on tmpfs (0700/0600, deleted with the entry, swept at start), and the selected text's first lines show in a pane where the body is tall ([ADR 0114](adr/0114-clipboard-pins-and-previews-live-in-memory-and-tmpfs.md)); persistence of the history, snippets, placeholders and sync are not built. Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
+- **Clipboard**: text + image history, search, copy, delete, clear (held to act, ADR 0085); bounded; the history is memory only. Entries can be pinned (first, never evicted by the bounds though counted in them, own caps of 20 and 16 MiB, kept by Clear all; the pins, text and images, persist across restarts as plaintext in a private file, [ADR 0115](adr/0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md)), image rows show a thumbnail from a preview file on tmpfs (0700/0600, deleted with the entry, swept at start), and the selected text's first lines show in a pane where the body is tall ([ADR 0114](adr/0114-clipboard-pins-and-previews-live-in-memory-and-tmpfs.md)); persistence of the history and sync are not built, and snippets and placeholders are declined (the user's decision, not deferred). Sensitive copies (`x-kde-passwordManagerHint`) never read; needs wl-paste ≥2.3 ([ADR 0019](adr/0019-clipboard-sensitive-content.md), done, #162).
 - **Keys**: niri's keybinds read from its config (`$NIRI_CONFIG`, else XDG, else `/etc/niri`) and its includes, KDL v1 (v2 read too), named by `hotkey-overlay-title` else the action, grouped Kanade, Windows, Workspaces, Other; then the in-Surface keys from `docs/wiki/Keyboard.md`'s table, compiled in so they never drift. Read-only: nothing runs from it. An unreadable file is named.
 - **Calendar**: month/agenda; local iCalendar files, read-only, plus the owned events the Calendar Surface adds, changes and removes, one file each in Kanade's own directory; a change rewrites only title and times, keeps the rest of the file and refuses an event changed elsewhere, with Edit and Remove on the row, Remove held like `d` (ADR 0015, ADR 0045, ADR 0085, ADR 0113); no recurrence, Google write-back, time zones, undo or CLI verbs for them; optional public iCalendar subscriptions and Google Calendar account sync into files the calendar reads (ADR 0062), OAuth with the user's own client, secrets in the Secret Service (ADR 0016). Reminders from events' `VALARM`s, or a default lead, as an Ongoing Activity counting down, each going off once across restarts ([ADR 0043](adr/0043-calendar-reminders.md)).
 - **Weather**: current + 5-day forecast from Open-Meteo, no account; explicit `weather.location`; 30 min refresh, failures back off 1 → 30 min; last good forecast shown stale with its time; error state without one (ADR 0017) (done, #152).
@@ -182,6 +182,10 @@ A `systemd-inhibit --what=idle` holder (ADR 0011) while on, only under `setpriv 
 ### Live Activities
 
 `kanade activity` lets another program show what it does as a Live Activity: a build, a download, a script ([ADR 0042](adr/0042-live-activities-from-outside.md)). Live, it is Persistent Ongoing Global, so a Satellite beside a higher primary; ended or failed, a 10 s Transient on the focused output, as a saved recording. A title, a pulse or a percent, and on Peek a detail and a bar; no Surface. Bounded: 8 live, a small id alphabet, titles and details one line cut to 80 and 160 characters, never logged; an unknown id refused. Withdrawn after `live.stale` without a word. A change within 250 ms of the last post of that Activity is held and posted as it falls due, and one that changes nothing is not posted; one thread sleeps until the next withdrawal or held post is due, none while none is live or held. `activity run` runs its command in the client, touching the Activity while it runs and ending it by the exit status, which it exits with. A poster may attach up to 3 actions (`activity actions <id> [<key>=<label>]...`, `activity run --action`): drawn as neutral pills on Peek only, labels cut to 24 characters and never one of the shell's own words (Cancel, Now, Dismiss, Stop, Confirm). A press is queued, at most 4, for the poster, which reads it back (`activity pressed`, or `activity wait`, a client-side poll); the shell runs nothing for it. The pressed pill is pending ("...") until the poster's next word or 10 s; a press of an earlier start's pill is ignored; actions end with the Activity; `activity run`'s `cancel` sends SIGTERM to its command. No keyboard path yet, as there is no Live Surface ([ADR 0110](adr/0110-external-live-activities-carry-actions-and-hear-them-pressed.md)). `activity hook claude` runs in the client too: one Claude Code hook event on stdin becomes the same verbs, a session as one Activity, bounded to exit 0 or 1 within a short wait and never 2, which Claude Code takes as a block ([ADR 0058](adr/0058-agent-hooks-and-coalesced-reposts.md), [wiki](wiki/Agent-hooks.md)). A notification with a `value` hint (a de facto, non-standard hint, a percent) is also a Live Activity of the `notifications` Module under the same policy and the same 8 (at most 3 of them, the oldest giving way), ended as done at 100 and withdrawn when the notification closes, expires or is replaced without it ([ADR 0059](adr/0059-notification-progress-as-a-live-activity.md)). An app's Unity launcher entry signal with `progress-visible` is one too, of the `launcher-entry` Module, titled with the app's desktop entry name, at most 2 of the 8, ended as done at full and withdrawn when the entry hides it ([ADR 0083](adr/0083-launcher-entry-progress.md)).
+
+### Dictation
+
+`dictation` (a Utility, off by default, [ADR 0111](adr/0111-voice-dictation-through-the-gemini-api.md)): `kanade dictate toggle` (bound by the user to a niri key; also a Launcher command) records the microphone with `pw-record` into memory, and on the stop sends it in one request to the Gemini API, the only engine. Nothing records or is sent without both an API key in the Secret Service and a recorded consent to the disclosure (the free tier may use what is sent to improve Google's products and show it to people), both set by `kanade dictate key|consent|forget` in the user's terminal, never through the shell's socket. The text is inserted as `dictate.insert` says: copy (default), type or paste, falling back to a sensitive copy when the focused window is not the one the recording started in, is in `dictate.never_in`, or the session is locked; a recording not yet stopped is cancelled by the lock. An Activity of Kind `Dictation` shows the seconds heard, the transcribing and the text or why it failed. It adds no mic indicator: the privacy cluster reads the PipeWire graph. A 120 s cap, audio never on disk. Local models and streaming are deferred. The request shape is not yet checked against a live key (ADR 0111, Unverified).
 
 ### Night light
 
@@ -284,9 +288,12 @@ weather open|close|toggle|refresh|status
 timer start <dur>|pomodoro [work break long-break rounds]|pause|resume|skip|cancel
 activity start <id> <title>|progress <id> <amount>|detail <id> [text]
 activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
+activity actions <id> [<key>=<label>]...|pressed <id>|wait <id> [--timeout S]
 activity hook claude
 capture screenshot area|window|output
 capture record start [screen|area [<x,y WxH>]] [none|system|mic] | pause | resume | stop | status
+dictate toggle|cancel|status
+dictate key|consent|forget
 gesture | gesture record <name> | gesture forget <name> | gesture list
 caffeine on|off|toggle [duration]|status
 night-light on|off|toggle|status
@@ -340,14 +347,15 @@ References, not dependencies: Suzuha = panels as one liquid shape; Noctalia v5 =
 
 Targets: idle CPU <0.1%; idle frames 0; memory tracked by `scripts/memory` (`docs/memory.md`), no cap before 1.0; Island morph mean frame gap = refresh interval (`scripts/frames`); source→visible <100 ms; Launcher→first key <100 ms; cold start <500 ms.
 
-Nested-niri E2E checks idle/morph each release.
+Idle frames, wakeups, frame gaps and memory are baselines taken by hand on the user's session (`AGENTS.md`, `docs/memory.md`), not a gate and not CI.
 
 ## Security/privacy
 
 - local-user IPC only; no network listener.
 - notification body plain text; action only on click; history memory-only, 20/app, 100 total.
-- clipboard history bounded; persistence off by default; a selection marked sensitive is never read or kept, unknown state fails closed ([ADR 0019](adr/0019-clipboard-sensitive-content.md)).
+- clipboard history bounded and memory only (pins: next line); a selection marked sensitive is never read or kept, unknown state fails closed ([ADR 0019](adr/0019-clipboard-sensitive-content.md)).
 - the clipboard history stays in memory; the pins are stored as plaintext in `$XDG_STATE_HOME/kanade/clipboard-pins` (0700/0600, the user's decision, only what passed the sensitive gate, removed with the pin; [ADR 0115](adr/0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md)); the other files are the pictures' previews on tmpfs (`$XDG_RUNTIME_DIR`, 0700/0600), deleted with their entry and swept at start; a pin adds no filter ([ADR 0114](adr/0114-clipboard-pins-and-previews-live-in-memory-and-tmpfs.md)).
+- dictation sends audio to Google only after a user-started recording, a key in the Secret Service and a consent typed at a terminal; audio in memory only, key, consent and text never logged, never through the socket ([ADR 0111](adr/0111-voice-dictation-through-the-gemini-api.md)).
 - calendar credentials/tokens never logged; weather sends only the configured coordinates, never logged; account secrets stored through system secret service, not TOML.
 - never log passwords, notification/window/media/clipboard content.
 - `media.lyrics = lrclib` sends the playing track's title, artist, album and length to lrclib.net over https only, only while it plays on an open Media Surface, with a `Kanade/<version>` User-Agent and no identifier; answers are cached under hashed names and never logged ([ADR 0063](adr/0063-synced-lyrics.md)).
@@ -387,14 +395,25 @@ Need design before commitment:
 
 ## Roadmap
 
-- **7A Modules**: registry/deps/capabilities; migrate v0.1 features.
-- **7B Contracts**: config schema/hot reload, CLI/IPC, status, doctor.
-- **7C Theme**: token refactor.
-- **8 Presentation**: banners + OSD; delete Island toast/OSD paths (the OSD returned to the Island, ADR 0021).
-- **9 Shell essentials**: detailed Controls, tray contract, clipboard, launcher providers, capture, caffeine.
-- **10 Desktop/data**: Dock, wallpaper, Settings, calendar, weather, per-output config.
-- **11 Session**: lock proof, idle/suspend, session menu, power/night light.
-- **12 Polish**: Material You, accessibility, motion, perf/E2E.
+Done (v0.2 phases 7A Modules, 7B Contracts, 7C Theme, 8 Presentation, 9 Shell essentials, 10 Desktop/data, 11 Session, and in 12 Polish Material You, desktop accessibility preferences, motion; history in `docs/archived/plan.md`), then, past the plan, each described in its section above:
+
+- Live Activity actions ([ADR 0110](adr/0110-external-live-activities-carry-actions-and-hear-them-pressed.md)).
+- Voice dictation through the Gemini API, API only ([ADR 0111](adr/0111-voice-dictation-through-the-gemini-api.md)).
+- Launcher commands, a closed set of Kanade verbs ([ADR 0112](adr/0112-launcher-runs-a-closed-set-of-kanade-verbs.md)).
+- Calendar editing of owned events ([ADR 0113](adr/0113-owned-events-are-edited-in-place-and-keep-what-they-hold.md)).
+- Clipboard pins, image previews and a detail pane ([ADR 0114](adr/0114-clipboard-pins-and-previews-live-in-memory-and-tmpfs.md)); pins persist as plaintext in a private file ([ADR 0115](adr/0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md)). Snippets and placeholders declined.
+- Recording: area target, system or microphone audio, pause and resume ([ADR 0116](adr/0116-recording-targets-audio-and-pause.md)).
+
+Remaining:
+
+- **Recording**: window recording (niri gives no tiled window's rectangle; needs a PipeWire cast, a spike first); system and microphone mixed in one recording (one source at a time now); Kanade's own region overlay in place of `slurp`; `wf-recorder`'s audio sources and the joined segments' A/V sync are not checked live (ADR 0116).
+- **Launcher**: web search and recent files, each wanting its own ADR for what leaves the machine and what it parses (ADR 0112).
+- **Live Activities**: a keyboard path to an Activity's actions, which needs a Live Surface (ADR 0110).
+- **Dictation**: a live check of the Gemini request and of `wtype` insertion; local models and streaming stay deferred (ADR 0111).
+- **Calendar**: recurrence, time zones, undo and CLI verbs for owned events, Google write-back (ADR 0113).
+- **Clipboard**: persistence of the whole history and sync; neither is decided.
+- **Accessibility**: an AT-SPI adapter over the semantic tree (ADR 0095 to 0099); the rest of the controls named for `kanade ui`.
+- **12 Polish, optimization and E2E**: baselines are retaken by hand (`docs/memory.md`), the Liquid Glass and Blur finishes have none yet, and the memory baseline waits for a retake now the glass capture is gone; invalidation scoped per output (`TODO.md`). Live E2E for the unverified items in `TODO.md` and `docs/wiki/Limitations.md`.
 
 ## Open
 
