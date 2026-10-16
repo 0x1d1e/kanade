@@ -221,6 +221,10 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 - [ ] `activity wait` and `run --action cancel` poll every 250 ms: each ask is a connect and an IPC on the draw thread, about 4 shell wakeups a second while anyone waits (for `run`, the command's lifetime). A subscription or a longer-held call would cost less.
 
+## Notification sounds (ADR 0118, review, low-level, unfixed)
+
+- [ ] The stderr note for a layer that cannot be used prints for every notification, even one dropped because a sound already plays (`cue()` emits the notes before the `PLAYING` check): dedupe or rate-limit it.
+
 ## Clipboard pins and previews (ADR 0114, 0115, low-level, unfixed)
 
 - [ ] Pins persist (ADR 0115) as one file rewritten whole on each change, up to 16 MiB; one save thread per change, each taking the latest set, so a burst of pins writes more than needed.
@@ -272,7 +276,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] niri config editor: edit niri's `config.kdl` from Kanade's settings.
   - Validate with `niri validate`, keep comments, write atomically, undo.
 - [ ] SDDM: ask the user whether they want it; if so take a theme from qylock (check the actual repo and its licence before using any of it) or create our own.
-- [ ] Notification sound customization: per app and urgency, a chosen sound file, volume, or off; in the notifications Module and its config.
+- [x] Notification sound customization: per app and urgency, a chosen sound file, volume, or off; in the notifications Module and its config.
+  - Done (ADR 0118): `notifications.sound_file`, `sound_low`/`_normal`/`_critical`, `sound_volume`, and rule `sound = "<file or name>"` with `volume`; Settings shows the switch, file and volume. Not run on the session: live playback through `pw-play` and `canberra-gtk-play` (volume, the missing-file note).
 - [x] Dock click behaviour: left click focuses the app, middle click opens a new instance, right click opens the application's actions (Desktop Entry actions).
   - Done: middle runs `Launch::run` through `dock::new_instance` (nothing for an app with no `.desktop` entry); left keeps cycling; right was already the menu with the actions. Not run on the session: the middle click.
 - [x] Clipboard Surface: remove the preview box (the large box that shows the full text of the selected entry, ADR 0114).

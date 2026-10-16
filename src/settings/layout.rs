@@ -126,6 +126,9 @@ pub const MODULES: &str = "modules";
 pub const EXTERNAL_KEYS: &[&str] = &[
     "dock.pinned",
     "gestures",
+    "notifications.sound_low",
+    "notifications.sound_normal",
+    "notifications.sound_critical",
     "notifications.rules",
     "focus.auto",
     // what an agent may read of the windows: set in a config file or `kanade config set`, not by a click
@@ -329,7 +332,11 @@ pub const PAGES: &[Page] = &[
             },
             Section {
                 title: "Sound",
-                rows: &[Row::Key("notifications.sound")],
+                rows: &[
+                    Row::Key("notifications.sound"),
+                    Row::Key("notifications.sound_file"),
+                    Row::Key("notifications.sound_volume"),
+                ],
             },
             Section {
                 title: "Privacy",

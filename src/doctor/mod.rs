@@ -580,13 +580,14 @@ fn modules(config: &Config, running: bool) -> Vec<Check> {
 // idle daemons that would act beside the idle Module
 const IDLE_DAEMONS: &[&str] = &["hypridle", "swayidle"];
 
-// notification sounds play through a helper, so say whether one is found; Kanade works without
-fn sounds(config: &Config) -> Option<Check> {
+// notification sounds play through a helper, so say whether one is found; Kanade works without. A
+// chosen sound file that is missing, or name no player can find, is named too: it is skipped for the next sound
+fn sounds(config: &Config) -> Vec<Check> {
     if !modules::resolve(modules::ALL, |name| config.off(name)).on("notifications") {
-        return None;
+        return Vec::new();
     }
 
-    Some(match (sound::player(), config.notification_sound) {
+    let mut checks = vec![match (sound::player(), config.notification_sound) {
         (Some(player), true) => Check::ok(format!("notifications.sound: {player} plays them")),
         (Some(player), false) => Check::ok(format!(
             "notifications.sound is off; {player} would play them"
@@ -599,7 +600,17 @@ fn sounds(config: &Config) -> Option<Check> {
             "notifications.sound is off; none of {} is on PATH",
             sound::PLAYERS.join(", ")
         )),
-    })
+    }];
+
+    if config.notification_sound {
+        checks.extend(
+            sound::unusable(&config.notification_sounds)
+                .into_iter()
+                .map(Check::warn),
+        );
+    }
+
+    checks
 }
 
 // whether a process of this name runs, as `/proc/<pid>/comm` names it

@@ -6,7 +6,7 @@
 //! DND (`notifications dnd toggle`) silences Banners, never the history, for as long as it is on or
 //! for a time it is given (`timed`). Banners never take the keyboard.
 //!
-//! A notification's rule (`rules`) may show it with no Banner or sound, under DND, for its own time,
+//! A notification's rule (`rules`) may show it with no Banner, its own sound or none, under DND, for its own time,
 //! or keep it out of the history: then it closes as expired once its Banner is gone, or at once with none.
 //!
 //! With `notifications.sound` on, a new notification plays a sound (`sound`), never under DND.
@@ -34,7 +34,7 @@ use super::apps::Apps;
 use super::bus;
 use super::icons;
 use super::live;
-use super::sound::{self, Hints};
+use super::sound::{self, Ring};
 use super::wake::{Announcer, Pace, Waker, Wakes};
 use crate::banners::{Banner, Banners};
 use crate::config;
@@ -457,12 +457,16 @@ pub fn follow() {
                 .collect();
 
             // only a notification new to the list rings; a replacement, like a progress, does not
-            let rings: Vec<Hints> = if config::get().notification_sound {
+            let rings: Vec<Ring> = if config::get().notification_sound {
                 arrived
                     .iter()
-                    .filter(|notification| notification.effects().sound)
                     .filter(|notification| !before.iter().any(|(id, _)| *id == notification.id()))
-                    .map(|notification| notification.sound().clone())
+                    .map(|notification| Ring {
+                        hints: notification.sound().clone(),
+                        urgency: notification.urgency(),
+                        rule: notification.effects().sound.clone(),
+                        volume: notification.effects().volume,
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -540,8 +544,10 @@ pub fn follow() {
 
             // never under DND, which quiets what the Banners show
             if !dnd {
-                for hints in &rings {
-                    sound::play(hints);
+                let config = config::get();
+
+                for ring in &rings {
+                    sound::play(ring, &config.notification_sounds);
                 }
             }
 
@@ -604,6 +610,7 @@ mod tests {
 
     use super::*;
     use crate::sources::notifications::rules::Effects;
+    use crate::sources::sound::Hints;
 
     fn notification(app: &str, id: u32, value: Option<u8>) -> Notification {
         Notification {

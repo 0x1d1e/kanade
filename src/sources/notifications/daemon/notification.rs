@@ -134,8 +134,8 @@ impl Notification {
         &self.sound
     }
 
-    pub fn effects(&self) -> Effects {
-        self.effects
+    pub fn effects(&self) -> &Effects {
+        &self.effects
     }
 
     // how far along the sender says it is, in percent

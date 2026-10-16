@@ -1,7 +1,7 @@
 //! Per-app notification rules (`[[notifications.rules]]`): each matches a notification by the app,
 //! desktop entry or category its sender gives, or a piece of its summary, and says what it does: a
-//! Banner or none, kept in the history or not, with a sound or none, shown under DND, how long its Banner stays and
-//! which urgency it counts as. Matching ignores case; every match field a rule gives must match,
+//! Banner or none, kept in the history or not, with a sound (its own, at its own volume) or none, shown under
+//! DND, how long its Banner stays and which urgency it counts as. Matching ignores case; every match field a rule gives must match,
 //! and the first rule that matches wins. With none matching, a notification does what it always
 //! did. A rule applies once, as its notification arrives.
 //!
@@ -12,7 +12,8 @@ use std::time::Duration;
 use toml::Value;
 
 use super::Urgency;
-use crate::config::{LONGEST, SHORTEST};
+use crate::config::{LONGEST, SHORTEST, SOUND_VOLUME};
+use crate::sources::sound::Choice;
 
 // one `[[notifications.rules]]` entry, as the file gives it
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -28,14 +29,18 @@ pub struct Rule {
     // what it does; none leaves that as it would be
     pub banner: Option<bool>,
     pub history: Option<bool>,
-    pub sound: Option<bool>,
+    // `true` is the sound it would have, `false` or "off" none, text a file or a sound name
+    pub sound: Option<Choice>,
+
+    // percent, over `notifications.sound_volume`
+    pub volume: Option<u32>,
     pub bypass_dnd: Option<bool>,
     pub timeout: Option<Duration>,
     pub urgency: Option<Urgency>,
 }
 
 // what a notification does, by the rule that matched it or none
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Effects {
     // shows as a Banner
     pub banner: bool,
@@ -43,8 +48,12 @@ pub struct Effects {
     // stays in the history once its Banner is gone; without, it closes as expired then
     pub history: bool,
 
-    // plays the sound `notifications.sound` gives, which it never does with that off
-    pub sound: bool,
+    // the sound it plays instead of the one it would have, none with `Off`; it never plays one
+    // with `notifications.sound` off
+    pub sound: Choice,
+
+    // percent, over `notifications.sound_volume`
+    pub volume: Option<u32>,
 
     // its Banner shows under DND, as a Critical one does
     pub bypass_dnd: bool,
@@ -61,7 +70,8 @@ impl Default for Effects {
         Effects {
             banner: true,
             history: true,
-            sound: true,
+            sound: Choice::Default,
+            volume: None,
             bypass_dnd: false,
             timeout: None,
             urgency: None,
@@ -79,10 +89,11 @@ pub struct Fields<'a> {
 }
 
 const MATCHES: [&str; 4] = ["app", "desktop_entry", "category", "summary"];
-const EFFECTS: [&str; 6] = [
+const EFFECTS: [&str; 7] = [
     "banner",
     "history",
     "sound",
+    "volume",
     "bypass_dnd",
     "timeout",
     "urgency",
@@ -98,7 +109,8 @@ pub fn resolve(rules: &[Rule], fields: Fields) -> Effects {
     Effects {
         banner: rule.banner.unwrap_or(default.banner),
         history: rule.history.unwrap_or(default.history),
-        sound: rule.sound.unwrap_or(default.sound),
+        sound: rule.sound.clone().unwrap_or(default.sound),
+        volume: rule.volume,
         bypass_dnd: rule.bypass_dnd.unwrap_or(default.bypass_dnd),
         timeout: rule.timeout,
         urgency: rule.urgency,
@@ -180,7 +192,8 @@ impl Rule {
                 "summary" => rule.summary = Some(text()?),
                 "banner" => rule.banner = Some(flag()?),
                 "history" => rule.history = Some(flag()?),
-                "sound" => rule.sound = Some(flag()?),
+                "sound" => rule.sound = Some(sound(value)?),
+                "volume" => rule.volume = Some(volume(value)?),
                 "bypass_dnd" => rule.bypass_dnd = Some(flag()?),
                 "timeout" => rule.timeout = Some(timeout(value)?),
                 "urgency" => rule.urgency = Some(urgency(value)?),
@@ -218,12 +231,28 @@ impl Rule {
         for (key, flag) in [
             ("banner", self.banner),
             ("history", self.history),
-            ("sound", self.sound),
             ("bypass_dnd", self.bypass_dnd),
         ] {
             if let Some(flag) = flag {
                 table.insert(key.to_owned(), Value::Boolean(flag));
             }
+        }
+
+        match &self.sound {
+            None => {}
+            Some(Choice::Default) => {
+                table.insert(String::from("sound"), Value::Boolean(true));
+            }
+            Some(Choice::Off) => {
+                table.insert(String::from("sound"), Value::Boolean(false));
+            }
+            Some(Choice::Sound(sound)) => {
+                table.insert(String::from("sound"), Value::String(sound.clone()));
+            }
+        }
+
+        if let Some(volume) = self.volume {
+            table.insert(String::from("volume"), Value::Integer(i64::from(volume)));
         }
 
         if let Some(timeout) = self.timeout {
@@ -255,6 +284,34 @@ fn timeout(value: &Value) -> Result<Duration, String> {
         .filter(|ms| (SHORTEST..=LONGEST).contains(ms))
         .map(Duration::from_millis)
         .ok_or_else(|| format!("timeout: {ms} is outside {SHORTEST}-{LONGEST} ms"))
+}
+
+// `true` for the sound it would have anyway, `false` or "off" for none, or a file or a sound name
+fn sound(value: &Value) -> Result<Choice, String> {
+    let expected = "sound: expected true, false or a sound file or name";
+
+    match value {
+        Value::Boolean(true) => Ok(Choice::Default),
+        Value::Boolean(false) => Ok(Choice::Off),
+        Value::String(text) if !text.trim().is_empty() && !text.contains('\n') => {
+            Choice::checked(text).map_err(|why| format!("sound: {why}"))
+        }
+        _ => Err(expected.to_owned()),
+    }
+}
+
+fn volume(value: &Value) -> Result<u32, String> {
+    let percent = value.as_integer().ok_or("volume: expected whole percent")?;
+
+    u32::try_from(percent)
+        .ok()
+        .filter(|percent| (SOUND_VOLUME.least..=SOUND_VOLUME.most).contains(percent))
+        .ok_or_else(|| {
+            format!(
+                "volume: {percent} is outside {}-{} %",
+                SOUND_VOLUME.least, SOUND_VOLUME.most
+            )
+        })
 }
 
 const URGENCIES: [(&str, Urgency); 3] = [
@@ -311,7 +368,8 @@ mod tests {
             Effects {
                 banner: true,
                 history: true,
-                sound: true,
+                sound: Choice::Default,
+                volume: None,
                 bypass_dnd: false,
                 timeout: None,
                 urgency: None,
@@ -420,10 +478,42 @@ mod tests {
         assert!(refused("rules = [{ app = \"a\", timeout = 0 }]").contains("outside"));
         assert!(refused("rules = [{ app = \"a\", timeout = 60001 }]").contains("outside"));
         assert!(refused("rules = [{ app = \"a\", urgency = \"high\" }]").contains("\"high\""));
+        assert!(
+            refused("rules = [{ app = \"a\", sound = 3 }]").contains("sound: expected true, false")
+        );
+        assert!(refused("rules = [{ app = \"a\", sound = \"\" }]").contains("sound: expected"));
+        assert!(refused("rules = [{ app = \"a\", sound = \"-v\" }]").starts_with("rule 1: sound:"));
+        assert!(refused("rules = [{ app = \"a\", sound = \"a/b\" }]").contains("absolute"));
+        assert!(refused("rules = [{ app = \"a\", volume = 101 }]").contains("outside 0-100"));
+        assert!(refused("rules = [{ app = \"a\", volume = -1 }]").contains("outside"));
+        assert!(
+            refused("rules = [{ app = \"a\", volume = \"loud\" }]").contains("volume: expected")
+        );
         assert!(refused("rules = [{ app = \"\" }]").contains("app: expected a line of text"));
         assert!(refused("rules = [{ ap = \"a\" }]").contains("unknown key ap"));
         assert!(refused("rules = \"a\"").contains("expected a list"));
         assert!(refused("rules = [\"a\"]").contains("expected a table"));
+    }
+
+    // `sound` is a flag or a sound: true keeps the sound it would have, false and "off" silence it
+    #[test]
+    fn a_rule_sound_is_a_flag_or_a_sound() {
+        let sound = |text: &str| {
+            let rules = rules(&format!("rules = [{{ app = \"a\", {text} }}]")).unwrap();
+
+            resolve(&rules, fields("a", ""))
+        };
+
+        assert_eq!(sound("sound = true").sound, Choice::Default);
+        assert_eq!(sound("sound = false").sound, Choice::Off);
+        assert_eq!(sound("sound = \"off\"").sound, Choice::Off);
+        assert_eq!(
+            sound("sound = \"~/pop.oga\", volume = 30").sound,
+            Choice::Sound(String::from("~/pop.oga"))
+        );
+        assert_eq!(sound("volume = 30").volume, Some(30));
+        assert_eq!(sound("volume = 0").volume, Some(0));
+        assert_eq!(sound("banner = false").sound, Choice::Default);
     }
 
     #[test]
@@ -437,7 +527,8 @@ mod tests {
             summary = "invoice"
             banner = false
             history = true
-            sound = false
+            sound = "/sounds/mail.oga"
+            volume = 40
             bypass_dnd = true
             timeout = 1500
             urgency = "low"

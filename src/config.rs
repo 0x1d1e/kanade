@@ -51,6 +51,7 @@ use crate::look::{
 use crate::modules;
 use crate::sources::accessibility;
 use crate::sources::notifications::rules::Rule;
+use crate::sources::sound::Sounds;
 use crate::sources::weather::Units;
 use crate::tiles::{self, Placed};
 
@@ -69,6 +70,12 @@ pub const ANIMATION_SPEED: Range = Range {
 pub const UI_SCALE: Range = Range {
     least: 80,
     most: 200,
+};
+
+// `notifications.sound_volume`, whole percent: 0 is no sound, 100 the file's own level
+pub const SOUND_VOLUME: Range = Range {
+    least: 0,
+    most: 100,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +205,9 @@ pub struct Config {
 
     // `notifications.sound`: a notification arriving plays a sound
     pub notification_sound: bool,
+
+    // `notifications.sound_file`, `sound_low`, `sound_normal`, `sound_critical`, `sound_volume`
+    pub notification_sounds: Sounds,
 
     // `notifications.rules`: what a notification does, by the first rule matching it
     pub notification_rules: Vec<Rule>,
@@ -571,6 +581,7 @@ impl Default for Config {
             },
             entrance: Entrance::default(),
             notification_sound: false,
+            notification_sounds: Sounds::default(),
             notification_rules: Vec::new(),
             osd_layout: true,
             live_stale: Duration::from_secs(30 * 60),
@@ -1926,9 +1937,77 @@ pub const NOTIFICATIONS: &[Setting] = &[
         per_output: false,
     },
     Setting {
+        key: "notifications.sound_file",
+        label: "Default sound",
+        help: "the sound of a notification whose sender and urgency name none: an absolute file path (a leading ~/ is your home) or a freedesktop sound name; unset plays message-new-instant, and a missing file is noted and replaced by it",
+        hint: Some("Sound file or name; empty for the default"),
+        kind: Kind::Path(Field {
+            get: |config| config.notification_sounds.file.clone(),
+            set: |config, file| config.notification_sounds.file = file,
+        }),
+        example: Some("\"~/Music/ding.oga\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "notifications.sound_volume",
+        label: "Sound volume",
+        help: "the volume of a notification sound, for that sound alone and never the system volume; 0 plays none, and a rule's volume goes over it",
+        hint: Some("Volume of notification sounds"),
+        kind: Kind::Percent(
+            SOUND_VOLUME,
+            Field {
+                get: |config| config.notification_sounds.volume,
+                set: |config, volume| config.notification_sounds.volume = volume,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "notifications.sound_low",
+        label: "Low urgency sound",
+        help: "the sound of a Low notification whose sender names none: a file, a freedesktop sound name or \"off\"; unset follows sound_file; file only",
+        hint: None,
+        kind: Kind::Path(Field {
+            get: |config| config.notification_sounds.low.clone(),
+            set: |config, sound| config.notification_sounds.low = sound,
+        }),
+        example: Some("\"off\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "notifications.sound_normal",
+        label: "Normal urgency sound",
+        help: "the sound of a Normal notification whose sender names none: a file, a freedesktop sound name or \"off\"; unset follows sound_file; file only",
+        hint: None,
+        kind: Kind::Path(Field {
+            get: |config| config.notification_sounds.normal.clone(),
+            set: |config, sound| config.notification_sounds.normal = sound,
+        }),
+        example: Some("\"message-new-instant\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "notifications.sound_critical",
+        label: "Critical urgency sound",
+        help: "the sound of a Critical notification whose sender names none: a file, a freedesktop sound name or \"off\"; unset follows sound_file; never under Do Not Disturb; file only",
+        hint: None,
+        kind: Kind::Path(Field {
+            get: |config| config.notification_sounds.critical.clone(),
+            set: |config, sound| config.notification_sounds.critical = sound,
+        }),
+        example: Some("\"~/Music/alarm.oga\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
         key: "notifications.rules",
         label: "Notification rules",
-        help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, sound, bypass_dnd, timeout (ms) and urgency; file only",
+        help: "per app: the first rule whose app, desktop_entry, category and summary piece all match, ignoring case, sets banner, history, sound (false, a file or a sound name), volume (%), bypass_dnd, timeout (ms) and urgency; file only",
         hint: None,
         kind: Kind::Rules(Field {
             get: |config| config.notification_rules.clone(),
@@ -4121,6 +4200,11 @@ mod tests {
                 "brightness.backend",
                 "osd.layout",
                 "notifications.sound",
+                "notifications.sound_file",
+                "notifications.sound_volume",
+                "notifications.sound_low",
+                "notifications.sound_normal",
+                "notifications.sound_critical",
                 "notifications.rules",
                 "controls.tiles",
                 "wallpaper.directory",
