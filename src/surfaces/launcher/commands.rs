@@ -200,6 +200,14 @@ const TABLE: &[Command] = &[
     },
     Command {
         gate: Gate::Capture,
+        icon: Icon::Camera,
+        title: "Record Window",
+        detail: "Record the focused window",
+        aliases: &["record window", "window recording"],
+        verb: &["capture", "record", "start", "window"],
+    },
+    Command {
+        gate: Gate::Capture,
         icon: Icon::Pause,
         title: "Pause Recording",
         detail: "Pause the screen recording",
@@ -469,6 +477,7 @@ mod tests {
             &["capture", "color"],
             &["capture", "record", "start", "mic"],
             &["capture", "record", "start", "area", "mic"],
+            &["capture", "record", "start", "window", "mic"],
             &["not-a-verb"],
         ] {
             assert!(denied(words), "{words:?}");

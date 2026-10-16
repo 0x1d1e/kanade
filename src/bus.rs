@@ -43,6 +43,7 @@ pub enum Argument {
     Bool(bool),
     Int(i32),
     Unsigned(u32),
+    Unsigned64(u64),
     Long(i64),
     Float(f64),
     Text(String),
@@ -386,6 +387,12 @@ impl From<u32> for Argument {
     }
 }
 
+impl From<u64> for Argument {
+    fn from(value: u64) -> Self {
+        Self::Unsigned64(value)
+    }
+}
+
 impl From<i64> for Argument {
     fn from(value: i64) -> Self {
         Self::Long(value)
@@ -481,6 +488,7 @@ fn variant(argument: &Argument) -> Variant<'static> {
         Argument::Bool(value) => Variant::Bool(*value),
         Argument::Int(number) => Variant::I32(*number),
         Argument::Unsigned(number) => Variant::U32(*number),
+        Argument::Unsigned64(number) => Variant::U64(*number),
         Argument::Long(number) => Variant::I64(*number),
         Argument::Float(number) => Variant::F64(*number),
         Argument::Text(text) => Variant::from(text.clone()),
@@ -522,6 +530,7 @@ mod tests {
             Argument::Path(String::from("/org/freedesktop/NetworkManager")),
             Argument::from(7_u32),
             Argument::Map(options),
+            Argument::from(1_u64 << 40),
         ]);
 
         let read: Vec<Value> = sent.fields().iter().map(value).collect();
@@ -531,5 +540,8 @@ mod tests {
         assert_eq!(read[2].number(), 7.0);
         assert_eq!(read[3].get("ssids").list().len(), 2);
         assert_eq!(read[3].get("missing"), &Value::Nothing);
+        // a window id is a `t`, which a `u` is refused for
+        assert_eq!(sent.fields()[4].value_signature().to_string(), "t");
+        assert_eq!(read[4].number(), (1_u64 << 40) as f64);
     }
 }

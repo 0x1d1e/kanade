@@ -1,6 +1,6 @@
 //! The Capture Surface: a screenshot of an area, the focused window or the focused output, a color
 //! picked from the screen, and the screen recording, each a tile; while one records, the last tile
-//! is Stop. Pills below record an area and choose the recording's audio (none, the speakers' or the
+//! is Stop. Pills below record an area or the focused window and choose the recording's audio (none, the speakers' or the
 //! microphone's, which is only ever chosen here, and stays chosen only while Kanade runs); while one
 //! records, the pill pauses or resumes it. It asks what `kanade capture` asks, so a recording and a picked color show on the island
 //! and a screenshot by niri's notification. A screenshot or a pick waits for the island to leave
@@ -32,8 +32,10 @@ enum At {
     Record,
     Stop,
 
-    // the pills: an area recorded, the audio chosen, the recording paused or taken up again
+    // the pills: an area or the focused window recorded, the audio chosen, the recording paused or
+    // taken up again
     Area,
+    Window,
     Sound,
     Pause,
     Resume,
@@ -71,7 +73,7 @@ fn grid(standing: &Standing) -> Vec<Vec<(At, f32)>> {
         if recording { At::Stop } else { At::Record },
     ];
     let pills = match (recording, standing.pausable, standing.paused) {
-        (false, ..) => vec![At::Area, At::Sound],
+        (false, ..) => vec![At::Area, At::Window, At::Sound],
         (true, true, true) => vec![At::Resume],
         (true, true, false) => vec![At::Pause],
         (true, false, _) => Vec::new(),
@@ -155,6 +157,7 @@ fn node(at: At) -> &'static str {
         At::Record => "record",
         At::Stop => "stop",
         At::Area => "record-area",
+        At::Window => "record-window",
         At::Sound => "audio",
         At::Pause => "pause",
         At::Resume => "resume",
@@ -169,7 +172,9 @@ fn look(at: At) -> (Icon, &'static str) {
         At::Color => (Icon::Palette, "Color"),
         At::Record => (Icon::Camera, "Record"),
         At::Stop => (Icon::Dismiss, "Stop"),
-        At::Area | At::Sound | At::Pause | At::Resume => unreachable!("a pill is not a tile"),
+        At::Area | At::Window | At::Sound | At::Pause | At::Resume => {
+            unreachable!("a pill is not a tile")
+        }
     }
 }
 
@@ -177,6 +182,7 @@ fn look(at: At) -> (Icon, &'static str) {
 fn label(at: At) -> &'static str {
     match at {
         At::Area => "Rec Area",
+        At::Window => "Rec Window",
         At::Sound => Chosen::read().0.choice(),
         At::Pause => "Pause",
         At::Resume => "Resume",
@@ -234,6 +240,14 @@ fn press(focus: Focus<At>, at: At) -> Focus<At> {
             pad::close();
             recording::press(Request::Start(Start {
                 target: Target::Area(None),
+                audio: Chosen::read().0,
+            }));
+        }
+        // the focused window, which the Surface is not: it is the island's, not a window of niri's
+        At::Window => {
+            pad::close();
+            recording::press(Request::Start(Start {
+                target: Target::Window(None),
                 audio: Chosen::read().0,
             }));
         }

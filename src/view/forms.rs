@@ -313,10 +313,15 @@ pub(super) fn recording(
             },
         ),
         Clip::Saving { path } => ("Saving", file_name(path).to_owned()),
-        Clip::Saved { path, copied } => (
-            match copied {
-                true => "Path copied",
-                false => "Saved",
+        Clip::Saved {
+            path,
+            copied,
+            closed,
+        } => (
+            match (copied, closed) {
+                (true, _) => "Path copied",
+                (false, true) => "Saved, window closed",
+                (false, false) => "Saved",
             },
             file_name(path).to_owned(),
         ),

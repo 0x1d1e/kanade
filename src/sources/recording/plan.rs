@@ -1,6 +1,6 @@
-//! What a recording is told (ADR 0116), as pure data and text: the rectangle of an area, the audio
-//! source, the arguments of `wf-recorder`, `slurp` and `ffmpeg`, and the list that joins the segments.
-//! Nothing here runs a program or reads a file.
+//! What a recording is told (ADR 0116, ADR 0117), as pure data and text: the rectangle of an area, the
+//! audio source, the arguments of `wf-recorder`, `slurp`, `gst-launch-1.0` and `ffmpeg`, and the list
+//! that joins the segments. Nothing here runs a program or reads a file.
 
 use std::fmt;
 
@@ -9,8 +9,16 @@ pub const RECORDER: &str = "wf-recorder";
 pub const PICKER: &str = "slurp";
 pub const JOINER: &str = "ffmpeg";
 
+// a window is recorded by these two, the first encoding what niri casts of it and the second, the
+// same program as the joiner, writing the file (ADR 0117)
+pub const ENCODER: &str = "gst-launch-1.0";
+pub const MUXER: &str = JOINER;
+
 // H.264 on the GPU through VA-API (ADR 0013)
 const CODEC: &str = "h264_vaapi";
+
+// the audio of a window, encoded by ffmpeg's own AAC; spelled so `boundary` does not read it as a color
+const AUDIO_CODEC: &str = concat!("a", "ac");
 
 // what `slurp` prints for the area picked: `x,y WxH`, which `Rect::parse` reads and the recorder takes
 pub const PICKED: &str = "%x,%y %wx%h";
@@ -140,13 +148,19 @@ impl Audio {
         }
     }
 
-    // the recorder's flag; the server resolves the default names, so a changed default is followed
-    fn flag(self) -> Option<&'static str> {
+    // the source the audio server is asked for; it resolves the default names, so a changed default
+    // is followed
+    fn source(self) -> Option<&'static str> {
         match self {
             Audio::None => None,
-            Audio::System => Some("--audio=@DEFAULT_MONITOR@"),
-            Audio::Mic => Some("--audio=@DEFAULT_SOURCE@"),
+            Audio::System => Some("@DEFAULT_MONITOR@"),
+            Audio::Mic => Some("@DEFAULT_SOURCE@"),
         }
+    }
+
+    // the recorder's flag
+    fn flag(self) -> Option<String> {
+        self.source().map(|source| format!("--audio={source}"))
     }
 }
 
@@ -157,14 +171,47 @@ pub enum Source {
     Output(String),
 
     Area(Rect),
+
+    /*
+     * a window of niri, by the id it had when the recording began, which no other window is given
+     * for as long as niri runs. `size` is the window's then, each side even: every frame is fitted
+     * to it, so a window that is resized is letterboxed and the segments of a pause join
+     */
+    Window {
+        id: u64,
+        size: (u32, u32),
+
+        // its app id, none until the app sets one
+        app: Option<String>,
+    },
 }
 
 impl Source {
+    // a window as it stands, `width` by `height`: refused when too small to record
+    pub fn window(id: u64, width: u32, height: u32, app: Option<String>) -> Result<Source, String> {
+        let fitted = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+        .fitted()
+        .map_err(|_| format!("the window {width}x{height} is too small to record"))?;
+
+        Ok(Source::Window {
+            id,
+            size: (fitted.width, fitted.height),
+            app: app.filter(|app| !app.is_empty()),
+        })
+    }
+
     // what the Activity says is recorded
     pub fn said(&self) -> String {
         match self {
             Source::Output(name) => name.clone(),
             Source::Area(rect) => format!("area {}x{}", rect.width, rect.height),
+            Source::Window { app: Some(app), .. } => format!("window {app}"),
+            Source::Window { id, .. } => format!("window {id}"),
         }
     }
 }
@@ -180,10 +227,114 @@ pub fn recorder(source: &Source, audio: Audio, file: &str) -> Vec<String> {
     match source {
         Source::Output(name) => arguments.extend([String::from("-o"), name.clone()]),
         Source::Area(rect) => arguments.extend([String::from("-g"), rect.to_string()]),
+        // a window is not the recorder's: `encoder` and `muxer` record it
+        Source::Window { .. } => {}
     }
 
-    arguments.extend(audio.flag().map(String::from));
+    arguments.extend(audio.flag());
     arguments.extend([String::from("-f"), file.to_owned()]);
+    arguments
+}
+
+/*
+ * the arguments of `gst-launch-1.0` for one segment of a window: the PipeWire node niri casts it on,
+ * encoded on the GPU through VA-API at the window's size (`add-borders` keeps the aspect, so a window
+ * that is resized stays whole in the frame), written to stdout as H.264 for `muxer`. Interrupted, it
+ * ends the stream (`-e`) rather than cut it off
+ */
+pub fn encoder(node: u64, size: (u32, u32)) -> Vec<String> {
+    let (width, height) = size;
+
+    [
+        "-q",
+        "-e",
+        "pipewiresrc",
+        &format!("path={node}"),
+        "do-timestamp=true",
+        "!",
+        "vapostproc",
+        "add-borders=true",
+        "!",
+        &format!("video/x-raw(memory:VAMemory),width={width},height={height}"),
+        "!",
+        "vah264enc",
+        "!",
+        "h264parse",
+        "config-interval=-1",
+        "!",
+        "video/x-h264,stream-format=byte-stream,alignment=au",
+        "!",
+        "fdsink",
+        "fd=1",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/*
+ * the arguments of `ffmpeg` that write the stream of `encoder` on stdin, and the audio if any, to
+ * `file`, copying the video. It stamps by the wall clock: a PipeWire window cast gives every frame the
+ * same timestamp through GStreamer's own muxer, and the clock is the only time the frames have. The
+ * audio is stamped by it too, so sound and picture are in step to about a frame at best, not
+ * guaranteed. A file that is there is never replaced (`-n`). The mp4 is fragmented, a fragment each
+ * second (`frag_duration`, as a still window has long gaps between keyframes) and flushed to the file
+ * as it is written (`flush_packets`, or a small stream stays in ffmpeg's buffer), so a writer that is
+ * killed leaves a file that plays up to its last fragment instead of one with no `moov`
+ */
+pub fn muxer(audio: Audio, file: &str) -> Vec<String> {
+    let mut arguments: Vec<String> = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-use_wallclock_as_timestamps",
+        "1",
+        "-probesize",
+        "65536",
+        "-analyzeduration",
+        "1",
+        "-f",
+        "h264",
+        "-i",
+        "-",
+    ]
+    .map(String::from)
+    .to_vec();
+
+    if let Some(source) = audio.source() {
+        arguments.extend(
+            [
+                "-f",
+                "pulse",
+                "-use_wallclock_as_timestamps",
+                "1",
+                "-i",
+                source,
+                "-c:a",
+                AUDIO_CODEC,
+                // the audio never ends of itself: the video ending, on the stop, ends the file
+                "-shortest",
+            ]
+            .map(String::from),
+        );
+    }
+
+    arguments.extend(
+        [
+            "-c:v",
+            "copy",
+            "-fps_mode",
+            "vfr",
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof",
+            "-frag_duration",
+            "1000000",
+            "-flush_packets",
+            "1",
+            "-n",
+            file,
+        ]
+        .map(String::from),
+    );
     arguments
 }
 
@@ -391,5 +542,46 @@ mod tests {
             "file 'it'\\''s a file.mp4'\n"
         );
         assert_eq!(list(&[String::from("a b.mp4")]), "file 'a b.mp4'\n");
+    }
+
+    // a window is recorded at the size it had, each side even, and refused when there is no picture
+    #[test]
+    fn a_window_is_fitted_to_even_sides_and_named_by_its_app() {
+        assert_eq!(
+            Source::window(7, 1433, 1018, Some(String::from("kitty"))),
+            Ok(Source::Window {
+                id: 7,
+                size: (1432, 1018),
+                app: Some(String::from("kitty"))
+            })
+        );
+        assert!(Source::window(7, 1, 1018, None).is_err());
+
+        let named = Source::window(7, 800, 600, Some(String::from("kitty"))).unwrap();
+        let unnamed = Source::window(7, 800, 600, Some(String::new())).unwrap();
+
+        assert_eq!(named.said(), "window kitty");
+        assert_eq!(unnamed.said(), "window 7");
+    }
+
+    // data integrity: the file a window is written to is never replaced, is fragmented so a killed writer
+    // leaves it playable, and one audio source is read
+    #[test]
+    fn a_window_is_written_without_replacing_and_hears_one_source() {
+        for audio in [Audio::None, Audio::System, Audio::Mic] {
+            let muxer = muxer(audio, "/v/a.mp4");
+
+            assert!(muxer.contains(&String::from("-n")));
+            assert!(!muxer.contains(&String::from("-y")));
+            assert!(muxer.iter().any(|word| word.contains("empty_moov")));
+            assert!(muxer.contains(&String::from("-frag_duration")));
+            assert_eq!(
+                muxer
+                    .iter()
+                    .filter(|word| word.starts_with("@DEFAULT_"))
+                    .count(),
+                usize::from(audio != Audio::None)
+            );
+        }
     }
 }

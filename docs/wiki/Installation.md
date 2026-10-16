@@ -20,7 +20,7 @@ Kanade needs:
 - A Rust toolchain and these system libraries with their headers: a C compiler, pkg-config, wayland, libxkbcommon, fontconfig, freetype, expat, vulkan-loader, libpulseaudio and linux-pam.
 - Optional, see [Limitations](Limitations.md): `pactl`, `udevadm`, `dbus-monitor`, `setpriv` (util-linux) and `pw-dump` (pipewire).
 - For the clipboard history: `wl-paste` and `wl-copy` from wl-clipboard 2.3 or later, the first that tells a password manager's copy; with an older one Kanade keeps no history.
-- For screen recording: `wf-recorder`, and a VA-API driver for the GPU. Optional: `slurp` to draw the area to record, and `ffmpeg` to pause a recording.
+- For screen recording: `wf-recorder`, and a VA-API driver for the GPU. Optional: `slurp` to draw the area to record, and `ffmpeg` to pause a recording. For recording a window: `gst-launch-1.0` with the PipeWire and VA-API plugins (`gst-plugin-pipewire`, `gst-plugins-bad`) and `ffmpeg`.
 - For the wallpaper: [awww](https://codeberg.org/LGFae/awww) (`awww` and `awww-daemon`), which draws it; Kanade picks the image and runs `awww-daemon` unless one runs already, only through `setpriv` (util-linux), so it never outlives Kanade.
 - For wallpaper-derived shell colors and configured app themes: Matugen 4.x (optional; without it, Kanade uses built-in colors). With `appearance.sync`: qt5ct/qt6ct for Qt apps, Darkly for a Qt6 style that draws the palette, and the Pywalfox browser extension for Firefox and Zen (all optional).
 - For caffeine, locking before sleep and the `idle` Module's inhibitors: `systemd-inhibit` (systemd) and `setpriv` (util-linux), which ties the inhibitor to Kanade so it never outlives it.

@@ -6,6 +6,7 @@
 //! A command that is not running cannot announce anything, so while one is down the source polls.
 
 use std::io::{self, BufRead, BufReader};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -435,6 +436,35 @@ pub fn hold_file(program: &str, args: &[&str]) -> io::Result<Child> {
     guarded(program, args, INT, |command| {
         clock::default_sigint(command)
             .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+    })
+}
+
+/*
+ * starts `program` as the first of two holders that write a file between them (a window recording:
+ * the source encodes, the sink writes), whose stdout is piped to the sink's stdin. Interrupted when
+ * Kanade dies, as `hold_file`. Its stderr is piped, for why it ended
+ */
+pub fn hold_source(program: &str, args: &[&str]) -> io::Result<Child> {
+    guarded(program, args, INT, |command| {
+        clock::default_sigint(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    })
+}
+
+/*
+ * starts `program` as the second of two holders, writing the file `hold_source` feeds it through
+ * `input`, the source's stdout. As `hold_file`, interrupted when Kanade dies, stderr piped
+ */
+pub fn hold_sink(program: &str, args: &[&str], input: &OwnedFd) -> io::Result<Child> {
+    guarded(program, args, INT, |command| {
+        clock::default_sigint(command)
+            .stdin(Stdio::from(input.try_clone()?))
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()

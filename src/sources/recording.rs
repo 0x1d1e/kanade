@@ -1,6 +1,7 @@
-//! Screen recording (docs/design.md Capture, ADR 0013, ADR 0116): `kanade capture record start`
-//! records the focused output or an area with wf-recorder, encoded on the GPU through VA-API, with
-//! no sound, the speakers' or the microphone's, to `~/Videos/Screencasts`; `pause` and `resume` end
+//! Screen recording (docs/design.md Capture, ADR 0013, ADR 0116, ADR 0117): `kanade capture record
+//! start` records the focused output or an area with wf-recorder, or a window with niri's screen
+//! cast (`window`), encoded on the GPU through VA-API, with no sound, the speakers' or the
+//! microphone's, to `~/Videos/Screencasts`; `pause` and `resume` end
 //! the recorder's file and start another, `stop` saves the lot as one file, and `status` says how
 //! the recording stands. wf-recorder captures through niri's wlr-screencopy, which niri counts as a
 //! cast, so the privacy cluster shows it, and the microphone, without asking this Module. While it
@@ -17,15 +18,18 @@
 //! after a pause live in a hidden folder beside it, joined with the first at the end. `machine` moves
 //! the recording between states; the programs it runs (the recorder, the area picker, the joiner)
 //! all start from one worker thread, as a child started through `setpriv --pdeathsig` dies with the
-//! thread that started it.
+//! thread that started it. A window is recorded by two programs and a niri session (`window`), but
+//! is one segment to the machine, whose end is the file's writer ending.
 
 mod machine;
 mod plan;
+mod window;
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
+use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -33,7 +37,7 @@ use std::process::{Child, ChildStderr, ExitStatus};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
@@ -41,11 +45,11 @@ use rustix::fs::{CWD, RenameFlags, renameat_with};
 use rustix::io::Errno;
 
 use self::machine::{Effect, Event, Machine, Phase, Pick, Segment};
-use self::plan::Source;
-pub use self::plan::{Audio, JOINER, PICKER, RECORDER, Rect};
+pub use self::plan::{Audio, ENCODER, JOINER, PICKER, RECORDER, Rect};
+use self::plan::{MUXER, Source};
 use super::capture::{self, COPY, SHOW, SHOWN};
 use super::json::Json;
-use super::niri;
+use super::niri::{self, Heard};
 use super::wake::{self, Failed, NOT_FOUND};
 use crate::clock;
 use crate::island::activity::{
@@ -87,8 +91,8 @@ struct Runtime {
     // the recording the machine is in, none while it is idle
     take: Option<Take>,
 
-    // the recorder that runs, reaped only once taken out, so while here its pid is its own
-    child: Option<(u64, Child)>,
+    // what runs for the segment, reaped only once taken out, so while here its pids are its own
+    child: Option<Held>,
 
     // the area picker's pid while it runs, for the one who ends it; reaped by the worker
     picker: Option<u32>,
@@ -104,6 +108,20 @@ struct Runtime {
      * one recording: a stale Stop or `kanade` waiting on an older one never mistakes a newer one
      */
     issued: Vec<String>,
+}
+
+// what runs for one segment
+struct Held {
+    serial: u64,
+
+    // the one that writes the file, whose end is the segment's
+    writer: Child,
+
+    // a window's encoder, which feeds the writer and is interrupted in its place
+    encoder: Option<Child>,
+
+    // a window's niri session, stopped by whoever takes this out, on every path
+    cast: Option<window::Cast>,
 }
 
 // what a waiting call waits for
@@ -130,6 +148,9 @@ struct Take {
 
     // whether it can pause: the joiner is there
     pausable: bool,
+
+    // the window it records closed, which ended it
+    closed: bool,
 }
 
 impl Take {
@@ -144,6 +165,9 @@ impl Take {
 
 struct Ended {
     path: String,
+
+    // the window it recorded closed
+    closed: bool,
 
     // none once saved, else why nothing was
     lost: Option<String>,
@@ -209,10 +233,17 @@ impl Runtime {
                 });
             }
             Effect::Interrupt => {
-                if let Some((_, child)) = &self.child
-                    && let Err(error) = clock::interrupt(child)
-                {
-                    eprintln!("capture: cannot stop {RECORDER}: {error}");
+                if let Some(held) = &self.child {
+                    if let Err(error) =
+                        clock::interrupt(held.encoder.as_ref().unwrap_or(&held.writer))
+                    {
+                        eprintln!("capture: cannot stop the recorder: {error}");
+                    }
+
+                    // a window's encoder that does not end is killed, whatever the writer waits on
+                    if held.encoder.is_some() {
+                        escalate(held.serial);
+                    }
                 }
             }
             Effect::Join { segments } => {
@@ -237,7 +268,12 @@ impl Runtime {
             Effect::Declined(why) => {
                 eprintln!("capture: cannot resume the recording: {why}");
 
-                if let Some(take) = &self.take {
+                // the window closed while paused: what there is of it is saved, not left paused
+                let closed = self.take.as_ref().is_some_and(|take| take.closed);
+
+                if let Some(take) = &self.take
+                    && !closed
+                {
                     post(running(take, true));
                 }
 
@@ -247,6 +283,10 @@ impl Runtime {
                     .chain(self.answer(Wait::End))
                 {
                     later.refused(why.clone());
+                }
+
+                if closed {
+                    drop(self.feed(Event::Stop));
                 }
             }
             Effect::Left(why) => {
@@ -304,6 +344,7 @@ impl Runtime {
 
         self.ended = Some(Ended {
             path: String::new(),
+            closed: false,
             lost: Some(why.clone()),
         });
         post(ended(
@@ -344,6 +385,7 @@ impl Runtime {
             None => Clip::Saved {
                 path: take.path.clone(),
                 copied: false,
+                closed: take.closed,
             },
             Some(why) => Clip::Failed {
                 path: take.path.clone(),
@@ -353,6 +395,7 @@ impl Runtime {
 
         self.ended = Some(Ended {
             path: take.path,
+            closed: take.closed,
             lost,
         });
         post(ended(clip, false));
@@ -489,12 +532,16 @@ pub enum Target {
 
     // the rectangle, or one the user chooses on screen
     Area(Option<Rect>),
+
+    // the window of niri with this id, or the focused one at the start; the id, not the title,
+    // which changes
+    Window(Option<u64>),
 }
 
 impl Request {
     /*
-     * `start [screen|area [<x,y WxH>]] [none|system|mic]`, `pause`, `resume`, `stop` or `status`,
-     * the words after `record`. The rectangle is one word or two
+     * `start [screen|area [<x,y WxH>]|window [<id>]] [none|system|mic]`, `pause`, `resume`,
+     * `stop` or `status`, the words after `record`. The rectangle is one word or two
      */
     pub fn parse(words: &[&str]) -> Option<Request> {
         match words {
@@ -522,6 +569,8 @@ impl Start {
             [] | ["screen"] => Target::Screen,
             ["area"] => Target::Area(None),
             ["area", rectangle @ ..] => Target::Area(Some(Rect::parse(&rectangle.join(" "))?)),
+            ["window"] => Target::Window(None),
+            ["window", id] => Target::Window(Some(id.parse().ok()?)),
             _ => return None,
         };
 
@@ -650,6 +699,22 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
                 .ok_or("no output to record")?,
         )),
         Target::Area(Some(area)) => Some(Source::Area(area.fitted()?)),
+        Target::Window(id) => {
+            for program in [ENCODER, MUXER] {
+                if !wake::found(program) {
+                    return Err(format!("{program} is not installed; it records a window"));
+                }
+            }
+
+            let found = window::find(id)?;
+
+            Some(Source::window(
+                found.id,
+                found.width,
+                found.height,
+                found.app,
+            )?)
+        }
         Target::Area(None) => {
             if !wake::found(PICKER) {
                 return Err(format!(
@@ -706,6 +771,7 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
         source,
         audio,
         pausable,
+        closed: false,
     });
 
     if pick {
@@ -716,7 +782,7 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
     }
 
     later.unsettled(format!(
-        "{RECORDER} wrote no frame within {}s; it may still record to {path}",
+        "no frame was written within {}s; it may still record to {path}",
         LATER.as_secs()
     ));
     runtime.waiting.push((Wait::End, later.clone()));
@@ -754,7 +820,7 @@ fn pause(later: &Later) -> Result<(), String> {
     };
 
     later.unsettled(format!(
-        "{RECORDER} did not finish the segment within {}s; the recording may still pause",
+        "the segment did not finish within {}s; the recording may still pause",
         LATER.as_secs()
     ));
     runtime.waiting.push((Wait::Paused, later.clone()));
@@ -772,7 +838,7 @@ fn resume(later: &Later) -> Result<(), String> {
     let mut runtime = RUNTIME.locked();
 
     later.unsettled(format!(
-        "{RECORDER} wrote no frame within {}s; it may still record to {}",
+        "no frame was written within {}s; it may still record to {}",
         LATER.as_secs(),
         runtime.path()
     ));
@@ -850,10 +916,13 @@ pub fn status() -> Status {
             path: take.path.clone(),
         },
         _ => match &runtime.ended {
-            Some(Ended { path, lost: None }) => Status::Saved { path: path.clone() },
+            Some(Ended {
+                path, lost: None, ..
+            }) => Status::Saved { path: path.clone() },
             Some(Ended {
                 path,
                 lost: Some(why),
+                ..
             }) => Status::Failed {
                 path: path.clone(),
                 why: why.clone(),
@@ -911,16 +980,23 @@ pub fn locked() {
 pub fn copied(path: &str) {
     let runtime = RUNTIME.locked();
 
-    let last = matches!(
-        &runtime.ended,
-        Some(Ended { path: saved, lost: None }) if saved == path
-    );
+    let last = match &runtime.ended {
+        Some(Ended {
+            path: saved,
+            closed,
+            lost: None,
+        }) if saved == path => Some(*closed),
+        _ => None,
+    };
 
-    if !runtime.machine.busy() && last {
+    if !runtime.machine.busy()
+        && let Some(closed) = last
+    {
         post(ended(
             Clip::Saved {
                 path: path.to_owned(),
                 copied: true,
+                closed,
             },
             false,
         ));
@@ -1143,6 +1219,10 @@ fn spawn(serial: u64, segment: u32) {
         });
     }
 
+    if let Source::Window { id, size, .. } = source {
+        return spawn_window(serial, segment, (id, size), audio, file);
+    }
+
     let folder = file.parent().map(Path::to_path_buf).unwrap_or_default();
     let started = fs::create_dir_all(&folder)
         .map_err(|error| format!("no folder {}: {error}", folder.display()))
@@ -1191,7 +1271,12 @@ fn spawn(serial: u64, segment: u32) {
         }));
     }
 
-    runtime.child = Some((serial, child));
+    runtime.child = Some(Held {
+        serial,
+        writer: child,
+        encoder: None,
+        cast: None,
+    });
     drop(runtime.feed(Event::Spawned {
         serial,
         started: Ok(()),
@@ -1206,7 +1291,10 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf) {
             let mut runtime = RUNTIME.locked();
 
             // under the lock, so a stop that interrupts it never signals a pid that is reaped
-            let Some((_, mut child)) = runtime.child.take_if(|(now, _)| *now == serial) else {
+            let Some(Held {
+                writer: mut child, ..
+            }) = runtime.child.take_if(|held| held.serial == serial)
+            else {
                 return;
             };
 
@@ -1226,9 +1314,10 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf) {
         || {
             let mut runtime = RUNTIME.locked();
 
-            if let Some((_, mut child)) = runtime.child.take_if(|(now, _)| *now == serial) {
-                drop(child.kill());
-                drop(child.wait());
+            if let Some(held) = runtime.child.take_if(|held| held.serial == serial) {
+                drop(runtime);
+                abandon(held);
+                runtime = RUNTIME.locked();
             }
 
             drop(runtime.feed(Event::Ended {
@@ -1237,6 +1326,57 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf) {
             }));
         },
     );
+}
+
+// how long an encoder told to stop has before it is killed, and then the writer after it
+const STOPPING: Duration = Duration::from_secs(5);
+
+/*
+ * kills the encoder of the segment `serial` after `STOPPING` if it is still held, then the writer after
+ * as long again: a GStreamer pipeline stuck on a window that no longer draws never ends of itself,
+ * and the recording, its cast and its indicator would stay up. What `follow_window` has taken out
+ * is its own to end (`finish_encoder`)
+ */
+fn escalate(serial: u64) {
+    let watching = thread::Builder::new()
+        .name(String::from("capture-record watchdog"))
+        .spawn(move || {
+            for writer in [false, true] {
+                thread::sleep(STOPPING);
+
+                let mut runtime = RUNTIME.locked();
+
+                let Some(held) = runtime.child.as_mut().filter(|held| held.serial == serial) else {
+                    return;
+                };
+                let child = match (writer, held.encoder.as_mut()) {
+                    (false, Some(encoder)) => encoder,
+                    _ => &mut held.writer,
+                };
+
+                eprintln!("capture: the recorder does not end; killing it");
+                drop(child.kill());
+            }
+        });
+
+    if let Err(error) = watching {
+        eprintln!("capture: cannot watch the recorder end: {error}");
+    }
+}
+
+// kills what runs for a segment that cannot go on, and ends its session
+fn abandon(mut held: Held) {
+    for child in [Some(&mut held.writer), held.encoder.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        drop(child.kill());
+        drop(child.wait());
+    }
+
+    if let Some(cast) = &held.cast {
+        cast.stop();
+    }
 }
 
 // deletes the file at `path` if it is there and empty
@@ -1289,6 +1429,416 @@ fn classify(status: io::Result<ExitStatus>, written: bool, said: VecDeque<String
         }
         Err(error) => Segment::Lost(format!("{RECORDER}: {error}")),
     }
+}
+
+/*
+ * how long a window's encoder has to end of itself after the writer did, then to end when told to,
+ * before it is killed
+ */
+const ENDING: Duration = Duration::from_millis(500);
+const ENDING_TOLD: Duration = Duration::from_secs(3);
+
+/*
+ * starts what records `segment` of a window (ADR 0117), if the recording still waits for it: niri's
+ * session for it, the encoder reading the session's PipeWire node, and the writer reading the
+ * encoder. All of it is told to the machine as one recorder
+ */
+fn spawn_window(
+    serial: u64,
+    segment: u32,
+    (id, size): (u64, (u32, u32)),
+    audio: Audio,
+    file: PathBuf,
+) {
+    let failed = |why: String| {
+        feed(Event::Spawned {
+            serial,
+            started: Err(why),
+        })
+    };
+
+    let folder = file.parent().map(Path::to_path_buf).unwrap_or_default();
+
+    if let Err(error) = fs::create_dir_all(&folder) {
+        return failed(format!("no folder {}: {error}", folder.display()));
+    }
+
+    let Some(name) = file.to_str() else {
+        return failed(format!("{} is not UTF-8", file.display()));
+    };
+
+    let cast = match window::Cast::open(id) {
+        Ok(cast) => cast,
+        Err(why) => {
+            // a resume to a window that closed while paused: what there is of it is saved
+            if segment > 1
+                && window::open(id) == Some(false)
+                && let Some(take) = RUNTIME.locked().take.as_mut()
+            {
+                take.closed = true;
+            }
+
+            return failed(why);
+        }
+    };
+
+    // a stop or a lock came while niri was asked, and nothing is written yet: nothing is recorded
+    let now = RUNTIME.locked().machine.phase();
+
+    match now {
+        Phase::Running {
+            serial: now,
+            stopping: true,
+            ..
+        } if now == serial => {
+            cast.stop();
+
+            return feed(Event::Ended {
+                serial,
+                segment: Segment::Empty,
+            });
+        }
+        Phase::Running { serial: now, .. } if now == serial => {}
+        _ => {
+            cast.stop();
+            return;
+        }
+    }
+
+    let (mut encoder, mut writer) = match window_programs(cast.node, size, audio, name) {
+        Ok(programs) => programs,
+        Err(why) => {
+            cast.stop();
+            return failed(why);
+        }
+    };
+
+    // read as it is printed, so a full pipe never holds the encoder
+    let encoder_said = encoder.stderr.take().map(|said| {
+        thread::Builder::new()
+            .name(String::from("capture-record said"))
+            .spawn(move || last_lines(Some(said)))
+    });
+    let writer_said = writer.stderr.take();
+    let held = Held {
+        serial,
+        writer,
+        encoder: Some(encoder),
+        cast: Some(cast),
+    };
+    let encoder_said = match encoder_said.transpose() {
+        Ok(said) => said,
+        Err(error) => {
+            abandon(held);
+            return failed(format!("cannot read {ENCODER}: {error}"));
+        }
+    };
+    let said = (writer_said, encoder_said);
+    let mut runtime = RUNTIME.locked();
+
+    // ended while it started
+    if !matches!(runtime.machine.phase(), Phase::Running { serial: now, .. } if now == serial) {
+        drop(runtime);
+        return abandon(held);
+    }
+
+    let followed = thread::Builder::new()
+        .name(String::from("capture-record"))
+        .spawn(move || follow_window(said, serial, file, id));
+
+    if let Err(error) = followed {
+        drop(runtime);
+        abandon(held);
+
+        return failed(format!("cannot follow {MUXER}: {error}"));
+    }
+
+    runtime.child = Some(held);
+    drop(runtime.feed(Event::Spawned {
+        serial,
+        started: Ok(()),
+    }));
+}
+
+// the encoder and the writer that reads it, started; neither is left running if the other cannot
+fn window_programs(
+    node: u64,
+    size: (u32, u32),
+    audio: Audio,
+    file: &str,
+) -> Result<(Child, Child), String> {
+    let arguments = plan::encoder(node, size);
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let mut encoder = wake::hold_source(ENCODER, &arguments)
+        .map_err(|error| format!("cannot run {ENCODER}: {error}"))?;
+
+    let Some(output) = encoder.stdout.take() else {
+        drop(encoder.kill());
+        drop(encoder.wait());
+
+        return Err(format!("{ENCODER} has no output"));
+    };
+
+    // the writer's copy is its own; this one is let go at the end, so the encoder alone writes to it
+    let input = OwnedFd::from(output);
+    let arguments = plan::muxer(audio, file);
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+    match wake::hold_sink(MUXER, &arguments, &input) {
+        Ok(writer) => Ok((encoder, writer)),
+        Err(error) => {
+            drop(encoder.kill());
+            drop(encoder.wait());
+
+            Err(format!("cannot run {MUXER}: {error}"))
+        }
+    }
+}
+
+/*
+ * reads what the writer prints until it exits, then ends what is left of the segment: the encoder if
+ * it still runs, the niri session always. Only then is the machine told, so a stop is never answered
+ * with the session still cast, and a window that closed is a recording that ended, not one that failed
+ */
+fn follow_window(
+    (writer_said, encoder_said): (Option<ChildStderr>, Option<JoinHandle<VecDeque<String>>>),
+    serial: u64,
+    file: PathBuf,
+    id: u64,
+) {
+    survive(
+        || {
+            let writer_said = last_lines(writer_said);
+
+            // out of the runtime before the waits: a stop no longer signals what is taken
+            let Some(mut held) = RUNTIME.locked().child.take_if(|held| held.serial == serial)
+            else {
+                return;
+            };
+
+            let writer = held.writer.wait();
+            let (encoder, encoder_said) = match held.encoder.take() {
+                Some(encoder) => finish_encoder(encoder, encoder_said),
+                None => (Ok(ExitStatus::from_raw(0)), VecDeque::new()),
+            };
+
+            if let Some(cast) = &held.cast {
+                cast.stop();
+            }
+
+            let written = fs::metadata(&file).is_ok_and(|file| file.len() > 0);
+
+            if !written {
+                discard_empty(&file);
+            }
+
+            // niri is asked only when the encoder ended badly, as a window that closed makes it
+            let ok = encoder_ok(&encoder);
+            let closed = !ok && window_closed(&encoder_said, || window::open(id) == Some(false));
+            let mut runtime = RUNTIME.locked();
+            let segment_number = match runtime.machine.phase() {
+                Phase::Running { segment, .. } => segment,
+                _ => 1,
+            };
+            let segment = classify_window(
+                [writer, encoder],
+                [writer_said, encoder_said],
+                written,
+                closed.then_some(segment_number),
+            );
+
+            if closed
+                && segment == Segment::Written
+                && let Some(take) = runtime.take.as_mut()
+            {
+                take.closed = true;
+            }
+
+            drop(runtime.feed(Event::Ended { serial, segment }));
+        },
+        || {
+            let held = RUNTIME.locked().child.take_if(|held| held.serial == serial);
+
+            if let Some(held) = held {
+                abandon(held);
+            }
+
+            feed(Event::Ended {
+                serial,
+                segment: Segment::Lost(String::from("internal error")),
+            });
+        },
+    );
+}
+
+/*
+ * waits for the encoder to end, which it does of itself once the writer has: told to after
+ * `ENDING` if it does not (the writer failed, and the encoder waits on a still window), killed
+ * after `ENDING_TOLD` more. What it printed, as the last lines
+ */
+fn finish_encoder(
+    mut encoder: Child,
+    said: Option<JoinHandle<VecDeque<String>>>,
+) -> (io::Result<ExitStatus>, VecDeque<String>) {
+    let started = Instant::now();
+    let mut told = false;
+
+    let status = loop {
+        match encoder.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(error) => break Err(error),
+        }
+
+        let waited = started.elapsed();
+
+        if waited >= ENDING + ENDING_TOLD {
+            drop(encoder.kill());
+            break encoder.wait();
+        }
+
+        if waited >= ENDING && !told {
+            drop(clock::interrupt(&encoder));
+            told = true;
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    // its pipe is closed now that it is gone
+    let said = said.and_then(|said| said.join().ok()).unwrap_or_default();
+
+    (status, said)
+}
+
+// whether the encoder ended as it should: finished, or told to
+fn encoder_ok(status: &io::Result<ExitStatus>) -> bool {
+    status
+        .as_ref()
+        .is_ok_and(|status| status.success() || status.signal() == Some(libc::SIGINT))
+}
+
+/*
+ * whether an encoder that failed did so because its window closed: PipeWire says the target is not
+ * found, or niri no longer lists the window (`gone`)
+ */
+fn window_closed(said: &VecDeque<String>, gone: impl FnOnce() -> bool) -> bool {
+    said.iter().any(|line| line.contains("target not found")) || gone()
+}
+
+/*
+ * what the writer and the encoder (in that order) left behind. A window closing ends the encoder,
+ * then the writer, with the file whole: that is a segment written, and if no frame was, nothing of
+ * this segment (`closed` holds its number when the window closed)
+ */
+fn classify_window(
+    [writer, encoder]: [io::Result<ExitStatus>; 2],
+    [writer_said, encoder_said]: [VecDeque<String>; 2],
+    written: bool,
+    closed: Option<u32>,
+) -> Segment {
+    let not_found = |status: &io::Result<ExitStatus>| {
+        status
+            .as_ref()
+            .is_ok_and(|status| status.code() == Some(NOT_FOUND))
+    };
+
+    if not_found(&encoder) {
+        return Segment::Lost(format!("{ENCODER} not found"));
+    }
+
+    if not_found(&writer) {
+        return Segment::Lost(format!("{MUXER} not found"));
+    }
+
+    let writer_ok = writer.as_ref().is_ok_and(|status| status.success());
+
+    match (writer_ok && written, closed) {
+        (true, Some(_)) => return Segment::Written,
+        (true, None) if encoder_ok(&encoder) => return Segment::Written,
+        _ => {}
+    }
+
+    match closed {
+        // an earlier segment is whole, which `Empty` leaves be
+        Some(segment) if !written && segment > 1 => return Segment::Empty,
+        Some(_) if !written => {
+            return Segment::Lost(String::from("the window closed before a frame was written"));
+        }
+        _ => {}
+    }
+
+    // told to stop before a frame: the encoder ended, and the writer found no stream, which it may
+    // call a failure
+    if !written && encoder_ok(&encoder) {
+        return Segment::Empty;
+    }
+
+    // the encoder first: when it fails the writer only finds the stream short
+    let (program, status, said) = if encoder_ok(&encoder) {
+        (MUXER, writer, writer_said)
+    } else {
+        (ENCODER, encoder, encoder_said)
+    };
+
+    if !written
+        && status
+            .as_ref()
+            .is_ok_and(|s| s.signal() == Some(libc::SIGINT))
+    {
+        return Segment::Empty;
+    }
+
+    let said = Vec::from(said).join("; ");
+
+    Segment::Lost(match (status, said.is_empty()) {
+        (Err(error), _) => format!("{program}: {error}"),
+        (Ok(status), true) => format!("{program} ended ({status})"),
+        (Ok(status), false) => format!("{program} ended ({status}): {said}"),
+    })
+}
+
+/*
+ * a window closed, as niri says: a recording of it that is paused, with no program running to find
+ * out, is saved as it is. One that runs finds out itself. Called on the niri thread, so it only
+ * looks at a flag unless a recording is on
+ */
+pub fn heard(heard: Heard) {
+    if !ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
+
+    let mut runtime = RUNTIME.locked();
+
+    if !matches!(runtime.machine.phase(), Phase::Paused { .. }) {
+        return;
+    }
+
+    let Some(Source::Window { id, .. }) =
+        runtime.take.as_ref().and_then(|take| take.source.clone())
+    else {
+        return;
+    };
+
+    let gone = match &heard {
+        Heard::Closed(closed) => closed.0 == id,
+        // the stream began again: every window niri has, which this one is not among
+        Heard::All(windows) => !windows.iter().any(|window| window.id.0 == id),
+        _ => false,
+    };
+
+    if gone {
+        if let Some(take) = runtime.take.as_mut() {
+            take.closed = true;
+        }
+
+        drop(runtime.feed(Event::Stop));
+    }
+}
+
+// stops the window casts an earlier Kanade left, at start
+pub fn reclaim() {
+    window::reclaim();
 }
 
 // saves the first `segments` segments as the recording's file
@@ -1577,8 +2127,29 @@ mod tests {
             start(Target::Area(Some(area)), Audio::System)
         );
 
+        // the focused window at the start, or one by its id; mic as ever only when asked for
+        assert_eq!(
+            Request::parse(&["start", "window"]),
+            start(Target::Window(None), Audio::None)
+        );
+        assert_eq!(
+            Request::parse(&["start", "window", "149"]),
+            start(Target::Window(Some(149)), Audio::None)
+        );
+        assert_eq!(
+            Request::parse(&["start", "window", "149", "system"]),
+            start(Target::Window(Some(149)), Audio::System)
+        );
+        assert_eq!(
+            Request::parse(&["start", "window", "mic"]),
+            start(Target::Window(None), Audio::Mic)
+        );
+
         for bad in [
-            &["start", "window"][..],
+            &["start", "window", "kitty"][..],
+            &["start", "window", "-3"],
+            &["start", "window", "1", "2"],
+            &["start", "screen", "window"],
             &["start", "area", "nowhere"],
             &["start", "screen", "area"],
             &["start", "loud"],
@@ -1779,5 +2350,81 @@ mod tests {
         assert!(chosen_area(exited(0), "10,20 1x200\n", "").is_err());
         assert!(chosen_area(exited(1), "", "compositor does not support layer shell").is_err());
         assert!(chosen_area(exited(127), "", "").is_err());
+    }
+
+    fn said(lines: &[&str]) -> VecDeque<String> {
+        lines.iter().map(|line| String::from(*line)).collect()
+    }
+
+    fn segment(
+        writer: io::Result<ExitStatus>,
+        encoder: io::Result<ExitStatus>,
+        written: bool,
+        closed: Option<u32>,
+    ) -> Segment {
+        classify_window(
+            [writer, encoder],
+            [said(&["writer"]), said(&["encoder"])],
+            written,
+            closed,
+        )
+    }
+
+    /*
+     * a window that closes ends the encoder, then the writer with its file whole: the recording is
+     * saved, as a stop would; one that ends with nothing written has nothing to save
+     */
+    #[test]
+    fn a_window_that_closes_ends_the_segment_not_the_recording() {
+        // told to stop: the encoder was interrupted and finished the stream
+        assert_eq!(segment(exited(0), exited(0), true, None), Segment::Written);
+        assert_eq!(
+            segment(exited(0), killed(libc::SIGINT), true, None),
+            Segment::Written
+        );
+        // closed: the encoder failed, the file is whole
+        assert_eq!(
+            segment(exited(0), exited(1), true, Some(1)),
+            Segment::Written
+        );
+        // the same without the window closing is a failure of the encoder, named
+        let Segment::Lost(why) = segment(exited(0), exited(1), true, None) else {
+            panic!("saved");
+        };
+        assert!(why.contains(ENCODER) && why.contains("encoder"), "{why}");
+
+        // closed before a frame: the first segment is nothing, a later one leaves the earlier whole
+        assert!(matches!(
+            segment(exited(1), exited(1), false, Some(1)),
+            Segment::Lost(_)
+        ));
+        assert_eq!(
+            segment(exited(1), exited(1), false, Some(2)),
+            Segment::Empty
+        );
+    }
+
+    #[test]
+    fn a_window_stopped_before_a_frame_is_empty_and_a_missing_program_is_said() {
+        assert_eq!(segment(exited(0), exited(0), false, None), Segment::Empty);
+        // the writer fails on a stream with nothing in it
+        assert_eq!(segment(exited(1), exited(0), false, None), Segment::Empty);
+        assert_eq!(
+            segment(exited(1), killed(libc::SIGINT), false, None),
+            Segment::Empty
+        );
+        // the writer failed: its words, the encoder having only found its pipe closed
+        let Segment::Lost(why) = segment(exited(1), exited(0), true, None) else {
+            panic!("saved");
+        };
+        assert!(why.contains(MUXER) && why.contains("writer"), "{why}");
+        assert!(matches!(
+            segment(exited(127), exited(0), false, None),
+            Segment::Lost(why) if why.contains("not found")
+        ));
+        assert!(matches!(
+            segment(exited(0), exited(127), false, None),
+            Segment::Lost(why) if why.contains(ENCODER)
+        ));
     }
 }

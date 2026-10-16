@@ -1,6 +1,6 @@
 # 116. Recording targets, audio and pause
 
-Status: accepted (Capture, slice 1). Supersedes in part [ADR 0013](0013-screen-recording-with-wf-recorder.md): the recording is no longer only the focused output, without sound and in one piece, and `start` answers once the first frame is written, not at once. The rest of 0013 stands (`wf-recorder` through wlr-screencopy, `h264_vaapi`, no fallback encoder, the holder dying by SIGINT, the Activity's lifetimes). Builds on ADR 0011 (holders) and ADR 0112 (the Launcher's closed verbs).
+Status: accepted (Capture, slice 1); the window target it left out is [ADR 0117](0117-window-recording-through-nirs-screen-cast.md). Supersedes in part [ADR 0013](0013-screen-recording-with-wf-recorder.md): the recording is no longer only the focused output, without sound and in one piece, and `start` answers once the first frame is written, not at once. The rest of 0013 stands (`wf-recorder` through wlr-screencopy, `h264_vaapi`, no fallback encoder, the holder dying by SIGINT, the Activity's lifetimes). Builds on ADR 0011 (holders) and ADR 0112 (the Launcher's closed verbs).
 
 ## Context
 

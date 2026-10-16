@@ -1211,7 +1211,8 @@ notifications dnd on until <HH:MM>
     },
     /*
      * screenshots and the color picker, by niri, whose own notification says when each screenshot
-     * is saved. Screen recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own
+     * is saved. Screen recording, by wf-recorder, which niri counts as a cast, so `privacy` shows it on its own;
+     * a window's, by niri's screen cast through GStreamer and ffmpeg (ADR 0117)
      */
     Module {
         name: "capture",
@@ -1242,7 +1243,11 @@ notifications dnd on until <HH:MM>
             },
             Need {
                 on: Provider::Program(recording::JOINER),
-                without: "no pausing a screen recording",
+                without: "no pausing a screen recording, and no recording a window",
+            },
+            Need {
+                on: Provider::Program(recording::ENCODER),
+                without: "no recording a window",
             },
         ],
         settings: &[],
@@ -1252,7 +1257,7 @@ notifications dnd on until <HH:MM>
             about: "Take a screenshot, pick a color or record the screen",
             usage: || {
                 String::from(
-                    "capture screenshot area|window|output\ncapture color\ncapture record start|pause|resume|stop|status\n  start [screen|area [<x,y WxH>]] [none|system|mic]: none is the default; mic is recorded only when asked for\ncapture cast window [<id>]|monitor [<output>]|clear",
+                    "capture screenshot area|window|output\ncapture color\ncapture record start|pause|resume|stop|status\n  start [screen|area [<x,y WxH>]|window [<id>]] [none|system|mic]: none is the default; mic is recorded only when asked for; window is the focused one without an id\ncapture cast window [<id>]|monitor [<output>]|clear",
                 )
             },
             parse: |arguments| match arguments {
@@ -1269,7 +1274,12 @@ notifications dnd on until <HH:MM>
                 _ => Err(Unparsed::Usage),
             },
         }],
-        start: |app| app,
+        // a paused window recording hears its window close; a session an earlier run left is stopped
+        start: |app| {
+            niri::on_windows(recording::heard);
+            recording::reclaim();
+            app
+        },
     },
     // screenshots and the screen recording from the island
     Module {

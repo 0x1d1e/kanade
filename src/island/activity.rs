@@ -490,10 +490,12 @@ pub enum Clip {
         path: String,
     },
 
-    // finished; `copied` once its path is on the clipboard, by the Activity's action
+    // finished; `copied` once its path is on the clipboard, by the Activity's action; `closed` when
+    // the window it recorded closed, which ended it
     Saved {
         path: String,
         copied: bool,
+        closed: bool,
     },
 
     // ended without saving anything, for why

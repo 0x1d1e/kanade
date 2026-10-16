@@ -1,6 +1,6 @@
 # 13. Screen recording with wf-recorder
 
-Status: accepted (roadmap 9 Shell essentials, #140). Partly superseded by [ADR 0116](0116-recording-targets-audio-and-pause.md): a recording may be an area, carry sound and be paused (segments); `start` answers once the first frame is written (the IPC "answers at once" below no longer holds), and the file is written straight to its path from the first frame while the recording is never paused. The rest stands. Resolves the `docs/design.md` Open item "Define recording backend selection + capability probing".
+Status: accepted (roadmap 9 Shell essentials, #140). A window is recorded another way, [ADR 0117](0117-window-recording-through-nirs-screen-cast.md). Partly superseded by [ADR 0116](0116-recording-targets-audio-and-pause.md): a recording may be an area, carry sound and be paused (segments); `start` answers once the first frame is written (the IPC "answers at once" below no longer holds), and the file is written straight to its path from the first frame while the recording is never paused. The rest stands. Resolves the `docs/design.md` Open item "Define recording backend selection + capability probing".
 
 ## Context
 

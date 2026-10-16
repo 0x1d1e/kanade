@@ -266,7 +266,7 @@ pub fn cast(to: &Retarget) -> Result<Acted, String> {
  * the focused workspace's active window, which niri captures for no id even when no window has
  * focus; asked by id so a window that is not there is said rather than silently missed
  */
-fn window() -> io::Result<Option<u64>> {
+pub(super) fn window() -> io::Result<Option<u64>> {
     Ok(active_window(&niri::ask("\"Workspaces\"")?))
 }
 

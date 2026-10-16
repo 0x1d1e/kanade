@@ -31,7 +31,7 @@ It is also the session's notification daemon, a Dock, and a lock screen.
 - **Finishes**: tinted solid, paper, liquid glass, and blur, which blurs the wallpaper and the windows behind the Island, Dock and Banners (needs a niri layer rule, see [Installation](docs/wiki/Installation.md)).
 - **Appearance**: with Matugen installed, Kanade derives light and dark shell colors from the wallpaper awww shows, however it was set, then renders configured app targets for the selected tone; `appearance.sync` carries them to GTK, Qt, KDE apps, niri's window borders, kitty, and Firefox or Zen live through Pywalfox.
 - **Lock screen**: `kanade lock` shows the date, the time, who is signed in and a password field over the wallpaper, and no notification. The session also locks before the machine sleeps, and, with the `idle` Module on, after a dim grace when idle.
-- **Capture**: screenshots and a screen color picker through niri and screen recording of the output or an area, with sound if you ask and a pause, through `wf-recorder`, a saved recording shown on the Island, a saved screenshot by niri's notification.
+- **Capture**: screenshots and a screen color picker through niri and screen recording of the output, an area or a window, with sound if you ask and a pause, through `wf-recorder`, a saved recording shown on the Island, a saved screenshot by niri's notification.
 - **Calendar and weather**: local iCalendar files and events you add, Google Calendar, read-only `https` calendar subscriptions, a Join action for a meeting link, and the forecast from Open-Meteo.
 - **Live Activities**: scripts and agents (a Claude Code hook recipe in [Agent hooks](docs/wiki/Agent-hooks.md)) show what they do on the Island with `kanade activity`; Focus quiets the session in one press.
 - **Settings window**: task-based pages with search, Inspect and Undo; changes apply live unless marked Restart.
@@ -77,7 +77,7 @@ Optional, each for the feature named; Kanade runs without them:
 |---|---|
 | Audio, privacy dots (`pactl`, `pw-dump`), device events (`udevadm`, `dbus-monitor`), `setpriv` | `libpulse pipewire systemd dbus util-linux` |
 | Clipboard history (needs wl-clipboard 2.3 or later) | `wl-clipboard` |
-| Screen recording (plus a VA-API driver: `intel-media-driver` for Intel, `mesa` for AMD); `slurp` draws an area, `ffmpeg` allows a pause | `wf-recorder` (`slurp`, `ffmpeg`) |
+| Screen recording (plus a VA-API driver: `intel-media-driver` for Intel, `mesa` for AMD); `slurp` draws an area, `ffmpeg` allows a pause and records a window with `gst-launch-1.0` (`gst-plugin-pipewire`, `gst-plugins-bad`) | `wf-recorder` (`slurp`, `ffmpeg`, `gstreamer`) |
 | Wallpaper | `awww` |
 | Wallpaper-derived colors | `matugen` |
 | `appearance.sync` | `qt5ct qt6ct glib2 dconf`; AUR: Darkly (Qt6 style), Pywalfox and its browser extension |
@@ -104,14 +104,8 @@ Per-feature detail is in [Installation](docs/wiki/Installation.md).
 
 ## Acknowledgements
 
-- [Amane](https://github.com/MystiaFin/amane) by MystiaFin: Kanade's runtime is ported from it (MIT, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [ADR 0028](docs/adr/0028-the-runtime-is-ported-from-amane.md)).
-- [niri](https://github.com/niri-wm/niri): the compositor Kanade is made for, and its IPC.
-- [Suzuha](https://github.com/MystiaFin/suzuha) by MystiaFin: panels drawn as one liquid shape on one surface.
+- [Amane](https://github.com/MystiaFin/amane) by MystiaFin: a Rust Wayland shell runtime.
 - [iNiR](https://github.com/snowarch/iNiR): an island on niri, one body in many contexts, satellites.
-- [Noctalia](https://github.com/noctalia-dev/noctalia): a native shell's config and architecture.
-- [Wayle](https://github.com/wayle-rs/wayle): a Rust Wayland shell with its settings, OSD and device controls built in.
-
-Besides Amane, they are references: Kanade holds none of their code.
 
 ## License
 

@@ -238,7 +238,21 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] Not run: the Surface (thumbnails, the pin stop and button, the pane, the footer copy) and the idle numbers with a history of pictures.
 
 ## Recording targets, audio and pause (ADR 0116, unfixed)
-- [ ] Window recording: niri gives no tiled window's rectangle; it needs a PipeWire cast of the window.
+- [x] Window recording (ADR 0117).
+  - [ ] The window's cast shows in the privacy dots (pid null) beside the Recording Clip; not deduplicated against it.
+  - [ ] Not verified live: a stop with no frame written, niri's Stop sharing on a window cast (is the recording saved?), a lock during a window cast, `mic`, a HiDPI window, a window that resizes, A/V sync, the Capture Surface's Rec Window pill, the Launcher's Record Window row, the "Saved, window closed" Clip, a second Kanade starting beside a window recording (its reclaim leaves the first's cast), the watchdog killing a stuck encoder.
+  - [ ] Kanade has no shutdown hook: a graceful exit during a window recording leaves the cast until the next start reclaims it.
+  - [ ] `recording.rs`, `classify_window`: a watchdog-SIGKILLed encoder classifies as Lost even when frames were written and the writer exited 0; accept as Written when escalation was requested.
+  - [ ] `recording.rs`, `finish_encoder`: the stderr `said.join()` is unbounded; a descendant holding stderr would hang the follow thread. Bound it.
+  - [ ] `recording.rs`, `classify_window`: Empty (no frame, encoder ok) can mask a real writer error; keep Empty only when the writer's stderr is empty or says no stream.
+  - [ ] `recording.rs`, ledger: a reused pid inherits an old `window-casts.<pid>` ledger (negligible).
+  - [ ] `THIRD_PARTY_NOTICES.md` says "Kanade vendors no other third-party code", but `vendor/vello_encoding` is vendored (its LICENSE files are present): correct the wording (pre-existing).
+  - [ ] The size is niri's logical size, fixed at start; a resize letterboxes.
+  - [ ] "Saved, window closed" also shows when niri's stop-cast (Stop sharing) ends the cast without the window closing: say a neutral "Saved, cast ended" when the window still exists.
+  - [ ] Kanade resets SIGINT's disposition but not the signal mask: a Kanade launched with SIGINT blocked (from a script with `&`) makes the encoder ignore SIGINT, and stop hits the 5 s watchdog. Reset the mask in `default_sigint` or the spawn `pre_exec` (rustix/libc; unsafe only in `clock.rs` or the runtime exception).
+  - [ ] The clip's duration includes the first-frame latency (0.2-2 s).
+  - [ ] The same-second NOREPLACE collision for window recordings (`-n`) is not verified live.
+  - [ ] A `kill -9` of Kanade during a real window recording leaves a playable fragmented mp4: verified on a synthetic pipeline only, not live.
 - [ ] A system and microphone mix (one source at a time now).
 - [ ] Kanade's own region overlay in place of `slurp`.
 - [ ] Not verified live: that `wf-recorder` takes `--audio=@DEFAULT_MONITOR@` and `--audio=@DEFAULT_SOURCE@`, that `slurp` runs with a null stdin, and A/V sync and timestamps across the joined segments.
@@ -250,3 +264,19 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] `capture record stop` on a static screen may wait for wf-recorder's next damage frame, past the CLI's 5 s reply. Live check pending: needs a still screen.
 - [ ] The join's 600 s limit can outlast the CLI's 5 s, which then answers unknown while the file still lands.
 - [ ] Not run: the Surface, the Launcher, the lock rule and the area picker on a session (no E2E in the change).
+
+## Backlog (user, 2026-10)
+
+- [ ] Liquid glass: update it to match Vitreus (reference checkout at `/home/k/Projects/acknowledgements/Vitreus/`: `liquid.wgsl`, `cardrip.wgsl` and its README). A reference to learn from, not to copy; if code is ported, the license and acknowledgements rules apply (THIRD_PARTY_NOTICES.md).
+- [ ] Settings window: change it to GPUI (now the runtime's own UI).
+  - Needs an ADR, and a decision on how it coexists with the runtime of ADR 0028.
+- [ ] niri config editor: edit niri's `config.kdl` from Kanade's settings.
+  - Validate with `niri validate`, keep comments, write atomically, undo.
+- [ ] SDDM: ask the user whether they want it; if so take a theme from qylock (check the actual repo and its licence before using any of it) or create our own.
+- [ ] Notification sound customization: per app and urgency, a chosen sound file, volume, or off; in the notifications Module and its config.
+- [ ] Dock click behaviour: left click focuses the app, middle click opens a new instance, right click opens the application's actions (Desktop Entry actions).
+  - Now (`src/dock.rs`, `on_click`): left focuses the app's window, the next one if it has the focus already, or launches the app if it is not running; right opens the context menu (pin or unpin, close, and the declared Desktop Entry actions); middle does nothing (`Button::Middle => {}`).
+  - Delta: middle must launch a new instance (`Launch::run`, as for an app that is not running, even when it runs); decide whether left should keep cycling windows or only focus; right already has the actions.
+- [ ] Clipboard Surface: remove the preview box (the large box that shows the full text of the selected entry, ADR 0114).
+  - Decide whether the list rows keep their one-line preview.
+  - When done, update ADR 0114 and the wiki (`docs/wiki/`) to match.

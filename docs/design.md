@@ -164,7 +164,7 @@ Shown as the Tray strip at Rest and the Tray Surface; menus are sub-surfaces (do
 
 - screenshot: area crop, window, fullscreen/output;
 - screenshots: niri-native IPC actions cover all three modes, so no external screenshot backend; `doctor` names a missing niri. External backend only for recording (#140);
-- recording: `wf-recorder` through niri's wlr-screencopy, so `privacy` sees it as a cast; `h264_vaapi` to `~/Videos/Screencasts`, no fallback encoder; start/pause/resume/stop/status; the focused output or an area (`slurp`, or a given rectangle), with no sound, the system's or the microphone's (an explicit choice per start, never a default); pause ends a segment and stop joins them with `ffmpeg`; locking the session stops and saves; a Persistent Ongoing Activity with Pause/Resume and Stop while it records, then the same Transient Activity as a screenshot (done, #140, [ADR 0013](adr/0013-screen-recording-with-wf-recorder.md), [ADR 0116](adr/0116-recording-targets-audio-and-pause.md)); window recording is later (niri gives no tiled window's rectangle; it needs a PipeWire cast);
+- recording: `wf-recorder` through niri's wlr-screencopy, so `privacy` sees it as a cast; `h264_vaapi` to `~/Videos/Screencasts`, no fallback encoder; start/pause/resume/stop/status; the focused output, an area (`slurp`, or a given rectangle), with no sound, the system's or the microphone's (an explicit choice per start, never a default); pause ends a segment and stop joins them with `ffmpeg`; locking the session stops and saves; a Persistent Ongoing Activity with Pause/Resume and Stop while it records, then the same Transient Activity as a screenshot (done, #140, [ADR 0013](adr/0013-screen-recording-with-wf-recorder.md), [ADR 0116](adr/0116-recording-targets-audio-and-pause.md)); a window by its niri id (or the focused one) through niri's `org.gnome.Mutter.ScreenCast`, `gst-launch-1.0` on the GPU and `ffmpeg` stamping by wall clock, closing it saves what exists ([ADR 0117](adr/0117-window-recording-through-nirs-screen-cast.md));
 - completion: a screenshot is shown by niri's own notification as a Banner, not in the Island; a recording's end emits a Transient Activity + copy/open path actions (done, #139);
 - color picker: niri's `PickColor` request (its own on-screen picker, which answers when the user clicks a pixel, or null when they leave it) through `kanade capture color` and a Color tile in the Capture Surface. The `#rrggbb` goes on the clipboard through `wl-copy`, plain text without ADR 0019's sensitive hint, and shows as a Transient Live Activity under a Kind-neutral id; leaving the picker shows and copies nothing, and the verb refuses with "no color picked" ([ADR 0086](adr/0086-color-picker-through-niri.md));
 - no OCR, reverse-image search, annotation editor, upload service.
@@ -291,7 +291,7 @@ activity end|fail <id> [text]|touch <id>|list|run <id> <title> -- <command>...
 activity actions <id> [<key>=<label>]...|pressed <id>|wait <id> [--timeout S]
 activity hook claude
 capture screenshot area|window|output
-capture record start [screen|area [<x,y WxH>]] [none|system|mic] | pause | resume | stop | status
+capture record start [screen|area [<x,y WxH>]|window [<id>]] [none|system|mic] | pause | resume | stop | status
 dictate toggle|cancel|status
 dictate key|consent|forget
 gesture | gesture record <name> | gesture forget <name> | gesture list
@@ -402,11 +402,11 @@ Done (v0.2 phases 7A Modules, 7B Contracts, 7C Theme, 8 Presentation, 9 Shell es
 - Launcher commands, a closed set of Kanade verbs ([ADR 0112](adr/0112-launcher-runs-a-closed-set-of-kanade-verbs.md)).
 - Calendar editing of owned events ([ADR 0113](adr/0113-owned-events-are-edited-in-place-and-keep-what-they-hold.md)).
 - Clipboard pins, image previews and a detail pane ([ADR 0114](adr/0114-clipboard-pins-and-previews-live-in-memory-and-tmpfs.md)); pins persist as plaintext in a private file ([ADR 0115](adr/0115-clipboard-pins-persist-as-plaintext-in-a-private-file.md)). Snippets and placeholders declined.
-- Recording: area target, system or microphone audio, pause and resume ([ADR 0116](adr/0116-recording-targets-audio-and-pause.md)).
+- Recording: area target, system or microphone audio, pause and resume ([ADR 0116](adr/0116-recording-targets-audio-and-pause.md)); window target ([ADR 0117](adr/0117-window-recording-through-nirs-screen-cast.md)).
 
 Remaining:
 
-- **Recording**: window recording (niri gives no tiled window's rectangle; needs a PipeWire cast, a spike first); system and microphone mixed in one recording (one source at a time now); Kanade's own region overlay in place of `slurp`; `wf-recorder`'s audio sources and the joined segments' A/V sync are not checked live (ADR 0116).
+- **Recording**: system and microphone mixed in one recording (one source at a time now); Kanade's own region overlay in place of `slurp`; `wf-recorder`'s audio sources and the joined segments' A/V sync are not checked live (ADR 0116).
 - **Launcher**: web search and recent files, each wanting its own ADR for what leaves the machine and what it parses (ADR 0112).
 - **Live Activities**: a keyboard path to an Activity's actions, which needs a Live Surface (ADR 0110).
 - **Dictation**: a live check of the Gemini request and of `wtype` insertion; local models and streaming stay deferred (ADR 0111).
