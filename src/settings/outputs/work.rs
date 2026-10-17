@@ -246,6 +246,18 @@ impl Port for Real {
         editor.edit_output(&output.id(), &ops)
     }
 
+    fn undo_write(&self) -> Result<String, String> {
+        let file = niri_config::target(None)?;
+        let editor = Editor {
+            file,
+            state: niri_config::state()?,
+            validate: &niri_config::niri_validate,
+            now_ms: niri_config::now_ms,
+        };
+
+        editor.undo()
+    }
+
     fn now(&self) -> u64 {
         static START: OnceLock<Instant> = OnceLock::new();
 
@@ -524,6 +536,20 @@ fn tick(gone: bool) {
     }
 }
 
+pub(super) fn edit_if_editable<T>(
+    output: &str,
+    monitor: Option<&Monitor>,
+    editable: impl FnOnce(&niri_config::OutputId) -> Result<(), String>,
+    edit: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let id = monitor
+        .map(|monitor| monitor.output.id())
+        .unwrap_or_else(|| niri_config::OutputId::named(output));
+
+    editable(&id)?;
+    edit()
+}
+
 fn handle(job: Job) {
     match job {
         Job::Refresh => publish(),
@@ -537,7 +563,13 @@ fn handle(job: Job) {
                 .outputs
                 .monitor(&output)
                 .and_then(|monitor| monitor.config.vrr);
-            let result = controller(|control| control.try_edit(&Real, &output, edit, hint));
+            let monitor = Settings::read().outputs.monitor(&output).cloned();
+            let result = edit_if_editable(
+                &output,
+                monitor.as_ref(),
+                niri_config::output_editable,
+                || controller(|control| control.try_edit(&Real, &output, edit, hint)),
+            );
 
             {
                 let mut settings = Settings::write();
@@ -609,25 +641,54 @@ fn handle(job: Job) {
 
                     match loaded {
                         Some(state) if state.last_failed => {
-                            // niri rejected the config: put the output back
-                            let reverted = controller(|control| control.revert(&Real));
+                            let undone = Real.undo_write();
 
-                            Settings::write().outputs.notice = Some(match reverted {
-                                Ok(_) => (
-                                    format!(
-                                        "niri could not load the saved config; \
-                                         {name} put back"
-                                    ),
-                                    true,
-                                ),
-                                Err(why) => (
-                                    format!(
-                                        "niri could not load the saved config; \
-                                         {name} is still as it was: {why}"
-                                    ),
-                                    true,
-                                ),
-                            });
+                            match undone {
+                                Ok(_) => {
+                                    let reverted = controller(|control| control.revert(&Real));
+
+                                    Settings::write().outputs.notice = Some(match reverted {
+                                        Ok(_) => (
+                                            format!(
+                                                "niri rejected the saved config; \
+                                             pre-trial config restored and {name} put back"
+                                            ),
+                                            true,
+                                        ),
+                                        Err(why) => (
+                                            format!(
+                                                "niri rejected the saved config; \
+                                             pre-trial config restored, but {name} is still as it was: {why}"
+                                            ),
+                                            true,
+                                        ),
+                                    });
+                                }
+                                Err(why_undo) => {
+                                    let reverted = controller(|control| {
+                                        let rev = control.revert_compositor(&Real);
+                                        control.abandon_keep();
+                                        rev
+                                    });
+
+                                    Settings::write().outputs.notice = Some(match reverted {
+                                        Ok(()) => (
+                                            format!(
+                                                "niri rejected the saved config and restoring pre-trial config failed ({why_undo}); \
+                                             {name} put back"
+                                            ),
+                                            true,
+                                        ),
+                                        Err(why_rev) => (
+                                            format!(
+                                                "niri rejected the saved config, restoring pre-trial config failed ({why_undo}), \
+                                             and {name} is still as it was: {why_rev}"
+                                            ),
+                                            true,
+                                        ),
+                                    });
+                                }
+                            }
                         }
                         Some(_) => {
                             // Config reload succeeded: delete the pending file and confirm keep.
@@ -636,12 +697,50 @@ fn handle(job: Job) {
                             check_disagreements(name, edits);
                         }
                         None => {
-                            // Reload timed out: check if niri differs from the written config.
-                            let disagreed = check_disagreements(name, edits);
-                            if disagreed {
-                                controller(|control| control.abandon_keep());
-                            } else {
-                                controller(|control| control.confirm_keep());
+                            // Reload timed out: keep pending file for recovery since reload was not confirmed.
+                            controller(|control| control.abandon_keep());
+
+                            match Real.outputs() {
+                                Err(why) => {
+                                    Settings::write().outputs.notice = Some((
+                                        format!(
+                                            "Saved, but niri reload timed out and outputs could not be checked: {why}"
+                                        ),
+                                        true,
+                                    ));
+                                }
+                                Ok(outputs) => {
+                                    if let Some(output) =
+                                        outputs.iter().find(|output| output.name == *name)
+                                    {
+                                        let refs: Vec<&Edit> = edits.iter().collect();
+                                        let said = disagreements(&refs, output);
+
+                                        if !said.is_empty() {
+                                            Settings::write().outputs.notice = Some((
+                                                format!(
+                                                    "Saved, but niri reload timed out and niri differs: {}",
+                                                    said.join("; ")
+                                                ),
+                                                true,
+                                            ));
+                                        } else {
+                                            Settings::write().outputs.notice = Some((
+                                                String::from(
+                                                    "Saved, but niri reload timed out; changes may not have reloaded",
+                                                ),
+                                                true,
+                                            ));
+                                        }
+                                    } else {
+                                        Settings::write().outputs.notice = Some((
+                                            format!(
+                                                "Saved, but niri reload timed out and {name} is no longer connected"
+                                            ),
+                                            true,
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
@@ -704,21 +803,22 @@ pub(super) fn resolve_keep_reload(
     control: &mut Controller,
     port: &dyn Port,
     loaded: Option<ipc::ConfigLoadState>,
-    disagreed: bool,
+    _disagreed: bool,
 ) {
     match loaded {
         Some(state) if state.last_failed => {
-            let _ = control.revert(port);
+            if port.undo_write().is_ok() {
+                let _ = control.revert(port);
+            } else {
+                let _ = control.revert_compositor(port);
+                control.abandon_keep();
+            }
         }
         Some(_) => {
             control.confirm_keep();
         }
         None => {
-            if disagreed {
-                control.abandon_keep();
-            } else {
-                control.confirm_keep();
-            }
+            control.abandon_keep();
         }
     }
 }
@@ -824,7 +924,7 @@ fn publish() {
     Settings::write().outputs.publish(monitors, blocked, error);
 }
 
-fn read_config(outputs: Vec<Output>) -> (Vec<Monitor>, Option<String>) {
+pub(super) fn read_config(outputs: Vec<Output>) -> (Vec<Monitor>, Option<String>) {
     let setup = niri_config::target(None).and_then(|file| Ok((file, niri_config::state()?)));
     let (file, state) = match setup {
         Ok(setup) => setup,
@@ -851,6 +951,10 @@ fn read_config(outputs: Vec<Output>) -> (Vec<Monitor>, Option<String>) {
             match editor.read_output(&id, key) {
                 Ok(read) => {
                     config.note = config.note.or(read.note);
+
+                    if let Some(owner) = &read.block_owner {
+                        config.owner = config.owner.or_else(|| Some(page::owner_text(owner)));
+                    }
 
                     match &read.reading {
                         Reading::Own(_) => config.set = true,

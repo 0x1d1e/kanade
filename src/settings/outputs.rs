@@ -905,6 +905,9 @@ pub trait Port {
     /// Writes `edits` to the output's block in one validated change.
     fn write(&self, output: &Output, edits: &[&Edit]) -> Result<String, String>;
 
+    /// Restores what the last `write` replaced.
+    fn undo_write(&self) -> Result<String, String>;
+
     /// Milliseconds on a clock that only goes forward.
     fn now(&self) -> u64;
 
@@ -1126,6 +1129,46 @@ impl Controller {
     /// recovery or a manual fix.
     pub fn abandon_keep(&mut self) {
         self.session = None;
+    }
+
+    /// Puts the output back as niri showed it before the trial, without clearing the session
+    /// or deleting the pending file.
+    pub fn revert_compositor(&self, port: &dyn Port) -> Result<(), String> {
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
+        let force: Vec<Field> = session.edits.keys().copied().collect();
+
+        let shown = port.outputs().ok().filter(|outputs| !outputs.is_empty());
+        let gone = shown
+            .as_ref()
+            .is_some_and(|outputs| outputs.iter().all(|output| output.name != session.output));
+        let now = shown
+            .as_ref()
+            .and_then(|outputs| outputs.iter().find(|output| output.name == session.output));
+        let may_turn_off = leaves_a_screen(shown.as_deref(), &session.output);
+        let plan = if gone {
+            Vec::new()
+        } else {
+            restore_plan(&session.previous, now, &force, may_turn_off)
+        };
+        let mut failed = None;
+
+        if shown.is_none() && !session.previous.enabled {
+            failed = Some(String::from("niri did not list its outputs"));
+        }
+
+        for args in plan {
+            if let Err(error) = port.run(&session.output, &args) {
+                failed.get_or_insert(error.message());
+            }
+        }
+
+        if let Some(why) = failed {
+            Err(why)
+        } else {
+            Ok(())
+        }
     }
 
     /// Puts the output back as niri showed it before the trial. When it cannot (niri refuses),

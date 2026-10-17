@@ -766,6 +766,59 @@ fn an_include_that_names_the_monitor_makes_it_the_includes_to_edit_even_through_
 }
 
 #[test]
+fn an_include_output_block_is_blocked_even_when_it_only_has_unmanaged_keys() {
+    let dir = Dir::new("outputs-include-unmanaged", "include \"mine.kdl\"\n");
+    fs::write(
+        dir.0.join("niri/mine.kdl"),
+        "output \"DP-1\" {\n    focus-at-startup\n}\n",
+    )
+    .unwrap();
+
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+    let id = OutputId::named("DP-1");
+
+    // The Outputs page cannot edit the block even though Kanade owns none of its keys.
+    assert!(
+        editor
+            .output_editable(&id)
+            .unwrap_err()
+            .contains("mine.kdl")
+    );
+    let read = editor.read_output(&id, "scale").unwrap();
+    assert_eq!(read.reading, Reading::Unset);
+    assert_eq!(read.block_owner, Some(dir.0.join("niri/mine.kdl")));
+}
+
+#[test]
+fn an_include_output_block_matched_by_edid_is_not_editable() {
+    let dir = Dir::new("outputs-include-edid", "include \"mine.kdl\"\n");
+    fs::write(
+        dir.0.join("niri/mine.kdl"),
+        "output \"AU Optronics 0x7EAD 0x00007EAD\" {\n    focus-at-startup\n}\n",
+    )
+    .unwrap();
+
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+    let id = OutputId {
+        connector: String::from("eDP-1"),
+        make: Some(String::from("AU Optronics")),
+        model: Some(String::from("0x7EAD")),
+        serial: Some(String::from("0x00007EAD")),
+    };
+
+    assert!(
+        editor
+            .output_editable(&id)
+            .unwrap_err()
+            .contains("mine.kdl")
+    );
+}
+
+#[test]
 fn a_mode_with_custom_or_a_modeline_is_not_kanades_to_touch() {
     let dir = Dir::new(
         "outputs-custom",

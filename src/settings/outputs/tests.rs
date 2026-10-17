@@ -11,6 +11,7 @@ struct Fake {
     written: RefCell<Vec<(String, Vec<Edit>)>>,
     refuse: RefCell<Option<String>>,
     cannot_write: Cell<bool>,
+    cannot_undo: Cell<bool>,
     cannot_ask: Cell<bool>,
     clock: Cell<u64>,
     unix: Cell<u64>,
@@ -34,6 +35,7 @@ impl Fake {
             written: RefCell::default(),
             refuse: RefCell::default(),
             cannot_write: Cell::new(false),
+            cannot_undo: Cell::new(false),
             cannot_ask: Cell::new(false),
             clock: Cell::new(1_000),
             unix: Cell::new(1_700_000_000_000),
@@ -151,6 +153,14 @@ impl Port for Fake {
         Ok(String::from("written"))
     }
 
+    fn undo_write(&self) -> Result<String, String> {
+        if self.cannot_undo.get() {
+            Err(String::from("config changed since write"))
+        } else {
+            Ok(String::from("undone"))
+        }
+    }
+
     fn now(&self) -> u64 {
         self.clock.get()
     }
@@ -247,6 +257,51 @@ fn setup() -> (Dir, Fake, Controller) {
     let control = Controller::new(dir.file());
 
     (dir, fake, control)
+}
+
+#[test]
+fn an_include_matched_by_edid_blocks_a_trial_before_the_live_edit() {
+    let monitor = panel();
+    let mut checked = None;
+    let mut touched = false;
+    let result = work::edit_if_editable(
+        &monitor.name,
+        Some(&Monitor {
+            output: monitor.clone(),
+            config: work::Config::default(),
+        }),
+        |id| {
+            checked = Some(id.clone());
+            assert_eq!(id, &monitor.id());
+            Err(String::from("owned by mine.kdl"))
+        },
+        || {
+            touched = true;
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err(String::from("owned by mine.kdl")));
+    assert_eq!(checked, Some(monitor.id()));
+    assert!(!touched);
+}
+
+#[test]
+fn connector_named_outputs_keep_their_editability_check() {
+    let mut checked = None;
+    let result = work::edit_if_editable(
+        "DP-1",
+        None,
+        |id| {
+            checked = Some(id.clone());
+            assert_eq!(id, &crate::niri_config::OutputId::named("DP-1"));
+            Ok(())
+        },
+        || Ok("trial started"),
+    );
+
+    assert_eq!(result, Ok("trial started"));
+    assert_eq!(checked, Some(crate::niri_config::OutputId::named("DP-1")));
 }
 
 // ---- what niri says ----
@@ -1314,6 +1369,47 @@ fn pending_file_older_than_five_minutes_cleans_up_if_already_matches_previous() 
     assert!(fake.commands.borrow().is_empty());
     assert!(!dir.file().exists());
     assert_eq!(fake.state("eDP-1"), before);
+}
+
+#[test]
+fn failed_config_reload_undoes_config_before_reverting_output() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+    let loaded = Some(crate::sources::niri::ConfigLoadState {
+        count: 1,
+        last_failed: true,
+    });
+
+    work::resolve_keep_reload(&mut control, &fake, loaded, false);
+
+    assert!(control.session.is_none());
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), panel());
+}
+
+#[test]
+fn failed_config_undo_keeps_pending_recovery_file_and_reverts_output() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+    fake.cannot_undo.set(true);
+    let loaded = Some(crate::sources::niri::ConfigLoadState {
+        count: 1,
+        last_failed: true,
+    });
+
+    work::resolve_keep_reload(&mut control, &fake, loaded, false);
+
+    assert!(control.session.is_none());
+    assert!(dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), panel());
 }
 
 #[test]

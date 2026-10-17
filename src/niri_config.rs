@@ -353,6 +353,9 @@ pub struct OutputRead {
 
     /// Set when more than one block matches: niri uses the first, whole, and drops the rest.
     pub note: Option<String>,
+
+    /// The include file that owns a matching block for the monitor, if any.
+    pub block_owner: Option<PathBuf>,
 }
 
 // what a change comes to
@@ -479,6 +482,7 @@ impl Editor<'_> {
             return Ok(OutputRead {
                 reading: Reading::Unset,
                 note: None,
+                block_owner: None,
             });
         };
         let note = shadowed(&blocks);
@@ -493,6 +497,7 @@ impl Editor<'_> {
                 (Some(hit), None) => Reading::Own(hit.shown),
             },
             note,
+            block_owner: included.map(|(path, _)| path.clone()),
         })
     }
 
@@ -543,6 +548,34 @@ impl Editor<'_> {
             }
             Reading::Unset => Err(format!("{path}: not set (niri's default applies)")),
         }
+    }
+
+    /// Checks whether an output block can be edited, returning an error if an include owns a block
+    /// for the monitor.
+    pub fn output_editable(&self, id: &OutputId) -> Result<(), String> {
+        let text = fs::read_to_string(&self.file)
+            .map_err(|error| format!("{}: {error}", self.file.display()))?;
+        let blocks = self.matching(&text, id)?;
+        let name = blocks
+            .first()
+            .map_or_else(|| id.block_name(), |(_, block)| block.name.clone());
+        let path = output_label(&name, "");
+
+        if let Some((owner, _)) = blocks.iter().find(|(file, _)| *file != self.file) {
+            let sync = if owner.file_name().is_some_and(|name| name == "kanade.kdl") {
+                " (appearance.sync writes it)"
+            } else {
+                ""
+            };
+
+            return Err(format!(
+                "{path}: set by {}{sync}, an include; Kanade edits only {}",
+                owner.display(),
+                self.file.display()
+            ));
+        }
+
+        Ok(())
     }
 
     /// A key of the monitor's block set to `value`; the block is made at the end of the file when
@@ -1303,6 +1336,19 @@ fn first_error(text: &str) -> String {
         Some(location) => format!("{message} ({location})"),
         None => message,
     }
+}
+
+/// Why a monitor's block may not be changed, if an include has a block for it.
+pub fn output_editable(id: &OutputId) -> Result<(), String> {
+    let file = target(None)?;
+    let editor = Editor {
+        file,
+        state: state()?,
+        validate: &niri_validate,
+        now_ms,
+    };
+
+    editor.output_editable(id)
 }
 
 #[cfg(test)]
