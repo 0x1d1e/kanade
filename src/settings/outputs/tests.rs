@@ -15,6 +15,9 @@ struct Fake {
     clock: Cell<u64>,
     unix: Cell<u64>,
 
+    // every `run`, refused ones included, which `commands` cannot show
+    runs: Cell<u32>,
+
     // whether the pending file existed at each command
     file: PathBuf,
     file_at_commands: RefCell<Vec<bool>>,
@@ -31,6 +34,7 @@ impl Fake {
             cannot_ask: Cell::new(false),
             clock: Cell::new(1_000),
             unix: Cell::new(1_700_000_000_000),
+            runs: Cell::new(0),
             file: file.to_owned(),
             file_at_commands: RefCell::default(),
         }
@@ -61,6 +65,7 @@ impl Port for Fake {
     }
 
     fn run(&self, name: &str, args: &[String]) -> Result<(), String> {
+        self.runs.set(self.runs.get() + 1);
         self.file_at_commands.borrow_mut().push(self.file.exists());
 
         // niri's CLI reads a negative number as a flag, unless `--` comes before it
@@ -559,6 +564,63 @@ fn a_revert_that_fails_keeps_the_file_and_tries_again() {
     assert_eq!(control.expire(&fake), Some(Ok(Ended::Reverted)));
     assert_eq!(fake.state("eDP-1"), panel());
     assert!(!dir.file().exists());
+}
+
+// a revert that failed while the page is gone waits out the retry deadline before it is tried
+// again; the 250 ms tick must not hammer niri with a refused command
+#[test]
+fn a_failed_revert_waits_for_its_deadline_after_the_page_leaves() {
+    let (_dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    *fake.refuse.borrow_mut() = Some(String::from("niri is busy"));
+    fake.at(2_000);
+
+    let tried = fake.runs.get();
+
+    assert_eq!(
+        control.revert_when_due(&fake, true),
+        Some(Err(String::from("niri is busy")))
+    );
+    assert_eq!(fake.runs.get(), tried + 1);
+
+    let session = control.session.as_ref().unwrap();
+
+    assert_eq!(session.stuck.as_deref(), Some("niri is busy"));
+    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+
+    // the ticks between the attempt and the deadline: nothing is tried
+    let commands = fake.commands.borrow().len();
+
+    for _ in 0..16 {
+        fake.at(2_250);
+        assert_eq!(control.revert_when_due(&fake, true), None);
+    }
+    assert_eq!(fake.runs.get(), tried + 1);
+    assert_eq!(fake.commands.borrow().len(), commands);
+
+    // and at the deadline it tries again
+    fake.at(2_000 + RETRY_MS);
+    assert_eq!(
+        control.revert_when_due(&fake, true),
+        Some(Err(String::from("niri is busy")))
+    );
+    assert_eq!(fake.runs.get(), tried + 2);
+
+    // an edit niri accepts clears the stale error, so leaving the page reverts at once instead of
+    // waiting out the failed revert's deadline
+    *fake.refuse.borrow_mut() = None;
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    assert_eq!(control.session.as_ref().unwrap().stuck, None);
+    assert_eq!(
+        control.revert_when_due(&fake, true),
+        Some(Ok(Ended::Reverted))
+    );
+    assert!(control.session.is_none());
 }
 
 #[test]

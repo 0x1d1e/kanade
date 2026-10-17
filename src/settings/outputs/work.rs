@@ -436,11 +436,12 @@ fn run(receiver: &Receiver<Job>) {
 fn tick(gone: bool) {
     let ended = controller(|control| {
         let output = control.session.as_ref()?.output.clone();
-        let (result, said) = if gone {
-            (control.revert(&Real), "Reverted: the page was left")
+        let said = if gone {
+            "Reverted: the page was left"
         } else {
-            (control.expire(&Real)?, "Reverted: no answer in time")
+            "Reverted: no answer in time"
         };
+        let result = control.revert_when_due(&Real, gone)?;
 
         // a revert niri refused leaves the trial, and is tried again in 5 s
         Some((output, result, said, control.session.is_none()))

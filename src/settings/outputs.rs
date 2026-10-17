@@ -850,6 +850,9 @@ impl Controller {
         if let Some(session) = &mut self.session {
             session.edits.insert(edit.field(), edit);
             session.deadline = now + TRIAL_MS;
+            // niri accepted a change, so the last revert's error is stale: leaving the page then
+            // reverts at once, not after the failed revert's own deadline
+            session.stuck = None;
         }
 
         Ok(())
@@ -931,11 +934,24 @@ impl Controller {
         Ok(Ended::Reverted)
     }
 
-    /// Reverts a trial whose time ran out.
-    pub fn expire(&mut self, port: &dyn Port) -> Option<Result<Ended, String>> {
+    /// Reverts the trial when it is due: at once when the page it was made on is gone and no revert
+    /// has been tried since, otherwise at its deadline (or `RETRY_MS` after a failed revert).
+    /// `None` while it is not yet time, so a tick before the deadline does nothing.
+    pub fn revert_when_due(
+        &mut self,
+        port: &dyn Port,
+        gone: bool,
+    ) -> Option<Result<Ended, String>> {
         let session = self.session.as_ref()?;
+        let due = (gone && session.stuck.is_none()) || port.now() >= session.deadline;
 
-        (port.now() >= session.deadline).then(|| self.revert(port))
+        due.then(|| self.revert(port))
+    }
+
+    /// The trial-timeout case of `revert_when_due`: the tests drive the clock to a deadline with it.
+    #[cfg(test)]
+    pub fn expire(&mut self, port: &dyn Port) -> Option<Result<Ended, String>> {
+        self.revert_when_due(port, false)
     }
 
     /// Puts back what a Kanade that died mid-trial left, at start. `Ok(None)` when there was no

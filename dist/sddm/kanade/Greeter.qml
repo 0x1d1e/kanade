@@ -124,17 +124,17 @@ Item {
     readonly property var chips: {
         var list = []
         if (users.length > 1)
-            list.push({ key: "user", label: "Switch user", active: true })
+            list.push({ key: "user", label: "Switch user", icon: "user", active: true })
         if (sessions.length > 0)
-            list.push({ key: "session", label: sessionName, active: sessions.length > 1 })
+            list.push({ key: "session", label: sessionName, icon: "session", active: sessions.length > 1 })
         if (layouts.length > 1)
-            list.push({ key: "layout", label: "Keyboard " + layoutName, active: true })
+            list.push({ key: "layout", label: "Keyboard " + layoutName, icon: "keyboard", active: true })
         if (canSuspend)
-            list.push({ key: "suspend", label: "Sleep", active: true })
+            list.push({ key: "suspend", label: "Sleep", icon: "sleep", active: true })
         if (canReboot)
-            list.push({ key: "reboot", label: armed === "reboot" ? "Confirm restart" : "Restart", active: true })
+            list.push({ key: "reboot", label: armed === "reboot" ? "Confirm restart" : "Restart", icon: "restart", active: true })
         if (canPowerOff)
-            list.push({ key: "poweroff", label: armed === "poweroff" ? "Confirm power off" : "Power Off", active: true })
+            list.push({ key: "poweroff", label: armed === "poweroff" ? "Confirm power off" : "Power Off", icon: "power", active: true })
         return list
     }
 
@@ -617,6 +617,7 @@ Item {
 
                 Chip {
                     label: modelData.label
+                    icon: modelData.icon
                     active: modelData.active
                     face: root.face
                     ink: root.text

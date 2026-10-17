@@ -12,7 +12,7 @@ scratch in QML; see `kanade/NOTICE`. `kanade sddm` installs it (below).
 | `theme.conf` | the config keys below, each with its default |
 | `Main.qml` | SDDM's entry: adapts its globals to a host object; a Loader falls back to a plain form if `Greeter.qml` fails |
 | `Greeter.qml` | the screen, a pure component that reads everything from `host` |
-| `Pill.qml` `Chip.qml` `Avatar.qml` `Line.qml` `TimeLine.qml` `CapsGlyph.qml` | its parts |
+| `Pill.qml` `Chip.qml` `Avatar.qml` `Line.qml` `TimeLine.qml` `CapsGlyph.qml` `Glyph.qml` | its parts |
 | `Sanitize.js` | validation of every config value, the date and time text, the shadow's falloff |
 
 `theme.conf.user` beside `theme.conf` overrides it. Keys: `backdrop`, `face`, `shade`, `font`,

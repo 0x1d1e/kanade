@@ -75,6 +75,7 @@ const THEME: &[(&str, &str)] = &[
     ),
     ("Pill.qml", include_str!("../dist/sddm/kanade/Pill.qml")),
     ("Chip.qml", include_str!("../dist/sddm/kanade/Chip.qml")),
+    ("Glyph.qml", include_str!("../dist/sddm/kanade/Glyph.qml")),
     ("Avatar.qml", include_str!("../dist/sddm/kanade/Avatar.qml")),
     ("Line.qml", include_str!("../dist/sddm/kanade/Line.qml")),
     (
@@ -653,6 +654,25 @@ fn beside(overlay: &Path, ending: &str) -> PathBuf {
 }
 
 /*
+ * a `farm` whose process died between its two renames leaves the overlay gone and the last working
+ * theme in `<theme>.old`: puts it back. Anything else is left alone, and a rename that fails is not
+ * papered over, since `.old` may be all there is left to show
+ */
+fn recover(overlay: &Path) -> io::Result<()> {
+    let old = beside(overlay, ".old");
+
+    if !matches!(fs::symlink_metadata(overlay), Err(error) if error.kind() == io::ErrorKind::NotFound)
+    {
+        return Ok(());
+    }
+    if !fs::symlink_metadata(&old).is_ok_and(|meta| meta.is_dir()) {
+        return Ok(());
+    }
+
+    fs::rename(&old, overlay)
+}
+
+/*
  * the paths under `dir` (and it) that the sddm user cannot read: a directory without o+rx, a file
  * without o+r; links are not followed. With `fix`, those are given 0755 and 0644, the entries it
  * could not are an error. Bounded, as `plan` is: an overlay is a few dozen entries
@@ -713,11 +733,17 @@ fn modes(dir: &Path, fix: bool) -> io::Result<Vec<PathBuf>> {
 /*
  * makes the overlay of an installed theme: its directories and links to its files, with `user` as
  * its `USER`. It is built beside the overlay as `<theme>.new` and moved into place, so a failure
- * partway leaves the overlay that was there; the overlay is Kanade's, and is replaced whole
+ * partway leaves the overlay that was there; a crash between the two renames leaves the last
+ * working theme in `<theme>.old`, which the next run puts back before anything else. The overlay is
+ * Kanade's, and is replaced whole
  */
 fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Result<(), String> {
     let said = |error: io::Error| format!("{}: {error}", overlay.display());
     let (new, old) = (beside(overlay, ".new"), beside(overlay, ".old"));
+
+    // a run that died between the two renames left the overlay gone and the last working theme in
+    // `.old`: put it back before the cleanup below would remove it
+    recover(overlay).map_err(said)?;
 
     // parts a run that died left
     for left in [&new, &old] {
@@ -1624,6 +1650,26 @@ mod tests {
         assert!(longest.len() == 128 && backdrop_ok(REAL, &longest));
     }
 
+    // `THEME` must be the built-in theme's directory whole: a part left out of it is not written by
+    // `copy_own` and not counted by `theme_state`, so `sync` would install a theme that fails to load
+    // and still call the overlay current
+    #[test]
+    fn every_part_of_the_built_in_theme_is_installed() {
+        let dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/dist/sddm/kanade"));
+        let mut on_disk: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        let mut listed: Vec<String> = THEME.iter().map(|(name, _)| String::from(*name)).collect();
+
+        on_disk.sort();
+        listed.sort();
+
+        assert_eq!(listed, on_disk);
+    }
+
     #[test]
     fn the_theme_conf_user_holds_only_values_the_theme_reads() {
         let picture = format!("{REAL}/bg/backdrop.png");
@@ -1941,6 +1987,65 @@ mod tests {
         assert_eq!(class::read(&pipe), None);
         symlink("/dev/zero", root.join("zero")).unwrap();
         assert_eq!(class::read(&root.join("zero")), None);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // a run that died between the farm's two renames leaves the overlay missing and the last working
+    // theme in `.old`: the next run must put that back, not sweep it away as a leftover
+    #[test]
+    fn a_farm_that_finds_no_overlay_puts_the_one_it_left_aside_back() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-farm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let overlay = root.join("themes/kanade");
+        let (new, old) = (beside(&overlay, ".new"), beside(&overlay, ".old"));
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a"), "a").unwrap();
+        fs::write(source.join("b"), "b").unwrap();
+
+        // the state one interrupted run leaves: the old overlay aside, a half-built new one, no overlay
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(overlay.join("Main.qml"), "the last working theme").unwrap();
+        fs::write(overlay.join(USER), "font=Fira\n").unwrap();
+        fs::rename(&overlay, &old).unwrap();
+        fs::create_dir_all(&new).unwrap();
+        fs::write(new.join("half"), "").unwrap();
+
+        // a plan that cannot be built: a link under a link is ENOTDIR, so the overlay is left unbuilt
+        let unbuildable = [
+            (PathBuf::from("a"), Some(source.join("a"))),
+            (PathBuf::from("a/b"), Some(source.join("b"))),
+        ];
+
+        assert!(farm(&overlay, &unbuildable, "font=Fira\n").is_err());
+        assert!(fs::symlink_metadata(&overlay).is_ok_and(|meta| meta.is_dir()));
+        assert_eq!(
+            fs::read_to_string(overlay.join("Main.qml")).unwrap(),
+            "the last working theme"
+        );
+        assert_eq!(
+            fs::read_to_string(overlay.join(USER)).unwrap(),
+            "font=Fira\n"
+        );
+        assert!(fs::symlink_metadata(&new).is_err());
+        assert!(fs::symlink_metadata(&old).is_err());
+
+        // an overlay that is there still wins: a stale `.old` is removed, not put back
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("stale"), "").unwrap();
+        let plan = [(PathBuf::from("a"), Some(source.join("a")))];
+
+        farm(&overlay, &plan, "font=Fira\n").unwrap();
+        assert!(fs::symlink_metadata(&old).is_err());
+        assert!(!overlay.join("stale").exists());
+        assert!(overlay.join("a").exists());
+        assert_eq!(
+            fs::read_to_string(overlay.join(USER)).unwrap(),
+            "font=Fira\n"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
