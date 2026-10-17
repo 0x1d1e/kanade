@@ -762,6 +762,11 @@ fn a_pending_file_older_than_five_minutes_is_deleted_and_not_applied() {
     let (dir, fake, _) = setup();
 
     crashed(&dir, &fake);
+    // An external change modified the output to scale 3.0 (neither applied 2.0 nor previous 1.0)
+    let mut modified = fake.state("eDP-1");
+    modified.logical.as_mut().unwrap().scale = 3.0;
+    fake.outputs.borrow_mut()[0] = modified;
+
     fake.commands.borrow_mut().clear();
     fake.at(RECOVERY_MS + 2);
 
@@ -771,7 +776,7 @@ fn a_pending_file_older_than_five_minutes_is_deleted_and_not_applied() {
     assert!(said.contains("older than 5 minutes"), "{said}");
     assert!(fake.commands.borrow().is_empty());
     assert!(!dir.file().exists());
-    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 3.0);
 }
 
 #[test]
@@ -1053,6 +1058,7 @@ fn text_being_typed_is_not_taken_by_a_countdown_or_a_poll() {
 fn a_countdown_does_not_ask_for_the_inputs_to_be_set_again() {
     let mut state = work::State::default();
     let trial = |seconds| work::Trial {
+        id: 1,
         output: String::from("eDP-1"),
         edits: BTreeMap::new(),
         seconds,
@@ -1218,4 +1224,150 @@ fn run_error_classifies_child_failures_as_unanswered_and_niri_refusals_as_refuse
         run_error(String::from("error: unexpected argument '--' found")),
         RunError::Refused(_)
     ));
+}
+
+// ---- Recovery findings fixes ----
+
+#[test]
+fn advancing_clock_past_deadline_rejects_keep_and_reverts_trial() {
+    let (dir, fake, mut control) = setup();
+    let before = fake.state("eDP-1");
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    assert!(control.session.is_some());
+    let session = control.session.as_ref().unwrap();
+    let id = session.id;
+    let deadline = session.deadline;
+
+    // Advance clock past deadline and grace window
+    fake.at(deadline + KEEP_GRACE_MS + 100);
+
+    // Keep request with an expired time is rejected and reverts the trial immediately
+    let err = control.keep_request(&fake, id, deadline + 1).unwrap_err();
+    assert_eq!(err, "The trial has expired");
+
+    // Session is gone, pending file is deleted, and output restored to before
+    assert!(control.session.is_none());
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
+}
+
+#[test]
+fn keep_request_within_grace_window_is_accepted() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    let session = control.session.as_ref().unwrap();
+    let id = session.id;
+    let deadline = session.deadline;
+
+    // Requested before deadline, but processed slightly after deadline within KEEP_GRACE_MS
+    fake.at(deadline + KEEP_GRACE_MS / 2);
+
+    let res = control.keep_request(&fake, id, deadline);
+    assert_eq!(res, Ok(Ended::Kept(String::from("written"))));
+    assert!(dir.file().exists());
+    assert!(control.session.is_some());
+}
+
+#[test]
+fn pending_file_older_than_five_minutes_restores_if_trial_state_is_live() {
+    let (dir, fake, _) = setup();
+    let before = crashed(&dir, &fake);
+
+    // Live state still matches what was applied in trial (scale 2.0, position 10, 20)
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+    assert_eq!(fake.state("eDP-1").logical.unwrap().x, 10);
+    assert_eq!(fake.state("eDP-1").logical.unwrap().y, 20);
+
+    fake.commands.borrow_mut().clear();
+    fake.at(RECOVERY_MS + 10_000);
+
+    let mut control = Controller::new(dir.file());
+    let said = control.recover(&fake).unwrap().unwrap();
+
+    // Since trial state was still live on niri, recover restored it to previous!
+    assert!(said.contains("eDP-1"), "{said}");
+    assert_eq!(fake.state("eDP-1"), before);
+    assert!(!dir.file().exists());
+}
+
+#[test]
+fn pending_file_older_than_five_minutes_cleans_up_if_already_matches_previous() {
+    let (dir, fake, _) = setup();
+    let before = crashed(&dir, &fake);
+
+    // Live state already returned to previous (e.g. external reload)
+    fake.outputs.borrow_mut()[0] = before.clone();
+
+    fake.commands.borrow_mut().clear();
+    fake.at(RECOVERY_MS + 10_000);
+
+    let mut control = Controller::new(dir.file());
+    let said = control.recover(&fake).unwrap().unwrap();
+
+    assert!(said.contains("already as it was"), "{said}");
+    assert!(fake.commands.borrow().is_empty());
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
+}
+
+#[test]
+fn reload_confirmed_deletes_recovery_file_even_if_niri_differs() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+
+    // The pending recovery file and session exist after keep
+    assert!(dir.file().exists());
+    assert!(control.session.is_some());
+
+    // Niri reloaded successfully (last_failed: false), but disagreed is true (e.g. scale rounded or coords differ)
+    let loaded = Some(crate::sources::niri::ConfigLoadState {
+        count: 1,
+        last_failed: false,
+    });
+    work::resolve_keep_reload(&mut control, &fake, loaded, true);
+
+    // Pending file MUST be deleted and session ended because reload succeeded!
+    assert!(!dir.file().exists());
+    assert!(control.session.is_none());
+}
+
+#[test]
+fn injected_worker_panic_triggers_emergency_revert() {
+    let (dir, fake, _) = setup();
+    let before = fake.state("eDP-1");
+
+    work::controller(|control| {
+        *control = Controller::new(dir.file());
+        control
+            .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+            .unwrap();
+    });
+
+    assert!(work::controller(|c| c.session.is_some()));
+    assert!(dir.file().exists());
+
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        panic!("simulated worker thread panic");
+    }));
+    let payload = panic_result.unwrap_err();
+
+    work::handle_worker_panic(&fake, &*payload);
+
+    // Emergency revert put the output back and deleted the pending file
+    assert!(work::controller(|c| c.session.is_none()));
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
+
+    let statuses = crate::supervise::status();
+    assert!(statuses.iter().any(|s| s.contains("kanade-outputs")));
 }

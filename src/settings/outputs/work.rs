@@ -78,6 +78,7 @@ pub struct Monitor {
 /// The trial the controller has, as the page shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trial {
+    pub id: u64,
     pub output: String,
     pub edits: BTreeMap<Field, Edit>,
 
@@ -212,7 +213,18 @@ impl Port for Real {
 
         // about the 2 s niri is given for a question (the PATIENCE shape in sources/niri.rs),
         // through the bounded child runner so a stalled command never blocks the worker thread
-        let timeout = Duration::from_secs(2);
+        let mut timeout = Duration::from_secs(2);
+
+        if let Some(deadline) = *EXIT_DEADLINE.locked() {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(RunError::Unanswered(String::from(
+                    "revert on exit exceeded deadline",
+                )));
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            timeout = remaining.min(Duration::from_millis(800));
+        }
 
         match child::run::<()>(command, "niri msg output", timeout, || None) {
             child::Ran::Done(Ok(_)) => Ok(()),
@@ -248,7 +260,7 @@ impl Port for Real {
 // the one trial; the worker holds it for a call at a time, and the exit takes it the same way
 static CONTROL: Mutex<Option<Controller>> = Mutex::new(None);
 
-fn controller<R>(call: impl FnOnce(&mut Controller) -> R) -> R {
+pub(super) fn controller<R>(call: impl FnOnce(&mut Controller) -> R) -> R {
     let mut control = CONTROL.locked();
     let control =
         control.get_or_insert_with(|| Controller::new(Controller::file().unwrap_or_default()));
@@ -272,15 +284,15 @@ pub(super) fn run_error(why: String) -> RunError {
 
 // ---- the jobs ----
 
-enum Job {
+pub(super) enum Job {
     Refresh,
     Edit { output: String, edit: Edit },
-    Keep,
+    Keep { id: u64, requested_at: u64 },
     Revert(&'static str),
     Reset(String),
 }
 
-static WORKER: Mutex<Option<Sender<Job>>> = Mutex::new(None);
+pub(super) static WORKER: Mutex<Option<Sender<Job>>> = Mutex::new(None);
 
 fn post(job: Job) {
     let mut worker = WORKER.locked();
@@ -316,7 +328,15 @@ fn spawn() -> Option<Sender<Job>> {
 
     thread::Builder::new()
         .name(String::from("kanade-outputs"))
-        .spawn(move || run(&receiver))
+        .spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run(&receiver);
+            }));
+            if let Err(payload) = res {
+                handle_worker_panic(&Real, &*payload);
+                *WORKER.locked() = None;
+            }
+        })
         .ok()
         .map(|_| sender)
 }
@@ -336,7 +356,17 @@ pub fn edit(output: &str, edit: Edit) {
 
 /// Writes the trial's changes to the config.
 pub fn keep() {
-    post(Job::Keep);
+    let target = Settings::read()
+        .outputs
+        .trial
+        .as_ref()
+        .map(|trial| (trial.id, Real.now()))
+        .or_else(|| controller(|c| c.session.as_ref().map(|s| (s.id, Real.now()))))
+        .unwrap_or((0, Real.now()));
+    post(Job::Keep {
+        id: target.0,
+        requested_at: target.1,
+    });
 }
 
 /// Puts the output back as it was before the trial.
@@ -349,9 +379,15 @@ pub fn reset(output: &str) {
     post(Job::Reset(output.to_owned()));
 }
 
+const EXIT_REVERT_TIMEOUT: Duration = Duration::from_millis(4_000);
+static EXIT_DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
+
 /// Puts the output back when Kanade exits with a trial unfinished. Waits for the commands.
 pub fn revert_on_exit() {
+    let deadline = Instant::now() + EXIT_REVERT_TIMEOUT;
+    *EXIT_DEADLINE.locked() = Some(deadline);
     let _ = controller(|control| control.revert(&Real));
+    *EXIT_DEADLINE.locked() = None;
 }
 
 /// At start: puts back what a Kanade that died mid-trial left. niri may not be up yet, so it asks
@@ -422,7 +458,12 @@ fn run(receiver: &Receiver<Job>) {
             opened = false;
             last_job = Instant::now();
 
-            handle(job);
+            let handle_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle(job);
+            }));
+            if let Err(payload) = handle_res {
+                handle_worker_panic(&Real, &*payload);
+            }
             asked = Instant::now();
         }
 
@@ -437,7 +478,12 @@ fn run(receiver: &Receiver<Job>) {
                 || (!open && (opened || last_job.elapsed() >= GRACE))
         };
 
-        tick(gone);
+        let tick_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tick(gone);
+        }));
+        if let Err(payload) = tick_res {
+            handle_worker_panic(&Real, &*payload);
+        }
         idle = gone;
 
         if !gone && asked.elapsed() >= POLL {
@@ -511,21 +557,25 @@ fn handle(job: Job) {
                 Settings::write().outputs.resync(&output, axes);
             }
         }
-        Job::Keep => {
+        Job::Keep { id, requested_at } => {
             let edits = controller(|control| {
-                control.session.as_ref().map(|session| {
-                    (
-                        session.output.clone(),
-                        session.edits.values().cloned().collect::<Vec<_>>(),
-                    )
-                })
+                control
+                    .session
+                    .as_ref()
+                    .filter(|s| s.id == id)
+                    .map(|session| {
+                        (
+                            session.output.clone(),
+                            session.edits.values().cloned().collect::<Vec<_>>(),
+                        )
+                    })
             });
 
             // snapshot the config-load counter before writing, so the worker can tell
             // when niri has reloaded (same thread, no race with the write)
             let before = ipc::config_load_state();
 
-            let result = controller(|control| control.keep(&Real));
+            let result = controller(|control| control.keep_request(&Real, id, requested_at));
 
             match result {
                 Ok(Ended::Kept(said)) => {
@@ -579,18 +629,16 @@ fn handle(job: Job) {
                                 ),
                             });
                         }
-                        _ => {
-                            // A load was seen and succeeded, or no ConfigLoaded
-                            // arrived within 2 s. Either way, do not revert: the
-                            // user pressed Keep, the config was written and
-                            // validated, and reverting would discard a change the
-                            // user explicitly asked for with no evidence it failed.
-                            // A timeout with the event stream down is unknown, not
-                            // failed. Compare what niri shows to what was written.
+                        Some(_) => {
+                            // Config reload succeeded: delete the pending file and confirm keep.
+                            controller(|control| control.confirm_keep());
+                            // Disagreements (e.g. scale rounding) are purely informational.
+                            check_disagreements(name, edits);
+                        }
+                        None => {
+                            // Reload timed out: check if niri differs from the written config.
                             let disagreed = check_disagreements(name, edits);
                             if disagreed {
-                                // niri disagrees: keep the pending file so the
-                                // trial stays recoverable
                                 controller(|control| control.abandon_keep());
                             } else {
                                 controller(|control| control.confirm_keep());
@@ -602,6 +650,7 @@ fn handle(job: Job) {
                 Err(why) => {
                     Settings::write().outputs.notice =
                         Some((format!("Not saved, nothing was written: {why}"), true));
+                    publish();
                 }
             }
 
@@ -639,6 +688,39 @@ fn ended_trial(result: Result<Ended, String>, said: &str) {
         Ok(_) => Some((said.to_owned(), false)),
         Err(why) => Some((format!("Could not put the output back: {why}"), true)),
     };
+}
+
+pub(super) fn handle_worker_panic(port: &dyn Port, payload: &(dyn std::any::Any + Send)) {
+    crate::supervise::panicked("kanade-outputs", payload);
+    controller(|control| {
+        if control.session.is_some() {
+            let _ = control.revert(port);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(super) fn resolve_keep_reload(
+    control: &mut Controller,
+    port: &dyn Port,
+    loaded: Option<ipc::ConfigLoadState>,
+    disagreed: bool,
+) {
+    match loaded {
+        Some(state) if state.last_failed => {
+            let _ = control.revert(port);
+        }
+        Some(_) => {
+            control.confirm_keep();
+        }
+        None => {
+            if disagreed {
+                control.abandon_keep();
+            } else {
+                control.confirm_keep();
+            }
+        }
+    }
 }
 
 // checks where niri shows something other than what was written; posts a notice if so.
@@ -714,6 +796,7 @@ fn show_trial() {
         let now = Real.now();
 
         control.session.as_ref().map(|session| Trial {
+            id: session.id,
             output: session.output.clone(),
             edits: session.edits.clone(),
             seconds: control.remaining(now).unwrap_or(0).div_ceil(1000),

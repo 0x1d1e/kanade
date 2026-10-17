@@ -33,6 +33,9 @@ pub use work::{
 /// How long a trial waits for Keep before it reverts, and starts over at each further edit.
 pub const TRIAL_MS: u64 = 15_000;
 
+/// Grace window for worker queue latency when processing a Keep request.
+pub const KEEP_GRACE_MS: u64 = 1_000;
+
 /// How old a pending file may be and still be put back at start: an older one is deleted unread.
 /// A trial is over in 15 s, so a file this old is not from a crash during one but from a Kanade
 /// that died and left niri's state to someone else; applying it could undo what the user did since.
@@ -411,6 +414,74 @@ impl Edit {
             )],
         }
     }
+
+    pub fn to_json(&self) -> Json {
+        match self {
+            Edit::Enabled(enabled) => serde_json::json!({
+                "type": "enabled",
+                "value": enabled,
+            }),
+            Edit::Mode(mode) => serde_json::json!({
+                "type": "mode",
+                "width": mode.width,
+                "height": mode.height,
+                "refresh": mode.refresh,
+                "preferred": mode.preferred,
+            }),
+            Edit::Scale(scale) => serde_json::json!({
+                "type": "scale",
+                "value": scale,
+            }),
+            Edit::Transform(transform) => serde_json::json!({
+                "type": "transform",
+                "value": transform.name(),
+            }),
+            Edit::Vrr(vrr) => serde_json::json!({
+                "type": "vrr",
+                "value": vrr.name(),
+            }),
+            Edit::Position(x, y) => serde_json::json!({
+                "type": "position",
+                "x": x,
+                "y": y,
+            }),
+        }
+    }
+
+    pub fn from_json(json: &Json) -> Option<Edit> {
+        let kind = json.get("type")?.as_str()?;
+        match kind {
+            "enabled" => Some(Edit::Enabled(json.get("value")?.as_bool()?)),
+            "mode" => Some(Edit::Mode(Mode {
+                width: u16::try_from(json.get("width")?.as_u64()?).ok()?,
+                height: u16::try_from(json.get("height")?.as_u64()?).ok()?,
+                refresh: u32::try_from(
+                    json.get("refresh")
+                        .or_else(|| json.get("refresh_rate"))?
+                        .as_u64()?,
+                )
+                .ok()?,
+                preferred: json
+                    .get("preferred")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(false),
+            })),
+            "scale" => Some(Edit::Scale(
+                json.get("value")?
+                    .as_f64()
+                    .filter(|scale| scale.is_finite())?,
+            )),
+            "transform" => Some(Edit::Transform(Transform::from_name(
+                json.get("value")?.as_str()?,
+            )?)),
+            "vrr" => Some(Edit::Vrr(Vrr::from_name(json.get("value")?.as_str()?)?)),
+            "position" => Some(Edit::Position(
+                i32::try_from(json.get("x")?.as_i64()?).ok()?,
+                i32::try_from(json.get("y")?.as_i64()?).ok()?,
+            )),
+            _ => None,
+        }
+    }
 }
 
 // `position set -- X Y`: niri's CLI parses a negative coordinate as a flag unless `--` goes before
@@ -725,6 +796,101 @@ pub fn disagreements(edits: &[&Edit], output: &Output) -> Vec<String> {
     said
 }
 
+/// Whether an output currently matches what it was before the trial.
+pub fn matches_previous(output: &Output, previous: &Previous) -> bool {
+    if output.enabled() != previous.enabled {
+        return false;
+    }
+    if !previous.enabled {
+        return true;
+    }
+    let current_mode = output.current_mode().map(|m| m.text());
+    if previous.mode.is_some() && current_mode != previous.mode {
+        return false;
+    }
+    let Some(logical) = output.logical else {
+        return false;
+    };
+    if (logical.scale - previous.scale).abs() > 1e-3 {
+        return false;
+    }
+    if logical.transform != previous.transform {
+        return false;
+    }
+    if (logical.x, logical.y) != (previous.x, previous.y) {
+        return false;
+    }
+    match previous.vrr {
+        Vrr::Off => {
+            if output.vrr_enabled {
+                return false;
+            }
+        }
+        Vrr::On => {
+            if !output.vrr_enabled {
+                return false;
+            }
+        }
+        Vrr::OnDemand => {}
+    }
+    true
+}
+
+/// Whether an output currently matches the edits applied during the trial, with all other fields
+/// matching `previous`.
+pub fn matches_applied(output: &Output, applied: &[Edit], previous: &Previous) -> bool {
+    if applied.is_empty() {
+        return false;
+    }
+    let refs: Vec<&Edit> = applied.iter().collect();
+    if !disagreements(&refs, output).is_empty() {
+        return false;
+    }
+    let covered_fields: Vec<Field> = applied.iter().map(Edit::field).collect();
+    if !covered_fields.contains(&Field::Enabled) && output.enabled() != previous.enabled {
+        return false;
+    }
+    if !output.enabled() {
+        return true;
+    }
+    if !covered_fields.contains(&Field::Mode) {
+        let current_mode = output.current_mode().map(|m| m.text());
+        if previous.mode.is_some() && current_mode != previous.mode {
+            return false;
+        }
+    }
+    let Some(logical) = output.logical else {
+        return false;
+    };
+    if !covered_fields.contains(&Field::Scale) && (logical.scale - previous.scale).abs() > 1e-3 {
+        return false;
+    }
+    if !covered_fields.contains(&Field::Transform) && logical.transform != previous.transform {
+        return false;
+    }
+    if !covered_fields.contains(&Field::Position)
+        && (logical.x, logical.y) != (previous.x, previous.y)
+    {
+        return false;
+    }
+    if !covered_fields.contains(&Field::Vrr) {
+        match previous.vrr {
+            Vrr::Off => {
+                if output.vrr_enabled {
+                    return false;
+                }
+            }
+            Vrr::On => {
+                if !output.vrr_enabled {
+                    return false;
+                }
+            }
+            Vrr::OnDemand => {}
+        }
+    }
+    true
+}
+
 // ---- the trial ----
 
 /// What the controller does to the world.
@@ -767,6 +933,7 @@ impl RunError {
 /// The trial in progress: one output, the changes made to it so far, and when they revert.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
+    pub id: u64,
     pub output: String,
     pub previous: Previous,
     pub edits: BTreeMap<Field, Edit>,
@@ -774,6 +941,7 @@ pub struct Session {
 
     // why the last revert failed, which the page says while it retries
     pub stuck: Option<String>,
+    pub taken: u64,
 }
 
 /// How a trial ended.
@@ -789,6 +957,7 @@ pub enum Ended {
 pub struct Controller {
     file: PathBuf,
     pub session: Option<Session>,
+    next_session_id: u64,
 }
 
 impl Controller {
@@ -796,6 +965,7 @@ impl Controller {
         Controller {
             file,
             session: None,
+            next_session_id: 0,
         }
     }
 
@@ -846,14 +1016,19 @@ impl Controller {
 
         if self.session.is_none() {
             let previous = Previous::of(output, hint);
+            let taken = port.unix_ms();
 
-            write_pending(&self.file, name, &previous, port.unix_ms())?;
+            write_pending(&self.file, name, &previous, &[], taken)?;
+            self.next_session_id += 1;
+            let id = self.next_session_id;
             self.session = Some(Session {
+                id,
                 output: name.to_owned(),
                 previous,
                 edits: BTreeMap::new(),
                 deadline: now + TRIAL_MS,
                 stuck: None,
+                taken,
             });
         }
 
@@ -874,6 +1049,9 @@ impl Controller {
                 if let Some(session) = &mut self.session {
                     session.edits.insert(edit.field(), edit);
                     session.deadline = now + TRIAL_MS;
+                    let applied: Vec<Edit> = session.edits.values().cloned().collect();
+                    let _ =
+                        write_pending(&self.file, name, &session.previous, &applied, session.taken);
                 }
 
                 return Err(why);
@@ -886,18 +1064,33 @@ impl Controller {
             // niri accepted a change, so the last revert's error is stale: leaving the page then
             // reverts at once, not after the failed revert's own deadline
             session.stuck = None;
+            let applied: Vec<Edit> = session.edits.values().cloned().collect();
+            let _ = write_pending(&self.file, name, &session.previous, &applied, session.taken);
         }
 
         Ok(())
     }
 
-    /// Writes the trial's changes to the config, all in one. The trial's recovery state (the
-    /// session and the pending file) is kept until `confirm_keep` or `abandon_keep`: the caller
-    /// waits for niri to reload the config before deciding.
-    pub fn keep(&mut self, port: &dyn Port) -> Result<Ended, String> {
+    /// Writes the trial's changes to the config if the session matches and the request is timely.
+    pub fn keep_request(
+        &mut self,
+        port: &dyn Port,
+        id: u64,
+        requested_at: u64,
+    ) -> Result<Ended, String> {
         let Some(session) = &self.session else {
-            return Err(String::from("There is nothing to keep"));
+            return Err(String::from("The trial has ended"));
         };
+        if session.id != id {
+            return Err(String::from("The trial has ended"));
+        }
+
+        let now = port.now();
+        if requested_at > session.deadline || now > session.deadline + KEEP_GRACE_MS {
+            let _ = self.revert(port);
+            return Err(String::from("The trial has expired"));
+        }
+
         let outputs = port.outputs()?;
         let output = outputs
             .iter()
@@ -907,6 +1100,19 @@ impl Controller {
         let said = port.write(output, &edits)?;
 
         Ok(Ended::Kept(said))
+    }
+
+    /// Writes the trial's changes to the config, all in one. The trial's recovery state (the
+    /// session and the pending file) is kept until `confirm_keep` or `abandon_keep`: the caller
+    /// waits for niri to reload the config before deciding.
+    #[allow(dead_code)]
+    pub fn keep(&mut self, port: &dyn Port) -> Result<Ended, String> {
+        let Some(session) = &self.session else {
+            return Err(String::from("There is nothing to keep"));
+        };
+        let id = session.id;
+        let now = port.now();
+        self.keep_request(port, id, now)
     }
 
     /// The reload succeeded and niri agrees: delete the pending file and end the trial.
@@ -999,34 +1205,30 @@ impl Controller {
     }
 
     /// Puts back what a Kanade that died mid-trial left, at start. `Ok(None)` when there was no
-    /// file; a file older than `RECOVERY_MS`, or one that cannot be read, is deleted unread.
+    /// file; a file older than `RECOVERY_MS`, or one that cannot be read, is deleted unread unless
+    /// niri's live output still shows the unconfirmed trial changes.
     pub fn recover(&mut self, port: &dyn Port) -> Result<Option<String>, String> {
         let Some(text) = fs::read_to_string(&self.file).ok() else {
             return Ok(None);
         };
         let parsed = crate::sources::json::parse(&text).and_then(|json| {
-            Some((
-                json.get("output")?.as_str()?.to_owned(),
-                json.get("taken_ms")?.as_u64()?,
-                Previous::from_json(json.get("previous")?)?,
-            ))
+            let output = json.get("output")?.as_str()?.to_owned();
+            let taken = json.get("taken_ms")?.as_u64()?;
+            let previous = Previous::from_json(json.get("previous")?)?;
+            let applied: Vec<Edit> = json
+                .get("applied")
+                .and_then(Json::as_array)
+                .map(|arr| arr.iter().filter_map(Edit::from_json).collect())
+                .unwrap_or_default();
+            Some((output, taken, previous, applied))
         });
-        let Some((name, taken, previous)) = parsed else {
+        let Some((name, taken, previous, applied)) = parsed else {
             delete_pending(&self.file);
 
             return Ok(Some(String::from(
                 "Dropped an unreadable pending-output file",
             )));
         };
-
-        if port.unix_ms().saturating_sub(taken) > RECOVERY_MS {
-            delete_pending(&self.file);
-
-            return Ok(Some(format!(
-                "Dropped a pending-output file for {name} older than {} minutes",
-                RECOVERY_MS / 60_000
-            )));
-        }
 
         // no output at all is niri not ready, not every output gone: the file stays for later
         let outputs = port.outputs()?;
@@ -1035,7 +1237,53 @@ impl Controller {
             return Err(String::from("niri lists no outputs yet"));
         }
 
+        let is_stale = port.unix_ms().saturating_sub(taken) > RECOVERY_MS;
         let found = outputs.iter().find(|output| output.name == name);
+
+        if is_stale {
+            let matches_app =
+                found.is_some_and(|output| matches_applied(output, &applied, &previous));
+            let matches_prev = found.is_some_and(|output| matches_previous(output, &previous));
+
+            if matches_app {
+                // The unconfirmed trial is STILL actively running on niri: DO NOT drop it!
+                // Restore the monitor to previous and then delete the pending file.
+                let may_turn_off = leaves_a_screen(Some(&outputs), &name);
+                let plan = found
+                    .map(|output| restore_plan(&previous, Some(output), &[], may_turn_off))
+                    .unwrap_or_default();
+                let left_on =
+                    !previous.enabled && !may_turn_off && found.is_some_and(Output::enabled);
+
+                for args in plan {
+                    port.run(&name, &args).map_err(|e| e.message())?;
+                }
+
+                delete_pending(&self.file);
+
+                if left_on {
+                    return Ok(Some(left_on_words(&name)));
+                }
+
+                return Ok(Some(format!(
+                    "Put {name} back as it was before an unfinished change"
+                )));
+            } else if matches_prev {
+                delete_pending(&self.file);
+
+                return Ok(Some(format!(
+                    "{name} is already as it was before an unfinished change"
+                )));
+            } else {
+                delete_pending(&self.file);
+
+                return Ok(Some(format!(
+                    "Dropped a pending-output file for {name} older than {} minutes",
+                    RECOVERY_MS / 60_000
+                )));
+            }
+        }
+
         let may_turn_off = leaves_a_screen(Some(&outputs), &name);
         let plan = found
             .map(|output| restore_plan(&previous, Some(output), &[], may_turn_off))
@@ -1062,11 +1310,18 @@ fn left_on_words(name: &str) -> String {
     format!("{name} was left on: turning it off would leave no screen on")
 }
 
-fn write_pending(file: &Path, name: &str, previous: &Previous, taken: u64) -> Result<(), String> {
+fn write_pending(
+    file: &Path,
+    name: &str,
+    previous: &Previous,
+    applied: &[Edit],
+    taken: u64,
+) -> Result<(), String> {
     let json = serde_json::json!({
         "output": name,
         "taken_ms": taken,
         "previous": previous.to_json(),
+        "applied": applied.iter().map(Edit::to_json).collect::<Vec<_>>(),
     });
 
     atomic::write(file, json.to_string().as_bytes(), FileMode::Private).map_err(|error| {

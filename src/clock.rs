@@ -627,7 +627,7 @@ pub fn on_terminate(action: impl FnOnce() + Send + 'static) -> io::Result<()> {
     use std::thread;
     use std::time::Duration;
 
-    const LIMIT: Duration = Duration::from_secs(3);
+    const LIMIT: Duration = Duration::from_secs(5);
 
     let mut reader = catch_termination()?;
 
