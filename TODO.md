@@ -214,7 +214,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## appearance.sync and the GTK file chooser
 
-- [ ] Not run on a live session: change the wallpaper or `appearance.tone` with `appearance.sync` on and a GTK file dialog (served by `xdg-desktop-portal-gtk`) reopened takes the new theme; `systemctl --user show -p ActiveEnterTimestamp xdg-desktop-portal-gtk` moves, once per burst and at most every 30 s; with the unit stopped, it stays stopped. Only the unit is restarted, never `xdg-desktop-portal`. No `kanade doctor` note.
+- [ ] Not run on a live session: change the wallpaper or `appearance.tone` with `appearance.sync` on and a GTK file dialog reopened takes the new theme; `systemctl --user show -p ActiveEnterTimestamp xdg-desktop-portal-gtk` and `systemctl --user show -p ActiveEnterTimestamp xdg-desktop-portal-gnome` move, once per burst and at most every 30 s; with a unit stopped, it stays stopped. Only those two units are restarted, never `xdg-desktop-portal`. No `kanade doctor` note.
 
 ## Launcher commands and dictation (ADR 0111, 0112, low-level, unfixed)
 

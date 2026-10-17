@@ -1,5 +1,9 @@
-//! The GTK file chooser is served by `xdg-desktop-portal-gtk`, a long-running GTK3 process that
-//! reads `gtk.css` once, so it keeps the old theme after a sync until it is restarted.
+//! The desktop portals that draw GTK dialogs (`xdg-desktop-portal-gnome` and
+//! `xdg-desktop-portal-gtk`) are long-running processes that read `settings.ini` and `gtk.css` once,
+//! so they keep the old theme after a sync until restarted. Both implement the file chooser and the
+//! app chooser; `portals.conf` picks which draws a dialog, so both are restarted. On a desktop it
+//! prefers, `xdg-desktop-portal-gnome` also serves the screen cast and remote desktop, so restarting
+//! it drops an in-flight cast or remote-desktop session; the GTK backend only closes open dialogs.
 
 use std::fs;
 use std::path::Path;
@@ -9,20 +13,29 @@ use std::time::{Duration, Instant};
 
 use super::config_home;
 
-const UNIT: &str = "xdg-desktop-portal-gtk.service";
+const DIRS: [&str; 2] = ["gtk-3.0", "gtk-4.0"];
 
-// rapid wallpaper changes restart it at most this often; the last one still lands
+// both GTK portal backends; each implements FileChooser and AppChooser, and `portals.conf` picks
+// which draws a dialog, so both are restarted; the base `xdg-desktop-portal` is never restarted
+const UNITS: [&str; 2] = [
+    "xdg-desktop-portal-gtk.service",
+    "xdg-desktop-portal-gnome.service",
+];
+
+// rapid wallpaper changes restart them at most this often; the last one still lands
 const MIN_INTERVAL: Duration = Duration::from_secs(30);
 
 // systemctl's exit code for a unit that is not installed, which is no failure for us
 const NOT_FOUND: i32 = 5;
 
-// what the GTK3 side of a sync writes: the settings file and the generated and user css
-pub(super) type Look = [Option<String>; 3];
+// what the GTK side of a sync writes, per dir: the settings file and the generated and user css
+pub(super) type Look = [[Option<String>; 3]; 2];
 
 pub(super) fn look() -> Look {
-    let root = config_home().join("gtk-3.0");
-    ["settings.ini", "kanade.css", "gtk.css"].map(|name| read(&root.join(name)))
+    DIRS.map(|dir| {
+        let root = config_home().join(dir);
+        ["settings.ini", "kanade.css", "gtk.css"].map(|name| read(&root.join(name)))
+    })
 }
 
 fn read(path: &Path) -> Option<String> {
@@ -38,7 +51,7 @@ pub(super) struct Restart {
 }
 
 impl Restart {
-    // the GTK3 look changed
+    // the GTK look changed
     pub(super) fn changed(&mut self, now: Instant) {
         if self.due.is_none() {
             self.due = Some(match self.last {
@@ -64,11 +77,17 @@ impl Restart {
     }
 }
 
-// `try-restart` does nothing for a unit that is not running, so it never starts the portal; the
+// `try-restart` does nothing for a unit that is not running, so it never starts a portal; the
 // worker does not wait for it
 pub(super) fn restart() {
+    for unit in UNITS {
+        restart_unit(unit);
+    }
+}
+
+fn restart_unit(unit: &'static str) {
     let spawned = Command::new("systemctl")
-        .args(["--user", "--no-block", "try-restart", UNIT])
+        .args(["--user", "--no-block", "try-restart", unit])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -76,7 +95,7 @@ pub(super) fn restart() {
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("kanade: could not restart {UNIT}: {error}");
+            eprintln!("kanade: could not restart {unit}: {error}");
             return;
         }
     };
@@ -84,17 +103,39 @@ pub(super) fn restart() {
         .name(String::from("kanade-portal-restart"))
         .spawn(move || match child.wait() {
             Ok(status) if status.success() || status.code() == Some(NOT_FOUND) => {}
-            Ok(status) => eprintln!("kanade: restarting {UNIT} failed: {status}"),
+            Ok(status) => eprintln!("kanade: restarting {unit} failed: {status}"),
             Err(error) => eprintln!("kanade: could not wait for systemctl: {error}"),
         });
     if let Err(error) = reaper {
-        eprintln!("kanade: could not watch the {UNIT} restart: {error}");
+        eprintln!("kanade: could not watch the {unit} restart: {error}");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portal_watches_the_dirs_the_gtk_sync_writes() {
+        // the sync writes these dirs and the portals are restarted when any of them changes
+        assert_eq!(
+            super::super::GtkConfig::ALL.map(super::super::GtkConfig::dir),
+            DIRS
+        );
+    }
+
+    #[test]
+    fn restarts_both_gtk_portal_backends_and_never_the_base_portal() {
+        assert_eq!(
+            UNITS,
+            [
+                "xdg-desktop-portal-gtk.service",
+                "xdg-desktop-portal-gnome.service"
+            ]
+        );
+        assert!(!UNITS.contains(&"xdg-desktop-portal.service"));
+        assert_eq!(DIRS, ["gtk-3.0", "gtk-4.0"]);
+    }
 
     #[test]
     fn restarts_once_for_a_burst_and_only_after_a_change() {
