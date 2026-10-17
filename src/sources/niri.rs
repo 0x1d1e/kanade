@@ -65,6 +65,18 @@ pub enum Target {
 #[derive(Debug, Default)]
 pub struct Niri {
     pub seen: Seen,
+    pub connected: bool,
+}
+
+impl Niri {
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+}
+
+#[allow(dead_code)]
+pub fn is_connected() -> bool {
+    Niri::read().connected
 }
 
 impl Service for Niri {
@@ -380,14 +392,17 @@ fn cast(cast: &Json) -> Option<(u64, Cast)> {
         _ => Target::Unknown,
     };
 
-    let session = (cast.get("kind").and_then(Json::as_str) == Some("PipeWire"))
-        .then(|| cast.get("session_id").and_then(Json::as_u64))
-        .flatten();
+    let session = match cast.get("kind").and_then(Json::as_str) {
+        Some("WlrScreencopy") => None,
+        _ => cast.get("session_id").and_then(Json::as_u64),
+    };
 
     let flag = |key, default| cast.get(key).and_then(Json::as_bool).unwrap_or(default);
 
     Some((
-        cast.get("stream_id").and_then(Json::as_u64)?,
+        cast.get("stream_id")
+            .or_else(|| cast.get("session_id"))
+            .and_then(Json::as_u64)?,
         Cast {
             target,
             session,
@@ -657,7 +672,11 @@ pub fn follow() {
         run(
             connect().map(BufReader::new),
             &mut posted,
-            |_, seen| Niri::write().seen = seen.clone(),
+            |_, seen| {
+                let mut niri = Niri::write();
+                niri.seen = seen.clone();
+                niri.connected = true;
+            },
             |heard| {
                 let hearing = WINDOWS.locked().clone();
 
@@ -710,6 +729,8 @@ fn run(
         post(posted, &Seen::default());
         *posted = Seen::default();
     }
+
+    Niri::write().connected = false;
 
     // the windows niri had may be gone by the time it is back; it lists them again then
     hear(Heard::Lost);
@@ -877,6 +898,16 @@ fn watch(
         Some(Err(error)) => return error,
         None => return io::ErrorKind::UnexpectedEof.into(),
     }
+
+    struct ConnectedGuard;
+    impl Drop for ConnectedGuard {
+        fn drop(&mut self) {
+            Niri::write().connected = false;
+        }
+    }
+
+    Niri::write().connected = true;
+    let _guard = ConnectedGuard;
 
     for line in lines {
         let line = match line {
@@ -1370,5 +1401,27 @@ mod tests {
         );
 
         assert_eq!(posts, []);
+    }
+
+    #[test]
+    fn losing_the_stream_marks_niri_disconnected() {
+        let text = [OK, WORKSPACES].join("\n");
+        let mut posted = Seen::default();
+
+        run(
+            Ok(text.as_bytes()),
+            &mut posted,
+            |_, seen| {
+                let mut niri = Niri::write();
+                niri.seen = seen.clone();
+                niri.connected = true;
+            },
+            drop,
+            drop,
+            || {},
+        );
+
+        assert!(!is_connected());
+        assert!(!Niri::read().is_connected());
     }
 }

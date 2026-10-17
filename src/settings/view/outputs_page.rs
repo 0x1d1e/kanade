@@ -33,8 +33,8 @@ pub fn actions(settings: &Settings, roles: &ThemeRoles) -> Vec<Box<dyn Widget>> 
     }
 
     vec![
-        pill("revert", "Revert", false, roles, outputs::revert),
-        pill("keep", "Keep", true, roles, outputs::keep),
+        pill("revert", "Revert", false, settings, roles, outputs::revert),
+        pill("keep", "Keep", true, settings, roles, outputs::keep),
     ]
 }
 
@@ -42,11 +42,12 @@ fn pill(
     node: &'static str,
     word: &str,
     primary: bool,
+    settings: &Settings,
     roles: &ThemeRoles,
     press: fn(),
 ) -> Box<dyn Widget> {
     let id = format!("outputs {node}");
-    let hovered = Settings::read().is_hovered(&id);
+    let hovered = settings.is_hovered(&id);
     let text = Text::new(word)
         .size(theme::text::LABEL)
         .color(if primary {
@@ -81,6 +82,7 @@ fn pill(
         press,
         (!primary).then(|| roles.edge()),
         false,
+        settings,
         roles,
     )
 }
@@ -165,6 +167,7 @@ fn monitor_view(monitor: &Monitor, settings: &Settings, roles: &ThemeRoles) -> B
             format!("reset output {name}"),
             "reset",
             "Reset",
+            settings,
             roles,
             move || outputs::reset(&reset),
         ));
@@ -207,15 +210,15 @@ fn monitor_view(monitor: &Monitor, settings: &Settings, roles: &ThemeRoles) -> B
     )));
 
     let mut rows: Vec<Box<dyn Widget>> = vec![
-        enabled_row(monitor, acts, alone, roles),
+        enabled_row(monitor, acts, alone, settings, roles),
         mode_row(monitor, acts && on, settings, roles),
-        scale_row(monitor, acts && on, roles),
-        transform_row(monitor, acts && on, roles),
+        scale_row(monitor, acts && on, settings, roles),
+        transform_row(monitor, acts && on, settings, roles),
     ];
     if output.vrr_supported {
-        rows.push(vrr_row(monitor, acts && on, roles));
+        rows.push(vrr_row(monitor, acts && on, settings, roles));
     }
-    rows.push(position_row(monitor, acts && on, roles));
+    rows.push(position_row(monitor, acts && on, settings, roles));
 
     let mut card = Vec::new();
     for row in rows {
@@ -255,12 +258,18 @@ fn row_label(
     }
 }
 
-fn enabled_row(monitor: &Monitor, acts: bool, alone: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn enabled_row(
+    monitor: &Monitor,
+    acts: bool,
+    alone: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let output = &monitor.output;
     let name = output.name.clone();
     let on = output.enabled();
     let switch_id = format!("switch output {name} enabled");
-    let hovered = Settings::read().is_hovered(&switch_id);
+    let hovered = settings.is_hovered(&switch_id);
     let track = switch_track(on, hovered, roles);
     let control: Box<dyn Widget> = if !acts || alone {
         Box::new(track.opacity(theme::DISABLED))
@@ -284,6 +293,7 @@ fn enabled_row(monitor: &Monitor, acts: bool, alone: bool, roles: &ThemeRoles) -
         ),
         control,
         true,
+        settings,
         roles,
     )
 }
@@ -315,6 +325,7 @@ fn mode_row(
             row_label(&output.name, "output-mode", "Mode", help, None),
             readonly(shown, roles),
             true,
+            settings,
             roles,
         );
     }
@@ -348,6 +359,7 @@ fn mode_row(
         format!("output {name} mode"),
         toggle,
         Some(roles.edge()),
+        settings,
         roles,
     );
 
@@ -356,6 +368,7 @@ fn mode_row(
             row_label(&output.name, "output-mode", "Mode", help, None),
             chooser,
             true,
+            settings,
             roles,
         );
     }
@@ -403,7 +416,7 @@ fn mode_row(
             .align_child(Start, Center)
             .child(Row::new(words).gap(10.0).align(Center));
         let mode_id = format!("output {name} mode {}", mode.text());
-        let hovered = Settings::read().is_hovered(&mode_id);
+        let hovered = settings.is_hovered(&mode_id);
         let line = if here {
             if hovered {
                 line.fill(theme::mix(faint(roles.primary), roles.on_surface, 0.08))
@@ -416,18 +429,26 @@ fn mode_row(
             line.fill(roles.surface)
         };
 
-        lines.push(button_styled(line, mode_id, pick, None, false, roles));
+        lines.push(button_styled(
+            line, mode_id, pick, None, false, settings, roles,
+        ));
     }
 
     labeled(
         row_label(&output.name, "output-mode", "Mode", help, None),
         Box::new(Column::new(lines).width(inner()).gap(4.0)),
         false,
+        settings,
         roles,
     )
 }
 
-fn scale_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn scale_row(
+    monitor: &Monitor,
+    acts: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let output = &monitor.output;
     let name = output.name.clone();
     let scale = output.logical.map_or(1.0, |logical| logical.scale);
@@ -460,6 +481,7 @@ fn scale_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widge
             by(-1.0),
             by(1.0),
             submit,
+            settings,
             roles,
         )
     } else {
@@ -470,11 +492,17 @@ fn scale_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widge
         row_label(&output.name, "output-scale", "Scale", help, None),
         control,
         true,
+        settings,
         roles,
     )
 }
 
-fn transform_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn transform_row(
+    monitor: &Monitor,
+    acts: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let output = &monitor.output;
     let name = output.name.clone();
     let current = output
@@ -487,6 +515,7 @@ fn transform_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn W
             row_label(&output.name, "output-transform", "Transform", help, None),
             readonly(current.label().to_owned(), roles),
             true,
+            settings,
             roles,
         );
     }
@@ -504,6 +533,7 @@ fn transform_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn W
                 group.iter().map(|t| t.label().to_owned()).collect(),
                 chosen,
                 move |index| outputs::edit(&name, Edit::Transform(group[index])),
+                settings,
                 roles,
             )
         })
@@ -513,11 +543,17 @@ fn transform_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn W
         row_label(&output.name, "output-transform", "Transform", help, None),
         Box::new(Column::new(rows).gap(6.0)),
         true,
+        settings,
         roles,
     )
 }
 
-fn vrr_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn vrr_row(
+    monitor: &Monitor,
+    acts: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let output = &monitor.output;
     let name = output.name.clone();
     let hint = monitor.config.vrr;
@@ -530,6 +566,7 @@ fn vrr_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget>
             Vrr::ALL.iter().map(|vrr| vrr.label().to_owned()).collect(),
             Vrr::ALL.iter().position(|&vrr| vrr == current),
             move |index| outputs::edit(&name, Edit::Vrr(Vrr::ALL[index])),
+            settings,
             roles,
         )
     } else {
@@ -546,11 +583,17 @@ fn vrr_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget>
         ),
         control,
         true,
+        settings,
         roles,
     )
 }
 
-fn position_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn position_row(
+    monitor: &Monitor,
+    acts: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let output = &monitor.output;
     let name = output.name.clone();
     let help = "Where the monitor sits among the others, in logical pixels from the top left. Both are set together";
@@ -587,6 +630,7 @@ fn position_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Wi
                     format!("apply output {name} position"),
                     "apply",
                     "Apply",
+                    settings,
                     roles,
                     apply.clone()
                 ),
@@ -606,6 +650,7 @@ fn position_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Wi
         row_label(&output.name, "output-position", "Position", help, None),
         control,
         true,
+        settings,
         roles,
     )
 }
@@ -649,6 +694,7 @@ fn chips(
     labels: Vec<String>,
     chosen: Option<usize>,
     pick: impl Fn(usize) + Clone + 'static,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     const INSET: f32 = 3.0;
@@ -661,7 +707,7 @@ fn chips(
         .map(|(index, label)| {
             let here = chosen == Some(index);
             let seg_id = format!("{id} {index}");
-            let hovered = Settings::read().is_hovered(&seg_id);
+            let hovered = settings.is_hovered(&seg_id);
             let hover_seg = seg_id.clone();
             let text = Text::new(label.clone())
                 .size(theme::text::LABEL)
@@ -731,6 +777,7 @@ fn capsule(
     less: impl Fn() + Clone + 'static,
     more: impl Fn() + Clone + 'static,
     submit: impl Fn(String) + 'static,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     const SIDE: f32 = 30.0;
@@ -740,7 +787,7 @@ fn capsule(
     let inside = FIELD - 2.0;
     let side = |node: &'static str, sign: &str, press: Box<dyn Fn()>| {
         let side_id = format!("capsule {id} {node}");
-        let hovered = Settings::read().is_hovered(&side_id);
+        let hovered = settings.is_hovered(&side_id);
         let hover_id = side_id.clone();
         let mut btn = Rectangle::new()
             .width(SIDE)

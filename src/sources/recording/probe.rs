@@ -13,13 +13,12 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::MutexExt;
 
-use super::encode::{self, Choice, Download, Encoder, Encoding, Kind, Node, Probe, Probed, Vendor};
+use super::encode::{
+    self, Choice, Download, Encoder, Encoding, Kind, Node, Probe, Probed, TRIAL, Vendor,
+};
 use super::plan::{ENCODER, JOINER};
 use crate::config::{Preference, Recording};
 use crate::sources::wake::{self, Failed};
-
-// how long one trial may take: a GPU that sleeps wakes in about a second
-const TRIAL: Duration = Duration::from_millis(1500);
 
 // where the kernel lists the GPUs, and the nodes themselves
 const SYS: &str = "/sys/class/drm";
@@ -90,18 +89,18 @@ struct Real {
 }
 
 impl Probe for Real {
-    fn vaapi(&mut self, node: &Node, first: bool) -> Probed {
+    fn vaapi(&mut self, node: &Node, first: bool, timeout: Duration) -> Probed {
         let encoding = trial(Kind::Vaapi, Some(node), first);
 
-        ffmpeg(&encoding, self.fresh)
+        ffmpeg(&encoding, self.fresh, timeout)
     }
 
-    fn nvenc(&mut self) -> Probed {
-        ffmpeg(&trial(Kind::Nvenc, None, true), self.fresh)
+    fn nvenc(&mut self, timeout: Duration) -> Probed {
+        ffmpeg(&trial(Kind::Nvenc, None, true), self.fresh, timeout)
     }
 
-    fn software(&mut self) -> Probed {
-        ffmpeg(&trial(Kind::Software, None, true), self.fresh)
+    fn software(&mut self, timeout: Duration) -> Probed {
+        ffmpeg(&trial(Kind::Software, None, true), self.fresh, timeout)
     }
 }
 
@@ -165,25 +164,31 @@ fn expired(found: &Probed, at: Instant, now: Instant) -> bool {
 }
 
 // whether `ffmpeg` encodes a frame the way `wf-recorder` is told to
-fn ffmpeg(encoding: &Encoding, fresh: bool) -> Probed {
+fn ffmpeg(encoding: &Encoding, fresh: bool, timeout: Duration) -> Probed {
     let arguments = encoding.trial();
 
     tried(JOINER, &arguments, fresh, || {
-        run(JOINER, &arguments, encoding.encoder.kind.codec())
+        run(JOINER, &arguments, encoding.encoder.kind.codec(), timeout)
     })
 }
 
 // whether GStreamer encodes a frame the way a window's pipeline does
-fn gstreamer(encoding: &Encoding, fresh: bool) -> Probed {
+fn gstreamer(encoding: &Encoding, fresh: bool, timeout: Duration) -> Probed {
     let arguments = encoding.gst_trial();
 
     tried(ENCODER, &arguments, fresh, || {
-        run(ENCODER, &arguments, &encoding.encoder.element())
+        run(ENCODER, &arguments, &encoding.encoder.element(), timeout)
     })
 }
 
 // the answer of one trial, and whether it is worth keeping: not when nothing was decided
-fn run(program: &str, arguments: &[String], what: &str) -> (Probed, bool) {
+fn run(program: &str, arguments: &[String], what: &str, timeout: Duration) -> (Probed, bool) {
+    if timeout.is_zero() {
+        return (
+            Probed::Fails(format!("{what} did not run: probe budget exceeded")),
+            false,
+        );
+    }
     if !wake::found(program) {
         return (
             Probed::Unknown(format!("{program} is not installed")),
@@ -193,7 +198,7 @@ fn run(program: &str, arguments: &[String], what: &str) -> (Probed, bool) {
 
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
-    match wake::act_within(program, &arguments, TRIAL) {
+    match wake::act_within(program, &arguments, timeout) {
         Ok(()) => (Probed::Works, true),
         Err(Failed::Overran(limit)) => (
             Probed::Fails(format!(
@@ -240,22 +245,45 @@ fn brief(said: &str, program: &str, what: &str) -> String {
  * whose chosen encoder failed to start: software alone is tried
  */
 pub fn choice(recording: &Recording, software: bool, fresh: bool) -> Choice {
+    choice_within(
+        recording,
+        software,
+        fresh,
+        Instant::now() + encode::PROBE_BUDGET,
+    )
+}
+
+pub fn choice_within(
+    recording: &Recording,
+    software: bool,
+    fresh: bool,
+    deadline: Instant,
+) -> Choice {
     let preference = match software {
         true => Preference::Software,
         false => recording.encoder,
     };
 
-    encode::choose(
+    encode::choose_within(
         preference,
         recording.device.as_deref(),
         &nodes(),
         &mut Real { fresh },
+        deadline,
     )
 }
 
 // the encoding of `recording`, or why nothing encodes
 pub fn encoding(recording: &Recording, software: bool) -> Result<Encoding, String> {
-    let choice = choice(recording, software, false);
+    encoding_within(recording, software, Instant::now() + encode::PROBE_BUDGET)
+}
+
+pub fn encoding_within(
+    recording: &Recording,
+    software: bool,
+    deadline: Instant,
+) -> Result<Encoding, String> {
+    let choice = choice_within(recording, software, false, deadline);
 
     match choice.encoder {
         Some(encoder) => Ok(Encoding {
@@ -283,16 +311,26 @@ pub fn window(
     recording: &Recording,
     no_va: bool,
 ) -> Result<(Encoding, Option<String>), String> {
+    window_within(
+        encoding,
+        recording,
+        no_va,
+        Instant::now() + encode::PROBE_BUDGET,
+    )
+}
+
+pub fn window_within(
+    encoding: Encoding,
+    recording: &Recording,
+    no_va: bool,
+    deadline: Instant,
+) -> Result<(Encoding, Option<String>), String> {
     let nodes = nodes();
     let device = recording.device.as_deref();
-    let failed = match downloading(&encoding, &nodes, device, false, no_va) {
+    let failed = match downloading(&encoding, &nodes, device, false, no_va, deadline) {
         Ok(found) => return Ok((found, None)),
         Err(why) => why,
     };
-
-    if encoding.encoder.kind == Kind::Software {
-        return Err(format!("{ENCODER} cannot encode: {failed}"));
-    }
 
     let software = Encoding {
         encoder: Encoder::software(),
@@ -301,7 +339,31 @@ pub fn window(
         download: Download::Gl,
     };
 
-    match downloading(&software, &nodes, device, false, false) {
+    if encoding.encoder.kind == Kind::Software {
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Ok((
+                software,
+                Some(format!(
+                    "{} cannot encode a window ({failed}); probe budget exceeded, using software",
+                    encoding.encoder
+                )),
+            ));
+        }
+        return Err(format!("{ENCODER} cannot encode: {failed}"));
+    }
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok((
+            software,
+            Some(format!(
+                "{} cannot encode a window ({failed}); probe budget exceeded, falling back to software",
+                encoding.encoder
+            )),
+        ));
+    }
+
+    match downloading(&software, &nodes, device, false, false, deadline) {
         Ok(found) => Ok((
             found,
             Some(format!(
@@ -309,9 +371,21 @@ pub fn window(
                 encoding.encoder
             )),
         )),
-        Err(also) => Err(format!(
-            "{ENCODER} cannot encode: {failed}; software too: {also}"
-        )),
+        Err(also) => {
+            if deadline.saturating_duration_since(Instant::now()).is_zero() {
+                Ok((
+                    software,
+                    Some(format!(
+                        "{} cannot encode a window ({failed}); fallback probe timed out, using software",
+                        encoding.encoder
+                    )),
+                ))
+            } else {
+                Err(format!(
+                    "{ENCODER} cannot encode: {failed}; software too: {also}"
+                ))
+            }
+        }
     }
 }
 
@@ -328,10 +402,18 @@ fn downloading(
     device: Option<&str>,
     fresh: bool,
     no_va: bool,
+    deadline: Instant,
 ) -> Result<Encoding, String> {
-    let works = |tried: &Encoding| match gstreamer(tried, fresh) {
-        Probed::Works | Probed::Unknown(_) => Ok(()),
-        Probed::Fails(why) => Err(why),
+    let works = |tried: &Encoding| {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(String::from("probe budget exceeded"));
+        }
+        let timeout = TRIAL.min(remaining);
+        match gstreamer(tried, fresh, timeout) {
+            Probed::Works | Probed::Unknown(_) => Ok(()),
+            Probed::Fails(why) => Err(why),
+        }
     };
 
     if encoding.encoder.kind == Kind::Vaapi {
@@ -341,6 +423,12 @@ fn downloading(
     let mut said = Vec::new();
 
     for download in encode::downloads(nodes, device, no_va) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            said.push(String::from("probe budget exceeded"));
+            break;
+        }
+
         let tried = Encoding {
             download,
             ..encoding.clone()
@@ -368,22 +456,25 @@ pub fn window_line(encoding: &Encoding, device: Option<&str>) -> Option<Result<S
     }
 
     let element = encoding.encoder.element();
+    let deadline = Instant::now() + encode::PROBE_BUDGET;
 
-    Some(match downloading(encoding, &nodes(), device, true, false) {
-        Ok(found) if found.encoder.kind == Kind::Vaapi => Ok(format!(
-            "window: {element} encodes a test frame; a live cast is not tried"
-        )),
-        Ok(found) => Ok(format!(
-            "window: {element} encodes a test frame, frames downloaded through {}; a live cast is not tried",
-            found.download
-        )),
-        Err(why) => Err(match encoding.encoder.kind {
-            Kind::Software => format!("window: {element} cannot encode ({why})"),
-            _ => format!(
-                "window: {element} cannot encode ({why}); a window records with software x264 instead"
-            ),
-        }),
-    })
+    Some(
+        match downloading(encoding, &nodes(), device, true, false, deadline) {
+            Ok(found) if found.encoder.kind == Kind::Vaapi => Ok(format!(
+                "window: {element} encodes a test frame; a live cast is not tried"
+            )),
+            Ok(found) => Ok(format!(
+                "window: {element} encodes a test frame, frames downloaded through {}; a live cast is not tried",
+                found.download
+            )),
+            Err(why) => Err(match encoding.encoder.kind {
+                Kind::Software => format!("window: {element} cannot encode ({why})"),
+                _ => format!(
+                    "window: {element} cannot encode ({why}); a window records with software x264 instead"
+                ),
+            }),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -430,5 +521,25 @@ mod tests {
     fn format_timeout_preserves_subsecond_accuracy() {
         assert_eq!(format_timeout(Duration::from_millis(1500)), "1.5 s");
         assert_eq!(format_timeout(Duration::from_secs(2)), "2 s");
+    }
+
+    #[test]
+    fn window_within_returns_software_when_budget_exceeded_for_software() {
+        let recording = Recording::default();
+        let encoding = Encoding {
+            encoder: Encoder::software(),
+            quality: recording.quality,
+            threads: threads(),
+            download: Download::Gl,
+        };
+        let deadline = Instant::now() - Duration::from_secs(1);
+        let res = window_within(encoding, &recording, false, deadline);
+        assert!(res.is_ok());
+        let (chosen, note) = res.unwrap();
+        assert_eq!(chosen.encoder.kind, Kind::Software);
+        assert!(
+            note.unwrap()
+                .contains("probe budget exceeded, using software")
+        );
     }
 }

@@ -192,11 +192,13 @@ fn follow(receiver: Receiver<Request>) {
             let now = Instant::now();
             if portal.take_due(now) {
                 portal::restart_gtk();
-                if portal::has_active_casts() {
-                    gnome_pending = true;
-                } else {
-                    portal::restart_gnome();
-                    gnome_pending = false;
+                if gnome_pending {
+                    if portal::has_active_casts() {
+                        // deferral holds
+                    } else {
+                        portal::restart_gnome();
+                        gnome_pending = false;
+                    }
                 }
             }
             if retry_zen_restore {
@@ -236,12 +238,16 @@ fn follow(receiver: Receiver<Request>) {
         look = Some(after);
         if portal.take_due(now) {
             portal::restart_gtk();
-            if portal::has_active_casts() {
-                gnome_pending = true;
-            } else {
-                portal::restart_gnome();
-                gnome_pending = false;
+            if gtk4_changed || gnome_pending {
+                if portal::has_active_casts() {
+                    gnome_pending = true;
+                } else {
+                    portal::restart_gnome();
+                    gnome_pending = false;
+                }
             }
+        } else if gtk4_changed {
+            gnome_pending = true;
         }
 
         match result {

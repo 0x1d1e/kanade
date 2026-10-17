@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 pub use crate::config::{Preference, Quality};
 
 pub const PROBE_BUDGET: Duration = Duration::from_millis(3000);
+pub const TRIAL: Duration = Duration::from_millis(1500);
 pub const MAX_VAAPI_CANDIDATES: usize = 2;
 
 // the encoder `wf-recorder` is given for each kind (`ffmpeg -encoders`)
@@ -512,9 +513,9 @@ pub enum Probed {
 
 // tries the ways to encode for real, one frame each
 pub trait Probe {
-    fn vaapi(&mut self, node: &Node, first: bool) -> Probed;
-    fn nvenc(&mut self) -> Probed;
-    fn software(&mut self) -> Probed;
+    fn vaapi(&mut self, node: &Node, first: bool, timeout: Duration) -> Probed;
+    fn nvenc(&mut self, timeout: Duration) -> Probed;
+    fn software(&mut self, timeout: Duration) -> Probed;
 }
 
 // what was chosen, and why, for `doctor` and the failure that says what it tried
@@ -534,13 +535,29 @@ pub struct Choice {
  * software, said in the notes. A probe that could not run (`Unknown`) lets VA-API and software
  * through, which a failure then falls back from at run time, and NVENC only when it is named
  */
+#[allow(dead_code)]
 pub fn choose(
     preference: Preference,
     device: Option<&str>,
     nodes: &[Node],
     probe: &mut impl Probe,
 ) -> Choice {
-    let started = Instant::now();
+    choose_within(
+        preference,
+        device,
+        nodes,
+        probe,
+        Instant::now() + PROBE_BUDGET,
+    )
+}
+
+pub fn choose_within(
+    preference: Preference,
+    device: Option<&str>,
+    nodes: &[Node],
+    probe: &mut impl Probe,
+    deadline: Instant,
+) -> Choice {
     let mut notes = Vec::new();
     let kinds: &[Kind] = match preference {
         Preference::Auto => &[Kind::Vaapi, Kind::Nvenc, Kind::Software],
@@ -551,6 +568,17 @@ pub fn choose(
     let named = preference != Preference::Auto;
 
     for &kind in kinds {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            notes.push(String::from(
+                "probe budget exceeded; falling back to software",
+            ));
+            return Choice {
+                encoder: Some(Encoder::software()),
+                notes,
+            };
+        }
+
         let found = match kind {
             Kind::Vaapi => {
                 let tried = candidates(nodes, device);
@@ -562,16 +590,18 @@ pub fn choose(
                 }
 
                 tried.iter().take(MAX_VAAPI_CANDIDATES).find_map(|node| {
-                    if started.elapsed() >= PROBE_BUDGET {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
                         notes.push(format!(
                             "VA-API on {} not tried: probe budget exceeded",
                             node.said()
                         ));
                         return None;
                     }
+                    let timeout = TRIAL.min(remaining);
                     let first = is_first(nodes, node);
 
-                    match probe.vaapi(node, first) {
+                    match probe.vaapi(node, first, timeout) {
                         Probed::Works => {
                             notes.push(format!("VA-API works on {}", node.said()));
                             Some(Encoder {
@@ -596,11 +626,13 @@ pub fn choose(
                 })
             }
             Kind::Nvenc => {
-                if started.elapsed() >= PROBE_BUDGET {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
                     notes.push(String::from("NVENC not tried: probe budget exceeded"));
                     None
                 } else {
-                    match probe.nvenc() {
+                    let timeout = TRIAL.min(remaining);
+                    match probe.nvenc(timeout) {
                         Probed::Works => {
                             notes.push(String::from("NVENC works"));
                             Some(Encoder {
@@ -629,13 +661,15 @@ pub fn choose(
                 }
             }
             Kind::Software => {
-                if started.elapsed() >= PROBE_BUDGET {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
                     notes.push(String::from(
                         "software x264 not tried: probe budget exceeded",
                     ));
                     Some(Encoder::software())
                 } else {
-                    match probe.software() {
+                    let timeout = TRIAL.min(remaining);
+                    match probe.software(timeout) {
                         Probed::Works => {
                             notes.push(String::from("software x264 works"));
                             Some(Encoder::software())
@@ -751,15 +785,15 @@ mod tests {
     }
 
     impl Probe for Asked {
-        fn vaapi(&mut self, node: &Node, _first: bool) -> Probed {
+        fn vaapi(&mut self, node: &Node, _first: bool, _timeout: Duration) -> Probed {
             self.answer(format!("vaapi {}", node.path))
         }
 
-        fn nvenc(&mut self) -> Probed {
+        fn nvenc(&mut self, _timeout: Duration) -> Probed {
             self.answer(String::from("nvenc"))
         }
 
-        fn software(&mut self) -> Probed {
+        fn software(&mut self, _timeout: Duration) -> Probed {
             self.answer(String::from("software"))
         }
     }
@@ -884,15 +918,15 @@ mod tests {
         struct Blind;
 
         impl Probe for Blind {
-            fn vaapi(&mut self, _: &Node, _: bool) -> Probed {
+            fn vaapi(&mut self, _: &Node, _: bool, _: Duration) -> Probed {
                 Probed::Unknown(String::from("no ffmpeg"))
             }
 
-            fn nvenc(&mut self) -> Probed {
+            fn nvenc(&mut self, _: Duration) -> Probed {
                 Probed::Unknown(String::from("no ffmpeg"))
             }
 
-            fn software(&mut self) -> Probed {
+            fn software(&mut self, _: Duration) -> Probed {
                 Probed::Unknown(String::from("no ffmpeg"))
             }
         }
@@ -950,6 +984,25 @@ mod tests {
 
         let vaapi_asked = probe.asked.iter().filter(|s| s.contains("vaapi")).count();
         assert_eq!(vaapi_asked, MAX_VAAPI_CANDIDATES);
+    }
+
+    #[test]
+    fn probe_budget_exhaustion_falls_back_to_software() {
+        let nodes = hybrid();
+        let mut probe = Asked::works(&["software"]);
+        let past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let choice = choose_within(Preference::Auto, None, &nodes, &mut probe, past);
+        assert_eq!(encoder(&choice), "libx264");
+        assert!(
+            probe.asked.is_empty(),
+            "no probes should run when budget is exhausted"
+        );
+        assert!(
+            choice
+                .notes
+                .iter()
+                .any(|note| note.contains("probe budget exceeded"))
+        );
     }
 
     fn encoding(kind: Kind, quality: Quality) -> Encoding {

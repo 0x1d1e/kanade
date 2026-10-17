@@ -77,8 +77,8 @@ pub fn row(path: &'static str, settings: &Settings, roles: &ThemeRoles) -> Box<d
     let enabled = shown.editable && !shown.busy;
 
     let control = match &item.control {
-        Control::Flag | Control::Drawn { .. } => flag(item, &shown, enabled, roles),
-        Control::Number(spec) => number(item, spec, &shown, enabled, roles),
+        Control::Flag | Control::Drawn { .. } => flag(item, &shown, enabled, settings, roles),
+        Control::Number(spec) => number(item, spec, &shown, enabled, settings, roles),
         Control::Choice { options, .. } => {
             let chosen = match &shown.current {
                 Current::Text(text) => text.as_str(),
@@ -92,6 +92,7 @@ pub fn row(path: &'static str, settings: &Settings, roles: &ThemeRoles) -> Box<d
                 format!("choice niri {path}"),
                 options,
                 chosen,
+                settings,
                 roles,
                 enabled,
                 choose,
@@ -100,7 +101,13 @@ pub fn row(path: &'static str, settings: &Settings, roles: &ThemeRoles) -> Box<d
         Control::Text { example } => text(item, example, &shown, enabled, roles),
     };
 
-    labeled(label(item, &shown, settings, roles), control, true, roles)
+    labeled(
+        label(item, &shown, settings, roles),
+        control,
+        true,
+        settings,
+        roles,
+    )
 }
 
 fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeRoles) -> Label {
@@ -128,6 +135,7 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
             format!("reset niri {path}"),
             "reset",
             "Reset",
+            settings,
             roles,
             move || {
                 niri::change(path, niri::reset_changes(item));
@@ -158,11 +166,17 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
 }
 
 // a switch for a flag, or for a ring, border or shadow
-fn flag(item: &'static Item, shown: &Shown, enabled: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn flag(
+    item: &'static Item,
+    shown: &Shown,
+    enabled: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let path = item.path;
     let on = matches!(shown.current, Current::Flag(true));
     let switch_id = format!("switch niri {path}");
-    let hovered = Settings::read().is_hovered(&switch_id);
+    let hovered = settings.is_hovered(&switch_id);
     let track = switch_track(on, hovered, roles);
 
     if !enabled {
@@ -229,6 +243,7 @@ fn number(
     spec: &'static Number,
     shown: &Shown,
     enabled: bool,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     const SIDE: f32 = 30.0;
@@ -284,7 +299,7 @@ fn number(
 
     let side = |node: &'static str, sign: &str, value: f64| {
         let side_id = format!("niri stepper {id} {node}");
-        let hovered = Settings::read().is_hovered(&side_id);
+        let hovered = settings.is_hovered(&side_id);
         let hover_id = side_id.clone();
         let mut btn = Rectangle::new()
             .width(SIDE)

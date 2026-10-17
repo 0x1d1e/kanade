@@ -88,8 +88,13 @@ impl Restart {
     }
 }
 
+pub(super) fn can_restart_gnome() -> bool {
+    let niri = crate::sources::niri::Niri::read();
+    niri.is_connected() && niri.seen.casts.is_empty() && niri.seen.sessions.is_empty()
+}
+
 pub(super) fn has_active_casts() -> bool {
-    !crate::sources::niri::Niri::read().seen.casts.is_empty()
+    !can_restart_gnome()
 }
 
 pub(super) fn restart_gtk() {
@@ -97,7 +102,7 @@ pub(super) fn restart_gtk() {
 }
 
 pub(super) fn restart_gnome() -> bool {
-    if has_active_casts() {
+    if !can_restart_gnome() {
         return false;
     }
     restart_unit(GNOME_UNIT);
@@ -109,7 +114,7 @@ pub(super) fn restart_gnome() -> bool {
 #[allow(dead_code)]
 pub(super) fn restart() {
     restart_gtk();
-    if !has_active_casts() {
+    if can_restart_gnome() {
         restart_unit(GNOME_UNIT);
     }
 }
@@ -148,18 +153,37 @@ mod tests {
     fn restarting_gnome_is_suppressed_when_casts_are_active() {
         use crate::sources::niri::{Niri, Target};
 
+        Niri::write().connected = false;
+        assert!(has_active_casts());
+        assert!(!can_restart_gnome());
+        assert!(!restart_gnome());
+
+        Niri::write().connected = true;
         Niri::write().seen.casts.clear();
+        Niri::write().seen.sessions.clear();
         assert!(!has_active_casts());
+        assert!(can_restart_gnome());
 
         Niri::write().seen.casts.insert(Target::Screen);
         assert!(has_active_casts());
+        assert!(!can_restart_gnome());
         assert!(
             !restart_gnome(),
             "active cast suppresses gnome portal restart"
         );
 
         Niri::write().seen.casts.clear();
+        Niri::write().seen.sessions.insert(42);
+        assert!(has_active_casts());
+        assert!(!can_restart_gnome());
+        assert!(
+            !restart_gnome(),
+            "active session suppresses gnome portal restart"
+        );
+
+        Niri::write().seen.sessions.clear();
         assert!(!has_active_casts());
+        assert!(can_restart_gnome());
     }
 
     #[test]

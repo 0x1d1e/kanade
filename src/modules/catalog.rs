@@ -1274,7 +1274,8 @@ notifications dnd on until <HH:MM>
                 _ => Err(Unparsed::Usage),
             },
         }],
-        // a paused window recording hears its window close; a session an earlier run left is stopped
+        // a paused window recording hears its window close; a session an earlier run left is stopped;
+        // prewarm window pipelines as well as encoder choices in the background thread spawned at startup
         start: |app| {
             niri::on_windows(recording::heard);
             recording::reclaim();

@@ -799,7 +799,7 @@ fn section_view(
             ));
         }
         Heading::Page(_) => {}
-        Heading::Found(page, title) => items.push(found_heading(page, title, roles)),
+        Heading::Found(page, title) => items.push(found_heading(page, title, settings, roles)),
     }
 
     let mut card: Vec<Box<dyn Widget>> = Vec::new();
@@ -828,7 +828,12 @@ fn section_view(
 }
 
 // "Page  ›  Section" over a result, pressed to open the page
-fn found_heading(page: &'static Page, title: &str, roles: &ThemeRoles) -> Box<dyn Widget> {
+fn found_heading(
+    page: &'static Page,
+    title: &str,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
     let name = page.name;
     let mut path = children![
         page.icon.on(14.0, roles.on_surface_variant),
@@ -855,7 +860,7 @@ fn found_heading(page: &'static Page, title: &str, roles: &ThemeRoles) -> Box<dy
     let row = Row::new(path).gap(8.0).align(Center);
     let width = fixed(Widget::width(&row)) + 2.0 * 8.0;
     let id = format!("open {name} {title}");
-    let hovered = Settings::read().is_hovered(&id);
+    let hovered = settings.is_hovered(&id);
     let hover_id = id.clone();
 
     let control = Rectangle::new()
@@ -909,6 +914,7 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
                 label(settings, &[setting], setting.label, &help(setting), roles),
                 control,
                 beside,
+                settings,
                 roles,
             )
         }
@@ -948,6 +954,7 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
                 label(settings, &[edge, align], title, description, roles),
                 Box::new(position(settings, edge, align, roles)),
                 true,
+                settings,
                 roles,
             )
         }
@@ -987,6 +994,7 @@ fn health_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         "check again".into(),
         "check-again",
         "Check again",
+        settings,
         roles,
         health::load,
     );
@@ -1070,6 +1078,7 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         "refresh login".into(),
         "refresh",
         "Refresh",
+        settings,
         roles,
         login::load,
     );
@@ -1136,6 +1145,7 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
                             format!("copy login step {index}"),
                             "copy",
                             "Copy",
+                            settings,
                             roles,
                             move || {
                                 let text = copied.clone();
@@ -1158,18 +1168,18 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
 }
 
 // a row's label over its help, with its marks, and what Inspect shows
-struct Label {
+pub(super) struct Label {
     // the setting it is for, which names the row: the first of them when it sets more than one
-    node: &'static str,
-    hover_id: String,
-    title: String,
-    help: String,
-    marks: Vec<Box<dyn Widget>>,
+    pub(super) node: &'static str,
+    pub(super) hover_id: String,
+    pub(super) title: String,
+    pub(super) help: String,
+    pub(super) marks: Vec<Box<dyn Widget>>,
 
     // under Inspect, the schema's whole help where Settings shows a shorter line
-    detail: Option<String>,
-    keys: Option<String>,
-    off: Option<String>,
+    pub(super) detail: Option<String>,
+    pub(super) keys: Option<String>,
+    pub(super) off: Option<String>,
 }
 
 fn label(
@@ -1198,6 +1208,7 @@ fn label(
             format!("reset {}", shown[0].key),
             "reset",
             "Reset",
+            settings,
             roles,
             move || change_all(paths.iter().map(|path| (path.clone(), None)).collect()),
         ));
@@ -1247,10 +1258,11 @@ fn label(
 }
 
 // a label with its control beside it, or under it when the control is wide
-fn labeled(
+pub(super) fn labeled(
     label: Label,
     control: Box<dyn Widget>,
     beside: bool,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     let width = fixed(control.width());
@@ -1336,7 +1348,7 @@ fn labeled(
 
     let node = label.node;
     let hover_id = label.hover_id;
-    let hovered = Settings::read().is_hovered(&hover_id);
+    let hovered = settings.is_hovered(&hover_id);
 
     let mut row = Rectangle::new()
         .width(inner())
@@ -1373,7 +1385,7 @@ fn control(
             let on = (field.get)(read);
 
             (
-                switch(format!("switch {key}"), on, roles, move || {
+                switch(format!("switch {key}"), on, settings, roles, move || {
                     change(path(key, None), Some(Value::Boolean(!on)));
                 }),
                 true,
@@ -1389,17 +1401,22 @@ fn control(
             let id = format!("choice {key}");
 
             let control = match key {
-                "appearance.tone" => cards(id, options, chosen, roles, tone_preview, choose),
-                "appearance.finish" => cards(id, options, chosen, roles, finish_preview, choose),
+                "appearance.tone" => {
+                    cards(id, options, chosen, settings, roles, tone_preview, choose)
+                }
+                "appearance.finish" => {
+                    cards(id, options, chosen, settings, roles, finish_preview, choose)
+                }
                 "appearance.motion" => cards(
                     id,
                     options,
                     chosen,
+                    settings,
                     roles,
                     |option| spring_preview(option, roles),
                     choose,
                 ),
-                _ => segmented(id, options, chosen, roles, enabled, choose),
+                _ => segmented(id, options, chosen, settings, roles, enabled, choose),
             };
 
             (control, true)
@@ -1407,7 +1424,7 @@ fn control(
         Kind::Millis(field) => {
             let ms = u64::try_from((field.get)(read).as_millis()).unwrap_or(config::LONGEST);
 
-            (stepper(setting, ms, MILLIS, roles), true)
+            (stepper(setting, ms, MILLIS, settings, roles), true)
         }
         Kind::Pixels(range, field) => {
             let px = u64::from((field.get)(read));
@@ -1419,7 +1436,7 @@ fn control(
                 expected: "whole pixels",
             };
 
-            (stepper(setting, px, steps, roles), true)
+            (stepper(setting, px, steps, settings, roles), true)
         }
         Kind::Percent(range, field) => {
             let percent = u64::from((field.get)(read));
@@ -1431,7 +1448,7 @@ fn control(
                 expected: "whole percent",
             };
 
-            (stepper(setting, percent, steps, roles), true)
+            (stepper(setting, percent, steps, settings, roles), true)
         }
         Kind::Seconds(range, field) => {
             let seconds = u64::from((field.get)(read));
@@ -1443,7 +1460,7 @@ fn control(
                 expected: "whole seconds",
             };
 
-            (stepper(setting, seconds, steps, roles), true)
+            (stepper(setting, seconds, steps, settings, roles), true)
         }
         Kind::Minutes(range, field) => {
             let minutes = (field.get)(read).as_secs() / 60;
@@ -1455,7 +1472,7 @@ fn control(
                 expected: "whole minutes",
             };
 
-            (stepper(setting, minutes, steps, roles), true)
+            (stepper(setting, minutes, steps, settings, roles), true)
         }
         Kind::Kelvin(range, field) => {
             let kelvin = u64::from((field.get)(read));
@@ -1467,7 +1484,7 @@ fn control(
                 expected: "whole kelvin",
             };
 
-            (stepper(setting, kelvin, steps, roles), true)
+            (stepper(setting, kelvin, steps, settings, roles), true)
         }
         Kind::DayTime(_) => (
             Box::new(field_with_hint(
@@ -1501,7 +1518,7 @@ fn control(
                 expected: count.expected,
             };
 
-            (stepper(setting, number, steps, roles), true)
+            (stepper(setting, number, steps, settings, roles), true)
         }
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
@@ -1548,6 +1565,7 @@ fn control(
                 (field.get)(read),
                 "Add a .desktop file id, then Enter",
                 None,
+                settings,
                 roles,
             )),
             false,
@@ -1558,6 +1576,7 @@ fn control(
                 (field.get)(read),
                 "Add an app id, then Enter",
                 None,
+                settings,
                 roles,
             )),
             false,
@@ -1568,6 +1587,7 @@ fn control(
                 (field.get)(read),
                 "Add a file or directory, then Enter",
                 None,
+                settings,
                 roles,
             )),
             false,
@@ -1578,6 +1598,7 @@ fn control(
                 (field.get)(read),
                 "Add a feed address, then Enter",
                 None,
+                settings,
                 roles,
             )),
             false,
@@ -1588,6 +1609,7 @@ fn control(
                 (field.get)(read).iter().map(Placed::to_string).collect(),
                 "Add a tile, like focus or wifi:full, then Enter",
                 Some(tiles::cycled),
+                settings,
                 roles,
             )),
             false,
@@ -1604,6 +1626,7 @@ fn control(
                             format!("remove {key} {app_id}"),
                             "remove",
                             Icon::Dismiss,
+                            settings,
                             roles,
                             move || change(entry.clone(), None)
                         )]
@@ -1614,6 +1637,7 @@ fn control(
                     Box::new(entry_line(
                         &format!("{app_id}  \u{2192}  {id}"),
                         actions,
+                        settings,
                         roles,
                     )) as Box<dyn Widget>
                 })
@@ -1706,7 +1730,9 @@ fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
             "Using the system default: Inter, then sans-serif"
         };
         if chosen.is_some() {
-            items.push(font_choice(system, false, roles, || select_font(None)));
+            items.push(font_choice(system, false, settings, roles, || {
+                select_font(None)
+            }));
         } else {
             items.push(Box::new(font_note(system, roles)));
         }
@@ -1716,7 +1742,7 @@ fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
         for family in matching {
             let selected = chosen.is_some_and(|chosen| chosen.eq_ignore_ascii_case(&family));
             let choice = family.clone();
-            items.push(font_choice(&family, selected, roles, move || {
+            items.push(font_choice(&family, selected, settings, roles, move || {
                 select_font(Some(choice.clone()))
             }));
         }
@@ -1732,11 +1758,12 @@ fn font_picker(settings: &Settings, roles: &ThemeRoles) -> Column {
 fn font_choice(
     name: &str,
     selected: bool,
+    settings: &Settings,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
 ) -> Box<dyn Widget> {
     let id = format!("font {name}");
-    let hovered = Settings::read().is_hovered(&id);
+    let hovered = settings.is_hovered(&id);
     let text = Text::new(name.to_owned())
         .size(theme::text::LABEL)
         .color(roles.on_surface)
@@ -1770,7 +1797,7 @@ fn font_choice(
         row
     };
 
-    button_styled(row, id, press, None, false, roles)
+    button_styled(row, id, press, None, false, settings, roles)
 }
 
 fn font_note(text: &str, roles: &ThemeRoles) -> Rectangle {
@@ -1817,6 +1844,7 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
                         .weight(theme::text::SEMIBOLD),
                 ),
                 Vec::new(),
+                settings,
                 roles,
             )],
             roles,
@@ -1866,10 +1894,17 @@ fn modules_view(settings: &Settings, query: Option<&str>, roles: &ThemeRoles) ->
                 &humanized(name),
                 &about,
                 on,
-                switch(format!("switch {MODULES}.{name}"), on, roles, move || {
-                    change(path(MODULES, Some(name)), Some(Value::Boolean(!on)));
-                }),
+                switch(
+                    format!("switch {MODULES}.{name}"),
+                    on,
+                    settings,
+                    roles,
+                    move || {
+                        change(path(MODULES, Some(name)), Some(Value::Boolean(!on)));
+                    },
+                ),
                 marks,
+                settings,
                 roles,
             )));
         }
@@ -1946,6 +1981,7 @@ fn module_line(
     on: bool,
     action: Box<dyn Widget>,
     marks: Vec<Box<dyn Widget>>,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Rectangle {
     let width = inner() - fixed(action.width()) - 24.0;
@@ -1981,7 +2017,7 @@ fn module_line(
 
     let height = fixed(Widget::height(&text)).max(fixed(action.height())) + 2.0 * 10.0;
     let hover_id = format!("module {name}");
-    let hovered = Settings::read().is_hovered(&hover_id);
+    let hovered = settings.is_hovered(&hover_id);
 
     let mut row = Rectangle::new()
         .width(inner())
@@ -2047,7 +2083,7 @@ fn position(
         let (cell_width, cell_height) = if sideways { (24.0, 44.0) } else { (48.0, 24.0) };
         let selectable = active && !(combined_position && sideways);
         let id = format!("place {edge_key} {} {}", to.0, to.1);
-        let hovered = Settings::read().is_hovered(&id);
+        let hovered = settings.is_hovered(&id);
 
         let mut cell = Rectangle::new()
             .width(cell_width)
@@ -2073,7 +2109,7 @@ fn position(
         );
 
         if selectable {
-            button(cell, id, press, None, roles)
+            button(cell, id, press, None, settings, roles)
         } else {
             Box::new(cell.opacity(theme::DISABLED))
         }
@@ -2136,6 +2172,7 @@ fn list(
     ids: Vec<String>,
     placeholder: &str,
     cycle: Option<fn(&str) -> Option<String>>,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Column {
     let key = setting.key;
@@ -2154,6 +2191,7 @@ fn list(
                     format!("up {key} {id}"),
                     "up",
                     "\u{2191}",
+                    settings,
                     roles,
                     to(list),
                 ));
@@ -2165,6 +2203,7 @@ fn list(
                     format!("down {key} {id}"),
                     "down",
                     "\u{2193}",
+                    settings,
                     roles,
                     to(list),
                 ));
@@ -2177,6 +2216,7 @@ fn list(
                     format!("cycle {key} {id}"),
                     "cycle",
                     "\u{21c4}",
+                    settings,
                     roles,
                     to(list),
                 ));
@@ -2188,11 +2228,12 @@ fn list(
                 format!("remove {key} {id}"),
                 "remove",
                 Icon::Dismiss,
+                settings,
                 roles,
                 to(without),
             ));
 
-            Box::new(entry_line(id, actions, roles)) as Box<dyn Widget>
+            Box::new(entry_line(id, actions, settings, roles)) as Box<dyn Widget>
         })
         .collect();
 
@@ -2217,9 +2258,14 @@ fn list(
 }
 
 // a list's entry with its actions at the end
-fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> Rectangle {
+fn entry_line(
+    text: &str,
+    actions: Vec<Box<dyn Widget>>,
+    settings: &Settings,
+    roles: &ThemeRoles,
+) -> Rectangle {
     let hover_id = format!("entry {text}");
-    let hovered = Settings::read().is_hovered(&hover_id);
+    let hovered = settings.is_hovered(&hover_id);
 
     let entry = Rectangle::new()
         .width(inner())
@@ -2252,8 +2298,14 @@ fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> 
 }
 
 // on is filled with the knob at the end, off in a trough with an edge and the knob at the start
-fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Box<dyn Widget> {
-    let hovered = Settings::read().is_hovered(&id);
+pub(super) fn switch(
+    id: String,
+    on: bool,
+    settings: &Settings,
+    roles: &ThemeRoles,
+    press: impl Fn() + 'static,
+) -> Box<dyn Widget> {
+    let hovered = settings.is_hovered(&id);
     pressed(
         switch_track(on, hovered, roles),
         id,
@@ -2314,10 +2366,11 @@ pub(super) fn switch_track(on: bool, hovered: bool, roles: &ThemeRoles) -> Recta
 }
 
 // a Choice's options side by side in a trough, the chosen one filled; one stop, Left and Right choose
-fn segmented(
+pub(super) fn segmented(
     id: String,
     options: &'static Choices,
     chosen: &str,
+    settings: &Settings,
     roles: &ThemeRoles,
     enabled: bool,
     choose: impl Fn(&'static str) + Clone + 'static,
@@ -2331,7 +2384,7 @@ fn segmented(
         .map(|&option| {
             let here = option == chosen;
             let seg_id = format!("{id} {option}");
-            let hovered = Settings::read().is_hovered(&seg_id);
+            let hovered = settings.is_hovered(&seg_id);
             let hover_seg = seg_id.clone();
             let text = Text::new(humanize(options, option))
                 .size(theme::text::LABEL)
@@ -2420,6 +2473,7 @@ fn cards(
     id: String,
     options: &'static Choices,
     chosen: &str,
+    settings: &Settings,
     roles: &ThemeRoles,
     preview: impl Fn(&'static str) -> Box<dyn Widget>,
     choose: impl Fn(&'static str) + Clone + 'static,
@@ -2434,7 +2488,7 @@ fn cards(
         .map(|&option| {
             let here = option == chosen;
             let card_id = format!("{id} {option}");
-            let hovered = Settings::read().is_hovered(&card_id);
+            let hovered = settings.is_hovered(&card_id);
             let hover_card = card_id.clone();
             let choose = choose.clone();
             let card = Rectangle::new()
@@ -2681,6 +2735,7 @@ fn stepper(
     setting: &'static Setting,
     value: u64,
     steps: Steps,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     const SIDE: f32 = 30.0;
@@ -2711,7 +2766,7 @@ fn stepper(
 
     let side = |node: &'static str, sign: &str, value: u64| {
         let side_id = format!("stepper {id} {node}");
-        let hovered = Settings::read().is_hovered(&side_id);
+        let hovered = settings.is_hovered(&side_id);
         let hover_id = side_id.clone();
         let mut btn = Rectangle::new()
             .width(SIDE)
@@ -2824,6 +2879,7 @@ fn text_button(
     id: String,
     node: &'static str,
     label: &str,
+    settings: &Settings,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
 ) -> Box<dyn Widget> {
@@ -2843,6 +2899,7 @@ fn text_button(
         id,
         press,
         Some(roles.edge()),
+        settings,
         roles,
     )
 }
@@ -2851,6 +2908,7 @@ fn icon_button(
     id: String,
     node: &'static str,
     icon: Icon,
+    settings: &Settings,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
 ) -> Box<dyn Widget> {
@@ -2865,15 +2923,17 @@ fn icon_button(
         id,
         press,
         None,
+        settings,
         roles,
     )
 }
 
 // a word in the primary color that acts when pressed
-fn link(
+pub(super) fn link(
     id: String,
     node: &'static str,
     label: &str,
+    settings: &Settings,
     roles: &ThemeRoles,
     press: impl Fn() + 'static,
 ) -> Box<dyn Widget> {
@@ -2894,6 +2954,7 @@ fn link(
         id,
         press,
         None,
+        settings,
         roles,
     )
 }
@@ -2977,9 +3038,10 @@ pub(super) fn button(
     id: impl Into<String>,
     press: impl Fn() + 'static,
     resting: Option<Color>,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
-    button_styled(control, id, press, resting, true, roles)
+    button_styled(control, id, press, resting, true, settings, roles)
 }
 
 pub(super) fn button_styled(
@@ -2988,11 +3050,12 @@ pub(super) fn button_styled(
     press: impl Fn() + 'static,
     resting: Option<Color>,
     wash: bool,
+    settings: &Settings,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
     let id = id.into();
     let hover_id = id.clone();
-    let hovered = Settings::read().is_hovered(&id);
+    let hovered = settings.is_hovered(&id);
     let press: Rc<dyn Fn()> = Rc::new(press);
     let click = press.clone();
     let token = ring::register(Stop::new(id).press(move || press()));

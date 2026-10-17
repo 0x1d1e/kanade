@@ -1247,10 +1247,14 @@ fn spawn(serial: u64, segment: u32) {
     // what encodes, from the settings the recording began with, and a window's by the pipeline it
     // runs
     let windowed = matches!(source, Source::Window { .. });
-    let found = probe::encoding(&recording, software).and_then(|encoding| match windowed {
-        true => probe::window(encoding, &recording, no_va),
-        false => Ok((encoding, None)),
-    });
+    let deadline = Instant::now() + encode::PROBE_BUDGET;
+    let found =
+        probe::encoding_within(&recording, software, deadline).and_then(
+            |encoding| match windowed {
+                true => probe::window_within(encoding, &recording, no_va, deadline),
+                false => Ok((encoding, None)),
+            },
+        );
     let (encoding, gave_way) = match found {
         Ok(found) => found,
         Err(why) => {
@@ -2087,13 +2091,17 @@ pub fn reclaim() {
     window::reclaim();
 }
 
-// pre-warms encoder probing in a background thread so starting a recording does not wait
+// pre-warms encoder probing and window pipelines in a background thread so starting a recording does not wait
 pub fn prewarm() {
     let _ = std::thread::Builder::new()
         .name(String::from("kanade-record-prewarm"))
         .spawn(|| {
             let recording = config::get().recording.clone();
-            let _ = probe::choice(&recording, false, false);
+            if let Ok(encoding) = probe::encoding(&recording, false) {
+                let _ = probe::window(encoding, &recording, false);
+            } else {
+                let _ = probe::choice(&recording, false, false);
+            }
         });
 }
 
