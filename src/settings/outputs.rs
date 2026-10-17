@@ -732,8 +732,9 @@ pub trait Port {
     /// The connected outputs, as niri reports them now.
     fn outputs(&self) -> Result<Vec<Output>, String>;
 
-    /// `niri msg output <output> <args>`; niri's message when it refuses.
-    fn run(&self, output: &str, args: &[String]) -> Result<(), String>;
+    /// `niri msg output <output> <args>`: `Refused` with niri's message when it says no,
+    /// `Unanswered` when the command timed out or could not be checked (niri may have applied it).
+    fn run(&self, output: &str, args: &[String]) -> Result<(), RunError>;
 
     /// Writes `edits` to the output's block in one validated change.
     fn write(&self, output: &Output, edits: &[&Edit]) -> Result<String, String>;
@@ -743,6 +744,24 @@ pub trait Port {
 
     /// Milliseconds since the epoch, to date the pending file.
     fn unix_ms(&self) -> u64;
+}
+
+/// Why a `Port::run` failed: a definite refusal, or a command that never answered.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunError {
+    /// niri said no; the message.
+    Refused(String),
+
+    /// The command timed out or could not be checked: niri may have applied it.
+    Unanswered(String),
+}
+
+impl RunError {
+    pub fn message(&self) -> String {
+        match self {
+            RunError::Refused(msg) | RunError::Unanswered(msg) => msg.clone(),
+        }
+    }
 }
 
 /// The trial in progress: one output, the changes made to it so far, and when they revert.
@@ -838,13 +857,27 @@ impl Controller {
             });
         }
 
-        if let Err(why) = port.run(name, &edit.args()) {
-            if self.session.as_ref().is_some_and(|s| s.edits.is_empty()) {
-                self.session = None;
-                delete_pending(&self.file);
-            }
+        match port.run(name, &edit.args()) {
+            Ok(()) => {}
+            Err(RunError::Refused(why)) => {
+                if self.session.as_ref().is_some_and(|s| s.edits.is_empty()) {
+                    self.session = None;
+                    delete_pending(&self.file);
+                }
 
-            return Err(why);
+                return Err(why);
+            }
+            Err(RunError::Unanswered(why)) => {
+                // niri may have applied it: keep the session and pending file so the
+                // trial's deadline can revert, rather than discarding state for a change
+                // that may be live
+                if let Some(session) = &mut self.session {
+                    session.edits.insert(edit.field(), edit);
+                    session.deadline = now + TRIAL_MS;
+                }
+
+                return Err(why);
+            }
         }
 
         if let Some(session) = &mut self.session {
@@ -858,8 +891,9 @@ impl Controller {
         Ok(())
     }
 
-    /// Writes the trial's changes to the config, all in one, and ends the trial. Nothing is
-    /// written, and the trial goes on to its deadline, when the engine refuses.
+    /// Writes the trial's changes to the config, all in one. The trial's recovery state (the
+    /// session and the pending file) is kept until `confirm_keep` or `abandon_keep`: the caller
+    /// waits for niri to reload the config before deciding.
     pub fn keep(&mut self, port: &dyn Port) -> Result<Ended, String> {
         let Some(session) = &self.session else {
             return Err(String::from("There is nothing to keep"));
@@ -872,10 +906,20 @@ impl Controller {
         let edits: Vec<&Edit> = session.edits.values().collect();
         let said = port.write(output, &edits)?;
 
+        Ok(Ended::Kept(said))
+    }
+
+    /// The reload succeeded and niri agrees: delete the pending file and end the trial.
+    pub fn confirm_keep(&mut self) {
         self.session = None;
         delete_pending(&self.file);
+    }
 
-        Ok(Ended::Kept(said))
+    /// The reload failed or niri disagrees: keep the pending file so the trial stays recoverable.
+    /// The session is cleared (the config is already written), but the file is left for a crash
+    /// recovery or a manual fix.
+    pub fn abandon_keep(&mut self) {
+        self.session = None;
     }
 
     /// Puts the output back as niri showed it before the trial. When it cannot (niri refuses),
@@ -912,8 +956,8 @@ impl Controller {
         }
 
         for args in plan {
-            if let Err(why) = port.run(&session.output, &args) {
-                failed.get_or_insert(why);
+            if let Err(error) = port.run(&session.output, &args) {
+                failed.get_or_insert(error.message());
             }
         }
 
@@ -999,7 +1043,7 @@ impl Controller {
         let left_on = !previous.enabled && !may_turn_off && found.is_some_and(Output::enabled);
 
         for args in plan {
-            port.run(&name, &args)?;
+            port.run(&name, &args).map_err(|e| e.message())?;
         }
 
         delete_pending(&self.file);

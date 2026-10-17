@@ -46,7 +46,8 @@ read later still (`/etc/sddm.conf`, or a `zzz-` one) wins, and `status` names it
   read the overlay can read it.
 - Every directory Kanade makes is 0755 and every file 0644 whatever your umask, since `sddm` is not you;
   `status` flags any that is not, and `sync` mends it. `sync` builds a theme beside the old one and
-  swaps it in, so a failure leaves the overlay that was there.
+  swaps it in atomically where the filesystem supports it (`renameat2` with `RENAME_EXCHANGE`),
+  falling back to two renames on others, so a failure leaves the overlay that was there.
 
 Trade-off: the overlay is yours, so any process running as you can change code and QML the login screen
 loads, which then runs as `sddm` (the greeter, before login). On a machine with one user, that adds
@@ -74,7 +75,7 @@ account, it is a trade-off. The alternative is a root-owned copy that this comma
 scripts/sddm-preview [--out DIR] [--only NAME ...]
 ```
 
-Renders 37 states (idle, typing, caps lock, wrong password through its shake, 12-hour clock, long
+Renders 40 states (idle, typing, caps lock, wrong password through its shake, 12-hour clock, long
 names, a backdrop and face, garbage config, ...) to PNGs under `$XDG_RUNTIME_DIR/sddm-preview` (or `--out DIR`), at 1920x1080 and
 at 3840x2160, under Qt 6 and Qt 5, and offscreen with the software renderer. It measures what was
 drawn against the lock screen's numbers (1 px), and it runs the real `sddm-greeter-qt6` and
@@ -85,8 +86,11 @@ Not part of CI.
 
 ## Limitations
 
-- No "Other user" entry: the screen lists the users SDDM lists. A hidden or LDAP-only account cannot
-  sign in from this theme (use a TTY, or SDDM's own theme, for it).
+- A hidden or LDAP-only account that SDDM does not list can sign in through the manual username
+  entry. When the user list is empty, a visible username field takes its place above the password.
+  When there are listed users, pressing the "Other user" chip past the last one moves to a cleared
+  username field; pressing it again returns to the list. With one listed user the same chip appears,
+  so the manual entry is always reachable with the keyboard alone.
 - Several screens each show the whole login screen. The password typed at one is not mirrored to the
   others. Each instance guards its own submit (`Checking`). SDDM probably gives each screen its own
   QML engine, in which case nothing is shared between screens; the guard across instances of one

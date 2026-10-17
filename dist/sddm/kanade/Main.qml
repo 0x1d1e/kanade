@@ -162,6 +162,24 @@ Item {
         id: plain
 
         Item {
+            TextInput {
+                id: fallbackUser
+                visible: root.users.length === 0
+                anchors.horizontalCenter: parent.horizontalCenter
+                y: parent.height * 0.4 - 40
+                width: 240
+                height: 24
+                color: "#f1f2f3"
+                font.pixelSize: 16
+                verticalAlignment: TextInput.AlignVCenter
+                clip: true
+                maximumLength: 256
+                Component.onCompleted: if (root.users.length === 0) forceActiveFocus()
+                Keys.onReturnPressed: secret.forceActiveFocus()
+                Keys.onEnterPressed: secret.forceActiveFocus()
+                Keys.onTabPressed: secret.forceActiveFocus()
+            }
+
             Text {
                 id: who
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -188,15 +206,20 @@ Item {
                     color: "#f1f2f3"
                     font.pixelSize: 14
                     echoMode: TextInput.Password
-                    focus: true
+                    focus: root.users.length > 0
                     verticalAlignment: TextInput.AlignVCenter
-                    Component.onCompleted: forceActiveFocus()
+                    Component.onCompleted: if (root.users.length > 0) forceActiveFocus()
                     Keys.onReturnPressed: submit()
                     Keys.onEnterPressed: submit()
 
                     function submit() {
+                        var name = ""
                         if (root.users.length > 0)
-                            root.login(root.users[root.defaultUser < root.users.length ? root.defaultUser : 0].name, text, root.defaultSession)
+                            name = root.users[root.defaultUser < root.users.length ? root.defaultUser : 0].name
+                        else
+                            name = fallbackUser.text
+                        if (name !== "")
+                            root.login(name, text, root.defaultSession)
                         text = ""
                     }
                 }

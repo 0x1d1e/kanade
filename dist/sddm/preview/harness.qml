@@ -111,6 +111,9 @@ Item {
         { name: "scale-small", options: { scale: "0.5" } },
         { name: "scale-big", options: { scale: "2" } },
         { name: "empty", host: { users: [], sessions: [] } },
+        { name: "manual-empty", host: { users: [], sessions: ["Niri"] }, typed: 3 },
+        { name: "manual-from-list", host: { users: root.many }, manualEntry: true },
+        { name: "late-users", host: { users: [] } },
         { name: "second-screen", options: { backdrop: "data/backdrop.png" }, host: { layouts: ["US", "DE"] } }
     ]
 
@@ -140,6 +143,14 @@ Item {
             text += "x"
         g.password = text
         g.ring = scenario.ring ? scenario.ring : 0
+        if (scenario.manualEntry)
+            g.manualEntry = true
+
+        // late-users: the greeter was built with an empty user list, then the host fills them
+        // in after reset(), as SDDM's userModel does on a real greeter
+        if (scenario.name === "late-users") {
+            host.users = [{ name: "kanade", realName: "Kanade", icon: "" }]
+        }
     }
 
     // two screens, one host: one login at a time, both hear the answer, both stay live; and the chips

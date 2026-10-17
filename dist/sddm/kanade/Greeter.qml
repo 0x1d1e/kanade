@@ -82,10 +82,17 @@ Item {
 
     readonly property bool busy: phase === "checking"
 
-    readonly property var user: (users.length > 0 && userIndex >= 0 && userIndex < users.length) ? users[userIndex] : null
-    readonly property string userName: user ? String(user.name || "") : ""
-    readonly property string shown: user ? String(user.realName || user.name || "") : ""
+    readonly property var user: (users.length > 0 && userIndex >= 0 && userIndex < users.length && !manual) ? users[userIndex] : null
+    readonly property string userName: manual ? manualUser.text : (user ? String(user.name || "") : "")
+    readonly property string shown: manual ? manualUser.text : (user ? String(user.realName || user.name || "") : "")
     readonly property string sessionName: (sessionIndex >= 0 && sessionIndex < sessions.length) ? String(sessions[sessionIndex]) : ""
+
+    // manual username entry: always when the user list is empty, else toggled by the user chip.
+    // `manualEntry` is imperatively assigned by `reset()` and the chip; `manual` is derived from
+    // it and the user list, so the list filling in after construction clears it without losing the
+    // binding (assigning a `property bool` breaks its binding; a `readonly` one keeps it)
+    property bool manualEntry: false
+    readonly property bool manual: manualEntry || users.length === 0
 
     // the date and time, now
     property date now: new Date()
@@ -123,8 +130,8 @@ Item {
     // the chips under the column, in key order
     readonly property var chips: {
         var list = []
-        if (users.length > 1)
-            list.push({ key: "user", label: "Switch user", icon: "user", active: true })
+        if (users.length >= 1)
+            list.push({ key: "user", label: manual ? "Back to list" : "Other user", icon: "user", active: true })
         if (sessions.length > 0)
             list.push({ key: "session", label: sessionName, icon: "session", active: sessions.length > 1 })
         if (layouts.length > 1)
@@ -165,6 +172,8 @@ Item {
 
     function reset() {
         picked = false
+        manualEntry = false
+        manualUser.text = ""
         pickUser()
         pickSession()
     }
@@ -178,7 +187,10 @@ Item {
 
     function focusField() {
         ring = 0
-        entry.forceActiveFocus()
+        if (manual && manualUser.text.length === 0)
+            manualUser.forceActiveFocus()
+        else
+            entry.forceActiveFocus()
     }
 
     // a login in flight blocks the submit of every instance in this engine (see Sanitize.js), and
@@ -193,6 +205,10 @@ Item {
     function submit() {
         if (busy)
             return
+        if (userName === "") {
+            failed()
+            return
+        }
         armed = ""
         phase = "checking"
         if (!still)
@@ -226,10 +242,23 @@ Item {
     function activate(key, byKey) {
         if (key === "user") {
             picked = true
-            if (users.length > 1) {
-                userIndex = (userIndex + 1) % users.length
+            if (manual) {
+                manualEntry = false
+                userIndex = 0
                 entry.text = ""
                 phase = ""
+            } else if (users.length > 1 && userIndex < users.length - 1) {
+                userIndex = userIndex + 1
+                entry.text = ""
+                phase = ""
+            } else {
+                manualEntry = true
+                manualUser.text = ""
+                entry.text = ""
+                phase = ""
+                manualUser.forceActiveFocus()
+                ring = 0
+                return
             }
         } else if (key === "session") {
             picked = true
@@ -271,14 +300,15 @@ Item {
             return { x: p.x, y: p.y, width: item.width, height: item.height }
         }
         return {
-            ui: ui, width: width, height: height, layouts: layouts.length, phase: phase, held: S.held(Date.now(), patience),
+            ui: ui, width: width, height: height, layouts: layouts.length, phase: phase, held: S.held(Date.now(), patience), manual: manual, manualEntry: manualEntry,
             date: { box: box(dateLine), baseline: dateLine.y + dateLine.baselineOffset, ascent: dateLine.ascent, descent: dateLine.descent, size: dateLine.size, text: dateLine.text },
             time: { box: box(timeLine), baseline: timeLine.y + timeLine.ascent, cap: timeLine.cap, text: timeLine.text },
             status: { box: box(statusLine), baseline: statusLine.y + statusLine.baselineOffset, cap: statusLine.cap, text: statusLine.text, visible: statusLine.visible },
             field: box(field),
             name: { box: box(nameLine), baseline: nameLine.y + nameLine.baselineOffset, ascent: nameLine.ascent, descent: nameLine.descent, text: nameLine.text },
             avatar: box(avatarItem),
-            focus: entry.focus, writable: !entry.readOnly, dots: dots, typed: entry.text.length, caps: caps, shaken: shaken,
+            focus: entry.focus || manualUser.activeFocus, writable: !entry.readOnly, dots: dots, typed: entry.text.length, caps: caps, shaken: shaken,
+            manualPill: manual ? box(manualPill) : null,
             caret: { visible: caret.visible, box: box(caret) },
             placeholder: { visible: placeholder.visible, x: placeholder.mapToItem(root, 0, 0).x, baseline: placeholder.y + placeholder.baselineOffset },
             chips: chipRow.children.length,
@@ -428,8 +458,10 @@ Item {
             y: root.avatarTop
             face: root.face
             ink: root.text
-            initial: root.shown.length > 0 ? root.shown.charAt(0).toUpperCase() : ""
+            initial: root.manual ? (manualUser.text.length > 0 ? manualUser.text.charAt(0).toUpperCase() : "") : (root.shown.length > 0 ? root.shown.charAt(0).toUpperCase() : "")
             sources: {
+                if (root.manual)
+                    return []
                 var list = []
                 if (root.facePath !== "" && root.userIndex === Math.max(0, Math.floor(Number(root.host ? root.host.defaultUser : 0))))
                     list.push(Qt.resolvedUrl(root.facePath))
@@ -441,6 +473,7 @@ Item {
 
         Line {
             id: nameLine
+            visible: !root.manual
             text: root.shown
             face: root.face
             ink: root.text
@@ -451,12 +484,66 @@ Item {
             x: root.middle - width / 2
         }
 
+        // a username field in the same place and typography as the name, for manual entry
+        Pill {
+            id: manualPill
+            visible: root.manual
+            x: root.middle - root.fieldWidth / 2
+            y: root.nameTop - (root.fieldHeight - root.nameHeight) / 2
+            width: root.fieldWidth
+            height: root.fieldHeight
+
+            TextInput {
+                id: manualUser
+                x: root.inset
+                width: parent.width - root.inset * 2
+                height: parent.height
+                verticalAlignment: TextInput.AlignVCenter
+                color: root.text
+                font.family: root.face
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                clip: true
+                maximumLength: 256
+                visible: root.manual
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+
+                Keys.onReturnPressed: {
+                    entry.forceActiveFocus()
+                }
+                Keys.onEnterPressed: {
+                    entry.forceActiveFocus()
+                }
+                Keys.onTabPressed: {
+                    entry.forceActiveFocus()
+                }
+                Keys.onEscapePressed: {
+                    if (root.users.length > 0) {
+                        root.manualEntry = false
+                        root.focusField()
+                    }
+                }
+            }
+
+            Line {
+                id: manualPlaceholder
+                visible: root.manual && manualUser.text.length === 0 && !manualUser.activeFocus
+                text: "Username"
+                face: root.face
+                ink: root.muted
+                size: 14
+                maxWidth: root.fieldWidth - root.inset * 2
+                x: root.inset + 4
+                base: parent.height / 2 + cap / 2
+            }
+        }
+
         MouseArea {
-            enabled: root.users.length > 1
-            x: Math.min(avatarItem.x, nameLine.x)
+            enabled: root.users.length >= 1 && !root.manual
+            x: Math.min(avatarItem.x, root.manual ? manualPill.x : nameLine.x)
             y: avatarItem.y
-            width: Math.max(avatarItem.width, nameLine.width)
-            height: nameLine.y + nameLine.height - avatarItem.y
+            width: Math.max(avatarItem.width, root.manual ? manualPill.width : nameLine.width)
+            height: (root.manual ? manualPill.y + manualPill.height : nameLine.y + nameLine.height) - avatarItem.y
             cursorShape: Qt.PointingHandCursor
             onClicked: root.activate("user", false)
         }
@@ -501,7 +588,7 @@ Item {
                 x: root.dots === 0 ? root.inset : root.inset + (root.dots - 1) * root.pitch + root.dot * 2 + 3
                 y: field.height / 2 - 9
                 color: root.text
-                visible: root.ring === 0 && !root.busy && (root.still || blink.on)
+                visible: root.ring === 0 && !root.busy && entry.activeFocus && (root.still || blink.on)
             }
 
             Timer {
@@ -509,7 +596,7 @@ Item {
                 property bool on: true
                 interval: 530
                 repeat: true
-                running: !root.still && root.ring === 0 && !root.busy
+                running: !root.still && root.ring === 0 && !root.busy && entry.activeFocus
                 onTriggered: on = !on
                 onRunningChanged: on = true
             }

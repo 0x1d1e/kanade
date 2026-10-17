@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 use kanade_runtime::service::Service;
 use kanade_runtime::{MutexExt, TextInput};
 
-use super::{Controller, Edit, Ended, Field, Output, Port, Vrr, disagreements, parse_outputs};
+use super::{
+    Controller, Edit, Ended, Field, Output, Port, RunError, Vrr, disagreements, parse_outputs,
+};
+use crate::appearance::child;
 use crate::niri_config::{self, Editor, OUTPUT_KEYS, Reading};
 use crate::settings::niri::{self as page, PAGE};
 use crate::settings::{Settings, WINDOW};
@@ -24,7 +27,10 @@ use crate::sources::niri as ipc;
 // how long niri gets to apply a change before the page asks what it applied
 const SETTLE: Duration = Duration::from_millis(300);
 
-// and to reload the config after a write, which it does when it sees the file change
+// how long to wait for niri to reload the config after a Keep, in TICK steps
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
+
+// how long to wait for niri to reload the config after a Reset (which has no ConfigLoaded check)
 const RELOAD: Duration = Duration::from_millis(700);
 
 // how often the page asks niri for the outputs while it shows, which is how it sees a monitor
@@ -197,26 +203,22 @@ impl Port for Real {
             .map_err(|error| format!("niri could not be asked for its outputs: {error}"))
     }
 
-    fn run(&self, output: &str, args: &[String]) -> Result<(), String> {
-        let done = Command::new("niri")
+    fn run(&self, output: &str, args: &[String]) -> Result<(), RunError> {
+        let mut command = Command::new("niri");
+        command
             .args(["msg", "output", output])
             .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| format!("niri msg could not run: {error}"))?;
+            .stdin(Stdio::null());
 
-        if done.status.success() {
-            return Ok(());
+        // about the 2 s niri is given for a question (the PATIENCE shape in sources/niri.rs),
+        // through the bounded child runner so a stalled command never blocks the worker thread
+        let timeout = Duration::from_secs(2);
+
+        match child::run::<()>(command, "niri msg output", timeout, || None) {
+            child::Ran::Done(Ok(_)) => Ok(()),
+            child::Ran::Done(Err(why)) => Err(run_error(why)),
+            child::Ran::Superseded(()) => unreachable!(),
         }
-
-        let said = String::from_utf8_lossy(&done.stderr);
-        let said = said.trim().trim_start_matches("Error: ").trim();
-
-        Err(if said.is_empty() {
-            format!("niri did not accept `{}`", args.join(" "))
-        } else {
-            said.to_owned()
-        })
     }
 
     fn write(&self, output: &Output, edits: &[&Edit]) -> Result<String, String> {
@@ -252,6 +254,20 @@ fn controller<R>(call: impl FnOnce(&mut Controller) -> R) -> R {
         control.get_or_insert_with(|| Controller::new(Controller::file().unwrap_or_default()));
 
     call(control)
+}
+
+// child::run's own errors (spawn, read, wait, timeout) mean niri may have applied the change;
+// everything else is niri's own refusal via a non-zero exit.
+pub(super) fn run_error(why: String) -> RunError {
+    if why.contains("timed out after")
+        || why.starts_with("could not run ")
+        || why.starts_with("could not read ")
+        || why.starts_with("could not wait for ")
+    {
+        RunError::Unanswered(why)
+    } else {
+        RunError::Refused(why)
+    }
 }
 
 // ---- the jobs ----
@@ -504,6 +520,11 @@ fn handle(job: Job) {
                     )
                 })
             });
+
+            // snapshot the config-load counter before writing, so the worker can tell
+            // when niri has reloaded (same thread, no race with the write)
+            let before = ipc::config_load_state();
+
             let result = controller(|control| control.keep(&Real));
 
             match result {
@@ -516,12 +537,65 @@ fn handle(job: Job) {
                     }
                     page::load();
 
-                    // niri reloads the config on its own; then the two can be compared
-                    thread::sleep(RELOAD);
+                    // wait for niri to reload the config (ConfigLoaded on the event stream),
+                    // up to about 2 s in TICK steps so a superseding job is still noticed
+                    let deadline = Instant::now() + CONFIRM_TIMEOUT;
+                    let mut loaded = None;
+
+                    while Instant::now() < deadline {
+                        thread::sleep(TICK);
+                        let now = ipc::config_load_state();
+                        if now.count != before.count {
+                            loaded = Some(now);
+                            break;
+                        }
+                    }
+
                     publish();
 
-                    if let Some((name, edits)) = &edits {
-                        compare(name, edits);
+                    // `edits` was read from the session before `keep`, which returns
+                    // Err when there is no session, so reaching Kept means edits is Some.
+                    let (name, edits) = edits.as_ref().unwrap();
+
+                    match loaded {
+                        Some(state) if state.last_failed => {
+                            // niri rejected the config: put the output back
+                            let reverted = controller(|control| control.revert(&Real));
+
+                            Settings::write().outputs.notice = Some(match reverted {
+                                Ok(_) => (
+                                    format!(
+                                        "niri could not load the saved config; \
+                                         {name} put back"
+                                    ),
+                                    true,
+                                ),
+                                Err(why) => (
+                                    format!(
+                                        "niri could not load the saved config; \
+                                         {name} is still as it was: {why}"
+                                    ),
+                                    true,
+                                ),
+                            });
+                        }
+                        _ => {
+                            // A load was seen and succeeded, or no ConfigLoaded
+                            // arrived within 2 s. Either way, do not revert: the
+                            // user pressed Keep, the config was written and
+                            // validated, and reverting would discard a change the
+                            // user explicitly asked for with no evidence it failed.
+                            // A timeout with the event stream down is unknown, not
+                            // failed. Compare what niri shows to what was written.
+                            let disagreed = check_disagreements(name, edits);
+                            if disagreed {
+                                // niri disagrees: keep the pending file so the
+                                // trial stays recoverable
+                                controller(|control| control.abandon_keep());
+                            } else {
+                                controller(|control| control.confirm_keep());
+                            }
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -567,13 +641,14 @@ fn ended_trial(result: Result<Ended, String>, said: &str) {
     };
 }
 
-// says once where niri shows something other than what was written
-fn compare(name: &str, edits: &[Edit]) {
+// checks where niri shows something other than what was written; posts a notice if so.
+// returns true when there are disagreements
+fn check_disagreements(name: &str, edits: &[Edit]) -> bool {
     let Ok(outputs) = Real.outputs() else {
-        return;
+        return false;
     };
     let Some(output) = outputs.iter().find(|output| output.name == name) else {
-        return;
+        return false;
     };
     let refs: Vec<&Edit> = edits.iter().collect();
     let said = disagreements(&refs, output);
@@ -583,6 +658,9 @@ fn compare(name: &str, edits: &[Edit]) {
             format!("Saved, but niri differs: {}", said.join("; ")),
             true,
         ));
+        true
+    } else {
+        false
     }
 }
 

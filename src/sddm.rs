@@ -31,6 +31,7 @@ use rustix::process::{getgid, getuid};
 use self::class::Class;
 use crate::atomic::{self, Mode};
 use crate::cli;
+use crate::clock;
 use crate::config::{self, Config};
 use crate::look::SddmBackground;
 use crate::sources::json::Json;
@@ -733,16 +734,19 @@ fn modes(dir: &Path, fix: bool) -> io::Result<Vec<PathBuf>> {
 /*
  * makes the overlay of an installed theme: its directories and links to its files, with `user` as
  * its `USER`. It is built beside the overlay as `<theme>.new` and moved into place, so a failure
- * partway leaves the overlay that was there; a crash between the two renames leaves the last
- * working theme in `<theme>.old`, which the next run puts back before anything else. The overlay is
- * Kanade's, and is replaced whole
+ * partway leaves the overlay that was there. When the overlay exists, the swap is atomic
+ * (`clock::exchange`, `renameat2` with `RENAME_EXCHANGE`): `.new` and the overlay trade places in
+ * one syscall, then `.new` (now the previous theme) is removed. When `exchange` is unsupported
+ * (the filesystem, cross-device), the fallback is two renames through `.old`,
+ * whose crash window `recover` covers on the next run. The overlay is Kanade's, and is replaced
+ * whole
  */
 fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Result<(), String> {
     let said = |error: io::Error| format!("{}: {error}", overlay.display());
     let (new, old) = (beside(overlay, ".new"), beside(overlay, ".old"));
 
-    // a run that died between the two renames left the overlay gone and the last working theme in
-    // `.old`: put it back before the cleanup below would remove it
+    // a run that died between the two fallback renames left the overlay gone and the last working
+    // theme in `.old`: put it back before the cleanup below would remove it
     recover(overlay).map_err(said)?;
 
     // parts a run that died left
@@ -775,7 +779,15 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
         return Err(said(error));
     }
 
-    // two renames, the first aside: a directory is not renamed over one that holds something
+    // atomic path: swap .new and the overlay in one syscall, then remove the previous.
+    // After exchange, .new holds whatever the overlay was, which may be a symlink;
+    // remove_dir_all does not remove a symlink, so fall back to remove_file
+    if fs::symlink_metadata(overlay).is_ok() && clock::exchange(&new, overlay).is_ok() {
+        let _ = fs::remove_dir_all(&new).or_else(|_| fs::remove_file(&new));
+        return Ok(());
+    }
+
+    // fallback: two renames through .old (a crash between them is covered by `recover`)
     let aside = fs::symlink_metadata(overlay).is_ok();
     if aside && let Err(error) = fs::rename(overlay, &old) {
         let _ = fs::remove_dir_all(&new);
@@ -785,10 +797,10 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
         if aside {
             let _ = fs::rename(&old, overlay);
         }
-        let _ = fs::remove_dir_all(&new);
+        let _ = fs::remove_dir_all(&new).or_else(|_| fs::remove_file(&new));
         return Err(said(error));
     }
-    let _ = fs::remove_dir_all(&old);
+    let _ = fs::remove_dir_all(&old).or_else(|_| fs::remove_file(&old));
 
     Ok(())
 }
@@ -2045,6 +2057,81 @@ mod tests {
         assert_eq!(
             fs::read_to_string(overlay.join(USER)).unwrap(),
             "font=Fira\n"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_farm_over_an_existing_overlay_leaves_the_new_content_with_no_leftovers() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let overlay = root.join("themes/kanade");
+        let (new, old) = (beside(&overlay, ".new"), beside(&overlay, ".old"));
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a"), "a").unwrap();
+        fs::write(source.join("b"), "b").unwrap();
+
+        // an overlay with one file
+        fs::create_dir_all(&overlay).unwrap();
+        fs::write(overlay.join("Main.qml"), "old").unwrap();
+        fs::write(overlay.join(USER), "font=Old\n").unwrap();
+
+        let plan = [(PathBuf::from("a"), Some(source.join("a")))];
+        farm(&overlay, &plan, "font=New\n").unwrap();
+
+        // the overlay holds the new content
+        assert!(overlay.join("a").exists());
+        assert_eq!(
+            fs::read_to_string(overlay.join(USER)).unwrap(),
+            "font=New\n"
+        );
+        // no .new or .old left
+        assert!(fs::symlink_metadata(&new).is_err());
+        assert!(fs::symlink_metadata(&old).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // after a successful exchange the .new path holds whatever the overlay held, which may be a
+    // symlink; remove_dir_all does not remove a symlink, so the removal must fall back to
+    // remove_file. This builds that case without live SDDM.
+    #[test]
+    fn a_farm_over_a_symlink_overlay_removes_the_stale_new_after_exchange() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-symlink-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let overlay = root.join("themes/kanade");
+        let new = beside(&overlay, ".new");
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("a"), "a").unwrap();
+
+        // the overlay is a symlink to a real directory (as a store-path theme might be)
+        let real = root.join("real-overlay");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("Main.qml"), "old").unwrap();
+        fs::write(real.join(USER), "font=Old\n").unwrap();
+        fs::create_dir_all(overlay.parent().unwrap()).unwrap();
+        symlink(&real, &overlay).unwrap();
+
+        let plan = [(PathBuf::from("a"), Some(source.join("a")))];
+        farm(&overlay, &plan, "font=New\n").unwrap();
+
+        // the overlay is now a real directory with the new content
+        assert!(overlay.join("a").exists());
+        assert_eq!(
+            fs::read_to_string(overlay.join(USER)).unwrap(),
+            "font=New\n"
+        );
+        // no .new left (the symlink that exchange put there was removed)
+        assert!(
+            fs::symlink_metadata(&new).is_err(),
+            ".new was not cleaned up"
         );
 
         fs::remove_dir_all(root).unwrap();

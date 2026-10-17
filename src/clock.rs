@@ -228,6 +228,35 @@ pub fn open_i2c(path: &std::path::Path, address: u16) -> io::Result<File> {
     Ok(bus)
 }
 
+/*
+ * atomically swaps two existing paths: after the call `a` holds what `b` held and vice versa,
+ * with no instant where either is missing. The two may be of different types (a directory and a
+ * symlink, for instance). Uses `renameat2(2)` with `RENAME_EXCHANGE`; returns `Err` when the
+ * kernel or filesystem does not support it, or the two paths are on different filesystems
+ */
+pub fn exchange(a: &std::path::Path, b: &std::path::Path) -> io::Result<()> {
+    let a = CString::new(a.as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
+    let b = CString::new(b.as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
+
+    // SAFETY: both CStrings outlive the call; AT_FDCWD makes the paths relative to cwd, but they
+    // are absolute in every caller. renameat2 with RENAME_EXCHANGE atomically swaps the two
+    let ret = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 // <linux/rfkill.h>, a struct rfkill_event as read in its first, fixed size
 pub const RFKILL_EVENT: usize = 8;
 pub const RFKILL_OP_ADD: u8 = 0;

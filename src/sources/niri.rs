@@ -12,7 +12,7 @@ use std::env;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
@@ -564,6 +564,10 @@ type InUse = fn(Option<String>);
 // set once `follow` runs, after which a Module can no longer ask to hear
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
 
+// every ConfigLoaded niri sends, successful or not; the high bit is whether the last one failed.
+// Read by the settings worker to know when niri has reloaded the config after a Keep.
+static CONFIG_LOADS: AtomicU64 = AtomicU64::new(0);
+
 // `then` hears every window event, on the niri thread, so it must not block. Taken before `follow`
 // runs, or the windows niri lists first are missed
 pub fn on_windows(then: fn(Heard)) {
@@ -615,6 +619,31 @@ pub fn on_config_failed(then: fn()) {
     );
 
     CONFIGS.locked().push(then);
+}
+
+fn record_config_load(failed: bool) {
+    let failed_bit = if failed { 1u64 << 63 } else { 0 };
+    // increment the counter in the low 63 bits, set the high bit from this load
+    let prev = CONFIG_LOADS.load(Ordering::Relaxed);
+    let count = (prev & !(1u64 << 63)).wrapping_add(1);
+    CONFIG_LOADS.store(count | failed_bit, Ordering::Relaxed);
+}
+
+/// A snapshot of niri's config-load counter: how many `ConfigLoaded` events have been seen and
+/// whether the last one failed. The settings worker reads this before and after a Keep to know
+/// when niri has reloaded the written config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigLoadState {
+    pub count: u64,
+    pub last_failed: bool,
+}
+
+pub fn config_load_state() -> ConfigLoadState {
+    let raw = CONFIG_LOADS.load(Ordering::Relaxed);
+    ConfigLoadState {
+        count: raw & !(1u64 << 63),
+        last_failed: raw & (1u64 << 63) != 0,
+    }
 }
 
 // runs on its own thread for good; without niri, or once its socket is lost, every monitor is focused
@@ -878,13 +907,14 @@ fn watch(
             }
         }
 
-        if event
-            .get("ConfigLoaded")
-            .and_then(|loaded| loaded.get("failed"))
-            .and_then(Json::as_bool)
-            == Some(true)
-        {
-            failed();
+        if let Some(loaded) = event.get("ConfigLoaded") {
+            let is_failed = loaded.get("failed").and_then(Json::as_bool) == Some(true);
+
+            record_config_load(is_failed);
+
+            if is_failed {
+                failed();
+            }
         }
 
         niri.apply(&event);

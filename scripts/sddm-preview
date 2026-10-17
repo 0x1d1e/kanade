@@ -271,6 +271,25 @@ def check(p, wrong_at):
     if name in texts:
         if (p["date"]["text"], p["time"]["text"]) != texts[name]:
             failed.append(f"{name}: texts {p['date']['text']!r} {p['time']['text']!r} != {texts[name]!r}")
+
+    # manual entry: the username pill is at the name's row, same width and height as the password field
+    if p.get("manual"):
+        mp = p.get("manualPill")
+        if mp is None:
+            failed.append(f"{name}: manual is true but manualPill is missing")
+        else:
+            near("manual pill width", mp["width"], 240, 0)
+            near("manual pill height", mp["height"], 36, 0)
+            near("manual pill centered", mp["x"] + mp["width"] / 2, middle)
+
+    # late-users: greeter built with empty users, then users filled in after reset; manual must
+    # clear once the list arrives, showing the listed user's name, not the empty username pill
+    if name == "late-users":
+        if p.get("manual"):
+            failed.append(f"{name}: manual is true after users arrived (the binding was lost)")
+        if p["name"]["text"] != "Kanade":
+            failed.append(f"{name}: name text is {p['name']['text']!r}, not 'Kanade'")
+
     return failed
 
 
@@ -501,8 +520,8 @@ def main():
             wrong = [problem for probe in probes for problem in check(probe, None)]
             print(f"{label}: {len(probes)} states, {len(faults)} faults, {len(wrong)} geometry misses")
             failed += [f"{label}: {line}" for line in faults + wrong]
-            if len(probes) != 37:
-                failed.append(f"{label}: {len(probes)} of 37 states rendered")
+            if len(probes) != 40:
+                failed.append(f"{label}: {len(probes)} of 40 states rendered")
 
         # the last two: theme.conf.user picks a session by name; and a theme.conf.user of garbage
         picks = "[General]\nsession=Niri\n"

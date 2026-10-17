@@ -18,6 +18,9 @@ struct Fake {
     // every `run`, refused ones included, which `commands` cannot show
     runs: Cell<u32>,
 
+    // when true, `run` returns `Unanswered` instead of carrying out the command
+    hangs: Cell<bool>,
+
     // whether the pending file existed at each command
     file: PathBuf,
     file_at_commands: RefCell<Vec<bool>>,
@@ -35,6 +38,7 @@ impl Fake {
             clock: Cell::new(1_000),
             unix: Cell::new(1_700_000_000_000),
             runs: Cell::new(0),
+            hangs: Cell::new(false),
             file: file.to_owned(),
             file_at_commands: RefCell::default(),
         }
@@ -64,7 +68,7 @@ impl Port for Fake {
         Ok(self.outputs.borrow().clone())
     }
 
-    fn run(&self, name: &str, args: &[String]) -> Result<(), String> {
+    fn run(&self, name: &str, args: &[String]) -> Result<(), RunError> {
         self.runs.set(self.runs.get() + 1);
         self.file_at_commands.borrow_mut().push(self.file.exists());
 
@@ -77,12 +81,20 @@ impl Port for Fake {
                 && arg.parse::<f64>().is_ok()
                 && !dashes.is_some_and(|dashes| dashes < at)
             {
-                return Err(format!("error: unexpected argument '{arg}' found"));
+                return Err(RunError::Refused(format!(
+                    "error: unexpected argument '{arg}' found"
+                )));
             }
         }
 
+        if self.hangs.get() {
+            return Err(RunError::Unanswered(String::from(
+                "niri msg output timed out after 2000 ms",
+            )));
+        }
+
         if let Some(why) = self.refuse.borrow().clone() {
-            return Err(why);
+            return Err(RunError::Refused(why));
         }
 
         self.commands
@@ -396,6 +408,9 @@ fn the_pending_file_is_there_before_niri_is_told_and_gone_when_the_trial_ends() 
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 1.5);
 
     control.keep(&fake).unwrap();
+    // keep no longer deletes the file; confirm_keep does
+    assert!(dir.file().exists());
+    control.confirm_keep();
     assert!(!dir.file().exists());
     assert!(control.session.is_none());
 }
@@ -665,7 +680,13 @@ fn keep_writes_every_change_of_the_trial_at_once() {
             vec![Edit::Scale(1.25), Edit::Vrr(Vrr::OnDemand)]
         )]
     );
+
+    // the file and session stay until confirm_keep
+    assert!(dir.file().exists());
+    assert!(control.session.is_some());
+    control.confirm_keep();
     assert!(!dir.file().exists());
+    assert!(control.session.is_none());
 }
 
 #[test]
@@ -1047,4 +1068,154 @@ fn a_countdown_does_not_ask_for_the_inputs_to_be_set_again() {
     state.resync("eDP-1", &['x', 'y']);
     assert_eq!(state.generation, 1);
     assert_eq!(state.resync.len(), 2);
+}
+
+// ---- Finding A: keep confirmation ----
+
+#[test]
+fn a_keep_is_confirmed_only_after_confirm_keep_is_called() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+
+    // the file is still there after keep, before confirm
+    assert!(dir.file().exists());
+    assert!(control.session.is_some());
+
+    control.confirm_keep();
+
+    // gone after confirm
+    assert!(!dir.file().exists());
+    assert!(control.session.is_none());
+}
+
+#[test]
+fn abandon_keep_clears_session_but_leaves_the_file() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+
+    control.abandon_keep();
+
+    // the file stays for crash recovery; the session is cleared
+    assert!(dir.file().exists());
+    assert!(control.session.is_none());
+}
+
+// ---- Finding B: RunError ----
+
+#[test]
+fn a_command_that_does_not_answer_does_not_end_a_trial() {
+    let (dir, fake, mut control) = setup();
+
+    fake.hangs.set(true);
+
+    let why = control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap_err();
+
+    assert!(why.contains("timed out"), "{why}");
+
+    // the trial stays: the pending file is there, the session holds the edit, and the
+    // deadline can revert it
+    assert!(dir.file().exists());
+    assert!(control.session.is_some());
+    let session = control.session.as_ref().unwrap();
+    assert!(session.edits.contains_key(&Field::Scale));
+
+    // the deadline reverts it
+    fake.hangs.set(false);
+    fake.at(20_000);
+    assert_eq!(control.expire(&fake), Some(Ok(Ended::Reverted)));
+    assert!(!dir.file().exists());
+}
+
+#[test]
+fn a_revert_that_does_not_answer_keeps_its_file_and_tries_again() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    fake.hangs.set(true);
+    fake.at(2_000);
+
+    // the revert fails with Unanswered, which is still an error to the controller
+    let result = control.revert(&fake);
+    assert!(result.is_err());
+    assert!(dir.file().exists());
+    assert!(control.session.is_some());
+
+    let session = control.session.as_ref().unwrap();
+    assert!(session.stuck.is_some());
+    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+
+    // when the command works again, the retry succeeds
+    fake.hangs.set(false);
+    fake.at(2_000 + RETRY_MS);
+    assert_eq!(control.expire(&fake), Some(Ok(Ended::Reverted)));
+    assert_eq!(fake.state("eDP-1"), panel());
+    assert!(!dir.file().exists());
+}
+
+#[test]
+fn a_keep_whose_load_fails_can_be_reverted() {
+    let (dir, fake, mut control) = setup();
+    let before = fake.state("eDP-1");
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+
+    // the load failed: revert puts the output back, the file goes with it
+    assert!(dir.file().exists());
+    assert_eq!(control.revert(&fake), Ok(Ended::Reverted));
+    assert_eq!(fake.state("eDP-1"), before);
+    assert!(!dir.file().exists());
+}
+
+// ---- run_error ----
+
+#[test]
+fn run_error_classifies_child_failures_as_unanswered_and_niri_refusals_as_refused() {
+    use super::work::run_error;
+
+    // child::run's own failures: niri may have applied the change
+    assert!(matches!(
+        run_error(String::from("niri msg output timed out after 2000 ms")),
+        RunError::Unanswered(_)
+    ));
+    assert!(matches!(
+        run_error(String::from(
+            "could not run niri msg output: No such file or directory (os error 2)"
+        )),
+        RunError::Unanswered(_)
+    ));
+    assert!(matches!(
+        run_error(String::from("could not read niri msg output output")),
+        RunError::Unanswered(_)
+    ));
+    assert!(matches!(
+        run_error(String::from(
+            "could not wait for niri msg output: interrupted"
+        )),
+        RunError::Unanswered(_)
+    ));
+
+    // niri's own refusals: it told us no
+    assert!(matches!(
+        run_error(String::from("Unknown output \"HDMI-A-5\"")),
+        RunError::Refused(_)
+    ));
+    assert!(matches!(
+        run_error(String::from("error: unexpected argument '--' found")),
+        RunError::Refused(_)
+    ));
 }
