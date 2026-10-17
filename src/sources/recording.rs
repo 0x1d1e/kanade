@@ -1,6 +1,6 @@
 //! Screen recording (docs/design.md Capture, ADR 0013, ADR 0116, ADR 0117): `kanade capture record
 //! start` records the focused output or an area with wf-recorder, or a window with niri's screen
-//! cast (`window`), encoded on the GPU through VA-API, with no sound, the speakers' or the
+//! cast (`window`), encoded on the GPU through VA-API or NVENC, else on the CPU, with no sound, the speakers' or the
 //! microphone's, to `~/Videos/Screencasts`; `pause` and `resume` end
 //! the recorder's file and start another, `stop` saves the lot as one file, and `status` says how
 //! the recording stands. wf-recorder captures through niri's wlr-screencopy, which niri counts as a
@@ -21,8 +21,10 @@
 //! thread that started it. A window is recorded by two programs and a niri session (`window`), but
 //! is one segment to the machine, whose end is the file's writer ending.
 
+mod encode;
 mod machine;
 mod plan;
+mod probe;
 mod window;
 
 use std::collections::VecDeque;
@@ -52,6 +54,7 @@ use super::json::Json;
 use super::niri::{self, Heard};
 use super::wake::{self, Failed, NOT_FOUND};
 use crate::clock;
+use crate::config;
 use crate::island::activity::{
     Action, Activity, Clip, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
@@ -151,6 +154,19 @@ struct Take {
 
     // the window it records closed, which ended it
     closed: bool,
+
+    // why it records with the software encoder when the one chosen did not start (ADR 0116); none
+    // while it has not had to
+    software: Option<String>,
+
+    // a window's frames could not be downloaded through the VA-API post-processor, which failed
+    // before a frame was written (a node that encodes a test frame may not import the GPU niri casts
+    // from): the rest of the recording downloads through EGL, which the trial of a chain tells
+    no_va: bool,
+
+    // the recording settings as it began: a reload of the config between a pause and the resume does
+    // not change the encoder, quality or device of what is one file
+    recording: config::Recording,
 }
 
 impl Take {
@@ -772,6 +788,9 @@ fn begin(start: Start, later: &Later) -> Result<(), String> {
         audio,
         pausable,
         closed: false,
+        software: None,
+        no_va: false,
+        recording: config::get().recording.clone(),
     });
 
     if pick {
@@ -886,9 +905,13 @@ pub fn status() -> Status {
     let runtime = RUNTIME.locked();
     let what = |take: &Take| {
         let what = take.source.as_ref().map(Source::said).unwrap_or_default();
-
-        match take.audio.heard() {
+        let what = match take.audio.heard() {
             Some(heard) => format!("{what}, {heard}"),
+            None => what,
+        };
+
+        match &take.software {
+            Some(_) => format!("{what}, software encoding"),
             None => what,
         }
     };
@@ -1203,13 +1226,15 @@ fn spawn(serial: u64, segment: u32) {
                     take.audio,
                     runtime.machine.phase(),
                     take.segment(segment),
+                    (take.software.is_some(), take.no_va),
+                    take.recording.clone(),
                 )
             }
             _ => return,
         }
     };
 
-    let (source, audio, phase, file) = chosen;
+    let (source, audio, phase, file, (software, no_va), recording) = chosen;
 
     // a stop or a lock came while it was handed over: nothing is recorded, not even a microphone
     if matches!(phase, Phase::Running { stopping: true, .. }) {
@@ -1219,18 +1244,42 @@ fn spawn(serial: u64, segment: u32) {
         });
     }
 
+    // what encodes, from the settings the recording began with, and a window's by the pipeline it
+    // runs
+    let windowed = matches!(source, Source::Window { .. });
+    let found = probe::encoding(&recording, software).and_then(|encoding| match windowed {
+        true => probe::window(encoding, &recording, no_va),
+        false => Ok((encoding, None)),
+    });
+    let (encoding, gave_way) = match found {
+        Ok(found) => found,
+        Err(why) => {
+            return feed(Event::Spawned {
+                serial,
+                started: Err(why),
+            });
+        }
+    };
+
+    if let Some(why) = gave_way {
+        gives_way(serial, &why);
+    }
+
+    eprintln!("capture: encoding with {}", encoding.encoder);
+
     if let Source::Window { id, size, .. } = source {
-        return spawn_window(serial, segment, (id, size), audio, file);
+        return spawn_window(serial, segment, (id, size), audio, file, encoding);
     }
 
     let folder = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    let ran = Ran::of(&encoding);
     let started = fs::create_dir_all(&folder)
         .map_err(|error| format!("no folder {}: {error}", folder.display()))
         .and_then(|()| {
             let file = file
                 .to_str()
                 .ok_or_else(|| format!("{} is not UTF-8", file.display()))?;
-            let arguments = plan::recorder(&source, audio, file);
+            let arguments = plan::recorder(&source, audio, file, &encoding);
             let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
 
             wake::hold_file(RECORDER, &arguments)
@@ -1259,7 +1308,7 @@ fn spawn(serial: u64, segment: u32) {
 
     let followed = thread::Builder::new()
         .name(String::from("capture-record"))
-        .spawn(move || follow(said, serial, file));
+        .spawn(move || follow(said, serial, file, ran));
 
     if let Err(error) = followed {
         drop(child.kill());
@@ -1283,8 +1332,123 @@ fn spawn(serial: u64, segment: u32) {
     }));
 }
 
-// reads what the recorder prints until it exits, then tells the machine how its segment ended
-fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf) {
+// how a segment's encoder ran, which says what to start again with if it fails before a frame
+#[derive(Clone, Copy)]
+struct Ran {
+    // the software encoder
+    software: bool,
+
+    // a window's frames downloaded through the VA-API post-processor
+    va: bool,
+}
+
+impl Ran {
+    fn of(encoding: &encode::Encoding) -> Self {
+        Self {
+            software: encoding.encoder.kind == encode::Kind::Software,
+            va: matches!(encoding.download, encode::Download::Va { .. }),
+        }
+    }
+}
+
+// what a segment that failed before it wrote a frame is started again with
+#[derive(Debug, PartialEq)]
+enum Again {
+    // EGL for the window's frames, the same encoder
+    Egl,
+
+    // the software encoder, with the VA-API download tried again
+    Software,
+}
+
+/*
+ * what to start again with, from how the segment ran and what the recording has already given up.
+ * A failed VA-API download, when the encoder is what failed (`encoder_failed`: not the muxer), goes
+ * to EGL once. An encoder that is not software goes to software once, which tries the VA-API
+ * download afresh, since the encoder may have failed for its own reasons (a session limit) and
+ * software with VA-API can work where EGL cannot import the cast. Nothing else, so no failure
+ * loops: EGL is taken once per `no_va` and `no_va` is cleared only by the one step to software
+ */
+fn again(ran: Ran, no_va: bool, software: bool, encoder_failed: bool) -> Option<Again> {
+    if ran.va && !no_va && encoder_failed {
+        Some(Again::Egl)
+    } else if !ran.software && !software {
+        Some(Again::Software)
+    } else {
+        None
+    }
+}
+
+/*
+ * a segment whose encoder failed before it wrote a frame, when the recording has a way left to try
+ * (`again`, ADR 0116): says so, notes it on the recording and gives the number of the segment to
+ * start again. None when it is not to be tried. `encoder_failed` is whether the encoder, and not
+ * the muxer, ended badly
+ */
+fn falls_back(
+    runtime: &mut Runtime,
+    serial: u64,
+    segment: &Segment,
+    written: bool,
+    ran: Ran,
+    encoder_failed: bool,
+) -> Option<u32> {
+    let Segment::Lost(why) = segment else {
+        return None;
+    };
+
+    let Phase::Running {
+        serial: now,
+        segment: number,
+        ..
+    } = runtime.machine.phase()
+    else {
+        return None;
+    };
+
+    if written || now != serial || why.ends_with("not found") {
+        return None;
+    }
+
+    let take = runtime.take.as_mut()?;
+
+    match again(ran, take.no_va, take.software.is_some(), encoder_failed)? {
+        Again::Egl => {
+            take.no_va = true;
+            eprintln!(
+                "capture: the encoder failed to start with the VA-API download ({why}); downloading through EGL instead"
+            );
+        }
+        Again::Software => {
+            take.software = Some(why.clone());
+            take.no_va = false;
+            eprintln!(
+                "capture: the encoder failed to start ({why}); recording with software x264 instead"
+            );
+        }
+    }
+
+    Some(number)
+}
+
+// the recording goes on with the software encoder after `why`, said once
+fn gives_way(serial: u64, why: &str) {
+    let mut runtime = RUNTIME.locked();
+
+    if runtime.machine.serial() == Some(serial)
+        && let Some(take) = runtime.take.as_mut().filter(|take| take.software.is_none())
+    {
+        take.software = Some(why.to_owned());
+        take.no_va = false;
+        eprintln!("capture: {why}; recording with software x264 instead");
+    }
+}
+
+/*
+ * reads what the recorder prints until it exits, then tells the machine how its segment ended, or
+ * starts it again if the one it had never started (`falls_back`)
+ */
+fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf, ran: Ran) {
     survive(
         || {
             let said = last_lines(said);
@@ -1306,10 +1470,23 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf) {
                 discard_empty(&file);
             }
 
-            drop(runtime.feed(Event::Ended {
-                serial,
-                segment: classify(status, written, said),
-            }));
+            let segment = classify(status, written, said);
+
+            if let Some(number) = falls_back(&mut runtime, serial, &segment, written, ran, true) {
+                // the worker starts it, as any recorder: a program's life is tied to its spawning thread
+                return runtime.hand(
+                    Job::Spawn {
+                        serial,
+                        segment: number,
+                    },
+                    |why| Event::Spawned {
+                        serial,
+                        started: Err(why),
+                    },
+                );
+            }
+
+            drop(runtime.feed(Event::Ended { serial, segment }));
         },
         || {
             let mut runtime = RUNTIME.locked();
@@ -1449,6 +1626,7 @@ fn spawn_window(
     (id, size): (u64, (u32, u32)),
     audio: Audio,
     file: PathBuf,
+    encoding: encode::Encoding,
 ) {
     let failed = |why: String| {
         feed(Event::Spawned {
@@ -1505,7 +1683,7 @@ fn spawn_window(
         }
     }
 
-    let (mut encoder, mut writer) = match window_programs(cast.node, size, audio, name) {
+    let (mut encoder, mut writer) = match window_programs(cast.node, size, audio, name, &encoding) {
         Ok(programs) => programs,
         Err(why) => {
             cast.stop();
@@ -1534,6 +1712,7 @@ fn spawn_window(
         }
     };
     let said = (writer_said, encoder_said);
+    let ran = Ran::of(&encoding);
     let mut runtime = RUNTIME.locked();
 
     // ended while it started
@@ -1544,7 +1723,7 @@ fn spawn_window(
 
     let followed = thread::Builder::new()
         .name(String::from("capture-record"))
-        .spawn(move || follow_window(said, serial, file, id));
+        .spawn(move || follow_window(said, serial, file, id, ran));
 
     if let Err(error) = followed {
         drop(runtime);
@@ -1566,8 +1745,9 @@ fn window_programs(
     size: (u32, u32),
     audio: Audio,
     file: &str,
+    encoding: &encode::Encoding,
 ) -> Result<(Child, Child), String> {
-    let arguments = plan::encoder(node, size);
+    let arguments = plan::encoder(node, size, encoding);
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
     let mut encoder = wake::hold_source(ENCODER, &arguments)
         .map_err(|error| format!("cannot run {ENCODER}: {error}"))?;
@@ -1605,6 +1785,7 @@ fn follow_window(
     serial: u64,
     file: PathBuf,
     id: u64,
+    ran: Ran,
 ) {
     survive(
         || {
@@ -1652,6 +1833,22 @@ fn follow_window(
                 && let Some(take) = runtime.take.as_mut()
             {
                 take.closed = true;
+            }
+
+            if !closed
+                && let Some(number) = falls_back(&mut runtime, serial, &segment, written, ran, !ok)
+            {
+                // the worker starts it, as any recorder: a program's life is tied to its spawning thread
+                return runtime.hand(
+                    Job::Spawn {
+                        serial,
+                        segment: number,
+                    },
+                    |why| Event::Spawned {
+                        serial,
+                        started: Err(why),
+                    },
+                );
             }
 
             drop(runtime.feed(Event::Ended { serial, segment }));
@@ -1833,6 +2030,55 @@ pub fn heard(heard: Heard) {
         }
 
         drop(runtime.feed(Event::Stop));
+    }
+}
+
+// what `kanade doctor` says of the encoder a recording would use (ADR 0116, Update)
+pub struct Report {
+    // the encoder and its node, none when nothing encodes
+    pub encoder: Option<String>,
+
+    // whether it is a GPU's; false for software
+    pub gpu: bool,
+
+    // the quantizer the quality is for it, none with no encoder
+    pub quantizer: Option<u32>,
+
+    // each way tried or skipped, and what it said
+    pub notes: Vec<String>,
+
+    // packages for a GPU encoder that is not in use
+    pub hints: Vec<String>,
+
+    // what a trial of the window's GStreamer chain with it said: Err when it fails, none when
+    // there is no encoder or `gst-launch-1.0` to ask
+    pub window: Option<Result<String, String>>,
+}
+
+// tries the encoders as a recording would, one frame each; takes a second or two
+pub fn report(recording: &config::Recording) -> Report {
+    let nodes = probe::nodes();
+    let choice = probe::choice(recording, false, true);
+    let kind = choice.encoder.as_ref().map(|encoder| encoder.kind);
+    let window = choice.encoder.clone().and_then(|encoder| {
+        probe::window_line(
+            &encode::Encoding {
+                encoder,
+                quality: recording.quality,
+                threads: probe::threads(),
+                download: encode::Download::Gl,
+            },
+            recording.device.as_deref(),
+        )
+    });
+
+    Report {
+        window,
+        encoder: choice.encoder.as_ref().map(ToString::to_string),
+        gpu: kind.is_some_and(|kind| kind != encode::Kind::Software),
+        quantizer: kind.map(|kind| encode::quantizer(recording.quality, kind)),
+        hints: encode::hints(&nodes, &choice),
+        notes: choice.notes,
     }
 }
 
@@ -2090,6 +2336,49 @@ fn ended(clip: Clip, preempt: bool) -> Activity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_start_gives_way_once_per_step_and_never_loops() {
+        let ran = |software, va| Ran { software, va };
+
+        // a VA-API download goes to EGL first, whatever the encoder, when the encoder failed
+        assert_eq!(
+            again(ran(false, true), false, false, true),
+            Some(Again::Egl)
+        );
+        assert_eq!(again(ran(true, true), false, false, true), Some(Again::Egl));
+
+        // not when the muxer did: the download is not to blame, so a hardware encoder goes on
+        assert_eq!(
+            again(ran(false, true), false, false, false),
+            Some(Again::Software)
+        );
+        assert_eq!(again(ran(true, true), false, false, false), None);
+
+        // software on EGL has nowhere to go
+        assert_eq!(again(ran(true, false), true, true, true), None);
+        assert_eq!(again(ran(true, false), false, false, true), None);
+
+        // the walk of a window whose encoder fails every time, as the recording keeps it: the most
+        // steps, then none. NVENC on VA-API, then on EGL, then software on VA-API (its own failure
+        // is not the download's), then on EGL
+        let (mut no_va, mut software, mut steps) = (false, false, 0);
+
+        loop {
+            let ran = ran(software, !no_va);
+
+            match again(ran, no_va, software, true) {
+                Some(Again::Egl) => no_va = true,
+                Some(Again::Software) => (software, no_va) = (true, false),
+                None => break,
+            }
+
+            steps += 1;
+            assert!(steps <= 3);
+        }
+
+        assert_eq!(steps, 3);
+    }
 
     #[test]
     fn the_verb_reads_its_target_and_audio() {

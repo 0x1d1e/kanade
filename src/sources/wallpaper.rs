@@ -144,6 +144,8 @@ fn hook(path: &Path, fire: bool) {
 
     if new && fire {
         hooks::fire_with(Event::Wallpaper, path);
+        // the login screen's picture, when `sddm.sync` asks for it; returns at once
+        crate::sddm::wallpaper_changed(path);
     }
 }
 
@@ -435,6 +437,21 @@ pub fn showing_on(output: &Output) -> Vec<PathBuf> {
     }
 
     showing
+}
+
+/*
+ * the image awww shows now, asked here and now: the focused output's, else the first by name. For
+ * a command that runs without a shell (`kanade sddm sync`); none with no awww, no answer in time or
+ * no image shown
+ */
+pub fn showing_now() -> Option<PathBuf> {
+    if !wake::found(AWWW) {
+        return None;
+    }
+
+    let said = wake::query_within(AWWW, &["query"], LIMIT).ok()?;
+
+    appearance_path(&shown(&said), focused().as_deref())
 }
 
 // the output the palette follows: the one focused at the last pick of Kanade's, none before

@@ -10,9 +10,9 @@ use std::rc::Rc;
 use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Align, Button, Canvas, Center, Color, Column, Cursor, End, Gradient, Image, Padding, Parent,
-    Path, Rectangle, Reveal, Row, ScrollArea, Shape, Size, SpaceBetween, Stack, Start, Text,
-    TextInput, Widget, Window, children,
+    Align, Button, Canvas, Center, Color, Column, Cursor, End, Gradient, Image, Key, Padding,
+    Parent, Path, Rectangle, Reveal, Row, ScrollArea, Shape, Size, SpaceBetween, Stack, Start,
+    Text, TextInput, Widget, Window, children,
 };
 use toml::Value;
 
@@ -29,6 +29,9 @@ use crate::tiles::{self, Placed};
 
 use super::health;
 use super::layout::{MODULE_GROUPS, MODULES, PAGES, Page, Row as Line};
+use super::login;
+use super::niri;
+use super::outputs;
 use super::ring::{self, Stop};
 use super::{
     FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change, change_all, font_search, input, inspect,
@@ -36,6 +39,9 @@ use super::{
 };
 
 // the size it opens at, and the smallest it can be made
+mod niri_page;
+mod outputs_page;
+
 const WIDTH: f32 = 920.0;
 const HEIGHT: f32 = 640.0;
 const MIN_WIDTH: f32 = 680.0;
@@ -125,11 +131,15 @@ pub fn window() -> Window {
     let settings = Settings::read();
     let roles = theme::roles();
 
+    // the niri page's inputs hold what the worker last read
+    niri::sync_inputs(&settings.niri);
+    outputs::sync_inputs(&settings.outputs);
+
     Window::new()
         .title("Kanade Settings")
         .size(WIDTH, HEIGHT)
         .min_size(MIN_WIDTH, MIN_HEIGHT)
-        .on_key(ring::key)
+        .on_key(key)
         .child(
             Row::new(children![
                 sidebar(&settings, &roles),
@@ -142,6 +152,15 @@ pub fn window() -> Window {
             .width(Parent)
             .height(Parent),
         )
+}
+
+// Esc puts the monitors back while a change waits for Keep, then goes to the ring as any key
+fn key(key: Key) {
+    if key == Key::Escape && Settings::read().outputs.trial.is_some() {
+        outputs::revert();
+    }
+
+    ring::key(key);
 }
 
 // the brand, the search field, then the pages under their groups' headings, scrolled in a short window
@@ -429,8 +448,12 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 
 // what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
 fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
+    // the niri page answers for niri's file, and has its own Undo
+    let niri_page = !settings.searching() && settings.page == niri::PAGE;
     let waiting = settings.pending.len();
-    let (status, ink) = if let Some(refused) = &settings.refused {
+    let (status, ink) = if niri_page {
+        niri_page::status(settings, roles)
+    } else if let Some(refused) = &settings.refused {
         (refused.clone(), theme::window_signals().warning)
     } else if settings.unreadable.is_some()
         || settings.error.is_some()
@@ -464,7 +487,16 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     };
 
     let mut actions: Vec<Box<dyn Widget>> = Vec::new();
-    if !settings.history.is_empty() {
+    let undoable = if niri_page {
+        settings.niri.undoable
+    } else {
+        !settings.history.is_empty()
+    };
+    let undo: fn() = if niri_page { niri::undo } else { undo };
+    if niri_page {
+        actions.extend(outputs_page::actions(settings, roles));
+    }
+    if undoable {
         let undo_button = Rectangle::new()
             .width(84.0)
             .height(30.0)
@@ -548,7 +580,11 @@ fn page_body(page: &'static Page, settings: &Settings, roles: &ThemeRoles) -> Co
             content(),
         ),
     ];
-    items.extend(notices(settings));
+    if page.name == niri::PAGE {
+        items.extend(niri_page::notices(settings));
+    } else {
+        items.extend(notices(settings));
+    }
 
     for section in page.sections {
         items.push(Box::new(section_view(
@@ -580,6 +616,14 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
         .weight(theme::text::MEDIUM),
     ];
     items.extend(notices(settings));
+    if PAGES
+        .iter()
+        .flat_map(|page| page.sections)
+        .flat_map(|section| section.rows)
+        .any(|row| matches!(row, Line::Niri(_)) && matches(row, &query))
+    {
+        items.extend(niri_page::notices(settings));
+    }
 
     let mut found = false;
     for page in PAGES {
@@ -621,6 +665,10 @@ fn results(settings: &Settings, roles: &ThemeRoles) -> Column {
 // whether a row's settings mention the query; the Modules row, whether a Module does, as it shows those
 fn matches(row: &Line, query: &str) -> bool {
     let mentions = |text: &str| text.to_lowercase().contains(query);
+
+    if let Line::Niri(path) = row {
+        return niri_page::mentions(path, query);
+    }
 
     row.keys().into_iter().any(|key| {
         if key == MODULES {
@@ -703,7 +751,10 @@ fn section_view(
     let mut items: Vec<Box<dyn Widget>> = Vec::new();
 
     match heading {
-        Heading::Page(title) if rows.len() > 1 && !title.is_empty() => {
+        Heading::Page(title)
+            if (rows.len() > 1 || rows.iter().any(|row| matches!(row, Line::Outputs)))
+                && !title.is_empty() =>
+        {
             items.push(Box::new(
                 Text::new(title)
                     .size(theme::text::TITLE)
@@ -719,6 +770,11 @@ fn section_view(
     for row in rows {
         if let Line::Key(MODULES) = row {
             items.push(Box::new(modules_view(settings, query, roles)));
+            continue;
+        }
+
+        if let Line::Outputs = row {
+            items.push(Box::new(outputs_page::section(settings, roles)));
             continue;
         }
 
@@ -810,6 +866,9 @@ fn row_view(row: &Line, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widg
             )
         }
         Line::Health => health_view(settings, roles),
+        Line::Login => login_view(settings, roles),
+        Line::Niri(path) => niri_page::row(path, settings, roles),
+        Line::Outputs => Box::new(outputs_page::section(settings, roles)),
         Line::Position { edge, align } => {
             let edge = setting(edge).expect("the layout's keys are the schema's");
             let align = setting(align).expect("the layout's keys are the schema's");
@@ -939,6 +998,116 @@ fn health_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
     }
 
     Box::new(Column::new(items).width(inner()).gap(10.0))
+}
+
+/*
+ * the Login screen page's status as `kanade sddm status` words it, over whether SDDM reads the
+ * overlay, and the root commands still to run, each to copy. Read-only: Kanade never runs them
+ */
+fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
+    let signals = theme::window_signals();
+    let body = inner();
+
+    let (summary, ink) = match &settings.login {
+        _ if settings.login_loading => (String::from("Checking\u{2026}"), roles.on_surface),
+        None => (String::from("Not checked yet"), roles.on_surface),
+        Some(Err(_)) => (String::from("Cannot be checked"), signals.warning),
+        Some(Ok(status)) if status.enabled => (
+            String::from("Enabled: SDDM reads the overlay"),
+            roles.on_surface,
+        ),
+        Some(Ok(_)) => (String::from("Not enabled yet"), signals.warning),
+    };
+
+    let again = link(
+        "refresh login".into(),
+        "refresh",
+        "Refresh",
+        roles,
+        login::load,
+    );
+    let mut items = children![
+        Row::new(children![
+            Text::new(summary)
+                .size(theme::text::BODY)
+                .color(ink)
+                .weight(theme::text::SEMIBOLD),
+            again,
+        ])
+        .width(inner())
+        .justify(SpaceBetween)
+        .align(Center),
+    ];
+
+    let line = |text: String, ink| {
+        Box::new(wrapped(
+            Text::new(text)
+                .size(theme::text::LABEL_SMALL)
+                .color(ink)
+                .weight(theme::text::MEDIUM),
+            body,
+        )) as Box<dyn Widget>
+    };
+
+    match &settings.login {
+        Some(Err(error)) => items.push(line(error.clone(), roles.on_surface_variant)),
+        Some(Ok(status)) => {
+            for text in &status.lines {
+                items.push(line(text.clone(), roles.on_surface_variant));
+            }
+
+            items.push(Box::new(hairline(inner(), roles)));
+            items.push(line(
+                if !status.steps.is_empty() {
+                    String::from(
+                        "In this order (Kanade never runs the commands for root; the last one only acts once the theme is in place):",
+                    )
+                } else if status.blocked {
+                    String::from("As root: edit the file named above, which no command of Kanade's can outdo")
+                } else {
+                    String::from("Nothing to do as root; `kanade sddm sync` writes the look")
+                },
+                roles.on_surface,
+            ));
+
+            for (index, step) in status.steps.iter().enumerate() {
+                let copied = step.command().to_owned();
+                let shown = match step {
+                    crate::sddm::Step::Root(command) => format!("as root: {command}"),
+                    crate::sddm::Step::Sync => String::from("in a terminal: kanade sddm sync"),
+                };
+                items.push(Box::new(
+                    Row::new(children![
+                        wrapped(
+                            Text::new(shown)
+                                .size(theme::text::LABEL_SMALL)
+                                .color(roles.on_surface)
+                                .weight(theme::text::MEDIUM),
+                            body - 70.0,
+                        ),
+                        link(
+                            format!("copy login step {index}"),
+                            "copy",
+                            "Copy",
+                            roles,
+                            move || {
+                                let text = copied.clone();
+                                std::thread::spawn(move || {
+                                    let _ = crate::sources::clipboard::put(&text);
+                                });
+                            },
+                        ),
+                    ])
+                    .width(inner())
+                    .justify(SpaceBetween)
+                    .align(Center),
+                ));
+            }
+        }
+        None => {}
+    }
+
+    Box::new(Column::new(items).width(inner()).gap(8.0))
 }
 
 // a row's label over its help, with its marks, and what Inspect shows
@@ -1245,20 +1414,25 @@ fn control(
             (stepper(setting, kelvin, steps, roles), true)
         }
         Kind::DayTime(_) => (
-            Box::new(field_with_hint(setting, "HH:MM", roles, move |text| {
-                let text = text.trim();
-                if text.is_empty() {
-                    change(path(key, None), None);
-                    return;
-                }
-
-                match DayTime::parse(text) {
-                    Ok(time) => change(path(key, None), Some(Value::String(time.to_string()))),
-                    Err(why) => {
-                        Settings::write().refused = Some(format!("Not saved: {key}: {why}"))
+            Box::new(field_with_hint(
+                input(setting),
+                "HH:MM",
+                roles,
+                move |text| {
+                    let text = text.trim();
+                    if text.is_empty() {
+                        change(path(key, None), None);
+                        return;
                     }
-                }
-            })),
+
+                    match DayTime::parse(text) {
+                        Ok(time) => change(path(key, None), Some(Value::String(time.to_string()))),
+                        Err(why) => {
+                            Settings::write().refused = Some(format!("Not saved: {key}: {why}"))
+                        }
+                    }
+                },
+            )),
             true,
         ),
         Kind::Count(count, field) => {
@@ -1276,9 +1450,9 @@ fn control(
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
         }
-        Kind::Path(_) | Kind::Text(_) => (
+        Kind::Path(_) | Kind::Text(_) | Kind::Node(_) => (
             Box::new(field_with_hint(
-                setting,
+                input(setting),
                 setting.example.unwrap_or("").trim_matches('"'),
                 roles,
                 move |text| {
@@ -1292,7 +1466,7 @@ fn control(
         ),
         Kind::Location(_) => (
             Box::new(field_with_hint(
-                setting,
+                input(setting),
                 "latitude, longitude",
                 roles,
                 move |text| {
@@ -1996,6 +2170,10 @@ fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> 
 
 // on is filled with the knob at the end, off in a trough with an edge and the knob at the start
 fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Box<dyn Widget> {
+    pressed(switch_track(on, roles), id, press, TARGET / 2.0, roles)
+}
+
+fn switch_track(on: bool, roles: &ThemeRoles) -> Rectangle {
     const KNOB: f32 = 16.0;
 
     let track = Rectangle::new()
@@ -2018,7 +2196,7 @@ fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) 
         )
     };
 
-    let track = track
+    track
         .semantics(|| Semantics::new(Role::Toggle, "switch").checked(on))
         .align_child(end, Center)
         .child(
@@ -2027,9 +2205,7 @@ fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) 
                 .height(KNOB)
                 .radius(KNOB / 2.0)
                 .fill(knob),
-        );
-
-    pressed(track, id, press, TARGET / 2.0, roles)
+        )
 }
 
 // a Choice's options side by side in a trough, the chosen one filled; one stop, Left and Right choose
@@ -2489,7 +2665,7 @@ fn stepper(
 
 // a text field beside its label, saved by Enter, an empty one handing the key back
 fn field_with_hint(
-    setting: &'static Setting,
+    id: &'static str,
     placeholder: &str,
     roles: &ThemeRoles,
     submit: impl Fn(String) + 'static,
@@ -2497,7 +2673,7 @@ fn field_with_hint(
     const WIDE: f32 = 260.0;
 
     Column::new(children![
-        text_field(input(setting), WIDE, placeholder, roles, submit),
+        text_field(id, WIDE, placeholder, roles, submit),
         Text::new("Enter saves; empty resets")
             .size(theme::text::LABEL_SMALL)
             .color(roles.on_surface_variant)

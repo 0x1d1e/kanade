@@ -1,0 +1,3 @@
+Kanade SDDM theme. MIT, see LICENSE. Written from scratch for Kanade: no code, QML, layout,
+asset or font from any other SDDM theme or third-party project is included. The look follows
+Kanade's own lock screen (crates/lock/src/paint.rs). Fonts are the system's; none is bundled.

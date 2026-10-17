@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::Builder;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,7 @@ use crate::config::Config;
 use crate::look::Tone;
 
 mod colors;
+mod portal;
 
 pub use colors::Scheme;
 
@@ -158,22 +159,38 @@ fn follow(receiver: Receiver<Request>) {
     let mut pending = None;
     let mut rerun = false;
     let mut retry_zen_restore = false;
+    let mut portal = portal::Restart::default();
+    let mut look = None;
 
     loop {
+        let wait = [
+            retry_zen_restore.then_some(HELPER_RETRY),
+            portal.wait(Instant::now()),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let next = match pending.take() {
             Some(request) => Some(request),
-            None if retry_zen_restore => match receiver.recv_timeout(HELPER_RETRY) {
-                Ok(request) => Some(request),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            },
-            None => match receiver.recv() {
-                Ok(request) => Some(request),
-                Err(_) => return,
+            None => match wait {
+                Some(wait) => match receiver.recv_timeout(wait) {
+                    Ok(request) => Some(request),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                },
+                None => match receiver.recv() {
+                    Ok(request) => Some(request),
+                    Err(_) => return,
+                },
             },
         };
         let Some(request) = next else {
-            retry_zen_restore = try_restore_zen_preferences();
+            if portal.take_due(Instant::now()) {
+                portal::restart();
+            }
+            if retry_zen_restore {
+                retry_zen_restore = try_restore_zen_preferences();
+            }
             continue;
         };
 
@@ -182,11 +199,25 @@ fn follow(receiver: Receiver<Request>) {
             run |= fold(newer, &mut wanted, &mut scheme);
         }
 
+        if !run || !matches!(wanted, Some(Request::Set(_) | Request::Disable)) {
+            continue;
+        }
+        let before = look.take().unwrap_or_else(portal::look);
         let result = match wanted {
-            Some(Request::Set(tone)) if run => apply(tone, scheme.as_deref(), &receiver),
-            Some(Request::Disable) if run => disable(&receiver),
-            _ => continue,
+            Some(Request::Set(tone)) => apply(tone, scheme.as_deref(), &receiver),
+            _ => disable(&receiver),
         };
+
+        // the file chooser's portal reads gtk.css once: restart it when the GTK3 files changed
+        let after = portal::look();
+        let now = Instant::now();
+        if after != before {
+            portal.changed(now);
+        }
+        look = Some(after);
+        if portal.take_due(now) {
+            portal::restart();
+        }
 
         match result {
             Helper::Done(Ok(())) => retry_zen_restore = zen_restore_retry_state(),

@@ -2,15 +2,21 @@
 //! registry, its pages by task (`layout`, ADR 0029), each setting drawn by its Kind. A change
 //! writes the settings file (`file`), the top layer, which the reload watch then applies like any
 //! other edit: a live-safe key at once, one that takes a restart as pending. It never writes the
-//! config directory, so the user's own files and a Nix-managed config stay as they are.
+//! Kanade config directory, so the user's own files and a Nix-managed config stay as they are; niri's
+//! `config.kdl` is the one user file Kanade edits, on request only (`niri_config`, ADR 0119).
 //!
 //! The window reads only the `Settings` Service, a snapshot of the files taken when it opens,
-//! after each write and after each reload, so a view never reads a file while drawing.
+//! after each write and after each reload, so a view never reads a file while drawing. The niri
+//! page is the exception that proves it: niri's config is read and changed by a worker thread
+//! (`niri`), whose results land in the same Service.
 
 mod file;
 mod fonts;
 mod health;
 mod layout;
+mod login;
+mod niri;
+mod outputs;
 mod ring;
 mod view;
 
@@ -29,6 +35,7 @@ use crate::doctor::Check;
 use crate::icon::Icon;
 use crate::modules;
 use crate::reload;
+use crate::sddm::Status;
 
 // the window's name, which tells it apart from any other the runtime opens
 const WINDOW: &str = "settings";
@@ -60,8 +67,18 @@ pub struct Settings {
     health_loaded: bool,
     health_loading: bool,
 
+    // the Login screen page's status, read off the draw thread when it shows (`login`)
+    login: Option<Result<Status, String>>,
+    login_loading: bool,
+
     // what the Modules page's filter holds
     module_query: String,
+
+    // niri's config.kdl as the niri page shows it, read and changed off the draw thread (`niri`)
+    niri: niri::State,
+
+    // the niri page's monitors, tried live in niri and then kept or reverted (`outputs`)
+    outputs: outputs::State,
 
     // the config the files give now, the settings file included, which a reload applies
     read: Config,
@@ -180,6 +197,9 @@ pub fn refresh() {
 
 pub use health::spawn_notice;
 
+// a trial of the monitors a Kanade that died left, put back at start; one running is put back at exit
+pub use outputs::{recover_at_start as recover_outputs, revert_on_exit as revert_outputs};
+
 // the pages, as `kanade settings open` names them
 pub fn pages() -> impl Iterator<Item = &'static str> {
     layout::PAGES.iter().map(|page| page.name)
@@ -267,6 +287,8 @@ pub fn open(page: Option<&'static str>) {
         Settings::write().history.clear();
         Settings::write().query.clear();
         Settings::write().module_query.clear();
+        Settings::write().niri.reopen();
+        Settings::write().outputs.reopen();
         TextInput::set_text(SEARCH, "");
         TextInput::set_text(MODULE_FILTER, "");
         ring::reset();
@@ -275,8 +297,17 @@ pub fn open(page: Option<&'static str>) {
     }
 
     reset_inputs();
-    if Settings::read().page == health::PAGE {
+    let page = Settings::read().page;
+    if page == health::PAGE {
         health::load();
+    } else if page == login::PAGE {
+        login::load();
+    }
+
+    // read again for the rows a search finds as well as the page
+    niri::load();
+    if Settings::read().page == niri::PAGE {
+        outputs::refresh();
     }
     kanade_runtime::open_window(WINDOW, view::window);
 }
@@ -389,6 +420,13 @@ fn turn_to(page: &'static str) {
     if page == health::PAGE && !Settings::read().health_loaded {
         health::load();
     }
+    if page == login::PAGE {
+        login::load();
+    }
+    if page == niri::PAGE {
+        niri::load();
+        outputs::refresh();
+    }
 }
 
 fn search(query: String) {
@@ -477,6 +515,7 @@ fn reset_inputs() {
                 (field.get)(&read).unwrap_or_default()
             }
             Kind::Text(_) => continue,
+            Kind::Node(field) => (field.get)(&read).unwrap_or_default(),
             Kind::Location(field) => (field.get)(&read)
                 .map(|at| format!("{}, {}", at.latitude, at.longitude))
                 .unwrap_or_default(),

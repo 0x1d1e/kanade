@@ -18,12 +18,15 @@ use std::process::{Command, ExitCode};
 use crate::bus::{Argument, Bus};
 
 use crate::cli::{self, Reply};
-use crate::config::{self, Config};
+use crate::config::{self, Config, Preference};
 use crate::lock;
 use crate::look::{Finish, Visualizer};
 use crate::modules::{self, Module, Provider};
+use crate::sddm;
 use crate::sources::json::Json;
-use crate::sources::{binds, bus, cava, clipboard, keys, niri, pipewire, radios, sound, wallpaper};
+use crate::sources::{
+    binds, bus, cava, clipboard, keys, niri, pipewire, radios, recording, sound, wake, wallpaper,
+};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -137,8 +140,10 @@ fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
     checks.extend(backdrop(&config));
+    checks.extend(login_screen(&config));
     checks.extend(blur.then(blur_check).flatten());
     checks.extend(screencast_check(&config));
+    checks.extend(recording_check(&config));
     checks.extend(sounds(&config));
 
     checks
@@ -613,6 +618,54 @@ fn sounds(config: &Config) -> Vec<Check> {
     checks
 }
 
+// the login screen: Kanade writes an overlay SDDM reads, so say whether it is made, read and
+// readable by the sddm user, and whether a Qt greeter exists to draw it. Silent when the Module is
+// off; one line when the overlay is not made, which is how it starts
+fn login_screen(config: &Config) -> Vec<Check> {
+    if !modules::resolve(modules::ALL, |name| config.off(name)).on("sddm") {
+        return Vec::new();
+    }
+
+    let mut checks: Vec<Check> = sddm::findings(config)
+        .into_iter()
+        .map(|finding| {
+            let mut check = if finding.ok {
+                Check::ok(finding.text)
+            } else {
+                Check::warn(finding.text)
+            };
+            check.detail = finding.detail;
+            check
+        })
+        .collect();
+
+    let path = env::var_os("PATH");
+    let greeter = SDDM_GREETERS
+        .iter()
+        .find_map(|name| match program_found(name, path.as_ref()) {
+            Found::Present(found) => Some(found),
+            _ => None,
+        });
+
+    // more than the one line means the overlay is made: then a missing greeter is a fault
+    let made = checks.len() > 1;
+    checks.push(match greeter {
+        Some(found) => Check::ok(format!("sddm: greeter {found}")),
+        None if made => Check::warn(format!(
+            "sddm: none of {} is on PATH, so there is no Qt greeter to draw the theme",
+            SDDM_GREETERS.join(", ")
+        )),
+        None => Check::ok(format!(
+            "sddm: none of {} is on PATH (SDDM is not installed?)",
+            SDDM_GREETERS.join(", ")
+        )),
+    });
+
+    checks
+}
+
+const SDDM_GREETERS: &[&str] = &["sddm-greeter-qt6", "sddm-greeter"];
+
 // whether a process of this name runs, as `/proc/<pid>/comm` names it
 fn process_running(name: &str) -> bool {
     let Ok(entries) = fs::read_dir("/proc") else {
@@ -674,7 +727,7 @@ fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
 
 /*
  * whether niri's overview shows the wallpaper: it draws a Background layer in the overview only
- * under a layer rule with `place-within-backdrop`, in the config Kanade never edits. Asked only
+ * under a layer rule with `place-within-backdrop`, in niri's config (edited by Kanade only on request). Asked only
  * while the `wallpaper` Module runs awww, whose layers are named `awww-daemon`. Kanade's own
  * layers are Top, Bottom or Overlay, which the rule does not apply to
  */
@@ -722,7 +775,7 @@ const BLURRED: [&str; 3] = ["kanade", "kanade-dock", "kanade-banners"];
 
 /*
  * whether niri blurs the windows behind Kanade's panes, not only the wallpaper: it blurs what a
- * layer asks for xray, the wallpaper alone, unless a layer rule in the config Kanade never edits
+ * layer asks for xray, the wallpaper alone, unless a layer rule in niri's config (edited by Kanade only on request)
  * sets `background-effect { xray false }` (ADR 0057). Asked only while the finish is `blur`
  */
 fn blur_check() -> Option<Check> {
@@ -757,7 +810,7 @@ fn blur_check() -> Option<Check> {
 
 /*
  * whether Banners, which show a notification's text, are hidden from screencasts: only by an
- * opt-in layer rule in the config Kanade never edits, never a warning (ADR 0070). Asked only
+ * opt-in layer rule in niri's config (edited by Kanade only on request), never a warning (ADR 0070). Asked only
  * while the `banners` Module runs
  */
 fn screencast_check(config: &Config) -> Option<Check> {
@@ -792,6 +845,83 @@ fn screencast_check(config: &Config) -> Option<Check> {
             unread.file.display(),
             unread.why
         )),
+    })
+}
+
+/*
+ * the encoder a recording would use, which encodes a frame to find out (ADR 0116, Update): ok on a
+ * GPU's, a warning on the CPU's, which costs processor time, unless `encoder = software` asked
+ * for it, and a failure with none. Always tried afresh, not as a recording remembers. Why, and
+ * what to install for a GPU that is not used. Asked only while the `capture` Module runs and
+ * `wf-recorder` is there
+ */
+fn recording_check(config: &Config) -> Option<Check> {
+    if !modules::resolve(modules::ALL, |name| config.off(name)).on("capture")
+        || !wake::found(recording::RECORDER)
+    {
+        return None;
+    }
+
+    let report = recording::report(&config.recording);
+    let mut detail = report.notes;
+    let window_failed = match &report.window {
+        Some(Ok(line)) => {
+            detail.push(line.clone());
+            false
+        }
+        Some(Err(line)) => {
+            detail.push(line.clone());
+            true
+        }
+        None => false,
+    };
+
+    detail.extend(
+        report
+            .hints
+            .iter()
+            .map(|hint| format!("install {hint} to record on the GPU")),
+    );
+
+    let quality = config.recording.quality.name();
+
+    let check = match (report.encoder, report.gpu) {
+        (Some(encoder), true) => Check {
+            detail,
+            ..Check::ok(format!(
+                "recording: {encoder}, quality {quality} (quantizer {})",
+                report.quantizer.unwrap_or_default()
+            ))
+        },
+        (Some(encoder), false) if config.recording.encoder == Preference::Software => Check {
+            detail,
+            ..Check::ok(format!(
+                "recording: {encoder}, as set, quality {quality} (crf {})",
+                report.quantizer.unwrap_or_default()
+            ))
+        },
+        (Some(encoder), false) => Check {
+            detail,
+            ..Check::warn(format!(
+                "recording: {encoder} on the CPU, quality {quality} (crf {})",
+                report.quantizer.unwrap_or_default()
+            ))
+        },
+        (None, _) => Check {
+            detail,
+            ..Check::fail(String::from(
+                "recording: no encoder works; install ffmpeg with libx264, or a GPU driver",
+            ))
+        },
+    };
+
+    // recording a screen or an area does not need GStreamer: only a window's chain is in doubt
+    Some(match check.verdict {
+        Verdict::Ok if window_failed => Check {
+            verdict: Verdict::Warn,
+            ..check
+        },
+        _ => check,
     })
 }
 

@@ -1,0 +1,11 @@
+[SddmGreeterTheme]
+Name=Kanade
+Description=Kanade's login screen, drawn as its lock screen is
+Author=0x1d1e
+Type=sddm-theme
+Version=0.1
+MainScript=Main.qml
+ConfigFile=theme.conf
+Theme-Id=kanade
+Theme-API=2.0
+QtVersion=6

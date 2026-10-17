@@ -1250,7 +1250,7 @@ notifications dnd on until <HH:MM>
                 without: "no recording a window",
             },
         ],
-        settings: &[],
+        settings: config::RECORDING,
         hooks: Hooks::NONE,
         verbs: &[Verb {
             name: "capture",
@@ -1549,6 +1549,26 @@ notifications dnd on until <HH:MM>
             // the layout in use shows in the password field; a hint, which the lock never needs
             niri::on_keyboard(lock::keyboard);
             app.window_per_monitor(lock::scene)
+        },
+    },
+    /*
+     * the login screen's look (`kanade sddm`): keys only, read by a command that runs without a
+     * shell; the shell only follows the wallpaper (`sddm.sync`) and says once at start if the
+     * overlay SDDM reads is out of date
+     */
+    Module {
+        name: "sddm",
+        about: "The login screen's look, written by `kanade sddm sync`",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: config::SDDM,
+        hooks: Hooks::NONE,
+        verbs: &[],
+        start: |app| {
+            crate::sddm::check_at_start();
+            app
         },
     },
     /*
