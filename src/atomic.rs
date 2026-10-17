@@ -3,7 +3,7 @@
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -29,12 +29,54 @@ pub fn write(path: &Path, bytes: &[u8], mode: Mode) -> io::Result<()> {
 }
 
 // `write`, with the numbers its temporary names take from `sequence`
-fn replace(
+fn replace(path: &Path, bytes: &[u8], mode: Mode, sequence: impl FnMut() -> u64) -> io::Result<()> {
+    stage_with(path, bytes, mode, sequence)?.commit(path)
+}
+
+/// A file written and flushed beside the one it will replace, not yet renamed over it, so that it
+/// can be checked first (a config another program validates). Dropped without `commit`, it is removed.
+pub struct Staged {
+    temporary: PathBuf,
+    kept: bool,
+}
+
+/// The first phase of `write`: `bytes` flushed to a hidden file in `path`'s directory.
+pub fn stage(path: &Path, bytes: &[u8], mode: Mode) -> io::Result<Staged> {
+    stage_with(path, bytes, mode, || WRITES.fetch_add(1, Ordering::Relaxed))
+}
+
+impl Staged {
+    /// Where the staged file is, in the directory of the file it will replace.
+    pub fn path(&self) -> &Path {
+        &self.temporary
+    }
+
+    /// The second phase: renamed over `path`. On an error it is removed.
+    pub fn commit(mut self, path: &Path) -> io::Result<()> {
+        let renamed = fs::rename(&self.temporary, path);
+
+        if renamed.is_ok() {
+            self.kept = true;
+        }
+
+        renamed
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if !self.kept {
+            let _ = fs::remove_file(&self.temporary);
+        }
+    }
+}
+
+fn stage_with(
     path: &Path,
     bytes: &[u8],
     mode: Mode,
     mut sequence: impl FnMut() -> u64,
-) -> io::Result<()> {
+) -> io::Result<Staged> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other("the path names no file"))?
@@ -68,21 +110,20 @@ fn replace(
         }
     };
 
-    let written = (|| {
-        // the umask has trimmed the mode `open` was given, so it is set outright
-        if let Mode::Exactly(bits) = mode {
-            file.set_permissions(Permissions::from_mode(bits))?;
-        }
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)
-    })();
+    // from here the guard removes the part on any error
+    let staged = Staged {
+        temporary,
+        kept: false,
+    };
 
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
+    // the umask has trimmed the mode `open` was given, so it is set outright
+    if let Mode::Exactly(bits) = mode {
+        file.set_permissions(Permissions::from_mode(bits))?;
     }
+    file.write_all(bytes)?;
+    file.sync_all()?;
 
-    written
+    Ok(staged)
 }
 
 #[cfg(test)]

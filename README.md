@@ -34,7 +34,7 @@ Around the Island, Kanade is the session's notification daemon, a Dock and a loc
 **The session**
 - Notifications: Kanade is the daemon. Banners come out of the Island, with Do Not Disturb, grouping and live progress.
 - Dock on each monitor: left click launches or focuses, middle click starts a new instance, right click opens the menu.
-- Lock screen (`kanade lock`), locking before sleep, and idle stages with the `idle` Module (off by default).
+- Lock screen (`kanade lock`), locking before sleep, and idle stages with the `idle` Module (off by default). A matching SDDM login screen theme, written by `kanade sddm` ([SDDM](docs/wiki/SDDM.md)).
 - Focus quiets the session in one press; Caffeine and Night light are switches.
 
 **Capture and time**
@@ -87,7 +87,7 @@ Optional, each for the feature named; Kanade runs without them:
 |---|---|
 | Audio, privacy dots (`pactl`, `pw-dump`), device events (`udevadm`, `dbus-monitor`), `setpriv` | `libpulse pipewire systemd dbus util-linux` |
 | Clipboard history (needs wl-clipboard 2.3 or later) | `wl-clipboard` |
-| Screen recording (plus a VA-API driver: `intel-media-driver` for Intel, `mesa` for AMD); `slurp` draws an area, `ffmpeg` allows a pause and records a window with `gst-launch-1.0` (`gst-plugin-pipewire`, `gst-plugins-bad`) | `wf-recorder` (`slurp`, `ffmpeg`, `gstreamer`) |
+| Screen recording, encoded on the GPU: VA-API (`intel-media-driver` for Intel, `mesa` for AMD) or NVENC (`nvidia-utils`), else on the CPU with libx264 (`ffmpeg`); `slurp` draws an area, `ffmpeg` allows a pause and records a window with `gst-launch-1.0` (`gst-plugin-pipewire`, `gst-plugins-bad`; `gst-plugins-ugly` for the CPU encoder, `gst-plugin-va` for VA-API, `gst-plugins-bad` and `nvidia-utils` for NVENC; VA-API (`gst-plugin-va`) or `gst-plugins-base` with EGL downloads the frames for both) | `wf-recorder` (`slurp`, `ffmpeg`, `gstreamer`) |
 | Wallpaper | `awww` |
 | Wallpaper-derived colors | `matugen` |
 | `appearance.sync` | `qt5ct qt6ct glib2 dconf`; AUR: Darkly (Qt6 style), Pywalfox and its browser extension |
@@ -106,6 +106,7 @@ Per-feature detail is in [Installation](docs/wiki/Installation.md).
 - [Agent hooks](docs/wiki/Agent-hooks.md): a Claude Code session as a live Activity.
 - [Dictation](docs/wiki/Dictation.md): speech to text with the Gemini API, and what it sends to Google.
 - [Google Calendar](docs/wiki/Google-Calendar.md): signing in with your own OAuth client.
+- [SDDM](docs/wiki/SDDM.md): the login screen theme and `kanade sddm`.
 - [Keyboard](docs/wiki/Keyboard.md): niri keybinds and keys inside each Surface.
 - [Limitations](docs/wiki/Limitations.md): known gaps.
 - [Design](docs/design.md) and [architecture decisions](docs/adr/): the target design and why it is built this way.

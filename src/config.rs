@@ -46,7 +46,7 @@ use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
     Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
-    Merge, Placement, ShellMode, Tone, UiDescribe, Visualizer,
+    Merge, Placement, SddmBackground, ShellMode, Tone, UiDescribe, Visualizer,
 };
 use crate::modules;
 use crate::sources::accessibility;
@@ -179,6 +179,27 @@ pub struct Config {
     // `lock.grace`, whole seconds; 0 is none
     pub lock_grace: u32,
 
+    // `sddm.theme`, none being Kanade's own
+    pub sddm_theme: Option<String>,
+
+    // `sddm.background`
+    pub sddm_background: SddmBackground,
+
+    // `sddm.background_path`
+    pub sddm_background_path: Option<String>,
+
+    // `sddm.surface`, `#rrggbb`, none being the theme's
+    pub sddm_surface: Option<String>,
+
+    // `sddm.blur`, pixels
+    pub sddm_blur: u32,
+
+    // `sddm.dim`, whole percent
+    pub sddm_dim: u32,
+
+    // `sddm.sync`
+    pub sddm_sync: bool,
+
     // `privacy.indicators`
     pub privacy_indicators: bool,
 
@@ -227,6 +248,9 @@ pub struct Config {
 
     // `dictate.*`: where a dictation's text goes (ADR 0111)
     pub dictate: Dictate,
+
+    // `recording.*`: how a screen recording is encoded (ADR 0116)
+    pub recording: Recording,
 
     // `controls.tiles`: which switches the Controls Surface shows, in order and size (ADR 0067)
     pub tiles: Vec<Placed>,
@@ -567,6 +591,13 @@ impl Default for Config {
             lock_backdrop: LockBackdrop::default(),
             lock_pam: None,
             lock_grace: 0,
+            sddm_theme: None,
+            sddm_background: SddmBackground::default(),
+            sddm_background_path: None,
+            sddm_surface: None,
+            sddm_blur: 32,
+            sddm_dim: 33,
+            sddm_sync: false,
             privacy_indicators: true,
             island_wheel: true,
             device_events: true,
@@ -589,6 +620,7 @@ impl Default for Config {
             night_light: NightLight::default(),
             focus: Focus::default(),
             dictate: Dictate::default(),
+            recording: Recording::default(),
             tiles: tiles::DEFAULT.to_vec(),
             pomodoro: Pomodoro::default(),
             hooks: Commands::default(),
@@ -708,6 +740,80 @@ impl Backend {
             "backlight" => Backend::Backlight,
             "ddcci" => Backend::Ddc,
             _ => Backend::Auto,
+        }
+    }
+}
+
+// `recording.*`
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Recording {
+    pub quality: Quality,
+    pub encoder: Preference,
+
+    // the DRM render node VA-API encodes on, none to find one
+    pub device: Option<String>,
+}
+
+// `recording.quality`: how much of the picture is kept, as one choice for every encoder
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quality {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Max,
+}
+
+impl Quality {
+    pub const NAMES: &[&str] = &["low", "medium", "high", "max"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Quality::Low => "low",
+            Quality::Medium => "medium",
+            Quality::High => "high",
+            Quality::Max => "max",
+        }
+    }
+
+    pub fn named(name: &str) -> Quality {
+        match name {
+            "low" => Quality::Low,
+            "medium" => Quality::Medium,
+            "max" => Quality::Max,
+            _ => Quality::High,
+        }
+    }
+}
+
+// `recording.encoder`: what to encode with, or `Auto` to find what works
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Preference {
+    #[default]
+    Auto,
+    Vaapi,
+    Nvenc,
+    Software,
+}
+
+impl Preference {
+    pub const NAMES: &[&str] = &["auto", "vaapi", "nvenc", "software"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Preference::Auto => "auto",
+            Preference::Vaapi => "vaapi",
+            Preference::Nvenc => "nvenc",
+            Preference::Software => "software",
+        }
+    }
+
+    pub fn named(name: &str) -> Preference {
+        match name {
+            "vaapi" => Preference::Vaapi,
+            "nvenc" => Preference::Nvenc,
+            "software" => Preference::Software,
+            _ => Preference::Auto,
         }
     }
 }
@@ -1011,6 +1117,10 @@ pub enum Kind {
     // a line of text, not empty; unset is none
     Text(Field<Option<String>>),
 
+    // a DRM render node, `/dev/dri/renderD` and a number (`render_node`); unset is none. A name that
+    // is anything else would reach a program as its `-d` argument or inside a `-init_hw_device`
+    Node(Field<Option<String>>),
+
     // `[latitude, longitude]` in degrees; unset is none
     Location(Field<Option<Location>>),
 
@@ -1098,6 +1208,19 @@ impl Kind {
                     .filter(|text| !text.trim().is_empty() && !text.contains('\n'))
                     .ok_or("expected a line of text")?;
                 (field.set)(config, Some(text.trim().to_owned()));
+            }
+            Kind::Node(field) => {
+                let text = value.as_str();
+
+                match text {
+                    Some("") => (field.set)(config, None),
+                    Some(node) if render_node(node) => (field.set)(config, Some(node.to_owned())),
+                    _ => {
+                        return Err(format!(
+                            "expected a render node like \"/dev/dri/renderD128\", found {value}"
+                        ));
+                    }
+                }
             }
             Kind::Location(field) => (field.set)(config, Some(Location::read(value)?)),
             Kind::DayTime(field) => {
@@ -1300,7 +1423,9 @@ impl Kind {
                 Value::Integer(i64::try_from((field.get)(config).as_secs() / 60).ok()?)
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
-            Kind::Path(field) | Kind::Text(field) => Value::String((field.get)(config)?),
+            Kind::Path(field) | Kind::Text(field) | Kind::Node(field) => {
+                Value::String((field.get)(config)?)
+            }
             Kind::Location(field) => (field.get)(config)?.value(),
             Kind::DayTime(field) => Value::String((field.get)(config)?.to_string()),
             Kind::DesktopIds(field)
@@ -1358,7 +1483,7 @@ impl Kind {
             | Kind::Count(_, field) => field.copy(from, to),
             Kind::Minutes(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
-            Kind::Path(field) | Kind::Text(field) => field.copy(from, to),
+            Kind::Path(field) | Kind::Text(field) | Kind::Node(field) => field.copy(from, to),
             Kind::Location(field) => field.copy(from, to),
             Kind::DayTime(field) => field.copy(from, to),
             Kind::DesktopIds(field)
@@ -2625,6 +2750,120 @@ pub const LOCK: &[Setting] = &[
     },
 ];
 
+pub const SDDM_BLUR: Range = Range {
+    least: 0,
+    most: 128,
+};
+pub const SDDM_DIM: Range = Range {
+    least: 0,
+    most: 100,
+};
+
+// the login screen's look (`kanade sddm`); nothing here touches the system, which only `kanade sddm
+// status` says how to do, with root
+pub const SDDM: &[Setting] = &[
+    Setting {
+        key: "sddm.theme",
+        label: "Theme",
+        help: "the SDDM theme `kanade sddm` writes its look for, by its directory name; unset is Kanade's own, kanade",
+        hint: Some("SDDM theme the login screen's look is written for"),
+        kind: Kind::Text(Field {
+            get: |config| config.sddm_theme.clone(),
+            set: |config, theme| config.sddm_theme = theme,
+        }),
+        example: Some("\"kanade\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "sddm.background",
+        label: "Background",
+        help: "what the login screen shows behind the clock: the wallpaper awww shows when `kanade sddm sync` runs, the image at sddm.background_path, the solid color sddm.surface, or \"none\", which writes no picture",
+        hint: Some("What shows behind the login screen clock"),
+        kind: Kind::Choice(
+            Choices::named(SddmBackground::NAMES),
+            Field {
+                get: |config| config.sddm_background.name(),
+                set: |config, name| config.sddm_background = SddmBackground::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "sddm.background_path",
+        label: "Background image",
+        help: "the image for sddm.background \"path\": png, jpeg, webp, gif or svg, a symbolic link to one is followed; its first frame",
+        hint: Some("Image for the login screen when its background is a path"),
+        kind: Kind::Path(Field {
+            get: |config| config.sddm_background_path.clone(),
+            set: |config, path| config.sddm_background_path = path,
+        }),
+        example: Some("\"~/Pictures/login.png\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "sddm.surface",
+        label: "Surface color",
+        help: "the login screen's color where there is no picture, #rrggbb; unset is the theme's own",
+        hint: Some("Login screen color where there is no picture"),
+        kind: Kind::Text(Field {
+            get: |config| config.sddm_surface.clone(),
+            set: |config, surface| config.sddm_surface = surface,
+        }),
+        example: Some("\"#0c0d11\""),
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "sddm.blur",
+        label: "Blur",
+        help: "how far the login screen's picture is blurred, in pixels of the picture; 32 is the lock screen's, 0 is sharp",
+        hint: Some("Blur of the login screen's picture; 0 sharp"),
+        kind: Kind::Pixels(
+            SDDM_BLUR,
+            Field {
+                get: |config| config.sddm_blur,
+                set: |config, blur| config.sddm_blur = blur,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "sddm.dim",
+        label: "Dim",
+        help: "how dark the login screen's picture is made, whole percent of black over it; 0 is none",
+        hint: Some("Black shade over the login screen's picture, percent"),
+        kind: Kind::Percent(
+            SDDM_DIM,
+            Field {
+                get: |config| config.sddm_dim,
+                set: |config, dim| config.sddm_dim = dim,
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "sddm.sync",
+        label: "Keep in sync",
+        help: "whether the shell writes the login screen's picture again whenever the wallpaper changes, with sddm.background \"wallpaper\", once root has made the overlay directory (`kanade sddm status` prints the command); off by default, as the file is readable by the login screen's own user and by anyone who can read the overlay directory, so it holds a picture of your desktop",
+        hint: Some("Write the login screen's picture whenever the wallpaper changes"),
+        kind: Kind::Switch(Field {
+            get: |config| config.sddm_sync,
+            set: |config, on| config.sddm_sync = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+];
+
 // whole seconds each idle stage waits, up to a day, 0 being never
 pub const IDLE_SECONDS: Range = Range {
     least: 0,
@@ -2791,6 +3030,70 @@ pub const BRIGHTNESS: &[Setting] = &[Setting {
     restart: true,
     per_output: false,
 }];
+
+pub const RECORDING: &[Setting] = &[
+    Setting {
+        key: "recording.quality",
+        label: "Recording quality",
+        help: "how much of the picture a screen recording keeps: \"low\", \"medium\", \"high\" or \"max\". Each is one fixed quantizer for the encoder in use, so a still screen costs nothing and a busy one what it needs; each step changes the size of a busy picture by about a quarter",
+        hint: Some("How much of the picture a recording keeps"),
+        kind: Kind::Choice(
+            Choices::labeled(
+                Quality::NAMES,
+                &[
+                    ("low", "Low"),
+                    ("medium", "Medium"),
+                    ("high", "High"),
+                    ("max", "Max"),
+                ],
+            ),
+            Field {
+                get: |config| config.recording.quality.name(),
+                set: |config, name| config.recording.quality = Quality::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "recording.encoder",
+        label: "Recording encoder",
+        help: "what encodes a screen recording as H.264: \"vaapi\" (the GPU through VA-API: Intel, AMD), \"nvenc\" (an NVIDIA GPU), \"software\" (libx264 on the CPU), or \"auto\" for the first that works, in that order; NVENC is not tried while VA-API works, so an NVIDIA GPU that sleeps stays asleep. One that does not work gives way to software, which `kanade doctor` and the log say. Read when a recording starts",
+        hint: Some("What encodes a recording"),
+        kind: Kind::Choice(
+            Choices::labeled(
+                Preference::NAMES,
+                &[
+                    ("auto", "Automatic"),
+                    ("vaapi", "VA-API (Intel, AMD)"),
+                    ("nvenc", "NVENC (NVIDIA)"),
+                    ("software", "Software (CPU)"),
+                ],
+            ),
+            Field {
+                get: |config| config.recording.encoder.name(),
+                set: |config, name| config.recording.encoder = Preference::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
+        key: "recording.device",
+        label: "Recording render node",
+        help: "the DRM render node VA-API encodes on, like /dev/dri/renderD128; unset finds an Intel or AMD one, the GPU that drives the display first, and never an NVIDIA one",
+        hint: Some("Render node for VA-API; unset finds one"),
+        kind: Kind::Node(Field {
+            get: |config| config.recording.device.clone(),
+            set: |config, device| config.recording.device = device,
+        }),
+        example: Some("\"/dev/dri/renderD128\""),
+        restart: false,
+        per_output: false,
+    },
+];
 
 pub const DICTATE: &[Setting] = &[
     Setting {
@@ -3978,6 +4281,13 @@ fn expand(path: &str, home: Option<&str>) -> String {
     }
 }
 
+// whether `text` is a DRM render node: `/dev/dri/renderD` and digits, nothing else
+fn render_node(text: &str) -> bool {
+    text.strip_prefix("/dev/dri/renderD").is_some_and(|number| {
+        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4007,6 +4317,43 @@ mod tests {
         list.iter()
             .map(|&(line, what)| (line, what.to_owned()))
             .collect()
+    }
+
+    // the node reaches `wf-recorder -d` and an `ffmpeg` device option: only a render node goes
+    #[test]
+    fn the_recording_device_is_a_render_node_or_nothing() {
+        for device in ["/dev/dri/renderD128", "/dev/dri/renderD0"] {
+            let (config, problems) = one(&format!("[recording]\ndevice = \"{device}\""));
+
+            assert!(problems.is_empty(), "{device}: {problems:?}");
+            assert_eq!(config.recording.device.as_deref(), Some(device));
+        }
+
+        let (config, problems) = one("[recording]\ndevice = \"\"");
+
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(config.recording.device, None);
+
+        for device in [
+            "renderD128",
+            "/dev/dri/card0",
+            "/dev/dri/renderD",
+            "/dev/dri/renderD12a",
+            "/dev/dri/renderD128,x=y",
+            "/dev/dri/../renderD128",
+            "/dev/dri/renderD128\\n",
+            "-v",
+            " ",
+        ] {
+            let (config, problems) = one(&format!("[recording]\ndevice = \"{device}\""));
+
+            assert_eq!(problems.len(), 1, "{device}: {problems:?}");
+            assert!(problems[0].1.contains("render node"), "{problems:?}");
+            assert_eq!(config.recording.device, None, "{device}");
+        }
+
+        // a number is no node either
+        assert_eq!(one("[recording]\ndevice = 128").1.len(), 1);
     }
 
     #[test]
@@ -4220,6 +4567,9 @@ mod tests {
                 "weather.location",
                 "weather.place",
                 "weather.units",
+                "recording.quality",
+                "recording.encoder",
+                "recording.device",
                 "gestures",
                 "dictate.insert",
                 "dictate.never_in",
@@ -4234,6 +4584,13 @@ mod tests {
                 "lock.backdrop",
                 "lock.pam_service",
                 "lock.grace",
+                "sddm.theme",
+                "sddm.background",
+                "sddm.background_path",
+                "sddm.surface",
+                "sddm.blur",
+                "sddm.dim",
+                "sddm.sync",
                 "idle.dim",
                 "idle.lock",
                 "idle.screen_off",

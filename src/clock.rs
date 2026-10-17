@@ -228,6 +228,35 @@ pub fn open_i2c(path: &std::path::Path, address: u16) -> io::Result<File> {
     Ok(bus)
 }
 
+/*
+ * atomically swaps two existing paths: after the call `a` holds what `b` held and vice versa,
+ * with no instant where either is missing. The two may be of different types (a directory and a
+ * symlink, for instance). Uses `renameat2(2)` with `RENAME_EXCHANGE`; returns `Err` when the
+ * kernel or filesystem does not support it, or the two paths are on different filesystems
+ */
+pub fn exchange(a: &std::path::Path, b: &std::path::Path) -> io::Result<()> {
+    let a = CString::new(a.as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
+    let b = CString::new(b.as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
+
+    // SAFETY: both CStrings outlive the call; AT_FDCWD makes the paths relative to cwd, but they
+    // are absolute in every caller. renameat2 with RENAME_EXCHANGE atomically swaps the two
+    let ret = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            a.as_ptr(),
+            libc::AT_FDCWD,
+            b.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 // <linux/rfkill.h>, a struct rfkill_event as read in its first, fixed size
 pub const RFKILL_EVENT: usize = 8;
 pub const RFKILL_OP_ADD: u8 = 0;
@@ -540,6 +569,120 @@ pub fn default_sigint(command: &mut Command) -> &mut Command {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
             Ok(())
         })
+    }
+}
+
+// the write end of the pipe `on_terminate` reads, for the handler, which may only call
+// async-signal-safe functions (`write` is one)
+static TERMINATION: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn terminated(signal: c_int) {
+    use std::sync::atomic::Ordering;
+
+    let fd = TERMINATION.load(Ordering::Relaxed);
+    let byte = signal as u8;
+
+    // SAFETY: `write` is async-signal-safe; a full pipe or a closed one loses a byte, which only
+    // means an earlier one is still waiting. errno is put back, as the interrupted code may be
+    // reading it
+    unsafe {
+        let errno = libc::__errno_location();
+        let saved = *errno;
+
+        libc::write(fd, (&raw const byte).cast(), 1);
+        *errno = saved;
+    }
+}
+
+// SIGTERM and SIGINT now write their number to the returned pipe instead of ending the process
+fn catch_termination() -> io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::net::UnixStream;
+    use std::sync::atomic::Ordering;
+
+    let (reader, writer) = UnixStream::pair()?;
+
+    // kept open for the process's life: the handler writes to it
+    TERMINATION.store(writer.into_raw_fd(), Ordering::Relaxed);
+
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        // SAFETY: `terminated` is async-signal-safe
+        unsafe {
+            libc::signal(signal, terminated as *const () as libc::sighandler_t);
+        }
+    }
+
+    Ok(reader)
+}
+
+/*
+ * runs `action` when this process gets SIGTERM or SIGINT (`systemctl --user stop`, `restart`, Ctrl+C),
+ * then ends it as the signal would have, so what the shell must put back on the way out
+ * (a monitor change on trial) is not lost to the default, which kills at once. A thread reads the
+ * signal from a pipe, so `action` is no signal handler's code. It is given `LIMIT` to finish, then
+ * the process ends all the same; a second signal ends it at once
+ */
+pub fn on_terminate(action: impl FnOnce() + Send + 'static) -> io::Result<()> {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    const LIMIT: Duration = Duration::from_secs(5);
+
+    let mut reader = catch_termination()?;
+
+    let spawned = thread::Builder::new()
+        .name(String::from("kanade-terminate"))
+        .spawn(move || {
+            let mut byte = [0u8; 1];
+            let signal = match reader.read(&mut byte) {
+                Ok(1) => c_int::from(byte[0]),
+                _ => libc::SIGTERM,
+            };
+
+            // the next one is the default: the user insisting
+            default_termination();
+
+            let (done, finished) = mpsc::channel();
+
+            if thread::Builder::new()
+                .name(String::from("kanade-terminate-action"))
+                .spawn(move || {
+                    action();
+                    let _ = done.send(());
+                })
+                .is_ok()
+            {
+                let _ = finished.recv_timeout(LIMIT);
+            }
+
+            let _ = kill_process(
+                rustix::process::getpid(),
+                Signal::from_named_raw(signal).unwrap_or(Signal::TERM),
+            );
+
+            // the signal ends this; if it somehow does not, so does this
+            thread::sleep(Duration::from_secs(1));
+            std::process::exit(128 + signal);
+        });
+
+    // nobody reads the pipe: the signals must not be swallowed
+    if let Err(error) = spawned {
+        default_termination();
+
+        return Err(error);
+    }
+
+    Ok(())
+}
+
+// SIGTERM and SIGINT end the process again
+fn default_termination() {
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        // SAFETY: plain call, setting a disposition, no handler
+        unsafe {
+            libc::signal(signal, libc::SIG_DFL);
+        }
     }
 }
 
@@ -904,6 +1047,24 @@ mod tests {
         interrupt(&child).expect("signalled");
 
         assert_eq!(child.wait().expect("reaped").signal(), Some(libc::SIGINT));
+    }
+
+    #[test]
+    fn sigterm_is_read_from_the_pipe_not_taken_as_death() {
+        let mut reader = catch_termination().expect("handlers installed");
+
+        terminate_pid(std::process::id()).expect("signalled");
+
+        let mut byte = [0u8; 1];
+
+        reader.read_exact(&mut byte).expect("the handler wrote");
+        assert_eq!(c_int::from(byte[0]), libc::SIGTERM);
+
+        // SAFETY: plain call, setting a disposition, no handler
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
     }
 
     #[test]

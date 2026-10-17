@@ -23,10 +23,12 @@ mod lock;
 mod look;
 mod merge;
 mod modules;
+mod niri_config;
 mod pane;
 mod raster;
 mod reload;
 mod scene;
+mod sddm;
 mod settings;
 mod shadow;
 mod sources;
@@ -67,8 +69,15 @@ fn main() -> ExitCode {
     kanade_runtime::set_ui_scale(config::get().appearance.ui_scale());
 
     supervise::follow_services();
+    settings::recover_outputs();
+
+    // `systemctl --user restart` or Ctrl+C mid-trial puts a monitor back before the shell ends
+    if let Err(why) = clock::on_terminate(settings::revert_outputs) {
+        eprintln!("kanade: SIGTERM will not put outputs back: {why}");
+    }
     modules::start(theme::font(App::new()))
         .on_key_release(surfaces::confirm::release)
         .run();
+    settings::revert_outputs();
     ExitCode::SUCCESS
 }

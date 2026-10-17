@@ -264,6 +264,23 @@ choice! {
 }
 
 choice! {
+    // what the login screen shows behind the clock, `sddm.background`
+    SddmBackground {
+        // the wallpaper awww shows, as `kanade sddm sync` last saw it
+        Wallpaper = "wallpaper",
+
+        // the image at `sddm.background_path`
+        Path = "path",
+
+        // the solid color, `sddm.surface`
+        Solid = "solid",
+
+        // nothing of Kanade's: the theme's own look, and no picture written
+        None = "none",
+    }
+}
+
+choice! {
     // how a Banner comes in, `banners.entrance`
     Entrance {
         // out from under the Island: a copy of its pill morphs and stretches into the Banner

@@ -59,7 +59,7 @@ pub struct Unread {
 }
 
 // the deepest include followed, past the loops refused on their own
-const DEEPEST: usize = 8;
+pub(crate) const DEEPEST: usize = 8;
 
 // the config niri reads, as it looks for it
 pub fn config() -> Option<PathBuf> {
@@ -429,7 +429,7 @@ fn problem(text: &str, error: &KdlError) -> String {
 }
 
 // an include's path: `~/` from home, else relative to the file including it
-fn beside(path: &Path, file: &str) -> PathBuf {
+pub(crate) fn beside(path: &Path, file: &str) -> PathBuf {
     if let Some(rest) = file.strip_prefix("~/")
         && let Some(home) = env::var_os("HOME")
     {
