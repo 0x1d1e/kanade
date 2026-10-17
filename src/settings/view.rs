@@ -34,9 +34,21 @@ use super::niri;
 use super::outputs;
 use super::ring::{self, Stop};
 use super::{
-    FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change, change_all, font_search, input, inspect,
-    module_filter, path, search, select_font, turn_to, undo,
+    FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change, change_all, font_search, hover, input,
+    inspect, module_filter, path, search, select_font, turn_to, undo,
 };
+
+pub(super) fn hover_wash(roles: &ThemeRoles) -> Color {
+    theme::faded(roles.on_surface, 0.08)
+}
+
+pub(super) fn hover_primary(roles: &ThemeRoles) -> Color {
+    theme::mix(roles.primary, roles.on_primary, 0.12)
+}
+
+pub(super) fn hover_container(roles: &ThemeRoles) -> Color {
+    theme::mix(roles.surface_container_high, roles.on_surface, 0.08)
+}
 
 // the size it opens at, and the smallest it can be made
 mod niri_page;
@@ -305,6 +317,7 @@ fn nav(
     let shown = page.name == settings.page;
     let here = shown && settings.query.trim().is_empty();
     let name = page.name;
+    let hovered = settings.is_hovered(name);
 
     let (ink, weight) = if here {
         (roles.on_surface, theme::text::SEMIBOLD)
@@ -319,6 +332,7 @@ fn nav(
         .padding(sides(10.0))
         .align_child(Start, Center)
         .cursor(Cursor::Pointer)
+        .on_hover(move |inside| hover(name, inside))
         .semantics(|| {
             Semantics::new(Role::Tab, name)
                 .label(page.title)
@@ -337,7 +351,13 @@ fn nav(
             .align(Center),
         );
     let row = if here {
-        row.fill(roles.surface_container_high)
+        if hovered {
+            row.fill(hover_container(roles))
+        } else {
+            row.fill(roles.surface_container_high)
+        }
+    } else if hovered {
+        row.fill(hover_wash(roles))
     } else {
         row
     };
@@ -395,12 +415,14 @@ fn main(settings: &Settings, roles: &ThemeRoles) -> Column {
 
 // the page's title, and Inspect
 fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
+    let hovered = settings.is_hovered("inspect");
     let inspect_button = Rectangle::new()
         .width(96.0)
         .height(30.0)
         .radius(radius::ROW)
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
+        .on_hover(move |inside| hover("inspect", inside))
         .semantics(|| Semantics::new(Role::Toggle, "inspect").checked(settings.inspect))
         .on_click(left(inspect))
         .child(
@@ -416,7 +438,13 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         );
 
     let inspect_button = if settings.inspect {
-        inspect_button.fill(roles.surface_container_high)
+        if hovered {
+            inspect_button.fill(hover_container(roles))
+        } else {
+            inspect_button.fill(roles.surface_container_high)
+        }
+    } else if hovered {
+        inspect_button.fill(hover_wash(roles))
     } else {
         inspect_button
     };
@@ -497,12 +525,14 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
         actions.extend(outputs_page::actions(settings, roles));
     }
     if undoable {
+        let hovered = settings.is_hovered("undo");
         let undo_button = Rectangle::new()
             .width(84.0)
             .height(30.0)
             .radius(radius::ROW)
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
+            .on_hover(move |inside| hover("undo", inside))
             .semantics(|| Semantics::new(Role::Button, "undo"))
             .on_click(left(undo))
             .child(
@@ -516,6 +546,12 @@ fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
                 .gap(6.0)
                 .align(Center),
             );
+
+        let undo_button = if hovered {
+            undo_button.fill(hover_wash(roles))
+        } else {
+            undo_button
+        };
 
         actions.push(outlined(
             undo_button,
@@ -818,22 +854,33 @@ fn found_heading(page: &'static Page, title: &str, roles: &ThemeRoles) -> Box<dy
 
     let row = Row::new(path).gap(8.0).align(Center);
     let width = fixed(Widget::width(&row)) + 2.0 * 8.0;
+    let id = format!("open {name} {title}");
+    let hovered = Settings::read().is_hovered(&id);
+    let hover_id = id.clone();
+
+    let control = Rectangle::new()
+        .width(width)
+        .height(28.0)
+        .radius(radius::ROW - 4.0)
+        .padding(sides(8.0))
+        .align_child(Start, Center)
+        .cursor(Cursor::Pointer)
+        .on_hover(move |inside| hover(hover_id.clone(), inside))
+        .semantics(|| {
+            Semantics::new(Role::Button, "open")
+                .label(format!("{} {title}", page.title).trim().to_owned())
+        })
+        .on_click(left(move || turn_to(name)))
+        .child(row);
+    let control = if hovered {
+        control.fill(hover_wash(roles))
+    } else {
+        control
+    };
 
     outlined(
-        Rectangle::new()
-            .width(width)
-            .height(28.0)
-            .radius(radius::ROW - 4.0)
-            .padding(sides(8.0))
-            .align_child(Start, Center)
-            .cursor(Cursor::Pointer)
-            .semantics(|| {
-                Semantics::new(Role::Button, "open")
-                    .label(format!("{} {title}", page.title).trim().to_owned())
-            })
-            .on_click(left(move || turn_to(name)))
-            .child(row),
-        ring::register(Stop::new(format!("open {name} {title}")).press(move || turn_to(name))),
+        control,
+        ring::register(Stop::new(id).press(move || turn_to(name))),
         None,
         roles,
     )
@@ -1114,6 +1161,7 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
 struct Label {
     // the setting it is for, which names the row: the first of them when it sets more than one
     node: &'static str,
+    hover_id: String,
     title: String,
     help: String,
     marks: Vec<Box<dyn Widget>>,
@@ -1188,6 +1236,7 @@ fn label(
 
     Label {
         node: shown[0].key,
+        hover_id: shown[0].key.to_string(),
         title: title.to_owned(),
         help: help.to_owned(),
         marks,
@@ -1286,21 +1335,28 @@ fn labeled(
     let height = fixed(content.height()) + 2.0 * ROW_INSET;
 
     let node = label.node;
+    let hover_id = label.hover_id;
+    let hovered = Settings::read().is_hovered(&hover_id);
 
-    Box::new(
-        Rectangle::new()
-            .width(inner())
-            .height(height)
-            .padding(Padding {
-                top: ROW_INSET,
-                right: 0.0,
-                bottom: ROW_INSET,
-                left: 0.0,
-            })
-            .semantics(|| Semantics::new(Role::Region, node))
-            .align_child(Start, Center)
-            .child(Column::new(vec![content]).width(inner())),
-    )
+    let mut row = Rectangle::new()
+        .width(inner())
+        .height(height)
+        .radius(radius::ROW)
+        .padding(Padding {
+            top: ROW_INSET,
+            right: 0.0,
+            bottom: ROW_INSET,
+            left: 0.0,
+        })
+        .semantics(|| Semantics::new(Role::Region, node))
+        .align_child(Start, Center)
+        .on_hover(move |inside| hover(hover_id.clone(), inside));
+
+    if hovered {
+        row = row.fill(hover_wash(roles));
+    }
+
+    Box::new(row.child(Column::new(vec![content]).width(inner())))
 }
 
 // what sets the key, by its Kind, showing the value the files give, and whether it fits beside
@@ -1680,6 +1736,7 @@ fn font_choice(
     press: impl Fn() + 'static,
 ) -> Box<dyn Widget> {
     let id = format!("font {name}");
+    let hovered = Settings::read().is_hovered(&id);
     let text = Text::new(name.to_owned())
         .size(theme::text::LABEL)
         .color(roles.on_surface)
@@ -1702,12 +1759,18 @@ fn font_choice(
         .align_child(Start, Center)
         .child(text);
     let row = if selected {
-        row.fill(roles.surface_container_high)
+        if hovered {
+            row.fill(hover_container(roles))
+        } else {
+            row.fill(roles.surface_container_high)
+        }
+    } else if hovered {
+        row.fill(hover_wash(roles))
     } else {
         row
     };
 
-    button(row, id, press, None, roles)
+    button_styled(row, id, press, None, false, roles)
 }
 
 fn font_note(text: &str, roles: &ThemeRoles) -> Rectangle {
@@ -1917,18 +1980,27 @@ fn module_line(
     .gap(2.0);
 
     let height = fixed(Widget::height(&text)).max(fixed(action.height())) + 2.0 * 10.0;
+    let hover_id = format!("module {name}");
+    let hovered = Settings::read().is_hovered(&hover_id);
 
-    Rectangle::new()
+    let mut row = Rectangle::new()
         .width(inner())
         .height(height)
+        .radius(radius::ROW)
         .semantics(|| Semantics::new(Role::Region, "module").label(name))
         .align_child(Start, Center)
-        .child(
-            Row::new(vec![Box::new(text), action])
-                .width(inner())
-                .justify(SpaceBetween)
-                .align(Center),
-        )
+        .on_hover(move |inside| hover(hover_id.clone(), inside));
+
+    if hovered {
+        row = row.fill(hover_wash(roles));
+    }
+
+    row.child(
+        Row::new(vec![Box::new(text), action])
+            .width(inner())
+            .justify(SpaceBetween)
+            .align(Center),
+    )
 }
 
 // a small screen with the places an edge and a side make, the chosen one filled
@@ -1974,7 +2046,10 @@ fn position(
 
         let (cell_width, cell_height) = if sideways { (24.0, 44.0) } else { (48.0, 24.0) };
         let selectable = active && !(combined_position && sideways);
-        let cell = Rectangle::new()
+        let id = format!("place {edge_key} {} {}", to.0, to.1);
+        let hovered = Settings::read().is_hovered(&id);
+
+        let mut cell = Rectangle::new()
             .width(cell_width)
             .height(cell_height)
             .radius(7.0)
@@ -1983,23 +2058,22 @@ fn position(
                     .selected(here)
                     .disabled(!selectable)
             })
-            .align_child(Center, Center)
-            .child(
-                Rectangle::new()
-                    .width(width)
-                    .height(height)
-                    .radius(5.0)
-                    .fill(if here { roles.primary } else { roles.edge() }),
-            );
+            .align_child(Center, Center);
+
+        if hovered && selectable {
+            cell = cell.fill(hover_wash(roles));
+        }
+
+        let cell = cell.child(
+            Rectangle::new()
+                .width(width)
+                .height(height)
+                .radius(5.0)
+                .fill(if here { roles.primary } else { roles.edge() }),
+        );
 
         if selectable {
-            button(
-                cell,
-                format!("place {edge_key} {} {}", to.0, to.1),
-                press,
-                None,
-                roles,
-            )
+            button(cell, id, press, None, roles)
         } else {
             Box::new(cell.opacity(theme::DISABLED))
         }
@@ -2144,36 +2218,52 @@ fn list(
 
 // a list's entry with its actions at the end
 fn entry_line(text: &str, actions: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> Rectangle {
-    Rectangle::new()
+    let hover_id = format!("entry {text}");
+    let hovered = Settings::read().is_hovered(&hover_id);
+
+    let entry = Rectangle::new()
         .width(inner())
         .height(ENTRY)
         .radius(radius::ROW)
-        .fill(roles.surface)
+        .fill(if hovered {
+            theme::mix(roles.surface, roles.on_surface, 0.08)
+        } else {
+            roles.surface
+        })
         .padding(sides(12.0))
         .semantics(|| Semantics::new(Role::Item, "entry").content(text))
         .align_child(Start, Center)
-        .child(
-            Row::new(children![
-                Text::new(text)
-                    .size(theme::text::LABEL)
-                    .color(roles.on_surface)
-                    .weight(theme::text::MEDIUM)
-                    .elide(),
-                Row::new(actions).gap(4.0).align(Center),
-            ])
-            .width(Parent)
-            .gap(12.0)
-            .justify(SpaceBetween)
-            .align(Center),
-        )
+        .on_hover(move |inside| hover(hover_id.clone(), inside));
+
+    entry.child(
+        Row::new(children![
+            Text::new(text)
+                .size(theme::text::LABEL)
+                .color(roles.on_surface)
+                .weight(theme::text::MEDIUM)
+                .elide(),
+            Row::new(actions).gap(4.0).align(Center),
+        ])
+        .width(Parent)
+        .gap(12.0)
+        .justify(SpaceBetween)
+        .align(Center),
+    )
 }
 
 // on is filled with the knob at the end, off in a trough with an edge and the knob at the start
 fn switch(id: String, on: bool, roles: &ThemeRoles, press: impl Fn() + 'static) -> Box<dyn Widget> {
-    pressed(switch_track(on, roles), id, press, TARGET / 2.0, roles)
+    let hovered = Settings::read().is_hovered(&id);
+    pressed(
+        switch_track(on, hovered, roles),
+        id,
+        press,
+        TARGET / 2.0,
+        roles,
+    )
 }
 
-fn switch_track(on: bool, roles: &ThemeRoles) -> Rectangle {
+pub(super) fn switch_track(on: bool, hovered: bool, roles: &ThemeRoles) -> Rectangle {
     const KNOB: f32 = 16.0;
 
     let track = Rectangle::new()
@@ -2183,15 +2273,30 @@ fn switch_track(on: bool, roles: &ThemeRoles) -> Rectangle {
         .padding(4.0);
 
     let (track, knob, end) = if on {
-        (
-            track.fill(roles.primary),
-            roles.on_primary,
-            Align::from(End),
-        )
+        let fill = if hovered {
+            hover_primary(roles)
+        } else {
+            roles.primary
+        };
+        (track.fill(fill), roles.on_primary, Align::from(End))
     } else {
+        let fill = if hovered {
+            theme::mix(roles.track(), roles.on_surface, 0.12)
+        } else {
+            roles.track()
+        };
+        let edge = if hovered {
+            roles.on_surface_variant
+        } else {
+            roles.edge()
+        };
         (
-            track.fill(roles.track()).border(1.0, roles.edge()),
-            roles.edge(),
+            track.fill(fill).border(1.0, edge),
+            if hovered {
+                roles.on_surface_variant
+            } else {
+                roles.edge()
+            },
             Align::from(Start),
         )
     };
@@ -2225,6 +2330,9 @@ fn segmented(
         .iter()
         .map(|&option| {
             let here = option == chosen;
+            let seg_id = format!("{id} {option}");
+            let hovered = Settings::read().is_hovered(&seg_id);
+            let hover_seg = seg_id.clone();
             let text = Text::new(humanize(options, option))
                 .size(theme::text::LABEL)
                 .color(if here {
@@ -2249,13 +2357,20 @@ fn segmented(
             let segment = if enabled {
                 segment
                     .cursor(Cursor::Pointer)
+                    .on_hover(move |inside| hover(hover_seg.clone(), inside))
                     .on_click(left(move || choose(option)))
             } else {
                 segment
             };
             let segment = segment.child(text);
             let segment = if here {
-                segment.fill(roles.primary)
+                if hovered {
+                    segment.fill(hover_primary(roles))
+                } else {
+                    segment.fill(roles.primary)
+                }
+            } else if hovered && enabled {
+                segment.fill(hover_wash(roles))
             } else {
                 segment
             };
@@ -2318,6 +2433,9 @@ fn cards(
         .iter()
         .map(|&option| {
             let here = option == chosen;
+            let card_id = format!("{id} {option}");
+            let hovered = Settings::read().is_hovered(&card_id);
+            let hover_card = card_id.clone();
             let choose = choose.clone();
             let card = Rectangle::new()
                 .width(THUMB.0 + 2.0 * CARD)
@@ -2326,6 +2444,7 @@ fn cards(
                 .padding(CARD)
                 .semantics(|| Semantics::new(Role::Tab, option).selected(here))
                 .cursor(Cursor::Pointer)
+                .on_hover(move |inside| hover(hover_card.clone(), inside))
                 .on_click(left(move || choose(option)))
                 .child(
                     Column::new(children![
@@ -2353,7 +2472,15 @@ fn cards(
                 );
 
             Box::new(if here {
-                card.fill(roles.track()).border(2.0, roles.primary)
+                if hovered {
+                    card.fill(theme::mix(roles.track(), roles.on_surface, 0.08))
+                        .border(2.0, hover_primary(roles))
+                } else {
+                    card.fill(roles.track()).border(2.0, roles.primary)
+                }
+            } else if hovered {
+                card.fill(hover_wash(roles))
+                    .border(1.0, roles.on_surface_variant)
             } else {
                 card.border(1.0, roles.edge())
             }) as Box<dyn Widget>
@@ -2583,19 +2710,28 @@ fn stepper(
     let inside = FIELD - 2.0;
 
     let side = |node: &'static str, sign: &str, value: u64| {
-        Rectangle::new()
+        let side_id = format!("stepper {id} {node}");
+        let hovered = Settings::read().is_hovered(&side_id);
+        let hover_id = side_id.clone();
+        let mut btn = Rectangle::new()
             .width(SIDE)
             .height(inside)
             .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
-            .on_click(left(to(value)))
-            .child(
-                Text::new(sign)
-                    .size(theme::text::BODY)
-                    .color(roles.on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            )
+            .on_hover(move |inside| hover(hover_id.clone(), inside))
+            .on_click(left(to(value)));
+
+        if hovered {
+            btn = btn.fill(hover_wash(roles));
+        }
+
+        btn.child(
+            Text::new(sign)
+                .size(theme::text::BODY)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
     };
     let divider = || {
         Rectangle::new()
@@ -2836,35 +2972,52 @@ fn halo(
 }
 
 // a pressable of its own edge or none, that Enter and Space press as well
-fn button(
+pub(super) fn button(
     control: Rectangle,
     id: impl Into<String>,
     press: impl Fn() + 'static,
     resting: Option<Color>,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
+    button_styled(control, id, press, resting, true, roles)
+}
+
+pub(super) fn button_styled(
+    control: Rectangle,
+    id: impl Into<String>,
+    press: impl Fn() + 'static,
+    resting: Option<Color>,
+    wash: bool,
+    roles: &ThemeRoles,
+) -> Box<dyn Widget> {
+    let id = id.into();
+    let hover_id = id.clone();
+    let hovered = Settings::read().is_hovered(&id);
     let press: Rc<dyn Fn()> = Rc::new(press);
     let click = press.clone();
     let token = ring::register(Stop::new(id).press(move || press()));
 
-    outlined(
-        control
-            .cursor(Cursor::Pointer)
-            .on_click(left(move || click())),
-        token,
-        resting,
-        roles,
-    )
+    let mut control = control
+        .cursor(Cursor::Pointer)
+        .on_hover(move |inside| hover(hover_id.clone(), inside))
+        .on_click(left(move || click()));
+
+    if hovered && wash {
+        control = control.fill(hover_wash(roles));
+    }
+
+    outlined(control, token, resting, roles)
 }
 
 // a pressable that is its own edge, in a halo
-fn pressed(
+pub(super) fn pressed(
     control: Rectangle,
     id: String,
     press: impl Fn() + 'static,
     corner: f32,
     roles: &ThemeRoles,
 ) -> Box<dyn Widget> {
+    let hover_id = id.clone();
     let press: Rc<dyn Fn()> = Rc::new(press);
     let click = press.clone();
     let token = ring::register(Stop::new(id).press(move || press()));
@@ -2872,6 +3025,7 @@ fn pressed(
     halo(
         control
             .cursor(Cursor::Pointer)
+            .on_hover(move |inside| hover(hover_id.clone(), inside))
             .on_click(left(move || click())),
         token,
         corner,

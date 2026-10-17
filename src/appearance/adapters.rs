@@ -163,11 +163,13 @@ fn follow(receiver: Receiver<Request>) {
     let mut retry_zen_restore = false;
     let mut portal = portal::Restart::default();
     let mut look = None;
+    let mut gnome_pending = false;
 
     loop {
         let wait = [
             retry_zen_restore.then_some(HELPER_RETRY),
             portal.wait(Instant::now()),
+            gnome_pending.then_some(HELPER_RETRY),
         ]
         .into_iter()
         .flatten()
@@ -187,11 +189,23 @@ fn follow(receiver: Receiver<Request>) {
             },
         };
         let Some(request) = next else {
-            if portal.take_due(Instant::now()) {
-                portal::restart();
+            let now = Instant::now();
+            if portal.take_due(now) {
+                portal::restart_gtk();
+                if portal::has_active_casts() {
+                    gnome_pending = true;
+                } else {
+                    portal::restart_gnome();
+                    gnome_pending = false;
+                }
             }
             if retry_zen_restore {
                 retry_zen_restore = try_restore_zen_preferences();
+            }
+            if gnome_pending && !portal::has_active_casts() {
+                portal::restart_gnome();
+                gnome_pending = false;
+                portal.record_restart(now);
             }
             continue;
         };
@@ -214,12 +228,20 @@ fn follow(receiver: Receiver<Request>) {
         // files of either dir changed
         let after = portal::look();
         let now = Instant::now();
-        if after != before {
+        let gtk3_changed = after[0] != before[0];
+        let gtk4_changed = after[1] != before[1];
+        if gtk3_changed || gtk4_changed {
             portal.changed(now);
         }
         look = Some(after);
         if portal.take_due(now) {
-            portal::restart();
+            portal::restart_gtk();
+            if portal::has_active_casts() {
+                gnome_pending = true;
+            } else {
+                portal::restart_gnome();
+                gnome_pending = false;
+            }
         }
 
         match result {

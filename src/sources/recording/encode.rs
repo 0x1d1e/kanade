@@ -5,8 +5,12 @@
 //! run programs and read `/sys`, are in `probe`, behind `Probe`.
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 pub use crate::config::{Preference, Quality};
+
+pub const PROBE_BUDGET: Duration = Duration::from_millis(3000);
+pub const MAX_VAAPI_CANDIDATES: usize = 2;
 
 // the encoder `wf-recorder` is given for each kind (`ffmpeg -encoders`)
 const VAAPI: &str = "h264_vaapi";
@@ -536,6 +540,7 @@ pub fn choose(
     nodes: &[Node],
     probe: &mut impl Probe,
 ) -> Choice {
+    let started = Instant::now();
     let mut notes = Vec::new();
     let kinds: &[Kind] = match preference {
         Preference::Auto => &[Kind::Vaapi, Kind::Nvenc, Kind::Software],
@@ -556,7 +561,14 @@ pub fn choose(
                     ));
                 }
 
-                tried.iter().find_map(|node| {
+                tried.iter().take(MAX_VAAPI_CANDIDATES).find_map(|node| {
+                    if started.elapsed() >= PROBE_BUDGET {
+                        notes.push(format!(
+                            "VA-API on {} not tried: probe budget exceeded",
+                            node.said()
+                        ));
+                        return None;
+                    }
                     let first = is_first(nodes, node);
 
                     match probe.vaapi(node, first) {
@@ -583,46 +595,62 @@ pub fn choose(
                     }
                 })
             }
-            Kind::Nvenc => match probe.nvenc() {
-                Probed::Works => {
-                    notes.push(String::from("NVENC works"));
-                    Some(Encoder {
-                        kind,
-                        node: None,
-                        first: true,
-                    })
-                }
-                Probed::Unknown(why) if named => {
-                    notes.push(format!("NVENC not tried: {why}"));
-                    Some(Encoder {
-                        kind,
-                        node: None,
-                        first: true,
-                    })
-                }
-                Probed::Unknown(why) => {
-                    notes.push(format!("NVENC not tried: {why}"));
+            Kind::Nvenc => {
+                if started.elapsed() >= PROBE_BUDGET {
+                    notes.push(String::from("NVENC not tried: probe budget exceeded"));
                     None
+                } else {
+                    match probe.nvenc() {
+                        Probed::Works => {
+                            notes.push(String::from("NVENC works"));
+                            Some(Encoder {
+                                kind,
+                                node: None,
+                                first: true,
+                            })
+                        }
+                        Probed::Unknown(why) if named => {
+                            notes.push(format!("NVENC not tried: {why}"));
+                            Some(Encoder {
+                                kind,
+                                node: None,
+                                first: true,
+                            })
+                        }
+                        Probed::Unknown(why) => {
+                            notes.push(format!("NVENC not tried: {why}"));
+                            None
+                        }
+                        Probed::Fails(why) => {
+                            notes.push(format!("NVENC fails: {why}"));
+                            None
+                        }
+                    }
                 }
-                Probed::Fails(why) => {
-                    notes.push(format!("NVENC fails: {why}"));
-                    None
-                }
-            },
-            Kind::Software => match probe.software() {
-                Probed::Works => {
-                    notes.push(String::from("software x264 works"));
+            }
+            Kind::Software => {
+                if started.elapsed() >= PROBE_BUDGET {
+                    notes.push(String::from(
+                        "software x264 not tried: probe budget exceeded",
+                    ));
                     Some(Encoder::software())
+                } else {
+                    match probe.software() {
+                        Probed::Works => {
+                            notes.push(String::from("software x264 works"));
+                            Some(Encoder::software())
+                        }
+                        Probed::Unknown(why) => {
+                            notes.push(format!("software x264 not tried: {why}"));
+                            Some(Encoder::software())
+                        }
+                        Probed::Fails(why) => {
+                            notes.push(format!("software x264 fails: {why}"));
+                            None
+                        }
+                    }
                 }
-                Probed::Unknown(why) => {
-                    notes.push(format!("software x264 not tried: {why}"));
-                    Some(Encoder::software())
-                }
-                Probed::Fails(why) => {
-                    notes.push(format!("software x264 fails: {why}"));
-                    None
-                }
-            },
+            }
         };
 
         if found.is_some() {
@@ -907,6 +935,21 @@ mod tests {
 
         // NVENC named and working: VA-API is not blamed for not being tried
         assert!(hinted(Preference::Nvenc, &["nvenc"]).is_empty());
+    }
+
+    #[test]
+    fn sequential_vaapi_probes_are_bounded() {
+        let nodes = vec![
+            node("/dev/dri/renderD128", Vendor::Intel, true),
+            node("/dev/dri/renderD129", Vendor::Amd, false),
+            node("/dev/dri/renderD130", Vendor::Intel, false),
+            node("/dev/dri/renderD131", Vendor::Amd, false),
+        ];
+        let mut probe = Asked::works(&["software"]);
+        let _ = choose(Preference::Auto, None, &nodes, &mut probe);
+
+        let vaapi_asked = probe.asked.iter().filter(|s| s.contains("vaapi")).count();
+        assert_eq!(vaapi_asked, MAX_VAAPI_CANDIDATES);
     }
 
     fn encoding(kind: Kind, quality: Quality) -> Encoding {

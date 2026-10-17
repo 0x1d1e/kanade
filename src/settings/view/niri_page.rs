@@ -147,6 +147,7 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
 
     Label {
         node: path,
+        hover_id: path.to_string(),
         title: item.label.to_owned(),
         help: item.help.to_owned(),
         marks,
@@ -160,7 +161,9 @@ fn label(item: &'static Item, shown: &Shown, settings: &Settings, roles: &ThemeR
 fn flag(item: &'static Item, shown: &Shown, enabled: bool, roles: &ThemeRoles) -> Box<dyn Widget> {
     let path = item.path;
     let on = matches!(shown.current, Current::Flag(true));
-    let track = switch_track(on, roles);
+    let switch_id = format!("switch niri {path}");
+    let hovered = Settings::read().is_hovered(&switch_id);
+    let track = switch_track(on, hovered, roles);
 
     if !enabled {
         return Box::new(track.opacity(theme::DISABLED));
@@ -168,7 +171,7 @@ fn flag(item: &'static Item, shown: &Shown, enabled: bool, roles: &ThemeRoles) -
 
     pressed(
         track,
-        format!("switch niri {path}"),
+        switch_id,
         move || match item.control {
             Control::Drawn { .. } => niri::change(path, niri::drawn_changes(item, !on)),
             _ => niri::change(path, vec![(path, (!on).then(|| String::from("true")))]),
@@ -280,19 +283,26 @@ fn number(
     let inside = FIELD - 2.0;
 
     let side = |node: &'static str, sign: &str, value: f64| {
-        Rectangle::new()
+        let side_id = format!("niri stepper {id} {node}");
+        let hovered = Settings::read().is_hovered(&side_id);
+        let hover_id = side_id.clone();
+        let mut btn = Rectangle::new()
             .width(SIDE)
             .height(inside)
             .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
-            .on_click(left(to(value)))
-            .child(
-                Text::new(sign)
-                    .size(theme::text::BODY)
-                    .color(roles.on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            )
+            .on_hover(move |inside| hover(hover_id.clone(), inside))
+            .on_click(left(to(value)));
+        if hovered {
+            btn = btn.fill(hover_wash(roles));
+        }
+        btn.child(
+            Text::new(sign)
+                .size(theme::text::BODY)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
     };
     let divider = || {
         Rectangle::new()

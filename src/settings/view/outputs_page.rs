@@ -45,6 +45,8 @@ fn pill(
     roles: &ThemeRoles,
     press: fn(),
 ) -> Box<dyn Widget> {
+    let id = format!("outputs {node}");
+    let hovered = Settings::read().is_hovered(&id);
     let text = Text::new(word)
         .size(theme::text::LABEL)
         .color(if primary {
@@ -61,15 +63,24 @@ fn pill(
         .align_child(Center, Center)
         .child(text);
 
-    button(
-        if primary {
-            control.fill(roles.primary)
+    let control = if primary {
+        if hovered {
+            control.fill(hover_primary(roles))
         } else {
-            control
-        },
-        format!("outputs {node}"),
+            control.fill(roles.primary)
+        }
+    } else if hovered {
+        control.fill(hover_wash(roles))
+    } else {
+        control
+    };
+
+    button_styled(
+        control,
+        id,
         press,
         (!primary).then(|| roles.edge()),
+        false,
         roles,
     )
 }
@@ -224,9 +235,17 @@ fn monitor_view(monitor: &Monitor, settings: &Settings, roles: &ThemeRoles) -> B
     )
 }
 
-fn row_label(node: &'static str, title: &str, help: &str, off: Option<String>) -> Label {
+fn row_label(
+    monitor_name: &str,
+    node: &'static str,
+    title: &str,
+    help: &str,
+    off: Option<String>,
+) -> Label {
+    let suffix = node.strip_prefix("output-").unwrap_or(node);
     Label {
         node,
+        hover_id: format!("{monitor_name}-{suffix}"),
         title: title.to_owned(),
         help: help.to_owned(),
         marks: Vec::new(),
@@ -240,13 +259,15 @@ fn enabled_row(monitor: &Monitor, acts: bool, alone: bool, roles: &ThemeRoles) -
     let output = &monitor.output;
     let name = output.name.clone();
     let on = output.enabled();
-    let track = switch_track(on, roles);
+    let switch_id = format!("switch output {name} enabled");
+    let hovered = Settings::read().is_hovered(&switch_id);
+    let track = switch_track(on, hovered, roles);
     let control: Box<dyn Widget> = if !acts || alone {
         Box::new(track.opacity(theme::DISABLED))
     } else {
         pressed(
             track,
-            format!("switch output {name} enabled"),
+            switch_id,
             move || outputs::edit(&name, Edit::Enabled(!on)),
             TARGET / 2.0,
             roles,
@@ -255,6 +276,7 @@ fn enabled_row(monitor: &Monitor, acts: bool, alone: bool, roles: &ThemeRoles) -
 
     labeled(
         row_label(
+            &output.name,
             "output-enabled",
             "Enabled",
             "Turns the monitor on or off. The last one that is on cannot be turned off",
@@ -290,7 +312,7 @@ fn mode_row(
 
     if !acts {
         return labeled(
-            row_label("output-mode", "Mode", help, None),
+            row_label(&output.name, "output-mode", "Mode", help, None),
             readonly(shown, roles),
             true,
             roles,
@@ -331,7 +353,7 @@ fn mode_row(
 
     if !open {
         return labeled(
-            row_label("output-mode", "Mode", help, None),
+            row_label(&output.name, "output-mode", "Mode", help, None),
             chooser,
             true,
             roles,
@@ -380,23 +402,25 @@ fn mode_row(
             .semantics(|| Semantics::new(Role::Item, "mode").content(mode.text()))
             .align_child(Start, Center)
             .child(Row::new(words).gap(10.0).align(Center));
+        let mode_id = format!("output {name} mode {}", mode.text());
+        let hovered = Settings::read().is_hovered(&mode_id);
         let line = if here {
-            line.fill(faint(roles.primary))
+            if hovered {
+                line.fill(theme::mix(faint(roles.primary), roles.on_surface, 0.08))
+            } else {
+                line.fill(faint(roles.primary))
+            }
+        } else if hovered {
+            line.fill(theme::mix(roles.surface, roles.on_surface, 0.08))
         } else {
             line.fill(roles.surface)
         };
 
-        lines.push(button(
-            line,
-            format!("output {name} mode {}", mode.text()),
-            pick,
-            None,
-            roles,
-        ));
+        lines.push(button_styled(line, mode_id, pick, None, false, roles));
     }
 
     labeled(
-        row_label("output-mode", "Mode", help, None),
+        row_label(&output.name, "output-mode", "Mode", help, None),
         Box::new(Column::new(lines).width(inner()).gap(4.0)),
         false,
         roles,
@@ -443,7 +467,7 @@ fn scale_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widge
     };
 
     labeled(
-        row_label("output-scale", "Scale", help, None),
+        row_label(&output.name, "output-scale", "Scale", help, None),
         control,
         true,
         roles,
@@ -460,7 +484,7 @@ fn transform_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn W
 
     if !acts {
         return labeled(
-            row_label("output-transform", "Transform", help, None),
+            row_label(&output.name, "output-transform", "Transform", help, None),
             readonly(current.label().to_owned(), roles),
             true,
             roles,
@@ -486,7 +510,7 @@ fn transform_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn W
         .collect();
 
     labeled(
-        row_label("output-transform", "Transform", help, None),
+        row_label(&output.name, "output-transform", "Transform", help, None),
         Box::new(Column::new(rows).gap(6.0)),
         true,
         roles,
@@ -513,7 +537,13 @@ fn vrr_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Widget>
     };
 
     labeled(
-        row_label("output-vrr", "Variable refresh rate", help, None),
+        row_label(
+            &output.name,
+            "output-vrr",
+            "Variable refresh rate",
+            help,
+            None,
+        ),
         control,
         true,
         roles,
@@ -573,7 +603,7 @@ fn position_row(monitor: &Monitor, acts: bool, roles: &ThemeRoles) -> Box<dyn Wi
     };
 
     labeled(
-        row_label("output-position", "Position", help, None),
+        row_label(&output.name, "output-position", "Position", help, None),
         control,
         true,
         roles,
@@ -630,6 +660,9 @@ fn chips(
         .enumerate()
         .map(|(index, label)| {
             let here = chosen == Some(index);
+            let seg_id = format!("{id} {index}");
+            let hovered = Settings::read().is_hovered(&seg_id);
+            let hover_seg = seg_id.clone();
             let text = Text::new(label.clone())
                 .size(theme::text::LABEL)
                 .color(if here {
@@ -649,13 +682,21 @@ fn chips(
                         .label(label)
                         .selected(here)
                 })
-                .align_child(Center, Center)
+                .align_child(Center, Center);
+            let segment = segment
                 .cursor(Cursor::Pointer)
+                .on_hover(move |inside| hover(hover_seg.clone(), inside))
                 .on_click(left(move || pick(index)))
                 .child(text);
 
             Box::new(if here {
-                segment.fill(roles.primary)
+                if hovered {
+                    segment.fill(hover_primary(roles))
+                } else {
+                    segment.fill(roles.primary)
+                }
+            } else if hovered {
+                segment.fill(hover_wash(roles))
             } else {
                 segment
             }) as Box<dyn Widget>
@@ -698,19 +739,26 @@ fn capsule(
     let middle = NUMBER + 2.0 * 8.0;
     let inside = FIELD - 2.0;
     let side = |node: &'static str, sign: &str, press: Box<dyn Fn()>| {
-        Rectangle::new()
+        let side_id = format!("capsule {id} {node}");
+        let hovered = Settings::read().is_hovered(&side_id);
+        let hover_id = side_id.clone();
+        let mut btn = Rectangle::new()
             .width(SIDE)
             .height(inside)
             .semantics(|| Semantics::new(Role::Button, node))
             .align_child(Center, Center)
             .cursor(Cursor::Pointer)
-            .on_click(left(press))
-            .child(
-                Text::new(sign)
-                    .size(theme::text::BODY)
-                    .color(roles.on_surface)
-                    .weight(theme::text::SEMIBOLD),
-            )
+            .on_hover(move |inside| hover(hover_id.clone(), inside))
+            .on_click(left(press));
+        if hovered {
+            btn = btn.fill(hover_wash(roles));
+        }
+        btn.child(
+            Text::new(sign)
+                .size(theme::text::BODY)
+                .color(roles.on_surface)
+                .weight(theme::text::SEMIBOLD),
+        )
     };
     let divider = || {
         Rectangle::new()
@@ -719,7 +767,7 @@ fn capsule(
             .fill(faint(roles.outline))
     };
     let (down, up) = (less.clone(), more.clone());
-    let token = ring::register(Stop::new(id).input(input).step(move |direction| {
+    let token = ring::register(Stop::new(id.clone()).input(input).step(move |direction| {
         // Up raises the number, as the arrows of a number field do
         if direction < 0 {
             up();

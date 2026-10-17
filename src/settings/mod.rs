@@ -21,7 +21,7 @@ mod ring;
 mod view;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::sync::OnceLock;
@@ -103,6 +103,9 @@ pub struct Settings {
 
     // what in the files does not apply, which a change must fix before it is written
     skipped: Vec<String>,
+
+    // interactive elements currently hovered, by identifier
+    hovered: HashSet<String>,
 }
 
 impl Service for Settings {
@@ -117,6 +120,10 @@ impl Service for Settings {
 }
 
 impl Settings {
+    pub(crate) fn is_hovered(&self, id: &str) -> bool {
+        self.hovered.contains(id)
+    }
+
     // whether the search shows its results in place of a page
     fn searching(&self) -> bool {
         !self.query.trim().is_empty()
@@ -287,6 +294,7 @@ pub fn open(page: Option<&'static str>) {
         Settings::write().history.clear();
         Settings::write().query.clear();
         Settings::write().module_query.clear();
+        Settings::write().hovered.clear();
         Settings::write().niri.reopen();
         Settings::write().outputs.reopen();
         TextInput::set_text(SEARCH, "");
@@ -414,6 +422,7 @@ fn turn_to(page: &'static str) {
         let mut settings = Settings::write();
         settings.page = page;
         settings.query.clear();
+        settings.hovered.clear();
     }
 
     TextInput::set_text(SEARCH, "");
@@ -478,6 +487,18 @@ fn load_fonts() {
         settings.fonts_loading = false;
         settings.fonts_loaded = true;
         settings.fonts_error = Some(format!("Could not list fonts: {error}"));
+    }
+}
+
+pub(crate) fn hover(id: impl Into<String>, inside: bool) {
+    let id = id.into();
+    let mut settings = Settings::write();
+    if inside {
+        if !settings.hovered.insert(id) {
+            settings.quiet();
+        }
+    } else if !settings.hovered.remove(&id) {
+        settings.quiet();
     }
 }
 

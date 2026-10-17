@@ -106,9 +106,9 @@ impl Ring {
             .collect()
     }
 
-    /// `bytes` kept as the newest backup, at `now_ms` or just after the newest; the pinned
-    /// original too if there is none yet; the oldest beyond `KEPT` dropped. Says the backup's name.
-    pub fn save(&self, bytes: &[u8], now_ms: u64) -> io::Result<String> {
+    /// `bytes` kept as a staged backup, at `now_ms` or just after the newest; the pinned
+    /// original too if there is none yet. Older backups are not pruned until `prune` is called.
+    pub fn stage(&self, bytes: &[u8], now_ms: u64) -> io::Result<String> {
         if !self.orig().exists() {
             atomic::write(&self.orig(), bytes, Mode::Private)?;
         }
@@ -118,11 +118,22 @@ impl Ring {
         let file = format!("{}.{unix_ms}.bak", self.name);
 
         atomic::write(&self.dir.join(&file), bytes, Mode::Private)?;
+        Ok(file)
+    }
 
+    /// Drops backups beyond `KEPT`.
+    pub fn prune(&self) {
         for old in self.list().into_iter().skip(KEPT) {
             let _ = fs::remove_file(self.dir.join(old.file));
         }
+    }
 
+    /// `bytes` kept as the newest backup, at `now_ms` or just after the newest; the pinned
+    /// original too if there is none yet; the oldest beyond `KEPT` dropped. Says the backup's name.
+    #[allow(dead_code)]
+    pub fn save(&self, bytes: &[u8], now_ms: u64) -> io::Result<String> {
+        let file = self.stage(bytes, now_ms)?;
+        self.prune();
         Ok(file)
     }
 
@@ -251,6 +262,36 @@ mod tests {
 
         assert_eq!(ring.last(), Some(last));
         assert!(ring.named("../escape").is_err());
+
+        let _ = fs::remove_dir_all(state.parent().unwrap());
+    }
+
+    #[test]
+    fn discarded_staged_backup_does_not_reduce_count_at_capacity() {
+        let state = dir("stage-discard").join("state");
+        let ring = Ring::new(&state, Path::new("/x/config.kdl"));
+
+        // Fill ring to capacity KEPT (20)
+        for n in 0..KEPT as u64 {
+            ring.save(format!("v{n}").as_bytes(), 1000 + n).unwrap();
+        }
+        assert_eq!(ring.list().len(), KEPT);
+
+        // Stage a new backup without committing (simulating a rejected edit)
+        let staged = ring.stage(b"provisional", 2000).unwrap();
+        assert_eq!(ring.list().len(), KEPT + 1);
+
+        // Edit is rejected: discard the provisional backup
+        ring.discard(&staged);
+
+        // The historical 20 backups must still be completely intact
+        let list = ring.list();
+        assert_eq!(list.len(), KEPT);
+        assert_eq!(
+            ring.read("1").unwrap().1,
+            format!("v{}", KEPT - 1).as_bytes()
+        );
+        assert_eq!(ring.read("20").unwrap().1, b"v0");
 
         let _ = fs::remove_dir_all(state.parent().unwrap());
     }

@@ -19,7 +19,7 @@ use crate::config::{Preference, Recording};
 use crate::sources::wake::{self, Failed};
 
 // how long one trial may take: a GPU that sleeps wakes in about a second
-const TRIAL: Duration = Duration::from_secs(10);
+const TRIAL: Duration = Duration::from_millis(1500);
 
 // where the kernel lists the GPUs, and the nodes themselves
 const SYS: &str = "/sys/class/drm";
@@ -196,10 +196,22 @@ fn run(program: &str, arguments: &[String], what: &str) -> (Probed, bool) {
     match wake::act_within(program, &arguments, TRIAL) {
         Ok(()) => (Probed::Works, true),
         Err(Failed::Overran(limit)) => (
-            Probed::Fails(format!("{what} did not finish in {} s", limit.as_secs())),
+            Probed::Fails(format!(
+                "{what} did not finish in {}",
+                format_timeout(limit)
+            )),
             false,
         ),
         Err(Failed::Said(said)) => (Probed::Fails(brief(&said, program, what)), true),
+    }
+}
+
+fn format_timeout(limit: Duration) -> String {
+    let secs = limit.as_secs_f32();
+    if secs.fract() == 0.0 {
+        format!("{secs:.0} s")
+    } else {
+        format!("{secs:.1} s")
     }
 }
 
@@ -412,5 +424,11 @@ mod tests {
             now + FAILURE_KEPT + Duration::from_secs(1)
         ));
         assert!(!expired(&Probed::Works, now, now + FAILURE_KEPT * 100));
+    }
+
+    #[test]
+    fn format_timeout_preserves_subsecond_accuracy() {
+        assert_eq!(format_timeout(Duration::from_millis(1500)), "1.5 s");
+        assert_eq!(format_timeout(Duration::from_secs(2)), "2 s");
     }
 }

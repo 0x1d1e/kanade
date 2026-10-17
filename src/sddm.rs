@@ -844,18 +844,150 @@ fn installed_user(installed: &Path, text: &mut String) -> Option<String> {
     }
 }
 
+fn is_executable(path: &Path) -> bool {
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn program_exists(program: &str) -> bool {
+    if let Some(path) = std::env::var_os("PATH")
+        && std::env::split_paths(&path)
+            .map(|dir| dir.join(program))
+            .any(|candidate| is_executable(&candidate))
+    {
+        return true;
+    }
+    for dir in [
+        "/usr/bin",
+        "/usr/libexec",
+        "/usr/lib/sddm",
+        "/usr/lib64/sddm",
+    ] {
+        if is_executable(&Path::new(dir).join(program)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn installed_greeter_version(w: &Where) -> Option<u8> {
+    if w.root != Path::new("/") {
+        for (name, ver) in [("sddm-greeter-qt6", 6), ("sddm-greeter", 5)] {
+            for sub in ["usr/bin", "usr/libexec", "usr/lib/sddm", "usr/lib64/sddm"] {
+                if is_executable(&w.root.join(sub).join(name)) {
+                    return Some(ver);
+                }
+            }
+        }
+        return None;
+    }
+    if program_exists("sddm-greeter-qt6") {
+        Some(6)
+    } else if program_exists("sddm-greeter") {
+        Some(5)
+    } else {
+        None
+    }
+}
+
+pub fn qt_version_of(metadata: &str) -> Option<u8> {
+    for line in metadata.lines() {
+        let trimmed = line.trim();
+        if let Some((k, v)) = trimmed.split_once('=')
+            && k.trim() == "QtVersion"
+            && let Ok(ver) = v.trim().parse::<u8>()
+        {
+            return Some(ver);
+        }
+    }
+    None
+}
+
+pub fn set_qt_version(text: &str, version: u8) -> String {
+    let mut replaced = false;
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let is_qt_version = line
+            .trim()
+            .split_once('=')
+            .is_some_and(|(k, _)| k.trim() == "QtVersion");
+        if is_qt_version {
+            lines.push(format!("QtVersion={version}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_owned());
+        }
+    }
+    if !replaced {
+        lines.push(format!("QtVersion={version}"));
+    }
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+fn target_qt_version(w: &Where, overlay: &Path) -> u8 {
+    if let Some(ver) = installed_greeter_version(w) {
+        return ver;
+    }
+
+    let overlay_meta = overlay.join("metadata.desktop");
+    if let Some(content) = class::read(&overlay_meta)
+        && let Some(ver) = qt_version_of(&content)
+    {
+        return ver;
+    }
+
+    6
+}
+
+pub fn configured_qt_version(config: &Config) -> u8 {
+    configured_qt_version_under(&Where::here(), config)
+}
+
+fn configured_qt_version_under(w: &Where, config: &Config) -> u8 {
+    let theme = config.sddm_theme.as_deref().unwrap_or(OWN);
+    let overlay_meta = w.overlay(theme).join("metadata.desktop");
+    if let Some(content) = class::read(&overlay_meta)
+        && let Some(v) = qt_version_of(&content)
+    {
+        return v;
+    }
+
+    if theme == OWN {
+        return 6;
+    }
+
+    let installed_meta = w.installed(theme).join("metadata.desktop");
+    if let Some(content) = class::read(&installed_meta)
+        && let Some(v) = qt_version_of(&content)
+    {
+        return v;
+    }
+
+    5
+}
+
 // Kanade's theme into its overlay; the files that already read the same are left alone
-fn copy_own(overlay: &Path) -> Result<usize, String> {
+fn copy_own(w: &Where, overlay: &Path) -> Result<usize, String> {
     let mut written = 0;
+    let target_qt = target_qt_version(w, overlay);
 
     for (name, text) in THEME {
         let path = overlay.join(name);
+        let content: std::borrow::Cow<str> = if *name == "metadata.desktop" {
+            std::borrow::Cow::Owned(set_qt_version(text, target_qt))
+        } else {
+            std::borrow::Cow::Borrowed(*text)
+        };
 
-        if class::read(&path).is_some_and(|have| have == *text) {
+        if class::read(&path).is_some_and(|have| have == content.as_ref()) {
             continue;
         }
 
-        atomic::write(&path, text.as_bytes(), Mode::Exactly(0o644))
+        atomic::write(&path, content.as_bytes(), Mode::Exactly(0o644))
             .map_err(|error| format!("{}: {error}", path.display()))?;
         written += 1;
     }
@@ -970,10 +1102,16 @@ fn theme_state(w: &Where, theme: &str) -> String {
     let overlay = w.overlay(theme);
 
     if theme == OWN {
+        let target_qt = target_qt_version(w, &overlay);
         return match THEME
             .iter()
             .filter(|(name, text)| {
-                !class::read(&overlay.join(name)).is_some_and(|have| have == *text)
+                let expected = if *name == "metadata.desktop" {
+                    std::borrow::Cow::Owned(set_qt_version(text, target_qt))
+                } else {
+                    std::borrow::Cow::Borrowed(*text)
+                };
+                !class::read(&overlay.join(name)).is_some_and(|have| have == expected.as_ref())
             })
             .count()
         {
@@ -1566,7 +1704,7 @@ fn apply(
     match &wanted_files {
         None => {
             make_dir(&overlay).map_err(|error| format!("{}: {error}", overlay.display()))?;
-            let written = copy_own(&overlay)?;
+            let written = copy_own(w, &overlay)?;
             let _ = writeln!(text, "theme {}: {written} files written", want.theme);
 
             let at = overlay.join(USER);
@@ -2228,6 +2366,109 @@ mod tests {
         assert!(report(&w, &config).unwrap().contains("modes: 2 entries"));
         sync(&config);
         assert_eq!(bits(&w.picture()), 0o644);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn qt_version_parsing_and_updating() {
+        let meta = "[SddmGreeterTheme]\nName=Kanade\nQtVersion=6\n";
+        assert_eq!(qt_version_of(meta), Some(6));
+
+        let updated = set_qt_version(meta, 5);
+        assert_eq!(qt_version_of(&updated), Some(5));
+        assert!(updated.contains("QtVersion=5"));
+
+        let no_ver = "[SddmGreeterTheme]\nName=Kanade\n";
+        assert_eq!(qt_version_of(no_ver), None);
+        let added = set_qt_version(no_ver, 6);
+        assert_eq!(qt_version_of(&added), Some(6));
+
+        let meta_spaces = "[SddmGreeterTheme]\nName=Kanade\nQtVersion = 5\n";
+        assert_eq!(qt_version_of(meta_spaces), Some(5));
+        let updated_spaces = set_qt_version(meta_spaces, 6);
+        assert_eq!(qt_version_of(&updated_spaces), Some(6));
+        assert_eq!(updated_spaces.matches("QtVersion").count(), 1);
+    }
+
+    #[test]
+    fn sync_preserves_user_configured_qt5_metadata() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-qt5-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let w = Where::under(root.clone());
+        let overlay = w.overlay(OWN);
+        fs::create_dir_all(&overlay).unwrap();
+
+        let user_meta = "[SddmGreeterTheme]\nName=Kanade\nQtVersion=5\n";
+        fs::write(overlay.join("metadata.desktop"), user_meta).unwrap();
+
+        copy_own(&w, &overlay).unwrap();
+        let content = fs::read_to_string(overlay.join("metadata.desktop")).unwrap();
+        assert_eq!(
+            qt_version_of(&content),
+            Some(5),
+            "preserves user-configured QtVersion=5"
+        );
+        assert_eq!(theme_state(&w, OWN), "current");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn greeter_version_detection_from_root() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-greeter-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let bin = root.join("usr/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let w = Where::under(root.clone());
+
+        let qt5_bin = bin.join("sddm-greeter");
+        fs::write(&qt5_bin, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&qt5_bin, Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(installed_greeter_version(&w), Some(5));
+
+        let qt6_bin = bin.join("sddm-greeter-qt6");
+        fs::write(&qt6_bin, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&qt6_bin, Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(installed_greeter_version(&w), Some(6));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installed_greeter_version_alternate_root_isolation() {
+        let root =
+            std::env::temp_dir().join(format!("kanade-sddm-isolated-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let w = Where::under(root.clone());
+        assert_eq!(installed_greeter_version(&w), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn target_qt_version_recovers_to_qt6_when_greeter_upgraded() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-upgrade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let bin = root.join("usr/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let w = Where::under(root.clone());
+        let overlay = w.overlay(OWN);
+        fs::create_dir_all(&overlay).unwrap();
+
+        // Existing overlay has QtVersion=5
+        let user_meta = "[SddmGreeterTheme]\nName=Kanade\nQtVersion=5\n";
+        fs::write(overlay.join("metadata.desktop"), user_meta).unwrap();
+
+        // Greeter on system is Qt6
+        let qt6_bin = bin.join("sddm-greeter-qt6");
+        fs::write(&qt6_bin, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&qt6_bin, Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(installed_greeter_version(&w), Some(6));
+        assert_eq!(target_qt_version(&w, &overlay), 6);
 
         let _ = fs::remove_dir_all(&root);
     }

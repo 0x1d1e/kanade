@@ -11,16 +11,19 @@ use std::process::{Command, Stdio};
 use std::thread::Builder;
 use std::time::{Duration, Instant};
 
+use kanade_runtime::service::Service;
+
 use super::config_home;
 
 const DIRS: [&str; 2] = ["gtk-3.0", "gtk-4.0"];
 
+pub(super) const GTK_UNIT: &str = "xdg-desktop-portal-gtk.service";
+pub(super) const GNOME_UNIT: &str = "xdg-desktop-portal-gnome.service";
+
 // both GTK portal backends; each implements FileChooser and AppChooser, and `portals.conf` picks
 // which draws a dialog, so both are restarted; the base `xdg-desktop-portal` is never restarted
-const UNITS: [&str; 2] = [
-    "xdg-desktop-portal-gtk.service",
-    "xdg-desktop-portal-gnome.service",
-];
+#[allow(dead_code)]
+const UNITS: [&str; 2] = [GTK_UNIT, GNOME_UNIT];
 
 // rapid wallpaper changes restart them at most this often; the last one still lands
 const MIN_INTERVAL: Duration = Duration::from_secs(30);
@@ -75,13 +78,39 @@ impl Restart {
     pub(super) fn wait(&self, now: Instant) -> Option<Duration> {
         self.due.map(|due| due.saturating_duration_since(now))
     }
+
+    // record that a restart occurred, ensuring no further restart runs within MIN_INTERVAL
+    pub(super) fn record_restart(&mut self, now: Instant) {
+        self.last = Some(now);
+        if let Some(due) = self.due {
+            self.due = Some(due.max(now + MIN_INTERVAL));
+        }
+    }
+}
+
+pub(super) fn has_active_casts() -> bool {
+    !crate::sources::niri::Niri::read().seen.casts.is_empty()
+}
+
+pub(super) fn restart_gtk() {
+    restart_unit(GTK_UNIT);
+}
+
+pub(super) fn restart_gnome() -> bool {
+    if has_active_casts() {
+        return false;
+    }
+    restart_unit(GNOME_UNIT);
+    true
 }
 
 // `try-restart` does nothing for a unit that is not running, so it never starts a portal; the
 // worker does not wait for it
+#[allow(dead_code)]
 pub(super) fn restart() {
-    for unit in UNITS {
-        restart_unit(unit);
+    restart_gtk();
+    if !has_active_casts() {
+        restart_unit(GNOME_UNIT);
     }
 }
 
@@ -114,6 +143,49 @@ fn restart_unit(unit: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restarting_gnome_is_suppressed_when_casts_are_active() {
+        use crate::sources::niri::{Niri, Target};
+
+        Niri::write().seen.casts.clear();
+        assert!(!has_active_casts());
+
+        Niri::write().seen.casts.insert(Target::Screen);
+        assert!(has_active_casts());
+        assert!(
+            !restart_gnome(),
+            "active cast suppresses gnome portal restart"
+        );
+
+        Niri::write().seen.casts.clear();
+        assert!(!has_active_casts());
+    }
+
+    #[test]
+    fn restart_records_throttle_interval() {
+        let mut restart = Restart::default();
+        let now = Instant::now();
+        restart.changed(now);
+        assert!(restart.take_due(now));
+
+        // immediately after, another change arrives
+        let t1 = now + Duration::from_secs(1);
+        restart.changed(t1);
+        assert!(!restart.take_due(t1));
+
+        // record_restart flushes deferred gnome restart at t = 5s
+        let t5 = now + Duration::from_secs(5);
+        restart.record_restart(t5);
+
+        // at t = 31s (which would have been 30s after `now`), it is NOT due yet because record_restart postponed it
+        let t31 = now + Duration::from_secs(31);
+        assert!(!restart.take_due(t31));
+
+        // at t = 36s (31s after record_restart), it is due
+        let t36 = now + Duration::from_secs(36);
+        assert!(restart.take_due(t36));
+    }
 
     #[test]
     fn portal_watches_the_dirs_the_gtk_sync_writes() {

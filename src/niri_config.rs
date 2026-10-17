@@ -1058,7 +1058,7 @@ impl Editor<'_> {
 
         let ring = self.ring();
         let before = ring
-            .save(&old, (self.now_ms)())
+            .stage(&old, (self.now_ms)())
             .map_err(|error| format!("cannot keep a backup, so nothing was changed: {error}"))?;
 
         // read again at the last moment: a save by an editor since the snapshot is not lost
@@ -1075,9 +1075,12 @@ impl Editor<'_> {
 
         let after = hash(&new);
 
-        staged
-            .commit(&self.file)
-            .map_err(|error| format!("cannot replace {}: {error}", self.file.display()))?;
+        if let Err(error) = staged.commit(&self.file) {
+            ring.discard(&before);
+            return Err(format!("cannot replace {}: {error}", self.file.display()));
+        }
+
+        ring.prune();
 
         let recorded = ring.record(&Last {
             config: self.file.clone(),

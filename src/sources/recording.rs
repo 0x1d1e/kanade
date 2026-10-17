@@ -2087,6 +2087,16 @@ pub fn reclaim() {
     window::reclaim();
 }
 
+// pre-warms encoder probing in a background thread so starting a recording does not wait
+pub fn prewarm() {
+    let _ = std::thread::Builder::new()
+        .name(String::from("kanade-record-prewarm"))
+        .spawn(|| {
+            let recording = config::get().recording.clone();
+            let _ = probe::choice(&recording, false, false);
+        });
+}
+
 // saves the first `segments` segments as the recording's file
 fn join(segments: u32) {
     let (parts, path) = {

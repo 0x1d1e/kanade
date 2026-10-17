@@ -640,31 +640,59 @@ fn login_screen(config: &Config) -> Vec<Check> {
         .collect();
 
     let path = env::var_os("PATH");
-    let greeter = SDDM_GREETERS
-        .iter()
-        .find_map(|name| match program_found(name, path.as_ref()) {
-            Found::Present(found) => Some(found),
-            _ => None,
-        });
-
-    // more than the one line means the overlay is made: then a missing greeter is a fault
+    let qt6_found = greeter_found("sddm-greeter-qt6", path.as_ref());
+    let qt5_found = greeter_found("sddm-greeter", path.as_ref());
+    let theme_qt = sddm::configured_qt_version(config);
     let made = checks.len() > 1;
-    checks.push(match greeter {
-        Some(found) => Check::ok(format!("sddm: greeter {found}")),
-        None if made => Check::warn(format!(
-            "sddm: none of {} is on PATH, so there is no Qt greeter to draw the theme",
+
+    let greeter_check = match (qt6_found, qt5_found) {
+        (Some(qt6), _) if theme_qt == 6 => Check::ok(format!("sddm: greeter {qt6}")),
+        (_, Some(qt5)) if theme_qt == 5 => Check::ok(format!("sddm: greeter {qt5}")),
+        (None, Some(qt5)) if theme_qt == 6 => Check::warn(format!(
+            "sddm: theme requests QtVersion=6, but only {qt5} (Qt5) was found (install sddm-greeter-qt6)"
+        )),
+        (Some(qt6), None) if theme_qt == 5 => Check::warn(format!(
+            "sddm: theme requests QtVersion=5, but only {qt6} (Qt6) was found (install sddm-greeter)"
+        )),
+        (Some(qt6), _) => Check::ok(format!("sddm: greeter {qt6}")),
+        (_, Some(qt5)) => Check::ok(format!("sddm: greeter {qt5}")),
+        (None, None) if made => Check::warn(format!(
+            "sddm: none of {} was found, so there is no Qt greeter to draw the theme",
             SDDM_GREETERS.join(", ")
         )),
-        None => Check::ok(format!(
-            "sddm: none of {} is on PATH (SDDM is not installed?)",
+        (None, None) => Check::ok(format!(
+            "sddm: none of {} was found (SDDM is not installed?)",
             SDDM_GREETERS.join(", ")
         )),
-    });
+    };
+    checks.push(greeter_check);
 
     checks
 }
 
 const SDDM_GREETERS: &[&str] = &["sddm-greeter-qt6", "sddm-greeter"];
+const SDDM_GREETER_DIRS: &[&str] = &["/usr/libexec", "/usr/lib/sddm", "/usr/lib64/sddm"];
+
+fn greeter_found(program: &str, path: Option<impl AsRef<OsStr>>) -> Option<String> {
+    greeter_found_in(program, path, SDDM_GREETER_DIRS)
+}
+
+fn greeter_found_in(
+    program: &str,
+    path: Option<impl AsRef<OsStr>>,
+    system_dirs: &[impl AsRef<Path>],
+) -> Option<String> {
+    if let Found::Present(found) = program_found(program, path) {
+        return Some(found);
+    }
+    for dir in system_dirs {
+        let candidate = dir.as_ref().join(program);
+        if executable(&candidate) {
+            return Some(format!("{program} at {}", candidate.display()));
+        }
+    }
+    None
+}
 
 // whether a process of this name runs, as `/proc/<pid>/comm` names it
 fn process_running(name: &str) -> bool {
@@ -968,5 +996,73 @@ fn holder(name: &str, holder: Option<String>, running: bool) -> Found {
         Some(other) => Found::Taken(format!("{other} holds {name}")),
         None if running => Found::Missing(format!("{name} held by no one")),
         None => Found::Present(format!("{name} free, Kanade takes it at start")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_checks_sddm_greeter_qt_version_compatibility() {
+        let temp = std::env::temp_dir().join(format!("kanade-doctor-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+
+        // Create only sddm-greeter (Qt5)
+        let qt5 = temp.join("sddm-greeter");
+        fs::write(&qt5, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&qt5, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let new_path = std::env::join_paths(std::iter::once(temp.clone())).unwrap();
+
+        let _config = Config {
+            off: vec![],
+            ..Config::default()
+        };
+
+        // Kanade default theme requires QtVersion 6
+        let qt6_found = match program_found("sddm-greeter-qt6", Some(&new_path)) {
+            Found::Present(found) => Some(found),
+            _ => None,
+        };
+        let qt5_found = match program_found("sddm-greeter", Some(&new_path)) {
+            Found::Present(found) => Some(found),
+            _ => None,
+        };
+        assert!(qt6_found.is_none());
+        assert!(qt5_found.is_some());
+
+        let theme_qt = 6;
+        let mismatch = matches!(
+            (qt6_found.as_ref(), qt5_found.as_ref()),
+            (None, Some(_)) if theme_qt == 6
+        );
+        assert!(
+            mismatch,
+            "mismatch detected when only Qt5 greeter is present for Qt6 theme"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn doctor_finds_greeter_in_candidate_system_dirs() {
+        let temp =
+            std::env::temp_dir().join(format!("kanade-doctor-sysdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let lib_dir = temp.join("usr/lib/sddm");
+        fs::create_dir_all(&lib_dir).unwrap();
+
+        let greeter = lib_dir.join("sddm-greeter-qt6");
+        fs::write(&greeter, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&greeter, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let empty_path: Option<&std::ffi::OsStr> = None;
+        let found = greeter_found_in("sddm-greeter-qt6", empty_path, &[&lib_dir]);
+        assert!(found.is_some());
+        assert!(found.unwrap().contains(&greeter.display().to_string()));
+
+        let _ = fs::remove_dir_all(&temp);
     }
 }

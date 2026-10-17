@@ -1278,6 +1278,7 @@ notifications dnd on until <HH:MM>
         start: |app| {
             niri::on_windows(recording::heard);
             recording::reclaim();
+            recording::prewarm();
             app
         },
     },
