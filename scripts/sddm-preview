@@ -49,7 +49,7 @@ FAULT = re.compile(
     r"Binding loop|unavailable|is not installed|Cannot read property|QML .*: (?!Cannot open)",
 )
 # the test images are in `data/`, and a scenario names one that is missing on purpose
-EXPECTED = re.compile(r"Cannot open: (.*/data/missing\.png|file:///usr/local/share/kanade-sddm/bg/[a-z0-9_.-]+\.(png|webp))$|propertyCache")
+EXPECTED = re.compile(r"Cannot open: (.*/data/missing\.png|file:///usr/local/share/kanade-sddm-data/backdrop\.png)$|propertyCache")
 
 
 def stage(into, qt):
@@ -245,10 +245,10 @@ def check(p, wrong_at):
         failed.append(f"{name}: placeholder visible {p['placeholder']['visible']} with {p['typed']} typed")
 
     # the backdrop the theme settles on: the overlay's own files and the theme's, nothing else
-    overlay = "/usr/local/share/kanade-sddm/"
+    data = "/usr/local/share/kanade-sddm-data/"
     allowed = {
-        "bg-overlay": overlay + "bg/backdrop.png",
-        "bg-overlay-webp": overlay + "bg/a-b_c.1.webp",
+        "bg-overlay": data + "backdrop.png",
+        "bg-overlay-webp": "",
         "pictured": "data/backdrop.png",
         "second-screen": "data/backdrop.png",
     }
@@ -258,7 +258,7 @@ def check(p, wrong_at):
         if got != want:
             failed.append(f"{name}: backdrop path {got!r} != {want!r}")
         source = p["backdrop"]["source"]
-        if want.startswith("/") != source.startswith("file://" + overlay):
+        if want.startswith("/") != source.startswith("file://" + data):
             failed.append(f"{name}: backdrop source {source!r} for path {want!r}")
         if not want and source:
             failed.append(f"{name}: backdrop source {source!r} where none is allowed")

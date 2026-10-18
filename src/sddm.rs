@@ -20,7 +20,9 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+#[cfg(test)]
+use std::os::unix::fs::symlink;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -37,8 +39,11 @@ use crate::look::SddmBackground;
 use crate::sources::json::Json;
 use crate::sources::{niri, wallpaper};
 
-// where the overlay lives: fixed, since the theme reads a picture from here and nowhere else
+// SDDM loads theme code only from this root-owned tree.
 const PREFIX: &str = "usr/local/share/kanade-sddm";
+
+// Mutable wallpaper data is kept outside every SDDM-loaded theme directory.
+const DATA: &str = "usr/local/share/kanade-sddm-data";
 
 // where themes are installed, which SDDM's `ThemeDir` defaults to
 const INSTALLED: &str = "usr/share/sddm/themes";
@@ -151,8 +156,12 @@ impl Where {
         self.prefix().join("themes").join(theme)
     }
 
+    fn data(&self) -> PathBuf {
+        self.root.join(DATA)
+    }
+
     fn picture(&self) -> PathBuf {
-        self.prefix().join("bg/backdrop.png")
+        self.data().join("backdrop.png")
     }
 
     // SDDM's own config, in the order it reads it (sddm.conf(5)), later winning: the system's
@@ -219,6 +228,7 @@ impl Where {
  * segment letters, digits, `_`, `.` or `-` and not empty or `..`, a .png, .jpg or .webp file, at most
  * 128 characters. The same rule as `Sanitize.backdrop`; a path it refuses shows no picture
  */
+#[cfg(test)]
 fn backdrop_ok(prefix: &str, path: &str) -> bool {
     let Some(rest) = path
         .strip_prefix(prefix)
@@ -256,10 +266,6 @@ fn theme_ok(name: &str) -> bool {
 }
 
 // `#rrggbb`
-fn hex_ok(color: &str) -> bool {
-    color.len() == 7 && color.starts_with('#') && color[1..].bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 /*
  * the `theme.conf.user` for `theme`. Kanade's own theme reads `backdrop` (a picture already
  * blurred and dimmed, so no shade over it), `surface` (the color without one); its file is Kanade's
@@ -268,11 +274,11 @@ fn hex_ok(color: &str) -> bool {
  * with that one key replaced when there is a picture, so what the user set for the theme stays. A value the theme
  * would refuse is an error here, not a file that says nothing.
  */
+#[cfg(test)]
 fn conf_user(
     prefix: &str,
     theme: &str,
     picture: Option<&str>,
-    surface: Option<&str>,
     installed: Option<&str>,
     key: &str,
 ) -> Result<String, String> {
@@ -280,36 +286,50 @@ fn conf_user(
         return Err(format!("{theme}: not a theme's directory name"));
     }
     if let Some(path) = picture
+        && path != format!("/{DATA}/backdrop.png")
         && !backdrop_ok(prefix, path)
     {
         return Err(format!("{path}: the theme would not read a picture there"));
     }
-    if let Some(color) = surface
-        && !hex_ok(color)
-    {
-        return Err(format!("{color}: the surface is #rrggbb"));
-    }
-
     if theme != OWN {
         return Ok(with_background(installed.unwrap_or(""), key, picture));
     }
 
-    let mut text = String::from(
-        "# Written by `kanade sddm sync`; the next run replaces the whole file.\n[General]\n",
-    );
-
-    let _ = writeln!(text, "backdrop={}", picture.unwrap_or(""));
-    if picture.is_some() {
-        text.push_str("shade=0\n");
-    }
-    if let Some(color) = surface {
-        let _ = writeln!(text, "surface={color}");
-    }
-
-    Ok(text)
+    Ok(String::from(
+        "# Written by `kanade sddm setup`; user settings are preserved across setup.\n[General]\nbackdrop=/usr/local/share/kanade-sddm-data/backdrop.png\n",
+    ))
 }
 
 // whether `text` is an ini file whole: sections, `key=value`, comments and blank lines, nothing else
+fn preserve_user_settings(text: &str) -> String {
+    // INI keys before the first section belong to General in QSettings.
+    let mut section = String::from("general");
+    let mut lines = Vec::new();
+    for line in class::unbom(text).lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            section = trimmed[1..trimmed.len() - 1].trim().to_ascii_lowercase();
+        }
+        if section == "general"
+            && let Some((key, _)) = trimmed.split_once('=')
+            && matches!(
+                key.trim().to_ascii_lowercase().as_str(),
+                "backdrop" | "shade"
+            )
+        {
+            continue;
+        }
+        lines.push(line);
+    }
+    let mut out = lines.join("\n");
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("[General]\n");
+    out.push_str(&format!("backdrop=/{DATA}/backdrop.png\n"));
+    out
+}
+
 fn user_ini(text: &str) -> Result<(), String> {
     if text.len() > 64 << 10 {
         return Err(String::from("over 64 KiB"));
@@ -336,6 +356,7 @@ fn user_ini(text: &str) -> Result<(), String> {
  * too), and every other line as it was. Without a picture Kanade manages nothing and `base` goes
  * through. A byte order mark first is dropped, which would otherwise hide the first section
  */
+#[cfg(test)]
 fn with_background(base: &str, key_name: &str, picture: Option<&str>) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut end = None;
@@ -536,10 +557,81 @@ fn owned(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn root_owned_ancestors(trusted_root: &Path, path: &Path) -> Result<(), String> {
+    let expected_owner = if cfg!(test) { getuid().as_raw() } else { 0 };
+    let relative = path.strip_prefix(trusted_root).map_err(|_| {
+        format!(
+            "{} is outside trusted root {}",
+            path.display(),
+            trusted_root.display()
+        )
+    })?;
+    let mut current = trusted_root.to_owned();
+    let mut chain = vec![current.clone()];
+    for component in relative.components() {
+        current.push(component);
+        chain.push(current.clone());
+    }
+    for ancestor in chain {
+        let meta = fs::symlink_metadata(&ancestor)
+            .map_err(|error| format!("{}: {error}", ancestor.display()))?;
+        let mode = meta.permissions().mode();
+        if !meta.is_dir()
+            || meta.file_type().is_symlink()
+            || meta.uid() != expected_owner
+            || mode & 0o022 != 0
+        {
+            return Err(format!(
+                "{} must be a root-owned directory not writable by group or others",
+                ancestor.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn root_owned_read_only(trusted_root: &Path, path: &Path) -> Result<(), String> {
+    fn visit(path: &Path, expected_owner: u32) -> Result<(), String> {
+        let meta =
+            fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let mode = meta.permissions().mode();
+        let safe_type = if meta.is_dir() {
+            mode & 0o005 == 0o005
+        } else if meta.is_file() {
+            mode & 0o004 != 0
+        } else {
+            false
+        };
+        if meta.file_type().is_symlink()
+            || meta.uid() != expected_owner
+            || mode & 0o022 != 0
+            || !safe_type
+        {
+            return Err(format!(
+                "{} must be root-owned, readable by SDDM, and not writable by group or others",
+                path.display()
+            ));
+        }
+        if meta.is_dir() {
+            for entry in
+                fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?
+            {
+                let entry = entry.map_err(|error| format!("{}: {error}", path.display()))?;
+                visit(&entry.path(), expected_owner)?;
+            }
+        }
+        Ok(())
+    }
+
+    let expected_owner = if cfg!(test) { getuid().as_raw() } else { 0 };
+    root_owned_ancestors(trusted_root, path)?;
+    visit(path, expected_owner)
+}
+
 // the root commands that make the overlay, which only the user may run
 fn make_prefix(prefix: &str) -> String {
     format!(
-        "install -d -o {} -g {} -m 755 {prefix} {prefix}/themes {prefix}/bg",
+        "install -d -o root -g root -m 755 {prefix} {prefix}/themes && install -d -o {} -g {} -m 755 /{DATA}",
         getuid().as_raw(),
         getgid().as_raw()
     )
@@ -734,13 +826,12 @@ fn modes(dir: &Path, fix: bool) -> io::Result<Vec<PathBuf>> {
 /*
  * makes the overlay of an installed theme: its directories and links to its files, with `user` as
  * its `USER`. It is built beside the overlay as `<theme>.new` and moved into place, so a failure
- * partway leaves the overlay that was there. When the overlay exists, the swap is atomic
- * (`clock::exchange`, `renameat2` with `RENAME_EXCHANGE`): `.new` and the overlay trade places in
- * one syscall, then `.new` (now the previous theme) is removed. When `exchange` is unsupported
- * (the filesystem, cross-device), the fallback is two renames through `.old`,
- * whose crash window `recover` covers on the next run. The overlay is Kanade's, and is replaced
- * whole
+ * partway leaves the overlay that was there. When the overlay exists, the swap uses
+ * `clock::exchange`, `renameat2` with `RENAME_EXCHANGE`, so the active directory is never absent.
+ * If the filesystem does not support exchange, installation fails and leaves the active theme
+ * unchanged. The overlay is Kanade's, and is replaced whole
  */
+#[cfg(test)]
 fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Result<(), String> {
     let said = |error: io::Error| format!("{}: {error}", overlay.display());
     let (new, old) = (beside(overlay, ".new"), beside(overlay, ".old"));
@@ -779,16 +870,20 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
         return Err(said(error));
     }
 
-    // atomic path: swap .new and the overlay in one syscall, then remove the previous.
-    // After exchange, .new holds whatever the overlay was, which may be a symlink;
-    // remove_dir_all does not remove a symlink, so fall back to remove_file
-    if fs::symlink_metadata(overlay).is_ok() && clock::exchange(&new, overlay).is_ok() {
+    // After exchange, .new holds whatever the overlay was; clean it up after the atomic swap.
+    if fs::symlink_metadata(overlay).is_ok() {
+        if let Err(error) = clock::exchange(&new, overlay) {
+            let _ = fs::remove_dir_all(&new);
+            return Err(format!(
+                "{}: atomic theme exchange is unavailable; active theme was left unchanged: {error}",
+                overlay.display()
+            ));
+        }
         let _ = fs::remove_dir_all(&new).or_else(|_| fs::remove_file(&new));
         return Ok(());
     }
 
-    // fallback: two renames through .old (a crash between them is covered by `recover`)
-    let aside = fs::symlink_metadata(overlay).is_ok();
+    let aside = false;
     if aside && let Err(error) = fs::rename(overlay, &old) {
         let _ = fs::remove_dir_all(&new);
         return Err(said(error));
@@ -807,42 +902,6 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
 
 // said of any theme but Kanade's, which is built to be read from here
 const OTHER_THEMES: &str = "note: a theme other than kanade is best effort; one that imports from a sibling or parent directory or names /usr/share/sddm/themes paths may not work from the overlay (check `kanade sddm status`, and the login screen)";
-
-// the installed theme's own `theme.conf.user`, which the overlay's starts from: nothing when there is
-// none, or when it cannot be read (said in `text`) by the sddm user or as an ini file
-fn installed_user(installed: &Path, text: &mut String) -> Option<String> {
-    let at = installed.join(USER);
-    let meta = match fs::metadata(&at) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            let _ = writeln!(text, "{}: {error}; starting empty", at.display());
-            return None;
-        }
-    };
-
-    // a file the sddm user cannot read is no setting of the theme's to carry into a file it can
-    let read = if !meta.is_file() || meta.permissions().mode() & 0o004 == 0 {
-        Err(String::from("not a file everyone can read"))
-    } else {
-        class::read(&at)
-            .map(|read| class::unbom(&read).to_owned())
-            .ok_or_else(|| String::from("not a file of a reasonable size"))
-            .and_then(|read| user_ini(&read).map(|()| read))
-    };
-
-    match read {
-        Ok(read) => Some(read),
-        Err(why) => {
-            let _ = writeln!(
-                text,
-                "{}: cannot be used as it is ({why}); starting empty",
-                at.display()
-            );
-            None
-        }
-    }
-}
 
 fn is_executable(path: &Path) -> bool {
     fs::metadata(path)
@@ -971,6 +1030,7 @@ fn configured_qt_version_under(w: &Where, config: &Config) -> u8 {
 }
 
 // Kanade's theme into its overlay; the files that already read the same are left alone
+#[cfg(test)]
 fn copy_own(w: &Where, overlay: &Path) -> Result<usize, String> {
     let mut written = 0;
     let target_qt = target_qt_version(w, overlay);
@@ -995,13 +1055,135 @@ fn copy_own(w: &Where, overlay: &Path) -> Result<usize, String> {
     Ok(written)
 }
 
+// Root-only install of the built-in executable theme. Assemble the whole directory beside the
+// active tree and exchange it only after every file is written successfully.
+fn remove_tree_entry(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => fs::remove_dir_all(path),
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn legacy_settings(overlay: &Path) -> (Option<String>, Option<String>) {
+    if !fs::symlink_metadata(overlay)
+        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+    {
+        return (None, None);
+    }
+    let read_plain = |name: &str| {
+        use std::io::Read;
+
+        let path = overlay.join(name);
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
+            .open(path)
+            .ok()?;
+        if !file.metadata().ok()?.is_file() {
+            return None;
+        }
+        let mut text = String::new();
+        file.take(64 << 10).read_to_string(&mut text).ok()?;
+        Some(text)
+    };
+    let qt =
+        read_plain("metadata.desktop").and_then(|text| qt_version_of(&text).map(|v| v.to_string()));
+    let user = read_plain(USER).filter(|text| user_ini(text).is_ok());
+    (qt, user)
+}
+
+fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), String> {
+    let prefix = w.prefix();
+    let present = match fs::symlink_metadata(&prefix) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+            return Err(format!("{} is not a plain directory", prefix.display()));
+        }
+        Ok(_) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("{}: {error}", prefix.display())),
+    };
+    if !present || root_owned_read_only(&w.root, &prefix).is_ok() {
+        return Ok((None, None));
+    }
+
+    let parent = prefix.parent().expect("prefix has a parent");
+    root_owned_ancestors(&w.root, parent)?;
+    let legacy = beside(&prefix, ".legacy");
+    let settings = legacy_settings(&w.overlay(OWN));
+    remove_tree_entry(&legacy).map_err(|error| format!("{}: {error}", legacy.display()))?;
+    fs::rename(&prefix, &legacy).map_err(|error| format!("{}: {error}", prefix.display()))?;
+    Ok(settings)
+}
+
+fn install_own(w: &Where) -> Result<(), String> {
+    let overlay = w.overlay(OWN);
+    let themes = overlay.parent().expect("theme has a parent");
+    let prefix = w.prefix();
+    let temp = beside(&overlay, ".new");
+    let (legacy_qt, legacy_user) = migrate_legacy_prefix(w)?;
+
+    if fs::symlink_metadata(&prefix).is_err() {
+        make_dir(&prefix).map_err(|error| format!("{}: {error}", prefix.display()))?;
+    }
+    root_owned_read_only(&w.root, &prefix)?;
+    if fs::symlink_metadata(themes).is_err() {
+        make_dir(themes).map_err(|error| format!("{}: {error}", themes.display()))?;
+    }
+    root_owned_read_only(&w.root, themes)?;
+    recover(&overlay).map_err(|error| format!("{}: {error}", overlay.display()))?;
+
+    let target_qt = legacy_qt
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| target_qt_version(w, &overlay));
+    let previous_user = legacy_user.or_else(|| legacy_settings(&overlay).1);
+    let user = preserve_user_settings(previous_user.as_deref().unwrap_or(""));
+    match fs::symlink_metadata(&temp) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(&temp),
+        Ok(_) => fs::remove_file(&temp),
+        Err(_) => Ok(()),
+    }
+    .map_err(|error| format!("{}: {error}", temp.display()))?;
+    make_dir(&temp).map_err(|error| format!("{}: {error}", temp.display()))?;
+
+    let built = (|| -> io::Result<()> {
+        for (name, text) in THEME {
+            let content = if *name == "metadata.desktop" {
+                set_qt_version(text, target_qt)
+            } else {
+                (*text).to_owned()
+            };
+            atomic::write(&temp.join(name), content.as_bytes(), Mode::Exactly(0o644))?;
+        }
+        atomic::write(&temp.join(USER), user.as_bytes(), Mode::Exactly(0o644))
+    })();
+    if let Err(error) = built {
+        let _ = fs::remove_dir_all(&temp);
+        return Err(format!("{}: {error}", overlay.display()));
+    }
+
+    if fs::symlink_metadata(&overlay).is_ok() {
+        if let Err(error) = clock::exchange(&temp, &overlay) {
+            let _ = fs::remove_dir_all(&temp);
+            return Err(format!(
+                "{}: atomic theme exchange is unavailable; active theme was left unchanged: {error}",
+                overlay.display()
+            ));
+        }
+        let _ = fs::remove_dir_all(&temp);
+    } else {
+        fs::rename(&temp, &overlay).map_err(|error| format!("{}: {error}", overlay.display()))?;
+    }
+    Ok(())
+}
+
 // ---- the commands
 
 struct Wanted {
     theme: String,
     background: SddmBackground,
     path: Option<PathBuf>,
-    surface: Option<String>,
     blur: u32,
     dim: u32,
 }
@@ -1015,17 +1197,11 @@ impl Wanted {
                 "sddm.theme {theme}: a theme's directory name, letters, digits, _ . and -"
             ));
         }
-        if let Some(color) = &config.sddm_surface
-            && !hex_ok(color)
-        {
-            return Err(format!("sddm.surface {color}: expected #rrggbb"));
-        }
 
         Ok(Wanted {
             theme,
             background: config.sddm_background,
             path: config.sddm_background_path.as_ref().map(PathBuf::from),
-            surface: config.sddm_surface.clone(),
             blur: config.sddm_blur,
             dim: config.sddm_dim,
         })
@@ -1102,6 +1278,11 @@ fn theme_state(w: &Where, theme: &str) -> String {
     let overlay = w.overlay(theme);
 
     if theme == OWN {
+        if root_owned_read_only(&w.root, &w.prefix().join("themes")).is_err()
+            || root_owned_read_only(&w.root, &overlay).is_err()
+        {
+            return String::from("missing or not root-owned");
+        }
         let target_qt = target_qt_version(w, &overlay);
         return match THEME
             .iter()
@@ -1190,7 +1371,9 @@ impl Status {
                 "as root: edit the file named above, which no command of Kanade's can outdo\n",
             );
         } else if self.steps.is_empty() {
-            text.push_str("nothing to do as root; `kanade sddm sync` writes the look\n");
+            text.push_str(
+                "nothing to do as root; `kanade sddm sync` writes only the backdrop data\n",
+            );
         } else {
             text.push_str("in this order (Kanade never runs the commands for root):\n");
             for step in &self.steps {
@@ -1220,17 +1403,37 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
         want.background.name()
     ));
 
-    match owned(&w.prefix()) {
-        Ok(()) => lines.push(format!("overlay: {prefix} ready")),
+    match root_owned_read_only(&w.root, &w.prefix()).and_then(|()| {
+        if w.prefix().join("themes").is_dir() && w.overlay(OWN).is_dir() {
+            root_owned_read_only(&w.root, &w.prefix().join("themes"))
+                .and_then(|()| root_owned_read_only(&w.root, &w.overlay(OWN)))
+        } else {
+            Ok(())
+        }
+    }) {
+        Ok(()) => lines.push(format!(
+            "executable themes: {prefix}/themes root-owned and read-only"
+        )),
         Err(error) => {
-            lines.push(format!("overlay: {error}"));
+            lines.push(format!("executable themes: {error}"));
             steps.push(Step::Root(make_prefix(&prefix)));
         }
+    }
+    match owned(&w.data()) {
+        Ok(()) => lines.push(format!("mutable data: {} ready", w.data().display())),
+        Err(error) => lines.push(format!("mutable data: {error}")),
     }
 
     let overlay = w.overlay(&want.theme);
     let class = class_of(w, &want.theme);
-    let made = steps.is_empty();
+    let supported = want.theme == OWN;
+    let made = if want.theme == OWN {
+        root_owned_read_only(&w.root, &w.prefix()).is_ok()
+            && root_owned_read_only(&w.root, &w.prefix().join("themes")).is_ok()
+            && root_owned_read_only(&w.root, &overlay).is_ok()
+    } else {
+        false
+    };
 
     let state = theme_state(w, &want.theme);
     lines.push(format!("theme class: {}", class.brief()));
@@ -1243,10 +1446,10 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
     }
 
     // the sddm user is neither the owner nor in its group
-    match modes(&w.prefix(), false) {
+    match modes(&w.prefix().join("themes"), false) {
         Ok(closed) if closed.is_empty() => {}
         Ok(closed) => lines.push(format!(
-            "modes: {} entries sddm cannot read, as {}; `kanade sddm sync` mends them",
+            "modes: {} entries sddm cannot read, as {}; root must fix executable theme permissions",
             closed.len(),
             closed[0].display()
         )),
@@ -1264,10 +1467,24 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
         if written { "written" } else { "none" }
     ));
 
-    // the theme must be in the overlay before SDDM is pointed at it
+    // setup is required before SDDM is pointed at the executable theme
     let current = made && state == "current" && written;
     if !current {
-        steps.push(Step::Sync);
+        if (root_owned_read_only(&w.root, &w.prefix()).is_err()
+            || (w.prefix().join("themes").is_dir()
+                && root_owned_read_only(&w.root, &w.prefix().join("themes")).is_err()))
+            && !steps
+                .iter()
+                .any(|step| matches!(step, Step::Root(command) if command == &make_prefix(&prefix)))
+        {
+            steps.push(Step::Root(make_prefix(&prefix)));
+        }
+        if want.theme == OWN {
+            steps.push(Step::Root(String::from("kanade sddm setup")));
+            steps.push(Step::Sync);
+        } else {
+            blocked = true;
+        }
     }
 
     let mut enabled = false;
@@ -1286,9 +1503,9 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
             for line in why {
                 lines.push(format!("sddm: {line}"));
             }
-            if writes {
+            if writes && supported {
                 steps.push(Step::Root(point_sddm(w, &want.theme)?));
-            } else {
+            } else if !writes {
                 blocked = true;
             }
         }
@@ -1359,9 +1576,13 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
         }
         _ => {}
     }
-    if let Err(error) = owned(&w.prefix()) {
+    if want.theme == OWN
+        && let Err(error) = root_owned_read_only(&w.root, &w.prefix())
+            .and_then(|()| root_owned_read_only(&w.root, &w.prefix().join("themes")))
+            .and_then(|()| root_owned_read_only(&w.root, &w.overlay(OWN)))
+    {
         return vec![Finding::warn(
-            format!("sddm: the overlay cannot be written: {error}"),
+            format!("sddm: executable themes are not safely installed: {error}"),
             vec![format!("as root: {}", make_prefix(shown))],
         )];
     }
@@ -1387,7 +1608,10 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
         ))),
         Err((why, writes)) => {
             let mut detail = why;
-            if writes && let Ok(step) = point_sddm(w, &want.theme) {
+            if writes
+                && want.theme == OWN
+                && let Ok(step) = point_sddm(w, &want.theme)
+            {
                 detail.push(format!("as root: {step}"));
             }
             out.push(Finding::warn(
@@ -1401,7 +1625,8 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
     let mut closed: Vec<PathBuf> = Vec::new();
     let mut unchecked: Vec<String> = Vec::new();
     for dir in [
-        Some(w.prefix()),
+        Some(w.prefix().join("themes")),
+        Some(w.data()),
         (want.theme != OWN).then(|| w.installed(&want.theme)),
     ]
     .into_iter()
@@ -1529,6 +1754,20 @@ fn source_of(want: &Wanted) -> Option<PathBuf> {
     }
 }
 
+pub fn setup() -> ExitCode {
+    if getuid().as_raw() != 0 {
+        return fail("`kanade sddm setup` must run as root");
+    }
+    let w = Where::here();
+    match install_own(&w) {
+        Ok(()) => cli::print(
+            "kanade SDDM theme installed root-owned and read-only to the desktop user\n",
+            ExitCode::SUCCESS,
+        ),
+        Err(error) => fail(&error),
+    }
+}
+
 pub fn sync() -> ExitCode {
     let w = Where::here();
     let config = config::get();
@@ -1581,21 +1820,33 @@ fn put_picture(path: &Path, bytes: &[u8]) -> Result<(), String> {
  * closed to others, and `themes` and `bg` are directories, not links, made if absent
  */
 fn ready(w: &Where, prefix: &str) -> Result<(), String> {
-    if let Err(error) = owned(&w.prefix()) {
+    let data = w.data();
+    if !data.exists() {
+        make_dir(&data).map_err(|error| format!("{}: {error}", data.display()))?;
+    }
+    if let Err(error) = owned(&data) {
         return Err(format!(
             "{error}; as root: {}\nthen run this again (`kanade sddm status` says more)",
             make_prefix(prefix)
         ));
     }
 
-    // a link in the way would send a write somewhere else
-    for dir in [w.prefix().join("themes"), w.prefix().join("bg")] {
-        match fs::symlink_metadata(&dir) {
-            Ok(meta) if meta.is_dir() => {}
-            Ok(_) => return Err(format!("{} is not a directory", dir.display())),
-            Err(_) => make_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))?,
-        }
+    // the executable theme tree must be root-owned and not writable by the desktop user
+    let themes = w.prefix().join("themes");
+    root_owned_read_only(&w.root, &themes)
+        .map_err(|error| format!("{error}; run `kanade sddm setup` as root"))?;
+    if !w.overlay(OWN).join("metadata.desktop").is_file() {
+        return Err(format!(
+            "{} is missing; run `kanade sddm setup` as root",
+            w.overlay(OWN).display()
+        ));
     }
+
+    // a link in the way would send a write somewhere else
+    if !data.exists() {
+        make_dir(&data).map_err(|error| format!("{}: {error}", data.display()))?;
+    }
+    owned(&data)?;
 
     Ok(())
 }
@@ -1614,118 +1865,48 @@ fn apply(
 ) -> Result<String, String> {
     let want = Wanted::of(config)?;
     let prefix = w.text()?;
-    let mut text = String::new();
-
-    ready(w, &prefix)?;
-    // the sddm user reads all of it, so a mode that shuts it out is mended, not left to fail a login
-    let mended =
-        modes(&w.prefix(), true).map_err(|error| format!("{}: {error}", w.prefix().display()))?;
-    if !mended.is_empty() {
-        let _ = writeln!(text, "modes mended: {} entries", mended.len());
-    }
-
-    let installed = w.installed(&want.theme);
-    let (wanted_files, class) = if want.theme == OWN {
-        (None, Class::A(String::from("backdrop")))
-    } else {
-        if !installed.join("metadata.desktop").is_file() {
-            return Err(format!(
-                "{} is not an installed SDDM theme",
-                installed.display()
-            ));
-        }
-
-        (Some(plan(&installed)?), class_of(w, &want.theme))
-    };
-
-    let mut picture = None;
-    if !class.takes_picture() {
-        let _ = writeln!(text, "theme class {}: {}", class.brief(), class.does());
-    } else if let Some(path) = source(&want) {
-        picture = Some(backdrop(&path, size(), want.blur, want.dim)?);
-        let _ = writeln!(text, "picture from {}", path.display());
-    } else if want.background == SddmBackground::Wallpaper {
-        text.push_str("no wallpaper is shown (awww): the solid color instead\n");
-    } else if want.background == SddmBackground::Path {
+    if want.theme != OWN {
         return Err(String::from(
-            "sddm.background is \"path\" but sddm.background_path is not set",
+            "user sync supports only the root-installed kanade theme",
         ));
     }
+    ready(w, &prefix)?;
 
-    let overlay = w.overlay(&want.theme);
-    match fs::symlink_metadata(&overlay) {
-        Ok(meta) if !meta.is_dir() => {
-            return Err(format!("{} is not a directory", overlay.display()));
+    let bytes = match want.background {
+        SddmBackground::Wallpaper | SddmBackground::Path => {
+            let path = source(&want).ok_or_else(|| {
+                if want.background == SddmBackground::Path {
+                    String::from("sddm.background is \"path\" but sddm.background_path is not set")
+                } else {
+                    String::from("no wallpaper is available")
+                }
+            })?;
+            Some(backdrop(&path, size(), want.blur, want.dim)?)
         }
-        _ => {}
-    }
+        SddmBackground::Solid | SddmBackground::None => None,
+    };
 
     let shown = w.picture();
-    match &picture {
+    match bytes {
         Some(bytes) => {
-            put_picture(&shown, bytes)?;
-            let _ = writeln!(
-                text,
-                "picture: {} ({})",
+            put_picture(&shown, &bytes)?;
+            Ok(format!(
+                "picture: {} ({})\n",
                 shown.display(),
                 sizes(bytes.len() as u64)
-            );
+            ))
         }
         None => {
             plain_target(&shown)?;
             match fs::remove_file(&shown) {
-                Ok(()) => text.push_str("picture: removed\n"),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("{}: {error}", shown.display())),
+                Ok(()) => Ok(format!("picture: removed {}\n", shown.display())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Ok(String::from("picture: none\n"))
+                }
+                Err(error) => Err(format!("{}: {error}", shown.display())),
             }
         }
     }
-
-    // the picture is in place, so the theme and the config that name it can come
-    let named = format!("{prefix}/bg/backdrop.png");
-    let seed = if wanted_files.is_some() {
-        installed_user(&installed, &mut text)
-    } else {
-        None
-    };
-    let key = match &class {
-        Class::A(key) => key.as_str(),
-        _ => "background",
-    };
-    let conf = conf_user(
-        &prefix,
-        &want.theme,
-        picture.as_ref().map(|_| named.as_str()),
-        want.surface.as_deref(),
-        seed.as_deref(),
-        key,
-    )?;
-
-    match &wanted_files {
-        None => {
-            make_dir(&overlay).map_err(|error| format!("{}: {error}", overlay.display()))?;
-            let written = copy_own(w, &overlay)?;
-            let _ = writeln!(text, "theme {}: {written} files written", want.theme);
-
-            let at = overlay.join(USER);
-            atomic::write(&at, conf.as_bytes(), Mode::Exactly(0o644))
-                .map_err(|error| format!("{}: {error}", at.display()))?;
-        }
-        Some(wanted) => {
-            farm(&overlay, wanted, &conf)?;
-            let _ = writeln!(
-                text,
-                "theme {}: {} entries linked",
-                want.theme,
-                wanted.len()
-            );
-            text.push_str(OTHER_THEMES);
-            text.push('\n');
-        }
-    }
-    let _ = writeln!(text, "{USER}: written");
-
-    Ok(text)
 }
 
 /*
@@ -1822,51 +2003,30 @@ mod tests {
 
     #[test]
     fn the_theme_conf_user_holds_only_values_the_theme_reads() {
-        let picture = format!("{REAL}/bg/backdrop.png");
+        let picture = format!("/{DATA}/backdrop.png");
 
-        let own = conf_user(
-            REAL,
-            "kanade",
-            Some(&picture),
-            Some("#0c0d11"),
-            None,
-            "background",
-        )
-        .unwrap();
+        let own = conf_user(REAL, "kanade", Some(&picture), None, "background").unwrap();
         assert!(own.starts_with("# Written by"));
         assert_eq!(
             own.lines().skip(1).collect::<Vec<_>>(),
-            [
-                "[General]",
-                &format!("backdrop={picture}"),
-                "shade=0",
-                "surface=#0c0d11"
-            ]
+            ["[General]", &format!("backdrop={picture}")]
         );
 
         // no picture: an empty backdrop, so a stale one in theme.conf cannot show
-        let bare = conf_user(REAL, "kanade", None, None, None, "background").unwrap();
+        let bare = conf_user(REAL, "kanade", None, None, "background").unwrap();
         assert_eq!(
             bare.lines().skip(1).collect::<Vec<_>>(),
-            ["[General]", "backdrop="]
+            ["[General]", &format!("backdrop=/{DATA}/backdrop.png")]
         );
 
         // another theme gets the key most take a picture from, and nothing without one
-        let other = conf_user(
-            REAL,
-            "breeze",
-            Some(&picture),
-            Some("#000000"),
-            None,
-            "background",
-        )
-        .unwrap();
+        let other = conf_user(REAL, "breeze", Some(&picture), None, "background").unwrap();
         assert_eq!(
             other.lines().skip(1).collect::<Vec<_>>(),
             ["[General]", &format!("background={picture}")]
         );
         assert_eq!(
-            conf_user(REAL, "breeze", None, None, None, "background")
+            conf_user(REAL, "breeze", None, None, "background")
                 .unwrap()
                 .lines()
                 .skip(1)
@@ -1880,7 +2040,6 @@ mod tests {
             REAL,
             "breeze",
             Some(&picture),
-            None,
             Some(installed),
             "background",
         )
@@ -1903,16 +2062,14 @@ mod tests {
         assert!(user_ini("[General]\nnot a setting\n").is_err());
 
         // a value that could add a line or that the theme would refuse is not written
-        for (theme, picture, surface) in [
-            ("kanade", Some("/etc/passwd.png"), None),
-            ("kanade", Some(format!("{picture}\nshade=1").as_str()), None),
-            ("kanade", None, Some("#0c0d1\n")),
-            ("kanade", None, Some("red")),
-            ("../x", None, None),
-            ("a\nb", None, None),
-            ("", None, None),
+        for (theme, picture) in [
+            ("kanade", Some("/etc/passwd.png")),
+            ("kanade", Some(format!("{picture}\nshade=1").as_str())),
+            ("../x", None),
+            ("a\nb", None),
+            ("", None),
         ] {
-            assert!(conf_user(REAL, theme, picture, surface, None, "background").is_err());
+            assert!(conf_user(REAL, theme, picture, None, "background").is_err());
         }
     }
 
@@ -1972,7 +2129,10 @@ mod tests {
 
         fs::create_dir_all(w.prefix()).unwrap();
         fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(w.prefix().join("themes"), Permissions::from_mode(0o755)).unwrap();
         fs::create_dir_all(w.overlay(OWN)).unwrap();
+        fs::set_permissions(w.overlay(OWN), Permissions::from_mode(0o755)).unwrap();
         fs::write(w.overlay(OWN).join("Main.qml"), "").unwrap();
         fs::set_permissions(
             w.overlay(OWN).join("Main.qml"),
@@ -1987,19 +2147,20 @@ mod tests {
             .map(|finding| finding.text.as_str())
             .collect();
         assert!(
-            warned.iter().any(|text| text.contains("does not read")),
-            "{warned:?}"
-        );
-        assert!(
-            warned.iter().any(|text| text.contains("cannot read")),
+            warned
+                .iter()
+                .any(|text| text.contains("not safely installed")),
             "{warned:?}"
         );
 
         // a prefix others can write is refused outright, as the writers refuse it
         fs::set_permissions(w.prefix(), Permissions::from_mode(0o777)).unwrap();
         let found = diagnose(&w, &config);
-        assert_eq!(found.len(), 1);
-        assert!(!found[0].ok && found[0].text.contains("writable by others"));
+        assert!(
+            found
+                .iter()
+                .any(|finding| { !finding.ok && finding.text.contains("not safely installed") })
+        );
 
         fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -2029,7 +2190,7 @@ mod tests {
 
         // nothing made
         let status = gather(&w, &config).unwrap();
-        assert_eq!(shape(&status), ["prefix", "sync", "conf"]);
+        assert_eq!(shape(&status), ["prefix", "prefix", "sync", "conf"]);
         let guarded = status
             .steps
             .iter()
@@ -2047,7 +2208,14 @@ mod tests {
         // made, not synced
         fs::create_dir_all(w.prefix()).unwrap();
         fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(shape(&gather(&w, &config).unwrap()), ["sync", "conf"]);
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(w.prefix().join("themes"), Permissions::from_mode(0o755)).unwrap();
+        install_own(&w).unwrap();
+        let config = Config {
+            sddm_background: SddmBackground::None,
+            ..config
+        };
+        assert_eq!(shape(&gather(&w, &config).unwrap()), ["conf"]);
 
         // synced
         apply(&w, &config, |_| None, || (16, 16)).unwrap();
@@ -2066,6 +2234,13 @@ mod tests {
 
         fs::create_dir_all(w.prefix()).unwrap();
         fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(w.prefix().join("themes"), Permissions::from_mode(0o755)).unwrap();
+        install_own(&w).unwrap();
+        let config = Config {
+            sddm_background: SddmBackground::None,
+            ..config
+        };
         apply(&w, &config, |_| None, || (16, 16)).unwrap();
 
         // SDDM does not read the overlay: nothing to say of a stale one
@@ -2301,73 +2476,83 @@ mod tests {
         let w = Where::under(root.clone());
         let bits = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
 
-        // the prefix is root's `install -d -m 755`; a third-party theme with a nested directory and
-        // a theme.conf.user of its own, made under the same umask
+        // setup runs under a restrictive umask and must still leave executable files readable.
         fs::create_dir_all(w.prefix()).unwrap();
         fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
-        let theme = w.installed("breeze");
-        fs::create_dir_all(theme.join("sub")).unwrap();
-        fs::write(theme.join("metadata.desktop"), "[SddmGreeterTheme]\n").unwrap();
-        fs::write(theme.join("Main.qml"), "").unwrap();
-        fs::write(theme.join("sub/a.qml"), "").unwrap();
+        let themes = w.prefix().join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        fs::set_permissions(&themes, Permissions::from_mode(0o755)).unwrap();
+        install_own(&w).unwrap();
+        assert_eq!(bits(&w.overlay(OWN)), 0o755);
+        assert_eq!(bits(&w.overlay(OWN).join("Main.qml")), 0o644);
+        assert_eq!(bits(&w.overlay(OWN).join("theme.conf")), 0o644);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn setup_preserves_unmanaged_user_settings_and_replaces_managed_values() {
+        let root =
+            std::env::temp_dir().join(format!("kanade-sddm-preserve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let w = Where::under(root.clone());
+        let overlay = w.overlay(OWN);
+        fs::create_dir_all(&overlay).unwrap();
+        fs::set_permissions(&overlay, Permissions::from_mode(0o755)).unwrap();
         fs::write(
-            theme.join(USER),
-            "[General]\nfont=Fira\nbackground=/x.png\n",
+            overlay.join(USER),
+            "font=BeforeSection\nbackdrop=/tmp/unsafe-before-section.png\n[General]\nfont=Fira\nBACKDROP=/tmp/unsafe.png\nshade=1\n[Other]\nbackdrop=keep-this\n",
         )
         .unwrap();
-        fs::set_permissions(theme.join(USER), Permissions::from_mode(0o644)).unwrap();
-        let source = root.join("source.png");
-        let tiny = Picture {
-            width: 8,
-            height: 8,
-            rgba: vec![200; 8 * 8 * 4],
-        };
-        fs::write(&source, encode(&tiny).unwrap()).unwrap();
+        fs::set_permissions(overlay.join(USER), Permissions::from_mode(0o644)).unwrap();
+        fs::write(
+            overlay.join("metadata.desktop"),
+            "[SddmGreeterTheme]\nQtVersion=5\n",
+        )
+        .unwrap();
+        fs::set_permissions(
+            overlay.join("metadata.desktop"),
+            Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        fs::create_dir_all(overlay.parent().unwrap()).unwrap();
+        fs::set_permissions(overlay.parent().unwrap(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.prefix()).unwrap();
+        fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
 
-        let mut config = Config {
-            sddm_background: SddmBackground::Path,
-            sddm_background_path: source.to_str().map(str::to_owned),
-            ..Config::default()
-        };
-
-        let shut = |w: &Where| modes(&w.prefix(), false).unwrap();
-        let sync = |config: &Config| {
-            apply(&w, config, |want| want.path.clone(), || (16, 16)).unwrap();
-            assert_eq!(shut(&w), Vec::<PathBuf>::new());
-        };
-
-        config.sddm_theme = Some(String::from("breeze"));
-        sync(&config);
-        let farmed = w.overlay("breeze");
-        assert_eq!(bits(&farmed), 0o755);
-        assert_eq!(bits(&farmed.join("sub")), 0o755);
-        assert_eq!(bits(&farmed.join(USER)), 0o644);
-        assert_eq!(bits(&w.picture()), 0o644);
-        let conf = fs::read_to_string(farmed.join(USER)).unwrap();
-        assert!(
-            conf.contains("font=Fira") && conf.contains("background=") && !conf.contains("/x.png")
+        install_own(&w).unwrap();
+        let written = fs::read_to_string(overlay.join(USER)).unwrap();
+        assert!(written.contains("font=Fira"));
+        assert!(written.contains("font=BeforeSection"));
+        assert!(written.contains("[Other]\nbackdrop=keep-this"));
+        assert!(!written.contains("unsafe-before-section.png"));
+        assert!(!written.contains("BACKDROP=/tmp/unsafe.png"));
+        assert!(!written.contains("shade=1"));
+        assert!(written.ends_with(&format!("[General]\nbackdrop=/{DATA}/backdrop.png\n")));
+        assert_eq!(
+            qt_version_of(&fs::read_to_string(overlay.join("metadata.desktop")).unwrap()),
+            Some(5)
         );
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        config.sddm_theme = None;
-        sync(&config);
-        assert_eq!(bits(&w.overlay(OWN).join("Main.qml")), 0o644);
-
-        // no part of a swap is left beside the themes
-        let left: Vec<_> = fs::read_dir(w.prefix().join("themes"))
-            .unwrap()
-            .flatten()
-            .map(|entry| entry.file_name())
-            .collect();
-        assert_eq!(left.len(), 2, "{left:?}");
-
-        // a mode that was shut is said, then mended
-        fs::set_permissions(w.picture(), Permissions::from_mode(0o600)).unwrap();
-        fs::set_permissions(w.prefix().join("bg"), Permissions::from_mode(0o700)).unwrap();
-        assert!(report(&w, &config).unwrap().contains("modes: 2 entries"));
-        sync(&config);
-        assert_eq!(bits(&w.picture()), 0o644);
-
+    #[test]
+    fn root_theme_validation_checks_nested_file_modes_and_symlinks() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-tree-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        let nested = root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::set_permissions(&root, Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&nested, Permissions::from_mode(0o755)).unwrap();
+        let script = nested.join("Main.qml");
+        fs::write(&script, "// theme").unwrap();
+        fs::set_permissions(&script, Permissions::from_mode(0o600)).unwrap();
+        assert!(root_owned_read_only(&root, &root).is_err());
+        fs::set_permissions(&script, Permissions::from_mode(0o644)).unwrap();
+        assert!(root_owned_read_only(&root, &root).is_ok());
+        let link = nested.join("link");
+        symlink(&script, &link).unwrap();
+        assert!(root_owned_read_only(&root, &root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2398,6 +2583,9 @@ mod tests {
         let w = Where::under(root.clone());
         let overlay = w.overlay(OWN);
         fs::create_dir_all(&overlay).unwrap();
+        fs::create_dir_all(overlay.parent().unwrap()).unwrap();
+        fs::set_permissions(overlay.parent().unwrap(), Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&overlay, Permissions::from_mode(0o755)).unwrap();
 
         let user_meta = "[SddmGreeterTheme]\nName=Kanade\nQtVersion=5\n";
         fs::write(overlay.join("metadata.desktop"), user_meta).unwrap();

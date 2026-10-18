@@ -13,7 +13,8 @@ use toml::Value;
 use super::class::{self, Class, plain};
 use super::{
     Config, OWN, USER, Wanted, Where, apply, cli, config, fail, largest_output, locked,
-    make_prefix, modes, owned, plain_target, pointed, pointing, source_of, theme_ok, theme_state,
+    make_prefix, modes, owned, plain_target, pointed, pointing, root_owned_read_only, source_of,
+    theme_ok, theme_state,
 };
 
 // the most themes listed: an install holds a few dozen
@@ -294,21 +295,32 @@ pub fn info(name: &str) -> ExitCode {
  * as the user's own part, a key, is already written
  */
 fn bring(w: &Where, config: &Config) -> Result<String, String> {
-    let mut text = String::new();
     let theme = Wanted::of(config)?.theme;
+    if theme != OWN {
+        return Err(String::from(
+            "only the root-installed kanade theme can be selected safely",
+        ));
+    }
 
-    if owned(&w.prefix()).is_ok() {
-        text.push_str(&locked(w, || apply(w, config, source_of, largest_output))?);
+    let prefix = w.text()?;
+    let executable_ready = root_owned_read_only(&w.root, &w.prefix()).is_ok()
+        && root_owned_read_only(&w.root, &w.prefix().join("themes")).is_ok()
+        && root_owned_read_only(&w.root, &w.overlay(OWN)).is_ok()
+        && w.overlay(OWN).join("metadata.desktop").is_file();
+    let data_ready = owned(&w.data()).is_ok();
+    let mut text = String::new();
+
+    if !executable_ready || !data_ready {
+        let make = make_prefix(&prefix);
+        if !data_ready || root_owned_read_only(&w.root, &w.prefix()).is_err() {
+            let _ = writeln!(text, "as root: {make}");
+        }
+        if !executable_ready {
+            text.push_str("as root: kanade sddm setup\n");
+        }
+        text.push_str("then run `kanade sddm sync`\n");
     } else {
-        let _ = writeln!(
-            text,
-            "overlay: {} is not made yet; as root: {}",
-            w.text()?,
-            make_prefix(&w.text()?)
-        );
-        text.push_str(
-            "then run `kanade sddm sync`, and only then the command for root that points SDDM at it (it does nothing until the theme is there)\n",
-        );
+        text.push_str(&locked(w, || apply(w, config, source_of, largest_output))?);
     }
     text.push_str(&pointing(w, &theme)?);
 
@@ -335,6 +347,11 @@ fn choose(name: &str) -> Result<(Config, String), String> {
 }
 
 fn use_text(w: &Where, name: &str) -> Result<String, String> {
+    if name != super::OWN {
+        return Err(String::from(
+            "only the root-installed kanade theme can be selected safely",
+        ));
+    }
     if !theme_ok(name) {
         return Err(format!("{name}: not a theme's directory name"));
     }
@@ -404,7 +421,7 @@ fn disable_text(w: &Where, config: &Config) -> Result<String, String> {
         text.push_str("sddm.sync = false (written to the settings file)\n");
     }
 
-    if owned(&w.prefix()).is_ok() {
+    if owned(&w.data()).is_ok() {
         let shown = w.picture();
 
         locked(w, || {
@@ -436,8 +453,8 @@ fn disable_text(w: &Where, config: &Config) -> Result<String, String> {
     }
     let _ = writeln!(
         text,
-        "to remove the overlay as well: as root `rm -r {}`",
-        w.text()?
+        "to remove the root-owned themes as root: `rm -r {}`",
+        w.prefix().join("themes").display()
     );
 
     Ok(text)
@@ -455,6 +472,7 @@ pub fn disable() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn root(name: &str) -> PathBuf {
         let root =
@@ -466,6 +484,35 @@ mod tests {
     }
 
     // what a person is shown to pick from: only directories of a plain name that hold a theme
+    #[test]
+    fn enable_prints_prerequisites_before_sync_when_data_is_missing() {
+        let dir = root("enable-data");
+        let w = Where::under(dir.clone());
+        super::super::install_own(&w).unwrap();
+        let output = bring(&w, &Config::default()).unwrap();
+
+        let make = output.find("install -d -o").unwrap();
+        let sync = output.find("kanade sddm sync").unwrap();
+        assert!(make < sync, "{output}");
+        assert!(!output.contains("picture:"), "{output}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn enable_prints_setup_before_sync_when_theme_is_missing() {
+        let dir = root("enable-theme");
+        let w = Where::under(dir.clone());
+        fs::create_dir_all(w.data()).unwrap();
+        fs::set_permissions(w.data(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = bring(&w, &Config::default()).unwrap();
+
+        let setup = output.find("kanade sddm setup").unwrap();
+        let sync = output.find("kanade sddm sync").unwrap();
+        assert!(setup < sync, "{output}");
+        assert!(!output.contains("picture:"), "{output}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn the_list_holds_installed_themes_with_metadata_and_plain_names_only() {
         let dir = root("list");

@@ -264,11 +264,11 @@ pub(crate) fn accent(track: &Track) -> Color {
 const TALL: f32 = 14.0;
 
 /*
- * what moves beside a playing track, as `media.visualizer` says, in `ink`, the artwork's accent: the
- * motion is drawn, not heard, as the Dynamic Island's. A pause mark while it does not play, and
- * three still bars with `off`, so only a moving one draws frames. `audio` draws what cava hears
- * (`sources/cava.rs`), a frame per answer of its own; until it answers, or where cava is missing,
- * it draws the synthetic bars
+ * what moves beside a playing track, as `media.visualizer` says, in `ink`, the artwork's accent:
+ * when cava is available and gives audio spectrum data, the bars, wave, and dots follow real audio
+ * frequencies; otherwise, or while cava is initializing/silent, they fall back to the synthetic
+ * swing animation so motion never freezes. `off` draws still bars, and a paused track draws the pause
+ * mark.
  */
 pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
     let style = config::get().visualizer;
@@ -283,13 +283,18 @@ pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
         return Row::new(bars).height(TALL).gap(2.0).align(End);
     }
 
+    cava::want();
+
+    if let Some(bars) = cava::bars() {
+        return match style {
+            Visualizer::Bars | Visualizer::Audio => audio_bars(bars, ink),
+            Visualizer::Wave => audio_wave(bars, ink),
+            Visualizer::Dots => audio_dots(bars, ink),
+            Visualizer::Off => unreachable!("handled above"),
+        };
+    }
+
     let style = if style == Visualizer::Audio {
-        cava::want();
-
-        if let Some(bars) = cava::bars() {
-            return audio(bars, ink);
-        }
-
         Visualizer::Bars
     } else {
         style
@@ -352,8 +357,8 @@ pub(crate) fn state(playing: bool, ink: Color, now: Instant) -> Row {
     Row::new(marks).height(TALL).gap(gap).align(Center)
 }
 
-// the bars cava gave, each up to `TALL`, which draw again when the next ones come
-fn audio(bars: [u8; cava::BARS], ink: Color) -> Row {
+// the 4 frequency bars cava gave, each up to `TALL`
+fn audio_bars(bars: [u8; cava::BARS], ink: Color) -> Row {
     let marks: Vec<Box<dyn Widget>> = bars
         .into_iter()
         .map(|bar| {
@@ -364,6 +369,48 @@ fn audio(bars: [u8; cava::BARS], ink: Color) -> Row {
         .collect();
 
     Row::new(marks).height(TALL).gap(2.0).align(Center)
+}
+
+// 7 wave bars interpolated from cava's frequency bins
+fn audio_wave(bars: [u8; cava::BARS], ink: Color) -> Row {
+    let norm = |b: u8| f32::from(b) / f32::from(cava::PEAK);
+    let marks: Vec<Box<dyn Widget>> = (0..7)
+        .map(|at| {
+            let pos = at as f32 * 0.5;
+            let idx = pos.floor() as usize;
+            let frac = pos.fract();
+            let val = if idx >= 3 {
+                norm(bars[3])
+            } else {
+                norm(bars[idx]) * (1.0 - frac) + norm(bars[idx + 1]) * frac
+            };
+            let height = 3.0 + (TALL - 5.0) * val;
+
+            Box::new(mark(2.0, height, ink, 1.0)) as Box<dyn Widget>
+        })
+        .collect();
+
+    Row::new(marks).height(TALL).gap(1.5).align(Center)
+}
+
+// 3 dots scaled and faded by bass, mids, and treble
+fn audio_dots(bars: [u8; cava::BARS], ink: Color) -> Row {
+    let norm = |b: u8| f32::from(b) / f32::from(cava::PEAK);
+    let bass = norm(bars[0]);
+    let mids = 0.5 * (norm(bars[1]) + norm(bars[2]));
+    let treble = norm(bars[3]);
+
+    let marks: Vec<Box<dyn Widget>> = [bass, mids, treble]
+        .into_iter()
+        .map(|val| {
+            let side = 4.0 + 2.0 * val;
+            let opacity = 0.35 + 0.65 * val;
+
+            Box::new(mark(side, side, ink, opacity)) as Box<dyn Widget>
+        })
+        .collect();
+
+    Row::new(marks).height(TALL).gap(3.0).align(Center)
 }
 
 // when the first moving visualizer drew, so its motion runs on from there
@@ -377,4 +424,50 @@ pub(super) fn mark(width: f32, height: f32, ink: Color, opacity: f32) -> Rectang
         .radius(width.min(height) / 2.0)
         .fill(ink)
         .opacity(opacity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kanade_runtime::service::Service;
+    use kanade_runtime::{Size, Widget};
+
+    #[test]
+    fn audio_bars_renders_four_bars_sized_by_audio() {
+        let row = audio_bars([0, 50, 100, 25], Color::rgb(255, 255, 255));
+        assert_eq!(Widget::height(&row), Size::Fixed(TALL));
+    }
+
+    #[test]
+    fn audio_wave_renders_seven_interpolated_bars() {
+        let row = audio_wave([0, 50, 100, 25], Color::rgb(255, 255, 255));
+        assert_eq!(Widget::height(&row), Size::Fixed(TALL));
+    }
+
+    #[test]
+    fn audio_dots_renders_three_dots_for_bass_mids_treble() {
+        let row = audio_dots([0, 50, 100, 25], Color::rgb(255, 255, 255));
+        assert_eq!(Widget::height(&row), Size::Fixed(TALL));
+    }
+
+    #[test]
+    fn state_paused_renders_pause_mark() {
+        let row = state(false, Color::rgb(255, 255, 255), Instant::now());
+        assert_eq!(Widget::height(&row), Size::Fixed(TALL));
+    }
+
+    #[test]
+    fn state_fallback_synthetic_when_cava_silent() {
+        cava::Spectrum::write().bars = None;
+        let row = state(true, Color::rgb(255, 255, 255), Instant::now());
+        assert_eq!(Widget::height(&row), Size::Fixed(TALL));
+    }
+
+    #[test]
+    fn state_audio_reactive_when_cava_provides_spectrum() {
+        cava::Spectrum::write().bars = Some([10, 40, 70, 100]);
+        let row = state(true, Color::rgb(255, 255, 255), Instant::now());
+        assert_eq!(Widget::height(&row), Size::Fixed(TALL));
+        cava::Spectrum::write().bars = None;
+    }
 }

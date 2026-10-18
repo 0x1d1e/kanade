@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use kanade_runtime::MutexExt;
 
-use super::class::{self, Class};
+use super::class;
 use super::{
-    Config, OWN, SddmBackground, Wanted, Where, apply, backdrop, largest_output, locked,
-    put_picture, ready,
+    Config, OWN, SddmBackground, Wanted, Where, backdrop, largest_output, locked, put_picture,
+    ready,
 };
 use crate::modules;
 
@@ -156,23 +156,15 @@ pub fn refresh(
             ));
         }
         let want = Wanted::of(&config)?;
-
+        if want.theme != OWN {
+            return Err(String::from(
+                "wallpaper following supports only the root-installed kanade theme",
+            ));
+        }
         ready(w, &prefix)?;
 
-        let class = if want.theme == OWN {
-            Class::A(String::from("backdrop"))
-        } else {
-            super::class_of(w, &want.theme)
-        };
-        if !class.takes_picture() {
-            return Ok(format!("theme class {}: no picture written", class.brief()));
-        }
-
-        // read as the theme reads it: a byte order mark and quotes do not hide the setting
-        let Class::A(key) = &class else {
-            unreachable!("only class A takes a picture")
-        };
-        let named = format!("{prefix}/bg/backdrop.png");
+        let key = "backdrop";
+        let named = format!("/{}/backdrop.png", super::DATA);
         let names = class::read(&w.overlay(&want.theme).join(super::USER)).is_some_and(|text| {
             class::pairs(&text)
                 .iter()
@@ -189,7 +181,9 @@ pub fn refresh(
                 source.display()
             ))
         } else {
-            apply(w, &config, |_| Some(source.to_owned()), size)
+            Err(String::from(
+                "the root-installed kanade theme does not name the backdrop data file; run `kanade sddm setup` as root",
+            ))
         }
     })
 }
@@ -273,25 +267,63 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(&source, png(40)).unwrap();
         let missing = refresh(&w, follows, &source, || (16, 16)).unwrap_err();
-        assert!(missing.contains("install -d"), "{missing}");
+        assert!(missing.contains("kanade sddm setup"), "{missing}");
         assert!(!w.prefix().exists());
 
-        // made, then one sync writes the whole look; the follow after it only the picture
+        // data is user-writable, while the built-in theme and config are root-owned
         fs::create_dir_all(w.prefix()).unwrap();
         fs::set_permissions(
             w.prefix(),
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
         )
         .unwrap();
-        let first = refresh(&w, follows, &source, || (16, 16)).unwrap();
-        assert!(first.contains("theme kanade"), "{first}");
+        fs::create_dir_all(w.data()).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(
+            w.prefix().join("themes"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::create_dir_all(w.overlay(OWN)).unwrap();
+        fs::set_permissions(
+            w.data(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.prefix().join("themes"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.overlay(OWN),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join("metadata.desktop"),
+            "[SddmGreeterTheme]\nQtVersion=6\n",
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join(super::super::USER),
+            format!("[General]\nbackdrop=/{}/backdrop.png\n", super::super::DATA),
+        )
+        .unwrap();
+        let theme_code = fs::read(w.overlay(OWN).join("metadata.desktop")).unwrap();
         let conf = fs::read(w.overlay(OWN).join(super::super::USER)).unwrap();
+        let first = refresh(&w, follows, &source, || (16, 16)).unwrap();
+        assert!(first.starts_with("picture:"), "{first}");
         let before = fs::read(w.picture()).unwrap();
 
         fs::write(&source, png(200)).unwrap();
         let second = refresh(&w, follows, &source, || (16, 16)).unwrap();
         assert!(second.starts_with("picture:"), "{second}");
         assert_ne!(fs::read(w.picture()).unwrap(), before);
+        assert_eq!(
+            fs::read(w.overlay(OWN).join("metadata.desktop")).unwrap(),
+            theme_code
+        );
         assert_eq!(
             fs::read(w.overlay(OWN).join(super::super::USER)).unwrap(),
             conf
@@ -325,10 +357,32 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kanade-sddm-bom-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let w = Where::under(root.clone());
-        fs::create_dir_all(w.prefix()).unwrap();
+        fs::create_dir_all(w.data()).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::create_dir_all(w.overlay(OWN)).unwrap();
         fs::set_permissions(
-            w.prefix(),
+            w.prefix().join("themes"),
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.overlay(OWN),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.data(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join("metadata.desktop"),
+            "[SddmGreeterTheme]\nQtVersion=6\n",
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join(super::super::USER),
+            format!("[General]\nbackdrop=/{}/backdrop.png\n", super::super::DATA),
         )
         .unwrap();
         let source = root.join("wall.png");
@@ -351,10 +405,32 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kanade-sddm-off-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let w = Where::under(root.clone());
-        fs::create_dir_all(w.prefix()).unwrap();
+        fs::create_dir_all(w.data()).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::create_dir_all(w.overlay(OWN)).unwrap();
         fs::set_permissions(
-            w.prefix(),
+            w.prefix().join("themes"),
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.overlay(OWN),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.data(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join("metadata.desktop"),
+            "[SddmGreeterTheme]\nQtVersion=6\n",
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join(super::super::USER),
+            format!("[General]\nbackdrop=/{}/backdrop.png\n", super::super::DATA),
         )
         .unwrap();
         let source = root.join("wall.png");
@@ -416,10 +492,32 @@ mod tests {
         let root = std::env::temp_dir().join(format!("kanade-sddm-wall-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let w = Where::under(root.clone());
-        fs::create_dir_all(w.prefix()).unwrap();
+        fs::create_dir_all(w.data()).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::create_dir_all(w.overlay(OWN)).unwrap();
         fs::set_permissions(
-            w.prefix(),
+            w.prefix().join("themes"),
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.overlay(OWN),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::set_permissions(
+            w.data(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join("metadata.desktop"),
+            "[SddmGreeterTheme]\nQtVersion=6\n",
+        )
+        .unwrap();
+        fs::write(
+            w.overlay(OWN).join(super::super::USER),
+            format!("[General]\nbackdrop=/{}/backdrop.png\n", super::super::DATA),
         )
         .unwrap();
         let real = root.join("real.png");
@@ -428,7 +526,7 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         let done = refresh(&w, follows, &link, || (16, 16)).unwrap();
-        assert!(done.contains("theme kanade"), "{done}");
+        assert!(done.starts_with("picture:"), "{done}");
         assert!(w.picture().exists());
 
         // a link that leads to a directory is no picture

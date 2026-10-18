@@ -17,42 +17,38 @@ scratch in QML; see `kanade/NOTICE`. `kanade sddm` installs it (below).
 
 `theme.conf.user` beside `theme.conf` overrides it. Keys: `backdrop`, `face`, `shade`, `font`,
 `clock24`, `scale`, `session`, `surface`. Every value is validated; a bad one takes its default.
-Images are paths relative to the theme directory, without `..`.
+Images are paths relative to the theme directory, without `..`. The built-in theme also accepts the
+single mutable backdrop at `/usr/local/share/kanade-sddm-data/backdrop.png`.
 
 ## Installing: `kanade sddm`
 
-SDDM reads its theme as the `sddm` user, so Kanade writes what it reads to an overlay it owns, outside
-`/usr/share`: `/usr/local/share/kanade-sddm/` (`themes/<theme>/` and `bg/backdrop.png`). The theme is
-chosen and styled by the `[sddm]` keys of the config (`sddm.theme`, `sddm.background`, `sddm.blur`, ...).
+SDDM reads theme code as the `sddm` user, so Kanade installs its built-in theme as a root-owned,
+read-only tree outside `/usr/share`, at `/usr/local/share/kanade-sddm/themes/kanade/`. Its mutable
+backdrop lives separately at `/usr/local/share/kanade-sddm-data/backdrop.png`, outside the loaded
+theme tree. Kanade's SDDM commands currently manage this built-in theme.
 
 ```sh
-kanade sddm status   # what is there, what SDDM reads, and the root commands still missing
-kanade sddm sync     # writes the overlay: the theme, the picture, theme.conf.user
+kanade sddm status   # what is installed and the root commands still needed
+kanade sddm setup    # run as root to install or refresh the built-in theme
+kanade sddm sync     # writes only the mutable backdrop data
 ```
 
-Kanade never runs sudo and never writes outside what you own. Root does two things once, which
-`status` prints for you to run: make the overlay directory owned by you (`install -d -o UID -g GID -m
-755 ...`), and write `/etc/sddm.conf.d/zz-kanade.conf` (`[Theme]` `ThemeDir` and `Current`). The file
-is named `zz-` so SDDM, which reads a directory's files by name, reads it after any other there; a file
-read later still (`/etc/sddm.conf`, or a `zzz-` one) wins, and `status` names it.
+Kanade never runs sudo. `status` prints the root commands still needed: create the root-owned theme
+tree and user-owned backdrop directory, run `kanade sddm setup` to install the built-in theme, and
+write `/etc/sddm.conf.d/zz-kanade.conf` with `[Theme]` `ThemeDir` and `Current`. The `zz-` file is
+read after earlier named files; a later file, such as `/etc/sddm.conf` or a `zzz-` file, wins, and
+`status` names it.
 
-- Kanade's own theme is copied from the one built into the binary. Any other installed theme is a
-  directory of links to its files, with its `theme.conf.user` kept and only `background` replaced.
-  Other themes are best effort: one that imports from a sibling or parent directory, or names
-  `/usr/share/sddm/themes` paths, may not work from the overlay. Run `status`, then look at the login
-  screen.
+- `setup` installs the built-in theme root-owned and read-only. `sync` updates only its separate
+  backdrop file; it does not write theme code or configuration.
 - The picture is the wallpaper (or `sddm.background_path`) blurred and dimmed as the lock screen does,
   re-encoded so it holds none of the original's metadata. The login screen's user and anyone who can
-  read the overlay can read it.
-- Every directory Kanade makes is 0755 and every file 0644 whatever your umask, since `sddm` is not you;
-  `status` flags any that is not, and `sync` mends it. `sync` builds a theme beside the old one and
-  swaps it in atomically where the filesystem supports it (`renameat2` with `RENAME_EXCHANGE`),
-  falling back to two renames on others, so a failure leaves the overlay that was there.
+  read `/usr/local/share/kanade-sddm-data/` can read it.
+- The theme tree is root-owned and read-only to the desktop user. `setup` refreshes it as root;
+  `sync` writes the separate user-owned backdrop with directory mode 0755 and file mode 0644.
 
-Trade-off: the overlay is yours, so any process running as you can change code and QML the login screen
-loads, which then runs as `sddm` (the greeter, before login). On a machine with one user, that adds
-little to what such a process can already do; on a shared machine, or with untrusted code under your
-account, it is a trade-off. The alternative is a root-owned copy that this command cannot refresh.
+The backdrop is readable by the `sddm` user and by anyone who can read the user-owned data directory.
+Theme code stays root-owned, so updating the theme requires running `setup` as root.
 
 ## Rules
 

@@ -94,17 +94,18 @@ Item {
         { name: "armed", host: { canSuspend: true, canReboot: true, canPowerOff: true }, ring: 4, armed: "poweroff" },
         { name: "garbage", options: { backdrop: "../../etc/passwd", face: "/etc/passwd", shade: "banana", font: "((((", clock24: "maybe", scale: "NaN", session: "nonexistent", surface: "#zzzzzz" } },
         { name: "garbage2", options: { backdrop: "data/missing.png", face: "..\\..\\x", shade: "-5", font: "Nonexistent Font Family", clock24: 7, scale: "99999", surface: "red", session: "" } },
-        // an absolute backdrop is read from the overlay's directory and nowhere else; the file is not
-        // there, so only the path the theme settled on is checked
-        { name: "bg-overlay", options: { backdrop: "/usr/local/share/kanade-sddm/bg/backdrop.png" } },
-        { name: "bg-overlay-webp", options: { backdrop: "/usr/local/share/kanade-sddm/bg/a-b_c.1.webp" } },
+        // Only the fixed mutable data file may be read outside the root-owned theme tree.
+        // It is absent in the preview, so its selected path is checked despite the load warning.
+        { name: "bg-overlay", options: { backdrop: "/usr/local/share/kanade-sddm-data/backdrop.png" } },
+        // A sibling image in that directory is not allowed, even with a valid image extension.
+        { name: "bg-overlay-webp", options: { backdrop: "/usr/local/share/kanade-sddm-data/a-b_c.1.webp" } },
         { name: "bg-outside", options: { backdrop: "/etc/passwd.png" } },
         { name: "bg-prefix-sibling", options: { backdrop: "/usr/local/share/kanade-sddm-evil/bg/backdrop.png" } },
         { name: "bg-dotdot", options: { backdrop: "/usr/local/share/kanade-sddm/../../../etc/shadow.png" } },
         { name: "bg-dotdot-inside", options: { backdrop: "/usr/local/share/kanade-sddm/bg/../backdrop.png" } },
         { name: "bg-empty-segment", options: { backdrop: "/usr/local/share/kanade-sddm/bg//backdrop.png" } },
-        { name: "bg-bare-prefix", options: { backdrop: "/usr/local/share/kanade-sddm/" } },
-        { name: "bg-extension", options: { backdrop: "/usr/local/share/kanade-sddm/bg/backdrop.svg" } },
+        { name: "bg-bare-prefix", options: { backdrop: "/usr/local/share/kanade-sddm-data/" } },
+        { name: "bg-extension", options: { backdrop: "/usr/local/share/kanade-sddm-data/backdrop.svg" } },
         { name: "bg-space", options: { backdrop: "/usr/local/share/kanade-sddm/bg/back drop.png" } },
         { name: "bg-scheme", options: { backdrop: "file:///usr/local/share/kanade-sddm/bg/backdrop.png" } },
         { name: "bg-long", options: { backdrop: "/usr/local/share/kanade-sddm/" + "a".repeat(120) + ".png" } },

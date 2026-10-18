@@ -29,8 +29,9 @@ mod backup;
 mod edit;
 
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -971,27 +972,24 @@ impl Editor<'_> {
 
     /// Puts back what the last change replaced, while the file is as that change left it.
     pub fn undo(&self) -> Result<String, String> {
-        let ring = self.ring();
-        let last = ring
-            .last()
-            .ok_or("nothing to undo: Kanade has not changed this config")?;
-
-        if !same_file(&last.config, &self.file) {
-            return Err(format!(
-                "the last change was to {}, not this config",
-                last.config.display()
-            ));
-        }
-
         self.change(false, |bytes| {
+            let ring = self.ring();
+            let last = ring
+                .last()
+                .ok_or("nothing to undo: Kanade has not changed this config")?;
+
+            if !same_file(&last.config, &self.file) {
+                return Err(format!(
+                    "the last change was to {}, not this config",
+                    last.config.display()
+                ));
+            }
             if hash(bytes) != last.after {
                 return Err(String::from(
                     "the config changed since Kanade's last change; undo would lose that. Pick a backup with `backups` and `restore`",
                 ));
             }
-
             let (name, old) = ring.named(&last.before)?;
-
             Ok(Plan::Write(old, format!("undone: restored {name}")))
         })
     }
@@ -1028,13 +1026,11 @@ impl Editor<'_> {
 
     /// Puts a backup back (`1` the newest, or `orig`), keeping what is there as a backup.
     pub fn restore(&self, which: &str) -> Result<String, String> {
-        let (name, old) = self.ring().read(which)?;
-
         self.change(false, |bytes| {
+            let (name, old) = self.ring().read(which)?;
             if bytes == old {
                 return Ok(Plan::Same(format!("the config is {name} already")));
             }
-
             Ok(Plan::Write(old, format!("restored {name}")))
         })
     }
@@ -1046,6 +1042,7 @@ impl Editor<'_> {
         plan: impl FnOnce(&[u8]) -> Result<Plan, String>,
     ) -> Result<String, String> {
         let meta = self.writable()?;
+        let _lock = self.lock()?;
         let (snapshot, old) = Snapshot::of(&self.file)?;
 
         if validate_original {
@@ -1127,6 +1124,55 @@ impl Editor<'_> {
                 "{said}; the change was written but could not be recorded for undo: {error}"
             ),
         })
+    }
+
+    // One advisory lock per canonical config path. The private state directory is shared by
+    // Kanade processes, while the hash keeps configs with the same basename independent.
+    fn lock(&self) -> Result<File, String> {
+        let canonical = self
+            .file
+            .canonicalize()
+            .or_else(|_| {
+                let absolute = std::path::absolute(&self.file)?;
+                let parent = absolute
+                    .parent()
+                    .ok_or_else(|| std::io::Error::other("no parent directory"))?;
+                Ok::<PathBuf, std::io::Error>(
+                    parent
+                        .canonicalize()?
+                        .join(absolute.file_name().unwrap_or_default()),
+                )
+            })
+            .map_err(|error| {
+                format!(
+                    "{}: cannot resolve config path for its lock: {error}",
+                    self.file.display()
+                )
+            })?;
+        let digest = ring::digest::digest(
+            &ring::digest::SHA256,
+            canonical.as_os_str().as_encoded_bytes(),
+        );
+        let key = digest.as_ref()[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        fs::create_dir_all(&self.state)
+            .map_err(|error| format!("{}: {error}", self.state.display()))?;
+        fs::set_permissions(&self.state, fs::Permissions::from_mode(0o700))
+            .map_err(|error| format!("{}: {error}", self.state.display()))?;
+        let path = self.state.join(format!("config.{key}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        file.lock()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        Ok(file)
     }
 
     // the config's metadata, if Kanade may change it

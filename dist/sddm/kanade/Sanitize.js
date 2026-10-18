@@ -61,22 +61,15 @@ function path(value) {
     return text
 }
 
-// the one place outside the theme a backdrop may be read from: what `kanade sddm sync` writes
-var overlay = "/usr/local/share/kanade-sddm/"
+// the one mutable data file outside the root-owned theme tree
+var backdropFile = "/usr/local/share/kanade-sddm-data/backdrop.png"
 
-// a backdrop: a `path` inside the theme, or an absolute one under exactly `overlay` (segments of
-// letters, digits, `_`, `.` and `-`, none empty or `..`, a .png, .jpg or .webp file); else ""
+// a backdrop may be this fixed mutable data file, or a plain relative file shipped in the theme
 function backdrop(value) {
     var text = str(value, "")
-    if (text.charAt(0) !== "/")
-        return path(text)
-    if (text.length > 128 || text.indexOf(overlay) !== 0 || !/\.(png|jpg|webp)$/.test(text))
-        return ""
-    var parts = text.substring(overlay.length).split("/")
-    for (var i = 0; i < parts.length; i++)
-        if (!/^[A-Za-z0-9_.-]+$/.test(parts[i]) || parts[i] === "." || parts[i] === "..")
-            return ""
-    return text
+    if (text === backdropFile)
+        return text
+    return path(text)
 }
 
 // a family name: plain characters, not absurdly long; else ""

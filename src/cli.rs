@@ -225,9 +225,10 @@ niri-config restore <n>|orig
     (
         "sddm",
         "Write the login screen's look, without a shell",
-        "sddm status|sync|enable|disable|theme list|theme info <name>|theme use <name>
+        "sddm status|setup|sync|enable|disable|theme list|theme info <name>|theme use <name>
   status: what is written and out of date, and the commands to run as root (Kanade never runs them)
-  sync: writes the theme, the picture and its config under /usr/local/share/kanade-sddm from the sddm.* keys
+  setup: as root, installs the built-in theme as a root-owned executable tree
+  sync: writes only the mutable backdrop data from the sddm.* keys
   enable: sync, then the root commands that make SDDM read it
   disable: removes the picture and stops following the wallpaper; prints the root command that stops SDDM reading the overlay
   theme list: the installed themes, each with its class (A reads a picture setting, B a fixed file, C none, D a video)
@@ -466,6 +467,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
         }
         ["doctor"] => return doctor::run(),
         ["sddm", "status"] => return sddm::status(),
+        ["sddm", "setup"] => return sddm::setup(),
         ["sddm", "sync"] => return sddm::sync(),
         ["sddm", "enable"] => return sddm::enable(),
         ["sddm", "disable"] => return sddm::disable(),

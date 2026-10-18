@@ -8,7 +8,7 @@
 //! finds the last ask older than `LAPSE` ends it, so it stops once the media is paused, the
 //! visualizer is not on screen or the setting changed, and a still island draws no frame. A watch
 //! of its own ends it, so a cava that gives no lines is ended as well. Its thread
-//! starts on the first ask, so Kanade holds none while the setting is not `audio`. Without cava the
+//! starts on the first ask, so Kanade holds none while the visualizer is off or idle. Without cava the
 //! view falls back to the synthetic bars, and a missing cava is looked for again after `RETRY`.
 //! It runs through setpriv, so it dies with Kanade.
 

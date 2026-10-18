@@ -132,10 +132,7 @@ fn a_config_niri_rejects_is_not_edited() {
     assert!(why.contains("as it is"), "{why}");
     assert_eq!(dir.text(), before);
     assert!(dir.strays().is_empty());
-    assert!(
-        !dir.state().exists(),
-        "no backup of a change that did not happen"
-    );
+    assert!(Ring::new(&dir.state(), &dir.config()).list().is_empty());
     assert_eq!(
         seen.borrow().len(),
         1,
@@ -160,7 +157,7 @@ fn a_change_niri_rejects_leaves_the_file_and_no_part() {
     );
     assert_eq!(dir.text(), "layout {\n    gaps 4\n}\n");
     assert!(dir.strays().is_empty(), "{:?}", dir.strays());
-    assert!(!dir.state().exists());
+    assert!(Ring::new(&dir.state(), &dir.config()).list().is_empty());
 }
 
 #[test]
@@ -188,6 +185,79 @@ fn a_save_by_another_program_during_the_change_is_not_overwritten() {
         Ring::new(&dir.state(), &config).list().is_empty(),
         "the backup of a change that did not happen is dropped"
     );
+}
+
+#[test]
+fn concurrent_editors_serialize_and_undo_the_committed_changes_in_order() {
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    let dir = Arc::new(Dir::new("concurrent", "layout {\n    gaps 4\n}\n"));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (second_attempt_tx, second_attempt_rx) = mpsc::channel();
+
+    let first_dir = dir.clone();
+    let first = std::thread::spawn(move || {
+        let validate = |file: &Path| {
+            if file != first_dir.config() {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }
+            Ok(())
+        };
+        let editor = Editor {
+            file: first_dir.config(),
+            state: first_dir.state(),
+            validate: &validate,
+            now_ms: || 1_700_000_000_000,
+        };
+        editor.set("layout.gaps", "8")
+    });
+
+    // Start an independent editor while the first holds the lock in candidate validation.
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let second_dir = dir.clone();
+    let (second_validated_tx, second_validated_rx) = mpsc::channel();
+    let second = std::thread::spawn(move || {
+        second_attempt_tx.send(()).unwrap();
+        let validate = |_: &Path| {
+            second_validated_tx.send(()).unwrap();
+            Ok(())
+        };
+        let editor = Editor {
+            file: second_dir.config(),
+            state: second_dir.state(),
+            validate: &validate,
+            now_ms: || 1_700_000_000_001,
+        };
+        editor.set("layout.focus-ring.width", "3")
+    });
+
+    second_attempt_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        second_validated_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
+    release_tx.send(()).unwrap();
+    assert!(first.join().unwrap().is_ok());
+    assert!(second.join().unwrap().is_ok());
+    assert!(dir.text().contains("gaps 8"));
+    assert!(dir.text().contains("width 3"));
+
+    let validate = |_: &Path| Ok(());
+    let editor = Editor {
+        file: dir.config(),
+        state: dir.state(),
+        validate: &validate,
+        now_ms,
+    };
+    editor.undo().unwrap();
+    assert!(dir.text().contains("gaps 8"));
+    assert!(!dir.text().contains("width 3"));
 }
 
 #[test]
@@ -473,7 +543,7 @@ fn unset_things_read_as_unset_and_flags_as_false() {
     assert_eq!(editor.get("layout.focus-ring.off").unwrap(), "false");
     assert_eq!(editor.get("layout.border").unwrap(), "{ ... }");
     assert!(editor.remove("layout.gaps").unwrap().contains("not set"));
-    assert!(!dir.state().exists(), "removing nothing keeps nothing");
+    assert!(Ring::new(&dir.state(), &dir.config()).list().is_empty());
 }
 
 // what niri prints, with its color
