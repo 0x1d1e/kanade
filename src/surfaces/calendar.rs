@@ -1020,10 +1020,8 @@ fn entry(
         Some(problem) => hint(problem, theme::signals().warning),
         None => hint("Enter saves, Esc cancels", quiet),
     });
-    lines.push(hint(
-        "2026-10-15 moves it; 14:30 or 9:00-10:30; else all day",
-        quiet,
-    ));
+    lines.push(hint("2026-10-15 moves it; else today", quiet));
+    lines.push(hint("14:30 or 9:00-10:30; else all day", quiet));
 
     Column::new(vec![
         Box::new(header) as Box<dyn Widget>,

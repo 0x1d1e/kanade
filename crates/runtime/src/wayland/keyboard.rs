@@ -138,6 +138,7 @@ impl WaylandState {
 
         // a window has no use for a shortcut's letter, which it would take for typing
         let key = match key {
+            Key::Character('a') if modifiers.ctrl => Key::SelectAll,
             Key::Character(_) if modifiers.ctrl => Key::Other,
             key => key,
         };
@@ -199,6 +200,7 @@ fn shortcut(event: &KeyEvent) -> Key {
     let mut lower = letter.to_lowercase();
 
     match (lower.next(), lower.next()) {
+        (Some('a'), None) => Key::SelectAll,
         (Some(letter), None) => Key::Character(letter),
         _ => Key::Other,
     }

@@ -193,6 +193,15 @@ impl Launch {
         self.command.as_ref().map(|command| command.shell())
     }
 
+    // validates whether the launch can start before collapsing a Surface
+    pub fn validate(&self) -> Result<(), String> {
+        match (&self.activate, &self.command) {
+            (None, None) => Err(String::from("nothing to launch")),
+            (Some(_), _) => Ok(()),
+            (None, Some(command)) => command.validate(),
+        }
+    }
+
     // starts it; blocks on the bus and niri, so off the view thread
     pub fn run(&self) -> Result<(), String> {
         self.start(
@@ -371,7 +380,7 @@ where
 }
 
 impl Command {
-    fn run(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), String> {
         if self.terminal && !wake::found(TERMINAL) {
             return Err(format!(
                 "{TERMINAL} is missing, so a terminal app cannot start"
@@ -383,6 +392,12 @@ impl Command {
         {
             return Err(format!("its Path {dir} is no directory"));
         }
+
+        Ok(())
+    }
+
+    fn run(&self) -> Result<(), String> {
+        self.validate()?;
 
         let action = format!(
             r#"{{"Action":{{"SpawnSh":{{"command":{}}}}}}}"#,
@@ -1048,5 +1063,53 @@ mod tests {
             None
         );
         assert_eq!(argv("   "), None);
+    }
+
+    #[test]
+    fn activation_succeeds_without_validating_or_spawning_exec_fallback() {
+        let launch = Launch::of(&Fields {
+            id: "org.example.App.desktop",
+            path: Some("/nonexistent/directory/that/does/not/exist"),
+            dbus_activatable: true,
+            ..fields("app")
+        })
+        .unwrap();
+
+        assert!(launch.validate().is_ok());
+        assert!(
+            launch
+                .start(
+                    |_| Activation::Done,
+                    |_| panic!("Exec fallback must not run")
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_invalid_path_fails_validation() {
+        let launch = Launch::of(&Fields {
+            path: Some("/nonexistent/directory/that/does/not/exist"),
+            ..fields("app")
+        })
+        .unwrap();
+
+        assert_eq!(
+            launch.validate(),
+            Err(String::from(
+                "its Path /nonexistent/directory/that/does/not/exist is no directory"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_valid_path_passes_validation() {
+        let launch = Launch::of(&Fields {
+            path: Some("/tmp"),
+            ..fields("app")
+        })
+        .unwrap();
+
+        assert!(launch.validate().is_ok());
     }
 }

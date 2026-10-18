@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use kanade_runtime::service::Service;
-use kanade_runtime::{Key, Rectangle};
+use kanade_runtime::{Center, Key, Rectangle, Row};
 
 use super::pad::{self, Focus};
 use crate::icon::Icon;
@@ -156,6 +156,18 @@ fn reading(
             })
             .collect(),
     );
+
+    let pills = if round.is_some() {
+        Row::new(vec![Box::new(
+            Rectangle::new()
+                .width(pad::WIDTH)
+                .height(pad::PILL)
+                .align_child(Center, Center)
+                .child(pills),
+        )])
+    } else {
+        pills
+    };
 
     pad::stacked(said, pills)
 }

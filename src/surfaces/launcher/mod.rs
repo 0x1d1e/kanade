@@ -99,6 +99,8 @@ const WHEEL: f32 = 40.0;
 pub struct Search {
     visit: u64,
     query: String,
+    caret: usize,
+    select_all: bool,
 
     // in the answers the query finds
     selected: usize,
@@ -161,14 +163,22 @@ impl Search {
             Action::Open(_) => Some(format!("Not opened: {why}")),
             // `dispatch` worded it, as it knows whether the verb may have run
             Action::Run(_) => Some(why.clone()),
-            Action::Launch(..) | Action::Perform(..) | Action::Focus(_) | Action::Choose(_) => None,
+            Action::Launch(..) | Action::Perform(..) => Some(format!("Not launched: {why}")),
+            Action::Focus(_) | Action::Choose(_) => None,
         }
     }
 
-    /*
-     * pressing `action` in `visit` failed, for `why`; nothing once that visit or that press is
-     * over, so a stale worker never touches a later visit's Search
-     */
+    // starts one press for this visit unless another press is still in flight
+    fn press_waiting(&mut self, visit: u64, action: Action) -> bool {
+        if self.visit != visit || matches!(self.pressing, Pressing::Waiting(_)) {
+            return false;
+        }
+
+        self.pressing = Pressing::Waiting(action);
+        true
+    }
+
+    // `Failed` is shown by the selected result until the next key
     fn press_failed(&mut self, visit: u64, action: Action, why: String) {
         if self.visit == visit
             && matches!(&self.pressing, Pressing::Waiting(waiting) if *waiting == action)
@@ -191,37 +201,134 @@ impl Search {
     fn step(mut self, key: Key, count: usize) -> Option<(Search, bool)> {
         let last = count.saturating_sub(1);
 
-        let selected = match key {
-            Key::Character(letter) => return Some((self.typed(Some(letter)), false)),
-            Key::Space => return Some((self.typed(Some(' ')), false)),
-            Key::Backspace => return Some((self.typed(None), false)),
-            Key::Enter => return Some((self, count > 0)),
-            Key::Up => self.selected.saturating_sub(1),
-            Key::Down => (self.selected + 1).min(last),
-            Key::Home => 0,
-            Key::End => last,
-            _ => return None,
-        };
-
-        self.selected = selected;
-        self.offset = reveal(self.offset.clamp(0.0, most(count)), selected);
-
-        Some((self, false))
-    }
-
-    // a letter typed, or the last one erased; a new query finds new answers, so it starts at the top
-    fn typed(mut self, letter: Option<char>) -> Search {
-        match letter {
-            Some(letter) => self.query.push(letter),
-            None => {
-                self.query.pop();
+        match key {
+            Key::Character(letter) => {
+                if self.select_all {
+                    self.query.clear();
+                    self.query.push(letter);
+                    self.caret = self.query.len();
+                    self.select_all = false;
+                } else {
+                    self.query.insert(self.caret, letter);
+                    self.caret += letter.len_utf8();
+                }
+                self.selected = 0;
+                self.offset = 0.0;
+                Some((self, false))
             }
+            Key::Space => {
+                if self.select_all {
+                    self.query.clear();
+                    self.query.push(' ');
+                    self.caret = self.query.len();
+                    self.select_all = false;
+                } else {
+                    self.query.insert(self.caret, ' ');
+                    self.caret += 1;
+                }
+                self.selected = 0;
+                self.offset = 0.0;
+                Some((self, false))
+            }
+            Key::Backspace => {
+                if self.select_all {
+                    self.query.clear();
+                    self.caret = 0;
+                    self.select_all = false;
+                    self.selected = 0;
+                    self.offset = 0.0;
+                } else if self.caret > 0 {
+                    let prev = self.query[..self.caret]
+                        .char_indices()
+                        .last()
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(0);
+                    self.query.drain(prev..self.caret);
+                    self.caret = prev;
+                    self.selected = 0;
+                    self.offset = 0.0;
+                }
+                Some((self, false))
+            }
+            Key::Delete => {
+                if self.select_all {
+                    self.query.clear();
+                    self.caret = 0;
+                    self.select_all = false;
+                    self.selected = 0;
+                    self.offset = 0.0;
+                } else if self.caret < self.query.len() {
+                    let len = self.query[self.caret..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(0);
+                    self.query.drain(self.caret..self.caret + len);
+                    self.selected = 0;
+                    self.offset = 0.0;
+                }
+                Some((self, false))
+            }
+            Key::Left => {
+                if self.select_all {
+                    self.select_all = false;
+                    self.caret = 0;
+                } else if self.caret > 0 {
+                    let prev = self.query[..self.caret]
+                        .char_indices()
+                        .last()
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(0);
+                    self.caret = prev;
+                }
+                Some((self, false))
+            }
+            Key::Right => {
+                if self.select_all {
+                    self.select_all = false;
+                    self.caret = self.query.len();
+                } else if self.caret < self.query.len() {
+                    let next = self.query[self.caret..]
+                        .chars()
+                        .next()
+                        .map(|c| self.caret + c.len_utf8())
+                        .unwrap_or(self.query.len());
+                    self.caret = next;
+                }
+                Some((self, false))
+            }
+            Key::Home => {
+                self.select_all = false;
+                self.caret = 0;
+                Some((self, false))
+            }
+            Key::End => {
+                self.select_all = false;
+                self.caret = self.query.len();
+                Some((self, false))
+            }
+            Key::SelectAll => {
+                if !self.query.is_empty() {
+                    self.select_all = true;
+                    self.caret = self.query.len();
+                }
+                Some((self, false))
+            }
+            Key::Enter => Some((self, count > 0)),
+            Key::Up => {
+                self.select_all = false;
+                self.selected = self.selected.saturating_sub(1);
+                self.offset = reveal(self.offset.clamp(0.0, most(count)), self.selected);
+                Some((self, false))
+            }
+            Key::Down => {
+                self.select_all = false;
+                self.selected = (self.selected + 1).min(last);
+                self.offset = reveal(self.offset.clamp(0.0, most(count)), self.selected);
+                Some((self, false))
+            }
+            _ => None,
         }
-
-        self.selected = 0;
-        self.offset = 0.0;
-
-        self
     }
 
     // scrolled by the wheel, the selection kept on a row that shows whole
@@ -240,6 +347,13 @@ impl Search {
     fn bounded(mut self, count: usize) -> Search {
         self.selected = self.selected.min(count.saturating_sub(1));
         self.offset = self.offset.clamp(0.0, most(count));
+        self.caret = self.caret.min(self.query.len());
+        while !self.query.is_char_boundary(self.caret) {
+            self.caret = self.caret.saturating_sub(1);
+        }
+        if self.query.is_empty() {
+            self.select_all = false;
+        }
 
         self
     }
@@ -526,6 +640,8 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
                     0,
                     field(
                         &search.query,
+                        search.caret,
+                        search.select_all,
                         match &choosing {
                             Some((Some(prompt), _)) => prompt,
                             Some((None, _)) => "Search choices",
@@ -541,13 +657,13 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
 }
 
 /*
- * a search icon, what is typed with the caret after it, or what to type faded; a query wider than
- * the field shows its end, where the typing is
+ * a search icon, what is typed with the caret, or what to type faded; a query wider than
+ * the field shows the window around the caret
  */
-fn field(query: &str, placeholder: &str) -> Rectangle {
+fn field(query: &str, caret: usize, select_all: bool, placeholder: &str) -> Rectangle {
     let room = width() - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
 
-    let caret = Rectangle::new()
+    let caret_widget = Rectangle::new()
         .width(CARET)
         .height(QUERY + 4.0)
         .fill(theme::island().on_surface);
@@ -555,7 +671,7 @@ fn field(query: &str, placeholder: &str) -> Rectangle {
     let typed: Box<dyn Widget> = if query.is_empty() {
         Box::new(
             Row::new(children![
-                caret,
+                caret_widget,
                 // a dmenu's prompt may be wider than the field
                 Rectangle::new()
                     .width(room)
@@ -571,8 +687,22 @@ fn field(query: &str, placeholder: &str) -> Rectangle {
             ])
             .align(Center),
         )
+    } else if select_all {
+        Box::new(
+            Row::new(children![
+                Rectangle::new()
+                    .width(room)
+                    .height(QUERY + 4.0)
+                    .fill(theme::island().surface_container_high)
+                    .radius(radius::HAIRLINE)
+                    .align_child(Start, Center)
+                    .child(tail(query, room)),
+                caret_widget,
+            ])
+            .align(Center),
+        )
     } else {
-        Box::new(Row::new(children![tail(query, room), caret]).align(Center))
+        cursor_text(query, caret, room, caret_widget)
     };
 
     Rectangle::new()
@@ -640,6 +770,97 @@ fn tail(query: &str, width: f32) -> Text {
         })
         .find(fits)
         .unwrap_or_else(|| text("\u{2026}"))
+}
+
+fn cursor_text(query: &str, caret: usize, room: f32, caret_widget: Rectangle) -> Box<dyn Widget> {
+    let text = |shown: &str| {
+        Text::new(shown)
+            .size(QUERY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::MEDIUM)
+    };
+    let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= room);
+
+    let whole = text(query);
+    if fits(&whole) {
+        let caret = caret.min(query.len());
+        let before = &query[..caret];
+        let after = &query[caret..];
+        let mut elements: Vec<Box<dyn Widget>> = Vec::with_capacity(3);
+        if !before.is_empty() {
+            elements.push(Box::new(text(before)));
+        }
+        elements.push(Box::new(caret_widget));
+        if !after.is_empty() {
+            elements.push(Box::new(text(after)));
+        }
+        return Box::new(Row::new(elements).align(Center));
+    }
+
+    if caret >= query.len() {
+        return Box::new(Row::new(children![tail(query, room), caret_widget]).align(Center));
+    }
+
+    let letters: Vec<(usize, char)> = query.char_indices().collect();
+    let caret_char_idx = letters
+        .iter()
+        .position(|&(idx, _)| idx == caret)
+        .unwrap_or(letters.len());
+
+    let mut left = caret_char_idx;
+    let mut right = caret_char_idx;
+    while left > 0 || right < letters.len() {
+        let try_left = left.saturating_sub(1);
+        let try_right = (right + 1).min(letters.len());
+
+        let start_byte = letters[try_left].0;
+        let end_byte = if try_right < letters.len() {
+            letters[try_right].0
+        } else {
+            query.len()
+        };
+        let prefix = if try_left > 0 { "\u{2026}" } else { "" };
+        let suffix = if try_right < letters.len() {
+            "\u{2026}"
+        } else {
+            ""
+        };
+        let candidate = format!("{prefix}{}{suffix}", &query[start_byte..end_byte]);
+        if !fits(&text(&candidate)) {
+            break;
+        }
+        left = try_left;
+        right = try_right;
+    }
+
+    let start_byte = if left < letters.len() {
+        letters[left].0
+    } else {
+        0
+    };
+    let end_byte = if right < letters.len() {
+        letters[right].0
+    } else {
+        query.len()
+    };
+    let prefix = if left > 0 { "\u{2026}" } else { "" };
+    let suffix = if right < letters.len() {
+        "\u{2026}"
+    } else {
+        ""
+    };
+    let before_str = format!("{prefix}{}", &query[start_byte..caret]);
+    let after_str = format!("{}{suffix}", &query[caret..end_byte]);
+
+    let mut elements: Vec<Box<dyn Widget>> = Vec::with_capacity(3);
+    if !before_str.is_empty() {
+        elements.push(Box::new(text(&before_str)));
+    }
+    elements.push(Box::new(caret_widget));
+    if !after_str.is_empty() {
+        elements.push(Box::new(text(&after_str)));
+    }
+    Box::new(Row::new(elements).align(Center))
 }
 
 // what it means, in the middle of where the rows go
@@ -901,18 +1122,30 @@ fn press(monitor: &str, visit: u64, action: Action) {
     }
 
     if let Action::Launch(launch, id) = &action {
+        if !Search::write().press_waiting(visit, action.clone()) {
+            return;
+        }
+
+        if let Err(why) = launch.validate() {
+            Search::write().press_failed(visit, action.clone(), why);
+            return;
+        }
+
         let launch = launch.clone();
+        let monitor = monitor.to_owned();
+        let action_for_result = action.clone();
 
         sources::recents::used(id);
 
         // off the view thread, as niri's or the bus's answer may take its patience
         thread::spawn(move || {
-            if let Err(error) = launch.run() {
+            let result = launch.run();
+            if let Err(error) = &result {
                 eprintln!("launcher: {launch:?}: {error}");
             }
+            pressed(&monitor, visit, action_for_result, result);
         });
 
-        view::collapse(monitor);
         return;
     }
 
@@ -937,19 +1170,31 @@ fn press(monitor: &str, visit: u64, action: Action) {
         return;
     }
 
-    if let Action::Perform(launch, id, action) = &action {
-        let (launch, action) = (launch.clone(), action.clone());
+    if let Action::Perform(launch, id, action_name) = &action {
+        if !Search::write().press_waiting(visit, action.clone()) {
+            return;
+        }
+
+        if let Err(why) = launch.validate() {
+            Search::write().press_failed(visit, action.clone(), why);
+            return;
+        }
+
+        let (launch, action_name) = (launch.clone(), action_name.clone());
+        let monitor = monitor.to_owned();
+        let action_for_result = action.clone();
 
         sources::recents::used(id);
 
         // off the view thread, as the bus's or niri's answer may take its patience
         thread::spawn(move || {
-            if let Err(error) = launch.run_action(&action) {
-                eprintln!("launcher: {launch:?} {action}: {error}");
+            let result = launch.run_action(&action_name);
+            if let Err(error) = &result {
+                eprintln!("launcher: {launch:?} {action_name}: {error}");
             }
+            pressed(&monitor, visit, action_for_result, result);
         });
 
-        view::collapse(monitor);
         return;
     }
 
@@ -1169,4 +1414,248 @@ fn wheel(lines: f32) {
     let count = found(visit, Apps::read().list(), &search.query, rec).len();
 
     store(search.bounded(count).wheel(lines, count));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kanade_runtime::Key;
+
+    #[test]
+    fn search_typing_and_caret_navigation() {
+        let mut search = Search::default();
+
+        for c in "hello".chars() {
+            let (next, pressed) = search.step(Key::Character(c), 1).unwrap();
+            assert!(!pressed);
+            search = next;
+        }
+        assert_eq!(search.query, "hello");
+        assert_eq!(search.caret, 5);
+
+        // Left arrow moves caret backwards
+        let (next, _) = search.step(Key::Left, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 4);
+
+        let (next, _) = search.step(Key::Left, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 3);
+
+        // Home moves to start
+        let (next, _) = search.step(Key::Home, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 0);
+
+        // Left at 0 stays at 0
+        let (next, _) = search.step(Key::Left, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 0);
+
+        // Right moves forward
+        let (next, _) = search.step(Key::Right, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 1);
+
+        // End moves to query end
+        let (next, _) = search.step(Key::End, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 5);
+
+        // Right at query end stays at end
+        let (next, _) = search.step(Key::Right, 1).unwrap();
+        search = next;
+        assert_eq!(search.caret, 5);
+    }
+
+    #[test]
+    fn search_insert_at_caret() {
+        let mut search = Search::default();
+        for c in "hllo".chars() {
+            search = search.step(Key::Character(c), 1).unwrap().0;
+        }
+        // Move caret to between 'h' and 'l'
+        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::Left, 1).unwrap().0;
+        assert_eq!(search.caret, 1);
+
+        // Insert 'e'
+        search = search.step(Key::Character('e'), 1).unwrap().0;
+        assert_eq!(search.query, "hello");
+        assert_eq!(search.caret, 2);
+    }
+
+    #[test]
+    fn search_backspace_and_delete_at_caret() {
+        let mut search = Search::default();
+        for c in "world".chars() {
+            search = search.step(Key::Character(c), 1).unwrap().0;
+        }
+
+        // Backspace at end
+        search = search.step(Key::Backspace, 1).unwrap().0;
+        assert_eq!(search.query, "worl");
+        assert_eq!(search.caret, 4);
+
+        // Move to position 2 (after "wo")
+        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::Left, 1).unwrap().0;
+        assert_eq!(search.caret, 2);
+
+        // Delete deletes character after caret ('r')
+        search = search.step(Key::Delete, 1).unwrap().0;
+        assert_eq!(search.query, "wol");
+        assert_eq!(search.caret, 2);
+
+        // Backspace deletes character before caret ('o')
+        search = search.step(Key::Backspace, 1).unwrap().0;
+        assert_eq!(search.query, "wl");
+        assert_eq!(search.caret, 1);
+
+        // Home then Backspace does nothing
+        search = search.step(Key::Home, 1).unwrap().0;
+        assert_eq!(search.caret, 0);
+        search = search.step(Key::Backspace, 1).unwrap().0;
+        assert_eq!(search.query, "wl");
+        assert_eq!(search.caret, 0);
+
+        // End then Delete does nothing
+        search = search.step(Key::End, 1).unwrap().0;
+        assert_eq!(search.caret, 2);
+        search = search.step(Key::Delete, 1).unwrap().0;
+        assert_eq!(search.query, "wl");
+        assert_eq!(search.caret, 2);
+    }
+
+    #[test]
+    fn search_multibyte_utf8_caret() {
+        let mut search = Search::default();
+        for c in "café".chars() {
+            search = search.step(Key::Character(c), 1).unwrap().0;
+        }
+        assert_eq!(search.query, "café");
+        assert_eq!(search.caret, 5); // 'é' is 2 bytes
+
+        // Left moves across 'é' (2 bytes)
+        search = search.step(Key::Left, 1).unwrap().0;
+        assert_eq!(search.caret, 3);
+
+        // Backspace deletes 'f'
+        search = search.step(Key::Backspace, 1).unwrap().0;
+        assert_eq!(search.query, "caé");
+        assert_eq!(search.caret, 2);
+
+        // Delete deletes 'é'
+        search = search.step(Key::Delete, 1).unwrap().0;
+        assert_eq!(search.query, "ca");
+        assert_eq!(search.caret, 2);
+    }
+
+    #[test]
+    fn search_select_all_and_replacement() {
+        let mut search = Search::default();
+        for c in "abc".chars() {
+            search = search.step(Key::Character(c), 1).unwrap().0;
+        }
+        assert_eq!(search.query, "abc");
+
+        // Select all
+        search = search.step(Key::SelectAll, 1).unwrap().0;
+        assert!(search.select_all);
+
+        // Typing replacement character replaces entire query
+        search = search.step(Key::Character('z'), 1).unwrap().0;
+        assert_eq!(search.query, "z");
+        assert_eq!(search.caret, 1);
+        assert!(!search.select_all);
+
+        // Select all then Backspace clears
+        search = search.step(Key::SelectAll, 1).unwrap().0;
+        search = search.step(Key::Backspace, 1).unwrap().0;
+        assert_eq!(search.query, "");
+        assert_eq!(search.caret, 0);
+        assert!(!search.select_all);
+
+        // Select all then Delete clears
+        for c in "test".chars() {
+            search = search.step(Key::Character(c), 1).unwrap().0;
+        }
+        search = search.step(Key::SelectAll, 1).unwrap().0;
+        search = search.step(Key::Delete, 1).unwrap().0;
+        assert_eq!(search.query, "");
+        assert_eq!(search.caret, 0);
+        assert!(!search.select_all);
+
+        // Select all then Left arrow cancels selection, caret at 0
+        for c in "word".chars() {
+            search = search.step(Key::Character(c), 1).unwrap().0;
+        }
+        search = search.step(Key::SelectAll, 1).unwrap().0;
+        search = search.step(Key::Left, 1).unwrap().0;
+        assert!(!search.select_all);
+        assert_eq!(search.caret, 0);
+
+        // Select all then Right arrow cancels selection, caret at end
+        search = search.step(Key::SelectAll, 1).unwrap().0;
+        search = search.step(Key::Right, 1).unwrap().0;
+        assert!(!search.select_all);
+        assert_eq!(search.caret, 4);
+    }
+
+    #[test]
+    fn late_press_failure_only_changes_the_matching_waiting_action() {
+        let mut search = Search {
+            visit: 42,
+            pressing: Pressing::Waiting(Action::Copy(String::from("current"))),
+            ..Search::default()
+        };
+        let pending = Action::Copy(String::from("current"));
+        let late = Action::Copy(String::from("old"));
+
+        search.press_failed(42, late, String::from("late error"));
+        assert_eq!(search.pressing, Pressing::Waiting(pending.clone()));
+
+        search.press_failed(42, pending.clone(), String::from("current error"));
+        assert_eq!(
+            search.pressing,
+            Pressing::Failed(pending, String::from("current error"))
+        );
+    }
+
+    #[test]
+    fn launch_failure_formats_as_not_launched() {
+        let mut search = Search {
+            visit: 42,
+            ..Search::default()
+        };
+        let action = Action::Launch(
+            sources::launch::Launch::of(&sources::launch::Fields {
+                id: "bad.desktop",
+                name: "Bad",
+                icon: None,
+                file: std::path::Path::new("/usr/share/applications/bad.desktop"),
+                exec: Some("bad-cmd"),
+                path: Some("/nonexistent/directory/bad"),
+                terminal: false,
+                dbus_activatable: false,
+            })
+            .unwrap(),
+            String::from("bad.desktop"),
+        );
+
+        assert!(search.press_waiting(42, action.clone()));
+        search.press_failed(
+            42,
+            action.clone(),
+            String::from("its Path /nonexistent/directory/bad is no directory"),
+        );
+
+        assert_eq!(
+            search.failed(&action),
+            Some(String::from(
+                "Not launched: its Path /nonexistent/directory/bad is no directory"
+            ))
+        );
+    }
 }

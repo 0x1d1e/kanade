@@ -56,6 +56,9 @@ pub enum Key {
 
     PageDown,
 
+    // select all text, e.g. Ctrl+A
+    SelectAll,
+
     // a key the runtime has no name for yet
     Other,
 }

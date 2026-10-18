@@ -159,6 +159,12 @@ pub fn window() -> Window {
                     .width(Parent)
                     .height(Parent)
                     .fill(roles.surface)
+                    .padding(Padding {
+                        top: crate::island::geometry::REST.height + 8.0,
+                        right: 0.0,
+                        bottom: 0.0,
+                        left: 0.0,
+                    })
                     .child(main(&settings, &roles)),
             ])
             .width(Parent)
@@ -477,7 +483,12 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 // what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
 fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
     // the niri page answers for niri's file, and has its own Undo
-    let niri_page = !settings.searching() && settings.page == niri::PAGE;
+    let niri_page = !settings.searching() && settings.page == niri::PAGE
+        || settings.searching()
+            && (settings.niri.touched
+                || settings.niri.undoable
+                || settings.niri.status().is_some()
+                || ring::on_niri_setting());
     let waiting = settings.pending.len();
     let (status, ink) = if niri_page {
         niri_page::status(settings, roles)
@@ -1067,9 +1078,13 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         _ if settings.login_loading => (String::from("Checking\u{2026}"), roles.on_surface),
         None => (String::from("Not checked yet"), roles.on_surface),
         Some(Err(_)) => (String::from("Cannot be checked"), signals.warning),
-        Some(Ok(status)) if status.enabled => (
-            String::from("Enabled: SDDM reads the overlay"),
+        Some(Ok(status)) if status.enabled && status.ready => (
+            String::from("Enabled: SDDM reads the ready overlay"),
             roles.on_surface,
+        ),
+        Some(Ok(status)) if status.enabled => (
+            String::from("Enabled (setup incomplete): SDDM reads the overlay"),
+            signals.warning,
         ),
         Some(Ok(_)) => (String::from("Not enabled yet"), signals.warning),
     };
@@ -1109,7 +1124,16 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         Some(Err(error)) => items.push(line(error.clone(), roles.on_surface_variant)),
         Some(Ok(status)) => {
             for text in &status.lines {
-                items.push(line(text.clone(), roles.on_surface_variant));
+                let ink = if text.contains("not ready")
+                    || text.contains("missing")
+                    || text.contains("WARNING")
+                    || text.contains("cannot read")
+                {
+                    signals.warning
+                } else {
+                    roles.on_surface_variant
+                };
+                items.push(line(text.clone(), ink));
             }
 
             items.push(Box::new(hairline(inner(), roles)));

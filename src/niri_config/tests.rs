@@ -80,6 +80,30 @@ fn editor<'a>(dir: &Dir, validate: Validate<'a>) -> Editor<'a> {
 const CONFIG: &str = "// mine\r\nlayout {\r\n    gaps 4 // tight\r\n    /-struts { left 8; }\r\n}\r\n\r\nprefer-no-csd\r\n// the end";
 
 #[test]
+fn a_single_value_replaces_a_node_with_multiple_values() {
+    let dir = Dir::new(
+        "replace-multiple-values",
+        "layout {\n    focus-ring {\n        active-color 255 0 0 255\n    }\n}\n",
+    );
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    editor
+        .set("layout.focus-ring.active-color", "#00ff00")
+        .unwrap();
+
+    assert_eq!(
+        dir.text(),
+        "layout {\n    focus-ring {\n        active-color \"#00ff00\"\n    }\n}\n"
+    );
+    assert_eq!(
+        editor.get("layout.focus-ring.active-color").unwrap(),
+        "\"#00ff00\""
+    );
+}
+
+#[test]
 fn a_change_is_validated_beside_the_file_backed_up_and_only_its_bytes_differ() {
     let dir = Dir::new("change", CONFIG);
     let seen = RefCell::new(Vec::new());

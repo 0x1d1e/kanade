@@ -49,6 +49,8 @@ pub(crate) fn parse_key(words: &str) -> Result<(Key, Modifiers), String> {
         "delete" | "del" => Key::Delete,
         "pageup" => Key::PageUp,
         "pagedown" => Key::PageDown,
+        "selectall" | "select-all" => Key::SelectAll,
+        "a" if modifiers.ctrl => Key::SelectAll,
         _ => character(name, modifiers)?,
     };
 
