@@ -9,114 +9,170 @@
 </p>
 
 <p align="center">
-  <a href="docs/wiki/Installation.md">Install</a> | <a href="docs/wiki/CLI.md">CLI</a> | <a href="docs/wiki/Configuration.md">Configuration</a> | <a href="docs/wiki/Keyboard.md">Keyboard</a> | <a href="docs/wiki/Limitations.md">Limitations</a> | <a href="docs/design.md">Design</a>
+  <a href="docs/wiki/Installation.md">Install</a> |
+  <a href="docs/wiki/CLI.md">CLI</a> |
+  <a href="docs/wiki/Configuration.md">Configuration</a> |
+  <a href="docs/wiki/Settings.md">Settings</a> |
+  <a href="docs/wiki/Keyboard.md">Keyboard</a> |
+  <a href="docs/wiki/Limitations.md">Limitations</a> |
+  <a href="docs/design.md">Design</a> |
+  <a href="docs/wiki/Home.md">Wiki</a>
 </p>
 
 > [!WARNING]
-> Kanade is in a very immature phase. Expect bugs, missing pieces and breaking changes to config, CLI and behavior until 1.0. See [Limitations](docs/wiki/Limitations.md) for known gaps.
+> Kanade is in active pre-1.0 development. Expect bugs, missing pieces, and breaking changes to config, CLI, and behavior until 1.0. See [Limitations](docs/wiki/Limitations.md) for known gaps.
 
-<!-- TODO screenshots: a strip of the Island's forms (Rest, a Compact track, a Split with a Satellite, an Expanded Surface) and the Dock; see the report for the shots wanted. -->
+## The Concept
 
-## The idea
+There is no status bar. Each monitor hosts one Island, positioned at the top center by default.
 
-There is no bar. Each monitor has one Island, by default at the top center. At Rest it shows the clock. When something happens, such as a playing track, a volume change, a notification, a low battery or a timer, it takes the Island over and the Island morphs to fit it, then settles back. Hover to peek; click to open a Surface, a full interface for that thing (thirteen of them, from Media to the Launcher), all reachable by keyboard. Things that last, like a timer or a script's job, stay beside it as Satellites.
+At Rest, the Island displays only the local clock and battery level, rendering one frame a minute. When an Activity occurs (a track starts playing, volume changes, a notification arrives, battery runs low, a timer counts down, or a background script reports progress), it takes over the Island. The Island morphs to display the Activity, then returns to Rest when it finishes. Hovering peeks at details without expanding; clicking or pressing a shortcut expands a full interactive Surface. Secondary ongoing Activities remain visible beside the Island body as Satellites.
 
-Around the Island, Kanade is the session's notification daemon, a Dock and a lock screen. It is written in Rust on its own Wayland and GPU runtime, and at Rest it draws one frame a minute, for the clock.
+Around the Island, Kanade provides the session shell: a notification daemon with Banners, an application Dock, a PAM-based lock screen, and an OSD for hardware feedback. Kanade is written in Rust on its own Wayland layer-shell and Vulkan GPU runtime (`crates/runtime`), drawing only when content changes.
 
-## Features
+## Island Presentations
 
-**The Island**
-- Activities take it over for as long as they last: media, volume and brightness, Caps and Num Lock, airplane mode, workspace changes, battery, timers, and what your own scripts post with `kanade activity` (a Claude Code hook recipe is in [Agent hooks](docs/wiki/Agent-hooks.md)).
-- Thirteen Surfaces: Media, Notifications, Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Session, Timer and Capture.
-- Tray items appear beside the clock on hover. Left click activates, middle is the secondary action, the wheel scrolls, right opens the menu.
-- Privacy dots show a microphone, camera or screen cast in use. Controls names the apps and ends a share with Stop sharing.
+The Island adapts its geometry and contents across distinct Presentation states:
 
-**The session**
-- Notifications: Kanade is the daemon. Banners come out of the Island, with Do Not Disturb, grouping and live progress.
-- Dock on each monitor: left click launches or focuses, middle click starts a new instance, right click opens the menu.
-- Lock screen (`kanade lock`), locking before sleep, and idle stages with the `idle` Module (off by default). A matching SDDM login screen theme, written by `kanade sddm` ([SDDM](docs/wiki/SDDM.md)).
-- Focus quiets the session in one press; Caffeine and Night light are switches.
+- **Rest**: The baseline state showing the time and battery level. Draws once a minute. If both clock and battery indicators are disabled, the Island autohides past the screen edge until touched or summoned.
+- **Compact**: The primary Activity occupies the Island in a compact pill shape, showing concise glyphs, progress meters, or track titles.
+- **Split**: When a secondary Satellite accompanies the primary Activity, the Island divides into two connected segments. The primary leads and the top Satellite trails.
+- **Peek**: Hovering the pointer reveals richer information and inline controls (such as playback controls, action buttons, or countdown values) without expanding into a full window.
+- **Expanded**: A click or shortcut expands the Island into a full interactive Surface dedicated to that Activity or control domain.
+- **Satellites**: Small secondary indicators that emerge from under the Island body for persistent, ongoing tasks like active timers, live builds, or screen recordings.
+- **Privacy cluster**: Distinct dots nested inside the trailing end of the Island body (round for microphone, square for camera, ring for screen cast). They appear whenever an application captures media through PipeWire. The Controls Surface identifies active capture applications and lets you end screen shares with Stop sharing.
 
-**Capture and time**
-- Screenshots, a screen color picker, and recording of an output, an area or a window, with sound if you ask and a pause.
-- Calendar from iCalendar files, Google Calendar and read-only subscriptions, with a Join action for meeting links; weather from Open-Meteo; a Timer with pomodoro.
+## The Thirteen Surfaces
 
-**Looks and control**
-- Four finishes: tinted solid, paper, liquid glass, and blur (needs a niri layer rule, see [Installation](docs/wiki/Installation.md)).
-- With Matugen, shell colors follow the wallpaper awww shows, and `appearance.sync` carries them to GTK, Qt, KDE apps, niri's borders, kitty and Firefox or Zen.
-- A Settings window with search, Inspect and Undo; changes apply live unless marked Restart. Every feature but the Island is a Module you can turn off, and then it starts nothing.
-- Scriptable: a `kanade` CLI, `kanade ui` to drive the shell by control name, and `kanade doctor` to check your setup.
+Expanding the Island opens one of thirteen dedicated Surfaces, navigable by keyboard or pointer:
 
-## Scope
+- **Media**: Track metadata, album artwork, timeline seeking for supported MPRIS players, and synchronized lyrics via LRCLIB or local LRC files.
+- **Notifications**: Notification center with application grouping, expandable history, Do Not Disturb toggles, and dismiss actions.
+- **Controls**: Quick toggles and sub-surfaces for Wi-Fi networks, Bluetooth pairing, per-app audio output routing, power profiles, night light, caffeine, battery charge limits, and active share termination.
+- **Launcher**: Fuzzy search across installed applications, open window switcher, desktop actions, unit and base conversions, mathematical calculator, emoji picker, and built-in shell commands.
+- **Clipboard**: Searchable clipboard history for text and images, persistent pinned entries that survive restarts, and automatic exclusion of sensitive password-manager selections.
+- **Calendar**: Agenda view supporting local iCalendar files, Google Calendar synchronization, read-only webcal subscriptions, and one-click Join actions for video meeting links.
+- **Weather**: Current conditions alongside hourly and multi-day forecasts retrieved from Open-Meteo.
+- **Timer**: Quick countdown timer, stopwatch, and configurable pomodoro intervals with automatic phase transitions.
+- **Capture**: Full-screen, output, or region screenshots, screen color picker, and output, area, or window screen recording.
+- **Wallpapers**: Visual wallpaper browser and selector driven by awww, integrating with Matugen for dynamic palette generation.
+- **Keys**: Searchable cheatsheet of active niri keybindings and Kanade shell shortcuts.
+- **Session**: Lock, logout, suspend, reboot, and power off controls with a grace-period countdown and inhibitor warnings.
+- **Tray**: StatusNotifierItem system tray host exposing application status icons and sub-surface menus.
 
-Kanade is not a bar, wallpaper renderer or system settings app, and it shows no permanent Wi-Fi, CPU or RAM indicators. It follows niri's focused output and workspaces; Hyprland and Sway are not supported.
+## Session Shell
 
-## Quick start
+Beyond the Island, Kanade coordinates the surrounding desktop environment:
+
+- **Notification daemon**: Kanade acts as the session notification server. Notification Banners emerge directly from the Island edge on the focused monitor. Features include urgency rules, per-app sound effects, Do Not Disturb, and inline text replies directly on the Banner.
+- **Dock**: Per-monitor dock strip supporting pinned and running applications, multi-window preview menus, middle-click to launch new instances, and drag-and-drop file launching. The Dock supports autohide, edge positioning, and three Island merge modes when sharing an edge: `crown` (Island sitting atop the Dock), `keystone` (Island centered in the Dock row), and `fold` (Dock revealed on hover).
+- **Lock screen and idle**: Built-in PAM screen locker (`crates/lock`) running over an independent Wayland connection. Features include lock-before-sleep hooks, optional idle stages (`idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`), and a companion SDDM theme generator (`kanade sddm`) to mirror the login experience.
+- **Appearance and finishes**: Shell surfaces (Panes) support four visual finishes: tinted solid, paper, liquid glass (real-time screen refraction), and compositor blur. Matugen extracts wallpaper color palettes, which `appearance.sync` applies across GTK, Qt, kitty, niri borders, and Firefox or Zen.
+
+## Integrations & Scripting
+
+- **CLI socket**: A comprehensive IPC client (`kanade <verb>`) allows controlling every Surface, switch, and session action from shell scripts or niri keybindings.
+- **Live Activities**: External processes post custom Live Activities to the Island via `kanade activity`. Used for monitoring long-running compiles, downloads, or AI agent sessions (such as Claude Code hooks). Live Activities support interactive action buttons on Peek.
+- **Semantic UI tree**: `kanade ui` inspects the shell's semantic control hierarchy by name and executes pointer or keyboard actions without hardcoded screen coordinates.
+- **Diagnostic doctor**: `kanade doctor` verifies the runtime environment, GPU render nodes, audio helpers, video encoders, notification bus state, and required niri layer rules.
+
+## Scope & Non-Goals
+
+- **niri specific**: Kanade is designed specifically for niri, integrating with its IPC socket, window layout, and layer-shell protocols. Hyprland and Sway are unsupported.
+- **No permanent status bar**: Kanade does not offer a static tray strip or permanent resource meters (such as continuous CPU, RAM, or network graphs). Information surfaces only when an Activity demands attention or when explicitly summoned.
+- **Not a wallpaper renderer**: Kanade manages wallpaper selection and palette extraction through awww and Matugen, but does not draw desktop wallpapers directly.
+
+## Quick Start & Installation
+
+On Arch Linux and derivatives, install via the automated setup script:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 ```
 
-Then `niri-session` from the TTY. It installs everything a fresh TTY install lacks with pacman (niri, a Vulkan driver, audio, fonts), clones and builds Kanade, sets up the systemd unit and icon, and adds `dist/niri/config.kdl` as niri's config only when you have none. Options go after `sh -s --`: `--shell-only` for an existing niri desktop, `--optional`, `--uninstall`. Read the [script](scripts/install) first if you like; it uses sudo only for pacman and, with `--optional`, enabling services. Or by hand:
+For existing niri setups or selective installs, pass options after `sh -s --`:
+
+- `--shell-only`: Installs only build dependencies and Kanade, skipping system packages and default niri configs.
+- `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
+- `--uninstall`: Cleans up the Kanade binary, completions, systemd unit, and desktop icons.
+
+### Manual Build
+
+To build and run manually from source:
 
 ```sh
 cargo install --locked --path .
 mkdir -p ~/.config/systemd/user
 cp dist/kanade.service ~/.config/systemd/user/
+systemctl --user daemon-reload
 systemctl --user enable --now kanade.service
 ```
 
-Kanade must be the only notification daemon. The systemd unit and recovery are in [Installation](docs/wiki/Installation.md).
+> [!IMPORTANT]
+> Kanade must be the only active notification daemon in your session. Disable alternative daemons such as mako or dunst (`systemctl --user disable --now mako`) before starting Kanade.
 
 ## Dependencies
 
-On Arch Linux and derivatives, all from the official repositories unless marked AUR.
+On Arch Linux and derivatives, all packages come from official repositories unless marked AUR.
 
-Required, to build and run:
+### Required
+
+To build and run the shell:
 
 ```sh
 sudo pacman -S --needed niri rust base-devel pkgconf wayland libxkbcommon fontconfig freetype2 \
   expat vulkan-icd-loader libpulse pam
 ```
 
-Also a Vulkan driver for the GPU (`vulkan-intel`, `vulkan-radeon` or `nvidia-utils`). niri must run as a systemd session (`niri-session` or a display manager).
+A Vulkan driver matching your GPU is also required: `vulkan-intel` for Intel, `vulkan-radeon` for AMD, or `nvidia-utils` for NVIDIA. niri must run as a systemd graphical session (`niri-session` or display manager).
 
-Optional, each for the feature named; Kanade runs without them:
+### Optional
 
-| Feature | Packages |
-|---|---|
-| Audio, privacy dots (`pactl`, `pw-dump`), device events (`udevadm`, `dbus-monitor`), `setpriv` | `libpulse pipewire systemd dbus util-linux` |
-| Clipboard history (needs wl-clipboard 2.3 or later) | `wl-clipboard` |
-| Screen recording, encoded on the GPU: VA-API (`intel-media-driver` for Intel, `mesa` for AMD) or NVENC (`nvidia-utils`), else on the CPU with libx264 (`ffmpeg`); `slurp` draws an area, `ffmpeg` allows a pause and records a window with `gst-launch-1.0` (`gst-plugin-pipewire`, `gst-plugins-bad`; `gst-plugins-ugly` for the CPU encoder, `gst-plugin-va` for VA-API, `gst-plugins-bad` and `nvidia-utils` for NVENC; VA-API (`gst-plugin-va`) or `gst-plugins-base` with EGL downloads the frames for both) | `wf-recorder` (`slurp`, `ffmpeg`, `gstreamer`) |
-| Wallpaper | `awww` |
-| Wallpaper-derived colors | `matugen` |
-| `appearance.sync` | `qt5ct qt6ct glib2 dconf`; AUR: Darkly (Qt6 style), Pywalfox and its browser extension |
-| Night light | `wlsunset` |
-| Caffeine, lock before sleep, idle inhibitors | `systemd util-linux` |
-| Google Calendar | `gnome-keyring` (or KWallet, KeePassXC) and `xdg-utils` |
-| Terminal apps in the Launcher | `xdg-terminal-exec` |
+Kanade runs without these packages, but individual features require them:
 
-Per-feature detail is in [Installation](docs/wiki/Installation.md).
+| Feature | Packages | Notes |
+|---|---|---|
+| Audio and device tracking | `libpulse pipewire systemd dbus util-linux` | Audio control (`pactl`), privacy dots (`pw-dump`), device detection (`udevadm`, `dbus-monitor`), and process isolation (`setpriv`). |
+| Clipboard history | `wl-clipboard` | Requires version 2.3 or later to detect sensitive password-manager selections. |
+| Screen recording (base) | `wf-recorder` | Records focused output or selected area. |
+| Region selection | `slurp` | Interactive bounding-box selection for screenshots and screen recording. |
+| Recording pause and join | `ffmpeg` | Allows pausing recordings and concatenates multi-part segments into a single file. |
+| GPU recording (VA-API) | `intel-media-driver` or `mesa` | Hardware-accelerated H.264 encoding for Intel (`intel-media-driver`) or AMD (`mesa`). Window recording also requires `gst-plugin-va`. |
+| GPU recording (NVENC) | `nvidia-utils` | Hardware-accelerated H.264 encoding on NVIDIA cards. Window recording also requires `gst-plugins-bad`. |
+| CPU recording (fallback) | `ffmpeg` | Software H.264 encoding with libx264. Window recording also requires `gst-plugins-ugly`. |
+| Window recording pipeline | `gstreamer gst-plugin-pipewire gst-plugins-base` | Captures niri DMA-BUF window casts over PipeWire with EGL frame download. |
+| Wallpaper management | `awww` | Wallpaper daemon and image display. |
+| Wallpaper-derived colors | `matugen` | Material You palette extraction from the active wallpaper. |
+| Theme synchronization (`appearance.sync`) | `qt5ct qt6ct glib2 dconf`<br>AUR: `darkly-qt6-git`, `python-pywalfox` | Synchronizes wallpaper palette across Qt, GTK, kitty, niri borders, and Firefox or Zen. |
+| Night light | `wlsunset` | Color temperature adjustment based on location or time. |
+| Power and idle inhibitors | `systemd util-linux` | Inhibitor management (`systemd-inhibit`) and process lifetime scoping (`setpriv`). |
+| Notification sounds | `pipewire` or `libcanberra` | Audio cues via `pw-play` or `canberra-gtk-play`. |
+| Google Calendar | `gnome-keyring` (or KWallet, KeePassXC) and `xdg-utils` | Secret Service storage for OAuth tokens and browser redirection via `xdg-open`. |
+| Terminal applications | `xdg-terminal-exec` | Opens terminal-based applications launched from the Launcher Surface. |
 
 ## Documentation
 
-- [Installation](docs/wiki/Installation.md): requirements, building, running as a systemd user unit.
-- [CLI](docs/wiki/CLI.md): every `kanade <verb>`.
-- [Configuration](docs/wiki/Configuration.md): config layers and every key.
-- [Agent hooks](docs/wiki/Agent-hooks.md): a Claude Code session as a live Activity.
-- [Dictation](docs/wiki/Dictation.md): speech to text with the Gemini API, and what it sends to Google.
-- [Google Calendar](docs/wiki/Google-Calendar.md): signing in with your own OAuth client.
-- [SDDM](docs/wiki/SDDM.md): the login screen theme and `kanade sddm`.
-- [Keyboard](docs/wiki/Keyboard.md): niri keybinds and keys inside each Surface.
-- [Limitations](docs/wiki/Limitations.md): known gaps.
-- [Design](docs/design.md) and [architecture decisions](docs/adr/): the target design and why it is built this way.
-- [Domain terms](CONTEXT.md): the names used here, such as Island, Surface and Activity.
-- [Branding](docs/branding.md): the mascot and the mark.
+| Guide | Description |
+|---|---|
+| [Installation](docs/wiki/Installation.md) | Package requirements, manual builds, systemd service management, and niri layer rules. |
+| [CLI](docs/wiki/CLI.md) | Command-line IPC syntax and available verbs for controlling Kanade. |
+| [Configuration](docs/wiki/Configuration.md) | Configuration file format, option reference, and defaults. |
+| [Settings](docs/wiki/Settings.md) | Built-in graphical settings editor and niri configuration support. |
+| [Keyboard](docs/wiki/Keyboard.md) | Keyboard shortcuts for every Surface and recommended niri keybindings. |
+| [Limitations](docs/wiki/Limitations.md) | Documented design boundaries, trade-offs, and known gaps. |
+| [Agent hooks](docs/wiki/Agent-hooks.md) | Recipe for connecting Claude Code sessions as Live Activities. |
+| [Dictation](docs/wiki/Dictation.md) | Voice dictation setup with the Gemini API and privacy disclosures. |
+| [Google Calendar](docs/wiki/Google-Calendar.md) | OAuth client creation and synchronization setup. |
+| [SDDM](docs/wiki/SDDM.md) | Matching SDDM login theme generation via `kanade sddm`. |
+| [Design](docs/design.md) | Target architecture, runtime pipeline, and system design. |
+| [Architecture decisions](docs/adr/) | Historical record of architecture decision records (ADRs). |
+| [Domain terms](CONTEXT.md) | Canonical domain language, invariants, and naming rules. |
+| [Branding](docs/branding.md) | Mascot assets, mark specifications, and visual identity. |
 
 ## Acknowledgements
 
-- [Amane](https://github.com/MystiaFin/amane) by MystiaFin: a Rust Wayland shell runtime.
-- [iNiR](https://github.com/snowarch/iNiR): an island on niri, one body in many contexts, satellites.
+- [Amane](https://github.com/MystiaFin/amane) by MystiaFin: A foundational Rust Wayland shell runtime.
+- [iNiR](https://github.com/snowarch/iNiR): Adaptive island concept for niri, demonstrating one body across multiple contexts.
 
 ## License
 
