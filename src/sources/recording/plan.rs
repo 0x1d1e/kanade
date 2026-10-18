@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use super::encode::Encoding;
+
 // the recorder, the area picker and the program that joins the segments of a paused recording
 pub const RECORDER: &str = "wf-recorder";
 pub const PICKER: &str = "slurp";
@@ -14,8 +16,8 @@ pub const JOINER: &str = "ffmpeg";
 pub const ENCODER: &str = "gst-launch-1.0";
 pub const MUXER: &str = JOINER;
 
-// H.264 on the GPU through VA-API (ADR 0013)
-const CODEC: &str = "h264_vaapi";
+// the H.264 header fields that say BT.709, limited range (`h264_metadata`)
+const TAG: &str = "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0";
 
 // the audio of a window, encoded by ffmpeg's own AAC; spelled so `boundary` does not read it as a color
 const AUDIO_CODEC: &str = concat!("a", "ac");
@@ -217,12 +219,12 @@ impl Source {
 }
 
 /*
- * the arguments of `wf-recorder` for one segment. Damage tracked (no `-D`), as only that is a cast
- * to niri, so the privacy cluster shows it. An area is named by its geometry alone: the recorder
+ * the arguments of `wf-recorder` for one segment, encoded as `encoding` says (ADR 0116). Damage
+ * tracked (no `-D`), as only that is a cast to niri, so the privacy cluster shows it. An area is named by its geometry alone: the recorder
  * finds the output it lies on
  */
-pub fn recorder(source: &Source, audio: Audio, file: &str) -> Vec<String> {
-    let mut arguments = vec![String::from("-c"), String::from(CODEC)];
+pub fn recorder(source: &Source, audio: Audio, file: &str, encoding: &Encoding) -> Vec<String> {
+    let mut arguments = encoding.recorder();
 
     match source {
         Source::Output(name) => arguments.extend([String::from("-o"), name.clone()]),
@@ -237,38 +239,47 @@ pub fn recorder(source: &Source, audio: Audio, file: &str) -> Vec<String> {
 }
 
 /*
- * the arguments of `gst-launch-1.0` for one segment of a window: the PipeWire node niri casts it on,
- * encoded on the GPU through VA-API at the window's size (`add-borders` keeps the aspect, so a window
- * that is resized stays whole in the frame), written to stdout as H.264 for `muxer`. Interrupted, it
- * ends the stream (`-e`) rather than cut it off
+ * what `pipewiresrc` is held to: the cast says no pixel aspect, and its DMA-BUF caps then carry
+ * `1/2147483647` into `vapostproc`, which cannot calculate the borders of that (`Can't calculate
+ * borders`) and scales the picture to fill the frame instead of bordering it, as a window that is
+ * resized shows. Any memory (`ANY`), as the cast's is DMA-BUF
  */
-pub fn encoder(node: u64, size: (u32, u32)) -> Vec<String> {
-    let (width, height) = size;
+const SQUARE_PIXELS: &str = "video/x-raw(ANY),pixel-aspect-ratio=1/1";
 
-    [
+/*
+ * the arguments of `gst-launch-1.0` for one segment of a window: the PipeWire node niri casts it on,
+ * encoded as `encoding` says at the window's size, written to stdout as H.264 for `muxer`.
+ * Interrupted, it ends the stream (`-e`) rather than cut it off
+ */
+pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> {
+    let mut arguments: Vec<String> = [
         "-q",
         "-e",
         "pipewiresrc",
         &format!("path={node}"),
         "do-timestamp=true",
         "!",
-        "vapostproc",
-        "add-borders=true",
+        SQUARE_PIXELS,
         "!",
-        &format!("video/x-raw(memory:VAMemory),width={width},height={height}"),
-        "!",
-        "vah264enc",
-        "!",
-        "h264parse",
-        "config-interval=-1",
-        "!",
-        "video/x-h264,stream-format=byte-stream,alignment=au",
-        "!",
-        "fdsink",
-        "fd=1",
     ]
     .map(String::from)
-    .to_vec()
+    .to_vec();
+
+    arguments.extend(encoding.chain(size));
+    arguments.extend(
+        [
+            "!",
+            "h264parse",
+            "config-interval=-1",
+            "!",
+            "video/x-h264,stream-format=byte-stream,alignment=au",
+            "!",
+            "fdsink",
+            "fd=1",
+        ]
+        .map(String::from),
+    );
+    arguments
 }
 
 /*
@@ -279,7 +290,9 @@ pub fn encoder(node: u64, size: (u32, u32)) -> Vec<String> {
  * guaranteed. A file that is there is never replaced (`-n`). The mp4 is fragmented, a fragment each
  * second (`frag_duration`, as a still window has long gaps between keyframes) and flushed to the file
  * as it is written (`flush_packets`, or a small stream stays in ffmpeg's buffer), so a writer that is
- * killed leaves a file that plays up to its last fragment instead of one with no `moov`
+ * killed leaves a file that plays up to its last fragment instead of one with no `moov`. The stream
+ * is tagged as BT.709 limited range, the matrix `encoder` converts with, which the encoder itself
+ * does not write
  */
 pub fn muxer(audio: Audio, file: &str) -> Vec<String> {
     let mut arguments: Vec<String> = [
@@ -322,6 +335,8 @@ pub fn muxer(audio: Audio, file: &str) -> Vec<String> {
         [
             "-c:v",
             "copy",
+            "-bsf:v",
+            TAG,
             "-fps_mode",
             "vfr",
             "-movflags",
@@ -396,6 +411,7 @@ pub fn joiner<'a>(list: &'a str, joined: &'a str) -> [&'a str; 15] {
 
 #[cfg(test)]
 mod tests {
+    use super::super::encode::{Encoder, Kind, Quality};
     use super::*;
 
     #[test]
@@ -451,8 +467,38 @@ mod tests {
         );
     }
 
+    fn vaapi() -> Encoding {
+        Encoding {
+            encoder: Encoder {
+                kind: Kind::Vaapi,
+                node: Some(String::from("/dev/dri/renderD128")),
+                first: true,
+            },
+            quality: Quality::High,
+            threads: 2,
+            download: Default::default(),
+        }
+    }
+
+    // `pipewiresrc` gives a cast no pixel aspect, which `vapostproc` takes as 1/2147483647 and then
+    // cannot calculate borders for: a window resized mid-take was stretched, not bordered (live)
     #[test]
-    fn the_recorder_gets_its_source_and_one_audio_source() {
+    fn a_windows_cast_is_held_to_square_pixels_before_the_converter() {
+        let arguments = encoder(7, (640, 480), &vaapi());
+        let at = |word: &str| arguments.iter().position(|found| found == word);
+        let source = at("pipewiresrc");
+        let held = at("video/x-raw(ANY),pixel-aspect-ratio=1/1");
+        let converter = at("vapostproc");
+
+        assert!(
+            source.is_some() && held.is_some() && converter.is_some(),
+            "{arguments:?}"
+        );
+        assert!(source < held && held < converter, "{arguments:?}");
+    }
+
+    #[test]
+    fn the_recorder_gets_its_encoding_its_source_and_one_audio_source() {
         let screen = Source::Output(String::from("DP-1"));
         let area = Source::Area(Rect {
             x: 10,
@@ -460,43 +506,52 @@ mod tests {
             width: 640,
             height: 480,
         });
+        let encoding = vaapi();
+        let head = encoding.recorder();
+        let with = |rest: &[&str]| -> Vec<String> {
+            head.iter()
+                .cloned()
+                .chain(rest.iter().map(|word| String::from(*word)))
+                .collect()
+        };
 
         assert_eq!(
-            recorder(&screen, Audio::None, "/v/a.mp4"),
-            ["-c", "h264_vaapi", "-o", "DP-1", "-f", "/v/a.mp4"]
+            recorder(&screen, Audio::None, "/v/a.mp4", &encoding),
+            with(&["-o", "DP-1", "-f", "/v/a.mp4"])
         );
         assert_eq!(
-            recorder(&area, Audio::System, "/v/a.mp4"),
-            [
-                "-c",
-                "h264_vaapi",
+            recorder(&area, Audio::System, "/v/a.mp4", &encoding),
+            with(&[
                 "-g",
                 "10,20 640x480",
                 "--audio=@DEFAULT_MONITOR@",
                 "-f",
                 "/v/a.mp4"
-            ]
+            ])
         );
         assert_eq!(
-            recorder(&screen, Audio::Mic, "/v/a.mp4"),
-            [
-                "-c",
-                "h264_vaapi",
-                "-o",
-                "DP-1",
-                "--audio=@DEFAULT_SOURCE@",
-                "-f",
-                "/v/a.mp4"
-            ]
+            recorder(&screen, Audio::Mic, "/v/a.mp4", &encoding),
+            with(&["-o", "DP-1", "--audio=@DEFAULT_SOURCE@", "-f", "/v/a.mp4"])
         );
 
-        // no argument turns damage tracking off, which would hide the recording from niri's casts
-        for audio in [Audio::None, Audio::System, Audio::Mic] {
-            assert!(
-                !recorder(&screen, audio, "f")
-                    .iter()
-                    .any(|argument| argument == "-D" || argument == "--no-damage")
-            );
+        // no argument turns damage tracking off, which would hide the recording from niri's casts,
+        // whatever encodes
+        for kind in [Kind::Vaapi, Kind::Nvenc, Kind::Software] {
+            let encoding = Encoding {
+                encoder: Encoder {
+                    kind,
+                    ..encoding.encoder.clone()
+                },
+                ..vaapi()
+            };
+
+            for audio in [Audio::None, Audio::System, Audio::Mic] {
+                assert!(
+                    !recorder(&screen, audio, "f", &encoding)
+                        .iter()
+                        .any(|argument| argument == "-D" || argument == "--no-damage")
+                );
+            }
         }
     }
 
@@ -572,6 +627,8 @@ mod tests {
             let muxer = muxer(audio, "/v/a.mp4");
 
             assert!(muxer.contains(&String::from("-n")));
+            // the stream is tagged BT.709 limited range, which its encoder does not write
+            assert!(muxer.contains(&String::from(TAG)));
             assert!(!muxer.contains(&String::from("-y")));
             assert!(muxer.iter().any(|word| word.contains("empty_moov")));
             assert!(muxer.contains(&String::from("-frag_duration")));

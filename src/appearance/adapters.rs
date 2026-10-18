@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread::Builder;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +22,7 @@ use crate::config::Config;
 use crate::look::Tone;
 
 mod colors;
+mod portal;
 
 pub use colors::Scheme;
 
@@ -51,6 +52,8 @@ type Helper<T> = Ran<Request, T>;
 struct SyncState {
     desktop: BTreeMap<String, SavedValue>,
     gtk3: Option<SavedGtkConfig>,
+    #[serde(default)]
+    gtk4: Option<SavedGtkConfig>,
     qt5ct: Option<SavedQtConfig>,
     qt6ct: Option<SavedQtConfig>,
     zen: BTreeMap<String, SavedZenProfile>,
@@ -158,22 +161,54 @@ fn follow(receiver: Receiver<Request>) {
     let mut pending = None;
     let mut rerun = false;
     let mut retry_zen_restore = false;
+    let mut portal = portal::Restart::default();
+    let mut look = None;
+    let mut gnome_pending = false;
 
     loop {
+        let wait = [
+            retry_zen_restore.then_some(HELPER_RETRY),
+            portal.wait(Instant::now()),
+            gnome_pending.then_some(HELPER_RETRY),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         let next = match pending.take() {
             Some(request) => Some(request),
-            None if retry_zen_restore => match receiver.recv_timeout(HELPER_RETRY) {
-                Ok(request) => Some(request),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            },
-            None => match receiver.recv() {
-                Ok(request) => Some(request),
-                Err(_) => return,
+            None => match wait {
+                Some(wait) => match receiver.recv_timeout(wait) {
+                    Ok(request) => Some(request),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                },
+                None => match receiver.recv() {
+                    Ok(request) => Some(request),
+                    Err(_) => return,
+                },
             },
         };
         let Some(request) = next else {
-            retry_zen_restore = try_restore_zen_preferences();
+            let now = Instant::now();
+            if portal.take_due(now) {
+                portal::restart_gtk();
+                if gnome_pending {
+                    if portal::has_active_casts() {
+                        // deferral holds
+                    } else {
+                        portal::restart_gnome();
+                        gnome_pending = false;
+                    }
+                }
+            }
+            if retry_zen_restore {
+                retry_zen_restore = try_restore_zen_preferences();
+            }
+            if gnome_pending && !portal::has_active_casts() {
+                portal::restart_gnome();
+                gnome_pending = false;
+                portal.record_restart(now);
+            }
             continue;
         };
 
@@ -182,11 +217,38 @@ fn follow(receiver: Receiver<Request>) {
             run |= fold(newer, &mut wanted, &mut scheme);
         }
 
+        if !run || !matches!(wanted, Some(Request::Set(_) | Request::Disable)) {
+            continue;
+        }
+        let before = look.take().unwrap_or_else(portal::look);
         let result = match wanted {
-            Some(Request::Set(tone)) if run => apply(tone, scheme.as_deref(), &receiver),
-            Some(Request::Disable) if run => disable(&receiver),
-            _ => continue,
+            Some(Request::Set(tone)) => apply(tone, scheme.as_deref(), &receiver),
+            _ => disable(&receiver),
         };
+
+        // the GTK portal backends read settings.ini and gtk.css once: restart them when the GTK
+        // files of either dir changed
+        let after = portal::look();
+        let now = Instant::now();
+        let gtk3_changed = after[0] != before[0];
+        let gtk4_changed = after[1] != before[1];
+        if gtk3_changed || gtk4_changed {
+            portal.changed(now);
+        }
+        look = Some(after);
+        if portal.take_due(now) {
+            portal::restart_gtk();
+            if gtk4_changed || gnome_pending {
+                if portal::has_active_casts() {
+                    gnome_pending = true;
+                } else {
+                    portal::restart_gnome();
+                    gnome_pending = false;
+                }
+            }
+        } else if gtk4_changed {
+            gnome_pending = true;
+        }
 
         match result {
             Helper::Done(Ok(())) => retry_zen_restore = zen_restore_retry_state(),
@@ -326,8 +388,13 @@ fn apply(tone: Tone, scheme: Option<&Scheme>, requests: &Receiver<Request>) -> H
         }
     }
 
-    if let Err(error) = apply_gtk3_config(tone, gtk_theme.as_deref(), &mut state) {
-        eprintln!("kanade: could not update GTK3 settings: {error}");
+    for which in GtkConfig::ALL {
+        if let Err(error) = apply_gtk_config(which, tone, gtk_theme.as_deref(), &mut state) {
+            eprintln!(
+                "kanade: could not update the {} settings: {error}",
+                which.dir()
+            );
+        }
     }
 
     if let Some(scheme) = &scheme
@@ -442,8 +509,13 @@ fn disable(requests: &Receiver<Request>) -> Helper<()> {
     if let Some(newer) = take_pending(requests) {
         return Helper::Superseded(newer);
     }
-    if let Err(error) = restore_gtk3_config(&mut state) {
-        eprintln!("kanade: could not restore GTK3 settings: {error}");
+    for which in GtkConfig::ALL {
+        if let Err(error) = restore_gtk_config(which, &mut state) {
+            eprintln!(
+                "kanade: could not restore the {} settings: {error}",
+                which.dir()
+            );
+        }
     }
     if let Err(error) = colors::restore_gtk(&mut state) {
         eprintln!("kanade: could not remove GTK colors: {error}");
@@ -684,17 +756,70 @@ fn config_exists(relative: &str) -> bool {
     config_home().join(relative).is_file()
 }
 
-fn gtk3_config_path() -> PathBuf {
-    config_home().join("gtk-3.0/settings.ini")
+// the two GTK settings files Kanade manages; each keeps its own saved state
+#[derive(Clone, Copy, Debug)]
+enum GtkConfig {
+    Three,
+    Four,
 }
 
-fn apply_gtk3_config(
+impl GtkConfig {
+    const ALL: [Self; 2] = [Self::Three, Self::Four];
+
+    fn dir(self) -> &'static str {
+        match self {
+            Self::Three => "gtk-3.0",
+            Self::Four => "gtk-4.0",
+        }
+    }
+
+    fn path(self) -> PathBuf {
+        config_home().join(self.dir()).join("settings.ini")
+    }
+
+    fn slot(self, state: &mut SyncState) -> &mut Option<SavedGtkConfig> {
+        match self {
+            Self::Three => &mut state.gtk3,
+            Self::Four => &mut state.gtk4,
+        }
+    }
+
+    fn saved(self, state: &SyncState) -> Option<&SavedGtkConfig> {
+        match self {
+            Self::Three => state.gtk3.as_ref(),
+            Self::Four => state.gtk4.as_ref(),
+        }
+    }
+}
+
+fn apply_gtk_config(
+    which: GtkConfig,
     tone: Tone,
     desktop_theme: Option<&str>,
     state: &mut SyncState,
 ) -> io::Result<()> {
-    let path = gtk3_config_path();
-    let metadata = match fs::symlink_metadata(&path) {
+    let themes = gtk_theme_names();
+    apply_gtk_config_with_save(
+        which,
+        &which.path(),
+        tone,
+        desktop_theme,
+        &themes,
+        state,
+        save_state,
+    )
+}
+
+fn apply_gtk_config_with_save(
+    which: GtkConfig,
+    path: &Path,
+    tone: Tone,
+    desktop_theme: Option<&str>,
+    themes: &[String],
+    state: &mut SyncState,
+    save: impl Fn(&SyncState) -> Result<(), String>,
+) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(io::Error::new(
@@ -709,20 +834,20 @@ fn apply_gtk3_config(
     };
     let created = metadata.is_none();
     let original = match metadata {
-        Some(_) => fs::read_to_string(&path)?,
+        Some(_) => fs::read_to_string(path)?,
         None => String::new(),
     };
     let current_theme = gtk_ini_value(&original, "Settings", "gtk-theme-name");
     let paired = desktop_theme
-        .and_then(|theme| paired_theme(theme, tone, &gtk_theme_names()))
+        .and_then(|theme| paired_theme(theme, tone, themes))
         .or_else(|| {
             current_theme
                 .as_deref()
-                .and_then(|theme| paired_theme(theme, tone, &gtk_theme_names()))
+                .and_then(|theme| paired_theme(theme, tone, themes))
         });
     let dark = gtk_dark_preference(tone);
     let mut updated = original.clone();
-    let mut saved = state.gtk3.take().unwrap_or_else(|| SavedGtkConfig {
+    let mut saved = which.slot(state).take().unwrap_or_else(|| SavedGtkConfig {
         theme: current_theme.as_ref().map(|theme| SavedValue {
             before: Some(theme.clone()),
             applied: theme.clone(),
@@ -756,25 +881,33 @@ fn apply_gtk3_config(
         dark,
     );
 
-    state.gtk3 = Some(saved);
-    save_state(state).map_err(io::Error::other)?;
+    *which.slot(state) = Some(saved);
+    save(state).map_err(io::Error::other)?;
     if updated != original {
-        atomic_write(&path, updated.as_bytes())?;
+        atomic_write(path, updated.as_bytes())?;
     }
-    let saved = state.gtk3.as_mut().expect("GTK state was saved");
+    let saved = which.slot(state).as_mut().expect("GTK state was saved");
     if let (Some(target), Some(theme)) = (paired.as_deref(), saved.theme.as_mut()) {
         commit_saved_update(theme, target);
     }
     commit_saved_update(&mut saved.prefer_dark, dark);
-    save_state(state).map_err(io::Error::other)
+    save(state).map_err(io::Error::other)
 }
 
-fn restore_gtk3_config(state: &mut SyncState) -> io::Result<()> {
-    let Some(saved) = state.gtk3.as_ref() else {
+fn restore_gtk_config(which: GtkConfig, state: &mut SyncState) -> io::Result<()> {
+    restore_gtk_config_with_save(which, &which.path(), state, save_state)
+}
+
+fn restore_gtk_config_with_save(
+    which: GtkConfig,
+    path: &Path,
+    state: &mut SyncState,
+    save: impl Fn(&SyncState) -> Result<(), String>,
+) -> io::Result<()> {
+    let Some(saved) = which.saved(state) else {
         return Ok(());
     };
-    let path = gtk3_config_path();
-    let metadata = match fs::symlink_metadata(&path) {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(io::Error::new(
@@ -788,11 +921,11 @@ fn restore_gtk3_config(state: &mut SyncState) -> io::Result<()> {
         Err(error) => return Err(error),
     };
     let Some(_) = metadata else {
-        state.gtk3 = None;
-        return save_state(state).map_err(io::Error::other);
+        *which.slot(state) = None;
+        return save(state).map_err(io::Error::other);
     };
 
-    let original = fs::read_to_string(&path)?;
+    let original = fs::read_to_string(path)?;
     let mut updated = original.clone();
     if let Some(theme) = &saved.theme {
         restore_gtk_ini_value(&mut updated, "Settings", "gtk-theme-name", theme);
@@ -809,13 +942,13 @@ fn restore_gtk3_config(state: &mut SyncState) -> io::Result<()> {
                 .lines()
                 .all(|line| line.trim().is_empty() || line.trim() == "[Settings]")
         {
-            fs::remove_file(&path)?;
+            fs::remove_file(path)?;
         } else {
-            atomic_write(&path, updated.as_bytes())?;
+            atomic_write(path, updated.as_bytes())?;
         }
     }
-    state.gtk3 = None;
-    save_state(state).map_err(io::Error::other)
+    *which.slot(state) = None;
+    save(state).map_err(io::Error::other)
 }
 
 fn qt_palette(major: u8, tone: Tone) -> Option<PathBuf> {
@@ -1835,6 +1968,7 @@ fn save_state(state: &SyncState) -> Result<(), String> {
 fn save_state_at(path: &Path, state: &SyncState) -> Result<(), String> {
     if state.desktop.is_empty()
         && state.gtk3.is_none()
+        && state.gtk4.is_none()
         && state.qt5ct.is_none()
         && state.qt6ct.is_none()
         && state.zen.is_empty()
@@ -1900,6 +2034,26 @@ mod tests {
     use super::*;
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let root = env::temp_dir().join(format!(
+            "kanade-{name}-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    // the settings file of one GTK dir under a temp config root, its parent made
+    fn gtk_settings_path(root: &Path, which: GtkConfig) -> PathBuf {
+        let dir = root.join(which.dir());
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("settings.ini")
+    }
+
+    const GTK_THEMES: [&str; 2] = ["adw-gtk3", "adw-gtk3-dark"];
 
     #[test]
     fn maps_tone_to_the_desktop_preference() {
@@ -2075,6 +2229,200 @@ mod tests {
             },
         );
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn gtk_theme_and_dark_preference_apply_in_light_and_dark_for_both_dirs() {
+        let themes = GTK_THEMES.map(String::from);
+        for which in GtkConfig::ALL {
+            let root = temp_dir("gtk-apply");
+            let path = gtk_settings_path(&root, which);
+            let original = "[Settings]\ngtk-theme-name=adw-gtk3-dark\ngtk-application-prefer-dark-theme=1\ngtk-font-name=Inter 11\n";
+            fs::write(&path, original).unwrap();
+            let mut state = SyncState::default();
+
+            apply_gtk_config_with_save(
+                which,
+                &path,
+                Tone::Light,
+                Some("adw-gtk3-dark"),
+                &themes,
+                &mut state,
+                |_| Ok(()),
+            )
+            .unwrap();
+            let light = fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                gtk_ini_value(&light, "Settings", "gtk-theme-name").as_deref(),
+                Some("adw-gtk3")
+            );
+            assert_eq!(
+                gtk_ini_value(&light, "Settings", "gtk-application-prefer-dark-theme").as_deref(),
+                Some("0")
+            );
+            assert_eq!(
+                gtk_ini_value(&light, "Settings", "gtk-font-name").as_deref(),
+                Some("Inter 11")
+            );
+
+            apply_gtk_config_with_save(
+                which,
+                &path,
+                Tone::Dark,
+                Some("adw-gtk3"),
+                &themes,
+                &mut state,
+                |_| Ok(()),
+            )
+            .unwrap();
+            let dark = fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                gtk_ini_value(&dark, "Settings", "gtk-theme-name").as_deref(),
+                Some("adw-gtk3-dark")
+            );
+            assert_eq!(
+                gtk_ini_value(&dark, "Settings", "gtk-application-prefer-dark-theme").as_deref(),
+                Some("1")
+            );
+            assert_eq!(
+                gtk_ini_value(&dark, "Settings", "gtk-font-name").as_deref(),
+                Some("Inter 11")
+            );
+
+            restore_gtk_config_with_save(which, &path, &mut state, |_| Ok(())).unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+            assert!(which.saved(&state).is_none());
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_gtk_settings_file_kanade_created_is_removed_on_restore() {
+        let themes = GTK_THEMES.map(String::from);
+        for which in GtkConfig::ALL {
+            let root = temp_dir("gtk-created");
+            let path = gtk_settings_path(&root, which);
+            let mut state = SyncState::default();
+
+            apply_gtk_config_with_save(
+                which,
+                &path,
+                Tone::Light,
+                Some("adw-gtk3"),
+                &themes,
+                &mut state,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert!(path.is_file());
+            assert_eq!(
+                gtk_ini_value(
+                    &fs::read_to_string(&path).unwrap(),
+                    "Settings",
+                    "gtk-application-prefer-dark-theme"
+                )
+                .as_deref(),
+                Some("0")
+            );
+
+            restore_gtk_config_with_save(which, &path, &mut state, |_| Ok(())).unwrap();
+            assert!(!path.exists());
+            assert!(which.saved(&state).is_none());
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_symlinked_gtk_settings_file_is_refused_for_both_dirs() {
+        let themes = GTK_THEMES.map(String::from);
+        let original =
+            "[Settings]\ngtk-theme-name=adw-gtk3-dark\ngtk-application-prefer-dark-theme=1\n";
+        for which in GtkConfig::ALL {
+            let root = temp_dir("gtk-symlink");
+            let path = gtk_settings_path(&root, which);
+            let target = root.join("real-settings.ini");
+            fs::write(&target, original).unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+
+            let mut state = SyncState::default();
+            assert!(
+                apply_gtk_config_with_save(
+                    which,
+                    &path,
+                    Tone::Light,
+                    None,
+                    &themes,
+                    &mut state,
+                    |_| Ok(()),
+                )
+                .is_err()
+            );
+            assert!(which.saved(&state).is_none());
+
+            let mut state = SyncState::default();
+            *which.slot(&mut state) = Some(SavedGtkConfig {
+                theme: None,
+                prefer_dark: SavedValue {
+                    before: Some(String::from("1")),
+                    applied: String::from("0"),
+                    pending: None,
+                },
+                created: false,
+            });
+            assert!(restore_gtk_config_with_save(which, &path, &mut state, |_| Ok(())).is_err());
+            assert!(which.saved(&state).is_some(), "state is kept to retry");
+
+            assert!(
+                fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read_to_string(&target).unwrap(), original);
+            fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn old_sync_state_with_gtk3_but_no_gtk4_still_loads() {
+        let state: SyncState = serde_json::from_str(
+            r#"{"gtk3":{"theme":null,"prefer_dark":{"before":"1","applied":"0","pending":null},"created":false}}"#,
+        )
+        .unwrap();
+        assert!(state.gtk3.is_some());
+        assert!(state.gtk4.is_none());
+    }
+
+    #[test]
+    fn restore_leaves_a_gtk_dir_kanade_never_applied_to_alone() {
+        let root = temp_dir("gtk-untouched");
+        let path = gtk_settings_path(&root, GtkConfig::Four);
+        let original =
+            "[Settings]\ngtk-theme-name=adw-gtk3-dark\ngtk-application-prefer-dark-theme=1\n";
+        fs::write(&path, original).unwrap();
+        let mut state: SyncState = serde_json::from_str(
+            r#"{"gtk3":{"theme":null,"prefer_dark":{"before":"1","applied":"0","pending":null},"created":false}}"#,
+        )
+        .unwrap();
+
+        restore_gtk_config_with_save(GtkConfig::Four, &path, &mut state, |_| Ok(())).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(state.gtk3.is_some(), "the gtk-3.0 state is kept");
+
+        // even a symlink is left alone when there is no state for the dir
+        fs::remove_file(&path).unwrap();
+        let target = root.join("real-settings.ini");
+        fs::write(&target, "keep\n").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        restore_gtk_config_with_save(GtkConfig::Four, &path, &mut state, |_| Ok(())).unwrap();
+        assert!(
+            fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep\n");
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

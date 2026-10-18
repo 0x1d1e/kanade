@@ -246,6 +246,23 @@ A stroke the user recorded under a name (`kanade gesture record NAME`, three str
 - The templates are state (rewritten by `record`), the verbs are config (user-owned); neither holds the other.
 - **Avoid:** macro, shortcut, mouse gesture (a gesture here is drawn on an overlay, not a global pointer motion), Hook (runs a user command on an event)
 
+## niri config
+niri's `config.kdl`, which `kanade niri-config` changes on request (ADR 0119); the one user file Kanade edits. Its path is `$NIRI_CONFIG`, else `$XDG_CONFIG_HOME/niri/config.kdl`, else `~/.config/niri/config.kdl` (`sources::binds::config`; `/etc/niri/config.kdl` is only read).
+- A setting is a single-valued node at a dotted path (`layout.gaps`), changed by splicing text into the file's bytes at the node's span.
+- An **include owner** is the file a node comes from when `config.kdl` includes others (niri reads includes in order and the last setting wins). Kanade edits a node only when `config.kdl` itself owns it, and no included file sets it, before or after; `appearance.sync`'s `kanade.kdl` owns the window colors.
+- **Invariant:** nothing outside the edited node's bytes changes (comments, `/-`, line endings); the file is replaced only after `niri validate` accepted the staged result, and only if its hash still equals the one read; a `set` or `remove` validates the original first (`undo` and `restore` do not, as a broken config is when they are needed, and need only the result to validate); a symlink or hard link is never written; a leading BOM stays.
+- A **backup** is the file's bytes before a change, in `$XDG_STATE_HOME/kanade/niri-config/` (the newest 20, and the pinned first bytes, `.orig`), a ring per config, keyed by a hash of its canonical path, so configs of one file name do not mix. `undo` needs the file as the last change left it.
+- A **trial** is a change to a connected monitor (`niri msg output <name> ...`) made in niri's memory only, before it is written: the Settings Outputs section starts one at the first change, restarts its 15 s at each further change, and ends it by **Keep** (the changes are written to the monitor's `output` block in one validated change) or **Revert** (the monitor goes back to **Previous**, what niri's `Outputs` IPC reported before the first change, never what the file says). One trial runs at a time. **Invariant:** `$XDG_STATE_HOME/kanade/outputs-pending.json` holds Previous before niri is told of the first change and is deleted when the trial ends; a Kanade that finds a file at start clears it without touching niri when its `saved` marker is set (Keep wrote the config), and applies only an unsaved one, unless it is older than 5 minutes, when it deletes it unread. The last enabled monitor is never turned off by a trial.
+- **Avoid:** niri settings file, compositor config (this one only is edited), rewrite (an edit splices)
+
+## SDDM overlay
+The directory Kanade owns (`/usr/local/share/kanade-sddm/`, `themes/<theme>/` and `bg/backdrop.png`) that SDDM reads the login screen's theme and picture from, after root makes it once and writes `/etc/sddm.conf.d/zz-kanade.conf`. Written by `kanade sddm`; shown, never changed, by `kanade doctor` and Settings' Login screen page.
+- A theme in it has a **class** from its files: A reads a picture from a `theme.conf` setting (Kanade writes the picture there), B draws a fixed image, C has none, D plays a video; only A takes a picture.
+- **Invariant:** Kanade never runs a command as root and never writes outside the overlay, its state and its settings file; it prints the root commands.
+- **Invariant:** nothing is written through a symbolic link, to a non-file, or to a file with another hard link; every file is 0644 and directory 0755 whatever the umask.
+- **Invariant:** `sddm.sync` is off by default, because the picture is readable by `sddm` and anyone who can read the overlay.
+- **Avoid:** greeter (Kanade ships a theme, not a greeter), login manager
+
 ## Module
 A feature the user can turn off in `[modules]` of the config: `src/modules/catalog.rs` lists every one, with the Modules it requires and those it can do without.
 - `island` is the core and cannot be turned off; every other Module requires it.

@@ -99,6 +99,7 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
         Kind::Count(count, _) => whole(count.range),
         Kind::Choice(choices, _) => json!({ "type": "string", "enum": choices.names }),
         Kind::Path(_) | Kind::Text(_) => json!({ "type": "string", "minLength": 1 }),
+        Kind::Node(_) => json!({ "type": "string", "pattern": "^(/dev/dri/renderD[0-9]+)?$" }),
         Kind::Location(_) => json!({
             "type": "array",
             "prefixItems": [
@@ -180,7 +181,7 @@ pub fn get(key: &str) -> Result<String, String> {
 fn parse(setting: &Setting, raw: &str) -> Result<Value, String> {
     let text = matches!(
         setting.kind,
-        Kind::Choice(..) | Kind::Path(_) | Kind::Text(_) | Kind::DayTime(_)
+        Kind::Choice(..) | Kind::Path(_) | Kind::Text(_) | Kind::Node(_) | Kind::DayTime(_)
     );
 
     if text && !raw.starts_with(['"', '\'']) {

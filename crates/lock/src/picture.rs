@@ -73,21 +73,9 @@ pub(crate) fn prepare(
             },
             Some(wallpaper),
         ) => {
-            let covered = cover(wallpaper, width, height)?;
+            let by = blurred.then(|| (BLURRED_BY * scale).round().max(1.0) as u32);
 
-            // over its color, so a wallpaper with see-through parts never shows what is under
-            // the lock
-            fill(&mut shown, *otherwise);
-            if *blurred {
-                let by = (BLURRED_BY * scale).round().max(1.0) as u32;
-                let mut small = shrink(&covered, by)?;
-                blur(&mut small, BLURRED);
-                stretch(&small, &mut shown);
-            } else {
-                stretch(&covered, &mut shown);
-            }
-
-            fill(&mut shown, *shade);
+            compose(&mut shown, wallpaper, by, *shade, *otherwise)?;
         }
         (Backdrop::Wallpaper { otherwise, .. }, None) | (Backdrop::Solid(otherwise), _) => {
             fill(&mut shown, *otherwise);
@@ -95,6 +83,58 @@ pub(crate) fn prepare(
     }
 
     Some(shown)
+}
+
+/*
+ * `wallpaper` covering all of `shown`, over `otherwise` so a wallpaper with see-through parts never
+ * shows what is under; shrunk `by` times, blurred and stretched back when `by` is given; then under
+ * `shade`. The one work of the lock screen's backdrop, and of a still of it.
+ */
+fn compose(
+    shown: &mut Pixmap,
+    wallpaper: &Pixmap,
+    by: Option<u32>,
+    shade: Color,
+    otherwise: Color,
+) -> Option<()> {
+    let covered = cover(wallpaper, shown.width(), shown.height())?;
+
+    fill(shown, otherwise);
+    match by {
+        Some(by) => {
+            let mut small = shrink(&covered, by)?;
+            blur(&mut small, BLURRED);
+            stretch(&small, shown);
+        }
+        None => stretch(&covered, shown),
+    }
+
+    fill(shown, shade);
+    Some(())
+}
+
+impl Picture {
+    /*
+     * this picture as an opaque still `width` by `height` pixels: covering it, blurred as the lock
+     * screen's is when `blur` is not 0 (in pixels of the still; the lock screen's own is 32 on a
+     * 1080p one), under a black shade of `dim`, 0 to 1. For a backdrop outside the lock, like the
+     * login screen's; none if it has no pixels.
+     */
+    pub fn backdrop(&self, (width, height): (u32, u32), blur: u32, dim: f32) -> Option<Picture> {
+        let wallpaper = self.pixmap()?;
+        let mut shown = Pixmap::new(width, height)?;
+        let by = (blur > 0).then(|| (blur / BLURRED).max(1));
+        let shade = Color::rgba(0, 0, 0, (dim.clamp(0.0, 1.0) * 255.0).round() as u8);
+
+        compose(&mut shown, &wallpaper, by, shade, Color::rgba(0, 0, 0, 255))?;
+
+        // opaque all through, so the premultiplied pixels are the plain ones
+        Some(Picture {
+            width,
+            height,
+            rgba: shown.take(),
+        })
+    }
 }
 
 // `picture` scaled to cover `width` by `height`, its middle kept

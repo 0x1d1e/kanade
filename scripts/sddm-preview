@@ -1,0 +1,554 @@
+#!/usr/bin/env python3
+"""Render and check Kanade's SDDM theme (dist/sddm/kanade) without touching the session or SDDM.
+
+    scripts/sddm-preview [--out DIR] [--only NAME ...]   render every state and check the geometry
+    scripts/sddm-preview stage DIR [--qt 5|6]            copy the theme to DIR, as the Qt 5 or Qt 6 one
+
+Runs, each under its own Xvfb on a free display (never the user's Wayland session: WAYLAND_DISPLAY
+is unset) or under Qt's offscreen platform, and PNGs and logs land in OUT (default $XDG_RUNTIME_DIR/sddm-preview, else a private temp dir):
+
+  qt6-1080       preview/harness.qml under qml6, 1920x1080
+  qt6-4k         the same on a 3840x2160 screen at QT_SCALE_FACTOR=2 (a 1920x1080 layout, 4k PNGs)
+  qt6-software   offscreen, software renderer, 800x800: the pill, text and field must survive
+  qt5-1080       the same harness under qml-qt5, if installed
+  qt5-software   likewise
+  greeter-qt6    sddm-greeter-qt6 --test-mode on the real Main.qml: PNGs of idle, typing, wrong password
+  greeter-qt5    sddm-greeter --test-mode, on the theme staged for Qt 5 (only metadata.desktop differs)
+  greeter-niri   a theme.conf.user with session=Niri: the login must read niri.desktop
+  greeter-broken a theme.conf.user of garbage: the lock screen's look must still be there
+
+The theme dir is staged into OUT/stage first, with test images in data/ (a backdrop, a light one
+and a face) that are not part of the theme. Exit status is 0 only when every check passes.
+Needs Xvfb, qml6, Python 3 and libX11/libXtst (for the greeter's keys); ImageMagick's `import` for
+the greeter's screenshots. Not installed, not run by CI.
+"""
+
+import argparse
+import ctypes
+import json
+import math
+import os
+import re
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import zlib
+from pathlib import Path
+
+root = Path(__file__).resolve().parent.parent
+theme = root / "dist" / "sddm" / "kanade"
+harness = root / "dist" / "sddm" / "preview" / "harness.qml"
+
+# what in a log is a QML fault
+FAULT = re.compile(
+    r"ReferenceError|TypeError|is not defined|is not a function|Unable to assign|Cannot assign|"
+    r"Binding loop|unavailable|is not installed|Cannot read property|QML .*: (?!Cannot open)",
+)
+# the test images are in `data/`, and a scenario names one that is missing on purpose
+EXPECTED = re.compile(r"Cannot open: (.*/data/missing\.png|file:///usr/local/share/kanade-sddm-data/backdrop\.png)$|propertyCache")
+
+
+def stage(into, qt):
+    """Copies the theme to `into` for Qt `qt`; only metadata.desktop differs between the two."""
+    into = Path(os.path.abspath(into))
+    if into.is_symlink() or (into.exists() and not into.is_dir()) or into.parent.resolve() != into.parent:
+        sys.exit(f"{into} is, or sits under, a symlink or a non-directory; not touching it")
+    if into.exists():
+        # only a copy of this theme is replaced, never a directory that happens to be named
+        marker = into / "metadata.desktop"
+        if not marker.is_file() or "Theme-Id=kanade" not in marker.read_text(errors="replace").splitlines():
+            sys.exit(f"{into} exists and is not a staged Kanade theme (no metadata.desktop with Theme-Id=kanade); not replacing it")
+        shutil.rmtree(into)
+    shutil.copytree(theme, into)
+
+    meta = into / "metadata.desktop"
+    text = meta.read_text()
+    meta.write_text(re.sub(r"(?m)^QtVersion=.*$", f"QtVersion={qt}", text))
+
+
+def png(path, width, height, pixel):
+    """Writes a PNG of `pixel(x, y) -> (r, g, b)`, with the standard library alone."""
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows += bytes(pixel(x, y))
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(rows), 6))
+        + chunk(b"IEND", b"")
+    )
+
+
+def images(into):
+    """A smooth backdrop as a blurred wallpaper reads, a light one, and a face that shows its crop."""
+    data = into / "data"
+    data.mkdir(exist_ok=True)
+
+    def wallpaper(x, y):
+        u, v = x / 640, y / 360
+        return (
+            int(40 + 90 * u + 40 * math.sin(v * 3)),
+            int(50 + 70 * v + 30 * math.sin(u * 5)),
+            int(120 + 80 * (1 - u) * v + 20 * math.sin((u + v) * 4)),
+        )
+
+    def light(x, y):
+        u, v = x / 640, y / 360
+        return (int(215 + 30 * u), int(205 + 40 * v), int(190 + 55 * (1 - u)))
+
+    def face(x, y):
+        # a wide picture, so the crop shows: warm left, cool right, a bright dot off the middle
+        if (x - 96) ** 2 + (y - 70) ** 2 < 24**2:
+            return (255, 245, 120)
+        return (230, int(120 + x / 3), int(60 + x / 2))
+
+    png(data / "backdrop.png", 640, 360, wallpaper)
+    png(data / "backdrop-light.png", 640, 360, light)
+    png(data / "face.png", 320, 160, face)
+
+
+def free_display():
+    for number in range(90, 100):
+        if not Path(f"/tmp/.X11-unix/X{number}").exists() and not Path(f"/tmp/.X{number}-lock").exists():
+            return number
+    sys.exit("no free display from :90 to :99")
+
+
+class Xvfb:
+    def __init__(self, width, height):
+        self.number = free_display()
+        self.process = subprocess.Popen(
+            ["Xvfb", f":{self.number}", "-screen", "0", f"{width}x{height}x24", "-nolisten", "tcp"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        socket = Path(f"/tmp/.X11-unix/X{self.number}")
+        for _ in range(50):
+            if socket.exists():
+                break
+            time.sleep(0.1)
+        else:
+            self.process.kill()
+            sys.exit("Xvfb did not start")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.process.terminate()
+        try:
+            self.process.wait(5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+
+def environment(scratch, display=None, **extra):
+    """The session's own environment minus its Wayland socket, so nothing opens on the user's screen."""
+    env = {key: value for key, value in os.environ.items() if key not in ("WAYLAND_DISPLAY", "DISPLAY")}
+    env.update(HOME=str(scratch), XDG_RUNTIME_DIR=str(scratch), QT_FORCE_STDERR_LOGGING="1")
+    if display is None:
+        env["QT_QPA_PLATFORM"] = "offscreen"
+    else:
+        env.update(DISPLAY=f":{display}", QT_QPA_PLATFORM="xcb", QSG_RHI_BACKEND="opengl")
+    env.update(extra)
+    return env
+
+
+def expected(p):
+    """What the lock screen's numbers (crates/lock/src/paint.rs) put where, for a scale-1 probe."""
+    width, height = p["width"], p["height"]
+    middle = width / 2
+    field_top = height * 0.92 - 20 - 20 - 36
+    name_height = p["name"]["ascent"] + p["name"]["descent"]
+    name_top = field_top - 20 - name_height
+    shaken = 0.0
+    return {
+        "middle": middle,
+        "date_top": height * 0.09,
+        "field_top": field_top,
+        "name_top": name_top,
+        "avatar_top": name_top - 20 - 72,
+        "status_center": height * 0.92 - 20 + 10,
+        "shaken": shaken,
+    }
+
+
+def check(p, wrong_at):
+    """Failures of the geometry of probe `p` against the lock screen's numbers, within 1 px."""
+    failed = []
+
+    def near(what, got, want, slack=1.0):
+        if got is None or abs(got - want) > slack:
+            failed.append(f"{p['scenario']}: {what} {got} != {want}")
+
+    name = p["scenario"]
+    if p["ui"] != 1:
+        return failed
+
+    e = expected(p)
+    middle = e["middle"]
+
+    # the date's ascender top, and the time's capitals 8 px under the date's descender
+    near("date ascender top", p["date"]["baseline"] - p["date"]["ascent"], e["date_top"])
+    near("time cap top", p["time"]["baseline"] - p["time"]["cap"], p["date"]["baseline"] + p["date"]["descent"] + 8)
+    near("date centered", p["date"]["box"]["x"] + p["date"]["box"]["width"] / 2, middle)
+    near("time centered", p["time"]["box"]["x"] + p["time"]["box"]["width"] / 2, middle)
+    near("date size", p["date"]["size"], 24, 0)
+
+    # the field: 240 by 36, 0.92 of the height up from the foot minus the status and a gap
+    near("field top", p["field"]["y"], e["field_top"])
+    near("field width", p["field"]["width"], 240, 0)
+    near("field height", p["field"]["height"], 36, 0)
+
+    shake_name = {"wrong-start": 0.0, "wrong-peak": 0.036, "wrong-mid": 0.15}.get(name)
+    shaken = 0.0
+    if shake_name is not None:
+        shaken = 12 * math.sin(shake_name / 0.5 * 3.5 * math.tau) * (1 - shake_name / 0.5) ** 2
+    near("field left (with the shake)", p["field"]["x"], middle - 120 + shaken)
+    near("shake", p["shaken"], shaken, 0.01)
+
+    # the name 20 px over the field, the avatar 20 px over that, 72 across
+    near("avatar top", p["avatar"]["y"], e["avatar_top"])
+    near("avatar size", p["avatar"]["width"], 72, 0)
+    near("avatar left", p["avatar"]["x"], middle - 36)
+    near("name baseline", p["name"]["baseline"], e["name_top"] + p["name"]["ascent"])
+
+    # the status row ends at 0.92 of the height; its text is centered in 20 px
+    if p["status"]["visible"]:
+        near("status centered in its row", p["status"]["baseline"] - p["status"]["cap"] / 2, e["status_center"])
+
+    # dots: a character each as many as fit, with a caps lock arrow and layout label taking room
+    room = (22 if p["caps"] else 0) + (32 if p["layouts"] > 1 else 0)
+    fit = int(max(0, (240 - 36 - room - 7) / 11)) + 1
+    near("dots", p["dots"], min(p["typed"], fit), 0)
+
+    caret_x = p["field"]["x"] + 18 if p["dots"] == 0 else p["field"]["x"] + 18 + (p["dots"] - 1) * 11 + 7 + 3
+    near("caret x", p["caret"]["box"]["x"], caret_x)
+    near("caret height", p["caret"]["box"]["height"], 18, 0)
+    near("caret width", p["caret"]["box"]["width"], 1.5, 0)
+    near("caret top", p["caret"]["box"]["y"], p["field"]["y"] + 9)
+
+    if p["typed"] == 0:
+        near("placeholder x", p["placeholder"]["x"], p["field"]["x"] + 22)
+    if p["placeholder"]["visible"] != (p["typed"] == 0):
+        failed.append(f"{name}: placeholder visible {p['placeholder']['visible']} with {p['typed']} typed")
+
+    # the backdrop the theme settles on: the overlay's own files and the theme's, nothing else
+    data = "/usr/local/share/kanade-sddm-data/"
+    allowed = {
+        "bg-overlay": data + "backdrop.png",
+        "bg-overlay-webp": "",
+        "pictured": "data/backdrop.png",
+        "second-screen": "data/backdrop.png",
+    }
+    if name.startswith("bg-") or name in allowed or name.startswith("garbage"):
+        got = p["backdrop"]["path"]
+        want = allowed.get(name, "")
+        if got != want:
+            failed.append(f"{name}: backdrop path {got!r} != {want!r}")
+        source = p["backdrop"]["source"]
+        if want.startswith("/") != source.startswith("file://" + data):
+            failed.append(f"{name}: backdrop source {source!r} for path {want!r}")
+        if not want and source:
+            failed.append(f"{name}: backdrop source {source!r} where none is allowed")
+
+    texts = {
+        "idle": ("Friday, 16 October", "09:41"),
+        "h12": ("Friday, 16 October", "2:07 PM"),
+        "h12-midnight": ("Tuesday, 6 October", "12:05 AM"),
+    }
+    if name in texts:
+        if (p["date"]["text"], p["time"]["text"]) != texts[name]:
+            failed.append(f"{name}: texts {p['date']['text']!r} {p['time']['text']!r} != {texts[name]!r}")
+
+    # manual entry: the username pill is at the name's row, same width and height as the password field
+    if p.get("manual"):
+        mp = p.get("manualPill")
+        if mp is None:
+            failed.append(f"{name}: manual is true but manualPill is missing")
+        else:
+            near("manual pill width", mp["width"], 240, 0)
+            near("manual pill height", mp["height"], 36, 0)
+            near("manual pill centered", mp["x"] + mp["width"] / 2, middle)
+
+    # late-users: greeter built with empty users, then users filled in after reset; manual must
+    # clear once the list arrives, showing the listed user's name, not the empty username pill
+    if name == "late-users":
+        if p.get("manual"):
+            failed.append(f"{name}: manual is true after users arrived (the binding was lost)")
+        if p["name"]["text"] != "Kanade":
+            failed.append(f"{name}: name text is {p['name']['text']!r}, not 'Kanade'")
+
+    return failed
+
+
+def render(label, binary, out, scratch, only, width, height, size=None, scale=1, software=False):
+    """Runs the harness once; returns (probes, log lines, failures)."""
+    shots = out / label
+    shots.mkdir(parents=True, exist_ok=True)
+    command = [
+        binary, str(harness), "--", f"theme={out / 'stage' / ('kanade-qt5' if 'qt5' in label else 'kanade')}",
+        f"out={shots}", f"width={width}", f"height={height}",
+    ]
+    log = shots / "log.txt"
+
+    def run(env):
+        with open(log, "w") as sink:
+            return subprocess.run(command, env=env, stdout=sink, stderr=subprocess.STDOUT, timeout=240).returncode
+
+    if software:
+        code = run(environment(scratch, None, QT_QUICK_BACKEND="software", QT_SCALE_FACTOR=str(scale)))
+    else:
+        with Xvfb(*(size or (width, height))) as x:
+            code = run(environment(scratch, x.number, QT_SCALE_FACTOR=str(scale)))
+
+    probes, faults, multi = [], [], []
+    for line in log.read_text().splitlines():
+        # Qt prefixes console.log with "qml: "
+        if "MULTI " in line:
+            for what, ok in json.loads(line.split("MULTI ", 1)[1]).items():
+                want = {"oneLogin": 1, "nextLogin": 2, "nextBy": 3, "long": 4096}.get(what, True)
+                if ok != want:
+                    faults.append(f"two screens: {what} is {ok!r}, not {want!r}")
+            multi.append(line)
+        elif "PROBE-ERROR" in line:
+            faults.append(line)
+        elif "PROBE " in line:
+            probes.append(json.loads(line.split("PROBE ", 1)[1]))
+        elif FAULT.search(line) and not EXPECTED.search(line):
+            faults.append(line.strip())
+    if not multi:
+        faults.append("the two-screens check did not run")
+    if code != 0:
+        faults.append(f"harness exited {code}")
+    return probes, faults
+
+
+# ---- the real greeter, driven with X's test extension
+
+class Keys:
+    def __init__(self, display):
+        self.x11 = ctypes.CDLL("libX11.so.6")
+        self.xtst = ctypes.CDLL("libXtst.so.6")
+        self.x11.XOpenDisplay.restype = ctypes.c_void_p
+        self.x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        self.x11.XStringToKeysym.restype = ctypes.c_ulong
+        self.x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+        self.x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+        self.x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.x11.XFlush.argtypes = [ctypes.c_void_p]
+        self.xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+        self.xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+        self.display = self.x11.XOpenDisplay(f":{display}".encode())
+        if not self.display:
+            sys.exit("cannot open the X display to type into")
+
+    def press(self, keysym):
+        code = self.x11.XKeysymToKeycode(self.display, self.x11.XStringToKeysym(keysym.encode()))
+        for down in (1, 0):
+            self.xtst.XTestFakeKeyEvent(self.display, code, down, 0)
+            self.x11.XFlush(self.display)
+            time.sleep(0.03)
+
+    def type(self, text):
+        for letter in text:
+            self.press(letter)
+
+    def point(self, x, y):
+        self.xtst.XTestFakeMotionEvent(self.display, 0, x, y, 0)
+        self.x11.XFlush(self.display)
+
+
+def shot(display, path):
+    subprocess.run(["import", "-window", "root", str(path)], env={**os.environ, "DISPLAY": f":{display}"},
+                   check=True, stderr=subprocess.DEVNULL)
+
+
+def bright(path):
+    """The brightest pixel in the clock's area: a drawn clock is white on the dark screen."""
+    done = subprocess.run(["magick", str(path), "-crop", "700x200+610+90", "-colorspace", "Gray",
+                           "-format", "%[fx:maxima]", "info:"], capture_output=True, text=True)
+    return float(done.stdout or 0)
+
+
+def greeter(label, binary, themedir, out, scratch, conf=None, session=None):
+    """Starts the real greeter in test mode, types into it, and returns failures.
+
+    `conf` is written as theme.conf.user next to a copy of the theme; `session` is the file the
+    login must read (SDDM resolves the session index to its .desktop file when logging in)."""
+    shots = out / label
+    shots.mkdir(parents=True, exist_ok=True)
+    failed = []
+    since = time.strftime("%Y-%m-%d %H:%M:%S")
+    if conf is not None:
+        copy = scratch / label
+        shutil.copytree(themedir, copy)
+        (copy / "theme.conf.user").write_text(conf)
+        themedir = copy
+
+    with Xvfb(1920, 1080) as x:
+        log = shots / "log.txt"
+        with open(log, "w") as sink:
+            process = subprocess.Popen([binary, "--test-mode", "--theme", str(themedir)],
+                                       env=environment(scratch, x.number), stdout=sink, stderr=subprocess.STDOUT)
+            time.sleep(5)
+            if process.poll() is not None:
+                failed.append(f"{label}: the greeter exited early with {process.returncode}")
+            else:
+                keys = Keys(x.number)
+                keys.point(960, 500)
+                shot(x.number, shots / "idle.png")
+                keys.type("hunter2")
+                time.sleep(0.5)
+                shot(x.number, shots / "typing.png")
+                if bright(shots / "idle.png") < 0.8:
+                    failed.append(f"{label}: the clock is not on the screen")
+                keys.press("Return")
+                time.sleep(0.15)
+                shot(x.number, shots / "checking-or-wrong-early.png")
+                time.sleep(1.2)
+                shot(x.number, shots / "wrong-or-after.png")
+                time.sleep(1.0)
+                shot(x.number, shots / "after.png")
+                keys.press("Tab")
+                time.sleep(0.3)
+                shot(x.number, shots / "ring.png")
+                # on to the session chip, pressed twice with the keys: it cycles and keeps the ring
+                keys.press("Tab")
+                keys.press("Return")
+                keys.press("Return")
+                time.sleep(0.3)
+                shot(x.number, shots / "session-cycled.png")
+                keys.press("Escape")
+                time.sleep(0.3)
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    code = process.wait(8)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    code = None
+                    failed.append(f"{label}: the greeter did not stop on SIGTERM")
+                else:
+                    # SDDM's greeter answers SIGTERM with its own handler and exit status 255,
+                    # whatever the theme (a bare Rectangle theme does the same); that is its clean stop
+                    caught = "Signal received: SIGTERM" in log.read_text()
+                    if code not in (0, -signal.SIGTERM) and not (code == 255 and caught):
+                        failed.append(f"{label}: the greeter exited with {code}")
+
+    lines = log.read_text().splitlines()
+    for line in lines:
+        if FAULT.search(line) and not EXPECTED.search(line):
+            failed.append(f"{label}: {line.strip()}")
+    if session:
+        loaded = [i for i, line in enumerate(lines) if line.startswith("Loading file:")]
+        reads = [line for line in lines[loaded[0]:] if line.startswith("Reading from")] if loaded else []
+        if not reads or not reads[-1].rstrip('"').endswith(session):
+            failed.append(f"{label}: the login did not read {session}: {reads[-1:] or 'nothing'}")
+
+    tags = [Path(binary).name]
+    for tag in tags:
+        journal = subprocess.run(["journalctl", "-t", tag, "--since", since, "--no-pager", "-q"],
+                                 capture_output=True, text=True).stdout.strip()
+        (shots / "journal.txt").write_text(journal + "\n")
+        if journal:
+            failed.append(f"{label}: journal has {len(journal.splitlines())} line(s) for {tag}")
+    return failed
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--out", help="where PNGs and logs go (default: sddm-preview in $XDG_RUNTIME_DIR, else a new private temp dir)")
+    parser.add_argument("--only", nargs="*", help="run names to run")
+    parser.add_argument("command", nargs="*")
+    parser.add_argument("--qt", default="6", choices=["5", "6"])
+    args = parser.parse_args()
+
+    if args.command[:1] == ["stage"]:
+        if len(args.command) != 2:
+            sys.exit("usage: scripts/sddm-preview stage DIR [--qt 5|6]")
+        stage(Path(args.command[1]), args.qt)
+        print(f"staged {args.command[1]} for Qt {args.qt}")
+        return 0
+
+    if args.out:
+        out = Path(args.out)
+    else:
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        out = Path(runtime) / "sddm-preview" if runtime and os.path.isdir(runtime) else Path(tempfile.mkdtemp(prefix="sddm-preview-"))
+    out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if out.stat().st_uid != os.getuid():
+        sys.exit(f"{out} belongs to someone else")
+    stages = out / "stage"
+    stages.mkdir(exist_ok=True)
+    stage(stages / "kanade", 6)
+    stage(stages / "kanade-qt5", 5)
+    images(stages / "kanade")
+    images(stages / "kanade-qt5")
+
+    scratch = Path(tempfile.mkdtemp(prefix="sddm-preview-"))
+    os.chmod(scratch, 0o700)
+    failed = []
+
+    runs = [
+        ("qt6-1080", "qml6", dict(width=1920, height=1080)),
+        ("qt6-4k", "qml6", dict(width=1920, height=1080, size=(3840, 2160), scale=2)),
+        ("qt6-software", "qml6", dict(width=800, height=800, software=True)),
+    ]
+    if shutil.which("qml-qt5"):
+        runs += [
+            ("qt5-1080", "qml-qt5", dict(width=1920, height=1080)),
+            ("qt5-software", "qml-qt5", dict(width=800, height=800, software=True)),
+        ]
+
+    try:
+        for label, binary, options in runs:
+            if args.only and label not in args.only:
+                continue
+            probes, faults = render(label, binary, out, scratch, args.only, **options)
+            wrong = [problem for probe in probes for problem in check(probe, None)]
+            print(f"{label}: {len(probes)} states, {len(faults)} faults, {len(wrong)} geometry misses")
+            failed += [f"{label}: {line}" for line in faults + wrong]
+            if len(probes) != 40:
+                failed.append(f"{label}: {len(probes)} of 40 states rendered")
+
+        # the last two: theme.conf.user picks a session by name; and a theme.conf.user of garbage
+        picks = "[General]\nsession=Niri\n"
+        broken = ("[General]\nbackdrop=/etc/shadow\nface=../../../etc/passwd\nshade=banana\nfont=((((\n"
+                  "clock24=perhaps\nscale=1e999\nsession=nonexistent\nsurface=#xyz\n[[[ not ini\n")
+        for label, binary, themedir, extra in (
+            ("greeter-qt6", "sddm-greeter-qt6", stages / "kanade", {}),
+            ("greeter-qt5", "sddm-greeter", stages / "kanade-qt5", {}),
+            ("greeter-niri", "sddm-greeter-qt6", stages / "kanade", dict(conf=picks, session="/niri.desktop")),
+            ("greeter-broken", "sddm-greeter-qt6", stages / "kanade", dict(conf=broken)),
+        ):
+            if args.only and label not in args.only:
+                continue
+            if not shutil.which(binary):
+                print(f"{label}: {binary} is not installed, skipped")
+                continue
+            problems = greeter(label, binary, themedir, out, scratch, **extra)
+            print(f"{label}: {len(problems)} problems")
+            failed += problems
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    for line in failed:
+        print("FAIL", line)
+    print(f"PNGs and logs under {out}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

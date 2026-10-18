@@ -18,12 +18,15 @@ use std::process::{Command, ExitCode};
 use crate::bus::{Argument, Bus};
 
 use crate::cli::{self, Reply};
-use crate::config::{self, Config};
+use crate::config::{self, Config, Preference};
 use crate::lock;
 use crate::look::{Finish, Visualizer};
 use crate::modules::{self, Module, Provider};
+use crate::sddm;
 use crate::sources::json::Json;
-use crate::sources::{binds, bus, cava, clipboard, keys, niri, pipewire, radios, sound, wallpaper};
+use crate::sources::{
+    binds, bus, cava, clipboard, keys, niri, pipewire, radios, recording, sound, wake, wallpaper,
+};
 
 // the oldest niri Kanade follows (docs/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
@@ -137,8 +140,10 @@ fn gather(shell: Check, pid: Option<u32>) -> Vec<Check> {
     checks.push(config_check(problems));
     checks.extend(modules(&config, running));
     checks.extend(backdrop(&config));
+    checks.extend(login_screen(&config));
     checks.extend(blur.then(blur_check).flatten());
     checks.extend(screencast_check(&config));
+    checks.extend(recording_check(&config));
     checks.extend(sounds(&config));
 
     checks
@@ -613,6 +618,82 @@ fn sounds(config: &Config) -> Vec<Check> {
     checks
 }
 
+// the login screen: Kanade writes an overlay SDDM reads, so say whether it is made, read and
+// readable by the sddm user, and whether a Qt greeter exists to draw it. Silent when the Module is
+// off; one line when the overlay is not made, which is how it starts
+fn login_screen(config: &Config) -> Vec<Check> {
+    if !modules::resolve(modules::ALL, |name| config.off(name)).on("sddm") {
+        return Vec::new();
+    }
+
+    let mut checks: Vec<Check> = sddm::findings(config)
+        .into_iter()
+        .map(|finding| {
+            let mut check = if finding.ok {
+                Check::ok(finding.text)
+            } else {
+                Check::warn(finding.text)
+            };
+            check.detail = finding.detail;
+            check
+        })
+        .collect();
+
+    let path = env::var_os("PATH");
+    let qt6_found = greeter_found("sddm-greeter-qt6", path.as_ref());
+    let qt5_found = greeter_found("sddm-greeter", path.as_ref());
+    let theme_qt = sddm::configured_qt_version(config);
+    let made = checks.len() > 1;
+
+    let greeter_check = match (qt6_found, qt5_found) {
+        (Some(qt6), _) if theme_qt == 6 => Check::ok(format!("sddm: greeter {qt6}")),
+        (_, Some(qt5)) if theme_qt == 5 => Check::ok(format!("sddm: greeter {qt5}")),
+        (None, Some(qt5)) if theme_qt == 6 => Check::warn(format!(
+            "sddm: theme requests QtVersion=6, but only {qt5} (Qt5) was found (install sddm-greeter-qt6)"
+        )),
+        (Some(qt6), None) if theme_qt == 5 => Check::warn(format!(
+            "sddm: theme requests QtVersion=5, but only {qt6} (Qt6) was found (install sddm-greeter)"
+        )),
+        (Some(qt6), _) => Check::ok(format!("sddm: greeter {qt6}")),
+        (_, Some(qt5)) => Check::ok(format!("sddm: greeter {qt5}")),
+        (None, None) if made => Check::warn(format!(
+            "sddm: none of {} was found, so there is no Qt greeter to draw the theme",
+            SDDM_GREETERS.join(", ")
+        )),
+        (None, None) => Check::ok(format!(
+            "sddm: none of {} was found (SDDM is not installed?)",
+            SDDM_GREETERS.join(", ")
+        )),
+    };
+    checks.push(greeter_check);
+
+    checks
+}
+
+const SDDM_GREETERS: &[&str] = &["sddm-greeter-qt6", "sddm-greeter"];
+const SDDM_GREETER_DIRS: &[&str] = &["/usr/libexec", "/usr/lib/sddm", "/usr/lib64/sddm"];
+
+fn greeter_found(program: &str, path: Option<impl AsRef<OsStr>>) -> Option<String> {
+    greeter_found_in(program, path, SDDM_GREETER_DIRS)
+}
+
+fn greeter_found_in(
+    program: &str,
+    path: Option<impl AsRef<OsStr>>,
+    system_dirs: &[impl AsRef<Path>],
+) -> Option<String> {
+    if let Found::Present(found) = program_found(program, path) {
+        return Some(found);
+    }
+    for dir in system_dirs {
+        let candidate = dir.as_ref().join(program);
+        if executable(&candidate) {
+            return Some(format!("{program} at {}", candidate.display()));
+        }
+    }
+    None
+}
+
 // whether a process of this name runs, as `/proc/<pid>/comm` names it
 fn process_running(name: &str) -> bool {
     let Ok(entries) = fs::read_dir("/proc") else {
@@ -674,7 +755,7 @@ fn pam_found(service: &str, file: Option<PathBuf>) -> Found {
 
 /*
  * whether niri's overview shows the wallpaper: it draws a Background layer in the overview only
- * under a layer rule with `place-within-backdrop`, in the config Kanade never edits. Asked only
+ * under a layer rule with `place-within-backdrop`, in niri's config (edited by Kanade only on request). Asked only
  * while the `wallpaper` Module runs awww, whose layers are named `awww-daemon`. Kanade's own
  * layers are Top, Bottom or Overlay, which the rule does not apply to
  */
@@ -722,7 +803,7 @@ const BLURRED: [&str; 3] = ["kanade", "kanade-dock", "kanade-banners"];
 
 /*
  * whether niri blurs the windows behind Kanade's panes, not only the wallpaper: it blurs what a
- * layer asks for xray, the wallpaper alone, unless a layer rule in the config Kanade never edits
+ * layer asks for xray, the wallpaper alone, unless a layer rule in niri's config (edited by Kanade only on request)
  * sets `background-effect { xray false }` (ADR 0057). Asked only while the finish is `blur`
  */
 fn blur_check() -> Option<Check> {
@@ -757,7 +838,7 @@ fn blur_check() -> Option<Check> {
 
 /*
  * whether Banners, which show a notification's text, are hidden from screencasts: only by an
- * opt-in layer rule in the config Kanade never edits, never a warning (ADR 0070). Asked only
+ * opt-in layer rule in niri's config (edited by Kanade only on request), never a warning (ADR 0070). Asked only
  * while the `banners` Module runs
  */
 fn screencast_check(config: &Config) -> Option<Check> {
@@ -792,6 +873,83 @@ fn screencast_check(config: &Config) -> Option<Check> {
             unread.file.display(),
             unread.why
         )),
+    })
+}
+
+/*
+ * the encoder a recording would use, which encodes a frame to find out (ADR 0116, Update): ok on a
+ * GPU's, a warning on the CPU's, which costs processor time, unless `encoder = software` asked
+ * for it, and a failure with none. Always tried afresh, not as a recording remembers. Why, and
+ * what to install for a GPU that is not used. Asked only while the `capture` Module runs and
+ * `wf-recorder` is there
+ */
+fn recording_check(config: &Config) -> Option<Check> {
+    if !modules::resolve(modules::ALL, |name| config.off(name)).on("capture")
+        || !wake::found(recording::RECORDER)
+    {
+        return None;
+    }
+
+    let report = recording::report(&config.recording);
+    let mut detail = report.notes;
+    let window_failed = match &report.window {
+        Some(Ok(line)) => {
+            detail.push(line.clone());
+            false
+        }
+        Some(Err(line)) => {
+            detail.push(line.clone());
+            true
+        }
+        None => false,
+    };
+
+    detail.extend(
+        report
+            .hints
+            .iter()
+            .map(|hint| format!("install {hint} to record on the GPU")),
+    );
+
+    let quality = config.recording.quality.name();
+
+    let check = match (report.encoder, report.gpu) {
+        (Some(encoder), true) => Check {
+            detail,
+            ..Check::ok(format!(
+                "recording: {encoder}, quality {quality} (quantizer {})",
+                report.quantizer.unwrap_or_default()
+            ))
+        },
+        (Some(encoder), false) if config.recording.encoder == Preference::Software => Check {
+            detail,
+            ..Check::ok(format!(
+                "recording: {encoder}, as set, quality {quality} (crf {})",
+                report.quantizer.unwrap_or_default()
+            ))
+        },
+        (Some(encoder), false) => Check {
+            detail,
+            ..Check::warn(format!(
+                "recording: {encoder} on the CPU, quality {quality} (crf {})",
+                report.quantizer.unwrap_or_default()
+            ))
+        },
+        (None, _) => Check {
+            detail,
+            ..Check::fail(String::from(
+                "recording: no encoder works; install ffmpeg with libx264, or a GPU driver",
+            ))
+        },
+    };
+
+    // recording a screen or an area does not need GStreamer: only a window's chain is in doubt
+    Some(match check.verdict {
+        Verdict::Ok if window_failed => Check {
+            verdict: Verdict::Warn,
+            ..check
+        },
+        _ => check,
     })
 }
 
@@ -838,5 +996,73 @@ fn holder(name: &str, holder: Option<String>, running: bool) -> Found {
         Some(other) => Found::Taken(format!("{other} holds {name}")),
         None if running => Found::Missing(format!("{name} held by no one")),
         None => Found::Present(format!("{name} free, Kanade takes it at start")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_checks_sddm_greeter_qt_version_compatibility() {
+        let temp = std::env::temp_dir().join(format!("kanade-doctor-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+
+        // Create only sddm-greeter (Qt5)
+        let qt5 = temp.join("sddm-greeter");
+        fs::write(&qt5, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&qt5, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let new_path = std::env::join_paths(std::iter::once(temp.clone())).unwrap();
+
+        let _config = Config {
+            off: vec![],
+            ..Config::default()
+        };
+
+        // Kanade default theme requires QtVersion 6
+        let qt6_found = match program_found("sddm-greeter-qt6", Some(&new_path)) {
+            Found::Present(found) => Some(found),
+            _ => None,
+        };
+        let qt5_found = match program_found("sddm-greeter", Some(&new_path)) {
+            Found::Present(found) => Some(found),
+            _ => None,
+        };
+        assert!(qt6_found.is_none());
+        assert!(qt5_found.is_some());
+
+        let theme_qt = 6;
+        let mismatch = matches!(
+            (qt6_found.as_ref(), qt5_found.as_ref()),
+            (None, Some(_)) if theme_qt == 6
+        );
+        assert!(
+            mismatch,
+            "mismatch detected when only Qt5 greeter is present for Qt6 theme"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn doctor_finds_greeter_in_candidate_system_dirs() {
+        let temp =
+            std::env::temp_dir().join(format!("kanade-doctor-sysdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let lib_dir = temp.join("usr/lib/sddm");
+        fs::create_dir_all(&lib_dir).unwrap();
+
+        let greeter = lib_dir.join("sddm-greeter-qt6");
+        fs::write(&greeter, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&greeter, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let empty_path: Option<&std::ffi::OsStr> = None;
+        let found = greeter_found_in("sddm-greeter-qt6", empty_path, &[&lib_dir]);
+        assert!(found.is_some());
+        assert!(found.unwrap().contains(&greeter.display().to_string()));
+
+        let _ = fs::remove_dir_all(&temp);
     }
 }

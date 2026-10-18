@@ -52,7 +52,12 @@ def build():
 
 def stop(shell):
     if shell is not None and shell.poll() is None:
-        shell.kill()
+        # SIGTERM first: the shell puts back a monitor change on trial before it ends (3 s at most)
+        shell.terminate()
+        try:
+            shell.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            shell.kill()
         # waiting collects the exit status so the old shell does not linger as a zombie
         shell.wait()
 

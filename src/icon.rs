@@ -84,6 +84,7 @@ const GRID: &str = include_str!("icons/grid.svg");
 const DATA: &str = include_str!("icons/data.svg");
 const UNDO: &str = include_str!("icons/undo.svg");
 const SLIDERS: &str = include_str!("icons/sliders.svg");
+const COLUMNS: &str = include_str!("icons/columns.svg");
 
 // drawn, not a font's glyph, so it looks the same whatever fonts the machine has
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -196,6 +197,9 @@ pub(crate) enum Icon {
     Pulse,
     Grid,
     Data,
+
+    // niri's scrolling columns, for its config page
+    Columns,
 
     // Settings: taking back the last change, and showing the config's keys
     Undo,
@@ -330,6 +334,7 @@ impl Icon {
             Icon::Pulse => &[PULSE],
             Icon::Grid => &[GRID],
             Icon::Data => &[DATA],
+            Icon::Columns => &[COLUMNS],
             Icon::Undo => &[UNDO],
             Icon::Sliders => &[SLIDERS],
         }

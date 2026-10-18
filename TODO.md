@@ -212,6 +212,10 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] Banners: the reply fields are named per pane (`banner-reply-0..5`) and the runtime keeps text under that name, so two outputs showing a reply-capable Banner at once would share a draft. Banners show on the focused output only, so it needs niri's focus unknown (`focused_output` none).
 - [ ] E2E not reached: IME against a live fcitx5/ibus (none installed), the lock-screen layout label (needs two layouts), hold-to-confirm for Session, portal reduced-motion, `focus.auto` with a real cast. DDC/CI works on a Dell P1917S when the bus is given, but an NVIDIA connector has no `ddc` link, so no monitor is found: a fallback matching the connector's EDID to the `/dev/i2c-*` buses is the fix.
 
+## appearance.sync and the GTK file chooser
+
+- [ ] Not run on a live session: change the wallpaper or `appearance.tone` with `appearance.sync` on and a GTK file dialog reopened takes the new theme; `systemctl --user show -p ActiveEnterTimestamp xdg-desktop-portal-gtk` and `systemctl --user show -p ActiveEnterTimestamp xdg-desktop-portal-gnome` move, once per burst and at most every 30 s; with a unit stopped, it stays stopped. Only those two units are restarted, never `xdg-desktop-portal`. No `kanade doctor` note.
+
 ## Launcher commands and dictation (ADR 0111, 0112, low-level, unfixed)
 
 - [ ] Dictation's `paste` fallback copies the one-line `typed(text)`, so a multi-line dictation loses its line breaks on the fallback path.
@@ -241,12 +245,24 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] Not run: the Surface (thumbnails, the pin stop and button, the footer copy) and the idle numbers with a history of pictures.
 
 ## Recording targets, audio and pause (ADR 0116, unfixed)
+- [ ] Recording quality and encoder choice (ADR 0116, Update): quality verified live: pending Iris. Not verified through `wf-recorder`: `-F`, `-p rc_mode=CQP -p qp=N`, the color `-p` tags (read back as BT.709 limited from libavcodec given the same options, not from a `wf-recorder` file), `-d`, NVENC and software; the runtime software fallback; the window path's probe and elements, and `va<node>postproc` with `va<node>h264enc` on a second VA-API node.
+  - [ ] The 5 s wait for a recording to start includes the probe, which can take up to its 10 s limit on a GPU that sleeps; a first start can time out.
+  - [ ] `falls_back` starts software on any `Lost` without a frame, a vanished output among them, and then shows only the second error.
+  - [ ] The trial encode uses the encoder's default rate control, not constant quantizer, so it does not prove CQP works.
 - [x] Window recording (ADR 0117).
   - [ ] The window's cast shows in the privacy dots (pid null) beside the Recording Clip; not deduplicated against it.
   - [ ] Not verified live: a stop with no frame written, niri's Stop sharing on a window cast (is the recording saved?), a lock during a window cast, `mic`, a HiDPI window, a window that resizes, A/V sync, the Capture Surface's Rec Window pill, the Launcher's Record Window row, the "Saved, window closed" Clip, a second Kanade starting beside a window recording (its reclaim leaves the first's cast), the watchdog killing a stuck encoder.
   - [ ] Kanade has no shutdown hook: a graceful exit during a window recording leaves the cast until the next start reclaims it.
+  - [ ] Iris saw ffmpeg warn of a non-monotonic dts at the join of a paused window recording (two packets with one pts). Not reproduced with synthetic fragmented segments joined by `-f concat -c copy` (clean), so the last fragment's final packet probably has no duration in a real one, and the join offsets the next segment by it. Predates the quality branch (the join is ADR 0116's, the fragmented segments ADR 0117's). Look at a real pair with `ffprobe -show_packets`.
+  - [ ] A window's frames reach `ffmpeg` in bursts (4 frames, then ~134 ms) with VA-API, an average of 30.8 fps: it stamps by arrival (`-use_wallclock_as_timestamps`), so the encoder's batching shows in the file's times. Predates the quality branch (ADR 0117). Stamp from `pipewiresrc`'s own times if the cast gives usable ones, or smooth the arrival.
   - [ ] `recording.rs`, `classify_window`: a watchdog-SIGKILLed encoder classifies as Lost even when frames were written and the writer exited 0; accept as Written when escalation was requested.
   - [ ] `recording.rs`, `finish_encoder`: the stderr `said.join()` is unbounded; a descendant holding stderr would hang the follow thread. Bound it.
+  - [ ] `probe.rs`, `window`/`downloading`: when every trial overruns its limit, a start waits up to 2 x (N + 1) x 10 s (N Va nodes, the chosen encoder then software); overruns are not cached. Bound the whole.
+  - [ ] `encode.rs`, `va_element`: `first` assumes GStreamer names the elements of the lowest numbered non-NVIDIA render node `vah264enc`/`vapostproc` and the others `va<node>...`; `is_first` guesses it from the node names. Ask GStreamer (`gst-inspect-1.0 va`) instead.
+  - [ ] `probe.rs`, `downloading`: the `Probed::Unknown` arm in `downloading` (treated as working) is reached only when `gst-launch-1.0` is missing, and then `window_line` has already returned None and the start fails naming it; review called the arm unreachable in practice. Drop it or say why it stays.
+  - [ ] `recording.rs`, test `a_failed_start_gives_way_once_per_step_and_never_loops`: the walk re-implements the `no_va` / `software` transitions instead of calling `falls_back` and `gives_way`, so deleting `take.no_va = false` there fails no test. Extract a pure step function that both call and the test walks.
+  - [ ] `recording.rs`, `falls_back`, `Again::Software` arm: after a muxer-only failure the log says "the encoder failed to start" and `take.software` records the muxer's reason. Misleading text only.
+  - [ ] `recording.rs`, `follow_window`: if the muxer dies first, the encoder may end by SIGPIPE or the kill, so `!ok` blames the encoder and costs one extra, bounded EGL restart (the same blame rule as `classify_window`).
   - [ ] `recording.rs`, `classify_window`: Empty (no frame, encoder ok) can mask a real writer error; keep Empty only when the writer's stderr is empty or says no stream.
   - [ ] `recording.rs`, ledger: a reused pid inherits an old `window-casts.<pid>` ledger (negligible).
   - [ ] `THIRD_PARTY_NOTICES.md` says "Kanade vendors no other third-party code", but `vendor/vello_encoding` is vendored (its LICENSE files are present): correct the wording (pre-existing).
@@ -270,15 +286,57 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## Backlog (user, 2026-10)
 
-- [ ] Liquid glass: update it to match Vitreus (reference checkout at `/home/k/Projects/acknowledgements/Vitreus/`: `liquid.wgsl`, `cardrip.wgsl` and its README). A reference to learn from, not to copy; if code is ported, the license and acknowledgements rules apply (THIRD_PARTY_NOTICES.md).
+- [x] Liquid glass: update it to match Vitreus (reference checkout at `/home/k/Projects/acknowledgements/Vitreus/`: `liquid.wgsl`, `cardrip.wgsl` and its README). A reference to learn from, not to copy; if code is ported, the license and acknowledgements rules apply (THIRD_PARTY_NOTICES.md).
+  - Abandoned by the user; not done. The branch `feat/glass-frost-light` is kept.
 - [ ] Settings window: change it to GPUI (now the runtime's own UI).
   - Needs an ADR, and a decision on how it coexists with the runtime of ADR 0028.
-- [ ] niri config editor: edit niri's `config.kdl` from Kanade's settings.
-  - Validate with `niri validate`, keep comments, write atomically, undo.
-- [ ] SDDM: ask the user whether they want it; if so take a theme from qylock (check the actual repo and its licence before using any of it) or create our own.
+- [ ] niri config editor: edit niri's `config.kdl` from Kanade's settings (ADR 0119).
+  - Slice 1 done: the text engine and `kanade niri-config validate|get|set|remove|undo|backups|restore` (byte-span splices, `niri validate` before the replace, backup ring, undo; symlinks, include-owned nodes and repeated nodes refused).
+  - Slice 2 done: the Settings `niri` page (Layout, Focus ring and border, Input, Keyboard, Touchpad, Mouse, Cursor, Other) over the engine's new batch `apply`, with a worker thread, Reset, include-owned rows read-only and the footer's Undo. Not run on the session: the page itself (needs a live niri; the paths and extremes were checked with `niri validate` 26.04 in tests). Slice 3: symlinked configs, repeated nodes (`spawn-at-startup`, `window-rule`), offering the rules in Installation. Slice 4: `ConfigLoaded` as the reload confirmation (done for Outputs; not yet for the niri page itself), and a restart note for `spawn-at-startup`/`environment`.
+  - Outputs slice 2 done (code, unit-tested; not run on the session, since an agent may not change the live outputs): the Settings niri page's Outputs section with live try, a Keep/Revert bar with 15 s, the pending-revert file and its recovery at start (`src/settings/outputs*`). Slice 3: the layout canvas, `output` blocks of disconnected monitors. To check live on eDP-1 and HDMI-A-5: each control tried, Keep, Revert by button/Esc/timeout, closing Settings and killing Kanade (-9) mid-trial then restarting it, a rejected change, the last-output switch, VRR on-demand, a hot-plug.
+    - Outputs follow-up (Vera), done: `Real::run` (`niri msg output`) now runs through `appearance::child::run` with a 2 s timeout, returning `RunError::Refused` or `RunError::Unanswered`; an unanswered first edit keeps the trial (the deadline reverts it). `ConfigLoaded` is now the confirmation that niri loaded a Keep: the worker snapshots the counter before writing, waits up to 2 s for it to advance, and handles failed loads (revert), disagreements (keep the pending file) and timeouts (do not revert; compare). A Keep no longer deletes the pending file before niri confirms the reload; `confirm_keep` and `abandon_keep` split the step. Remaining from Vera: a panic in the worker leaves no timer; a recovery can overwrite or be overwritten by a new trial's file (a stale file vs a new trial); a Keep after the deadline but before the tick still writes; `vrr on-demand` is always sent again on recovery (it is invisible in IPC).
+    - `clock::on_terminate` also replaces an inherited ignored SIGINT (a background job of a script) with its handler; `main.rs` words a failure to start it as "SIGTERM will not put outputs back", which also covers SIGINT.
+    - Not run live (an agent may not change outputs): `niri msg output <name> position set -- -1920 0` (the `--` form is only from `--help` and clap's rules), SIGTERM mid-trial (`systemctl --user restart kanade` should put the monitor back before the restart), typing in a position field during the 15 s.
+  - Outputs slice 1 done (engine only, no UI): `output "<name>"` blocks addressed by ordinal, resolved as niri does (first match, includes in order, include-owned refused), properties (`position x= y=`, `variable-refresh-rate on-demand=true`), reset, and `kanade niri-config get|set|remove 'output["name"].key'` (ADR 0119 amendment). Slices 2-3 pending: the Settings Outputs section (live try over `niri msg output`, a confirm bar, a pending-revert file), then the canvas and the rest. Not run on the session: no `niri msg output` was run; the engine was tested on temp configs and `niri validate` only. `max-bpc` is not in niri 26.04's parser, so it is left out.
+  - Unfixed, low-level (review of outputs slice 1): `Props` set replaces the entry list and collapses its spacing (`x=0   y=0` becomes `x=1 y=2` with single spaces); comments between the entries of a `Props` node are dropped on Set; bidirectional control characters in an output name are written as is; the message of a remove of a never-set `variable-refresh-rate` reads `variable-refresh-rate =  (was ...)` with an empty value in one path.
+  - Checked for the class of the border bug (a node niri reads from a block's presence): only `layout.border` reads a bare block as on; the other rows are values or presence-only flags, whose absence is niri's default. `layout.focus-ring`/`shadow` blocks with neither flag keep their default. Not checked: other blocks niri 26.04 may treat so outside the page's table (`hot-corners`, `animations`, `tab-indicator`, `insert-hint`).
+  - Low-level, unfixed: a search of one or two letters ("n", "ni") lists all 66 rows, as `niri_page::mentions` matches inside words and descriptions.
+  - Low-level, unfixed: a panicked worker leaves its rows busy (`Saving…`) until the window reopens.
+  - Low-level, unfixed: Undo can undo a CLI change made after the page's own change; the engine's hash check still gates it, but the change it reverts is not the page's.
+  - An include that newly starts setting a watched path is stamped only from the next read on; a change to it before that shows when the page is next read.
+  - Not run on the session: the CLI was run on a copy of the config only, never the live file.
+  - Unfixed, low-level (review of slice 1): SIGINT/SIGTERM while `niri validate` runs leaves a hidden `.config.kdl.<pid>.<n>.part` beside the config (the staged file is deleted only on a normal return). Cosmetic: an indented `include "kanade.kdl"` gets the new node at the node's start, leaving a whitespace-only line, and a file mixing tabs and spaces gets an odd indent.
+- [x] SDDM: our own theme, `kanade sddm` and the overlay (ADR 0120, `docs/wiki/SDDM.md`); qylock was not used.
 - [x] Notification sound customization: per app and urgency, a chosen sound file, volume, or off; in the notifications Module and its config.
   - Done (ADR 0118): `notifications.sound_file`, `sound_low`/`_normal`/`_critical`, `sound_volume`, and rule `sound = "<file or name>"` with `volume`; Settings shows the switch, file and volume. Not run on the session: live playback through `pw-play` and `canberra-gtk-play` (volume, the missing-file note).
 - [x] Dock click behaviour: left click focuses the app, middle click opens a new instance, right click opens the application's actions (Desktop Entry actions).
   - Done: middle runs `Launch::run` through `dock::new_instance` (nothing for an app with no `.desktop` entry); left keeps cycling; right was already the menu with the actions. Not run on the session: the middle click.
 - [x] Clipboard Surface: remove the preview box (the large box that shows the full text of the selected entry, ADR 0114).
   - Done: the box is gone for text and images; rows keep their one-line preview and thumbnails and take its room; ADR 0114, the wiki and the design are updated. Not run on the session: the Surface's layout.
+- [ ] niri strip minimap Surface: the columns and windows of each workspace on niri's scrolling strip, click to focus. Nothing like it exists in Kanade.
+- [ ] Column and window controls from the Island, tied to the focused window: consume or expel, column width presets, move to workspace.
+- [ ] Per-app volume mixer in Controls (today only the output and input devices).
+- [ ] Emoji grid picker with recents, as a Surface (optional; `:emoji` search in the Launcher already exists).
+- [ ] Desktop widgets on the desktop layer (clock, weather, calendar, media); scope to be decided.
+
+## SDDM theme and `kanade sddm` (feat/sddm-theme, low-level, unfixed)
+
+- [x] Done with the CLI and docs: ADR 0120 and the wiki page; `theme list|info|use`, `enable|disable`; `sddm.sync` follows the wallpaper (coalesced, flock, no write through a link or a hard link, BOM-tolerant, a clear missing-overlay message); `kanade doctor` and Settings' Login screen page.
+- [ ] Control characters in a theme's file names are removed in `theme list|info` but not in every message that names a path (an error that echoes a file name).
+- [ ] `theme info|use <name>` echoes the raw `<name>` argument in its errors, before it is shown to be a plain directory name.
+- [ ] `installed_user`'s error "not a file of a reasonable size" is wrong: `class::read` truncates at 256 KiB, hides the open error, and silently truncates an oversized seed.
+- [ ] After a follow worker panics, a path submitted during the failed refresh stays pending until the next wallpaper change.
+- [ ] Doctor's "modes could not be checked" is noisy for a removed installed theme.
+- [ ] `follow::refresh` asks niri for the output size (`largest_output`) while holding the flock, which can delay `kanade sddm sync`.
+- [ ] A `theme use` that fails after the picture step leaves the picture removed (a class C theme such as maya writes none), so the still-selected theme has lost its picture; the setting is put back, the picture is not.
+- [ ] The Login screen page's header says "Enabled: SDDM reads the overlay" while a row beside it says "theme files: missing or out of date"; wording only.
+- [ ] The Login screen page's status is read when the page opens and by Refresh, not after a change to one of its rows; Refresh shows the new state.
+- [ ] Iris: the avatar overlaps the clock at 520x330 (a small login surface).
+- [ ] Iris: a Qt 5 greeter decodes a huge hand-set backdrop in `theme.conf.user` with no size cap; the theme cannot check a file's size from QML, so the wiki says to keep it small (Kanade's own picture stays under 16 MiB).
+- [ ] Not run live: the follow path in the running shell (the hook, the worker thread, the niri size query), the Settings page, a farmed third-party theme on a live greeter, and the class of every installed theme.
+- [ ] `plan`'s `walk` checks its entry cap only on entering a directory, so a single huge directory is read whole before it trips.
+- [ ] `status` says `theme.conf.user: written`, not whether it is stale against the config.
+- [ ] The "a third of the screen" text of the over-size error is approximate (each step shrinks each side by a quarter, up to four times).
+- [ ] `PREFIX` (Rust) and the overlay path in `Sanitize.js` are the same literal twice, with no cross-check between them.
+- [ ] The embedded `metadata.desktop` always says `QtVersion=6`; a Qt 5 SDDM needs the line changed by hand (`scripts/sddm-preview stage DIR --qt 5` does it for the preview only).
+- [ ] The conf-file sort is case-insensitive as sddm.conf(5) says, but not checked against SDDM's source; a wrong guess gives a benign false warning from `status`.

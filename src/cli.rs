@@ -30,7 +30,7 @@ use crate::sources::{
     night_light, niri, osd, power, recording, reminders, subscriptions, timer, wallpaper, weather,
 };
 use crate::surfaces::launcher::choose;
-use crate::{config, doctor, ui};
+use crate::{config, doctor, sddm, ui};
 
 // the one IPC handler the shell registers, which every verb goes through
 pub const HANDLER: &str = "kanade";
@@ -193,6 +193,26 @@ config validate <file>
   validate: says what a file alone would not apply, without a shell",
     ),
     (
+        "niri-config",
+        "Change single settings in niri's config.kdl, checked by niri and backed up",
+        "niri-config validate|backups|undo
+niri-config get <path>
+niri-config set <path> <value>
+niri-config remove <path>
+niri-config get|set|remove 'output[\"<name>\"].<key>'
+niri-config restore <n>|orig
+  <path>: dotted node names in niri's config, like layout.gaps or layout.focus-ring.off
+  <value>: true, false, a number or text; text that looks like a number in \"double quotes\"
+  output[\"<name>\"].<key>: a key of niri's `output \"<name>\"` block (off, scale, transform, position,
+    mode, variable-refresh-rate), the name in double quotes (\\\" and \\\\ inside); position and
+    variable-refresh-rate take properties, `x=1 y=2`, `on-demand=true`, or nothing for the bare node;
+    `remove output[\"<name>\"]` removes the keys above and the block if nothing else is in it
+  --config <file>: right after niri-config, another file than niri's own (NIRI_CONFIG is read too)
+  set, remove: splice the one node into the file, ask `niri validate` first, keep a backup
+  undo: puts back the last change while the file is as it left it
+  restore: <n> from `backups`, 1 the newest, or orig, the first bytes Kanade saw",
+    ),
+    (
         "doctor",
         "Check what Kanade runs on, without a shell",
         "doctor",
@@ -201,6 +221,19 @@ config validate <file>
         "help",
         "Show this list, or a command's arguments",
         "help [<command>]",
+    ),
+    (
+        "sddm",
+        "Write the login screen's look, without a shell",
+        "sddm status|setup|sync|enable|disable|theme list|theme info <name>|theme use <name>
+  status: what is written and out of date, and the commands to run as root (Kanade never runs them)
+  setup: as root, installs the built-in theme as a root-owned executable tree
+  sync: writes only the mutable backdrop data from the sddm.* keys
+  enable: sync, then the root commands that make SDDM read it
+  disable: removes the picture and stops following the wallpaper; prints the root command that stops SDDM reading the overlay
+  theme list: the installed themes, each with its class (A reads a picture setting, B a fixed file, C none, D a video)
+  theme info <name>: what Kanade finds in the theme and what sync does for it
+  theme use <name>: sets sddm.theme, writes the overlay, prints the root commands",
     ),
 ];
 
@@ -433,12 +466,21 @@ pub fn run(arguments: &[String]) -> ExitCode {
             );
         }
         ["doctor"] => return doctor::run(),
+        ["sddm", "status"] => return sddm::status(),
+        ["sddm", "setup"] => return sddm::setup(),
+        ["sddm", "sync"] => return sddm::sync(),
+        ["sddm", "enable"] => return sddm::enable(),
+        ["sddm", "disable"] => return sddm::disable(),
+        ["sddm", "theme", "list"] => return sddm::list(),
+        ["sddm", "theme", "info", name] => return sddm::info(name),
+        ["sddm", "theme", "use", name] => return sddm::use_theme(name),
         ["config", "defaults"] => return print(&config::defaults(), ExitCode::SUCCESS),
         ["config", "schema"] => return print(&keys::schema(), ExitCode::SUCCESS),
         ["config", "get", key] => return keyed(keys::get(key)),
         ["config", "set", key, value] => return keyed(keys::set(key, value)),
         ["config", "reset", key] => return keyed(keys::reset(key)),
         ["config", "validate", file] => return validated(file),
+        ["niri-config", ref rest @ ..] => return niri_config(rest),
         _ => {}
     }
 
@@ -588,6 +630,51 @@ fn keyed(said: Result<String, String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+// `niri-config`: niri's own config file, changed in this process like `config`; 2 for words that
+// are no form of it
+fn niri_config(words: &[&str]) -> ExitCode {
+    let (explicit, words) = match words {
+        ["--config", file, rest @ ..] => (Some(std::path::Path::new(file)), rest),
+        words => (None, words),
+    };
+    let file = match crate::niri_config::target(explicit) {
+        Ok(file) => file,
+        Err(why) => return keyed(Err(why)),
+    };
+    let state = crate::niri_config::state();
+    let editor = crate::niri_config::Editor {
+        file,
+        state: state.clone().unwrap_or_default(),
+        validate: &crate::niri_config::niri_validate,
+        now_ms: crate::niri_config::now_ms,
+    };
+
+    let writes = matches!(
+        words,
+        ["set", ..] | ["remove", ..] | ["undo"] | ["restore", ..] | ["backups"]
+    );
+
+    if writes && let Err(why) = state {
+        return keyed(Err(why));
+    }
+
+    let said = match words {
+        ["validate"] => editor.check(),
+        ["get", path] => editor.get(path),
+        ["set", path, value] => editor.set(path, value),
+        ["remove", path] => editor.remove(path),
+        ["undo"] => editor.undo(),
+        ["backups"] => Ok(editor.backups()),
+        ["restore", which] => editor.restore(which),
+        _ => {
+            complain(&mistake(&["niri-config"], Style::of(&io::stderr())));
+            return ExitCode::from(2);
+        }
+    };
+
+    keyed(said.map(|said| format!("{said}\n")))
 }
 
 // `config validate <file>`: 1 for a problem in it, or for a file that does not read

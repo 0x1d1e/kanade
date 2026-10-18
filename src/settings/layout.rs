@@ -39,6 +39,15 @@ pub enum Row {
 
     // `kanade doctor`'s checks, run in the shell (ADR 0088); it has no key
     Health,
+
+    // what `kanade sddm status` finds and the root commands still to run; it has no key
+    Login,
+
+    // an option of niri's own config (`niri`, ADR 0119), by its path in `config.kdl`; it has no key
+    Niri(&'static str),
+
+    // the connected monitors, a card each, tried live and then kept or reverted (`outputs`)
+    Outputs,
 }
 
 impl Row {
@@ -46,7 +55,7 @@ impl Row {
         match self {
             Row::Key(key) => vec![key],
             Row::Position { edge, align } => vec![edge, align],
-            Row::Health => Vec::new(),
+            Row::Health | Row::Login | Row::Niri(_) | Row::Outputs => Vec::new(),
         }
     }
 }
@@ -115,7 +124,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Session",
-        &["lock", "idle", "session", "settings", "ui", "hooks"],
+        &["lock", "sddm", "idle", "session", "settings", "ui", "hooks"],
     ),
 ];
 
@@ -347,6 +356,14 @@ pub const PAGES: &[Page] = &[
                 rows: &[Row::Key("dictate.insert"), Row::Key("dictate.never_in")],
             },
             Section {
+                title: "Screen recording",
+                rows: &[
+                    Row::Key("recording.quality"),
+                    Row::Key("recording.encoder"),
+                    Row::Key("recording.device"),
+                ],
+            },
+            Section {
                 title: "Live Activities",
                 rows: &[Row::Key("live.stale")],
             },
@@ -483,6 +500,33 @@ pub const PAGES: &[Page] = &[
         ],
     },
     Page {
+        name: "login",
+        title: "Login screen",
+        summary: "The SDDM login screen's look, written to an overlay SDDM reads (kanade sddm)",
+        group: "System",
+        icon: Icon::Lock,
+        sections: &[
+            Section {
+                title: "",
+                rows: &[Row::Key("sddm.theme"), Row::Key("sddm.background")],
+            },
+            Section {
+                title: "Picture",
+                rows: &[
+                    Row::Key("sddm.background_path"),
+                    Row::Key("sddm.surface"),
+                    Row::Key("sddm.blur"),
+                    Row::Key("sddm.dim"),
+                    Row::Key("sddm.sync"),
+                ],
+            },
+            Section {
+                title: "Status",
+                rows: &[Row::Login],
+            },
+        ],
+    },
+    Page {
         name: "health",
         title: "Health",
         summary: "What Kanade and its Modules need from the session, as kanade doctor checks it",
@@ -496,6 +540,115 @@ pub const PAGES: &[Page] = &[
             Section {
                 title: "First start",
                 rows: &[Row::Key("settings.health_notice")],
+            },
+        ],
+    },
+    Page {
+        name: "niri",
+        title: "niri",
+        summary: "Edit niri's own config.kdl: its monitors, layout, focus, keyboard, touchpad, mouse and cursor. niri applies a change itself",
+        group: "Compositor",
+        icon: Icon::Columns,
+        sections: &[
+            Section {
+                title: "Outputs",
+                rows: &[Row::Outputs],
+            },
+            Section {
+                title: "Layout",
+                rows: &[
+                    Row::Niri("layout.gaps"),
+                    Row::Niri("layout.center-focused-column"),
+                    Row::Niri("layout.always-center-single-column"),
+                    Row::Niri("layout.empty-workspace-above-first"),
+                    Row::Niri("layout.default-column-display"),
+                    Row::Niri("layout.struts.left"),
+                    Row::Niri("layout.struts.right"),
+                    Row::Niri("layout.struts.top"),
+                    Row::Niri("layout.struts.bottom"),
+                ],
+            },
+            Section {
+                title: "Focus ring and border",
+                rows: &[
+                    Row::Niri("layout.focus-ring"),
+                    Row::Niri("layout.focus-ring.width"),
+                    Row::Niri("layout.focus-ring.active-color"),
+                    Row::Niri("layout.focus-ring.inactive-color"),
+                    Row::Niri("layout.border"),
+                    Row::Niri("layout.border.width"),
+                    Row::Niri("layout.border.active-color"),
+                    Row::Niri("layout.border.inactive-color"),
+                    Row::Niri("layout.shadow"),
+                ],
+            },
+            Section {
+                title: "Input",
+                rows: &[
+                    Row::Niri("input.warp-mouse-to-focus"),
+                    Row::Niri("input.focus-follows-mouse"),
+                    Row::Niri("input.workspace-auto-back-and-forth"),
+                    Row::Niri("input.disable-power-key-handling"),
+                    Row::Niri("input.mod-key"),
+                ],
+            },
+            Section {
+                title: "Keyboard",
+                rows: &[
+                    Row::Niri("input.keyboard.repeat-delay"),
+                    Row::Niri("input.keyboard.repeat-rate"),
+                    Row::Niri("input.keyboard.numlock"),
+                    Row::Niri("input.keyboard.track-layout"),
+                    Row::Niri("input.keyboard.xkb.layout"),
+                    Row::Niri("input.keyboard.xkb.variant"),
+                    Row::Niri("input.keyboard.xkb.options"),
+                ],
+            },
+            Section {
+                title: "Touchpad",
+                rows: &[
+                    Row::Niri("input.touchpad.tap"),
+                    Row::Niri("input.touchpad.natural-scroll"),
+                    Row::Niri("input.touchpad.dwt"),
+                    Row::Niri("input.touchpad.left-handed"),
+                    Row::Niri("input.touchpad.middle-emulation"),
+                    Row::Niri("input.touchpad.accel-speed"),
+                    Row::Niri("input.touchpad.accel-profile"),
+                    Row::Niri("input.touchpad.scroll-factor"),
+                    Row::Niri("input.touchpad.scroll-method"),
+                    Row::Niri("input.touchpad.click-method"),
+                ],
+            },
+            Section {
+                title: "Mouse",
+                rows: &[
+                    Row::Niri("input.mouse.natural-scroll"),
+                    Row::Niri("input.mouse.left-handed"),
+                    Row::Niri("input.mouse.middle-emulation"),
+                    Row::Niri("input.mouse.accel-speed"),
+                    Row::Niri("input.mouse.accel-profile"),
+                    Row::Niri("input.mouse.scroll-factor"),
+                    Row::Niri("input.mouse.scroll-method"),
+                ],
+            },
+            Section {
+                title: "Cursor",
+                rows: &[
+                    Row::Niri("cursor.xcursor-theme"),
+                    Row::Niri("cursor.xcursor-size"),
+                    Row::Niri("cursor.hide-when-typing"),
+                    Row::Niri("cursor.hide-after-inactive-ms"),
+                ],
+            },
+            Section {
+                title: "Other",
+                rows: &[
+                    Row::Niri("overview.zoom"),
+                    Row::Niri("animations.off"),
+                    Row::Niri("animations.slowdown"),
+                    Row::Niri("prefer-no-csd"),
+                    Row::Niri("screenshot-path"),
+                ],
             },
         ],
     },
@@ -568,6 +721,28 @@ mod tests {
         }
 
         assert_eq!(grouped.len(), modules::ALL.len() - 1);
+    }
+
+    #[test]
+    fn every_niri_row_is_an_option_listed_once() {
+        let rows: Vec<&str> = PAGES
+            .iter()
+            .flat_map(|page| page.sections)
+            .flat_map(|section| section.rows)
+            .filter_map(|row| match row {
+                Row::Niri(path) => Some(*path),
+                _ => None,
+            })
+            .collect();
+
+        for path in &rows {
+            assert!(
+                super::super::niri::item(path).is_some(),
+                "{path} is no option"
+            );
+            assert_eq!(rows.iter().filter(|&row| row == path).count(), 1, "{path}");
+        }
+        assert_eq!(rows.len(), super::super::niri::ITEMS.len());
     }
 
     #[test]
