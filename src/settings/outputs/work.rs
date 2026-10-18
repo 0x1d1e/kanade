@@ -697,7 +697,11 @@ fn handle(job: Job) {
                             check_disagreements(name, edits);
                         }
                         None => {
-                            // Reload timed out: keep pending file for recovery since reload was not confirmed.
+                            // Reload timed out: end the trial but keep the pending file. It is
+                            // marked saved, since the config write succeeded, so a later start
+                            // clears it without putting the monitor back over that change; per
+                            // CONTEXT.md the Keep ends the trial, and the live monitor already
+                            // holds the saved values.
                             controller(|control| control.abandon_keep());
 
                             match Real.outputs() {

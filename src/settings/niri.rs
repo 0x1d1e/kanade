@@ -1092,7 +1092,7 @@ struct Read {
     not_editable: Option<String>,
     unreadable: Option<String>,
 
-    // the included files that set one of the options, which are watched along with the config
+    // the included files, every one of them, which are watched along with the config
     includes: Vec<PathBuf>,
 
     // the options a bare block in the config itself turns on
@@ -1340,6 +1340,18 @@ fn read_all(editor: &Editor) -> Read {
         ..Read::default()
     };
 
+    // every include is watched, not only the ones that set an option now: one that gains one
+    // later must be read again
+    match editor.includes() {
+        Ok(files) => read.includes = files,
+        Err(why) => {
+            read.values.clear();
+            read.unreadable = Some(why);
+
+            return read;
+        }
+    }
+
     for item in ITEMS {
         if matches!(item.control, Control::Drawn { bare_on: true, .. }) {
             match editor.sets_in_config(item.path) {
@@ -1359,11 +1371,6 @@ fn read_all(editor: &Editor) -> Read {
         for path in item.paths() {
             match editor.read(path) {
                 Ok(reading) => {
-                    if let Reading::Included(_, file) | Reading::Overridden(_, file) = &reading
-                        && !read.includes.contains(file)
-                    {
-                        read.includes.push(file.clone());
-                    }
                     read.values.insert(path, reading);
                 }
                 // the file itself is the trouble, the same for every path
@@ -1726,6 +1733,38 @@ mod tests {
         assert!(!shown.editable);
         assert!(!shown.set);
         assert_eq!(shown.owner.as_deref(), Some("Set by mine.kdl, an include"));
+    }
+
+    // an include that sets none of the page's options is watched too: one that gains one later
+    // must be read again
+    #[test]
+    fn an_include_that_sets_nothing_is_watched_too() {
+        let ok = |_: &Path| Ok(());
+        let dir = Dir::new("include \"extra.kdl\"\n");
+        fs::write(dir.0.join("extra.kdl"), "// nothing the page reads\n").unwrap();
+        let editor = dir.editor(&ok);
+
+        let read = read_all(&editor);
+        assert!(read.unreadable.is_none(), "{:?}", read.unreadable);
+        assert!(
+            read.includes
+                .iter()
+                .any(|file| file.file_name().is_some_and(|name| name == "extra.kdl")),
+            "{:?}",
+            read.includes
+        );
+
+        // and the next read picks up an option the include gains
+        fs::write(dir.0.join("extra.kdl"), "layout {\n    gaps 42\n}\n").unwrap();
+        let read = read_all(&editor);
+        assert!(
+            matches!(
+                read.values.get("layout.gaps"),
+                Some(Reading::Included(_, file)) if file.ends_with("extra.kdl")
+            ),
+            "{:?}",
+            read.values.get("layout.gaps")
+        );
     }
 
     #[test]

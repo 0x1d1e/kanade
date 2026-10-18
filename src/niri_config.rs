@@ -430,6 +430,32 @@ impl Editor<'_> {
         })
     }
 
+    /// Every file the config includes, in the order niri reads them, with the config itself left
+    /// out. A file is listed even when it sets none of the options read from it: it may set one
+    /// later, and a watcher needs it now.
+    pub fn includes(&self) -> Result<Vec<PathBuf>, String> {
+        let mut found = Vec::new();
+
+        self.walk(
+            &self.file,
+            false,
+            &mut Vec::new(),
+            None,
+            &|_| Ok(vec![(0usize, ())]),
+            &mut found,
+        )?;
+
+        let mut files: Vec<PathBuf> = Vec::new();
+
+        for (file, ()) in found {
+            if file != self.file && !files.contains(&file) {
+                files.push(file);
+            }
+        }
+
+        Ok(files)
+    }
+
     /// Whether the config file itself has a node at `path` (a block counts), whatever the
     /// includes hold. niri reads some blocks differently there than in an include.
     pub fn sets_in_config(&self, path: &str) -> Result<bool, String> {

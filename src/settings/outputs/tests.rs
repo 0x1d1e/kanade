@@ -1169,6 +1169,71 @@ fn abandon_keep_clears_session_but_leaves_the_file() {
     assert!(control.session.is_none());
 }
 
+#[test]
+fn a_saved_change_left_by_a_crash_is_not_put_back_at_start() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    let session = control.session.as_ref().unwrap();
+    let (id, requested_at) = (session.id, session.deadline);
+
+    assert_eq!(
+        control.keep_request(&fake, id, requested_at),
+        Ok(Ended::Kept(String::from("written")))
+    );
+    // the reload is not confirmed (a timeout, or a SIGKILL during the wait)
+    control.abandon_keep();
+    drop(control);
+    assert!(dir.file().exists());
+
+    fake.commands.borrow_mut().clear();
+    let mut fresh = Controller::new(dir.file());
+    let said = fresh.recover(&fake).unwrap().unwrap();
+
+    // the config was written, so the record is cleared and niri is not asked to put it back
+    assert!(said.contains("saved"), "{said}");
+    assert!(!dir.file().exists());
+    assert!(fake.commands.borrow().is_empty());
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+}
+
+#[test]
+fn a_pending_file_without_saved_still_puts_the_output_back_at_start() {
+    let (dir, fake, _) = setup();
+    let before = fake.state("eDP-1");
+
+    // a file an older Kanade wrote, with no `saved` key
+    let previous = Previous::of(&before, None);
+    let json = serde_json::json!({
+        "output": "eDP-1",
+        "taken_ms": fake.unix_ms(),
+        "previous": previous.to_json(),
+        "applied": [Edit::Scale(2.0).to_json()],
+    });
+    fs::write(dir.file(), json.to_string()).unwrap();
+
+    // niri still shows the unconfirmed trial change
+    let mut shown = fake.state("eDP-1");
+    shown.logical.as_mut().unwrap().scale = 2.0;
+    fake.outputs.borrow_mut()[0] = shown;
+
+    fake.commands.borrow_mut().clear();
+    let mut control = Controller::new(dir.file());
+    let said = control.recover(&fake).unwrap().unwrap();
+
+    assert!(said.contains("eDP-1"), "{said}");
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
+    assert!(
+        fake.commands
+            .borrow()
+            .iter()
+            .any(|(_, args)| args[0] == "scale")
+    );
+}
+
 // ---- Finding B: RunError ----
 
 #[test]
@@ -1282,6 +1347,62 @@ fn run_error_classifies_child_failures_as_unanswered_and_niri_refusals_as_refuse
 }
 
 // ---- Recovery findings fixes ----
+
+#[test]
+fn a_recovery_puts_back_every_variable_refresh_rate_mode() {
+    for (previous_vrr, applied_vrr) in [
+        (Vrr::Off, Vrr::On),
+        (Vrr::Off, Vrr::OnDemand),
+        (Vrr::On, Vrr::Off),
+        (Vrr::On, Vrr::OnDemand),
+        (Vrr::OnDemand, Vrr::Off),
+        (Vrr::OnDemand, Vrr::On),
+    ] {
+        let (dir, fake, _) = setup();
+
+        // niri reports on-demand as off (and on only while a window wants it), so a monitor on
+        // any of the three modes shows vrr_enabled false just after a trial
+        let mut shown = panel();
+        shown.vrr_enabled = false;
+        fake.outputs.borrow_mut()[0] = shown.clone();
+
+        let previous = Previous {
+            enabled: true,
+            mode: shown.current_mode().map(|mode| mode.text()),
+            scale: 1.0,
+            transform: Transform::Normal,
+            x: 0,
+            y: 0,
+            vrr: previous_vrr,
+        };
+        let json = serde_json::json!({
+            "output": "eDP-1",
+            "taken_ms": fake.unix_ms(),
+            "previous": previous.to_json(),
+            "applied": [Edit::Vrr(applied_vrr).to_json()],
+        });
+        fs::write(dir.file(), json.to_string()).unwrap();
+
+        let mut control = Controller::new(dir.file());
+        control.recover(&fake).unwrap();
+
+        let vrr: Vec<Vec<String>> = fake
+            .commands
+            .borrow()
+            .iter()
+            .filter(|(_, args)| args[0] == "vrr")
+            .map(|(_, args)| args.clone())
+            .collect();
+        let wanted: Vec<String> = match previous_vrr {
+            Vrr::Off => vec!["vrr".into(), "off".into()],
+            Vrr::On => vec!["vrr".into(), "on".into()],
+            Vrr::OnDemand => vec!["vrr".into(), "--on-demand".into(), "on".into()],
+        };
+
+        assert_eq!(vrr, vec![wanted], "{previous_vrr:?} -> {applied_vrr:?}");
+        assert!(!dir.file().exists());
+    }
+}
 
 #[test]
 fn advancing_clock_past_deadline_rejects_keep_and_reverts_trial() {
@@ -1438,6 +1559,31 @@ fn reload_confirmed_deletes_recovery_file_even_if_niri_differs() {
 }
 
 #[test]
+fn a_keep_with_no_reload_seen_is_not_reverted_at_start() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
+        .unwrap();
+    control.keep(&fake).unwrap();
+
+    // no ConfigLoaded update was seen in the window: the trial ends and the file records a
+    // change already written
+    work::resolve_keep_reload(&mut control, &fake, None, false);
+    assert!(control.session.is_none());
+    assert!(dir.file().exists());
+
+    fake.commands.borrow_mut().clear();
+    let mut fresh = Controller::new(dir.file());
+    let said = fresh.recover(&fake).unwrap().unwrap();
+
+    assert!(said.contains("saved"), "{said}");
+    assert!(!dir.file().exists());
+    assert!(fake.commands.borrow().is_empty());
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 1.5);
+}
+
+#[test]
 fn injected_worker_panic_triggers_emergency_revert() {
     let (dir, fake, _) = setup();
     let before = fake.state("eDP-1");
@@ -1466,4 +1612,62 @@ fn injected_worker_panic_triggers_emergency_revert() {
 
     let statuses = crate::supervise::status();
     assert!(statuses.iter().any(|s| s.contains("kanade-outputs")));
+}
+
+#[test]
+fn keep_request_succeeds_and_prevents_revert_when_writing_pending_file_fails() {
+    let (dir, fake, mut control) = setup();
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    let session = control.session.as_ref().unwrap();
+    let (id, requested_at) = (session.id, session.deadline);
+
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    let _guard = Restore(dir.0.clone());
+
+    // Make rewriting the pending file fail (e.g. read-only permissions on file and parent directory)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir.file(), fs::Permissions::from_mode(0o400));
+        let _ = fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o500));
+    }
+
+    let kept = control.keep_request(&fake, id, requested_at);
+
+    // Config write succeeded, so keep_request succeeds even though writing the pending file failed
+    assert_eq!(kept, Ok(Ended::Kept(String::from("written"))));
+
+    // The pending file is deleted or cleared
+    let pending_is_cleared = !dir.file().exists()
+        || fs::read_to_string(dir.file())
+            .map(|text| text.is_empty())
+            .unwrap_or(false);
+    assert!(pending_is_cleared);
+
+    // Restore permissions so cleanup and recovery can access the directory
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o700));
+    }
+
+    // A later start (crash recovery) does not revert niri's output
+    fake.commands.borrow_mut().clear();
+    let mut fresh = Controller::new(dir.file());
+    let _ = fresh.recover(&fake);
+
+    assert!(fake.commands.borrow().is_empty());
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
 }

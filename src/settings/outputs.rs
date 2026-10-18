@@ -1021,7 +1021,7 @@ impl Controller {
             let previous = Previous::of(output, hint);
             let taken = port.unix_ms();
 
-            write_pending(&self.file, name, &previous, &[], taken)?;
+            write_pending(&self.file, name, &previous, &[], taken, false)?;
             self.next_session_id += 1;
             let id = self.next_session_id;
             self.session = Some(Session {
@@ -1053,8 +1053,14 @@ impl Controller {
                     session.edits.insert(edit.field(), edit);
                     session.deadline = now + TRIAL_MS;
                     let applied: Vec<Edit> = session.edits.values().cloned().collect();
-                    let _ =
-                        write_pending(&self.file, name, &session.previous, &applied, session.taken);
+                    let _ = write_pending(
+                        &self.file,
+                        name,
+                        &session.previous,
+                        &applied,
+                        session.taken,
+                        false,
+                    );
                 }
 
                 return Err(why);
@@ -1068,7 +1074,14 @@ impl Controller {
             // reverts at once, not after the failed revert's own deadline
             session.stuck = None;
             let applied: Vec<Edit> = session.edits.values().cloned().collect();
-            let _ = write_pending(&self.file, name, &session.previous, &applied, session.taken);
+            let _ = write_pending(
+                &self.file,
+                name,
+                &session.previous,
+                &applied,
+                session.taken,
+                false,
+            );
         }
 
         Ok(())
@@ -1102,6 +1115,18 @@ impl Controller {
         let edits: Vec<&Edit> = session.edits.values().collect();
         let said = port.write(output, &edits)?;
 
+        // the config is written: mark the pending file saved, so a start does not put the monitor
+        // back over a change that is already in the file. When writing the saved record fails,
+        // deleting or clearing the pending file ensures startup recovery will not put the monitor
+        // back over a change that is already saved. The borrow of `session` ends here.
+        let previous = session.previous.clone();
+        let name = session.output.clone();
+        let taken = session.taken;
+        let applied: Vec<Edit> = session.edits.values().cloned().collect();
+        if write_pending(&self.file, &name, &previous, &applied, taken, true).is_err() {
+            delete_pending(&self.file);
+        }
+
         Ok(Ended::Kept(said))
     }
 
@@ -1124,9 +1149,9 @@ impl Controller {
         delete_pending(&self.file);
     }
 
-    /// The reload failed or niri disagrees: keep the pending file so the trial stays recoverable.
-    /// The session is cleared (the config is already written), but the file is left for a crash
-    /// recovery or a manual fix.
+    /// The reload failed or niri disagrees: the session is cleared and the pending file is left.
+    /// The config is already written, so the file is marked saved and a start clears it without
+    /// touching niri; it is kept only as a record of the change, not to put the monitor back.
     pub fn abandon_keep(&mut self) {
         self.session = None;
     }
@@ -1248,8 +1273,9 @@ impl Controller {
     }
 
     /// Puts back what a Kanade that died mid-trial left, at start. `Ok(None)` when there was no
-    /// file; a file older than `RECOVERY_MS`, or one that cannot be read, is deleted unread unless
-    /// niri's live output still shows the unconfirmed trial changes.
+    /// file. A file marked `saved` is a record of a config change already written: it is deleted
+    /// without asking niri. An unsaved file older than `RECOVERY_MS`, or one that cannot be read,
+    /// is deleted unread unless niri's live output still shows the unconfirmed trial changes.
     pub fn recover(&mut self, port: &dyn Port) -> Result<Option<String>, String> {
         let Some(text) = fs::read_to_string(&self.file).ok() else {
             return Ok(None);
@@ -1263,15 +1289,29 @@ impl Controller {
                 .and_then(Json::as_array)
                 .map(|arr| arr.iter().filter_map(Edit::from_json).collect())
                 .unwrap_or_default();
-            Some((output, taken, previous, applied))
+            let saved = json.get("saved").and_then(Json::as_bool).unwrap_or(false);
+            Some((output, taken, previous, applied, saved))
         });
-        let Some((name, taken, previous, applied)) = parsed else {
+        let Some((name, taken, previous, applied, saved)) = parsed else {
             delete_pending(&self.file);
 
             return Ok(Some(String::from(
                 "Dropped an unreadable pending-output file",
             )));
         };
+
+        // a saved file is a record of a change already in the config, not a trial to put back
+        if saved {
+            delete_pending(&self.file);
+
+            return Ok(Some(String::from(
+                "Cleared the pending record of a saved output change",
+            )));
+        }
+
+        // what a trial changed, which niri's own report cannot tell (on-demand reads as off), so
+        // restoring the output needs those fields forced
+        let force: Vec<Field> = applied.iter().map(Edit::field).collect();
 
         // no output at all is niri not ready, not every output gone: the file stays for later
         let outputs = port.outputs()?;
@@ -1293,7 +1333,7 @@ impl Controller {
                 // Restore the monitor to previous and then delete the pending file.
                 let may_turn_off = leaves_a_screen(Some(&outputs), &name);
                 let plan = found
-                    .map(|output| restore_plan(&previous, Some(output), &[], may_turn_off))
+                    .map(|output| restore_plan(&previous, Some(output), &force, may_turn_off))
                     .unwrap_or_default();
                 let left_on =
                     !previous.enabled && !may_turn_off && found.is_some_and(Output::enabled);
@@ -1329,7 +1369,7 @@ impl Controller {
 
         let may_turn_off = leaves_a_screen(Some(&outputs), &name);
         let plan = found
-            .map(|output| restore_plan(&previous, Some(output), &[], may_turn_off))
+            .map(|output| restore_plan(&previous, Some(output), &force, may_turn_off))
             .unwrap_or_default();
         let left_on = !previous.enabled && !may_turn_off && found.is_some_and(Output::enabled);
 
@@ -1359,12 +1399,14 @@ fn write_pending(
     previous: &Previous,
     applied: &[Edit],
     taken: u64,
+    saved: bool,
 ) -> Result<(), String> {
     let json = serde_json::json!({
         "output": name,
         "taken_ms": taken,
         "previous": previous.to_json(),
         "applied": applied.iter().map(Edit::to_json).collect::<Vec<_>>(),
+        "saved": saved,
     });
 
     atomic::write(file, json.to_string().as_bytes(), FileMode::Private).map_err(|error| {
@@ -1375,7 +1417,19 @@ fn write_pending(
 }
 
 fn delete_pending(file: &Path) {
-    let _ = fs::remove_file(file);
+    if fs::remove_file(file).is_err() && file.exists() {
+        #[cfg(unix)]
+        if let Ok(metadata) = fs::metadata(file) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut perms = metadata.permissions();
+            if perms.mode() & 0o200 == 0 {
+                perms.set_mode(0o600);
+                let _ = fs::set_permissions(file, perms);
+            }
+        }
+        let _ = fs::OpenOptions::new().write(true).truncate(true).open(file);
+    }
 }
 
 #[cfg(test)]
