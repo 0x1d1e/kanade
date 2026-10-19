@@ -19,6 +19,10 @@ const LIST: &str =
 const IMAGES: &str = "https://raw.githubusercontent.com/ItsTerm1n4l/Wallpapers/main/images/";
 
 const MARKER: &str = "kanade/wallpaper-seed";
+// written when a fill of an empty folder starts, and removed once the marker is written, so a
+// failed fill can finish even though pictures have arrived. A folder that already held a picture
+// has no pending file.
+const PENDING: &str = "kanade/wallpaper-seed.pending";
 
 // the favorites page, and one picture
 const PAGE: u64 = 256 * 1024;
@@ -30,10 +34,24 @@ pub fn run() {
     let Some(dir) = super::directory() else {
         return;
     };
-    let Some(marker) = marker() else {
+    let Some(marker) = state_file(MARKER) else {
+        return;
+    };
+    let Some(pending) = state_file(PENDING) else {
         return;
     };
     if marker.is_file() {
+        let _ = fs::remove_file(&pending);
+        return;
+    }
+
+    // a picture already in the folder is the user's: mark it and download nothing, so emptying
+    // the folder later does not fill it. A fill that already started (the pending file) finishes,
+    // skipping files already present. The marker is written only when every download works.
+    if !downloads(holds_image(&dir), pending.is_file()) {
+        if let Err(error) = mark(&marker) {
+            eprintln!("kanade: wallpaper: {error}");
+        }
         return;
     }
 
@@ -50,8 +68,11 @@ pub fn run() {
         return;
     }
 
-    // a missing marker is an unfinished seed, including a folder that already holds pictures;
-    // files already present are skipped, and the marker is written only when every download works
+    if let Err(error) = note_pending(&pending) {
+        eprintln!("kanade: wallpaper: {error}");
+        return;
+    }
+
     if let Err(error) = fs::create_dir_all(&dir) {
         eprintln!("kanade: wallpaper: {error}");
         return;
@@ -82,9 +103,37 @@ pub fn run() {
         }
     }
 
-    if !failed && let Err(error) = mark(&marker) {
-        eprintln!("kanade: wallpaper: {error}");
+    if !failed {
+        match mark(&marker) {
+            Ok(()) => {
+                let _ = fs::remove_file(&pending);
+            }
+            Err(error) => eprintln!("kanade: wallpaper: {error}"),
+        }
     }
+}
+
+// a picture already there, and no fill in progress, is not seeded
+fn downloads(has_image: bool, pending: bool) -> bool {
+    !has_image || pending
+}
+
+fn holds_image(dir: &Path) -> bool {
+    let Ok(read) = fs::read_dir(dir) else {
+        return false;
+    };
+
+    read.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file() && super::image(&path)
+    })
+}
+
+fn note_pending(path: &Path) -> Result<(), String> {
+    if path.is_file() {
+        return Ok(());
+    }
+    atomic::write(path, b"", Mode::Private).map_err(|error| error.to_string())
 }
 
 // image file names from markdown image links, `![name](/images/<file>)` or a full URL
@@ -139,13 +188,13 @@ fn image_url(file: &str) -> String {
     url
 }
 
-fn marker() -> Option<PathBuf> {
+fn state_file(name: &str) -> Option<PathBuf> {
     config::base(
         "XDG_STATE_HOME",
         ".local/state",
         std::env::var("HOME").ok().as_deref(),
     )
-    .map(|dir| dir.join(MARKER))
+    .map(|dir| dir.join(name))
 }
 
 fn mark(path: &Path) -> Result<(), String> {
@@ -218,5 +267,25 @@ mod tests {
                 "airplane-flying-through-stormy-clouds.jpeg".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn a_folder_that_already_holds_an_image_is_not_filled() {
+        assert!(!downloads(true, false));
+        assert!(downloads(false, false));
+        assert!(downloads(false, true));
+        assert!(downloads(true, true));
+
+        let dir =
+            std::env::temp_dir().join(format!("kanade-wallpaper-seed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!holds_image(&dir));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("notes.txt"), b"x").unwrap();
+        fs::write(dir.join(".hidden.png"), b"x").unwrap();
+        assert!(!holds_image(&dir));
+        fs::write(dir.join("picture.png"), b"x").unwrap();
+        assert!(holds_image(&dir));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
