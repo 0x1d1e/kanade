@@ -545,10 +545,7 @@ fn controls(
         )),
     ];
     if controls {
-        row.push(Box::new(to_controls(
-            monitor,
-            ring == Some(&At::Controls),
-        )));
+        row.push(Box::new(to_controls(monitor, ring == Some(&At::Controls))));
     }
 
     Row::new(row).width(width).gap(CONTROLS_GAP).align(Center)
@@ -565,12 +562,7 @@ fn controls_layout(width: f32, controls: bool) -> ControlsLayout {
     let transport = 2.0 * BUTTON + PLAY + 2.0 * TRANSPORT_GAP;
     let group_gaps = CONTROLS_GAP * if controls { 2.0 } else { 1.0 };
     let controls_width = if controls { TARGET } else { 0.0 };
-    let volume_bar = width
-        - transport
-        - group_gaps
-        - controls_width
-        - TARGET
-        - VOLUME_GAP;
+    let volume_bar = width - transport - group_gaps - controls_width - TARGET - VOLUME_GAP;
 
     ControlsLayout {
         volume_bar,
