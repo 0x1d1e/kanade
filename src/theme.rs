@@ -61,8 +61,18 @@ pub fn signals() -> SemanticColors {
     match finish() {
         Finish::TintedSolid => SEMANTIC,
         Finish::Blur if !blur_light() => SEMANTIC,
-        Finish::LiquidGlass if INK.get() < 0.5 => SEMANTIC,
-        Finish::Blur | Finish::LiquidGlass | Finish::Paper => SIGNALS_LIGHT,
+        Finish::LiquidGlass => interpolate_signals(INK.get()),
+        Finish::Blur | Finish::Paper => SIGNALS_LIGHT,
+    }
+}
+
+fn interpolate_signals(amount: f32) -> SemanticColors {
+    SemanticColors {
+        privacy: mix(SEMANTIC.privacy, SIGNALS_LIGHT.privacy, amount),
+        capture: mix(SEMANTIC.capture, SIGNALS_LIGHT.capture, amount),
+        warning: mix(SEMANTIC.warning, SIGNALS_LIGHT.warning, amount),
+        critical: mix(SEMANTIC.critical, SIGNALS_LIGHT.critical, amount),
+        ..SEMANTIC
     }
 }
 
@@ -418,8 +428,10 @@ impl ThemeRoles {
     pub fn edge(&self) -> Color {
         let grounds = self.grounds();
 
+        let variant = over(self.on_surface_variant, self.surface);
+
         (1..=20)
-            .map(|step| mix(self.surface, self.on_surface_variant, step as f32 / 20.0))
+            .map(|step| mix(self.surface, variant, step as f32 / 20.0))
             .find(|edge| grounds.iter().all(|&ground| contrast(*edge, ground) >= 3.1))
             .unwrap_or(self.on_surface)
     }
@@ -527,6 +539,38 @@ mod tests {
             surface_container_high: alpha(text, high),
             outline: alpha(text, 64),
         }
+    }
+
+    #[test]
+    fn a_control_edge_interpolates_to_the_composited_variant() {
+        let roles = ThemeRoles {
+            surface: Color::rgb(246, 246, 250),
+            on_surface_variant: Color::rgba(60, 60, 67, 210),
+            ..ISLAND_LIGHT
+        };
+        let endpoint = over(roles.on_surface_variant, roles.surface);
+
+        assert_eq!(endpoint, Color::rgb(93, 93, 99));
+        assert_eq!(mix(roles.surface, endpoint, 1.0), endpoint);
+    }
+
+    #[test]
+    fn liquid_glass_signals_interpolate_continuously_with_ink() {
+        let halfway = interpolate_signals(0.5);
+
+        assert_eq!(interpolate_signals(0.0), SEMANTIC);
+        assert_eq!(interpolate_signals(1.0), SIGNALS_LIGHT);
+        assert_ne!(halfway, SEMANTIC);
+        assert_ne!(halfway, SIGNALS_LIGHT);
+        assert_eq!(
+            halfway.privacy,
+            mix(SEMANTIC.privacy, SIGNALS_LIGHT.privacy, 0.5)
+        );
+        assert_eq!(
+            halfway.island_surface, SEMANTIC.island_surface,
+            "the Island's own surface signal stays fixed"
+        );
+        assert!(contrast(halfway.critical, Color::WHITE) >= 4.5);
     }
 
     // a control's edge and the ring read at 3:1 on every ground, in dark and light tones and on a
