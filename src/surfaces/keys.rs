@@ -516,7 +516,11 @@ fn row(item: &Item, height: f32, ring: bool) -> Rectangle {
             ),
         Item::Notice(title, detail) => line.align_child(Start, Center).child(
             Row::new(children![
-                Icon::Keyboard.crossed(TARGET).opacity(theme::DISABLED),
+                Rectangle::new()
+                    .width(TARGET)
+                    .height(TARGET)
+                    .align_child(Center, Center)
+                    .child(Icon::Keyboard.crossed(16.0).opacity(theme::DISABLED)),
                 Column::new(children![
                     Text::new(title)
                         .size(theme::text::BODY)

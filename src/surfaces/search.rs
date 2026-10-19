@@ -13,6 +13,7 @@ use crate::theme::{self};
 pub const FIELD: f32 = 44.0;
 const FIELD_INSET: f32 = 16.0;
 const ICON_GAP: f32 = 12.0;
+const ICON_GLYPH: f32 = 16.0;
 
 // the typed text's size, and the caret after it
 const QUERY: f32 = theme::text::TITLE;
@@ -64,7 +65,13 @@ pub fn field(icon: Icon, query: &str, placeholder: &str, width: f32) -> Rectangl
         })
         .child(
             Row::new(vec![
-                Box::new(icon.on(TARGET, theme::island().on_surface_variant)) as Box<dyn Widget>,
+                Box::new(
+                    Rectangle::new()
+                        .width(TARGET)
+                        .height(TARGET)
+                        .align_child(Center, Center)
+                        .child(icon.on(ICON_GLYPH, theme::island().on_surface_variant)),
+                ) as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)
@@ -116,7 +123,7 @@ pub fn state_with(
     height: f32,
 ) -> Rectangle {
     let mut lines = children![
-        icon.draw(28.0),
+        icon.draw(ICON_GLYPH),
         Text::new(title)
             .size(theme::text::BODY)
             .color(theme::island().on_surface)

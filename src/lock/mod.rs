@@ -29,7 +29,6 @@ use crate::clock::Note;
 use crate::config::{self, Config};
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
-use crate::pane;
 use crate::sources::{recording, sleep};
 
 mod keyboard;
@@ -665,9 +664,6 @@ fn request_lock(requests: &mut Requests, locker: &Locker) -> u64 {
     // only spawns, so nothing waits on it under the requests
     look_up();
 
-    // nothing is captured from now: niri may lock before `kanade-lock` hears of it; a refusal or an end lifts this
-    pane::locked(true);
-
     // a screen recording is saved and ends (ADR 0116); only spawns, so nothing waits under the requests
     recording::locked();
 
@@ -692,18 +688,6 @@ fn heard(news: News) {
     }
 
     let mut requests = requests();
-
-    /*
-     * nothing captures the lock screen: the panes under it draw nothing. News of an older request
-     * does not end the pause, as the newest one's lock is on its way
-     */
-    match news {
-        News::Locked(_) => pane::locked(true),
-        News::Unlocked(request) | News::Finished(request) if request == requests.newest => {
-            pane::locked(false);
-        }
-        _ => {}
-    }
 
     let was = requests.locked;
     requests.heard(news);

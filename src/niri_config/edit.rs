@@ -1441,6 +1441,11 @@ fn apply_at(
 
                     vec![(argument.clone(), new)]
                 }
+                (arguments, value) if !arguments.is_empty() => {
+                    let new = value.v1();
+                    let span = arguments[0].start..arguments[arguments.len() - 1].end;
+                    vec![(span, new)]
+                }
                 _ => {
                     return Err(format!(
                         "{path}: takes several values; not a single setting"
@@ -1738,11 +1743,7 @@ mod tests {
                 .unwrap_err()
                 .contains("argument of its own")
         );
-        assert!(
-            set("a 1 2\n", "a", "3")
-                .unwrap_err()
-                .contains("several values")
-        );
+        assert_eq!(set("a 1 2\n", "a", "3").unwrap().as_deref(), Some("a 3\n"));
         assert!(segments("layout..gaps").is_err());
 
         // off with `/-`, so not made again beside it

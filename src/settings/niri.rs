@@ -664,6 +664,9 @@ pub struct State {
     // whether the last change this window made can be undone
     pub undoable: bool,
 
+    // whether this window has changed niri's config
+    pub touched: bool,
+
     // whether an Undo waits for the worker
     undoing: bool,
 
@@ -824,6 +827,7 @@ impl State {
 
         match row {
             Some(row) => {
+                self.touched = true;
                 self.busy.push(row);
                 self.refused.remove(row);
             }
@@ -873,6 +877,7 @@ impl State {
         self.footer = None;
         self.refused.clear();
         self.undoable = false;
+        self.touched = false;
         self.epoch += 1;
         self.generation += 1;
     }

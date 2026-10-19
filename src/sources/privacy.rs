@@ -26,7 +26,7 @@ pub struct Privacy {
     // none while no app captures from a microphone or a camera
     pub sensors: Option<Sensors>,
 
-    // what the casts niri has capture, besides Liquid Glass's own, paused ones included; niri says
+    // what the casts niri has capture, paused ones included; niri says
     // what, a window or an output, never whose, so a cast is never a "Recording" or "Sharing"
     pub casts: BTreeSet<Target>,
 

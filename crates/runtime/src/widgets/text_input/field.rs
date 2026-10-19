@@ -54,6 +54,7 @@ impl Field {
         let Modifiers { shift, ctrl, .. } = modifiers;
 
         match key {
+            Key::SelectAll => self.shortcut('a'),
             Key::Character(letter) if ctrl => self.shortcut(letter),
             Key::Character(letter) => self.insert(letter.encode_utf8(&mut [0; 4])),
             Key::Space if ctrl => Effect::Unchanged,

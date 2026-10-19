@@ -5,7 +5,6 @@ mod transform;
 
 use std::path::PathBuf;
 
-use crate::backdrop::Spot;
 use crate::graphics::{Color, VALUE_ROWS};
 use crate::input::Handlers;
 use crate::ui::Semantics;
@@ -25,8 +24,6 @@ pub struct Rectangle {
     pub(crate) shadow: Option<Shadow>,
     pub(crate) shader: Option<PathBuf>,
     pub(crate) shader_values: Vec<[f32; 4]>,
-    pub(crate) backdrop: Option<Spot>,
-    pub(crate) presented: bool,
     pub(crate) child: Option<Box<dyn Widget>>,
     pub(crate) clip: bool,
     pub(crate) rotation: f32,
@@ -146,28 +143,6 @@ impl Rectangle {
         self
     }
 
-    /*
-     * the newest copy of what is behind a pane (`backdrop::watch`), handed to the shader as
-     * `backdrop` and `backdrop_sampler` in wgsl, transparent while there is none
-     */
-    pub fn backdrop(mut self, spot: Spot) -> Self {
-        self.backdrop = Some(spot);
-
-        self
-    }
-
-    /*
-     * hands the shader the window as it was last presented, premultiplied, as `canvas` in wgsl: a
-     * texture of the window's size, or of one texel while there is none yet (`textureDimensions`).
-     * With a `backdrop` copy of the screen that holds the window, it lets the shader take its own
-     * drawing out of the copy. The window keeps a copy of each frame only while a shader asks
-     */
-    pub fn presented(mut self) -> Self {
-        self.presented = true;
-
-        self
-    }
-
     pub fn child(mut self, child: impl Widget + 'static) -> Self {
         self.child = Some(Box::new(child));
 
@@ -219,8 +194,6 @@ impl RectangleNeedsHeight {
             shadow: None,
             shader: None,
             shader_values: Vec::new(),
-            backdrop: None,
-            presented: false,
             child: None,
             clip: false,
             rotation: 0.0,

@@ -247,9 +247,20 @@ pub fn recorder(source: &Source, audio: Audio, file: &str, encoding: &Encoding) 
 const SQUARE_PIXELS: &str = "video/x-raw(ANY),pixel-aspect-ratio=1/1";
 
 /*
+ * the output of `videorate`: 30 fps, any memory (the source is DMA-BUF). Without a fixed framerate,
+ * a static window that only damages once produces a single-frame recording whose duration is one
+ * frame period instead of the wall-clock capture time
+ */
+const PACED: &str = "video/x-raw(ANY),framerate=30/1";
+
+/*
  * the arguments of `gst-launch-1.0` for one segment of a window: the PipeWire node niri casts it on,
  * encoded as `encoding` says at the window's size, written to stdout as H.264 for `muxer`.
- * Interrupted, it ends the stream (`-e`) rather than cut it off
+ * Interrupted, it ends the stream (`-e`) rather than cut it off.
+ *
+ * `keepalive-time` and `resend-last` make `pipewiresrc` re-emit the last buffer every second when
+ * the window is static (no damage). `videorate` then duplicates that into a steady 30 fps stream,
+ * so the recording's duration matches the wall clock even when nothing redraws
  */
 pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> {
     let mut arguments: Vec<String> = [
@@ -258,8 +269,14 @@ pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> 
         "pipewiresrc",
         &format!("path={node}"),
         "do-timestamp=true",
+        "keepalive-time=1000",
+        "resend-last=true",
         "!",
         SQUARE_PIXELS,
+        "!",
+        "videorate",
+        "!",
+        PACED,
         "!",
     ]
     .map(String::from)
@@ -487,14 +504,32 @@ mod tests {
         let arguments = encoder(7, (640, 480), &vaapi());
         let at = |word: &str| arguments.iter().position(|found| found == word);
         let source = at("pipewiresrc");
+        let keepalive = at("keepalive-time=1000");
+        let resend = at("resend-last=true");
         let held = at("video/x-raw(ANY),pixel-aspect-ratio=1/1");
+        let rate = at("videorate");
+        let paced = at("video/x-raw(ANY),framerate=30/1");
         let converter = at("vapostproc");
 
         assert!(
-            source.is_some() && held.is_some() && converter.is_some(),
+            source.is_some()
+                && keepalive.is_some()
+                && resend.is_some()
+                && held.is_some()
+                && rate.is_some()
+                && paced.is_some()
+                && converter.is_some(),
             "{arguments:?}"
         );
-        assert!(source < held && held < converter, "{arguments:?}");
+        assert!(
+            source < keepalive
+                && keepalive < held
+                && resend < held
+                && held < rate
+                && rate < paced
+                && paced < converter,
+            "{arguments:?}"
+        );
     }
 
     #[test]

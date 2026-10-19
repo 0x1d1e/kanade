@@ -11,7 +11,6 @@ mod stack;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::iter;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -364,7 +363,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         Keyboard::None
     };
 
-    let (placed, later, moving) = {
+    let (placed, moving) = {
         let mut motions = MOTIONS.locked();
         let motion = motions.entry(monitor.name.clone()).or_default();
 
@@ -378,8 +377,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
         let mut placed = motion.placed(now);
 
-        // as it heads now, to place each card ahead by its own pane's lead
-        let later = motion.clone();
         let moving = motion.moving(now);
 
         if motion.is_empty() {
@@ -392,10 +389,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
          */
         placed.sort_by_key(|placed| placed.banner.id);
 
-        (placed, later, moving)
+        (placed, moving)
     };
 
-    // each Banner's captured pane, and those let go, which the next Banner takes afresh
+    // each Banner's reply field slot, kept while it shows
     let (panes, freed) = {
         let mut all = PANES.locked();
         let panes = all.entry(monitor.name.clone()).or_default();
@@ -406,8 +403,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     };
 
     for pane in freed {
-        pane::forget(&pane::Spot::new(&monitor.name, &self::pane(pane)));
-
         // what was typed there is not for the Banner that takes the pane next
         TextInput::set_text(reply_field(&monitor.name, pane), "");
     }
@@ -474,55 +469,14 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             let at = now_look.at;
             let body = pane_body(at, now_look.radius);
 
-            let spot = pane::Spot::new(&monitor.name, &self::pane(panes[&placed.banner.id]));
-
-            /*
-             * out to everywhere the card goes until its rim shows, and to where it was a quarter of
-             * that before, as the Island's body is
-             */
-            let since = now.checked_sub(pane::LEAD / 4).unwrap_or(now);
-            let captured = iter::once(since)
-                .chain((1..=4).map(|step| now + pane::LEAD * step / 4))
-                .filter_map(|at| {
-                    let ahead = later
-                        .placed(at)
-                        .into_iter()
-                        .find(|ahead| ahead.banner.id == placed.banner.id)?;
-                    let look = look(&ahead, at);
-
-                    Some(pane_body(look.at, look.radius))
-                })
-                .fold(body, pane::ahead);
-
-            // each live Banner watches its own copy; hidden cards stop capturing
-            let captured = pane::place(
-                monitor,
-                &spot.pane,
-                anchor,
-                (width, height),
-                (now_look.seen > 0.0 && !covered).then_some(captured),
-            );
-            let backdrop = pane::shown(&spot, now);
-
             if now_look.seen >= 1.0 && !covered {
                 outlines.push(body);
             }
 
-            // each card's ink follows the page behind it, for all the card builds
-            let _ink = pane::inked(backdrop.as_ref());
             let roles = theme::island();
 
-            /*
-             * A captured pane casts no shadow, which would darken its sampled colors; either
-             * way, it takes as many layers so the targets of later cards keep their place
-             */
             let mut shadow = Vec::new();
-
-            if captured {
-                shadow::none(&mut shadow);
-            } else {
-                shadow::draw(&mut shadow, at, now_look.radius);
-            }
+            shadow::draw(&mut shadow, at, now_look.radius);
 
             cards.push(Box::new(
                 Layers::new(children![
@@ -535,7 +489,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                     drawn(
                         &placed.banner,
                         &now_look,
-                        backdrop,
                         card_height,
                         reply_field(&monitor.name, panes[&placed.banner.id]),
                         &roles,
@@ -587,14 +540,9 @@ fn reply_field(monitor: &str, pane: usize) -> &'static str {
         .or_insert_with(|| Box::leak(format!("banner-reply-{monitor}-{pane}").into_boxed_str()))
 }
 
-// a pane's capture spot on an output, as a Banner draws in
-fn pane(index: usize) -> String {
-    format!("banner-{index}")
-}
-
 /*
- * which pane each Banner on an output draws in: its own while it shows, so one going never hands
- * its rims to another, and the lowest free one for one new
+ * which reply field each Banner on an output uses: stable while it shows, with the lowest free
+ * slot assigned to a new Banner
  */
 #[derive(Debug, Default)]
 struct Panes {
@@ -1007,13 +955,11 @@ fn mix(from: f32, to: f32, amount: f32) -> f32 {
 }
 
 /*
- * the card as `look` says, what it says laid out at its full `height`, clipped to where it is, on
- * the Island's pane, with its captured backdrop under Liquid Glass
+ * the card as `look` says, clipped to where it is
  */
 fn drawn(
     banner: &Banner,
     look: &Look,
-    backdrop: Option<pane::Seen>,
     height: f32,
     field: &'static str,
     roles: &ThemeRoles,
@@ -1026,7 +972,6 @@ fn drawn(
             height: at.height,
             radius: look.radius,
             united: None,
-            backdrop,
         })),
         Box::new(card(banner, height, field, roles).opacity(look.says)),
     ];

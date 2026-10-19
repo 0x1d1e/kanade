@@ -1,4 +1,3 @@
-mod backdrop;
 mod compositor;
 mod data_device;
 mod effect;
@@ -59,7 +58,6 @@ use crate::ipc::IpcHandlers;
 use crate::ui_scale;
 use crate::window::Named;
 use crate::{Cursor, LayerWindow, Modifiers, Monitor};
-use backdrop::Captures;
 pub use effect::blur_available;
 use ime::Ime;
 use toplevels::Toplevel;
@@ -110,9 +108,6 @@ struct WaylandState {
     // idle followed per timeout `idle::watch` asks for, none without the compositor's idle notifier
     idle_notifier: Option<ExtIdleNotifierV1>,
     idle_notifications: Vec<(Duration, ExtIdleNotificationV1)>,
-
-    // the panes whose backdrops are copied from the compositor, none without its screencopy
-    captures: Option<Captures>,
 
     // the gpu draws through libwayland's own display, and cursors are set through it
     connection: Connection,
@@ -171,9 +166,6 @@ impl WaylandApp {
 
         let idle_notifier = idle::bind(&globals, &qh);
 
-        let captures = backdrop::bind(&globals, &qh);
-        let capable = captures.is_some();
-
         let data_device_manager = DataDeviceManagerState::bind(&globals, &qh).ok();
 
         let fractional_scale = globals.bind(&qh, 1..=1, ()).ok();
@@ -215,8 +207,6 @@ impl WaylandApp {
             idle_notifier,
             idle_notifications: Vec::new(),
 
-            captures,
-
             connection: connection.clone(),
 
             pointer_device: None,
@@ -245,8 +235,6 @@ impl WaylandApp {
         socket::insert(&event_loop.handle(), handlers);
 
         wake::insert(&event_loop.handle());
-
-        backdrop::insert(&event_loop.handle(), capable);
 
         // what was asked before the loop could be woken
         state.follow_idle();

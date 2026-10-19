@@ -6,7 +6,6 @@
 //! shows at startup or one Kanade sets; otherwise the shell uses its built-in roles. The Island,
 //! Dock and Banners take a tinted solid ramp from that wallpaper's hue (`tint`, ADR 0050).
 
-use std::cell::Cell;
 use std::ffi::CString;
 
 use fontconfig::{FC_FAMILY, FC_STYLE, Fontconfig, Pattern};
@@ -61,8 +60,7 @@ pub fn signals() -> SemanticColors {
     match finish() {
         Finish::TintedSolid => SEMANTIC,
         Finish::Blur if !blur_light() => SEMANTIC,
-        Finish::LiquidGlass if INK.get() < 0.5 => SEMANTIC,
-        Finish::Blur | Finish::LiquidGlass | Finish::Paper => SIGNALS_LIGHT,
+        Finish::Blur | Finish::Paper => SIGNALS_LIGHT,
     }
 }
 
@@ -138,41 +136,7 @@ pub const ISLAND_LIGHT: ThemeRoles = ThemeRoles {
 // the Island's roles, the same whatever `appearance.tone` is: tinted by the wallpaper, dark or
 // light as `appearance.finish` says
 pub fn island() -> ThemeRoles {
-    let roles = crate::appearance::island_roles(finish());
-    let paper = INK.get();
-
-    if finish() != Finish::LiquidGlass || paper <= 0.0 {
-        return roles;
-    }
-
-    let inked = tint::veiled(crate::appearance::island_roles(Finish::Paper));
-
-    tint::fade(roles, inked, paper)
-}
-
-thread_local! {
-    // how dark the ink of the window being built is: 0 the finish's own, 1 paper's, over a bright page
-    static INK: Cell<f32> = const { Cell::new(0.0) };
-}
-
-// ends the window's ink when dropped, so what is built after it has the finish's own
-pub struct Inked(());
-
-impl Drop for Inked {
-    fn drop(&mut self) {
-        INK.set(0.0);
-    }
-}
-
-/*
- * Liquid Glass's ink for what is built while the guard lives, `paper` from 0 to 1 turning the
- * island's roles to paper's (ADR 0054). In eighths, as every ink in between is an icon file written
- * and a raster cached once
- */
-pub fn inked(paper: f32) -> Inked {
-    INK.set((paper.clamp(0.0, 1.0) * 8.0).round() / 8.0);
-
-    Inked(())
+    crate::appearance::island_roles(finish())
 }
 
 // Settings' mark, from top left to bottom right
@@ -206,14 +170,6 @@ pub const SHADOW_AMBIENT: Color = Color::rgba(0, 0, 0, 38);
 pub const SHADOW_CONTACT: Color = Color::rgba(0, 0, 0, 26);
 
 // the ring of a pinned Island on the tinted ramp: white, so it reads on every hue (ADR 0050)
-// the glass finish's containers: light veils over the glass, not solid fills (`tint::clear`)
-const GLASS_CONTAINER: Color = Color::rgba(255, 255, 255, 28);
-const GLASS_CONTAINER_HIGH: Color = Color::rgba(255, 255, 255, 48);
-
-// the same under paper's ink, over a bright page: dark veils
-const GLASS_PAPER_CONTAINER: Color = Color::rgba(0, 0, 0, 14);
-const GLASS_PAPER_CONTAINER_HIGH: Color = Color::rgba(0, 0, 0, 26);
-
 pub const TINT_OUTLINE: Color = Color::rgba(255, 255, 255, 71);
 
 /*
@@ -231,7 +187,7 @@ pub const PAPER_OUTLINE: Color = Color::rgba(30, 30, 50, 89);
 // the pane's top light edge and rim in the finish
 pub fn pane_edge() -> Color {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass => PANE_EDGE,
+        Finish::TintedSolid => PANE_EDGE,
         Finish::Blur if !blur_light() => PANE_EDGE,
         Finish::Blur | Finish::Paper => PAPER_EDGE,
     }
@@ -239,7 +195,7 @@ pub fn pane_edge() -> Color {
 
 pub fn pane_rim() -> Color {
     match finish() {
-        Finish::TintedSolid | Finish::LiquidGlass => PANE_RIM,
+        Finish::TintedSolid => PANE_RIM,
         Finish::Blur if !blur_light() => PANE_RIM,
         Finish::Blur | Finish::Paper => PAPER_RIM,
     }
@@ -418,8 +374,10 @@ impl ThemeRoles {
     pub fn edge(&self) -> Color {
         let grounds = self.grounds();
 
+        let variant = over(self.on_surface_variant, self.surface);
+
         (1..=20)
-            .map(|step| mix(self.surface, self.on_surface_variant, step as f32 / 20.0))
+            .map(|step| mix(self.surface, variant, step as f32 / 20.0))
             .find(|edge| grounds.iter().all(|&ground| contrast(*edge, ground) >= 3.1))
             .unwrap_or(self.on_surface)
     }
@@ -527,6 +485,19 @@ mod tests {
             surface_container_high: alpha(text, high),
             outline: alpha(text, 64),
         }
+    }
+
+    #[test]
+    fn a_control_edge_interpolates_to_the_composited_variant() {
+        let roles = ThemeRoles {
+            surface: Color::rgb(246, 246, 250),
+            on_surface_variant: Color::rgba(60, 60, 67, 210),
+            ..ISLAND_LIGHT
+        };
+        let endpoint = over(roles.on_surface_variant, roles.surface);
+
+        assert_eq!(endpoint, Color::rgb(93, 93, 99));
+        assert_eq!(mix(roles.surface, endpoint, 1.0), endpoint);
     }
 
     // a control's edge and the ring read at 3:1 on every ground, in dark and light tones and on a

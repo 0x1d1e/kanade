@@ -67,7 +67,7 @@ Beyond the Island, Kanade coordinates the surrounding desktop environment:
 - **Notification daemon**: Kanade acts as the session notification server. Notification Banners emerge directly from the Island edge on the focused monitor. Features include urgency rules, per-app sound effects, Do Not Disturb, and inline text replies directly on the Banner.
 - **Dock**: Per-monitor dock strip supporting pinned and running applications, multi-window preview menus, middle-click to launch new instances, and drag-and-drop file launching. The Dock supports autohide, edge positioning, and three Island merge modes when sharing an edge: `crown` (Island sitting atop the Dock), `keystone` (Island centered in the Dock row), and `fold` (Dock revealed on hover).
 - **Lock screen and idle**: Built-in PAM screen locker (`crates/lock`) running over an independent Wayland connection. Features include lock-before-sleep hooks, optional idle stages (`idle.dim`, `idle.lock`, `idle.screen_off`, `idle.suspend`), and a companion SDDM theme generator (`kanade sddm`) to mirror the login experience.
-- **Appearance and finishes**: Shell surfaces (Panes) support four visual finishes: tinted solid, paper, liquid glass (real-time screen refraction), and compositor blur. Matugen extracts wallpaper color palettes, which `appearance.sync` applies across GTK, Qt, kitty, niri borders, and Firefox or Zen.
+- **Appearance and finishes**: Shell surfaces (Panes) support three visual finishes: tinted solid, paper, and compositor blur. Matugen extracts wallpaper color palettes, which `appearance.sync` applies across GTK, Qt, kitty, niri borders, and Firefox or Zen.
 
 ## Integrations & Scripting
 

@@ -1347,6 +1347,9 @@ pub struct Status {
 
     // SDDM reads the overlay's theme
     pub enabled: bool,
+
+    // the overlay files and mutable data are ready for the selected theme
+    pub ready: bool,
 }
 
 impl Status {
@@ -1511,11 +1514,14 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
         }
     }
 
+    let ready = steps.is_empty() && !blocked && state == "current" && owned(&w.data()).is_ok();
+
     Ok(Status {
         lines,
         steps,
         blocked,
         enabled,
+        ready,
     })
 }
 

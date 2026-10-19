@@ -1,5 +1,4 @@
 mod atlas;
-mod backdrops;
 mod clip;
 mod convert;
 mod cut;
@@ -74,19 +73,11 @@ pub struct Gpu {
     atlas_drops: Rc<Cell<u64>>,
     atlas_seen: u64,
 
-    // the copies of what is behind each pane, for the shaders that read them, see backdrops.rs
-    backdrops: Rc<RefCell<backdrops::Backdrops>>,
-
     // custom shaders, compiled once and kept by the path they were read from
     shaders: HashMap<PathBuf, Shader>,
 
     // finished window-sized textures waiting to be reused
     spare: Vec<Texture>,
-
-    // the last frame this window presented, kept only while a shader asks for it (`presented`), and
-    // whether one did this frame
-    presented: Option<Texture>,
-    presenting: bool,
 
     // last frame's vello results in the order they were painted, and how far this frame got
     painted: Vec<Option<painted::Painted>>,
@@ -108,7 +99,6 @@ impl Gpu {
             queue,
             vello,
             atlas_drops,
-            backdrops,
         } = shared::get(&surface);
 
         let config = target::configure(&surface, &adapter);
@@ -139,11 +129,8 @@ impl Gpu {
             atlas_drops,
             atlas_seen: 0,
 
-            backdrops,
             shaders: HashMap::new(),
             spare: Vec::new(),
-            presented: None,
-            presenting: false,
 
             painted: Vec::new(),
             painting: 0,

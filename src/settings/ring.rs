@@ -81,6 +81,22 @@ pub fn reset() {
     AT.set(None);
 }
 
+// Whether the keyboard ring is on a niri setting, including while search results show it.
+pub fn on_niri_setting() -> bool {
+    AT.with_borrow(|at| {
+        at.as_deref().is_some_and(|id| {
+            [
+                "field settings niri ",
+                "switch niri ",
+                "choice niri ",
+                "reset niri ",
+            ]
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+        })
+    })
+}
+
 pub fn key(key: Key) {
     match key {
         Key::Tab => travel(1),

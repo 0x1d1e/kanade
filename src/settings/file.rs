@@ -142,11 +142,11 @@ fn replace(
     edits: Vec<Entry>,
 ) -> Result<Vec<Replaced>, Refusal> {
     let (new, replaced) = change(text, below, edits)
-        .map_err(|problem| Refusal::failed(format!("{} not written: {problem}", file.display())))?;
+        .map_err(|problem| Refusal::failed(format!("{problem} ({})", file.display())))?;
 
     if replaced.iter().any(|each| each.was != each.now) {
         write(file, &new)
-            .map_err(|error| Refusal::failed(format!("{} not written: {error}", file.display())))?;
+            .map_err(|error| Refusal::failed(format!("{error} ({})", file.display())))?;
     }
 
     Ok(replaced)
