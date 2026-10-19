@@ -73,6 +73,16 @@ impl ImageCache {
         }
     }
 
+    // same atlas size, so the renderer's image stays the size it has; the copies are what go
+    pub(crate) fn clear_residents(&mut self) {
+        let size = self.atlas.size();
+
+        self.atlas = AtlasAllocator::new(size);
+        self.map.clear();
+        self.images.clear();
+        self.evicted_in_resolve = 0;
+    }
+
     pub(crate) fn begin_resolve(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.evicted_in_resolve = 0;

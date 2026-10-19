@@ -16,6 +16,7 @@ mod input;
 mod ipc;
 mod layer_window;
 mod macros;
+mod memory;
 mod monitor;
 mod placement;
 mod style;
@@ -51,6 +52,7 @@ pub use ipc::{IpcCall, IpcReply, ipc_socket};
 pub use layer_window::{
     Horizontal, InputArea, Keyboard, Layer, LayerWindow, Margin, Vertical, WindowSize, Zone,
 };
+pub use memory::release_visit;
 pub use monitor::{Monitor, Monitors};
 pub use placement::{Align, Center, End, Justify, Padding, Size, Start};
 pub use style::{Fill, Image, Mask, Radius, Shadow};

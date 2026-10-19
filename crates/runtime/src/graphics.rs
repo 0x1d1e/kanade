@@ -17,6 +17,7 @@ pub use cap::Cap;
 pub use color::Color;
 pub use geometry::{Area, Corners};
 pub use gpu::Gpu;
+pub(crate) use gpu::release_pool;
 pub use gradient::Gradient;
 pub use outline::Outline;
 pub use path::{BezierPath, PathBuilder};

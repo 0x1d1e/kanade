@@ -33,6 +33,12 @@ impl Gpu {
         self.spare.push(texture);
     }
 
+    // a size the window left is not drawn again; a spare of the size it has now still is
+    pub(super) fn evict_other_sizes(&mut self, width: u32, height: u32) {
+        self.spare
+            .retain(|texture| texture.width() == width && texture.height() == height);
+    }
+
     fn take(&mut self, width: u32, height: u32, usage: TextureUsages) -> Option<Texture> {
         let fits = |texture: &Texture| {
             texture.width() == width && texture.height() == height && texture.usage() == usage

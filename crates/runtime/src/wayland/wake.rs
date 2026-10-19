@@ -9,6 +9,12 @@ pub fn insert(handle: &LoopHandle<'static, WaylandState>) {
 
     handle
         .insert_source(source, |_, _, state| {
+            crate::memory::trim_if_due();
+
+            if crate::memory::take_redraw() {
+                state.request_frames();
+            }
+
             state.follow_ui_scale();
 
             state.open_requested();

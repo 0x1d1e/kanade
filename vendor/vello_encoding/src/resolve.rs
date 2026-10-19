@@ -5,6 +5,7 @@ use bytemuck::{Pod, Zeroable};
 use peniko::{Extend, ImageData, InterpolationAlphaSpace};
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{DrawTag, Encoding, PathTag, StreamOffsets, Style, Transform};
 
@@ -153,6 +154,14 @@ pub fn resolve_solid_paths_only(encoding: &Encoding, packed: &mut Vec<u8>) -> La
     layout
 }
 
+// the next resolve drops glyph encodings and image copies a visit left behind
+static COLD: AtomicBool = AtomicBool::new(false);
+
+/// Asks the next resolve to drop encodings and image copies no longer shown.
+pub fn release_cold() {
+    COLD.store(true, Ordering::Release);
+}
+
 /// Resolver for late bound resources.
 #[derive(Default)]
 pub struct Resolver {
@@ -178,6 +187,15 @@ impl Resolver {
         self.image_cache.mark_dirty(image);
     }
 
+    fn drop_cold(&mut self) {
+        if !COLD.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
+        self.glyph_cache.clear();
+        self.image_cache.clear_residents();
+    }
+
     /// Resolves late bound resources and packs an encoding. Returns the packed
     /// layout and computed ramp data.
     pub fn resolve<'a>(
@@ -185,6 +203,8 @@ impl Resolver {
         encoding: &Encoding,
         packed: &mut Vec<u8>,
     ) -> (Layout, Ramps<'a>, Images<'a>) {
+        self.drop_cold();
+
         let resources = &encoding.resources;
         if resources.patches.is_empty() {
             let layout = resolve_solid_paths_only(encoding, packed);

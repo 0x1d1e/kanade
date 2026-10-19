@@ -38,6 +38,18 @@ impl Glyph {
 pub(super) type GlyphKey = (usize, u16, u32, u32);
 
 impl Gpu {
+    // a visit's pictures; the Rest clock draws through the atlas, which this leaves alone
+    pub(super) fn forget_cold(&mut self) {
+        let generation = crate::memory::generation();
+
+        if self.glyph_generation == generation {
+            return;
+        }
+
+        self.glyph_generation = generation;
+        self.glyphs.clear();
+    }
+
     pub(super) fn draw_glyph(
         &mut self,
         scene: &mut Scene,

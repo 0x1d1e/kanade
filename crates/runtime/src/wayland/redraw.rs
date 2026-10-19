@@ -73,6 +73,9 @@ impl OpenWindow {
 
         let presented = self.present(frame.renderer);
 
+        // the trim runs on the next wake, after this frame returns and its tree is dropped
+        crate::memory::note_drawn();
+
         let timing = Timing {
             started,
             viewed,

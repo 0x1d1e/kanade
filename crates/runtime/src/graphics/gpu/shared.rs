@@ -14,7 +14,10 @@ use super::wait::wait;
 /*
  * one gpu device and one vello for every window: separate devices are
  * separate gpu contexts, which the driver switches between whenever two
- * windows draw, and each compiled every shader again on its first frame
+ * windows draw, and each compiled every shader again on its first frame.
+ * a normal window close replaces the renderer on this device, which drops
+ * the pool of buffers only that larger target needed; the next frame does
+ * not compile the shaders again, this close does, once
  */
 #[derive(Clone)]
 pub struct Shared {
@@ -46,6 +49,29 @@ pub fn instance() -> Instance {
 // opened by the first window, with a gpu that can draw to its surface; later windows reuse it
 pub fn get(surface: &Surface) -> Shared {
     SHARED.with_borrow_mut(|shared| shared.get_or_insert_with(|| open(surface)).clone())
+}
+
+// vello's pool lives in the renderer; replacing it on this device drops those buffers
+pub(crate) fn release_pool() {
+    let shared = SHARED.with(|slot| slot.borrow().clone());
+
+    let Some(shared) = shared else {
+        return;
+    };
+
+    let vello =
+        vello::Renderer::new(&shared.device, renderer_options()).expect("failed to start vello");
+
+    *shared.vello.borrow_mut() = vello;
+
+    shared.atlas_drops.set(shared.atlas_drops.get() + 1);
+}
+
+fn renderer_options() -> RendererOptions {
+    RendererOptions {
+        antialiasing_support: AaSupport::area_only(),
+        ..RendererOptions::default()
+    }
 }
 
 fn open(surface: &Surface) -> Shared {
@@ -91,12 +117,7 @@ fn open(surface: &Surface) -> Shared {
     });
 
     // area anti-aliasing matches how edges looked with the cpu renderer
-    let vello_options = RendererOptions {
-        antialiasing_support: AaSupport::area_only(),
-        ..RendererOptions::default()
-    };
-
-    let vello = vello::Renderer::new(&device, vello_options).expect("failed to start vello");
+    let vello = vello::Renderer::new(&device, renderer_options()).expect("failed to start vello");
 
     Shared {
         adapter,

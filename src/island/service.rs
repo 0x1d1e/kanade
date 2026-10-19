@@ -154,6 +154,9 @@ struct Island {
      */
     under: Option<Shape>,
 
+    // when a collapse to Rest has faded the Surface out, so its freed heap can be trimmed
+    release_at: Option<Instant>,
+
     // none until the first morph; width, height and radius as one spring group
     shape: Option<Spring<3>>,
 
@@ -221,7 +224,7 @@ impl Service for IslandService {
 
         loop {
             // no deadline waits forever, recv_timeout falls back to recv on overflow
-            let wait = Self::read().deadline().map_or(Duration::MAX, |deadline| {
+            let wait = Self::read().next_wake().map_or(Duration::MAX, |deadline| {
                 deadline.saturating_duration_since(Instant::now())
             });
 
@@ -233,7 +236,7 @@ impl Service for IslandService {
 
             // Write cannot be made quiet from here, so only write when something falls due
             if Self::read()
-                .deadline()
+                .next_wake()
                 .is_some_and(|deadline| deadline <= now)
             {
                 Self::write().expire(now);
@@ -553,6 +556,15 @@ impl IslandService {
             .filter_map(|island| island.due.map(|due| due.at))
             .chain(self.arbiter.deadline())
             .chain(self.auto.as_ref().map(|auto| auto.until))
+            .min()
+    }
+
+    // deadline, or a collapse whose Surface has faded and whose freed heap can be trimmed
+    fn next_wake(&self) -> Option<Instant> {
+        self.deadline()
+            .into_iter()
+            .chain(self.untouched.release_at)
+            .chain(self.islands.values().filter_map(|island| island.release_at))
             .min()
     }
 
@@ -1180,6 +1192,21 @@ impl IslandService {
         if self.arbiter.expire(now) {
             self.sync(now);
         }
+
+        self.release_faded(now);
+    }
+
+    // a collapse to Rest whose Surface has faded: one trim, not another island deadline
+    fn release_faded(&mut self, now: Instant) {
+        let mut faded = self.untouched.release_at.take_if(|at| *at <= now).is_some();
+
+        for island in self.islands.values_mut() {
+            faded |= island.release_at.take_if(|at| *at <= now).is_some();
+        }
+
+        if faded {
+            kanade_runtime::release_visit();
+        }
     }
 
     // the first touch starts from where every untouched island is, mid-morph included
@@ -1265,9 +1292,19 @@ fn follow(
             island.under = Some(Shape::from(spring.target()));
         }
 
+        let duration = timings.for_motion(response(from, presentation, timings));
+
+        // the Surface still draws for the first half of the fade; trim once it is gone
+        if presentation == Presentation::Rest && from != Presentation::Rest {
+            island.release_at = Some(now + duration);
+            nudge();
+        } else if presentation != Presentation::Rest && island.release_at.take().is_some() {
+            nudge();
+        }
+
         spring.to(
             sizes.target(presentation, visit, holds).into(),
-            timings.for_motion(response(from, presentation, timings)),
+            duration,
             now,
         );
 

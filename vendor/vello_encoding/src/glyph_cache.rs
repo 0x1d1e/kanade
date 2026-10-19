@@ -91,11 +91,21 @@ impl GlyphCache {
         })
     }
 
+    // a visit's encodings; the next resolve rebuilds only the glyphs that scene draws
+    pub(crate) fn clear(&mut self) {
+        self.free_list.clear();
+        self.map.clear();
+        self.var_map.clear();
+        self.cached_count = 0;
+        self.hinting = HintCache::default();
+    }
+
     pub(crate) fn maintain(&mut self) {
-        // Maximum number of resolve phases where we'll retain an unused glyph
-        const MAX_ENTRY_AGE: u64 = 64;
+        // KANADE: Rest resolves about once a minute, so 64 unused resolves keeps a visit's
+        // glyphs for about an hour. One unused resolve is enough, and the cache is one frame's.
+        const MAX_ENTRY_AGE: u64 = 0;
         // Maximum number of resolve phases before we force a prune
-        const PRUNE_FREQUENCY: u64 = 64;
+        const PRUNE_FREQUENCY: u64 = 1;
         // Always prune if the cached count is greater than this value
         const CACHED_COUNT_THRESHOLD: usize = 256;
         // Number of encoding buffers we'll keep on the free list
@@ -416,5 +426,62 @@ fn find_hint_entry(entries: &mut Vec<HintEntry>, key: &HintKey<'_>) -> Option<(u
         Some((ix, true))
     } else {
         Some((found_index, false))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(serial: u64) -> GlyphEntry {
+        GlyphEntry {
+            encoding: Arc::new(Encoding::new()),
+            stream_sizes: StreamOffsets::default(),
+            serial,
+        }
+    }
+
+    #[test]
+    fn an_unused_glyph_does_not_wait_out_an_hour_of_rest() {
+        let mut cache = GlyphCache::default();
+        let stale = GlyphKey {
+            glyph_id: 1,
+            ..GlyphKey::default()
+        };
+        let fresh = GlyphKey {
+            glyph_id: 2,
+            ..GlyphKey::default()
+        };
+
+        cache.serial = 2;
+        cache.cached_count = 2;
+        cache.map.insert(stale, entry(1));
+        cache.map.insert(fresh, entry(2));
+
+        cache.maintain();
+
+        assert!(!cache.map.contains_key(&GlyphKey {
+            glyph_id: 1,
+            ..GlyphKey::default()
+        }));
+        assert!(cache.map.contains_key(&GlyphKey {
+            glyph_id: 2,
+            ..GlyphKey::default()
+        }));
+    }
+
+    #[test]
+    fn clear_drops_encodings_kept_for_reuse() {
+        let mut cache = GlyphCache::default();
+
+        cache.cached_count = 1;
+        cache.map.insert(GlyphKey::default(), entry(4));
+        cache.free_list.push(Arc::new(Encoding::new()));
+
+        cache.clear();
+
+        assert!(cache.map.is_empty());
+        assert!(cache.free_list.is_empty());
+        assert_eq!(cache.cached_count, 0);
     }
 }

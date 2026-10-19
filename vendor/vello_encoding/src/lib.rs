@@ -66,7 +66,7 @@ pub use path::{
     PathTag, SegmentCount, Style, Tile,
 };
 pub use ramp_cache::Ramps;
-pub use resolve::{Layout, Patch, Resolver, resolve_solid_paths_only};
+pub use resolve::{Layout, Patch, Resolver, release_cold, resolve_solid_paths_only};
 
 #[cfg(feature = "bump_estimate")]
 pub use estimate::BumpEstimator;

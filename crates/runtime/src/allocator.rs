@@ -41,13 +41,18 @@ pub fn limit() {
 
 /*
  * a pool only shrinks from its end, so the gaps decoding, d-bus and niri's
- * events leave in the middle stay with the process; trimming gives them back
+ * events leave in the middle stay with the process; trimming gives them back.
+ * the timer is the backstop: a collapse to Rest and a normal window close trim
+ * once between frames, or a sample two seconds later still shows the freed heap
  */
-// a fixed timer; if it ever shows up in frame times, trim after a window closes instead
 fn trim() {
     loop {
         thread::sleep(TRIM);
 
-        unsafe { malloc_trim(0) };
+        trim_heap();
     }
+}
+
+pub(crate) fn trim_heap() {
+    unsafe { malloc_trim(0) };
 }

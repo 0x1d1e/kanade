@@ -197,6 +197,10 @@ impl WaylandState {
     }
 
     pub fn close(&mut self, surface: &WlSurface) {
+        let normal = self.windows.iter().any(|window| {
+            window.role.wl_surface() == surface && matches!(window.role, Role::Normal { .. })
+        });
+
         let mut open = OPEN.locked();
         for window in &self.windows {
             if window.role.wl_surface() == surface {
@@ -211,6 +215,12 @@ impl WaylandState {
         // windows made per monitor come back when a monitor is plugged in again
         if self.windows.is_empty() && self.per_monitor.is_empty() {
             self.running = false;
+        }
+
+        // the window's gpu is already dropped; the shared pool is what a larger target left behind
+        if normal {
+            crate::graphics::release_pool();
+            crate::allocator::trim_heap();
         }
     }
 }

@@ -7,14 +7,16 @@ use super::{Gpu, texture};
 impl Gpu {
     // false when the frame was skipped, so nothing was committed
     pub fn draw(&mut self, commands: Vec<Command>, width: u32, height: u32) -> bool {
+        self.forget_cold();
+
         if self.config.width != width || self.config.height != height {
             self.config.width = width;
             self.config.height = height;
 
             self.surface.configure(&self.device, &self.config);
 
-            // spares and prior drawing results had the old size
-            self.spare.clear();
+            // prior drawing had the old size; a spare of this size, from a previous visit, stays
+            self.evict_other_sizes(width, height);
             self.painted.clear();
         }
 

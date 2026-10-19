@@ -43,6 +43,8 @@ use pass::Pass;
 use shader::Shader;
 use shared::Shared;
 
+pub(crate) use shared::release_pool;
+
 /*
  * the only part of the runtime that knows how drawing is done,
  * vello draws the shapes and wgpu runs everything else on the gpu
@@ -66,6 +68,9 @@ pub struct Gpu {
 
     // letters already drawn into pictures, none for letters without pixels like a space
     glyphs: HashMap<glyph::GlyphKey, Option<glyph::Glyph>>,
+
+    // the visit whose glyph pictures were dropped; Rest's letters are in the atlas, not here
+    glyph_generation: u64,
 
     quads: quads::Quads,
 
@@ -125,6 +130,7 @@ impl Gpu {
             shown: HashMap::new(),
             drawn: HashSet::new(),
             glyphs: HashMap::new(),
+            glyph_generation: 0,
             quads,
             atlas_drops,
             atlas_seen: 0,
