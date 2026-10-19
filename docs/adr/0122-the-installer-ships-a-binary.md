@@ -18,6 +18,6 @@ A piped `curl | sh` used to clone `release/0.1` and `cargo install` it. That com
 ## Consequences
 
 - The downloaded binary runs on Arch x86_64 with the libraries it was linked against. Another distro, or an Arch where those sonames differ, is unsupported for that binary. Compiling is the path when the asset is missing, or when `--ref` or a checkout is used, not when the checksum fails.
-- `install-0.1` assets are replaced in place. They are not the `v0.1.0` release.
+- `kanade`, `kanade.sha256`, `kanade-install`, `kanade-install.sha256`, and `kanade.rev` sit on the `install-0.1` prerelease. They are replaced in place, not `v0.1.0`. They are built locally from `release/0.1` on Arch x86_64 and uploaded by hand. GitHub Actions does not build or upload them.
 
-Files: `scripts/install`, `crates/install`, `.github/workflows/release-binary.yml`.
+Files: `scripts/install`, `crates/install`.
