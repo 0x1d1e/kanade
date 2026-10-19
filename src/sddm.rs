@@ -1860,7 +1860,8 @@ fn ready(w: &Where, prefix: &str) -> Result<(), String> {
 /*
  * writes the look the config asks for: the theme into the overlay, the picture (or none) and
  * `theme.conf.user`. Everything that can fail on the picture does before anything is written, and the
- * picture is in place before the config that names it. A theme that reads no picture setting (class
+ * picture is in place before the config that names it. With `wallpaper`, no available wallpaper means
+ * no picture; an explicit `path` that is absent or invalid is an error. A theme that reads no picture setting (class
  * B, C or D) is linked and gets none, so what it shows is its own
  */
 fn apply(
@@ -1879,13 +1880,12 @@ fn apply(
     ready(w, &prefix)?;
 
     let bytes = match want.background {
-        SddmBackground::Wallpaper | SddmBackground::Path => {
+        SddmBackground::Wallpaper => source(&want)
+            .map(|path| backdrop(&path, size(), want.blur, want.dim))
+            .transpose()?,
+        SddmBackground::Path => {
             let path = source(&want).ok_or_else(|| {
-                if want.background == SddmBackground::Path {
-                    String::from("sddm.background is \"path\" but sddm.background_path is not set")
-                } else {
-                    String::from("no wallpaper is available")
-                }
+                String::from("sddm.background is \"path\" but sddm.background_path is not set")
             })?;
             Some(backdrop(&path, size(), want.blur, want.dim)?)
         }
@@ -2226,6 +2226,51 @@ mod tests {
         // synced
         apply(&w, &config, |_| None, || (16, 16)).unwrap();
         assert_eq!(shape(&gather(&w, &config).unwrap()), ["conf"]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wallpaper_sync_without_a_wallpaper_keeps_the_theme_enabled_without_a_picture() {
+        let root =
+            std::env::temp_dir().join(format!("kanade-sddm-no-wallpaper-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let w = Where::under(root.clone());
+        fs::create_dir_all(w.prefix()).unwrap();
+        fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(w.prefix().join("themes"), Permissions::from_mode(0o755)).unwrap();
+        install_own(&w).unwrap();
+        let config = Config::default();
+
+        let result = apply(&w, &config, |_| None, || (16, 16)).unwrap();
+        assert!(result.contains("picture: none"), "{result}");
+        assert!(!w.picture().exists());
+        assert!(
+            fs::read_to_string(w.overlay(OWN).join(USER))
+                .unwrap()
+                .contains(&format!("backdrop=/{DATA}/backdrop.png"))
+        );
+        fs::create_dir_all(w.ours().parent().unwrap()).unwrap();
+        fs::write(
+            w.ours(),
+            format!(
+                "[Theme]\nThemeDir={}/themes\nCurrent=kanade\n",
+                w.text().unwrap()
+            ),
+        )
+        .unwrap();
+        assert!(pointing(&w, OWN).unwrap().contains("enabled"));
+
+        let explicit_path = Config {
+            sddm_background: SddmBackground::Path,
+            ..config
+        };
+        assert!(
+            apply(&w, &explicit_path, |_| None, || (16, 16))
+                .unwrap_err()
+                .contains("background_path is not set")
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

@@ -44,7 +44,7 @@ Kanade's theme code and `theme.conf.user` are installed as root-owned, non-user-
 
 ## The picture
 
-`sddm.background` says what shows behind the clock: the wallpaper (`wallpaper`, a symbolic link to it is followed, as it is only read), an image (`path`, from `sddm.background_path`), the solid color `sddm.surface`, or `none`. The picture is blurred (`sddm.blur`) and darkened (`sddm.dim`) as the lock screen does, sized to the largest output, and re-encoded so it holds none of the original's metadata.
+`sddm.background` says what shows behind the clock: the wallpaper (`wallpaper`, a symbolic link to it is followed, as it is only read), an image (`path`, from `sddm.background_path`), the solid color `sddm.surface`, or `none`. If wallpaper is selected but none is available, sync succeeds without a picture and the built-in theme shows its solid surface. An explicit `path` with no configured or readable image is an error. The picture is blurred (`sddm.blur`) and darkened (`sddm.dim`) as the lock screen does, sized to the largest output, and re-encoded so it holds none of the original's metadata.
 
 The picture is readable by the `sddm` user and by anyone who can read `/usr/local/share/kanade-sddm-data/`, so it holds a picture of your desktop. That is why `sddm.sync` is off by default. Turned on, with `sddm.background = "wallpaper"`, the shell writes the picture again whenever the wallpaper changes (changes close together make one write, and nothing polls). `kanade sddm sync` does the same by hand.
 
