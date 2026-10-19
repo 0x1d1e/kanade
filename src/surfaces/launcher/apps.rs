@@ -102,7 +102,7 @@ fn answer(app: &App, fit: Fit) -> Answer {
     Answer {
         fit,
         title: app.name.clone(),
-        detail: app.description.clone().unwrap_or_default(),
+        detail: String::new(),
         mark: mark(app),
         action: Action::Launch(app.launch.clone(), app.id.clone()),
     }
