@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use ttf_parser::Face;
 
-use crate::backdrop::Spot;
 use crate::graphics::{Area, BezierPath, Cap, Color, Corners, Gradient, Transform};
 
 pub enum Command {
@@ -90,8 +89,6 @@ pub enum Command {
     Shader {
         shader: PathBuf,
         values: Vec<[f32; 4]>,
-        backdrop: Option<Spot>,
-        presented: bool,
         area: Area,
         path: Option<BezierPath>,
         transform: Transform,

@@ -81,14 +81,7 @@ fn paint(rectangle: &Rectangle, renderer: &mut Renderer, area: Area, radius: Cor
     }
 
     if let Some(shader) = &rectangle.shader {
-        renderer.shader(
-            area,
-            shader,
-            radius,
-            &rectangle.shader_values,
-            rectangle.backdrop.as_ref(),
-            rectangle.presented,
-        );
+        renderer.shader(area, shader, radius, &rectangle.shader_values);
 
         // the shader's time moves on, so the window keeps drawing new frames
         if reads_time(shader) {
@@ -216,7 +209,7 @@ fn names_time(source: &str) -> bool {
 mod tests {
     use super::names_time;
 
-    // the glass shader's comment "a channel at a time" once kept every glass window drawing at the
+    // a shader comment once kept every window drawing at the
     // display's rate, at rest
     #[test]
     fn a_comment_does_not_make_a_shader_read_time() {

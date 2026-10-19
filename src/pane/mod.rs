@@ -5,10 +5,12 @@
 
 mod blob;
 mod blur;
+mod body;
 mod shader;
 
 pub use self::blob::{Dot, blob};
 pub use self::blur::{FILL as BLUR_FILL, behind as blurred};
+pub use self::body::{Body, Join};
 pub use self::shader::shader;
 
 use kanade_runtime::{Color, Rectangle};
@@ -28,7 +30,6 @@ pub struct Pane {
      * rect clips it. None for one rounded rect
      */
     pub united: Option<Body>,
-
 }
 
 // the shader's values, by row

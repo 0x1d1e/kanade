@@ -377,7 +377,7 @@ struct Cast {
     active: bool,
 }
 
-// a cast's stream and what it captures; none for Kanade's own Liquid Glass backdrop capture
+// a cast's stream and what it captures; none for Kanade's own capture
 fn cast(cast: &Json) -> Option<(u64, Cast)> {
     let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
 
@@ -1192,7 +1192,7 @@ mod tests {
         assert_eq!(casting(&posts), [true, false]);
     }
 
-    // Liquid Glass captures its own backdrop, and records nothing
+    // Kanade's own capture records nothing
     #[test]
     fn kanade_s_own_capture_is_no_cast() {
         let own = format!(

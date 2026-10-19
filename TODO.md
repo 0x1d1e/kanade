@@ -1,6 +1,6 @@
 # TODO
 
-Backlog left from the `liquid-glass` branch (#208), and the full architecture review after it.
+Backlog from the full architecture review.
 
 ## Architecture (full review)
 
@@ -59,7 +59,6 @@ Not worth changing, by this review:
 - [x] `Image::blurred`, the loader's blur key and `graphics/image/soften.rs` are gone (no caller after ADR 0049).
 - [ ] Dead after ADR 0049: `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
 - [ ] A plain (unmerged) pane needs no shader: a `Rectangle` fill would drop the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
-- [ ] Retake the memory and frame baselines (`docs/memory.md`) now the capture is gone.
 - [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
 
 ## Architecture (#208 review)
@@ -79,25 +78,10 @@ Not worth changing, by this review:
   - 8% of the island window's frames came later than 1.5 refresh intervals while morphing, and the slowest took 48 ms of view, draw and gpu.
   - Not taken: more than one monitor. Not run (they unplug the output or restart niri): #214's unplug and replug with the Dock, a Banner and autohide active, and #216's lost niri stream.
 
-## Panes (Liquid Glass finish, ADR 0052)
-
-- [ ] Retake the idle-frame, wakeup, frame-gap and memory baselines with `appearance.finish = "liquid-glass"`; no number is recorded for it yet.
-  - First finding: with a page animating behind it (a spinner in a terminal) both the Island and the Dock drew at the refresh rate, as their copies kept changing. A copy now counts as new only outside the body and the panes the shader skips (ADR 0054); check by eye over a spinner, and over a truly static page (a plain window, cursor blink off), that 5 s at rest draws 0 frames.
-- [x] Over a bright page the light text on Liquid Glass is hard to read: a scrim, then paper's ink (ADR 0054). Tune by eye; the ink follows the mean light of a ring 12 px outside the body, so a page half bright and half dark may keep the wrong ink on one side.
-
-- [ ] The `unread` regions (`src/pane/capture.rs`) rest on the shader's read geometry (`glass.wgsl`), with no test tying the two; a merged outline's concave notch is the case to check by eye or by a test that samples the shader's offsets.
-
 ## Panes (Satellites as one liquid shape, ADR 0101)
 
 - [ ] Not seen: the neck as a Satellite comes out and tucks back (tinted, paper, blur; a dot bringing in a second one; a dot sliding to another slot). Tune `pane::blob::REACH` by eye: the neck lasts the last quarter of a dot's travel.
 - [ ] Banners do not join the Island's body: they are a window of their own (ADR 0023).
-- [ ] Liquid Glass keeps plain dots; the neck there would feed the screen copy the edge reads.
-
-## Panes (Liquid Glass refraction, ADR 0100)
-
-- [ ] Not run on a GPU: `appearance.refraction = true` under `liquid-glass`. Check by eye: the edge of the Island at rest and open, the Dock and a Banner over a photo wallpaper and over a window with text; no flicker or colored fringe at the edge while the body morphs or a clock ticks (skew rejects should fall back to the outward look, not show a wrong color); 5 s at rest over a static page draws 0 frames; with it off, the look and idle frames are as before. A wgpu validation error at start (bind group, binding 6) would show in the log for every shader, with the setting off too.
-- [ ] If it holds: tune `pane::unmix::MAX_ALPHA` and `SLACK`; consider the inward read only where the outward one is weakest; take the ink's ring from the unmixed page only if a bright window under the body, not around it, ever needs it.
-- [ ] A copy of the output holds windows in higher layers and the cursor, which the unmix reads as page.
 
 ## Panes (Blur finish, ADR 0057)
 

@@ -281,9 +281,6 @@ pub struct Appearance {
     // follow the desktop's reduced motion and higher contrast (ADR 0080)
     pub accessibility: bool,
 
-    // Liquid Glass bends what lies under its edge, with the shell's own drawing taken out of the
-    // screen copy (experimental, ADR 0100)
-
     // the UI scale in percent, on top of each output's own scale (ADR 0091)
     pub scale: u32,
 }
@@ -3905,15 +3902,15 @@ const MIGRATIONS: &[Migration] = &[
             appearance.remove("highlight");
         }
     },
-    // 6: remove Liquid Glass and its refraction setting (ADR 0121)
+    // 6: map the removed Liquid Glass finish to tinted solid and drop refraction (ADR 0121)
     |table| {
         if let Some(Node::Table(appearance)) =
             table.get_mut("appearance").map(|entry| &mut entry.node)
         {
             if let Some(finish) = appearance.get_mut("finish")
-                && finish.node.as_str() == Some("liquid-glass")
+                && matches!(&finish.node, Node::Value(Value::String(value)) if value == "liquid-glass")
             {
-                finish.node = Node::String("tinted-solid".to_owned());
+                finish.node = Node::Value(Value::String("tinted-solid".to_owned()));
             }
 
             appearance.remove("refraction");
@@ -4362,17 +4359,18 @@ mod tests {
     }
 
     #[test]
-    fn removed_material_and_highlight_keys_are_dropped_silently() {
+    fn removed_finish_and_refraction_are_migrated() {
         for version in [None, Some(SCHEMA_VERSION - 1)] {
             let version = version.map_or(String::new(), |version| {
                 format!("schema_version = {version}\n")
             });
             let text = format!(
-                "{version}[appearance]\nmaterial = \"liquid-glass\"\nhighlight = \"bright\"\ntone = \"light\""
+                "{version}[appearance]\nfinish = \"liquid-glass\"\nrefraction = true\ntone = \"light\""
             );
             let (config, problems) = one(&text);
 
             assert!(problems.is_empty(), "{problems:?}");
+            assert_eq!(config.appearance.finish, Finish::TintedSolid);
             assert_eq!(config.appearance.tone, Tone::Light);
         }
     }

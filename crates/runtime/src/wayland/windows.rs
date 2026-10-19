@@ -129,7 +129,6 @@ impl WaylandState {
         }
 
         self.publish(None);
-        self.recapture_backdrops();
         self.request_frames();
     }
 

@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use crate::backdrop::Spot;
 use crate::graphics::{Area, Color, Corners, Renderer};
 
 use super::Command;
@@ -67,8 +66,6 @@ impl Renderer {
         shader: &Path,
         radius: impl Into<Corners>,
         values: &[[f32; 4]],
-        backdrop: Option<&Spot>,
-        presented: bool,
     ) {
         let radius = radius.into();
 
@@ -86,8 +83,6 @@ impl Renderer {
         self.commands.push(Command::Shader {
             shader: shader.to_path_buf(),
             values: values.to_vec(),
-            backdrop: backdrop.cloned(),
-            presented,
             area,
             path,
             transform: self.transform,

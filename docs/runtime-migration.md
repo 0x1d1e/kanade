@@ -76,8 +76,7 @@ Runtime work, done when wanted.
         writes, a selection replaced while it is read, and password-manager copies. Do it with
         the ADR 0019 validation (`wl-copy --sensitive` between two plain copies) and a source
         that stalls.
-- [x] Liquid glass from GPU textures, without the capture to PNG to decode
-      round trip (ADR 0037); `crates/glass` is gone. ADR 0049 then removed the capture.
+- [x] GPU screencopy implementation removed with the Liquid Glass finish (ADR 0121).
 
 ## Glue to delete
 

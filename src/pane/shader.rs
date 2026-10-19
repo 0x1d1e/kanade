@@ -17,13 +17,6 @@ pub fn shader() -> &'static PathBuf {
     PATH.get_or_init(|| write("pane", include_str!("../pane.wgsl")))
 }
 
-// Liquid Glass's shader, written once when first asked for
-pub fn glass_shader() -> &'static PathBuf {
-    static PATH: OnceLock<PathBuf> = OnceLock::new();
-
-    PATH.get_or_init(|| write("glass", include_str!("../glass.wgsl")))
-}
-
 // the Satellites' shader, written once when first asked for
 pub fn blob_shader() -> &'static PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -73,15 +66,12 @@ fn sweep(dir: &Path) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name();
         let shader = name.to_str().is_some_and(|name| {
-            ["pane-", "glass-", "blob-"]
-                .iter()
-                .any(|kind| name.starts_with(kind))
-                && name.ends_with(".wgsl")
+            ["pane-", "blob-"].iter().any(|kind| name.starts_with(kind)) && name.ends_with(".wgsl")
         });
 
         // one being written may not be locked yet, while one left behind is long untouched
         let left = name.to_str().is_some_and(|name| {
-            [".pane-", ".glass-", ".blob-"]
+            [".pane-", ".blob-"]
                 .iter()
                 .any(|kind| name.starts_with(kind))
                 && name.ends_with(".writing")

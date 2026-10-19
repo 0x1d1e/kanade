@@ -2,7 +2,6 @@
 //! (in the modules below), the Satellites, the cluster and the Dock merged into it.
 
 use std::collections::HashMap;
-use std::iter;
 use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
@@ -77,14 +76,34 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
     }
 }
 
-    let mut all = PLACED.locked();
+// the Island's body and output size as last drawn, for positioning wallpaper actions
+struct Placed {
+    body: (f32, f32),
+    screen: (f32, f32),
+}
 
-    match all.get_mut(&monitor.name) {
-        Some(old) => *old = placed,
-        None => {
-            all.insert(monitor.name.clone(), placed);
-        }
-    }
+static PLACED: LazyLock<Mutex<HashMap<String, Placed>>> = LazyLock::new(Mutex::default);
+
+fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
+    let screen = (monitor.width, monitor.height);
+    let (horizontal, vertical) = (anchor.horizontal(), anchor.vertical());
+    let origin = (
+        match horizontal {
+            Horizontal::Left => 0.0,
+            Horizontal::Middle => ((screen.0 as f32 - window.0.round()) / 2.0).floor(),
+            Horizontal::Right => screen.0 as f32 - window.0.round(),
+        },
+        match vertical {
+            Vertical::Top => 0.0,
+            Vertical::Middle => ((screen.1 as f32 - window.1.round()) / 2.0).floor(),
+            Vertical::Bottom => screen.1 as f32 - window.1.round(),
+        },
+    );
+    let placed = Placed {
+        body: (origin.0 + body.x, origin.1 + body.y),
+        screen: (screen.0 as f32, screen.1 as f32),
+    };
+    PLACED.locked().insert(monitor.name.clone(), placed);
 }
 
 /*
@@ -305,19 +324,14 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .as_ref()
         .zip(laid.as_ref())
         .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
-    let shown = capture_visible(out, sliding, merged_dock_visible, covered, raised);
+    let blur_shown = (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised);
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
 
     // a layer that is not there takes its place all the same, so the targets after keep theirs
     let nothing = || Box::new(Rectangle::new().width(0.0).height(0.0)) as Box<dyn Widget>;
 
-    match body_pane(
-        pane_body,
-        body_rect,
-        shape.radius,
-        plate.is_some(),
-    ) {
+    match body_pane(pane_body, body_rect, shape.radius, plate.is_some()) {
         Pane::United(united) => {
             pane = Some(united);
             layers.push(nothing());
@@ -351,7 +365,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
 
     let (hover, track) = hover_target(&monitor.name, area, room, hang, canvas, peeks);
 
-    let shadow = shadows(body_rect, shape.radius, plate, origin, captured, out);
+    let shadow = shadows(body_rect, shape.radius, plate, origin, out);
 
     // fading as the body slides out of the way, so it never pops at the edge
     let mut under: Vec<Box<dyn Widget>> = vec![Box::new(
@@ -418,7 +432,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .space(Zone::Ignore)
         .namespace("kanade")
         // the panes' outlines, the body drawn alone or united with the Dock's plate
-        .blur(pane::blurred(shown.then_some(pane_body), (0.0, 0.0)))
+        .blur(pane::blurred(blur_shown.then_some(pane_body), (0.0, 0.0)))
         .keyboard(keyboard)
         .on_key(move |key| self::key(&pressed, key))
         // empty under niri's overview, so the pointer reaches the overview beneath
@@ -581,53 +595,33 @@ fn marks(cluster: Option<Cluster>, body: Rect, sideways: bool) -> Option<Box<dyn
     Some(Box::new(cluster?.draw(body, sideways)))
 }
 
-/*
- * A captured Liquid Glass pane casts no shadow: it would darken the colors sampled around it. Nor
- * does a body hidden past its edge, where the shadow would still reach onto the screen. Cast or
- * not, it takes as many layers, so the body's buttons and sliders keep their place among targets
- * mid-press or mid-drag; a merged Dock's plate is cast in this canvas's coordinates.
- */
+/* A body hidden past its edge has no shadow; the merged Dock's plate uses window coordinates. */
 fn shadows(
     body: Rect,
     radius: f32,
     plate: Option<merge::Plate>,
     origin: (f32, f32),
-    captured: bool,
     out: f32,
 ) -> Vec<Box<dyn Widget>> {
     let mut shadow = Vec::new();
 
-    if !captured && out > 0.0 {
+    if out > 0.0 {
         shadow::draw(&mut shadow, body, radius);
     } else {
         shadow::none(&mut shadow);
     }
 
     if let Some(plate) = plate {
-        if captured {
-            shadow::none(&mut shadow);
-        } else {
-            let rect = Rect {
-                x: plate.rect.x - origin.0,
-                y: plate.rect.y - origin.1,
-                ..plate.rect
-            };
+        let rect = Rect {
+            x: plate.rect.x - origin.0,
+            y: plate.rect.y - origin.1,
+            ..plate.rect
+        };
 
-            shadow::draw(&mut shadow, rect, plate.radius);
-        }
+        shadow::draw(&mut shadow, rect, plate.radius);
     }
 
     shadow
-}
-
-fn capture_visible(
-    out: f32,
-    sliding: bool,
-    merged_dock_visible: bool,
-    covered: bool,
-    raised: bool,
-) -> bool {
-    (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised)
 }
 
 // the pane under the Island's body
@@ -643,12 +637,7 @@ enum Pane {
  * merged, one pane under both the Island's body and the Dock's plate, in the window's
  * coordinates, which cuts its fill to the two united; the body then has none of its own
  */
-fn body_pane(
-    pane_body: pane::Body,
-    body: Rect,
-    radius: f32,
-    merged: bool,
-) -> Pane {
+fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pane {
     if !merged {
         return Pane::Under(Box::new(pane::layer(pane::Pane {
             width: body.width,

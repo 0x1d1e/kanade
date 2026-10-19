@@ -82,8 +82,6 @@ impl Gpu {
             Command::Shader {
                 shader,
                 values,
-                backdrop,
-                presented,
                 area,
                 path,
                 transform,
@@ -92,8 +90,6 @@ impl Gpu {
                 Material {
                     shader: &shader,
                     values: &values,
-                    backdrop: backdrop.as_ref(),
-                    presented,
                 },
                 area,
                 path.as_ref(),

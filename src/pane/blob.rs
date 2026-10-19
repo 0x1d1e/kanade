@@ -5,7 +5,7 @@
 use kanade_runtime::Rectangle;
 
 use super::shader::blob_shader;
-use super::{Body, blur, glass, rgba};
+use super::{Body, blur, rgba};
 use crate::config;
 use crate::island::motion::Mode;
 use crate::theme;
@@ -29,15 +29,11 @@ pub struct Dot {
 /*
  * the shape of `dots`, nearest the body first, drawn from `body`'s canvas's corner, whose dots rest
  * `gap` apart and so have no neck at rest. None where the dots are drawn alone, each its own fill,
- * which is the look the neck degrades to: Liquid Glass, whose copy would read the neck (the dots
- * are no pane), reduced motion, where a dot is already in its place, and more dots than the shader takes
+ * which the neck degrades to: reduced motion, where a dot is already in its place, and more dots
+ * than the shader takes
  */
 pub fn blob(body: Body, gap: f32, dots: &[Dot]) -> Option<Rectangle> {
-    if dots.is_empty()
-        || dots.len() > MOST
-        || glass()
-        || config::get().island.motion == Mode::Reduced
-    {
+    if dots.is_empty() || dots.len() > MOST || config::get().island.motion == Mode::Reduced {
         return None;
     }
 

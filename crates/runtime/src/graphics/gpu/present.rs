@@ -13,10 +13,9 @@ impl Gpu {
 
             self.surface.configure(&self.device, &self.config);
 
-            // spares and kept results of the old size would never fit again
+            // spares and prior drawing results had the old size
             self.spare.clear();
             self.painted.clear();
-            self.presented = None;
         }
 
         let Some(frame) = self.next_frame() else {
@@ -28,8 +27,6 @@ impl Gpu {
         let canvas = self.take_canvas(width, height);
 
         self.run(commands, &canvas);
-
-        self.keep_presented(&canvas);
 
         let target = frame.texture.create_view(&Default::default());
 

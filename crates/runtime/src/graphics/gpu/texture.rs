@@ -20,16 +20,6 @@ pub fn scratch(device: &Device, width: u32, height: u32) -> Texture {
     create(device, width, height, SCRATCH)
 }
 
-// a frame kept for the shaders of the next one
-pub fn kept(device: &Device, width: u32, height: u32) -> Texture {
-    create(
-        device,
-        width,
-        height,
-        TextureUsages::TEXTURE_BINDING.union(TextureUsages::COPY_DST),
-    )
-}
-
 pub fn view(texture: &Texture) -> TextureView {
     texture.create_view(&Default::default())
 }

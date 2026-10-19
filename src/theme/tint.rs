@@ -90,52 +90,6 @@ pub fn paper(source: Source) -> ThemeRoles {
     }
 }
 
-// the tinted solid's ramp for glass: its containers are light veils, not solid fills, so a tile on
-// the glass is more glass and shows the page through it
-pub fn clear(roles: ThemeRoles) -> ThemeRoles {
-    ThemeRoles {
-        surface_container: super::GLASS_CONTAINER,
-        surface_container_high: super::GLASS_CONTAINER_HIGH,
-        ..roles
-    }
-}
-
-// paper's roles for glass: its containers are dark veils, not solid fills
-pub fn veiled(roles: ThemeRoles) -> ThemeRoles {
-    ThemeRoles {
-        surface_container: super::GLASS_PAPER_CONTAINER,
-        surface_container_high: super::GLASS_PAPER_CONTAINER_HIGH,
-        ..roles
-    }
-}
-
-// the roles `amount` of the way from `from` to `to`, 0 to 1, alpha too
-pub fn fade(from: ThemeRoles, to: ThemeRoles, amount: f32) -> ThemeRoles {
-    let blend = |from: Color, to: Color| {
-        let channel = |from: u8, to: u8| {
-            (f32::from(from) + (f32::from(to) - f32::from(from)) * amount).round() as u8
-        };
-
-        Color::rgba(
-            channel(from.red(), to.red()),
-            channel(from.green(), to.green()),
-            channel(from.blue(), to.blue()),
-            channel(from.alpha(), to.alpha()),
-        )
-    };
-
-    ThemeRoles {
-        primary: blend(from.primary, to.primary),
-        on_primary: blend(from.on_primary, to.on_primary),
-        surface: blend(from.surface, to.surface),
-        on_surface: blend(from.on_surface, to.on_surface),
-        on_surface_variant: blend(from.on_surface_variant, to.on_surface_variant),
-        surface_container: blend(from.surface_container, to.surface_container),
-        surface_container_high: blend(from.surface_container_high, to.surface_container_high),
-        outline: blend(from.outline, to.outline),
-    }
-}
-
 // a hair lighter than the surface, which the pane's fill is at its top edge
 pub fn lit(surface: Color) -> Color {
     let [lightness, a, b] = oklab(surface);
