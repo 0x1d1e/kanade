@@ -18,6 +18,7 @@ use crate::theme::{self, DISABLED};
 
 const FIELD: f32 = 44.0;
 const FIELD_INSET: f32 = 16.0;
+const ICON_GLYPH: f32 = 16.0;
 const DOTS: f32 = theme::text::TITLE;
 const CARET: f32 = 1.5;
 
@@ -260,8 +261,13 @@ fn field(secret: &Secret) -> Rectangle {
         })
         .child(
             Row::new(vec![
-                Box::new(Icon::Lock.on(TARGET, theme::island().on_surface_variant))
-                    as Box<dyn Widget>,
+                Box::new(
+                    Rectangle::new()
+                        .width(TARGET)
+                        .height(TARGET)
+                        .align_child(Center, Center)
+                        .child(Icon::Lock.on(ICON_GLYPH, theme::island().on_surface_variant)),
+                ) as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)

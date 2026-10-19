@@ -567,7 +567,7 @@ fn tile(
         ImageState::Loading => tile,
         ImageState::Failed => tile
             .align_child(Center, Center)
-            .child(Icon::Picture.crossed(TARGET).opacity(theme::DISABLED)),
+            .child(Icon::Picture.crossed(16.0).opacity(theme::DISABLED)),
     };
 
     let tile = if current {
