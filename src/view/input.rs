@@ -145,7 +145,6 @@ pub fn key(monitor: &str, key: Key) {
         // OnDemand would keep the focus the press gave while the pointer rests on the pill
         set_armed(monitor, false);
     } else if surfaces::welcome::key(monitor, key) {
-        return;
     } else {
         let used = (modules::on("notification-surface")
             && surfaces::notifications::key(monitor, key))

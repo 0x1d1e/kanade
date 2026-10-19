@@ -29,6 +29,7 @@ pub fn collect_targets(text_input: &TextInput, area: Area, targets: &mut Vec<Tar
         let editor = editor.clone();
 
         move |_: Button| {
+            focus::clear_wanted();
             focus::set(id, on_key.clone(), editor.clone());
         }
     };

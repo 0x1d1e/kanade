@@ -374,13 +374,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     };
     let shown = fitting(shown, &heights, from, lane.end, hang);
 
-    // only a reply field needs the keyboard; the rest of the time the window never takes it
-    let keyboard = if shown.iter().any(|banner| banner.reply.is_some()) {
-        Keyboard::OnDemand
-    } else {
-        Keyboard::None
-    };
-
     let (placed, moving) = {
         let mut motions = MOTIONS.locked();
         let motion = motions.entry(monitor.name.clone()).or_default();
@@ -422,8 +415,14 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     for pane in freed {
         // what was typed there is not for the Banner that takes the pane next
-        TextInput::set_text(reply_field(&monitor.name, pane), "");
+        let field = reply_field(&monitor.name, pane);
+        TextInput::blur_if_focused(field);
+        TextInput::set_text(field, "");
     }
+
+    // A reply field becomes keyboard interactive only after its own click focuses it. Reply
+    // capability alone must not let an arriving layer window take application focus.
+    let keyboard = banner_keyboard(&placed, &monitor.name, &panes, TextInput::is_focused);
 
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
     let mut areas = Vec::new();
@@ -544,6 +543,28 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .on_hover(hover)
                 .child(Layers::new(cards).width(width).height(height)),
         )
+}
+
+fn reply_keyboard(focused: bool) -> Keyboard {
+    if focused {
+        Keyboard::OnDemand
+    } else {
+        Keyboard::None
+    }
+}
+
+fn banner_keyboard(
+    placed: &[motion::Placed],
+    monitor: &str,
+    panes: &HashMap<u32, usize>,
+    is_focused: impl Fn(&'static str) -> bool,
+) -> Keyboard {
+    reply_keyboard(placed.iter().any(|placed| {
+        let Some(pane) = panes.get(&placed.banner.id) else {
+            return false;
+        };
+        placed.banner.reply.is_some() && is_focused(reply_field(monitor, *pane))
+    }))
 }
 
 fn reply_field(monitor: &str, pane: usize) -> &'static str {
@@ -1280,8 +1301,11 @@ fn reply(id: u32, placeholder: &str, field: &'static str, width: f32, roles: &Th
 fn send(id: u32, field: &'static str, text: &str) {
     if Notifications::reply(id, text) {
         TextInput::set_text(field, "");
-        TextInput::blur();
+        TextInput::blur_if_focused(field);
         close(id);
+    } else {
+        TextInput::set_text(field, "");
+        TextInput::blur_if_focused(field);
     }
 }
 
@@ -1335,9 +1359,42 @@ fn on_left(press: impl Fn() + 'static) -> impl Fn(Button) + 'static {
 
 #[cfg(test)]
 mod tests {
-    use super::reply_field;
+    use super::{Keyboard, Urgency, banner_keyboard, reply_field};
 
     // the runtime keeps a field's text under its name, so two outputs showing a reply must not share one
+    #[test]
+    fn reply_keyboard_uses_the_focused_reply_identity() {
+        let panes = [(7, 0)].into_iter().collect();
+        let banner = super::stack::Banner {
+            id: 7,
+            version: 0,
+            toast: Default::default(),
+            urgency: Urgency::Normal,
+            default: false,
+            actions: Vec::new(),
+            reply: Some(String::new()),
+            history: false,
+            bypass_dnd: false,
+            timeout: None,
+        };
+        let placed = [super::motion::Placed {
+            banner: banner.clone(),
+            out: 1.0,
+            slot: 0.0,
+            leaving: false,
+        }];
+        let field = reply_field("test", 0);
+
+        assert_eq!(
+            banner_keyboard(&placed, "test", &panes, |_| false),
+            Keyboard::None
+        );
+        assert_eq!(
+            banner_keyboard(&placed, "test", &panes, |id| id == field),
+            Keyboard::OnDemand
+        );
+    }
+
     #[test]
     fn a_reply_field_is_one_per_output_and_pane() {
         assert_ne!(reply_field("eDP-1", 0), reply_field("HDMI-A-5", 0));

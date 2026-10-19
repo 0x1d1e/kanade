@@ -50,6 +50,20 @@ pub fn editor() -> Option<(&'static str, Rc<dyn Editor>)> {
 
 pub fn clear() {
     FOCUS.set(None);
+    clear_wanted();
+}
+
+pub fn clear_wanted() {
+    WANTED.set(None);
+}
+
+pub fn clear_if(id: &'static str) -> bool {
+    let wanted = WANTED.with_borrow_mut(|wanted| wanted.take_if(|wanted| *wanted == id).is_some());
+    let focused = FOCUS.with_borrow(|focus| matches!(focus, Some(focus) if focus.id == id));
+    if focused {
+        FOCUS.set(None);
+    }
+    wanted || focused
 }
 
 pub fn has(id: &'static str) -> bool {
@@ -77,4 +91,42 @@ pub fn send(key: Key, modifiers: Modifiers) -> bool {
 
     // escape leaves the input and still reaches the window, which may want to close
     key != Key::Escape
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_if_only_clears_the_matching_input_and_pending_request() {
+        clear();
+        want("reply");
+        assert!(clear_if("reply"));
+        assert!(!wanted("reply"));
+
+        want("reply");
+        assert!(!clear_if("other"));
+        assert!(wanted("reply"));
+
+        set("reply", Rc::new(|_, _| {}), Rc::new(TestEditor));
+        assert!(clear_if("reply"));
+        assert!(!has("reply"));
+    }
+
+    struct TestEditor;
+
+    impl Editor for TestEditor {
+        fn context(&self) -> super::super::ime::Context {
+            super::super::ime::Context {
+                sensitive: false,
+                text: String::new(),
+                cursor: 0,
+                anchor: 0,
+            }
+        }
+
+        fn apply(&self, _: &super::super::ime::Batch) -> bool {
+            false
+        }
+    }
 }

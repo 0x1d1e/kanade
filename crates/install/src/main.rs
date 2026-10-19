@@ -186,7 +186,7 @@ fn run() -> i32 {
                 }
             }
             KeyCode::Down | KeyCode::Tab => {
-                if stage == Stage::Plan && focus + 1 < choice_count(sddm) {
+                if stage == Stage::Plan && focus < choice_count(sddm) - 1 {
                     focus += 1;
                 }
             }
@@ -686,7 +686,7 @@ fn choice_lines(focused: bool, label: &str, state: &str, width: u16) -> Vec<Line
         .collect();
     if let Some(last) = lines.last_mut() {
         let used = last.width();
-        if used + state_width + 1 <= available {
+        if used + state_width < available {
             last.spans.push(Span::styled(" ", style));
             last.spans.push(Span::styled(state.to_string(), style));
             return lines;
@@ -1320,6 +1320,41 @@ impl LineBuf {
     }
 }
 
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LineBuf, choice_count, niri_on, toggle};
@@ -1416,39 +1451,4 @@ mod tests {
         assert!(niri_on(true, true, false, true));
         assert!(!niri_on(false, true, false, false));
     }
-}
-
-fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    for next in chars.by_ref() {
-                        if next.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    while let Some(next) = chars.next() {
-                        if next == '\u{7}' {
-                            break;
-                        }
-                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
-        out.push(ch);
-    }
-    out
 }

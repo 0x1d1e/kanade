@@ -113,6 +113,16 @@ impl TextInput {
         focus::want(id);
     }
 
+    // whether this input currently receives keys
+    pub fn is_focused(id: &'static str) -> bool {
+        focus::has(id)
+    }
+
+    // gives up the keyboard only when this input has it
+    pub fn blur_if_focused(id: &'static str) -> bool {
+        focus::clear_if(id)
+    }
+
     // takes the keyboard from whichever input has it
     pub fn blur() {
         focus::clear();

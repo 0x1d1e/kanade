@@ -96,12 +96,11 @@ pub fn start_after_focus() {
 // Dismissal is completion, including when the state directory cannot be written. In that case
 // the tour still closes for this run and may be offered again after a later restart.
 pub fn finish(monitor: &str) {
-    if let Some(marker) = marker() {
-        if let Err(error) =
+    if let Some(marker) = marker()
+        && let Err(error) =
             atomic::write(&marker, env!("CARGO_PKG_VERSION").as_bytes(), Mode::Private)
-        {
-            eprintln!("kanade: could not record welcome tour completion: {error}");
-        }
+    {
+        eprintln!("kanade: could not record welcome tour completion: {error}");
     }
     view::collapse(monitor);
 }
@@ -153,8 +152,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         if island.presentation(monitor) != Presentation::Expanded(Surface::Welcome) {
             return false;
         }
-        let step = State::read().of(island.visit()).step;
-        step
+        State::read().of(island.visit()).step
     };
     match key {
         Key::Escape => {

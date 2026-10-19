@@ -121,6 +121,13 @@ install_packages() {
         fi
     fi
 
+    wallpaper=0
+    if [ "$desktop" = 1 ] && { [ "$no_niri" = 0 ] || [ "$want_niri" = 1 ] || [ "$sddm" = 1 ]; }; then
+        wallpaper=1
+    fi
+    if [ "$sddm" = 1 ] || [ "$want_niri" = 1 ]; then
+        wallpaper=1
+    fi
     if [ "$desktop" = 1 ]; then
         gpu=""
         for vendor in /sys/class/drm/card*/device/vendor; do
@@ -146,6 +153,9 @@ install_packages() {
     if [ "$sddm" = 1 ] || [ "$want_niri" = 1 ] || { [ "$desktop" = 1 ] && [ "$no_niri" = 0 ]; }; then
         packages="$packages niri"
     fi
+    if [ "$wallpaper" = 1 ]; then
+        packages="$packages awww"
+    fi
     if [ "$sddm" = 1 ]; then
         packages="$packages sddm qt6-declarative qt6-5compat"
     fi
@@ -155,7 +165,7 @@ install_packages() {
     "$helper" -S --needed --noconfirm $packages
     if [ "$optional" = 1 ]; then
         # shellcheck disable=SC2086
-        "$helper" -S --needed --noconfirm wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf wlsunset \
+        "$helper" -S --needed --noconfirm wl-clipboard wf-recorder matugen qt5ct qt6ct glib2 dconf wlsunset \
             xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
         # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
         # replaces whatever manages the network now

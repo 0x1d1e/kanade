@@ -43,10 +43,13 @@ pub fn seed() {
     choose_initial();
 }
 
-// Choose a first wallpaper only when awww has no image on any output. The folder seeder runs
-// immediately before this, so its downloaded images are eligible; an existing cache always wins.
+// Seed first so downloaded images are eligible, then wait for awww to answer. Existing images
+// are preserved; a successful query with no image allows the initial pick.
 fn choose_initial() {
-    let Ok(said) = query_look(true, || wake::query_within(AWWW, &["query"], LIMIT)) else {
+    let Some(said) = ready_query(
+        || wake::query_within(AWWW, &["query"], LIMIT),
+        std::thread::sleep,
+    ) else {
         return;
     };
     if appearance_path(&shown(&said), None).is_some() {
@@ -58,6 +61,20 @@ fn choose_initial() {
         return;
     };
     let _ = set(path, Output::All, None, None);
+}
+
+fn ready_query<E>(
+    mut query: impl FnMut() -> Result<String, E>,
+    mut sleep: impl FnMut(Duration),
+) -> Option<String> {
+    for attempt in 0..=TRIES {
+        match query() {
+            Ok(said) => return Some(said),
+            Err(_) if attempt < TRIES => sleep(AGAIN),
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 pub const AWWW: &str = "awww";
@@ -1488,6 +1505,39 @@ mod tests {
         let startup = looks.finish(startup, Some(wallpaper.0.clone()));
         assert!(!startup.publish);
         assert_eq!(startup.appearance, Some(wallpaper.0.clone()));
+    }
+
+    #[test]
+    fn startup_query_retries_until_awww_answers() {
+        let mut answers = [
+            Err("not ready".to_owned()),
+            Err("not ready".to_owned()),
+            Ok("ready".to_owned()),
+        ]
+        .into_iter();
+        let mut retries = 0;
+        let said = ready_query(
+            || answers.next().expect("query should be retried"),
+            |_| retries += 1,
+        );
+        assert_eq!(said.as_deref(), Some("ready"));
+        assert_eq!(retries, 2);
+    }
+
+    #[test]
+    fn startup_query_gives_up_when_awww_is_missing() {
+        let mut attempts = 0;
+        let mut retries = 0;
+        let said: Option<String> = ready_query(
+            || {
+                attempts += 1;
+                Err("missing")
+            },
+            |_| retries += 1,
+        );
+        assert_eq!(said, None);
+        assert_eq!(attempts, TRIES as usize + 1);
+        assert_eq!(retries, TRIES as usize);
     }
 
     #[test]

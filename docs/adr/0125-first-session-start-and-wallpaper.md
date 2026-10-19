@@ -11,7 +11,7 @@ The installer can select Niri with `--niri` or SDDM while skipping the rest of t
 - When the installer is asked for Niri or SDDM, it installs `dist/niri/config.kdl` only if the user's config is absent, even with `--shell-only`. `--no-niri` suppresses the direct Niri path; SDDM implies Niri, so SDDM still installs the config. Existing configs are kept.
 - The Kanade user unit is enabled for `niri.service`, the systemd session entry point used by `niri-session` and display managers. niri's unit binds to and starts `graphical-session.target`. If `niri.service` is already active, the installer restarts Kanade immediately so the new unit takes effect in the current session. It does not start a display manager.
 - SDDM setup runs `kanade sddm status` after writing Kanade's drop-in, reporting any effective theme override. The installer does not edit the later file that wins.
-- After the wallpaper folder seeder finishes, Kanade asks awww for its current image. If there is none, it picks one image from the folder at random and sets it on all outputs. An existing awww image is left alone. If no image is available, the next start may retry.
+- After the wallpaper folder seeder finishes, Kanade retries awww's query for its bounded startup window. If awww answers with no image on any output, Kanade picks one image from the folder at random and sets it on all outputs. An existing awww image is left alone. If the daemon does not answer in time or no image is available, the next start may retry.
 
 ## Consequences
 
