@@ -25,7 +25,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
-const USAGE: &str = "usage: kanade-install --script PATH [--shell-only] [--optional]";
+const USAGE: &str = "usage: kanade-install --script PATH [--shell-only] [--no-niri] [--niri] [--sddm] [--sddm-greeter keep|niri] [--optional]";
 
 /// Same sentence as `scripts/install`.
 const NO_PACMAN: &str = "failed to find pacman, Kanade installs on Arch Linux and derivatives only";
@@ -42,6 +42,11 @@ const RULE: u16 = 16;
 struct Args {
     script: PathBuf,
     shell_only: bool,
+    no_niri: bool,
+    niri: bool,
+    sddm: bool,
+    /// `Some` when `--sddm-greeter` was passed. `true` is niri.
+    greeter_niri: Option<bool>,
     optional: bool,
 }
 
@@ -51,6 +56,8 @@ struct Scan {
     refusal: Vec<String>,
     helper: &'static str,
     config: PathBuf,
+    /// NVIDIA beside another device. The login screen row starts on niri.
+    hybrid_nvidia: bool,
 }
 
 struct TermGuard;
@@ -109,6 +116,9 @@ fn run() -> i32 {
     let mut stage = Stage::Scan;
     let mut focus = 0usize;
     let mut shell_only = args.shell_only;
+    let mut niri = niri_on(args.shell_only, args.no_niri, args.sddm, args.niri);
+    let mut sddm = args.sddm;
+    let mut login_niri = args.greeter_niri.unwrap_or(scan.hybrid_nvidia);
     let mut optional = args.optional;
     let mut run_state: Option<Run> = None;
 
@@ -121,6 +131,9 @@ fn run() -> i32 {
             stage,
             focus,
             shell_only,
+            niri,
+            sddm,
+            login_niri,
             optional,
             run: run_state.as_ref(),
         };
@@ -173,16 +186,22 @@ fn run() -> i32 {
                 }
             }
             KeyCode::Down | KeyCode::Tab => {
-                if stage == Stage::Plan && focus < 1 {
+                if stage == Stage::Plan && focus + 1 < choice_count(sddm) {
                     focus += 1;
                 }
             }
             KeyCode::Char(' ') => {
                 if stage == Stage::Plan {
-                    if focus == 0 {
-                        shell_only = !shell_only;
-                    } else {
-                        optional = !optional;
+                    toggle(
+                        focus,
+                        &mut shell_only,
+                        &mut niri,
+                        &mut sddm,
+                        &mut login_niri,
+                        &mut optional,
+                    );
+                    if focus >= choice_count(sddm) {
+                        focus = choice_count(sddm) - 1;
                     }
                 }
             }
@@ -196,8 +215,13 @@ fn run() -> i32 {
                         .unwrap_or((80, 24));
                     match start_script(
                         &args.script,
-                        shell_only,
-                        optional,
+                        &Plan {
+                            shell_only,
+                            niri,
+                            sddm,
+                            login_niri,
+                            optional,
+                        },
                         column_width(cols),
                         body_rows(rows),
                     ) {
@@ -247,8 +271,55 @@ struct Ui<'a> {
     stage: Stage,
     focus: usize,
     shell_only: bool,
+    niri: bool,
+    sddm: bool,
+    login_niri: bool,
     optional: bool,
     run: Option<&'a Run>,
+}
+
+/// shell-only, niri, sddm, then the login screen row only while sddm is on, then optional packages.
+fn choice_count(sddm: bool) -> usize {
+    if sddm { 5 } else { 4 }
+}
+
+fn niri_on(shell_only: bool, no_niri: bool, sddm: bool, requested: bool) -> bool {
+    sddm || requested || (!shell_only && !no_niri)
+}
+
+fn toggle(
+    focus: usize,
+    shell_only: &mut bool,
+    niri: &mut bool,
+    sddm: &mut bool,
+    login_niri: &mut bool,
+    optional: &mut bool,
+) {
+    let optional_at = if *sddm { 4 } else { 3 };
+    match focus {
+        0 => {
+            *shell_only = !*shell_only;
+            if *shell_only {
+                *niri = false;
+                *sddm = false;
+            }
+        }
+        1 => {
+            *niri = !*niri;
+            if !*niri {
+                *sddm = false;
+            }
+        }
+        2 => {
+            *sddm = !*sddm;
+            if *sddm {
+                *niri = true;
+            }
+        }
+        3 if *sddm => *login_niri = !*login_niri,
+        at if at == optional_at => *optional = !*optional,
+        _ => {}
+    }
 }
 
 fn copper() -> Style {
@@ -511,16 +582,56 @@ fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
     };
     let mut lines: Vec<Line<'static>> =
         wrap_text(lead, width).into_iter().map(Line::from).collect();
-    lines.push(choice_line(ui.focus == 0, "shell-only", ui.shell_only));
-    lines.push(choice_line(ui.focus == 1, "optional packages", ui.optional));
+    lines.push(choice_line(
+        ui.focus == 0,
+        "shell-only",
+        on_off(ui.shell_only),
+    ));
+    lines.push(choice_line(ui.focus == 1, "niri", on_off(ui.niri)));
+    lines.push(choice_line(ui.focus == 2, "sddm", on_off(ui.sddm)));
+    let mut optional_at = 3;
+    if ui.sddm {
+        lines.push(choice_line(
+            ui.focus == 3,
+            "login screen",
+            if ui.login_niri { "niri" } else { "keep" },
+        ));
+        optional_at = 4;
+    }
+    lines.push(choice_line(
+        ui.focus == optional_at,
+        "optional packages",
+        on_off(ui.optional),
+    ));
     lines.push(Line::from(""));
-    let niri = if ui.shell_only {
-        "niri config is not installed with shell-only".to_string()
+    let installed = if ui.niri {
+        "niri is installed"
     } else {
-        let path = ui.scan.config.display();
-        format!("niri config is installed only when {path} is missing, and never replaced")
+        "niri is not installed"
     };
-    lines.extend(wrap_text(&niri, width).into_iter().map(dim_line));
+    lines.extend(wrap_text(installed, width).into_iter().map(dim_line));
+    if ui.shell_only {
+        lines.extend(
+            wrap_text("niri config is not installed with shell-only", width)
+                .into_iter()
+                .map(dim_line),
+        );
+    } else if ui.niri {
+        let path = ui.scan.config.display();
+        let niri =
+            format!("niri config is installed only when {path} is missing, and never replaced");
+        lines.extend(wrap_text(&niri, width).into_iter().map(dim_line));
+    }
+    if ui.sddm {
+        lines.extend(
+            wrap_text(
+                "SDDM is installed with niri, themed, and enabled for the next boot. It is not started now.",
+                width,
+            )
+            .into_iter()
+            .map(dim_line),
+        );
+    }
     lines.push(Line::from(""));
     lines.extend(
         wrap_text(&format!("helper: {}", ui.scan.helper), width)
@@ -540,9 +651,12 @@ fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn choice_line(focused: bool, label: &str, on: bool) -> Line<'static> {
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+fn choice_line(focused: bool, label: &str, state: &str) -> Line<'static> {
     let style = if focused { Style::default() } else { dim() };
-    let state = if on { "on" } else { "off" };
     let pad = "optional packages".len().saturating_sub(label.len()) + 3;
     Line::from(vec![
         Span::styled(
@@ -725,6 +839,10 @@ fn restore_terminal() {
 fn parse_args() -> Args {
     let mut script = None;
     let mut shell_only = false;
+    let mut no_niri = false;
+    let mut niri = false;
+    let mut sddm = false;
+    let mut greeter_niri = None;
     let mut optional = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -734,6 +852,23 @@ fn parse_args() -> Args {
                 std::process::exit(0);
             }
             "--shell-only" => shell_only = true,
+            "--no-niri" => no_niri = true,
+            "--niri" => niri = true,
+            "--sddm" => sddm = true,
+            "--sddm-greeter" => {
+                let Some(value) = args.next() else {
+                    eprintln!("{USAGE}");
+                    std::process::exit(2);
+                };
+                greeter_niri = Some(match value.as_str() {
+                    "keep" => false,
+                    "niri" => true,
+                    _ => {
+                        eprintln!("{USAGE}");
+                        std::process::exit(2);
+                    }
+                });
+            }
             "--optional" => optional = true,
             "--script" => {
                 let Some(path) = args.next() else {
@@ -762,6 +897,10 @@ fn parse_args() -> Args {
     Args {
         script,
         shell_only,
+        no_niri,
+        niri,
+        sddm,
+        greeter_niri,
         optional,
     }
 }
@@ -826,7 +965,37 @@ fn scan() -> Scan {
         refusal,
         helper,
         config,
+        hybrid_nvidia: hybrid_nvidia(),
     }
+}
+
+fn hybrid_nvidia() -> bool {
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return false;
+    };
+    let mut nvidia = false;
+    let mut devices = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("card") {
+            continue;
+        }
+        let device = entry.path().join("device");
+        let Ok(vendor) = std::fs::read_to_string(device.join("vendor")) else {
+            continue;
+        };
+        if vendor.trim() == "0x10de" {
+            nvidia = true;
+        }
+        let real = std::fs::canonicalize(&device).unwrap_or(device);
+        if !devices.contains(&real) {
+            devices.push(real);
+        }
+    }
+    nvidia && devices.len() >= 2
 }
 
 fn notification_line() -> String {
@@ -976,13 +1145,15 @@ impl Run {
     }
 }
 
-fn start_script(
-    script: &Path,
+struct Plan {
     shell_only: bool,
+    niri: bool,
+    sddm: bool,
+    login_niri: bool,
     optional: bool,
-    cols: u16,
-    rows: u16,
-) -> io::Result<Run> {
+}
+
+fn start_script(script: &Path, plan: &Plan, cols: u16, rows: u16) -> io::Result<Run> {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: rows.max(1),
@@ -994,10 +1165,20 @@ fn start_script(
     let mut cmd = CommandBuilder::new("sh");
     cmd.arg(script);
     cmd.arg("--yes");
-    if shell_only {
+    if plan.shell_only {
         cmd.arg("--shell-only");
     }
-    if optional {
+    if plan.niri {
+        cmd.arg("--niri");
+    } else {
+        cmd.arg("--no-niri");
+    }
+    if plan.sddm {
+        cmd.arg("--sddm");
+        cmd.arg("--sddm-greeter");
+        cmd.arg(if plan.login_niri { "niri" } else { "keep" });
+    }
+    if plan.optional {
         cmd.arg("--optional");
     }
     let child = pair
@@ -1112,7 +1293,7 @@ impl LineBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::LineBuf;
+    use super::{LineBuf, choice_count, niri_on, toggle};
 
     #[test]
     fn pty_crlf_keeps_the_line() {
@@ -1129,6 +1310,82 @@ mod tests {
                 "bare".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn choices_follow_the_rules() {
+        let mut shell_only = false;
+        let mut niri = true;
+        let mut sddm = false;
+        let mut login_niri = false;
+        let mut optional = false;
+
+        toggle(
+            0,
+            &mut shell_only,
+            &mut niri,
+            &mut sddm,
+            &mut login_niri,
+            &mut optional,
+        );
+        assert!(shell_only && !niri && !sddm);
+
+        toggle(
+            1,
+            &mut shell_only,
+            &mut niri,
+            &mut sddm,
+            &mut login_niri,
+            &mut optional,
+        );
+        assert!(shell_only && niri && !sddm);
+
+        toggle(
+            2,
+            &mut shell_only,
+            &mut niri,
+            &mut sddm,
+            &mut login_niri,
+            &mut optional,
+        );
+        assert!(shell_only && niri && sddm);
+        assert_eq!(choice_count(sddm), 5);
+
+        toggle(
+            3,
+            &mut shell_only,
+            &mut niri,
+            &mut sddm,
+            &mut login_niri,
+            &mut optional,
+        );
+        assert!(login_niri);
+        toggle(
+            4,
+            &mut shell_only,
+            &mut niri,
+            &mut sddm,
+            &mut login_niri,
+            &mut optional,
+        );
+        assert!(optional);
+
+        toggle(
+            1,
+            &mut shell_only,
+            &mut niri,
+            &mut sddm,
+            &mut login_niri,
+            &mut optional,
+        );
+        assert!(!niri && !sddm && optional);
+        assert_eq!(choice_count(sddm), 4);
+
+        assert!(niri_on(false, false, false, false));
+        assert!(!niri_on(true, false, false, false));
+        assert!(niri_on(true, true, true, false));
+        assert!(niri_on(true, true, false, true));
+        assert!(!niri_on(false, true, false, false));
     }
 }
 

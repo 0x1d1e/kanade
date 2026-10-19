@@ -12,7 +12,8 @@ A piped `curl | sh` used to clone `release/0.1` and `cargo install` it. That com
 - `--ref REF` compiles that branch or tag. It does not download `install-0.1`. A checkout compiles itself.
 - `uname -m` must be `x86_64` on the download path. Anything else exits 1. Arch is still required (`pacman` on PATH).
 - Kanade's packages are installed by `paru` if it is on PATH, otherwise by `yay` if that is already on PATH. The helper runs as the user, never under `sudo`, with `--needed --noconfirm`. If neither helper is on PATH, the script runs `sudo pacman -S --needed paru` and then uses that paru. If pacman cannot install paru, it stops. It does not build paru with makepkg. It does not publish an AUR package for Kanade, and it does not add AUR dependencies beyond the packages the installer already took from the repos.
-- The TUI is `kanade-install`, a separate binary. It only calls this script. Ratatui and crossterm stay in that crate.
+- The TUI is `kanade-install`, a separate binary. It only calls this script. Ratatui and crossterm stay in that crate. Its plan choices are shell-only, niri, sddm and optional packages. While sddm is on, one more row chooses the login screen's display server: keep, or niri.
+- `--sddm` is optional. The script, not the shell, installs `sddm`, `qt6-declarative` and `qt6-5compat` with the helper, then does the root setup from ADR 0120: the overlay, `kanade sddm setup`, the user's `kanade sddm sync`, and `zz-kanade.conf` only after the theme is installed. A separate drop-in, `zy-kanade-greeter.conf`, can set the login screen's display server. The script enables `sddm.service` for the next boot when it is not already enabled, and does not start it. The shell still never runs sudo. ADR 0120 is unchanged: the executable theme stays root-owned, the picture stays in the user-owned data directory, and `zz-kanade.conf` sets only `[Theme]`.
 - Not static. Not an AUR package. Not a distro installer.
 
 ## Consequences

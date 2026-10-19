@@ -12,6 +12,10 @@
 # or scripts/install from a checkout, which builds that checkout. Options:
 #     --optional    also the packages of the optional features
 #     --shell-only  Kanade without the desktop packages or a niri config
+#     --no-niri     skip the niri package and do not write a niri config
+#     --niri        install the niri package even with --shell-only; still no niri config then
+#     --sddm        install SDDM with niri, theme it, enable it for the next boot; do not start it
+#     --sddm-greeter keep|niri   login screen display server, with --sddm (default keep, or niri on hybrid NVIDIA)
 #     --uninstall   removes Kanade's binary, completions, unit, icon and build checkout; configs and packages stay
 #     --yes         skip the TUI; a piped run with a terminal otherwise execs kanade-install
 #     --ref REF     compile that branch or tag instead of downloading install-0.1; refused from a checkout
@@ -20,7 +24,7 @@ set -eu
 repo=https://github.com/0x1d1e/kanade
 release=https://github.com/0x1d1e/kanade/releases/download/install-0.1
 script_url=https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install
-usage='usage: install [--optional] [--shell-only] [--uninstall] [--yes] [--ref REF]'
+usage='usage: install [--optional] [--shell-only] [--no-niri] [--niri] [--sddm] [--sddm-greeter keep|niri] [--uninstall] [--yes] [--ref REF]'
 
 # one branch or tag name. Not empty, not an option, not a range, not a URL, not a shell word.
 ref_ok() {
@@ -133,9 +137,17 @@ install_packages() {
         if [ -z "$gpu" ]; then
             echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
         fi
-        packages="$packages niri xdg-desktop-portal-gnome gnome-keyring polkit polkit-gnome pipewire
+        packages="$packages xdg-desktop-portal-gnome gnome-keyring polkit polkit-gnome pipewire
             pipewire-pulse wireplumber noto-fonts noto-fonts-emoji inter-font kitty brightnessctl
             playerctl qt6ct xwayland-satellite $gpu"
+    fi
+    # niri is part of a desktop install unless --no-niri. --sddm and --niri install it anyway, including
+    # on --shell-only, which still does not write a niri config. --sddm wins over --no-niri for the package.
+    if [ "$sddm" = 1 ] || [ "$want_niri" = 1 ] || { [ "$desktop" = 1 ] && [ "$no_niri" = 0 ]; }; then
+        packages="$packages niri"
+    fi
+    if [ "$sddm" = 1 ]; then
+        packages="$packages sddm qt6-declarative qt6-5compat"
     fi
 
     ensure_helper
@@ -252,15 +264,124 @@ launch_tui() {
         exit 1
     fi
     chmod 755 "$tmp/kanade-install"
-    if [ "$desktop" = 0 ] && [ "$optional" = 1 ]; then
-        exec "$tmp/kanade-install" --script "$tmp/install" --shell-only --optional < /dev/tty > /dev/tty 2>&1
-    elif [ "$desktop" = 0 ]; then
-        exec "$tmp/kanade-install" --script "$tmp/install" --shell-only < /dev/tty > /dev/tty 2>&1
-    elif [ "$optional" = 1 ]; then
-        exec "$tmp/kanade-install" --script "$tmp/install" --optional < /dev/tty > /dev/tty 2>&1
-    else
-        exec "$tmp/kanade-install" --script "$tmp/install" < /dev/tty > /dev/tty 2>&1
+    set -- --script "$tmp/install"
+    if [ "$desktop" = 0 ]; then
+        set -- "$@" --shell-only
     fi
+    if [ "$no_niri" = 1 ]; then
+        set -- "$@" --no-niri
+    fi
+    if [ "$want_niri" = 1 ]; then
+        set -- "$@" --niri
+    fi
+    if [ "$sddm" = 1 ]; then
+        set -- "$@" --sddm
+    fi
+    if [ "$sddm_greeter_set" = 1 ]; then
+        set -- "$@" --sddm-greeter "$sddm_greeter"
+    fi
+    if [ "$optional" = 1 ]; then
+        set -- "$@" --optional
+    fi
+    exec "$tmp/kanade-install" "$@" < /dev/tty > /dev/tty 2>&1
+}
+
+# an NVIDIA GPU beside another device. Xorg can start on the one with no screens; niri does not.
+hybrid_nvidia() {
+    nvidia=0
+    devices=
+    for dev in /sys/class/drm/card*/device; do
+        [ -r "$dev/vendor" ] || continue
+        vendor=$(cat "$dev/vendor")
+        real=$(readlink -f "$dev" 2> /dev/null || printf '%s' "$dev")
+        devices="$devices$real
+"
+        if [ "$vendor" = 0x10de ]; then
+            nvidia=1
+        fi
+    done
+    [ "$nvidia" = 1 ] || return 1
+    count=$(printf '%s
+' "$devices" | sort -u | awk 'NF { n++ } END { print n + 0 }')
+    [ "$count" -ge 2 ]
+}
+
+# $1 path, $2 exact text without a trailing newline. Skip when the installed file already matches.
+write_root_text() {
+    dest=$1
+    text=$2
+    current=$(sudo cat "$dest" 2> /dev/null || true)
+    if [ "$current" = "$text" ]; then
+        return 0
+    fi
+    printf '%s\n' "$text" | sudo install -D -m 644 /dev/stdin "$dest"
+}
+
+# after $root/bin/kanade exists. Stops on failure, and does not point SDDM at a theme that is not installed.
+# The shell never runs these. This script does, as it does for paru and the user unit.
+setup_sddm() {
+    echo "setting up SDDM"
+    uid=$(id -u)
+    gid=$(id -g)
+    sudo install -d -o root -g root -m 755 /usr/local/share/kanade-sddm /usr/local/share/kanade-sddm/themes
+    sudo install -d -o "$uid" -g "$gid" -m 755 /usr/local/share/kanade-sddm-data
+    sudo "$root/bin/kanade" sddm setup
+    "$root/bin/kanade" sddm sync
+
+    meta=/usr/local/share/kanade-sddm/themes/kanade/metadata.desktop
+    if [ ! -f "$meta" ]; then
+        echo "failed: SDDM theme was not installed" >&2
+        exit 1
+    fi
+    write_root_text /etc/sddm.conf.d/zz-kanade.conf '[Theme]
+ThemeDir=/usr/local/share/kanade-sddm/themes
+Current=kanade'
+
+    if [ "$sddm_greeter" = niri ]; then
+        niri_bin=$(command -v niri || true)
+        case "$niri_bin" in
+            /*) ;;
+            *) niri_bin=$(readlink -f "$niri_bin" 2> /dev/null || true) ;;
+        esac
+        case "$niri_bin" in
+            /*) ;;
+            *) echo "failed: niri is not on PATH" >&2; exit 1 ;;
+        esac
+        kdl=/usr/local/share/kanade-sddm/niri-greeter.kdl
+        write_root_text "$kdl" 'layout {
+    gaps 0
+    border { off; }
+    shadow { off; }
+}
+window-rule {
+    open-fullscreen true
+}'
+        # not zz-kanade.conf: that file is [Theme] only. This one sorts before it.
+        write_root_text /etc/sddm.conf.d/zy-kanade-greeter.conf "[General]
+DisplayServer=wayland
+
+[Wayland]
+CompositorCommand=$niri_bin -c $kdl"
+    fi
+
+    if systemctl is-enabled --quiet sddm.service; then
+        echo "sddm is already enabled; not started"
+        return 0
+    fi
+    if [ -L /etc/systemd/system/display-manager.service ]; then
+        target=$(readlink -f /etc/systemd/system/display-manager.service 2> /dev/null || true)
+        name=$(basename "$target")
+        if [ -n "$target" ] && [ "$name" != sddm.service ]; then
+            sudo rm -f /etc/systemd/system/display-manager.service
+        fi
+    fi
+    for dm in gdm lightdm lxdm greetd plasmalogin; do
+        if systemctl is-enabled --quiet "$dm.service"; then
+            sudo systemctl disable "$dm.service"
+        fi
+    done
+    sudo systemctl enable sddm.service
+    echo "enabled sddm for the next boot; not started"
 }
 
 # everything is in main(), so the shell has read the whole script before anything runs: a piped
@@ -277,6 +398,11 @@ main() {
 
     optional=0
     desktop=1
+    no_niri=0
+    want_niri=0
+    sddm=0
+    sddm_greeter=keep
+    sddm_greeter_set=0
     uninstall=0
     yes=0
     ref=release/0.1
@@ -285,6 +411,20 @@ main() {
         case "$1" in
             --optional) optional=1 ;;
             --shell-only) desktop=0 ;;
+            --no-niri) no_niri=1 ;;
+            --niri) want_niri=1 ;;
+            --sddm) sddm=1 ;;
+            --sddm-greeter)
+                shift
+                if [ $# -eq 0 ]; then
+                    echo "$usage" >&2
+                    exit 2
+                fi
+                case "$1" in
+                    keep|niri) sddm_greeter=$1; sddm_greeter_set=1 ;;
+                    *) echo "$usage" >&2; exit 2 ;;
+                esac
+                ;;
             --uninstall) uninstall=1 ;;
             --yes) yes=1 ;;
             --ref)
@@ -413,6 +553,13 @@ main() {
         install -Dm755 "$work/kanade" "$root/bin/kanade"
     fi
 
+    if [ "$sddm" = 1 ]; then
+        if [ "$sddm_greeter_set" = 0 ] && hybrid_nvidia; then
+            sddm_greeter=niri
+        fi
+        setup_sddm
+    fi
+
     # the old unit is kept when it differs, so a hand edit is not lost
     unit="$config/systemd/user/kanade.service"
     if [ -e "$unit" ] && ! cmp -s "$dist/kanade.service" "$unit"; then
@@ -429,8 +576,9 @@ main() {
     "$root/bin/kanade" completions fish > "$config/fish/completions/kanade.fish"
     "$root/bin/kanade" completions zsh > "$data/zsh/site-functions/_kanade"
 
-    # a config of yours is never replaced; Kanade's binds are in docs/wiki/Keyboard.md
-    if [ "$desktop" = 1 ]; then
+    # a config of yours is never replaced; Kanade's binds are in docs/wiki/Keyboard.md.
+    # --shell-only and --no-niri do not write one. --sddm does not change that.
+    if [ "$desktop" = 1 ] && [ "$no_niri" = 0 ]; then
         if [ -e "$config/niri/config.kdl" ]; then
             echo "kept $config/niri/config.kdl, dist/niri/config.kdl is the default"
             echo "  add this as its last line for appearance.sync: include optional=true \"kanade.kdl\""
