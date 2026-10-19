@@ -59,7 +59,9 @@ pub fn run() -> ExitCode {
         return fail(&format!("{why}, the installed binary was not replaced"));
     }
 
-    let rev = match fetch(&format!("{RAW}/install-0.1/kanade.rev"), &sum_path) {
+    // the release asset the installer reads. Only a missing one falls back, through `tree_of`,
+    // to the release branch. The raw install-0.1 path 404s, so it is not a source
+    let rev = match fetch(&revision_url(), &sum_path) {
         Ok(()) => fs::read_to_string(&sum_path).unwrap_or_default(),
         Err(_) => String::new(),
     };
@@ -222,6 +224,10 @@ fn digest(path: &Path) -> Result<String, String> {
         .collect())
 }
 
+fn revision_url() -> String {
+    format!("{RELEASE}/kanade.rev")
+}
+
 // a hex rev names its tree; anything else, including a missing file, is the release branch
 fn tree_of(rev: &str) -> &str {
     let rev = rev.trim();
@@ -258,6 +264,8 @@ fn install_unit(path: &Path, bytes: &[u8]) -> Result<Unit, String> {
         None
     };
 
+    // the unit file only. A drop-in from `systemctl --user edit` lives in kanade.service.d and
+    // is not part of this write
     atomic::write(path, bytes, Mode::Exactly(0o644)).map_err(|error| error.to_string())?;
 
     Ok(match backup {
@@ -355,5 +363,60 @@ mod tests {
         assert_eq!(tree_of(""), "release/0.1");
         assert_eq!(tree_of("not a rev"), "release/0.1");
         assert_eq!(tree_of("g"), "release/0.1");
+    }
+
+    #[test]
+    fn the_revision_is_the_release_asset() {
+        assert_eq!(
+            revision_url(),
+            "https://github.com/0x1d1e/kanade/releases/download/install-0.1/kanade.rev"
+        );
+    }
+
+    #[test]
+    fn a_changed_unit_is_kept_and_a_drop_in_is_left_alone() {
+        let dir =
+            std::env::temp_dir().join(format!("kanade-unit-{}-{}", std::process::id(), stamp()));
+        let _clean = DirClean(dir.clone());
+        fs::create_dir_all(&dir).unwrap();
+
+        let unit = dir.join("kanade.service");
+        fs::write(&unit, b"old\n").unwrap();
+        let drop_in = dir.join("kanade.service.d/override.conf");
+        fs::create_dir_all(drop_in.parent().unwrap()).unwrap();
+        fs::write(&drop_in, b"[Service]\n").unwrap();
+
+        assert!(matches!(
+            install_unit(&unit, b"old\n").unwrap(),
+            Unit::Unchanged
+        ));
+        assert!(!dir_has_backup(&dir));
+
+        let Unit::Replaced(backup) = install_unit(&unit, b"new\n").unwrap() else {
+            panic!("a differing unit was not kept");
+        };
+        assert_eq!(fs::read(&backup).unwrap(), b"old\n");
+        assert_eq!(fs::read(&unit).unwrap(), b"new\n");
+        assert_eq!(fs::read(&drop_in).unwrap(), b"[Service]\n");
+        assert!(backup.starts_with(&dir));
+        assert!(!backup.starts_with(dir.join("kanade.service.d")));
+    }
+
+    fn dir_has_backup(dir: &Path) -> bool {
+        fs::read_dir(dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".bak.")
+        })
+    }
+
+    struct DirClean(PathBuf);
+
+    impl Drop for DirClean {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }

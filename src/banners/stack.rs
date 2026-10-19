@@ -121,15 +121,29 @@ impl Stack {
             return;
         }
 
-        if let Some(shown) = self
+        if let Some(index) = self
             .shown
-            .iter_mut()
-            .find(|shown| shown.banner.id == banner.id)
+            .iter()
+            .position(|shown| shown.banner.id == banner.id)
         {
             // a replacement under a draft keeps it, unless the new version takes no reply or is
             // from another sender, whose text the draft must not be sent to
-            shown.drafting &= banner.reply.is_some() && banner.toast.app == shown.banner.toast.app;
-            shown.timer = if shown.drafting {
+            let drafting = self.shown[index].drafting
+                && banner.reply.is_some()
+                && banner.toast.app == self.shown[index].banner.toast.app;
+
+            // already covered: a quiet replacement waits at the front, unless a reply is being
+            // typed. That text lives in the pane's field, which freeing the pane clears
+            if !drafting && waits(self.held, banner.loud()) {
+                self.shown.remove(index);
+                self.queued.push_front(banner);
+                self.promote(now);
+                return;
+            }
+
+            let shown = &mut self.shown[index];
+            shown.drafting = drafting;
+            shown.timer = if drafting {
                 Timer::Sticky
             } else {
                 timer(&banner, self.hovered, now)
@@ -167,10 +181,12 @@ impl Stack {
             let mut quiet = VecDeque::new();
 
             for shown in self.shown.drain(..) {
-                if waits(held, shown.banner.loud()) {
-                    quiet.push_back(shown.banner);
-                } else {
+                // a draft stays on its pane until the reply is sent or closed. Unplacing it frees
+                // the pane, and the field is cleared
+                if shown.drafting || !waits(held, shown.banner.loud()) {
                     kept.push(shown);
+                } else {
+                    quiet.push_back(shown.banner);
                 }
             }
 
@@ -567,5 +583,78 @@ mod tests {
         stack.draft(2, true, later);
         assert!(stack.draft(2, false, later));
         assert_eq!(stack.deadline(), Some(later + NORMAL));
+    }
+
+    // the typed reply is not on the Banner. Unplacing it frees the pane and clears the field
+    #[test]
+    fn fullscreen_silence_does_not_unplace_a_draft() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+        let replying = Banner {
+            reply: Some(String::new()),
+            ..banner(1, Urgency::Normal)
+        };
+
+        stack.arrive(replying, false, now);
+        stack.arrive(banner(2, Urgency::Normal), false, now);
+        assert!(stack.draft(1, true, now));
+        assert!(stack.set_held(true, now));
+
+        assert!(stack.drafting(1));
+        assert!(stack.shown().any(|banner| banner.id == 1));
+        assert!(stack.shown().all(|banner| banner.id != 2));
+        assert!(stack.contains(2));
+
+        assert!(stack.set_held(false, now));
+        assert!(stack.drafting(1));
+        assert!(stack.shown().any(|banner| banner.id == 1));
+        assert!(stack.shown().any(|banner| banner.id == 2));
+    }
+
+    // a Banner allowed to stay is replaced by one that now waits: it leaves, in front of the queue
+    #[test]
+    fn a_replacement_that_now_waits_goes_to_the_front_of_the_queue() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+        let loud = |id| Banner {
+            bypass_dnd: true,
+            ..banner(id, Urgency::Normal)
+        };
+
+        stack.arrive(loud(1), false, now);
+        stack.arrive(loud(2), false, now);
+        stack.arrive(loud(3), false, now);
+        assert!(stack.set_held(true, now));
+        stack.arrive(banner(4, Urgency::Low), false, now);
+
+        stack.arrive(banner(2, Urgency::Normal), false, now);
+        assert!(stack.shown().all(|banner| banner.id != 2));
+        assert!(stack.contains(2));
+
+        assert!(stack.set_held(false, now));
+        assert!(stack.shown().any(|banner| banner.id == 2));
+        assert!(stack.shown().all(|banner| banner.id != 4));
+        assert!(stack.contains(4));
+
+        // a draft is not moved off by the same replacement
+        let mut drafting = Stack::default();
+        let replying = Banner {
+            reply: Some(String::new()),
+            bypass_dnd: true,
+            ..banner(1, Urgency::Normal)
+        };
+        drafting.arrive(replying.clone(), false, now);
+        assert!(drafting.draft(1, true, now));
+        assert!(drafting.set_held(true, now));
+        drafting.arrive(
+            Banner {
+                bypass_dnd: false,
+                ..replying
+            },
+            false,
+            now,
+        );
+        assert!(drafting.drafting(1));
+        assert!(drafting.shown().any(|banner| banner.id == 1));
     }
 }

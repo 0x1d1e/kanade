@@ -123,10 +123,11 @@ pub fn preview(monitor: &str, item: &Item, at: Rect, edge: Edge) {
     }
 
     if let Some(open) = Menu::read().open.clone() {
-        if open.monitor == monitor && !open.windows_only {
+        // one menu for every output: a right-click is not replaced by a hover on another monitor
+        if !open.windows_only {
             return;
         }
-        if open.windows_only && open.monitor == monitor && open.item == *item {
+        if open.monitor == monitor && open.item == *item {
             OVER_ICON.store(true, Ordering::Relaxed);
             CLOSE_TICK.fetch_add(1, Ordering::Relaxed);
             return;
@@ -214,9 +215,15 @@ fn schedule_close() {
     });
 }
 
-// shows the menu its titles were asked for, unless it was closed or another was asked since
+// shows the menu its titles were asked for, unless it was closed or another was asked since.
+// A hover does not replace a right-click, whichever output that menu is on
 fn publish(ticket: u64, open: Open) {
     let mut menu = Menu::write();
+
+    if open.windows_only && menu.open.as_ref().is_some_and(|shown| !shown.windows_only) {
+        menu.quiet();
+        return;
+    }
 
     // under the write, so a close that follows clears what this shows
     if ASKED.load(Ordering::SeqCst) == ticket {
@@ -861,10 +868,17 @@ mod tests {
         }
     }
 
+    // the menu is one global Service, so tests that publish it take this in turn
+    fn menu_tests() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+
     // a menu dismissed while niri was asked for its titles came back when they arrived, and an older
     // one replaced a newer
     #[test]
     fn a_menu_closed_or_overtaken_before_its_titles_arrive_does_not_show() {
+        let _lock = menu_tests();
         let closed = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
         close();
         publish(closed, menu_of("closed"));
@@ -877,6 +891,40 @@ mod tests {
         assert_eq!(
             Menu::read().open.as_ref().map(|open| open.monitor.as_str()),
             Some("newer")
+        );
+
+        close();
+    }
+
+    #[test]
+    fn a_right_click_menu_is_not_replaced_by_a_hover_on_another_monitor() {
+        let _lock = menu_tests();
+        close();
+
+        let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(ticket, menu_of("left"));
+        let mut hover = menu_of("right");
+        hover.windows_only = true;
+        let hover_ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(hover_ticket, hover);
+
+        let open = Menu::read().open.clone().expect("right-click stays");
+        assert_eq!(open.monitor, "left");
+        assert!(!open.windows_only);
+
+        close();
+
+        let mut first = menu_of("left");
+        first.windows_only = true;
+        let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(ticket, first);
+        let mut second = menu_of("right");
+        second.windows_only = true;
+        let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(ticket, second);
+        assert_eq!(
+            Menu::read().open.as_ref().map(|open| open.monitor.as_str()),
+            Some("right")
         );
 
         close();
