@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -19,14 +20,18 @@ use crossterm::terminal::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 const USAGE: &str = "usage: kanade-install --script PATH [--shell-only] [--optional]";
 
 /// Same sentence as `scripts/install`.
 const NO_PACMAN: &str = "failed to find pacman, Kanade installs on Arch Linux and derivatives only";
+
+/// Copper `#c4a484`. Name, focus mark, and a refusal. Nothing else.
+const COPPER: Color = Color::Rgb(0xc4, 0xa4, 0x84);
 
 struct Args {
     script: PathBuf,
@@ -46,12 +51,16 @@ struct TermGuard;
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        restore_terminal();
     }
 }
 
 fn main() {
+    let code = run();
+    std::process::exit(code);
+}
+
+fn run() -> i32 {
     let args = parse_args();
     let scan = scan();
     if !stdio_is_tty() {
@@ -64,50 +73,55 @@ fn main() {
         if scan.refusal.is_empty() {
             eprintln!("failed to find a terminal");
         }
-        std::process::exit(1);
+        return 1;
     }
 
     let mut stdout = io::stdout();
-    if enable_raw_mode().is_err() || execute!(stdout, EnterAlternateScreen).is_err() {
+    if enter_terminal(&mut stdout).is_err() {
+        restore_terminal();
         eprintln!("failed to find a terminal");
-        std::process::exit(1);
+        return 1;
     }
-    let _guard = TermGuard;
+    let guard = TermGuard;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).unwrap_or_else(|err| {
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(err) => {
+            drop(guard);
+            eprintln!("failed to open the terminal: {err}");
+            return 1;
+        }
+    };
+    if let Err(err) = terminal.clear() {
+        drop(terminal);
+        drop(guard);
         eprintln!("failed to open the terminal: {err}");
-        std::process::exit(1);
-    });
+        return 1;
+    }
+    let _ = terminal.hide_cursor();
 
     let mut stage = Stage::Scan;
     let mut focus = 0usize;
     let mut shell_only = args.shell_only;
     let mut optional = args.optional;
-    let mut run: Option<Run> = None;
+    let mut run_state: Option<Run> = None;
 
-    loop {
-        let height = terminal.size().map(|s| s.height).unwrap_or(24);
-        if let Err(err) = terminal.draw(|frame| {
-            draw(
-                frame,
-                &Ui {
-                    scan: &scan,
-                    stage,
-                    focus,
-                    shell_only,
-                    optional,
-                    run: run.as_ref(),
-                    script: &args.script,
-                },
-            );
-        }) {
-            eprintln!("failed to draw: {err}");
-            std::process::exit(1);
-        }
-
-        if let Some(active) = run.as_ref() {
+    let outcome = loop {
+        if let Some(active) = run_state.as_ref() {
             let _ = active.finished();
         }
+        let ui = Ui {
+            scan: &scan,
+            stage,
+            focus,
+            shell_only,
+            optional,
+            run: run_state.as_ref(),
+        };
+        if let Err(err) = terminal.draw(|frame| draw(frame, &ui)) {
+            break Outcome::Fail(format!("failed to draw: {err}"));
+        }
+
         if !event::poll(Duration::from_millis(50)).unwrap_or(false) {
             continue;
         }
@@ -115,9 +129,10 @@ fn main() {
             continue;
         };
         if let Event::Resize(cols, rows) = happened {
-            if let Some(active) = run.as_ref() {
-                active.resize(cols, rows);
+            if let Some(active) = run_state.as_ref() {
+                active.resize(cols, rows.saturating_sub(3).max(1));
             }
+            let _ = terminal.clear();
             continue;
         }
         let Event::Key(key) = happened else {
@@ -127,14 +142,11 @@ fn main() {
             continue;
         }
 
-        if let Some(active) = run.as_ref() {
+        if let Some(active) = run_state.as_ref() {
             if active.finished() {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
-                        let code = active.exit_code().unwrap_or(1);
-                        let _ = disable_raw_mode();
-                        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-                        std::process::exit(code);
+                        break Outcome::Code(active.exit_code().unwrap_or(1));
                     }
                     _ => {}
                 }
@@ -145,10 +157,10 @@ fn main() {
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            std::process::exit(quit_code(&scan));
+            break Outcome::Code(quit_code(&scan));
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => std::process::exit(quit_code(&scan)),
+            KeyCode::Char('q') | KeyCode::Esc => break Outcome::Code(quit_code(&scan)),
             KeyCode::Up | KeyCode::BackTab => {
                 if stage == Stage::Plan {
                     focus = focus.saturating_sub(1);
@@ -171,23 +183,45 @@ fn main() {
             KeyCode::Enter => match stage {
                 Stage::Scan if scan.refusal.is_empty() => stage = Stage::Plan,
                 Stage::Scan => {}
-                Stage::Plan => match start_script(&args.script, shell_only, optional, height) {
-                    Ok(started) => {
-                        run = Some(started);
-                        stage = Stage::Running;
+                Stage::Plan => {
+                    let rows = terminal.size().map(|size| size.height).unwrap_or(24);
+                    match start_script(
+                        &args.script,
+                        shell_only,
+                        optional,
+                        rows.saturating_sub(3).max(1),
+                    ) {
+                        Ok(started) => {
+                            run_state = Some(started);
+                            stage = Stage::Running;
+                        }
+                        Err(err) => {
+                            break Outcome::Fail(format!(
+                                "failed to run the install script: {err}"
+                            ));
+                        }
                     }
-                    Err(err) => {
-                        let _ = disable_raw_mode();
-                        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-                        eprintln!("failed to run the install script: {err}");
-                        std::process::exit(1);
-                    }
-                },
+                }
                 Stage::Running => {}
             },
             _ => {}
         }
+    };
+
+    drop(terminal);
+    drop(guard);
+    match outcome {
+        Outcome::Code(code) => code,
+        Outcome::Fail(message) => {
+            eprintln!("{message}");
+            1
+        }
     }
+}
+
+enum Outcome {
+    Code(i32),
+    Fail(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -205,108 +239,223 @@ struct Ui<'a> {
     shell_only: bool,
     optional: bool,
     run: Option<&'a Run>,
-    script: &'a Path,
+}
+
+fn copper() -> Style {
+    Style::default().fg(COPPER)
+}
+
+fn dim() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
 }
 
 fn draw(frame: &mut ratatui::Frame, ui: &Ui<'_>) {
-    let Ui {
-        scan,
-        stage,
-        focus,
-        shell_only,
-        optional,
-        run,
-        script,
-    } = *ui;
     let area = frame.area();
-    let title = match stage {
-        Stage::Scan => "kanade install  scan",
-        Stage::Plan => "kanade install  plan",
-        Stage::Running => "kanade install  running",
-    };
-    let mut lines = vec![Line::from(Span::styled(
-        title,
-        Style::default().add_modifier(Modifier::BOLD),
-    ))];
-    lines.push(Line::from(""));
-
-    match stage {
-        Stage::Scan => {
-            for line in &scan.lines {
-                lines.push(Line::from(line.as_str()));
-            }
-            lines.push(Line::from(""));
-            if scan.refusal.is_empty() {
-                lines.push(Line::from("enter: plan    q: quit"));
-            } else {
-                for line in &scan.refusal {
-                    lines.push(Line::from(Span::styled(
-                        line.as_str(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )));
-                }
-                lines.push(Line::from("q: quit"));
-            }
-        }
-        Stage::Plan => {
-            lines.push(toggle_line(focus == 0, "shell-only", shell_only));
-            lines.push(toggle_line(focus == 1, "optional packages", optional));
-            lines.push(Line::from(""));
-            if shell_only {
-                lines.push(Line::from("niri config is not installed with shell-only"));
-            } else {
-                let path = scan.config.display();
-                lines.push(Line::from(format!(
-                    "niri config is installed only when {path} is missing, and never replaced"
-                )));
-            }
-            lines.push(Line::from(format!("helper: {}", scan.helper)));
-            if scan.helper == "none" {
-                lines.push(Line::from(
-                    "paru is installed with pacman, then used for packages",
-                ));
-            }
-            lines.push(Line::from(""));
-            lines.push(Line::from(
-                "space: toggle    enter: run the script    q: quit",
-            ));
-        }
-        Stage::Running => {
-            let command = script_command(script, shell_only, optional);
-            lines.push(Line::from(command));
-            lines.push(Line::from(
-                "the script is running. this does not roll back.",
-            ));
-            lines.push(Line::from(""));
-            if let Some(run) = run {
-                let stored = run.lines.lock().unwrap_or_else(|p| p.into_inner());
-                let shown = stored.tail(area.height.saturating_sub(8) as usize);
-                for line in shown {
-                    lines.push(Line::from(line));
-                }
-                drop(stored);
-                lines.push(Line::from(""));
-                if let Some(code) = run.exit_code() {
-                    lines.push(Line::from(format!("exited {code}    q: close")));
-                }
-            }
-        }
+    frame.render_widget(Clear, area);
+    if area.width == 0 || area.height == 0 {
+        return;
     }
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
+    let head_rows = match ui.stage {
+        Stage::Scan => 3,
+        Stage::Plan | Stage::Running => 2,
+    };
+    let [head, body, foot] = Layout::vertical([
+        Constraint::Length(head_rows),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    frame.render_widget(Paragraph::new(header(ui)), head);
+    draw_body(frame, body, ui);
+    frame.render_widget(Paragraph::new(footer(ui)), foot);
 }
 
-fn toggle_line(focused: bool, label: &str, on: bool) -> Line<'static> {
-    let mark = if on { "[x]" } else { "[ ]" };
-    let text = format!("{mark} {label}");
-    let style = if focused {
-        Style::default().add_modifier(Modifier::REVERSED)
+fn header(ui: &Ui<'_>) -> Vec<Line<'static>> {
+    let name = Line::from(Span::styled("Kanade", copper()));
+    match ui.stage {
+        Stage::Scan => vec![name, Line::from("A shell for niri."), Line::from("")],
+        Stage::Plan => vec![name, Line::from("")],
+        Stage::Running => {
+            let status = match ui.run.and_then(Run::exit_code) {
+                Some(code) => format!("exited {code}"),
+                None => "running".to_string(),
+            };
+            vec![name, Line::from(status)]
+        }
+    }
+}
+
+fn draw_body(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ui: &Ui<'_>) {
+    match ui.stage {
+        Stage::Scan => draw_scan(frame, area, ui.scan),
+        Stage::Plan => {
+            frame.render_widget(
+                Paragraph::new(plan_lines(ui)).wrap(Wrap { trim: false }),
+                area,
+            );
+        }
+        Stage::Running => {
+            let lines = running_lines(ui.run, area.height);
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+        }
+    }
+}
+
+fn draw_scan(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, scan: &Scan) {
+    let mut lines = fact_lines(scan);
+    if !scan.refusal.is_empty() {
+        let needed = lines.len() as u16 + 1 + scan.refusal.len() as u16;
+        if needed > area.height && area.height > 0 {
+            let keep = area.height.saturating_sub(1 + scan.refusal.len() as u16) as usize;
+            lines.truncate(keep);
+        }
+        lines.push(Line::from(""));
+        for line in &scan.refusal {
+            lines.push(Line::from(Span::styled(line.clone(), copper())));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn fact_lines(scan: &Scan) -> Vec<Line<'static>> {
+    let pairs: Vec<(&str, &str)> = scan.lines.iter().map(|line| split_fact(line)).collect();
+    let width = pairs
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    pairs
+        .into_iter()
+        .map(|(label, value)| fact_line(label, value, width))
+        .collect()
+}
+
+fn split_fact(line: &str) -> (&str, &str) {
+    line.split_once(": ").unwrap_or((line, ""))
+}
+
+fn fact_line(label: &str, value: &str, label_width: usize) -> Line<'static> {
+    let pad = label_width.saturating_sub(label.chars().count()) + 3;
+    Line::from(vec![
+        Span::styled(label.to_string(), dim()),
+        Span::raw(" ".repeat(pad)),
+        Span::raw(value.to_string()),
+    ])
+}
+
+fn plan_lines(ui: &Ui<'_>) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        choice_line(ui.focus == 0, "shell-only", ui.shell_only),
+        choice_line(ui.focus == 1, "optional packages", ui.optional),
+        Line::from(""),
+    ];
+    if ui.shell_only {
+        lines.push(dim_line("niri config is not installed with shell-only"));
     } else {
-        Style::default()
+        let path = ui.scan.config.display();
+        lines.push(dim_line(format!(
+            "niri config is installed only when {path} is missing, and never replaced"
+        )));
+    }
+    lines.push(dim_line(format!("helper: {}", ui.scan.helper)));
+    if ui.scan.helper == "none" {
+        lines.push(dim_line(
+            "paru is installed with pacman, then used for packages",
+        ));
+    }
+    lines
+}
+
+fn choice_line(focused: bool, label: &str, on: bool) -> Line<'static> {
+    let style = if focused { Style::default() } else { dim() };
+    let state = if on { "on" } else { "off" };
+    let pad = "optional packages".len().saturating_sub(label.len()) + 3;
+    Line::from(vec![
+        Span::styled(
+            if focused { ">" } else { " " },
+            if focused { copper() } else { Style::default() },
+        ),
+        Span::styled("  ", style),
+        Span::styled(label.to_string(), style),
+        Span::styled(" ".repeat(pad), style),
+        Span::styled(state.to_string(), style),
+    ])
+}
+
+fn dim_line(text: impl Into<String>) -> Line<'static> {
+    Line::from(Span::styled(text.into(), dim()))
+}
+
+fn running_lines(run: Option<&Run>, rows: u16) -> Vec<Line<'static>> {
+    let Some(run) = run else {
+        return Vec::new();
     };
-    let prefix = if focused { "> " } else { "  " };
-    Line::from(vec![Span::raw(prefix), Span::styled(text, style)])
+    let stored = run
+        .lines
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let shown = stored.tail(rows.max(1) as usize);
+    drop(stored);
+    shown.into_iter().map(Line::from).collect()
+}
+
+fn footer(ui: &Ui<'_>) -> Line<'static> {
+    match ui.stage {
+        Stage::Scan if ui.scan.refusal.is_empty() => {
+            keys(&[("enter: plan", true), ("q: quit", false)])
+        }
+        Stage::Scan => keys(&[("q: quit", true)]),
+        Stage::Plan => keys(&[
+            ("space: toggle", false),
+            ("enter: run the script", true),
+            ("q: quit", false),
+        ]),
+        Stage::Running if ui.run.is_some_and(Run::finished) => keys(&[("q: close", true)]),
+        Stage::Running => Line::from(""),
+    }
+}
+
+fn keys(items: &[(&str, bool)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, (text, primary)) in items.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled("    ", dim()));
+        }
+        let style = if *primary { Style::default() } else { dim() };
+        spans.push(Span::styled((*text).to_string(), style));
+    }
+    Line::from(spans)
+}
+
+fn enter_terminal(stdout: &mut io::Stdout) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(stdout, EnterAlternateScreen, Hide)?;
+    // The curl line can leave OSC 8 open, so its URL stays painted on the cells.
+    wipe(stdout)?;
+    Ok(())
+}
+
+fn wipe(stdout: &mut io::Stdout) -> io::Result<()> {
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\");
+    buf.extend_from_slice(b"\x1b[2J\x1b[H");
+    for row in 1..=rows {
+        write!(buf, "\x1b[{row};1H")?;
+        buf.extend(std::iter::repeat_n(b' ', cols as usize));
+    }
+    buf.extend_from_slice(b"\x1b[1;1H");
+    stdout.write_all(&buf)?;
+    stdout.flush()
+}
+
+fn restore_terminal() {
+    let mut stdout = io::stdout();
+    let _ = stdout.write_all(b"\x1b[0m\x1b]8;;\x1b\\");
+    let _ = execute!(stdout, Show, LeaveAlternateScreen);
+    let _ = disable_raw_mode();
 }
 
 fn parse_args() -> Args {
@@ -511,16 +660,22 @@ impl Run {
         if self
             .exit
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|poison| poison.into_inner())
             .is_some()
         {
             return true;
         }
-        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        let mut child = self
+            .child
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         match child.try_wait() {
             Ok(Some(status)) => {
                 let code = i32::try_from(status.exit_code()).unwrap_or(1);
-                *self.exit.lock().unwrap_or_else(|p| p.into_inner()) = Some(code);
+                *self
+                    .exit
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) = Some(code);
                 true
             }
             _ => false,
@@ -528,7 +683,10 @@ impl Run {
     }
 
     fn exit_code(&self) -> Option<i32> {
-        *self.exit.lock().unwrap_or_else(|p| p.into_inner())
+        *self
+            .exit
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn resize(&self, cols: u16, rows: u16) {
@@ -545,7 +703,10 @@ impl Run {
         if bytes.is_empty() {
             return;
         }
-        let mut writer = self.writer.lock().unwrap_or_else(|p| p.into_inner());
+        let mut writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let _ = writer.write_all(&bytes);
         let _ = writer.flush();
     }
@@ -554,7 +715,7 @@ impl Run {
 fn start_script(script: &Path, shell_only: bool, optional: bool, rows: u16) -> io::Result<Run> {
     let pair = native_pty_system()
         .openpty(PtySize {
-            rows: rows.max(24),
+            rows: rows.max(1),
             cols: 100,
             pixel_width: 0,
             pixel_height: 0,
@@ -610,17 +771,6 @@ fn read_pty(mut reader: Box<dyn Read + Send>, lines: Arc<Mutex<LineBuf>>) {
     }
 }
 
-fn script_command(script: &Path, shell_only: bool, optional: bool) -> String {
-    let mut command = format!("sh {} --yes", script.display());
-    if shell_only {
-        command.push_str(" --shell-only");
-    }
-    if optional {
-        command.push_str(" --optional");
-    }
-    command
-}
-
 fn key_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
     match code {
         KeyCode::Char(ch) if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -644,14 +794,24 @@ fn key_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
 struct LineBuf {
     done: Vec<String>,
     cur: String,
+    /// A `\r` waiting to see if the next byte is `\n`. A pty writes `\r\n`.
+    cr: bool,
 }
 
 impl LineBuf {
     fn push(&mut self, text: &str) {
         for ch in text.chars() {
+            if self.cr {
+                self.cr = false;
+                if ch == '\n' {
+                    self.commit();
+                    continue;
+                }
+                self.cur.clear();
+            }
             match ch {
+                '\r' => self.cr = true,
                 '\n' => self.commit(),
-                '\r' => self.cur.clear(),
                 other if other.is_control() => {}
                 other => self.cur.push(other),
             }
@@ -680,18 +840,55 @@ impl LineBuf {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::LineBuf;
+
+    #[test]
+    fn pty_crlf_keeps_the_line() {
+        let mut buf = LineBuf::default();
+        buf.push("script-output-line\r\n");
+        buf.push("split\r");
+        buf.push("\n");
+        buf.push("bare\n");
+        assert_eq!(
+            buf.tail(10),
+            vec![
+                "script-output-line".to_string(),
+                "split".to_string(),
+                "bare".to_string(),
+            ]
+        );
+    }
+}
+
 fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if next.is_ascii_alphabetic() {
-                        break;
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
                     }
                 }
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
             }
             continue;
         }
