@@ -77,26 +77,6 @@ pub(crate) fn resize(island: &mut Write<IslandService>) {
     }
 }
 
-// the Island's pane name for backdrop capture
-const ISLAND: &str = "island";
-
-// where each output's body last stood on it, and the output's size, in logical pixels
-struct Placed {
-    body: (f32, f32),
-    screen: (f32, f32),
-}
-
-static PLACED: LazyLock<Mutex<HashMap<String, Placed>>> = LazyLock::new(Mutex::default);
-
-// as drawn: the body's corner on the output, from the window's corner there and the body in it
-fn placed(monitor: &Monitor, anchor: Anchor, window: (f32, f32), body: Rect) {
-    let screen = (monitor.width, monitor.height);
-    let corner = pane::origin(anchor, (window.0.round(), window.1.round()), screen);
-    let placed = Placed {
-        body: (corner.0 + body.x, corner.1 + body.y),
-        screen: (screen.0 as f32, screen.1 as f32),
-    };
-
     let mut all = PLACED.locked();
 
     match all.get_mut(&monitor.name) {
@@ -225,10 +205,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let place = config::get().island_placement();
     let hang = place.anchor.hang();
 
-    // Liquid Glass's ink follows the page behind the pane, for all this window builds
-    let backdrop = pane::shown(&pane::Spot::new(&monitor.name, ISLAND), now);
-    let _ink = pane::inked(backdrop.as_ref());
-
     /*
      * merged with the Dock (ADR 0031), this window draws both: the Island's canvas lies at
      * `shell.island` in it and the Dock's at `shell.dock`, under one pane
@@ -324,22 +300,12 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     let plate = scene.plate();
     let pane_body = scene.pane(pose);
 
-    let captured = capture(&island, &monitor.name, stand, &scene, pane_body, now);
-
-    // hidden past its edge, it captures nothing there
+    // hidden past its edge, it has no pane fill
     let merged_dock_visible = shell
         .as_ref()
         .zip(laid.as_ref())
         .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
     let shown = capture_visible(out, sliding, merged_dock_visible, covered, raised);
-    let captured = pane::place(
-        monitor,
-        ISLAND,
-        place.anchor,
-        scene.window(),
-        shown.then_some(captured),
-    );
-
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
 
@@ -350,7 +316,6 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         pane_body,
         body_rect,
         shape.radius,
-        backdrop,
         plate.is_some(),
     ) {
         Pane::United(united) => {
@@ -665,30 +630,6 @@ fn capture_visible(
     (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised)
 }
 
-/*
- * captured out to everywhere the body goes until its rim is shown, so it fits as the body
- * grows, and never samples the Island where the spring overshoots on the way; and to where it
- * was a quarter of that before, as the screen it is captured from lags this frame
- */
-fn capture(
-    island: &IslandService,
-    monitor: &str,
-    stand: Stand,
-    scene: &Scene,
-    body: pane::Body,
-    now: Instant,
-) -> pane::Body {
-    let since = now.checked_sub(pane::LEAD / 4).unwrap_or(now);
-
-    iter::once(since)
-        .chain((1..=4).map(|step| now + pane::LEAD * step / 4))
-        .fold(body, |captured, at| {
-            let ahead = stand.pose(island.shape(monitor, at), autohide::at(monitor, at));
-
-            pane::ahead(captured, scene.pane(ahead))
-        })
-}
-
 // the pane under the Island's body
 enum Pane {
     // its own layer under the body's content
@@ -706,7 +647,6 @@ fn body_pane(
     pane_body: pane::Body,
     body: Rect,
     radius: f32,
-    backdrop: Option<pane::Seen>,
     merged: bool,
 ) -> Pane {
     if !merged {
@@ -715,7 +655,6 @@ fn body_pane(
             height: body.height,
             radius,
             united: None,
-            backdrop,
         })));
     }
 
@@ -732,7 +671,6 @@ fn body_pane(
                 height,
                 radius,
                 united: Some(scene::within(pane_body, (x, y))),
-                backdrop,
             })),
     ))
 }
