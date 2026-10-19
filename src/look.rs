@@ -52,9 +52,6 @@ choice! {
         // opaque and light, tinted toward the wallpaper's hue, with dark ink (ADR 0051)
         Paper = "paper",
 
-        // clear glass over the screen, its edge reflecting what lies around it, light text (ADR 0052)
-        LiquidGlass = "liquid-glass",
-
         // the tinted solid's ramp, or paper's while `appearance.tone` is light, translucent over the
         // compositor's blur of what lies behind it, the windows too (ADR 0057)
         Blur = "blur",
@@ -62,12 +59,12 @@ choice! {
 }
 
 impl Finish {
-    // what the desktop's higher contrast leaves of it: Liquid Glass and Blur show what lies behind
-    // the pane, so they become the solid finish of their tone; the two solid ones are held at 7:1
+    // what the desktop's higher contrast leaves of it: Blur shows what lies behind the pane, so it
+    // becomes the solid finish of its tone; the two solid ones are held at 7:1
     pub fn solid(self, tone: Tone) -> Self {
         match (self, tone) {
-            (Finish::LiquidGlass | Finish::Blur, Tone::Light) => Finish::Paper,
-            (Finish::LiquidGlass | Finish::Blur, Tone::Dark) => Finish::TintedSolid,
+            (Finish::Blur, Tone::Light) => Finish::Paper,
+            (Finish::Blur, Tone::Dark) => Finish::TintedSolid,
             (finish, _) => finish,
         }
     }

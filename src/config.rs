@@ -283,7 +283,6 @@ pub struct Appearance {
 
     // Liquid Glass bends what lies under its edge, with the shell's own drawing taken out of the
     // screen copy (experimental, ADR 0100)
-    pub refraction: bool,
 
     // the UI scale in percent, on top of each output's own scale (ADR 0091)
     pub scale: u32,
@@ -304,7 +303,6 @@ impl Default for Appearance {
             sync: false,
             font: None,
             accessibility: true,
-            refraction: false,
             scale: 100,
         }
     }
@@ -1704,7 +1702,7 @@ pub const ISLAND: &[Setting] = &[
     Setting {
         key: "appearance.finish",
         label: "Finish",
-        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, \"liquid-glass\", clear glass over the screen, its edge reflecting what lies around, or \"blur\", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is \"light\" (needs niri 26.04)",
+        help: "what the Island, Dock and Banners are made of, tinted toward the wallpaper's hue in each: \"tinted-solid\", dark with light text, \"paper\", light with dark ink, or \"blur\", the tinted solid translucent over what the compositor blurs behind it, paper while `appearance.tone` is \"light\" (needs niri 26.04)",
         hint: Some("What the Island, Dock and Banners are made of"),
         kind: Kind::Choice(
             Choices::named(Finish::NAMES),
@@ -1713,19 +1711,6 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.appearance.finish = Finish::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
-    },
-    Setting {
-        key: "appearance.refraction",
-        label: "Refraction (experimental)",
-        help: "Liquid Glass only: bend what lies under its edge, taking the shell's own drawing out of the copy of the screen, where that can be told apart, else the edge reflects what lies around as before; costs a copy of each frame of the window",
-        hint: Some("Experimental: Liquid Glass bends what is under its edge"),
-        kind: Kind::Switch(Field {
-            get: |config| config.appearance.refraction,
-            set: |config, refraction| config.appearance.refraction = refraction,
-        }),
         example: None,
         restart: false,
         per_output: false,
@@ -3920,6 +3905,20 @@ const MIGRATIONS: &[Migration] = &[
             appearance.remove("highlight");
         }
     },
+    // 6: remove Liquid Glass and its refraction setting (ADR 0121)
+    |table| {
+        if let Some(Node::Table(appearance)) =
+            table.get_mut("appearance").map(|entry| &mut entry.node)
+        {
+            if let Some(finish) = appearance.get_mut("finish")
+                && finish.node.as_str() == Some("liquid-glass")
+            {
+                finish.node = Node::String("tinted-solid".to_owned());
+            }
+
+            appearance.remove("refraction");
+        }
+    },
 ];
 
 // the `schema_version` this build writes and reads up to
@@ -4502,7 +4501,6 @@ mod tests {
                 "shell.align",
                 "appearance.tone",
                 "appearance.finish",
-                "appearance.refraction",
                 "appearance.sync",
                 "appearance.accessibility",
                 "animation.speed",
