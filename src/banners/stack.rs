@@ -92,6 +92,9 @@ pub struct Stack {
     // the pointer is on a Banner
     hovered: bool,
 
+    // a fullscreen window covers the focused output: quiet Banners wait, they are not dropped
+    held: bool,
+
     // the Banners that left, any way, whose notification stays out of the history, for it to close:
     // id and version
     left: Vec<(u32, u64)>,
@@ -148,6 +151,38 @@ impl Stack {
         self.queued.retain(|queued| queued.id != banner.id);
         self.queue(banner);
         self.promote(now);
+    }
+
+    // fullscreen silence came on or off; quiet Banners wait, then show with a fresh time, and the
+    // sound they skipped is not played. false when it already was
+    pub fn set_held(&mut self, held: bool, now: Instant) -> bool {
+        if self.held == held {
+            return false;
+        }
+
+        self.held = held;
+
+        if held {
+            let mut kept = Vec::new();
+            let mut quiet = VecDeque::new();
+
+            for shown in self.shown.drain(..) {
+                if waits(held, shown.banner.loud()) {
+                    quiet.push_back(shown.banner);
+                } else {
+                    kept.push(shown);
+                }
+            }
+
+            self.shown = kept;
+
+            for banner in quiet.into_iter().rev() {
+                self.queued.push_front(banner);
+            }
+        }
+
+        self.promote(now);
+        true
     }
 
     // its sender or the user closed it; false when it was not here
@@ -311,9 +346,17 @@ impl Stack {
 
     // fills the free places from the queue, each with its full time
     fn promote(&mut self, now: Instant) {
-        while self.shown.len() < MOST
-            && let Some(banner) = self.queued.pop_front()
-        {
+        while self.shown.len() < MOST {
+            let Some(index) = self
+                .queued
+                .iter()
+                .position(|banner| !waits(self.held, banner.loud()))
+            else {
+                break;
+            };
+            let Some(banner) = self.queued.remove(index) else {
+                break;
+            };
             let timer = timer(&banner, self.hovered, now);
 
             self.shown.push(Shown {
@@ -328,6 +371,11 @@ impl Stack {
             self.hovered = false;
         }
     }
+}
+
+// fullscreen silence already combined into `held`: a quiet Banner waits, a loud one shows
+fn waits(held: bool, loud: bool) -> bool {
+    crate::sources::notifications::policy::hold_banner(loud, held, true)
 }
 
 // a full time, held while the pointer is on the Banners
@@ -380,6 +428,25 @@ mod tests {
         assert!(stack.silence(now));
         assert_eq!(ids(&stack), [2, 3]);
         assert!(!stack.silences());
+
+        let mut held = Stack::default();
+        held.arrive(banner(1, Urgency::Normal), false, now);
+        held.arrive(
+            Banner {
+                bypass_dnd: true,
+                ..banner(4, Urgency::Low)
+            },
+            false,
+            now,
+        );
+        assert!(held.set_held(true, now));
+        assert!(held.shown().all(|banner| banner.loud()));
+        assert!(held.contains(1));
+        held.arrive(banner(5, Urgency::Low), false, now);
+        assert!(held.shown().all(|banner| banner.id != 5));
+        assert!(held.set_held(false, now));
+        assert!(held.shown().any(|banner| banner.id == 1));
+        assert!(held.shown().any(|banner| banner.id == 5));
 
         let mut quiet = Stack::default();
         quiet.arrive(banner(1, Urgency::Normal), true, now);

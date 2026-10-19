@@ -213,6 +213,15 @@ niri-config restore <n>|orig
   restore: <n> from `backups`, 1 the newest, or orig, the first bytes Kanade saw",
     ),
     (
+        "update",
+        "Replace the installed binary with the published one, without a shell",
+        "update
+  downloads the Arch x86_64 binary from the install-0.1 release, checks its sha256, and replaces ~/.cargo/bin/kanade
+  a failed download leaves the installed binary as it was
+  refreshes the user unit from that release, keeping the old one when it differs
+  restarts kanade.service when it is running",
+    ),
+    (
         "doctor",
         "Check what Kanade runs on, without a shell",
         "doctor",
@@ -465,6 +474,7 @@ pub fn run(arguments: &[String]) -> ExitCode {
                 ExitCode::SUCCESS,
             );
         }
+        ["update"] => return crate::update::run(),
         ["doctor"] => return doctor::run(),
         ["sddm", "status"] => return sddm::status(),
         ["sddm", "setup"] => return sddm::setup(),

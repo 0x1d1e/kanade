@@ -227,6 +227,10 @@ pub struct Config {
     // `notifications.sound`: a notification arriving plays a sound
     pub notification_sound: bool,
 
+    // `notifications.fullscreen_silence`: quiet Banners wait while a fullscreen window covers the
+    // focused output, and no notification sound plays
+    pub notification_fullscreen_silence: bool,
+
     // `notifications.sound_file`, `sound_low`, `sound_normal`, `sound_critical`, `sound_volume`
     pub notification_sounds: Sounds,
 
@@ -607,6 +611,7 @@ impl Default for Config {
             },
             entrance: Entrance::default(),
             notification_sound: false,
+            notification_fullscreen_silence: true,
             notification_sounds: Sounds::default(),
             notification_rules: Vec::new(),
             osd_layout: true,
@@ -2044,6 +2049,19 @@ pub const NOTIFICATIONS: &[Setting] = &[
         per_output: false,
     },
     Setting {
+        key: "notifications.fullscreen_silence",
+        label: "Silence in fullscreen",
+        help: "while a fullscreen window covers the focused output, a non-Critical Banner waits and no notification sound plays; a Critical one, and one a rule lets bypass Do Not Disturb, still shows; waiting Banners show when it no longer covers, without the sound again",
+        hint: Some("Hold quiet Banners while a fullscreen window covers the focused output"),
+        kind: Kind::Switch(Field {
+            get: |config| config.notification_fullscreen_silence,
+            set: |config, on| config.notification_fullscreen_silence = on,
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
+    Setting {
         key: "notifications.sound_file",
         label: "Default sound",
         help: "the sound of a notification whose sender and urgency name none: an absolute file path (a leading ~/ is your home) or a freedesktop sound name; unset plays message-new-instant, and a missing file is noted and replaced by it",
@@ -2296,7 +2314,7 @@ pub const WALLPAPER: &[Setting] = &[
     Setting {
         key: "wallpaper.directory",
         label: "Wallpaper folder",
-        help: "the images the Wallpapers Surface shows, else ~/Pictures/Wallpapers",
+        help: "the images the Wallpapers Surface shows, else ~/Pictures/Wallpapers; an empty folder is filled once from the Favorites list at https://github.com/ItsTerm1n4l/Wallpapers",
         hint: Some("Images the Wallpapers Surface shows"),
         kind: Kind::Path(Field {
             get: |config| config.wallpapers.clone(),
@@ -4543,6 +4561,7 @@ mod tests {
                 "brightness.backend",
                 "osd.layout",
                 "notifications.sound",
+                "notifications.fullscreen_silence",
                 "notifications.sound_file",
                 "notifications.sound_volume",
                 "notifications.sound_low",

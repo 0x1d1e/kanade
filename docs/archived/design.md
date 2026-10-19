@@ -1,5 +1,8 @@
 # Kanade design
 
+Status: archived, kept as history and no longer edited to match the code. Current terms are `CONTEXT.md`, decisions are `docs/adr/`, usage is `README.md` and `docs/wiki/`.
+
+
 ## Objective
 
 Desktop shell for niri, Rust, on Kanade's own runtime (`crates/runtime`, ADR 0028) ([ADR 0008](adr/0008-kanade-is-a-shell.md)). No bar. One Island/output: status at rest, Activities live, Surfaces on demand. ~zero idle cost.

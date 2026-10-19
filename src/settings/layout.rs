@@ -340,6 +340,7 @@ pub const PAGES: &[Page] = &[
                 title: "Sound",
                 rows: &[
                     Row::Key("notifications.sound"),
+                    Row::Key("notifications.fullscreen_silence"),
                     Row::Key("notifications.sound_file"),
                     Row::Key("notifications.sound_volume"),
                 ],

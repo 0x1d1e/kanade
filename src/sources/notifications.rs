@@ -44,7 +44,9 @@ use crate::island::service::IslandService;
 use crate::{banners, modules, supervise};
 
 mod daemon;
+pub mod policy;
 pub mod rules;
+pub mod silence;
 pub mod timed;
 
 pub use daemon::{Notification, Notifications, Urgency};
@@ -390,6 +392,27 @@ fn steps(
         .collect()
 }
 
+// a fullscreen window covers the focused output, and fullscreen silence is on
+pub fn fullscreen_quiet() -> bool {
+    config::get().notification_fullscreen_silence && output_covered()
+}
+
+// the focused output's shown window is fullscreen and fills it
+fn output_covered() -> bool {
+    let Some(name) = crate::sources::niri::Niri::read()
+        .seen
+        .focused_output
+        .clone()
+    else {
+        return false;
+    };
+    let monitors = kanade_runtime::Monitors::read();
+    monitors
+        .all()
+        .iter()
+        .any(|monitor| monitor.name == name && crate::sources::fullscreen::covers(monitor))
+}
+
 // runs on its own thread for good
 pub fn follow() {
     let (mut wakes, waker) = Wakes::woken(PACE, vec![BUS]);
@@ -542,10 +565,16 @@ pub fn follow() {
                 }
             }
 
-            // never under DND, which quiets what the Banners show
-            if !dnd {
-                let config = config::get();
-
+            // never under DND, and not while a fullscreen window covers the focused output:
+            // a sound skipped then is not played later
+            let config = config::get();
+            let covered = output_covered();
+            if policy::play_sound(
+                config.notification_sound,
+                dnd,
+                config.notification_fullscreen_silence,
+                covered,
+            ) {
                 for ring in &rings {
                     sound::play(ring, &config.notification_sounds);
                 }
@@ -582,6 +611,7 @@ pub fn follow() {
             if !shown.is_empty() || !closed.is_empty() {
                 let now = Instant::now();
                 let mut banners = Banners::write();
+                banners.hold(fullscreen_quiet(), now);
 
                 for banner in shown {
                     banners.arrive(banner, dnd, now);

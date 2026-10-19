@@ -107,5 +107,7 @@ systemctl --user restart kanade.service
 
 Only if that fails, end the graphical session with `loginctl terminate-session <id>` (`loginctl list-sessions` lists them). This closes every app in it, and unsaved work is lost.
 
+`kanade update` replaces `~/.cargo/bin/kanade` with the published Arch x86_64 binary from the `install-0.1` release, the same asset the installer uses, after checking `kanade.sha256`. It does not need a shell, does not compile, and does not install packages or write a niri config. A missing file, a short file, a checksum mismatch or any other download failure stops and leaves the installed binary as it was. It then refreshes the user unit from that release, keeping the old one when it differs, and leaves systemd drop-ins alone. If `kanade.service` is running it restarts that unit only. It does not stop other `kanade` processes. Another architecture is refused.
+
 From a checkout, `cargo run` runs it and `scripts/dev` rebuilds and restarts it on every save.
 

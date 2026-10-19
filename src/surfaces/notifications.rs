@@ -66,6 +66,9 @@ const ACTION_WIDTH: f32 = 120.0;
 const TILE: f32 = 36.0;
 const TILE_GAP: f32 = 10.0;
 
+// Silence / Unsilence, beside the dismiss
+const QUIET: f32 = 78.0;
+
 // pixels per wheel line
 const WHEEL: f32 = 40.0;
 
@@ -128,6 +131,8 @@ enum Item {
 enum Part {
     Body,
     Action(usize),
+    // no Banner and no sound for this app, history kept
+    Silence,
     Dismiss,
 }
 
@@ -165,9 +170,9 @@ struct Shape {
 }
 
 impl Shape {
-    // the body, every action shown, then the dismiss
+    // the body, every action shown, silence, then the dismiss
     fn columns(&self) -> usize {
-        self.actions + 2
+        self.actions + 3
     }
 
     fn height(&self) -> f32 {
@@ -213,6 +218,7 @@ impl At {
 
                 let column = match (cards.get(row), part) {
                     (_, Part::Body) => 0,
+                    (_, Part::Silence) => last.saturating_sub(1),
                     (_, Part::Dismiss) => last,
                     (Some(card), Part::Action(index))
                         if card.item == item && index < card.actions =>
@@ -238,15 +244,19 @@ impl At {
     // what the ring is on at `place`
     fn on(place: Place, cards: &[Shape]) -> At {
         match cards.get(place.row) {
-            Some(card) => At::Card {
-                item: card.item,
-                row: place.row,
-                part: match place.column {
-                    0 => Part::Body,
-                    column if column > card.actions => Part::Dismiss,
-                    column => Part::Action(column - 1),
-                },
-            },
+            Some(card) => {
+                let columns = card.columns();
+                At::Card {
+                    item: card.item,
+                    row: place.row,
+                    part: match place.column {
+                        0 => Part::Body,
+                        column if column + 1 == columns => Part::Dismiss,
+                        column if column + 2 == columns => Part::Silence,
+                        column => Part::Action(column.saturating_sub(1)),
+                    },
+                }
+            }
             None if place.column == 0 => At::Footer(Footer::Dnd),
             None => At::Footer(Footer::Clear),
         }
@@ -390,6 +400,9 @@ enum Press {
     Action { id: u32, key: String },
     Dismiss(u32),
 
+    // no Banner and no sound for this app, including Critical; history stays
+    Silence { app: String, desktop: String },
+
     // a stack: open it or close it, or dismiss all it holds
     Toggle(u64),
     DismissAll(Vec<u32>),
@@ -407,6 +420,7 @@ struct Card {
     toast: Toast,
     critical: bool,
     default: bool,
+    desktop: String,
 
     // key and label, at most `MOST_ACTIONS`
     actions: Vec<(String, String)>,
@@ -422,6 +436,7 @@ impl Card {
             toast: notifications::toast(notification),
             critical: notification.urgency() == Urgency::Critical,
             default: notification.has_default_action(),
+            desktop: notification.desktop_entry().to_owned(),
             actions: notification
                 .actions()
                 .iter()
@@ -449,6 +464,10 @@ impl Card {
             Part::Action(index) => Press::Action {
                 id: self.id,
                 key: self.actions[index].0.clone(),
+            },
+            Part::Silence => Press::Silence {
+                app: self.toast.app.clone(),
+                desktop: self.desktop.clone(),
             },
             Part::Dismiss => Press::Dismiss(self.id),
         }
@@ -486,6 +505,10 @@ impl Entry {
             Entry::Card(card) => card.press(part),
             Entry::Stack(group) | Entry::Head(group) => match part {
                 Part::Dismiss => Press::DismissAll(group.ids.clone()),
+                Part::Silence => Press::Silence {
+                    app: group.front.toast.app.clone(),
+                    desktop: group.front.desktop.clone(),
+                },
                 Part::Body | Part::Action(_) => Press::Toggle(group.key),
             },
         }
@@ -844,17 +867,23 @@ fn badge(count: usize) -> Rectangle {
  * actions under the text. Pressing it opens it. `ring` is the column the ring is on
  */
 fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
-    let words = width() - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
+    let words = width() - 2.0 * CARD_INSET - TILE - 2.0 * TILE_GAP - TARGET - QUIET - 4.0;
 
     let top = Row::new(children![
         view::toast_tile(&card.toast, TILE, radius::TILE, &theme::island()),
         Column::new(lines(card, card.critical, None))
             .width(words)
             .gap(1.0),
+        quiet(
+            monitor,
+            card.press(Part::Silence),
+            notifications::silence::covers(&card.toast.app, &card.desktop),
+            ring == Some(card.actions.len() + 1),
+        ),
         dismiss(
             monitor,
             Press::Dismiss(card.id),
-            ring == Some(card.actions.len() + 1)
+            ring == Some(card.actions.len() + 2)
         ),
     ])
     .gap(TILE_GAP)
@@ -893,17 +922,26 @@ fn card(monitor: &str, card: &Card, ring: Option<usize>) -> Rectangle {
  */
 fn stack(monitor: &str, group: &Group, ring: Option<usize>) -> Stack {
     let card = &group.front;
-    let words = width() - 2.0 * CARD_INSET - TILE - TILE_GAP - TARGET - 4.0;
+    let words = width() - 2.0 * CARD_INSET - TILE - 2.0 * TILE_GAP - TARGET - QUIET - 4.0;
 
     let top = Row::new(children![
         view::toast_tile(&card.toast, TILE, radius::TILE, &theme::island()),
         Column::new(lines(card, group.critical, Some(group.ids.len())))
             .width(words)
             .gap(1.0),
+        quiet(
+            monitor,
+            Press::Silence {
+                app: card.toast.app.clone(),
+                desktop: card.desktop.clone(),
+            },
+            notifications::silence::covers(&card.toast.app, &card.desktop),
+            ring == Some(1),
+        ),
         dismiss(
             monitor,
             Press::DismissAll(group.ids.clone()),
-            ring == Some(1)
+            ring == Some(2)
         ),
     ])
     .gap(TILE_GAP)
@@ -965,7 +1003,7 @@ fn head(monitor: &str, group: &Group, ring: Option<usize>) -> Rectangle {
         _ => 70.0,
     };
 
-    let words = width() - 2.0 * CARD_INSET - TARGET - less_width - 2.0 * TILE_GAP - 4.0;
+    let words = width() - 2.0 * CARD_INSET - TARGET - QUIET - less_width - 3.0 * TILE_GAP - 4.0;
 
     let label = Text::new(format!("{} · {}", group.front.toast.app, group.ids.len()))
         .size(theme::text::LABEL_SMALL)
@@ -1004,10 +1042,19 @@ fn head(monitor: &str, group: &Group, ring: Option<usize>) -> Rectangle {
             Row::new(children![
                 Column::new(children![label]).width(words),
                 less,
+                quiet(
+                    monitor,
+                    Press::Silence {
+                        app: group.front.toast.app.clone(),
+                        desktop: group.front.desktop.clone(),
+                    },
+                    notifications::silence::covers(&group.front.toast.app, &group.front.desktop),
+                    ring == Some(1),
+                ),
                 dismiss(
                     monitor,
                     Press::DismissAll(group.ids.clone()),
-                    ring == Some(1)
+                    ring == Some(2)
                 ),
             ])
             .gap(TILE_GAP)
@@ -1059,6 +1106,31 @@ fn label_in(label: &str, width: f32) -> Text {
         Size::Fixed(natural) if natural <= width => text,
         _ => text.elide(),
     }
+}
+
+// Silence or Unsilence for this app: no Banner and no sound, history kept
+fn quiet(monitor: &str, press: Press, silenced: bool, ring: bool) -> Rectangle {
+    let monitor = monitor.to_owned();
+    let label = if silenced { "Unsilence" } else { "Silence" };
+
+    Rectangle::new()
+        .width(QUIET)
+        .height(TARGET)
+        .radius(TARGET / 2.0)
+        .align_child(Center, Center)
+        .cursor(Cursor::Pointer)
+        .semantics(|| Semantics::new(Role::Button, "silence").label(label))
+        .on_click(super::on_left(move || {
+            click(&monitor, press.clone());
+        }))
+        .child(
+            Text::new(label)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface)
+                .weight(theme::text::MEDIUM)
+                .elide(),
+        )
+        .border_if(ring)
 }
 
 // a round target with a cross, pressed to close the notification, or a stack's
@@ -1303,6 +1375,7 @@ fn run(monitor: &str, press: Press) {
         }
         Press::Dismiss(id) => Notifications::dismiss(id),
         Press::DismissAll(ids) => Notifications::dismiss_all(&ids),
+        Press::Silence { app, desktop } => notifications::silence::toggle_named(&app, &desktop),
         Press::Toggle(key) => {
             let mut focus = focus(monitor);
 

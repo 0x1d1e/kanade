@@ -91,6 +91,16 @@ impl Notification {
         &self.app_name
     }
 
+    // the `desktop-entry` hint, empty when the sender gives none
+    pub fn desktop_entry(&self) -> &str {
+        &self.desktop_entry
+    }
+
+    // the `category` hint, empty when the sender gives none
+    pub fn category(&self) -> &str {
+        &self.category
+    }
+
     // the one-line title
     pub fn summary(&self) -> &str {
         &self.summary

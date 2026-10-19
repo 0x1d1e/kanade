@@ -15,7 +15,8 @@
   <a href="docs/wiki/Settings.md">Settings</a> |
   <a href="docs/wiki/Keyboard.md">Keyboard</a> |
   <a href="docs/wiki/Limitations.md">Limitations</a> |
-  <a href="docs/design.md">Design</a> |
+  <a href="CONTEXT.md">Domain</a> |
+  <a href="docs/adr/">Decisions</a> |
   <a href="docs/wiki/Home.md">Wiki</a>
 </p>
 
@@ -166,8 +167,7 @@ Kanade runs without these packages, but individual features require them:
 | [Dictation](docs/wiki/Dictation.md) | Voice dictation setup with the Gemini API and privacy disclosures. |
 | [Google Calendar](docs/wiki/Google-Calendar.md) | OAuth client creation and synchronization setup. |
 | [SDDM](docs/wiki/SDDM.md) | Matching SDDM login theme generation via `kanade sddm`. |
-| [Design](docs/design.md) | Target architecture, runtime pipeline, and system design. |
-| [Architecture decisions](docs/adr/) | Historical record of architecture decision records (ADRs). |
+| [Architecture decisions](docs/adr/) | Decisions and supersessions. |
 | [Domain terms](CONTEXT.md) | Canonical domain language, invariants, and naming rules. |
 | [Branding](docs/branding.md) | Mascot assets, mark specifications, and visual identity. |
 

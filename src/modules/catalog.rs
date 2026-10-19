@@ -616,11 +616,17 @@ notifications dnd on until <HH:MM>
         warns: None,
         needs: &[],
         settings: &[],
-        hooks: Hooks::NONE,
+        hooks: Hooks {
+            reload: Some(banners::follow_cover),
+            ..Hooks::NONE
+        },
         verbs: &[],
         start: |app| {
             service::watch::<Monitors>(banners::forget_gone);
             service::watch::<Niri>(banners::follow_focus);
+            service::watch::<Niri>(banners::follow_cover);
+            service::watch::<kanade_runtime::Toplevels>(banners::follow_cover);
+            service::watch::<crate::sources::fullscreen::Fullscreen>(banners::follow_cover);
 
             app.window_per_monitor(banners::window)
         },
@@ -856,6 +862,7 @@ notifications dnd on until <HH:MM>
             supervise::spawn("wallpaper", wallpaper::follow);
             supervise::spawn("wallpaper-set", wallpaper::serve);
             supervise::spawn("wallpaper-shown", wallpaper::watch);
+            supervise::spawn("wallpaper-seed", wallpaper::seed);
             app
         },
     },

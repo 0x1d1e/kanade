@@ -37,6 +37,7 @@ mod surfaces;
 mod theme;
 mod tiles;
 mod ui;
+mod update;
 mod view;
 
 use std::env;

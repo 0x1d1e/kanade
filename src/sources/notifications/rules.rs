@@ -99,6 +99,11 @@ const EFFECTS: [&str; 7] = [
     "urgency",
 ];
 
+// whether any rule matches; silence applies only when none does
+pub fn matched(rules: &[Rule], fields: Fields) -> bool {
+    rules.iter().any(|rule| rule.matches(fields))
+}
+
 // what the first rule matching does, the defaults for none
 pub fn resolve(rules: &[Rule], fields: Fields) -> Effects {
     let Some(rule) = rules.iter().find(|rule| rule.matches(fields)) else {
@@ -272,7 +277,7 @@ impl Rule {
 }
 
 // a desktop entry with or without its `.desktop`
-fn desktop_id(entry: &str) -> &str {
+pub(crate) fn desktop_id(entry: &str) -> &str {
     entry.strip_suffix(".desktop").unwrap_or(entry)
 }
 

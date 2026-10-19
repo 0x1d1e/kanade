@@ -208,6 +208,7 @@ enum Press {
     DesktopAction { launch: Launch, id: String },
 }
 
+#[derive(Clone)]
 struct ContextTarget {
     monitor: String,
     at: Rect,
@@ -1876,6 +1877,8 @@ fn slot(
     }
 
     let context = item.clone();
+    let hover_item = context.clone();
+    let hover_target = target.clone();
 
     let slot = slot
         .cursor(Cursor::Pointer)
@@ -1900,6 +1903,18 @@ fn slot(
                 if let Some(press) = fresh.clone() {
                     carry_out(press);
                 }
+            }
+        })
+        .on_hover(move |inside| {
+            if inside {
+                context_menu::preview(
+                    &hover_target.monitor,
+                    &hover_item,
+                    hover_target.at,
+                    hover_target.edge,
+                );
+            } else {
+                context_menu::leave_icon();
             }
         });
 

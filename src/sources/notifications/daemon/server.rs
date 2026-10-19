@@ -123,15 +123,19 @@ fn notify(method: &Method) {
         effects: rules::Effects::default(),
     };
 
-    // the rules in effect as it arrives decide what it does, for good
-    let effects = rules::resolve(
-        &config::get().notification_rules,
-        Fields {
-            app: &notification.app_name,
-            desktop_entry: &notification.desktop_entry,
-            category: &notification.category,
-            summary: &notification.summary,
-        },
+    // the rules in effect as it arrives decide what it does, for good; app silence applies
+    // only when none matched
+    let rules = config::get().notification_rules.clone();
+    let fields = Fields {
+        app: &notification.app_name,
+        desktop_entry: &notification.desktop_entry,
+        category: &notification.category,
+        summary: &notification.summary,
+    };
+    let effects = super::super::policy::quiet_app(
+        rules::resolve(&rules, fields),
+        rules::matched(&rules, fields),
+        super::super::silence::covers(&notification.app_name, &notification.desktop_entry),
     );
 
     if let Some(urgency) = effects.urgency {

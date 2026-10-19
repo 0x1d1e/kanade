@@ -1,5 +1,6 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use crate::island::geometry::Rect;
 use crate::look::Edge;
@@ -9,9 +10,9 @@ use crate::theme::{self, ThemeRoles, radius};
 use kanade_runtime::service::Service;
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Button, Center, Column, Cursor, Full, Horizontal, Key, Keyboard, Layer, LayerWindow, Monitor,
-    Monitors, Padding, Parent, Rectangle, Row, Shadow, Start, Text, Vertical, Widget, Zone,
-    children,
+    Button, Center, Column, Cursor, Full, Horizontal, Key, Keyboard, Layer, LayerWindow, Margin,
+    Monitor, Monitors, Padding, Parent, Rectangle, Row, Shadow, Start, Text, Vertical, Widget,
+    Zone, children,
 };
 
 use super::{Item, Press, carry_out, desktop};
@@ -28,6 +29,13 @@ const CLOSE: f32 = 26.0;
 
 // the newest open that asked for its titles: closing, or another open, supersedes the ones before it
 static ASKED: AtomicU64 = AtomicU64::new(0);
+
+// the hover list stays open while the pointer crosses from the icon onto it
+static OVER_ICON: AtomicBool = AtomicBool::new(false);
+static OVER_PANEL: AtomicBool = AtomicBool::new(false);
+static CLOSE_TICK: AtomicU64 = AtomicU64::new(0);
+
+const GRACE: Duration = Duration::from_millis(180);
 
 #[derive(Default)]
 struct Menu {
@@ -46,6 +54,12 @@ struct Open {
     selected: Option<usize>,
     offset: usize,
     scroll: f32,
+
+    // the hover list: window rows only, no pin and no actions
+    windows_only: bool,
+
+    // the pointer is on that list, so it may take the keyboard for Delete
+    panel: bool,
 }
 
 impl Service for Menu {
@@ -61,6 +75,7 @@ pub fn open(monitor: &str, item: &Item, at: Rect, edge: Edge) {
         return;
     }
 
+    CLOSE_TICK.fetch_add(1, Ordering::Relaxed);
     let (monitor, item) = (monitor.to_owned(), item.clone());
     let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -93,8 +108,109 @@ pub fn open(monitor: &str, item: &Item, at: Rect, edge: Edge) {
                 selected: None,
                 offset: 0,
                 scroll: 0.0,
+                windows_only: false,
+                panel: false,
             },
         );
+    });
+}
+
+// the app's windows, asked of niri as the pointer comes onto a running icon; none with no windows,
+// and the right-click menu wins if it is open
+pub fn preview(monitor: &str, item: &Item, at: Rect, edge: Edge) {
+    if item.windows.is_empty() {
+        return;
+    }
+
+    if let Some(open) = Menu::read().open.clone() {
+        if open.monitor == monitor && !open.windows_only {
+            return;
+        }
+        if open.windows_only && open.monitor == monitor && open.item == *item {
+            OVER_ICON.store(true, Ordering::Relaxed);
+            CLOSE_TICK.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    }
+
+    OVER_ICON.store(true, Ordering::Relaxed);
+    CLOSE_TICK.fetch_add(1, Ordering::Relaxed);
+    let (monitor, item) = (monitor.to_owned(), item.clone());
+    let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
+
+    thread::spawn(move || {
+        let ids: Vec<WindowId> = item.windows.iter().map(|window| window.id).collect();
+        let windows = windows::titled(&ids).unwrap_or_else(|error| {
+            eprintln!("dock: no window titles: {error}");
+            ids.iter()
+                .map(|id| Titled {
+                    id: *id,
+                    title: String::new(),
+                })
+                .collect()
+        });
+
+        if windows.is_empty() {
+            return;
+        }
+
+        publish(
+            ticket,
+            Open {
+                monitor,
+                item,
+                windows,
+                at,
+                edge,
+                selected: None,
+                offset: 0,
+                scroll: 0.0,
+                windows_only: true,
+                panel: false,
+            },
+        );
+    });
+}
+
+pub fn leave_icon() {
+    OVER_ICON.store(false, Ordering::Relaxed);
+    schedule_close();
+}
+
+fn hover_panel(inside: bool) {
+    OVER_PANEL.store(inside, Ordering::Relaxed);
+
+    let mut menu = Menu::write();
+    match menu.open.as_mut() {
+        Some(open) if open.windows_only && open.panel != inside => open.panel = inside,
+        Some(_) => menu.quiet(),
+        None => menu.quiet(),
+    }
+
+    if !inside {
+        schedule_close();
+    }
+}
+
+fn schedule_close() {
+    let ticket = CLOSE_TICK.fetch_add(1, Ordering::Relaxed) + 1;
+
+    thread::spawn(move || {
+        thread::sleep(GRACE);
+
+        if CLOSE_TICK.load(Ordering::Relaxed) != ticket {
+            return;
+        }
+        if OVER_ICON.load(Ordering::Relaxed) || OVER_PANEL.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let mut menu = Menu::write();
+        if menu.open.as_ref().is_some_and(|open| open.windows_only) {
+            menu.open = None;
+        } else {
+            menu.quiet();
+        }
     });
 }
 
@@ -154,11 +270,12 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     };
 
     let count = row_count(&open);
-    let (width, visible_rows) = size(monitor, count);
+    let separated = !open.windows_only && count > 1;
+    let (width, visible_rows) = size(monitor, count, separated);
     let last_offset = count.saturating_sub(visible_rows);
     let offset = open.offset.min(last_offset);
     let end = (offset + visible_rows).min(count);
-    let separator = offset == 0 && end > 1;
+    let separator = !open.windows_only && offset == 0 && end > 1;
     let list_height =
         (end - offset) as f32 * (ROW + GAP) - GAP + if separator { SEPARATOR + GAP } else { 0.0 };
     let height = 2.0 * INSET + list_height;
@@ -192,6 +309,33 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .child(Column::new(content).width(width - 2.0 * INSET).gap(GAP)),
         );
 
+    if open.windows_only {
+        let monitor_name = monitor.name.clone();
+        let height_px = monitor.height;
+        let panel = panel.on_hover(hover_panel);
+
+        return LayerWindow::new()
+            .width(width)
+            .height(height)
+            .anchor_vertical(Vertical::Top)
+            .anchor_horizontal(Horizontal::Left)
+            .margin(Margin {
+                top: y as i32,
+                left: x as i32,
+                ..Margin::default()
+            })
+            .layer(Layer::Overlay)
+            .keyboard(if open.panel {
+                Keyboard::Exclusive
+            } else {
+                Keyboard::None
+            })
+            .space(Zone::Ignore)
+            .namespace("kanade-dock-menu")
+            .on_key(move |key| key_press(&monitor_name, height_px, key))
+            .child(panel);
+    }
+
     let root = Rectangle::new()
         .width(Parent)
         .height(Parent)
@@ -213,39 +357,53 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .child(root)
 }
 
-// what a row of the menu is, in the order they come: the pin, the windows, the app's own actions
+// what a row of the menu is, in the order they come: the pin, silence, the windows, the app's own actions
 enum Entry<'a> {
     Pin,
+    Silence,
     Window(&'a Titled),
 
     // by place in the entry's actions
     Action(usize),
 }
 
+fn entries(open: &Open) -> Vec<Entry<'_>> {
+    if open.windows_only {
+        return open.windows.iter().map(Entry::Window).collect();
+    }
+
+    let mut entries = vec![Entry::Pin];
+    if silence_target(&open.item).is_some() {
+        entries.push(Entry::Silence);
+    }
+    entries.extend(open.windows.iter().map(Entry::Window));
+    if let Some(desktop) = desktop(&open.item.app) {
+        entries.extend((0..desktop.actions.len()).map(Entry::Action));
+    }
+    entries
+}
+
 fn row(open: &Open, index: usize) -> Option<Entry<'_>> {
-    if index == 0 {
-        return Some(Entry::Pin);
-    }
-
-    let index = index - 1;
-
-    match open.windows.get(index) {
-        Some(window) => Some(Entry::Window(window)),
-        None => {
-            let action = index - open.windows.len();
-
-            desktop(&open.item.app)
-                .filter(|entry| action < entry.actions.len())
-                .map(|_| Entry::Action(action))
-        }
-    }
+    entries(open).into_iter().nth(index)
 }
 
 fn row_count(open: &Open) -> usize {
-    1 + open.windows.len() + desktop(&open.item.app).map_or(0, |entry| entry.actions.len())
+    entries(open).len()
 }
 
-fn size(monitor: &Monitor, count: usize) -> (f32, usize) {
+fn silence_target(item: &Item) -> Option<crate::sources::notifications::silence::App> {
+    use crate::sources::windows::App;
+
+    let (desktop, name) = match &item.app {
+        App::Desktop(entry) => (entry.id.as_str(), entry.name.as_str()),
+        App::Unmatched(Some(id)) => (id.as_str(), id.as_str()),
+        App::Unmatched(None) => (item.pin.as_deref()?, ""),
+    };
+
+    crate::sources::notifications::silence::App::named(name, desktop)
+}
+
+fn size(monitor: &Monitor, count: usize, separated: bool) -> (f32, usize) {
     let width = WIDTH.min((monitor.width as f32 - 2.0 * SCREEN_GAP).max(1.0));
     let max_height = (monitor.height as f32 - 2.0 * SCREEN_GAP).max(ROW + 2.0 * INSET);
     let content_height = (max_height - 2.0 * INSET).max(ROW);
@@ -253,7 +411,7 @@ fn size(monitor: &Monitor, count: usize) -> (f32, usize) {
         .rev()
         .find(|rows| {
             let rows = (*rows).max(1);
-            let separators = if count > 1 { SEPARATOR + GAP } else { 0.0 };
+            let separators = if separated { SEPARATOR + GAP } else { 0.0 };
             rows as f32 * (ROW + GAP) - GAP + separators <= content_height
         })
         .unwrap_or(1)
@@ -306,6 +464,18 @@ fn rows(
                 (name.to_owned(), true)
             }
             Entry::Window(window) => (window.title.clone(), true),
+            Entry::Silence => {
+                let silenced = silence_target(&open.item)
+                    .is_some_and(|app| crate::sources::notifications::silence::covers_app(&app));
+                (
+                    if silenced {
+                        "Unsilence".to_owned()
+                    } else {
+                        "Silence".to_owned()
+                    },
+                    false,
+                )
+            }
             Entry::Action(action) => (
                 desktop(&open.item.app)
                     .map_or_else(String::new, |entry| entry.actions[*action].name.clone()),
@@ -329,6 +499,7 @@ fn rows(
                 Entry::Window(_) => {
                     Semantics::new(Role::MenuItem, "window").content(label.as_str())
                 }
+                Entry::Silence => Semantics::new(Role::MenuItem, "silence").label(label.as_str()),
                 Entry::Action(_) => Semantics::new(Role::MenuItem, "action").label(label.as_str()),
             };
 
@@ -337,7 +508,7 @@ fn rows(
 
         rows.push(Box::new(row) as Box<dyn Widget>);
 
-        if index == 0 && end > 1 {
+        if index == 0 && !open.windows_only && end > 1 {
             rows.push(Box::new(
                 Rectangle::new()
                     .width(width)
@@ -451,12 +622,13 @@ fn scroll(monitor: &str, monitor_width: u32, monitor_height: u32, delta: f32) {
         return;
     };
     let count = row_count(open);
+    let separated = !open.windows_only && count > 1;
     let monitor = Monitor {
         name: monitor.to_owned(),
         width: monitor_width,
         height: monitor_height,
     };
-    let visible = size(&monitor, count).1;
+    let visible = size(&monitor, count, separated).1;
     let (next, remainder) = scrolled(open.offset, open.scroll, delta, count, visible);
     open.scroll = remainder;
 
@@ -535,7 +707,8 @@ fn move_selection(monitor: &str, screen_height: u32, down: bool) {
         width: WIDTH.ceil() as u32 + 2 * SCREEN_GAP as u32,
         height: screen_height,
     };
-    let visible = size(&monitor, count).1;
+    let separated = !open.windows_only && count > 1;
+    let visible = size(&monitor, count, separated).1;
 
     if next < open.offset {
         open.offset = next;
@@ -555,6 +728,13 @@ fn activate(monitor: &str, index: usize) {
 
     if let Some(Entry::Window(window)) = row(&open, index) {
         carry_out(Press::Focus(window.id));
+        return;
+    }
+
+    if let Some(Entry::Silence) = row(&open, index) {
+        if let Some(app) = silence_target(&item) {
+            crate::sources::notifications::silence::toggle(app);
+        }
         return;
     }
 
@@ -676,6 +856,8 @@ mod tests {
             selected: None,
             offset: 0,
             scroll: 0.0,
+            windows_only: false,
+            panel: false,
         }
     }
 

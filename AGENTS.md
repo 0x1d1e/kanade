@@ -1,10 +1,10 @@
 # Kanade
 
-niri shell on its own runtime (ADR 0028), centered on an adaptive activity island. Before architecture or scope work, read `docs/design.md` (target design; decisions in `docs/adr/`). v0.1 plan, history only: `docs/archived/plan.md`.
+niri shell on its own runtime (ADR 0028). The Island is the default core, not the only one. A core is where Activities, Surfaces, the Dock, Banners, the OSD and the privacy dots are drawn. The user will be able to pick another, including a bar. v0.1 still has only the Island; do not build a core switch. Before architecture or scope work, read `CONTEXT.md` and `docs/adr/`. History only: `docs/archived/plan.md`, `docs/archived/design.md`.
 
 Domain terms and invariants: `CONTEXT.md`. Before naming a type or writing docs, use its terms, not its avoid-listed synonyms.
 
-Precedence: `CONTEXT.md` defines the implemented domain invariants; `docs/design.md` the target architecture; ADRs record decisions and supersessions (history, not current state). Update the affected ones in the same change as an architectural change.
+Precedence: `CONTEXT.md` defines the implemented domain invariants; ADRs record decisions and supersessions (history, not current state). Update the affected ones in the same change as an architectural change.
 
 User docs: `README.md` is the short overview; install, CLI, config, keyboard and limitations live in `docs/wiki/`. The config page holds `kanade config defaults` verbatim (checked by a unit test).
 

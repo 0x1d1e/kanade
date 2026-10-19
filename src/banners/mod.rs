@@ -152,6 +152,11 @@ impl Banners {
         nudge();
     }
 
+    // fullscreen silence: quiet Banners wait; false when it already was
+    pub fn hold(&mut self, held: bool, now: Instant) -> bool {
+        self.stack.set_held(held, now)
+    }
+
     pub fn contains(&self, id: u32) -> bool {
         self.stack.contains(id)
     }
@@ -200,6 +205,19 @@ pub fn follow_focus() {
         banners.quiet();
     } else {
         banners.focus(focused, Instant::now());
+    }
+}
+
+// a watcher of niri, toplevels and config: quiet Banners wait while a fullscreen window covers
+// the focused output, and show when it no longer does
+pub fn follow_cover() {
+    let held = crate::sources::notifications::fullscreen_quiet();
+    let mut banners = Banners::write();
+
+    if banners.hold(held, Instant::now()) {
+        nudge();
+    } else {
+        banners.quiet();
     }
 }
 

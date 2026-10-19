@@ -34,6 +34,14 @@ use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::{appearance, config, modules, supervise};
 
+#[path = "wallpaper_seed.rs"]
+mod seed;
+
+// fills an empty wallpaper folder once, from the Favorites list; a later emptying is left empty
+pub fn seed() {
+    seed::run();
+}
+
 pub const AWWW: &str = "awww";
 pub const DAEMON: &str = "awww-daemon";
 
