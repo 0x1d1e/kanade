@@ -3,6 +3,7 @@
 # desktop pieces and a default niri config. Run again to update. The unit is Kanade's own and is
 # replaced (the old one kept as kanade.service.bak.DATE); change it with
 # `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
+# The curl URL only reads this script from main. A piped run clones or updates release/0.1.
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --shell-only
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --ref v0.1.0
@@ -10,7 +11,7 @@
 #     --optional    also the packages of the optional features
 #     --shell-only  only build dependencies and Kanade, for a niri desktop you already have
 #     --uninstall   removes Kanade's binary, completions, unit, icon and build checkout; configs and packages stay
-#     --ref REF     clone or update that branch or tag instead of main; refused from a checkout
+#     --ref REF     clone or update that branch or tag instead of release/0.1, including --ref main; refused from a checkout
 set -eu
 
 repo=https://github.com/0x1d1e/kanade
@@ -26,7 +27,7 @@ ref_ok() {
     return 0
 }
 
-# everything is in main, so the shell has read the whole script before anything runs: a piped
+# everything is in main(), so the shell has read the whole script before anything runs: a piped
 # script's stdin is then free for sudo and pacman's questions
 main() {
     # piped from curl, stdin is the script's; sudo, pacman and the uninstall question read the terminal
@@ -41,7 +42,7 @@ main() {
     optional=0
     desktop=1
     uninstall=0
-    ref=main
+    ref=release/0.1
     ref_set=0
     while [ $# -gt 0 ]; do
         case "$1" in

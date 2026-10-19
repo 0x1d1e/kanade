@@ -84,7 +84,7 @@ Beyond the Island, Kanade coordinates the surrounding desktop environment:
 
 ## Quick Start & Installation
 
-On Arch Linux and derivatives, install via the automated setup script:
+On Arch Linux and derivatives, install via the automated setup script. The command installs the `release/0.1` branch. The script is fetched from `main`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
@@ -94,7 +94,7 @@ For existing niri setups or selective installs, pass options after `sh -s --`:
 
 - `--shell-only`: Installs only build dependencies and Kanade, skipping system packages and default niri configs.
 - `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
-- `--ref`: Clones or updates that branch or tag instead of `main`.
+- `--ref`: Overrides the branch or tag, including `--ref main`.
 - `--uninstall`: Cleans up the Kanade binary, completions, systemd unit, and desktop icons.
 
 ### Manual Build
