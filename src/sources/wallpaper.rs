@@ -40,6 +40,24 @@ mod seed;
 // fills an empty wallpaper folder once, from the Favorites list; a later emptying is left empty
 pub fn seed() {
     seed::run();
+    choose_initial();
+}
+
+// Choose a first wallpaper only when awww has no image on any output. The folder seeder runs
+// immediately before this, so its downloaded images are eligible; an existing cache always wins.
+fn choose_initial() {
+    let Ok(said) = query_look(true, || wake::query_within(AWWW, &["query"], LIMIT)) else {
+        return;
+    };
+    if appearance_path(&shown(&said), None).is_some() {
+        return;
+    }
+
+    let images = images();
+    let Some(path) = pick(&images, &[], RandomState::new().hash_one(())) else {
+        return;
+    };
+    let _ = set(path, Output::All, None, None);
 }
 
 pub const AWWW: &str = "awww";

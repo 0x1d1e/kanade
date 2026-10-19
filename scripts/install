@@ -346,6 +346,11 @@ setup_sddm() {
     write_root_text /etc/sddm.conf.d/zz-kanade.conf '[Theme]
 ThemeDir=/usr/local/share/kanade-sddm/themes
 Current=kanade'
+    # Report the effective selection using Kanade's config-order inspection. Never rewrite another
+    # SDDM file automatically: a later user's or package drop-in may intentionally override ours.
+    if ! "$root/bin/kanade" sddm status; then
+        echo "note: SDDM's effective theme may be overridden; see the status above" >&2
+    fi
 
     if [ "$sddm_greeter" = niri ]; then
         niri_bin=$(command -v niri || true)
@@ -586,9 +591,9 @@ main() {
     "$root/bin/kanade" completions fish > "$config/fish/completions/kanade.fish"
     "$root/bin/kanade" completions zsh > "$data/zsh/site-functions/_kanade"
 
-    # a config of yours is never replaced; Kanade's binds are in docs/wiki/Keyboard.md.
-    # --shell-only and --no-niri do not write one. --sddm does not change that.
-    if [ "$desktop" = 1 ] && [ "$no_niri" = 0 ]; then
+    # A config of yours is never replaced. Explicit Niri or SDDM selection means Niri is the
+    # chosen session even when the rest of the desktop packages were skipped.
+    if { [ "$no_niri" = 0 ] && { [ "$desktop" = 1 ] || [ "$want_niri" = 1 ]; }; } || [ "$sddm" = 1 ]; then
         if [ -e "$config/niri/config.kdl" ]; then
             echo "kept $config/niri/config.kdl, dist/niri/config.kdl is the default"
             echo "  add this as its last line for appearance.sync: include optional=true \"kanade.kdl\""
@@ -601,10 +606,11 @@ main() {
     systemctl --user daemon-reload
     systemctl --user enable kanade.service
 
-    # the unit runs with niri; with niri up it restarts, from a TTY it starts with niri
+    # niri.service is the session entry point and pulls in graphical-session.target.
+    # Restart now when niri is already active; otherwise its WantedBy link starts Kanade at login.
     if systemctl --user is-active --quiet niri.service; then
         systemctl --user restart kanade.service
-    elif [ "$desktop" = 1 ]; then
+    elif [ "$desktop" = 1 ] || [ "$want_niri" = 1 ] || [ "$sddm" = 1 ]; then
         echo "installed; start niri from this TTY with: niri-session"
         echo "  Kanade starts with it, Mod+T opens kitty. To start niri at login on tty1, add to"
         echo "  ~/.bash_profile or ~/.zprofile: [ \"\$(tty)\" = /dev/tty1 ] && exec niri-session"

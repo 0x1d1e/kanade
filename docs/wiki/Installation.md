@@ -14,9 +14,9 @@ Packages are not installed with `pacman -S`. The script uses `paru` if it is on 
 
 A fresh TTY install still adds niri with its portal and polkit agent, the GPU's Vulkan driver, audio, fonts, kitty and qt6ct, then the unit, the icon, and a default niri config (`dist/niri/config.kdl`) only when `~/.config/niri/config.kdl` is missing. A niri config of yours is never replaced. Afterwards run `niri-session` from the TTY. Run it again to update. Options go after `sh -s --`, as in `curl ... | sh -s -- --shell-only` or `curl ... | sh -s -- --yes` or `curl ... | sh -s -- --ref v0.1.0` (an override, not the default):
 
-- `--shell-only` installs Kanade without the desktop packages, for a niri desktop you already have. It does not install a niri config. The TUI can still add the niri package on that run; the script flag for that is `--niri`.
+- `--shell-only` installs Kanade without the desktop packages, for a niri desktop you already have. It does not install a niri config unless you also choose Niri (`--niri`) or SDDM (`--sddm`); those install the default config only when yours is missing. The TUI can add the niri package on that run.
 - `--no-niri` skips the niri package and does not write a niri config, even on a desktop install. `--sddm` still installs the niri package.
-- `--niri` installs the niri package without the rest of the desktop packages. With `--shell-only` it still does not write a niri config.
+- `--niri` installs the niri package without the rest of the desktop packages. With `--shell-only` it also installs the default niri config when yours is missing.
 - `--sddm` installs `sddm`, `qt6-declarative` and `qt6-5compat` with the helper, and `niri` if that package is not already being installed. After `~/.cargo/bin/kanade` is in place, the script creates the root-owned overlay and the user-owned data directory, runs `kanade sddm setup` as root and `kanade sddm sync` as you, and writes `/etc/sddm.conf.d/zz-kanade.conf` only when `metadata.desktop` is there and the file differs. That file sets `[Theme]` only. It does not turn `sddm.sync` on. A login screen of niri writes `/etc/sddm.conf.d/zy-kanade-greeter.conf` and a root-owned `/usr/local/share/kanade-sddm/niri-greeter.kdl`, separate from the theme file. keep writes neither and deletes nothing. If `sddm.service` is not already enabled, the script removes a `display-manager.service` symlink that points elsewhere, disables an enabled `gdm`, `lightdm`, `lxdm`, `greetd` or `plasmalogin`, and runs `systemctl enable sddm` with no `--now`. It does not start SDDM. If `sddm` is already enabled, other display managers are left alone and the theme is still refreshed. A failed step stops, and SDDM is not pointed at a theme that was not installed.
 - `--sddm-greeter keep|niri` chooses that login screen with `--sddm`. Without it, `--sddm` uses niri on a hybrid NVIDIA machine and keep otherwise.
 - `--yes` skips the TUI.
@@ -83,7 +83,7 @@ Only one Kanade runs per session. A second one stops at start with `failed to li
 
 ## Run
 
-Kanade runs as a systemd user unit tied to niri's graphical session, so it starts with niri, stops with it, and restarts after a crash. A crash while the session is locked leaves niri locked on its red screen until the restart locks it again. This needs niri started as a systemd session, as `niri-session` or a display manager does, see [niri's systemd integration](https://github.com/YaLTeR/niri/wiki/Example-systemd-Setup).
+Kanade runs as a systemd user unit wanted by `niri.service`, so it starts with niri, stops with its graphical session, and restarts after a crash. niri's service binds to `graphical-session.target` and starts it, including when launched by `niri-session` or a display manager. A crash while the session is locked leaves niri locked on its red screen until the restart locks it again; see [niri's systemd integration](https://github.com/YaLTeR/niri/wiki/Example-systemd-Setup).
 
 ```sh
 mkdir -p ~/.config/systemd/user
