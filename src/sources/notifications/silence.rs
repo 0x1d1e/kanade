@@ -40,18 +40,17 @@ impl App {
     fn matches_notice(&self, name: &str, desktop: &str) -> bool {
         let name = token(name);
         let desktop = token(rules::desktop_id(desktop));
-        self.desktop
-            .as_ref()
-            .is_some_and(|id| desktop.as_ref() == Some(id))
-            || self
-                .name
-                .as_ref()
-                .is_some_and(|have| name.as_ref() == Some(have))
+        match (&self.desktop, &desktop) {
+            (Some(have), Some(got)) => have == got,
+            _ => self.name.is_some() && self.name == name,
+        }
     }
 
     fn same(&self, other: &App) -> bool {
-        self.desktop.is_some() && self.desktop == other.desktop
-            || self.name.is_some() && self.name == other.name
+        match (&self.desktop, &other.desktop) {
+            (Some(have), Some(got)) => have == got,
+            _ => self.name.is_some() && self.name == other.name,
+        }
     }
 }
 
@@ -204,5 +203,20 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_shared_name_does_not_cover_a_different_desktop_id() {
+        let nautilus = App::named("Files", "org.gnome.nautilus").unwrap();
+        let other = App::named("Files", "org.example.files").unwrap();
+        let same_id = App::named("Nautilus", "org.gnome.nautilus").unwrap();
+        let name_only = App::named("Files", "").unwrap();
+
+        assert!(!nautilus.matches_notice("Files", "org.example.files"));
+        assert!(nautilus.matches_notice("Anything", "org.gnome.nautilus"));
+        assert!(nautilus.matches_notice("Files", ""));
+        assert!(!nautilus.same(&other));
+        assert!(nautilus.same(&same_id));
+        assert!(nautilus.same(&name_only));
     }
 }

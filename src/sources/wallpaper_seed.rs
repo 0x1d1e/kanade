@@ -68,12 +68,7 @@ pub fn run() {
         return;
     }
 
-    if let Err(error) = note_pending(&pending) {
-        eprintln!("kanade: wallpaper: {error}");
-        return;
-    }
-
-    if let Err(error) = fs::create_dir_all(&dir) {
+    if let Err(error) = prepare_fill(&dir, &pending) {
         eprintln!("kanade: wallpaper: {error}");
         return;
     }
@@ -127,6 +122,16 @@ fn holds_image(dir: &Path) -> bool {
         let path = entry.path();
         path.is_file() && super::image(&path)
     })
+}
+
+// the folder exists before pending is written. A create that fails deletes any pending file,
+// so a later start that finds the user's pictures does not download.
+fn prepare_fill(dir: &Path, pending: &Path) -> Result<(), String> {
+    if let Err(error) = fs::create_dir_all(dir) {
+        let _ = fs::remove_file(pending);
+        return Err(error.to_string());
+    }
+    note_pending(pending)
 }
 
 fn note_pending(path: &Path) -> Result<(), String> {
@@ -287,5 +292,29 @@ mod tests {
         fs::write(dir.join("picture.png"), b"x").unwrap();
         assert!(holds_image(&dir));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_directory_leaves_no_pending_file() {
+        let root = std::env::temp_dir().join(format!(
+            "kanade-wallpaper-seed-order-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let blocked = root.join("not-a-directory");
+        fs::write(&blocked, b"x").unwrap();
+        let pending = root.join("pending");
+        fs::write(&pending, b"").unwrap();
+
+        assert!(prepare_fill(&blocked.join("wallpapers"), &pending).is_err());
+        assert!(!pending.exists());
+
+        let dir = root.join("wallpapers");
+        let created = root.join("created");
+        assert!(prepare_fill(&dir, &created).is_ok());
+        assert!(dir.is_dir());
+        assert!(created.is_file());
+        let _ = fs::remove_dir_all(&root);
     }
 }
