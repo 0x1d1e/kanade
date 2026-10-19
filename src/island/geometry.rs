@@ -596,7 +596,8 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
             | Surface::Launcher
             | Surface::Clipboard
             | Surface::Wallpapers
-            | Surface::Keys,
+            | Surface::Keys
+            | Surface::Welcome,
         ) => largest,
     }
 }

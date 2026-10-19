@@ -129,6 +129,7 @@ pub const ALL: &[Module] = &[
             service::watch::<Monitors>(autohide::forget_gone);
             service::watch::<Monitors>(cluster::forget_gone);
             IslandService::write().withhold(&withheld());
+            crate::surfaces::welcome::start_after_focus();
             reload::spawn();
             clock::spawn();
             shadow::prepare();

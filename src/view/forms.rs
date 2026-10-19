@@ -100,6 +100,7 @@ pub(super) fn surface(
             island.held(monitor),
             recording::standing(island),
         )),
+        Surface::Welcome => Some(surfaces::welcome::surface(open, island.visit())),
     }
 }
 

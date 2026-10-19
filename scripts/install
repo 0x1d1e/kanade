@@ -323,7 +323,17 @@ setup_sddm() {
     echo "setting up SDDM"
     uid=$(id -u)
     gid=$(id -g)
-    sudo install -d -o root -g root -m 755 /usr/local/share/kanade-sddm /usr/local/share/kanade-sddm/themes
+    # Repair only the managed executable prefix and theme parent. Never recurse into the
+    # separately user-owned backdrop directory or into unrelated themes.
+    for dir in /usr/local/share/kanade-sddm /usr/local/share/kanade-sddm/themes; do
+        if [ -L "$dir" ] || { [ -e "$dir" ] && [ ! -d "$dir" ]; }; then
+            echo "failed: $dir is not a plain directory" >&2
+            exit 1
+        fi
+        sudo install -d -o root -g root -m 755 "$dir"
+        sudo chown root:root "$dir"
+        sudo chmod 755 "$dir"
+    done
     sudo install -d -o "$uid" -g "$gid" -m 755 /usr/local/share/kanade-sddm-data
     sudo "$root/bin/kanade" sddm setup
     "$root/bin/kanade" sddm sync

@@ -44,6 +44,9 @@ pub enum Surface {
 
     // a screenshot of an area, a window or the screen, and the screen recording
     Capture,
+
+    // the one-time first-start tour
+    Welcome,
 }
 
 impl Surface {

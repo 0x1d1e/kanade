@@ -137,10 +137,15 @@ pub fn key(monitor: &str, key: Key) {
     }
 
     if key == Key::Escape {
+        if surfaces::welcome::key(monitor, key) {
+            return;
+        }
         collapse(monitor);
 
         // OnDemand would keep the focus the press gave while the pointer rests on the pill
         set_armed(monitor, false);
+    } else if surfaces::welcome::key(monitor, key) {
+        return;
     } else {
         let used = (modules::on("notification-surface")
             && surfaces::notifications::key(monitor, key))

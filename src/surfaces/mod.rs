@@ -30,6 +30,7 @@ pub mod tray;
 mod visit;
 pub mod wallpapers;
 pub mod weather;
+pub mod welcome;
 
 /*
  * held through a Surface's `fit`, which reads what it asks for and then posts it. Besides the
