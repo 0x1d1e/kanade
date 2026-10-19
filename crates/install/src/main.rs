@@ -20,7 +20,7 @@ use crossterm::terminal::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
@@ -32,6 +32,10 @@ const NO_PACMAN: &str = "failed to find pacman, Kanade installs on Arch Linux an
 
 /// Copper `#c4a484`. Name, focus mark, and a refusal. Nothing else.
 const COPPER: Color = Color::Rgb(0xc4, 0xa4, 0x84);
+
+const INSET_X: u16 = 4;
+const INSET_Y: u16 = 2;
+const COLUMN: u16 = 72;
 
 struct Args {
     script: PathBuf,
@@ -130,7 +134,7 @@ fn run() -> i32 {
         };
         if let Event::Resize(cols, rows) = happened {
             if let Some(active) = run_state.as_ref() {
-                active.resize(cols, rows.saturating_sub(3).max(1));
+                active.resize(column_width(cols), body_rows(rows));
             }
             let _ = terminal.clear();
             continue;
@@ -184,12 +188,16 @@ fn run() -> i32 {
                 Stage::Scan if scan.refusal.is_empty() => stage = Stage::Plan,
                 Stage::Scan => {}
                 Stage::Plan => {
-                    let rows = terminal.size().map(|size| size.height).unwrap_or(24);
+                    let (cols, rows) = terminal
+                        .size()
+                        .map(|size| (size.width, size.height))
+                        .unwrap_or((80, 24));
                     match start_script(
                         &args.script,
                         shell_only,
                         optional,
-                        rows.saturating_sub(3).max(1),
+                        column_width(cols),
+                        body_rows(rows),
                     ) {
                         Ok(started) => {
                             run_state = Some(started);
@@ -256,34 +264,77 @@ fn draw(frame: &mut ratatui::Frame, ui: &Ui<'_>) {
         return;
     }
 
-    let head_rows = match ui.stage {
-        Stage::Scan => 3,
-        Stage::Plan | Stage::Running => 2,
-    };
-    let [head, body, foot] = Layout::vertical([
-        Constraint::Length(head_rows),
+    let (column, foot) = place(area);
+    let lines = header(ui, column.width);
+    let [head, body] = Layout::vertical([
+        Constraint::Length(u16::try_from(lines.len()).unwrap_or(0)),
         Constraint::Min(0),
-        Constraint::Length(1),
     ])
-    .areas(area);
+    .areas(column);
 
-    frame.render_widget(Paragraph::new(header(ui)), head);
+    if head.height > 0 {
+        frame.render_widget(Paragraph::new(lines), head);
+    }
     draw_body(frame, body, ui);
     frame.render_widget(Paragraph::new(footer(ui)), foot);
 }
 
-fn header(ui: &Ui<'_>) -> Vec<Line<'static>> {
-    let name = Line::from(Span::styled("Kanade", copper()));
-    match ui.stage {
-        Stage::Scan => vec![name, Line::from("A shell for niri."), Line::from("")],
-        Stage::Plan => vec![name, Line::from("")],
-        Stage::Running => {
-            let status = match ui.run.and_then(Run::exit_code) {
-                Some(code) => format!("exited {code}"),
-                None => "running".to_string(),
-            };
-            vec![name, Line::from(status)]
-        }
+/// Left inset, top inset, and a measure near 72. The rest of the terminal stays empty.
+fn place(area: Rect) -> (Rect, Rect) {
+    let x_off = inset_x(area.width);
+    let width = area.width.saturating_sub(x_off).clamp(1, COLUMN);
+    let x = area.x.saturating_add(x_off);
+    let foot_y = area.y.saturating_add(area.height.saturating_sub(1));
+    let foot = Rect::new(x, foot_y, width, 1);
+    let y = area.y.saturating_add(inset_y(area.height));
+    let height = foot_y.saturating_sub(y);
+    (Rect::new(x, y, width, height), foot)
+}
+
+fn inset_x(cols: u16) -> u16 {
+    INSET_X.min(cols.saturating_sub(1))
+}
+
+fn inset_y(rows: u16) -> u16 {
+    if rows <= 1 {
+        0
+    } else {
+        INSET_Y.min(rows.saturating_sub(2))
+    }
+}
+
+fn column_width(cols: u16) -> u16 {
+    cols.saturating_sub(inset_x(cols)).clamp(1, COLUMN)
+}
+
+fn body_rows(rows: u16) -> u16 {
+    let column = rows.saturating_sub(inset_y(rows)).saturating_sub(1);
+    let head = u16::try_from(header_lines(Stage::Running, 1, "running").len()).unwrap_or(1);
+    column.saturating_sub(head).max(1)
+}
+
+fn header(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
+    let status = match ui.run.and_then(Run::exit_code) {
+        Some(code) => format!("exited {code}"),
+        None => "running".to_string(),
+    };
+    header_lines(ui.stage, width, &status)
+}
+
+fn header_lines(stage: Stage, width: u16, status: &str) -> Vec<Line<'static>> {
+    let name = Line::from(Span::styled(
+        "Kanade",
+        copper().add_modifier(Modifier::BOLD),
+    ));
+    // Column measure. Without it the inset is just leftover space.
+    let rule = Line::from(Span::styled(
+        "\u{2500}".repeat(usize::from(width.max(1))),
+        dim(),
+    ));
+    match stage {
+        Stage::Scan => vec![name, rule, Line::from("A shell for niri."), Line::from("")],
+        Stage::Plan => vec![name, rule, Line::from("")],
+        Stage::Running => vec![name, rule, Line::from(status.to_string()), Line::from("")],
     }
 }
 
@@ -303,46 +354,83 @@ fn draw_body(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ui: &Ui<'_
     }
 }
 
-fn draw_scan(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, scan: &Scan) {
-    let mut lines = fact_lines(scan);
-    if !scan.refusal.is_empty() {
-        let needed = lines.len() as u16 + 1 + scan.refusal.len() as u16;
-        if needed > area.height && area.height > 0 {
-            let keep = area.height.saturating_sub(1 + scan.refusal.len() as u16) as usize;
-            lines.truncate(keep);
-        }
-        lines.push(Line::from(""));
-        for line in &scan.refusal {
-            lines.push(Line::from(Span::styled(line.clone(), copper())));
-        }
+fn draw_scan(frame: &mut ratatui::Frame, area: Rect, scan: &Scan) {
+    if area.width == 0 || area.height == 0 {
+        return;
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-}
-
-fn fact_lines(scan: &Scan) -> Vec<Line<'static>> {
     let pairs: Vec<(&str, &str)> = scan.lines.iter().map(|line| split_fact(line)).collect();
-    let width = pairs
+    let label_width = pairs
         .iter()
         .map(|(label, _)| label.chars().count())
         .max()
         .unwrap_or(0);
-    pairs
-        .into_iter()
-        .map(|(label, value)| fact_line(label, value, width))
-        .collect()
+    let label_w = u16::try_from(label_width)
+        .unwrap_or(u16::MAX)
+        .min(area.width);
+    let value_x = label_w.saturating_add(3);
+    let value_w = area.width.saturating_sub(value_x);
+
+    let refusal_rows = scan.refusal.iter().fold(0u16, |rows, line| {
+        rows.saturating_add(text_rows(line, area.width))
+    });
+    let reserve = if refusal_rows == 0 {
+        0
+    } else {
+        refusal_rows.saturating_add(1)
+    };
+    let facts_room = area.height.saturating_sub(reserve);
+
+    let mut y = 0u16;
+    for (label, value) in pairs {
+        if y >= facts_room {
+            break;
+        }
+        let rows = text_rows(value, value_w).min(facts_room - y);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label.to_string(), dim())),
+            Rect::new(area.x, area.y + y, label_w, 1),
+        );
+        if value_w > 0 && rows > 0 {
+            frame.render_widget(
+                Paragraph::new(value.to_string()).wrap(Wrap { trim: false }),
+                Rect::new(area.x + value_x, area.y + y, value_w, rows),
+            );
+        }
+        y = y.saturating_add(rows);
+    }
+
+    if scan.refusal.is_empty() || area.height == 0 {
+        return;
+    }
+    let start = if y == 0 {
+        0
+    } else {
+        y.saturating_add(1).min(area.height)
+    };
+    if start >= area.height {
+        return;
+    }
+    let lines: Vec<Line> = scan
+        .refusal
+        .iter()
+        .map(|line| Line::from(Span::styled(line.clone(), copper())))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Rect::new(area.x, area.y + start, area.width, area.height - start),
+    );
+}
+
+fn text_rows(text: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let len = text.chars().count().max(1);
+    u16::try_from(len.div_ceil(width))
+        .unwrap_or(u16::MAX)
+        .max(1)
 }
 
 fn split_fact(line: &str) -> (&str, &str) {
     line.split_once(": ").unwrap_or((line, ""))
-}
-
-fn fact_line(label: &str, value: &str, label_width: usize) -> Line<'static> {
-    let pad = label_width.saturating_sub(label.chars().count()) + 3;
-    Line::from(vec![
-        Span::styled(label.to_string(), dim()),
-        Span::raw(" ".repeat(pad)),
-        Span::raw(value.to_string()),
-    ])
 }
 
 fn plan_lines(ui: &Ui<'_>) -> Vec<Line<'static>> {
@@ -359,6 +447,7 @@ fn plan_lines(ui: &Ui<'_>) -> Vec<Line<'static>> {
             "niri config is installed only when {path} is missing, and never replaced"
         )));
     }
+    lines.push(Line::from(""));
     lines.push(dim_line(format!("helper: {}", ui.scan.helper)));
     if ui.scan.helper == "none" {
         lines.push(dim_line(
@@ -712,11 +801,17 @@ impl Run {
     }
 }
 
-fn start_script(script: &Path, shell_only: bool, optional: bool, rows: u16) -> io::Result<Run> {
+fn start_script(
+    script: &Path,
+    shell_only: bool,
+    optional: bool,
+    cols: u16,
+    rows: u16,
+) -> io::Result<Run> {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: rows.max(1),
-            cols: 100,
+            cols: cols.max(1),
             pixel_width: 0,
             pixel_height: 0,
         })
