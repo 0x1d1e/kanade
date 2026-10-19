@@ -675,8 +675,13 @@ fn field(query: &str) -> Rectangle {
         })
         .child(
             Row::new(vec![
-                Box::new(Icon::Search.on(TARGET, theme::island().on_surface_variant))
-                    as Box<dyn Widget>,
+                Box::new(
+                    Rectangle::new()
+                        .width(TARGET)
+                        .height(TARGET)
+                        .align_child(Center, Center)
+                        .child(Icon::Search.on(16.0, theme::island().on_surface_variant)),
+                ) as Box<dyn Widget>,
                 typed,
             ])
             .gap(ICON_GAP)
