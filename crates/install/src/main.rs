@@ -575,34 +575,29 @@ fn split_fact(line: &str) -> (&str, &str) {
 }
 
 fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
-    let lead = if ui.shell_only {
-        "Installs the shell, the unit, and the icon. No desktop packages."
-    } else {
-        "Installs the shell, the unit, and the icon."
-    };
+    let lead = "Installs the shell, the unit, and the icon.";
     let mut lines: Vec<Line<'static>> =
         wrap_text(lead, width).into_iter().map(Line::from).collect();
-    lines.push(choice_line(
-        ui.focus == 0,
-        "shell-only",
-        on_off(ui.shell_only),
-    ));
-    lines.push(choice_line(ui.focus == 1, "niri", on_off(ui.niri)));
-    lines.push(choice_line(ui.focus == 2, "sddm", on_off(ui.sddm)));
+    let mut push_choice = |focused, label: &str, state: &str| {
+        lines.extend(choice_lines(focused, label, state, width));
+    };
+    push_choice(ui.focus == 0, "shell-only", on_off(ui.shell_only));
+    push_choice(ui.focus == 1, "niri", on_off(ui.niri));
+    push_choice(ui.focus == 2, "sddm", on_off(ui.sddm));
     let mut optional_at = 3;
     if ui.sddm {
-        lines.push(choice_line(
+        push_choice(
             ui.focus == 3,
             "login screen",
             if ui.login_niri { "niri" } else { "keep" },
-        ));
+        );
         optional_at = 4;
     }
-    lines.push(choice_line(
+    push_choice(
         ui.focus == optional_at,
         "optional packages",
         on_off(ui.optional),
-    ));
+    );
     lines.push(Line::from(""));
     let installed = if ui.niri {
         "niri is installed"
@@ -612,7 +607,7 @@ fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
     lines.extend(wrap_text(installed, width).into_iter().map(dim_line));
     if ui.shell_only {
         lines.extend(
-            wrap_text("niri config is not installed with shell-only", width)
+            wrap_text("Shell-only skips desktop packages and niri config; enabling niri or SDDM still installs niri.", width)
                 .into_iter()
                 .map(dim_line),
         );
@@ -625,7 +620,7 @@ fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
     if ui.sddm {
         lines.extend(
             wrap_text(
-                "SDDM is installed with niri, themed, and enabled for the next boot. It is not started now.",
+                "SDDM installs with niri, sets up the Kanade theme, and enables SDDM for the next boot only.",
                 width,
             )
             .into_iter()
@@ -641,7 +636,7 @@ fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
     if ui.scan.helper == "none" {
         lines.extend(
             wrap_text(
-                "paru is installed with pacman, then used for packages",
+                "No helper found; pacman installs paru first, then paru installs packages.",
                 width,
             )
             .into_iter()
@@ -655,19 +650,53 @@ fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
-fn choice_line(focused: bool, label: &str, state: &str) -> Line<'static> {
+fn choice_lines(focused: bool, label: &str, state: &str, width: u16) -> Vec<Line<'static>> {
     let style = if focused { Style::default() } else { dim() };
-    let pad = "optional packages".len().saturating_sub(label.len()) + 3;
-    Line::from(vec![
-        Span::styled(
-            if focused { ">" } else { " " },
-            if focused { copper() } else { Style::default() },
-        ),
-        Span::styled("  ", style),
-        Span::styled(label.to_string(), style),
-        Span::styled(" ".repeat(pad), style),
+    let marker = if focused { ">" } else { " " };
+    let prefix = format!("{marker}  ");
+    let available = usize::from(width.max(1));
+    let label_width = label.chars().count();
+    let state_width = state.chars().count();
+    if prefix.chars().count() + label_width + state_width + 3 <= available {
+        return vec![Line::from(vec![
+            Span::styled(marker, if focused { copper() } else { Style::default() }),
+            Span::styled("  ", style),
+            Span::styled(label.to_string(), style),
+            Span::styled(" ".repeat(3), style),
+            Span::styled(state.to_string(), style),
+        ])];
+    }
+    let mut lines: Vec<Line<'static>> = wrap_text(label, width.saturating_sub(3).max(1))
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            Line::from(vec![
+                Span::styled(
+                    if index == 0 { marker } else { " " },
+                    if index == 0 && focused {
+                        copper()
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Span::styled("  ", style),
+                Span::styled(text, style),
+            ])
+        })
+        .collect();
+    if let Some(last) = lines.last_mut() {
+        let used = last.width();
+        if used + state_width + 1 <= available {
+            last.spans.push(Span::styled(" ", style));
+            last.spans.push(Span::styled(state.to_string(), style));
+            return lines;
+        }
+    }
+    lines.push(Line::from(vec![
+        Span::styled("   ", style),
         Span::styled(state.to_string(), style),
-    ])
+    ]));
+    lines
 }
 
 fn dim_line(text: impl Into<String>) -> Line<'static> {
