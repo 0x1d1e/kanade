@@ -5,13 +5,26 @@
 # `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --shell-only
+#   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --ref v0.1.0
 # or scripts/install from a checkout, which builds that checkout. Options:
 #     --optional    also the packages of the optional features
 #     --shell-only  only build dependencies and Kanade, for a niri desktop you already have
 #     --uninstall   removes Kanade's binary, completions, unit, icon and build checkout; configs and packages stay
+#     --ref REF     clone or update that branch or tag instead of main; refused from a checkout
 set -eu
 
 repo=https://github.com/0x1d1e/kanade
+usage='usage: install [--optional] [--shell-only] [--uninstall] [--ref REF]'
+
+# one branch or tag name. Not empty, not an option, not a range, not a URL, not a shell word.
+ref_ok() {
+    case "$1" in
+        "" | -* | *[!A-Za-z0-9._/+-]* | *..* | . | @ | */ | /* | *//* | *. | .* | */.* | *.lock | *.lock/* | */*.lock | */*.lock/*)
+            return 1
+            ;;
+    esac
+    return 0
+}
 
 # everything is in main, so the shell has read the whole script before anything runs: a piped
 # script's stdin is then free for sudo and pacman's questions
@@ -28,14 +41,40 @@ main() {
     optional=0
     desktop=1
     uninstall=0
-    for arg in "$@"; do
-        case "$arg" in
+    ref=main
+    ref_set=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
             --optional) optional=1 ;;
             --shell-only) desktop=0 ;;
             --uninstall) uninstall=1 ;;
-            *) echo "usage: install [--optional] [--shell-only] [--uninstall]" >&2; exit 2 ;;
+            --ref)
+                shift
+                if [ $# -eq 0 ]; then
+                    echo "$usage" >&2
+                    exit 2
+                fi
+                ref=$1
+                ref_set=1
+                ;;
+            *) echo "$usage" >&2; exit 2 ;;
         esac
+        shift
     done
+
+    # --ref is the clone path only; a checkout builds that tree and is never fetched over
+    if [ "$ref_set" = 1 ] && [ -f "$0" ] && [ -f "$(dirname "$0")/../dist/kanade.service" ]; then
+        echo "--ref does not apply to a checkout, which builds that tree" >&2
+        exit 2
+    fi
+    if [ "$ref_set" = 1 ] && [ "$uninstall" = 1 ]; then
+        echo "--ref does not apply to --uninstall" >&2
+        exit 2
+    fi
+    if [ "$ref_set" = 1 ] && ! ref_ok "$ref"; then
+        echo "--ref takes one branch or tag name" >&2
+        exit 2
+    fi
 
     config="${XDG_CONFIG_HOME:-$HOME/.config}"
     data="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -127,10 +166,11 @@ main() {
     else
         src="$data/kanade/src"
         if [ -d "$src/.git" ]; then
-            git -C "$src" fetch -q --depth 1 origin main
+            # quoted argv, not a shell command. A failed fetch stops here and leaves this tree.
+            git -C "$src" fetch -q --depth 1 origin "$ref"
             git -C "$src" checkout -q --force FETCH_HEAD
         else
-            git clone -q --depth 1 "$repo" "$src"
+            git clone -q --depth 1 --branch "$ref" "$repo" "$src"
         fi
         cd "$src"
     fi

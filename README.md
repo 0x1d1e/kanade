@@ -94,6 +94,7 @@ For existing niri setups or selective installs, pass options after `sh -s --`:
 
 - `--shell-only`: Installs only build dependencies and Kanade, skipping system packages and default niri configs.
 - `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
+- `--ref`: Clones or updates that branch or tag instead of `main`.
 - `--uninstall`: Cleans up the Kanade binary, completions, systemd unit, and desktop icons.
 
 ### Manual Build
