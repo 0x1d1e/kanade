@@ -1,21 +1,26 @@
 #!/bin/sh
-# installs Kanade: the binary, its shell completions, the systemd user unit, the icon, and on a fresh TTY install the
-# desktop pieces and a default niri config. Run again to update. The unit is Kanade's own and is
-# replaced (the old one kept as kanade.service.bak.DATE); change it with
+# installs Kanade: the binary, its shell completions, the systemd user unit, the icon, and on a fresh
+# TTY install the desktop pieces and a default niri config. Run again to update. The unit is
+# Kanade's own and is replaced (the old one kept as kanade.service.bak.DATE); change it with
 # `systemctl --user edit kanade.service`. A niri config of yours is never replaced.
-# The curl URL only reads this script from main. A piped run clones or updates release/0.1.
+# The curl URL only reads this script from main. A piped run with no --ref downloads the Arch
+# x86_64 binary from the install-0.1 release, or compiles release/0.1 if that asset is absent.
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --shell-only
+#   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --yes
 #   curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh -s -- --ref v0.1.0
 # or scripts/install from a checkout, which builds that checkout. Options:
 #     --optional    also the packages of the optional features
-#     --shell-only  only build dependencies and Kanade, for a niri desktop you already have
+#     --shell-only  Kanade without the desktop packages or a niri config
 #     --uninstall   removes Kanade's binary, completions, unit, icon and build checkout; configs and packages stay
-#     --ref REF     clone or update that branch or tag instead of release/0.1, including --ref main; refused from a checkout
+#     --yes         skip the TUI; a piped run with a terminal otherwise execs kanade-install
+#     --ref REF     compile that branch or tag instead of downloading install-0.1; refused from a checkout
 set -eu
 
 repo=https://github.com/0x1d1e/kanade
-usage='usage: install [--optional] [--shell-only] [--uninstall] [--ref REF]'
+release=https://github.com/0x1d1e/kanade/releases/download/install-0.1
+script_url=https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install
+usage='usage: install [--optional] [--shell-only] [--uninstall] [--yes] [--ref REF]'
 
 # one branch or tag name. Not empty, not an option, not a range, not a URL, not a shell word.
 ref_ok() {
@@ -27,21 +32,253 @@ ref_ok() {
     return 0
 }
 
-# everything is in main(), so the shell has read the whole script before anything runs: a piped
-# script's stdin is then free for sudo and pacman's questions
-main() {
-    # piped from curl, stdin is the script's; sudo, pacman and the uninstall question read the terminal
-    if [ ! -t 0 ] && [ ! -f "$0" ]; then
-        if ! (: < /dev/tty) 2> /dev/null; then
-            echo "failed to find a terminal for sudo and pacman, run this from a shell" >&2
-            exit 1
+# 0 saved, 2 missing (HTTP 404), 1 anything else. A short body is not a successful download.
+fetch() {
+    url=$1
+    dest=$2
+    rm -f "$dest"
+    code=$(curl -sS -L --retry 2 -o "$dest" -w '%{http_code}' "$url") || code=000
+    if [ "$code" = 200 ] && [ -s "$dest" ]; then
+        return 0
+    fi
+    if [ "$code" = 200 ]; then
+        echo "failed: $url is short" >&2
+        rm -f "$dest"
+        return 1
+    fi
+    rm -f "$dest"
+    if [ "$code" = 404 ]; then
+        return 2
+    fi
+    echo "failed to download $url (HTTP $code)" >&2
+    return 1
+}
+
+# sha256sum -c, in the file's directory, so the name in the checksum file matches. A mismatch or a
+# short file stops. Callers must not install, and must not fall back to compiling, after this fails.
+verify() {
+    file=$1
+    sum=$2
+    name=$(basename "$file")
+    if [ ! -s "$file" ] || [ ! -s "$sum" ]; then
+        echo "failed: $name is short or its checksum is short" >&2
+        return 1
+    fi
+    size=$(wc -c < "$file")
+    if [ "$size" -lt 1024 ]; then
+        echo "failed: $name is short" >&2
+        return 1
+    fi
+    dir=$(dirname "$file")
+    sumname=$(basename "$sum")
+    if ! (cd "$dir" && sha256sum -c "$sumname"); then
+        echo "failed: $name checksum mismatch" >&2
+        return 1
+    fi
+}
+
+# same sentence as crates/install. Printed before any install.
+refuse_machine() {
+    machine=$(uname -m)
+    if [ "$machine" != x86_64 ]; then
+        echo "failed: this machine is $machine, Kanade's install binary is x86_64 only" >&2
+        exit 1
+    fi
+}
+
+# paru if it is already on PATH, otherwise yay if that is. Neither: pacman installs paru, then paru.
+# The helper itself is never run under sudo. Scan prints the same helper: line before this runs.
+ensure_helper() {
+    if command -v paru > /dev/null; then
+        echo "helper: paru"
+        helper=paru
+        return 0
+    fi
+    if command -v yay > /dev/null; then
+        echo "helper: yay"
+        helper=yay
+        return 0
+    fi
+    echo "helper: none"
+    if ! sudo pacman -S --needed paru || ! command -v paru > /dev/null; then
+        echo "pacman could not install paru" >&2
+        exit 1
+    fi
+    helper=paru
+}
+
+# Kanade's packages. Not pacman -S. compile=1 adds the build packages the fallback and --ref need.
+install_packages() {
+    packages="wayland libxkbcommon fontconfig freetype2 expat vulkan-icd-loader libpulse pam systemd dbus util-linux"
+    if [ "$compile" = 1 ]; then
+        packages="$packages git base-devel pkgconf"
+        if ! command -v cargo > /dev/null; then
+            packages="$packages rust"
         fi
-        exec < /dev/tty
+    fi
+
+    if [ "$desktop" = 1 ]; then
+        gpu=""
+        for vendor in /sys/class/drm/card*/device/vendor; do
+            [ -r "$vendor" ] || continue
+            case "$(cat "$vendor")" in
+                0x8086) gpu="$gpu vulkan-intel" ;;
+                0x1002) gpu="$gpu vulkan-radeon" ;;
+                # virgl gives the guest OpenGL only, so Kanade's Vulkan needs the CPU rasterizer there
+                0x1af4) gpu="$gpu vulkan-virtio vulkan-swrast" ;;
+                0x1234 | 0x15ad) gpu="$gpu vulkan-swrast" ;;
+                0x10de) echo "note: install nvidia-utils or vulkan-nouveau yourself for the NVIDIA GPU" >&2 ;;
+            esac
+        done
+        if [ -z "$gpu" ]; then
+            echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
+        fi
+        packages="$packages niri xdg-desktop-portal-gnome gnome-keyring polkit polkit-gnome pipewire
+            pipewire-pulse wireplumber noto-fonts noto-fonts-emoji inter-font kitty brightnessctl
+            playerctl qt6ct xwayland-satellite $gpu"
+    fi
+
+    ensure_helper
+    # shellcheck disable=SC2086 # the list is split on purpose
+    "$helper" -S --needed --noconfirm $packages
+    if [ "$optional" = 1 ]; then
+        # shellcheck disable=SC2086
+        "$helper" -S --needed --noconfirm wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf wlsunset \
+            xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
+        # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
+        # replaces whatever manages the network now
+        sudo systemctl enable --now bluetooth upower power-profiles-daemon
+    fi
+}
+
+# clone or update $ref and cargo install it. The download path does not call this.
+compile_tree() {
+    if [ -f "$0" ] && [ -f "$(dirname "$0")/../dist/kanade.service" ]; then
+        cd "$(dirname "$0")/.."
+        dist=$(pwd)/dist
+    else
+        src="$data/kanade/src"
+        if [ -d "$src/.git" ]; then
+            git -C "$src" fetch -q --depth 1 origin "$ref"
+            git -C "$src" checkout -q --force FETCH_HEAD
+        else
+            git clone -q --depth 1 --branch "$ref" "$repo" "$src"
+        fi
+        cd "$src"
+        dist=$src/dist
+    fi
+    cargo install --locked --root "$root" --path .
+}
+
+# download kanade + checksum into $1. 0 verified, ready to install. Exits on a bad checksum or any
+# download error other than a missing asset. Returns 1 only for HTTP 404, which the caller compiles.
+fetch_binary() {
+    dir=$1
+    fetch "$release/kanade" "$dir/kanade" && status=0 || status=$?
+    if [ "$status" = 2 ]; then
+        echo "install-0.1 has no kanade asset (HTTP 404), compiling release/0.1" >&2
+        return 1
+    fi
+    if [ "$status" != 0 ]; then
+        exit 1
+    fi
+    fetch "$release/kanade.sha256" "$dir/kanade.sha256" && status=0 || status=$?
+    if [ "$status" != 0 ]; then
+        echo "failed: kanade.sha256 missing or not downloaded" >&2
+        exit 1
+    fi
+    verify "$dir/kanade" "$dir/kanade.sha256" || exit 1
+
+    rev=
+    fetch "$release/kanade.rev" "$dir/kanade.rev" && status=0 || status=$?
+    if [ "$status" = 0 ]; then
+        rev=$(tr -d '[:space:]' < "$dir/kanade.rev")
+        if [ -n "$rev" ]; then
+            echo "kanade $rev"
+        fi
+    fi
+    # absent, or a rev download that is not the binary: do not fail the verified binary
+    case "$rev" in
+        [0-9a-f][0-9a-f]*) tree=$rev ;;
+        *) tree=release/0.1 ;;
+    esac
+    raw=https://raw.githubusercontent.com/0x1d1e/kanade/$tree
+    mkdir -p "$dir/dist/niri"
+    fetch_dist "$raw/dist/kanade.service" "$dir/dist/kanade.service" "$tree"
+    fetch_dist "$raw/dist/kanade.png" "$dir/dist/kanade.png" "$tree"
+    fetch_dist "$raw/dist/niri/config.kdl" "$dir/dist/niri/config.kdl" "$tree"
+    dist=$dir/dist
+}
+
+fetch_dist() {
+    fetch "$1" "$2" && status=0 || status=$?
+    if [ "$status" != 0 ]; then
+        echo "failed to download $(basename "$2") from $3" >&2
+        exit 1
+    fi
+}
+
+# piped, with a terminal, and without --yes: the TUI collects the toggles and runs this script again.
+# A missing kanade-install asset continues here. A checksum mismatch does not.
+launch_tui() {
+    if ! command -v curl > /dev/null || ! command -v sha256sum > /dev/null; then
+        echo "failed to find curl or sha256sum, continuing without the TUI" >&2
+        return 0
+    fi
+    tmp=$(mktemp -d)
+    if ! curl -fsSL "$script_url" -o "$tmp/install"; then
+        echo "failed to save a copy of the install script, continuing without the TUI" >&2
+        rm -rf "$tmp"
+        return 0
+    fi
+    fetch "$release/kanade-install" "$tmp/kanade-install" && status=0 || status=$?
+    if [ "$status" = 2 ]; then
+        echo "install-0.1 has no kanade-install asset (HTTP 404), continuing without the TUI" >&2
+        rm -rf "$tmp"
+        return 0
+    fi
+    if [ "$status" != 0 ]; then
+        rm -rf "$tmp"
+        exit 1
+    fi
+    fetch "$release/kanade-install.sha256" "$tmp/kanade-install.sha256" && status=0 || status=$?
+    if [ "$status" != 0 ]; then
+        echo "failed: kanade-install.sha256 missing or not downloaded" >&2
+        rm -rf "$tmp"
+        exit 1
+    fi
+    if ! verify "$tmp/kanade-install" "$tmp/kanade-install.sha256"; then
+        rm -rf "$tmp"
+        exit 1
+    fi
+    chmod 755 "$tmp/kanade-install"
+    if [ "$desktop" = 0 ] && [ "$optional" = 1 ]; then
+        exec "$tmp/kanade-install" --script "$tmp/install" --shell-only --optional < /dev/tty > /dev/tty 2>&1
+    elif [ "$desktop" = 0 ]; then
+        exec "$tmp/kanade-install" --script "$tmp/install" --shell-only < /dev/tty > /dev/tty 2>&1
+    elif [ "$optional" = 1 ]; then
+        exec "$tmp/kanade-install" --script "$tmp/install" --optional < /dev/tty > /dev/tty 2>&1
+    else
+        exec "$tmp/kanade-install" --script "$tmp/install" < /dev/tty > /dev/tty 2>&1
+    fi
+}
+
+# everything is in main(), so the shell has read the whole script before anything runs: a piped
+# script's stdin is then free for sudo and the helper's questions
+main() {
+    piped=0
+    have_tty=0
+    if [ ! -t 0 ] && [ ! -f "$0" ]; then
+        piped=1
+    fi
+    if (: < /dev/tty) 2> /dev/null; then
+        have_tty=1
     fi
 
     optional=0
     desktop=1
     uninstall=0
+    yes=0
     ref=release/0.1
     ref_set=0
     while [ $# -gt 0 ]; do
@@ -49,6 +286,7 @@ main() {
             --optional) optional=1 ;;
             --shell-only) desktop=0 ;;
             --uninstall) uninstall=1 ;;
+            --yes) yes=1 ;;
             --ref)
                 shift
                 if [ $# -eq 0 ]; then
@@ -77,6 +315,25 @@ main() {
         exit 2
     fi
 
+    # --yes, --uninstall, --ref, or no terminal: do not download the TUI. Refuse before downloading
+    # it, so a non-Arch or non-x86_64 machine never execs the binary.
+    if [ "$piped" = 1 ] && [ "$have_tty" = 1 ] && [ "$yes" = 0 ] && [ "$uninstall" = 0 ] && [ "$ref_set" = 0 ]; then
+        if ! command -v pacman > /dev/null; then
+            echo "failed to find pacman, Kanade installs on Arch Linux and derivatives only" >&2
+            exit 1
+        fi
+        refuse_machine
+        launch_tui
+    fi
+
+    if [ "$piped" = 1 ]; then
+        if [ "$have_tty" = 0 ]; then
+            echo "failed to find a terminal for sudo and pacman, run this from a shell" >&2
+            exit 1
+        fi
+        exec < /dev/tty
+    fi
+
     config="${XDG_CONFIG_HOME:-$HOME/.config}"
     data="${XDG_DATA_HOME:-$HOME/.local/share}"
     # where the unit's ExecStart expects the binary, whatever CARGO_HOME or CARGO_INSTALL_ROOT say
@@ -93,14 +350,22 @@ main() {
                 *) echo "kept Kanade; point those binds at another program first" >&2; exit 1 ;;
             esac
         fi
-        # first, so a failure leaves the unit and the binary as they were; a binary that is not there
-        # has nothing to fail on
         if [ -e "$root/bin/kanade" ]; then
-            if ! command -v cargo > /dev/null; then
-                echo "failed to find cargo to uninstall $root/bin/kanade, remove it yourself" >&2
-                exit 1
+            cargo_installed=0
+            if [ -f "$root/.crates2.json" ] && grep -q '"kanade"' "$root/.crates2.json"; then
+                cargo_installed=1
+            elif [ -f "$root/.crates.toml" ] && grep -q '"kanade"' "$root/.crates.toml"; then
+                cargo_installed=1
             fi
-            cargo uninstall --root "$root" kanade
+            if [ "$cargo_installed" = 1 ]; then
+                if ! command -v cargo > /dev/null; then
+                    echo "failed to find cargo to uninstall $root/bin/kanade, remove it yourself" >&2
+                    exit 1
+                fi
+                cargo uninstall --root "$root" kanade
+            else
+                rm -f "$root/bin/kanade"
+            fi
         fi
         systemctl --user disable --now kanade.service || true
         rm -f "$config/systemd/user/kanade.service" "$config/systemd/user/kanade.service".bak* \
@@ -118,75 +383,45 @@ main() {
         exit 1
     fi
 
-    # what the build and the shell need; rust only when there is no cargo, so rustup keeps working
-    packages="git base-devel pkgconf wayland libxkbcommon fontconfig freetype2 expat vulkan-icd-loader
-        libpulse pam systemd dbus util-linux"
-    if ! command -v cargo > /dev/null; then
-        packages="$packages rust"
-    fi
-
-    if [ "$desktop" = 1 ]; then
-        # the Vulkan driver of each GPU, by PCI vendor; a virtual GPU gets the virtio one and the CPU
-        # rasterizer, a plain VGA adapter the rasterizer alone. Proprietary NVIDIA is left to the user.
-        gpu=""
-        for vendor in /sys/class/drm/card*/device/vendor; do
-            [ -r "$vendor" ] || continue
-            case "$(cat "$vendor")" in
-                0x8086) gpu="$gpu vulkan-intel" ;;
-                0x1002) gpu="$gpu vulkan-radeon" ;;
-                # virgl gives the guest OpenGL only, so Kanade's Vulkan needs the CPU rasterizer there
-                0x1af4) gpu="$gpu vulkan-virtio vulkan-swrast" ;;
-                0x1234 | 0x15ad) gpu="$gpu vulkan-swrast" ;;
-                0x10de) echo "note: install nvidia-utils or vulkan-nouveau yourself for the NVIDIA GPU" >&2 ;;
-            esac
-        done
-        if [ -z "$gpu" ]; then
-            echo "note: no Vulkan driver chosen, install the one for your GPU" >&2
-        fi
-
-        # a fresh TTY install has no session pieces: niri with its portal and a polkit agent, audio,
-        # fonts (Noto Color Emoji for the Launcher's emoji, Inter for its labels), what the default
-        # niri config uses (kitty, brightnessctl, playerctl, qt6ct) and xwayland-satellite for X11 apps
-        packages="$packages niri xdg-desktop-portal-gnome gnome-keyring polkit polkit-gnome pipewire
-            pipewire-pulse wireplumber noto-fonts noto-fonts-emoji inter-font kitty brightnessctl
-            playerctl qt6ct xwayland-satellite $gpu"
-    fi
-    # shellcheck disable=SC2086 # the list is split on purpose
-    sudo pacman -S --needed $packages
-    if [ "$optional" = 1 ]; then
-        sudo pacman -S --needed wl-clipboard wf-recorder awww matugen qt5ct qt6ct glib2 dconf wlsunset \
-            xdg-utils xdg-terminal-exec networkmanager bluez upower power-profiles-daemon
-        # the Controls tiles and the battery talk to these; NetworkManager is left to you, since it
-        # replaces whatever manages the network now
-        sudo systemctl enable --now bluetooth upower power-profiles-daemon
-    fi
-
-    # run from a checkout, this script sits in its scripts/; piped from curl, clone one to build from
+    checkout=0
     if [ -f "$0" ] && [ -f "$(dirname "$0")/../dist/kanade.service" ]; then
-        cd "$(dirname "$0")/.."
-    else
-        src="$data/kanade/src"
-        if [ -d "$src/.git" ]; then
-            # quoted argv, not a shell command. A failed fetch stops here and leaves this tree.
-            git -C "$src" fetch -q --depth 1 origin "$ref"
-            git -C "$src" checkout -q --force FETCH_HEAD
-        else
-            git clone -q --depth 1 --branch "$ref" "$repo" "$src"
-        fi
-        cd "$src"
+        checkout=1
     fi
 
-    cargo install --locked --root "$root" --path .
+    compile=0
+    work=
+    if [ "$checkout" = 1 ] || [ "$ref_set" = 1 ]; then
+        compile=1
+    else
+        refuse_machine
+        if ! command -v curl > /dev/null || ! command -v sha256sum > /dev/null; then
+            echo "failed to find curl or sha256sum" >&2
+            exit 1
+        fi
+        work=$(mktemp -d)
+        trap 'rm -rf "$work"' EXIT
+        if ! fetch_binary "$work"; then
+            compile=1
+        fi
+    fi
+
+    install_packages
+
+    if [ "$compile" = 1 ]; then
+        compile_tree
+    else
+        install -Dm755 "$work/kanade" "$root/bin/kanade"
+    fi
 
     # the old unit is kept when it differs, so a hand edit is not lost
     unit="$config/systemd/user/kanade.service"
-    if [ -e "$unit" ] && ! cmp -s dist/kanade.service "$unit"; then
+    if [ -e "$unit" ] && ! cmp -s "$dist/kanade.service" "$unit"; then
         backup="$unit.bak.$(date +%Y%m%d%H%M%S)"
         cp "$unit" "$backup"
         echo "replaced $unit, the old one is $backup; customize with: systemctl --user edit kanade.service"
     fi
-    install -Dm644 dist/kanade.service "$unit"
-    install -Dm644 dist/kanade.png "$data/icons/hicolor/256x256/apps/kanade.png"
+    install -Dm644 "$dist/kanade.service" "$unit"
+    install -Dm644 "$dist/kanade.png" "$data/icons/hicolor/256x256/apps/kanade.png"
 
     # from the verbs of the binary just built, so they never lag it; zsh needs the directory in its fpath
     mkdir -p "$data/bash-completion/completions" "$config/fish/completions" "$data/zsh/site-functions"
@@ -200,7 +435,7 @@ main() {
             echo "kept $config/niri/config.kdl, dist/niri/config.kdl is the default"
             echo "  add this as its last line for appearance.sync: include optional=true \"kanade.kdl\""
         else
-            install -Dm644 dist/niri/config.kdl "$config/niri/config.kdl"
+            install -Dm644 "$dist/niri/config.kdl" "$config/niri/config.kdl"
             echo "installed $config/niri/config.kdl"
         fi
     fi

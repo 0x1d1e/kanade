@@ -6,7 +6,7 @@ license = "MIT"
 publish = false
 
 [workspace]
-members = ["crates/lock", "crates/runtime"]
+members = ["crates/lock", "crates/runtime", "crates/install"]
 
 [dependencies]
 # the runtime already builds it; only `kanade doctor` lists the compositor's globals with it (#105),

@@ -1,0 +1,86 @@
+name: Release binary
+
+# main is filtered in the gate job: GitHub cannot combine a path filter on main with an
+# unfiltered push to release/0.1 in one `on.push`. The Arch job does not run unless the gate says so.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, release/0.1]
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - id: check
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.ref }}" = "refs/heads/release/0.1" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only HEAD^ HEAD | grep -Eq '^(scripts/install$|crates/install/|\.github/workflows/release-binary\.yml$|Cargo\.toml$|Cargo\.lock$)'; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  binary:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Arch build packages
+        run: |
+          set -eu
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm --needed \
+            git base-devel pkgconf rust \
+            wayland libxkbcommon fontconfig freetype2 expat \
+            vulkan-icd-loader vulkan-headers \
+            libpulse pam \
+            github-cli
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Build release/0.1 kanade and this checkout's kanade-install
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          git fetch origin release/0.1
+          if ! git rev-parse --verify --quiet origin/release/0.1 >/dev/null; then
+            echo "origin/release/0.1 does not exist" >&2
+            exit 1
+          fi
+          rev=$(git rev-parse origin/release/0.1)
+          git worktree add --detach /tmp/kanade-release "$rev"
+          (
+            cd /tmp/kanade-release
+            cargo build --release --locked -p kanade
+          )
+          cargo build --release --locked -p kanade-install
+          mkdir -p out
+          cp /tmp/kanade-release/target/release/kanade out/kanade
+          cp target/release/kanade-install out/kanade-install
+          printf '%s\n' "$rev" > out/kanade.rev
+          (
+            cd out
+            sha256sum kanade > kanade.sha256
+            sha256sum kanade-install > kanade-install.sha256
+          )
+          notes='These assets are replaced in place and are not v0.1.0.'
+          if ! gh release view install-0.1 >/dev/null 2>&1; then
+            gh release create install-0.1 --target "$rev" --prerelease --title install-0.1 --notes "$notes"
+          fi
+          gh release upload install-0.1 --clobber \
+            out/kanade out/kanade.sha256 out/kanade-install out/kanade-install.sha256 out/kanade.rev

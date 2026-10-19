@@ -84,7 +84,7 @@ Beyond the Island, Kanade coordinates the surrounding desktop environment:
 
 ## Quick Start & Installation
 
-On Arch Linux and derivatives, install via the automated setup script. The command installs the `release/0.1` branch. The script is fetched from `main`.
+On Arch Linux x86_64, the script is fetched from `main`. A piped run with a terminal opens a short TUI (`kanade-install`) unless you pass `--yes`. With no `--ref`, it downloads the Arch binary from the `install-0.1` release, checks sha256, and installs it to `~/.cargo/bin`. That binary is dynamically linked to Arch's PulseAudio (`libpulsecommon-17.0.so` and the rest of that closure). It is not static and not portable. A missing asset compiles `release/0.1`; a bad checksum does not. Packages come from `paru`, or from `yay` if paru is not on PATH and yay already is. If neither is on PATH, `sudo pacman -S --needed paru` installs paru and that is used. If that fails, the install stops. See [Installation](docs/wiki/Installation.md).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install | sh
@@ -92,10 +92,11 @@ curl -fsSL https://raw.githubusercontent.com/0x1d1e/kanade/main/scripts/install 
 
 For existing niri setups or selective installs, pass options after `sh -s --`:
 
-- `--shell-only`: Installs only build dependencies and Kanade, skipping system packages and default niri configs.
+- `--shell-only`: Installs Kanade without the desktop packages, and does not install a niri config.
+- `--yes`: Skips the TUI.
 - `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
-- `--ref`: Overrides the branch or tag, including `--ref main`.
-- `--uninstall`: Cleans up the Kanade binary, completions, systemd unit, and desktop icons.
+- `--ref`: Compiles that branch or tag, including `--ref main`. Does not download the `install-0.1` binary.
+- `--uninstall`: Removes the Kanade binary, completions, systemd unit, and desktop icon.
 
 ### Manual Build
 
