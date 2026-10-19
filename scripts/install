@@ -100,7 +100,7 @@ ensure_helper() {
         return 0
     fi
     echo "helper: none"
-    if ! sudo pacman -S --needed paru || ! command -v paru > /dev/null; then
+    if ! sudo pacman -S --needed --noconfirm paru || ! command -v paru > /dev/null; then
         echo "pacman could not install paru" >&2
         exit 1
     fi
