@@ -44,6 +44,9 @@ const CHIP_MIN: f32 = 64.0;
 
 const BUTTON: f32 = 36.0;
 const PLAY: f32 = 44.0;
+const TRANSPORT_GAP: f32 = 8.0;
+const CONTROLS_GAP: f32 = 24.0;
+const VOLUME_GAP: f32 = 10.0;
 
 // the timeline's block: the ring's room around the bar and its thumb, then the times
 const SIDE: f32 = 4.0;
@@ -527,29 +530,53 @@ fn controls(
             ring == Some(&At::Next),
         ),
     ])
-    .gap(8.0)
+    .gap(TRANSPORT_GAP)
     .align(Center);
-
-    let gap = 24.0;
-    let level = width - (2.0 * BUTTON + PLAY + 2.0 * 8.0) - gap - TARGET - 10.0;
 
     // Controls is where the rest of the machine is, one press from the player
     let controls = modules::on("controls");
-    let level = if controls {
-        level - TARGET - gap
-    } else {
-        level
-    };
-
+    let layout = controls_layout(width, controls);
     let mut row: Vec<Box<dyn Widget>> = vec![
         Box::new(transport),
-        Box::new(volume(level, accent, ring == Some(&At::Speaker))),
+        Box::new(volume(
+            layout.volume_bar,
+            accent,
+            ring == Some(&At::Speaker),
+        )),
     ];
     if controls {
-        row.push(Box::new(to_controls(monitor, ring == Some(&At::Controls))));
+        row.push(Box::new(to_controls(
+            monitor,
+            ring == Some(&At::Controls),
+        )));
     }
 
-    Row::new(row).width(width).gap(gap).align(Center)
+    Row::new(row).width(width).gap(CONTROLS_GAP).align(Center)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ControlsLayout {
+    volume_bar: f32,
+    speaker_center: f32,
+    controls_center: f32,
+}
+
+fn controls_layout(width: f32, controls: bool) -> ControlsLayout {
+    let transport = 2.0 * BUTTON + PLAY + 2.0 * TRANSPORT_GAP;
+    let group_gaps = CONTROLS_GAP * if controls { 2.0 } else { 1.0 };
+    let controls_width = if controls { TARGET } else { 0.0 };
+    let volume_bar = width
+        - transport
+        - group_gaps
+        - controls_width
+        - TARGET
+        - VOLUME_GAP;
+
+    ControlsLayout {
+        volume_bar,
+        speaker_center: transport + CONTROLS_GAP + TARGET / 2.0,
+        controls_center: width - TARGET / 2.0,
+    }
 }
 
 // opens Controls in place of the player
@@ -662,7 +689,7 @@ fn volume(width: f32, accent: Color, ring: bool) -> Rectangle {
             .height(TARGET)
             .radius(TARGET / 2.0)
             .align_child(Start, Center)
-            .child(row.gap(10.0).align(Center))
+            .child(row.gap(VOLUME_GAP).align(Center))
     };
 
     if !modules::on("audio") {
@@ -777,11 +804,13 @@ fn grid(playback: &Playback) -> (Vec<Vec<(At, f32)>>, usize) {
     }
 
     if modules::on("audio") {
-        row.push((At::Speaker, 0.6));
+        let layout = controls_layout(width, modules::on("controls"));
+        row.push((At::Speaker, layout.speaker_center / width));
     }
 
     if modules::on("controls") {
-        row.push((At::Controls, 1.0 - TARGET / 2.0 / width));
+        let layout = controls_layout(width, true);
+        row.push((At::Controls, layout.controls_center / width));
     }
 
     if !row.is_empty() {
