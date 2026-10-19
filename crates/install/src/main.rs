@@ -20,7 +20,7 @@ use crossterm::terminal::{
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
@@ -36,6 +36,8 @@ const COPPER: Color = Color::Rgb(0xc4, 0xa4, 0x84);
 const INSET_X: u16 = 4;
 const INSET_Y: u16 = 2;
 const COLUMN: u16 = 72;
+/// A full-width rule reads as a widget. This is ground under the name.
+const RULE: u16 = 16;
 
 struct Args {
     script: PathBuf,
@@ -264,43 +266,117 @@ fn draw(frame: &mut ratatui::Frame, ui: &Ui<'_>) {
         return;
     }
 
-    let (column, foot) = place(area);
-    let lines = header(ui, column.width);
-    let [head, body] = Layout::vertical([
-        Constraint::Length(u16::try_from(lines.len()).unwrap_or(0)),
-        Constraint::Min(0),
-    ])
-    .areas(column);
+    let width = column_width(area.width);
+    let x = area.x.saturating_add(inset_x(area.width));
+    let lines = header(ui, width);
+    let header_pref = u16::try_from(lines.len()).unwrap_or(0);
+    let keys = key_line(ui);
+    let want_keys = keys.is_some();
+    let body_natural = body_natural_rows(ui, width);
+    let refusal = match ui.stage {
+        Stage::Scan => refusal_rows(ui.scan, width),
+        Stage::Plan | Stage::Running => 0,
+    };
+    let y_off = top_inset(
+        area.height,
+        header_pref
+            .saturating_add(refusal)
+            .saturating_add(u16::from(want_keys)),
+    );
+    let top = area.y.saturating_add(y_off);
+    let avail = area.height.saturating_sub(y_off);
+    let page = place_page(
+        avail,
+        header_pref,
+        body_natural,
+        refusal,
+        want_keys,
+        wants_lead_gap(ui.stage),
+    );
 
-    if head.height > 0 {
-        frame.render_widget(Paragraph::new(lines), head);
+    if page.header > 0 {
+        let shown: Vec<_> = lines.into_iter().take(usize::from(page.header)).collect();
+        frame.render_widget(Paragraph::new(shown), Rect::new(x, top, width, page.header));
     }
-    draw_body(frame, body, ui);
-    frame.render_widget(Paragraph::new(footer(ui)), foot);
+    let body_y = top
+        .saturating_add(page.header)
+        .saturating_add(page.lead_gap);
+    if page.body > 0 {
+        draw_body(frame, Rect::new(x, body_y, width, page.body), ui);
+    }
+    if let Some(keys) = keys {
+        let keys_y = if page.keys_pinned {
+            top.saturating_add(avail.saturating_sub(1))
+        } else {
+            body_y
+                .saturating_add(page.body)
+                .saturating_add(page.key_gap)
+        };
+        frame.render_widget(Paragraph::new(keys), Rect::new(x, keys_y, width, 1));
+    }
 }
 
-/// Left inset, top inset, and a measure near 72. The rest of the terminal stays empty.
-fn place(area: Rect) -> (Rect, Rect) {
-    let x_off = inset_x(area.width);
-    let width = area.width.saturating_sub(x_off).clamp(1, COLUMN);
-    let x = area.x.saturating_add(x_off);
-    let foot_y = area.y.saturating_add(area.height.saturating_sub(1));
-    let foot = Rect::new(x, foot_y, width, 1);
-    let y = area.y.saturating_add(inset_y(area.height));
-    let height = foot_y.saturating_sub(y);
-    (Rect::new(x, y, width, height), foot)
+/// Keys follow the last content line. They take the last visible row only when the page does not fit.
+struct Page {
+    header: u16,
+    lead_gap: u16,
+    body: u16,
+    key_gap: u16,
+    keys_pinned: bool,
+}
+
+fn place_page(
+    avail: u16,
+    header_pref: u16,
+    body_natural: u16,
+    refusal: u16,
+    want_keys: bool,
+    want_lead_gap: bool,
+) -> Page {
+    let keys = u16::from(want_keys);
+    let lead = u16::from(want_lead_gap && body_natural > 0);
+    let key_gap = keys;
+    let needed = header_pref
+        .saturating_add(lead)
+        .saturating_add(body_natural)
+        .saturating_add(key_gap)
+        .saturating_add(keys);
+    if needed <= avail {
+        return Page {
+            header: header_pref,
+            lead_gap: lead,
+            body: body_natural,
+            key_gap,
+            keys_pinned: false,
+        };
+    }
+    let keys = keys.min(avail);
+    let rest = avail.saturating_sub(keys);
+    let refusal = refusal.min(rest);
+    let header = header_pref.min(rest.saturating_sub(refusal));
+    Page {
+        header,
+        lead_gap: 0,
+        body: rest.saturating_sub(header),
+        key_gap: 0,
+        keys_pinned: keys > 0,
+    }
+}
+
+fn wants_lead_gap(stage: Stage) -> bool {
+    matches!(stage, Stage::Scan | Stage::Running)
 }
 
 fn inset_x(cols: u16) -> u16 {
     INSET_X.min(cols.saturating_sub(1))
 }
 
-fn inset_y(rows: u16) -> u16 {
+fn top_inset(rows: u16, min_page: u16) -> u16 {
     if rows <= 1 {
-        0
-    } else {
-        INSET_Y.min(rows.saturating_sub(2))
+        return 0;
     }
+    let preferred = INSET_Y.min(rows.saturating_sub(1));
+    preferred.min(rows.saturating_sub(min_page))
 }
 
 fn column_width(cols: u16) -> u16 {
@@ -308,9 +384,10 @@ fn column_width(cols: u16) -> u16 {
 }
 
 fn body_rows(rows: u16) -> u16 {
-    let column = rows.saturating_sub(inset_y(rows)).saturating_sub(1);
     let head = u16::try_from(header_lines(Stage::Running, 1, "running").len()).unwrap_or(1);
-    column.saturating_sub(head).max(1)
+    let inset = top_inset(rows, head);
+    let avail = rows.saturating_sub(inset);
+    avail.saturating_sub(head.min(avail)).max(1)
 }
 
 fn header(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
@@ -326,15 +403,12 @@ fn header_lines(stage: Stage, width: u16, status: &str) -> Vec<Line<'static>> {
         "Kanade",
         copper().add_modifier(Modifier::BOLD),
     ));
-    // Column measure. Without it the inset is just leftover space.
-    let rule = Line::from(Span::styled(
-        "\u{2500}".repeat(usize::from(width.max(1))),
-        dim(),
-    ));
+    let rule_len = usize::from(RULE.min(width.max(1)));
+    let rule = Line::from(Span::styled("\u{2500}".repeat(rule_len), dim()));
     match stage {
-        Stage::Scan => vec![name, rule, Line::from("A shell for niri."), Line::from("")],
-        Stage::Plan => vec![name, rule, Line::from("")],
-        Stage::Running => vec![name, rule, Line::from(status.to_string()), Line::from("")],
+        Stage::Scan => vec![name, rule, Line::from("A shell for niri.")],
+        Stage::Plan => vec![name, rule],
+        Stage::Running => vec![name, rule, Line::from(status.to_string())],
     }
 }
 
@@ -342,14 +416,11 @@ fn draw_body(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ui: &Ui<'_
     match ui.stage {
         Stage::Scan => draw_scan(frame, area, ui.scan),
         Stage::Plan => {
-            frame.render_widget(
-                Paragraph::new(plan_lines(ui)).wrap(Wrap { trim: false }),
-                area,
-            );
+            frame.render_widget(Paragraph::new(plan_lines(ui, area.width)), area);
         }
         Stage::Running => {
-            let lines = running_lines(ui.run, area.height);
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+            let lines = running_lines(ui.run, area.height, area.width);
+            frame.render_widget(Paragraph::new(lines), area);
         }
     }
 }
@@ -370,9 +441,7 @@ fn draw_scan(frame: &mut ratatui::Frame, area: Rect, scan: &Scan) {
     let value_x = label_w.saturating_add(3);
     let value_w = area.width.saturating_sub(value_x);
 
-    let refusal_rows = scan.refusal.iter().fold(0u16, |rows, line| {
-        rows.saturating_add(text_rows(line, area.width))
-    });
+    let refusal_rows = refusal_rows(scan, area.width);
     let reserve = if refusal_rows == 0 {
         0
     } else {
@@ -413,10 +482,11 @@ fn draw_scan(frame: &mut ratatui::Frame, area: Rect, scan: &Scan) {
     let lines: Vec<Line> = scan
         .refusal
         .iter()
-        .map(|line| Line::from(Span::styled(line.clone(), copper())))
+        .flat_map(|line| wrap_text(line, area.width))
+        .map(|line| Line::from(Span::styled(line, copper())))
         .collect();
     frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Paragraph::new(lines),
         Rect::new(area.x, area.y + start, area.width, area.height - start),
     );
 }
@@ -433,26 +503,39 @@ fn split_fact(line: &str) -> (&str, &str) {
     line.split_once(": ").unwrap_or((line, ""))
 }
 
-fn plan_lines(ui: &Ui<'_>) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        choice_line(ui.focus == 0, "shell-only", ui.shell_only),
-        choice_line(ui.focus == 1, "optional packages", ui.optional),
-        Line::from(""),
-    ];
-    if ui.shell_only {
-        lines.push(dim_line("niri config is not installed with shell-only"));
+fn plan_lines(ui: &Ui<'_>, width: u16) -> Vec<Line<'static>> {
+    let lead = if ui.shell_only {
+        "Installs the shell, the unit, and the icon. No desktop packages."
+    } else {
+        "Installs the shell, the unit, and the icon."
+    };
+    let mut lines: Vec<Line<'static>> =
+        wrap_text(lead, width).into_iter().map(Line::from).collect();
+    lines.push(choice_line(ui.focus == 0, "shell-only", ui.shell_only));
+    lines.push(choice_line(ui.focus == 1, "optional packages", ui.optional));
+    lines.push(Line::from(""));
+    let niri = if ui.shell_only {
+        "niri config is not installed with shell-only".to_string()
     } else {
         let path = ui.scan.config.display();
-        lines.push(dim_line(format!(
-            "niri config is installed only when {path} is missing, and never replaced"
-        )));
-    }
+        format!("niri config is installed only when {path} is missing, and never replaced")
+    };
+    lines.extend(wrap_text(&niri, width).into_iter().map(dim_line));
     lines.push(Line::from(""));
-    lines.push(dim_line(format!("helper: {}", ui.scan.helper)));
+    lines.extend(
+        wrap_text(&format!("helper: {}", ui.scan.helper), width)
+            .into_iter()
+            .map(dim_line),
+    );
     if ui.scan.helper == "none" {
-        lines.push(dim_line(
-            "paru is installed with pacman, then used for packages",
-        ));
+        lines.extend(
+            wrap_text(
+                "paru is installed with pacman, then used for packages",
+                width,
+            )
+            .into_iter()
+            .map(dim_line),
+        );
     }
     lines
 }
@@ -477,32 +560,124 @@ fn dim_line(text: impl Into<String>) -> Line<'static> {
     Line::from(Span::styled(text.into(), dim()))
 }
 
-fn running_lines(run: Option<&Run>, rows: u16) -> Vec<Line<'static>> {
+fn running_lines(run: Option<&Run>, rows: u16, width: u16) -> Vec<Line<'static>> {
     let Some(run) = run else {
         return Vec::new();
     };
-    let stored = run
-        .lines
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    let shown = stored.tail(rows.max(1) as usize);
-    drop(stored);
-    shown.into_iter().map(Line::from).collect()
+    let visual = visual_lines(&output_lines(run), width);
+    let start = visual.len().saturating_sub(usize::from(rows));
+    visual.into_iter().skip(start).map(Line::from).collect()
 }
 
-fn footer(ui: &Ui<'_>) -> Line<'static> {
+fn output_lines(run: &Run) -> Vec<String> {
+    run.lines
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .tail(usize::MAX)
+}
+
+fn visual_lines(lines: &[String], width: u16) -> Vec<String> {
+    lines
+        .iter()
+        .flat_map(|line| wrap_text(line, width))
+        .collect()
+}
+
+fn body_natural_rows(ui: &Ui<'_>, width: u16) -> u16 {
+    match ui.stage {
+        Stage::Scan => scan_body_rows(ui.scan, width),
+        Stage::Plan => u16::try_from(plan_lines(ui, width).len()).unwrap_or(u16::MAX),
+        Stage::Running => {
+            let lines = ui.run.map(output_lines).unwrap_or_default();
+            u16::try_from(visual_lines(&lines, width).len()).unwrap_or(u16::MAX)
+        }
+    }
+}
+
+fn scan_body_rows(scan: &Scan, width: u16) -> u16 {
+    let facts = fact_rows(scan, width);
+    let refusal = refusal_rows(scan, width);
+    if refusal == 0 {
+        facts
+    } else if facts == 0 {
+        refusal
+    } else {
+        facts.saturating_add(1).saturating_add(refusal)
+    }
+}
+
+fn fact_rows(scan: &Scan, width: u16) -> u16 {
+    let pairs: Vec<(&str, &str)> = scan.lines.iter().map(|line| split_fact(line)).collect();
+    let label_width = pairs
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let label_w = u16::try_from(label_width).unwrap_or(u16::MAX).min(width);
+    let value_w = width.saturating_sub(label_w.saturating_add(3));
+    pairs.iter().fold(0u16, |rows, (_, value)| {
+        rows.saturating_add(text_rows(value, value_w))
+    })
+}
+
+fn refusal_rows(scan: &Scan, width: u16) -> u16 {
+    if scan.refusal.is_empty() || width == 0 {
+        return 0;
+    }
+    scan.refusal.iter().fold(0u16, |rows, line| {
+        rows.saturating_add(wrap_len(line, width))
+    })
+}
+
+fn wrap_len(text: &str, width: u16) -> u16 {
+    u16::try_from(wrap_text(text, width).len())
+        .unwrap_or(u16::MAX)
+        .max(1)
+}
+
+/// Break on a space when one fits. The column is the measure, not the terminal.
+fn wrap_text(text: &str, width: u16) -> Vec<String> {
+    let width = usize::from(width);
+    if width == 0 {
+        return Vec::new();
+    }
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut rows = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars.len() - index <= width {
+            rows.push(chars[index..].iter().collect());
+            break;
+        }
+        let end = index + width;
+        let break_at = chars[index..end].iter().rposition(|ch| *ch == ' ');
+        if let Some(rel) = break_at.filter(|rel| *rel > 0) {
+            rows.push(chars[index..index + rel].iter().collect());
+            index += rel + 1;
+        } else {
+            rows.push(chars[index..end].iter().collect());
+            index = end;
+        }
+    }
+    rows
+}
+
+fn key_line(ui: &Ui<'_>) -> Option<Line<'static>> {
     match ui.stage {
         Stage::Scan if ui.scan.refusal.is_empty() => {
-            keys(&[("enter: plan", true), ("q: quit", false)])
+            Some(keys(&[("enter: plan", true), ("q: quit", false)]))
         }
-        Stage::Scan => keys(&[("q: quit", true)]),
-        Stage::Plan => keys(&[
+        Stage::Scan => Some(keys(&[("q: quit", true)])),
+        Stage::Plan => Some(keys(&[
             ("space: toggle", false),
             ("enter: run the script", true),
             ("q: quit", false),
-        ]),
-        Stage::Running if ui.run.is_some_and(Run::finished) => keys(&[("q: close", true)]),
-        Stage::Running => Line::from(""),
+        ])),
+        Stage::Running if ui.run.is_some_and(Run::finished) => Some(keys(&[("q: close", true)])),
+        Stage::Running => None,
     }
 }
 
