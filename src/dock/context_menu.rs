@@ -426,27 +426,74 @@ fn size(monitor: &Monitor, count: usize, separated: bool) -> (f32, usize) {
     (width, visible_rows)
 }
 
+/*
+ * where the menu stands: out from the icon on the side away from the Dock's edge, then clear of the
+ * Dock's strip on that edge, then within the output. The icon's rect is the one taken as the menu
+ * opened, and an autohide that was still sliding out left it below the screen: the strip, read as it
+ * stands, is what the menu goes above, not the screen's own edge
+ */
 fn position(monitor: &Monitor, open: &Open, width: f32, height: f32) -> (f32, f32) {
-    let x = match open.edge {
-        Edge::Left => open.at.x + open.at.width + GAP,
-        Edge::Right => open.at.x - width - GAP,
-        Edge::Top | Edge::Bottom => open.at.x + (open.at.width - width) / 2.0,
-    };
-    let y = match open.edge {
-        Edge::Top => open.at.y + open.at.height + GAP,
-        Edge::Bottom => open.at.y - height - GAP,
-        Edge::Left | Edge::Right => open.at.y + (open.at.height - height) / 2.0,
-    };
-
-    (
-        clamp(x, width, monitor.width as f32),
-        clamp(y, height, monitor.height as f32),
+    place(
+        open.at,
+        open.edge,
+        (monitor.width as f32, monitor.height as f32),
+        (width, height),
+        super::standing(monitor),
     )
 }
 
-fn clamp(position: f32, size: f32, screen: f32) -> f32 {
+fn place(
+    at: Rect,
+    edge: Edge,
+    screen: (f32, f32),
+    panel: (f32, f32),
+    dock: Option<(Edge, Rect)>,
+) -> (f32, f32) {
+    let (width, height) = panel;
+    let x = match edge {
+        Edge::Left => at.x + at.width + GAP,
+        Edge::Right => at.x - width - GAP,
+        Edge::Top | Edge::Bottom => at.x + (at.width - width) / 2.0,
+    };
+    let y = match edge {
+        Edge::Top => at.y + at.height + GAP,
+        Edge::Bottom => at.y - height - GAP,
+        Edge::Left | Edge::Right => at.y + (at.height - height) / 2.0,
+    };
+
+    let (mut left, mut right) = within(width, screen.0);
+    let (mut low, mut high) = within(height, screen.1);
+
+    // the Dock's strip, as far out as its icons grow, keeps the menu on the far side of it
+    if let Some((band_edge, band)) = dock {
+        match band_edge {
+            Edge::Top => low = low.max(band.bottom() + GAP),
+            Edge::Bottom => high = high.min(band.y - GAP - height),
+            Edge::Left => left = left.max(band.right() + GAP),
+            Edge::Right => right = right.min(band.x - GAP - width),
+        }
+    }
+
+    // an output with no room for both keeps the menu on it, over the Dock rather than off the screen
+    let (left, right) = if left > right {
+        within(width, screen.0)
+    } else {
+        (left, right)
+    };
+    let (low, high) = if low > high {
+        within(height, screen.1)
+    } else {
+        (low, high)
+    };
+
+    (x.clamp(left, right), y.clamp(low, high))
+}
+
+// the least and the most a menu `size` long stands at on an output `screen` long, a gap from its edges
+fn within(size: f32, screen: f32) -> (f32, f32) {
     let inset = SCREEN_GAP.min(screen / 2.0);
-    position.clamp(inset, (screen - inset - size).max(inset))
+
+    (inset, (screen - inset - size).max(inset))
 }
 
 fn rows(
