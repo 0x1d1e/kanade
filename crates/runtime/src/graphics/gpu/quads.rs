@@ -9,6 +9,8 @@ use vello::wgpu::{BindGroup, BindGroupLayout, RenderPipeline, Sampler};
 
 use super::atlas::Atlas;
 
+use batch::Deferred;
+
 pub use clip::{Clip, Clips};
 
 // how many numbers one quad takes: Quad in quads.wgsl has seven rows of four
@@ -51,4 +53,7 @@ pub struct Quads {
     // every quad's numbers one after another, as quads.wgsl reads them
     waiting: Vec<f32>,
     runs: Vec<Run>,
+
+    // letters left for the batch after, put off by an atlas full of texels still being drawn
+    deferred: Vec<Deferred>,
 }

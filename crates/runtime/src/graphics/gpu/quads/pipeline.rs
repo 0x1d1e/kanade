@@ -89,6 +89,7 @@ impl Quads {
             blank,
             waiting: Vec::new(),
             runs: Vec::new(),
+            deferred: Vec::new(),
         }
     }
 }

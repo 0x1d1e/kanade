@@ -24,8 +24,76 @@ pub struct Letter {
     pub top: f32,
 }
 
+// what asking for a letter came to
+pub enum Placement {
+    // its pixels are in the atlas
+    Letter(Letter),
+
+    // it has none, like a space
+    Nothing,
+
+    /*
+     * it needs the atlas to start over, which it may not while letters it holds are still waiting
+     * to be drawn: the caller draws what it gathered, then asks again
+     */
+    Overflow,
+}
+
 // the face, the letter and its size in pixels
 type Key = (usize, u16, u32);
+
+/*
+ * the rows letters fill: where the next one goes, and whether the atlas has to start over to hold
+ * it. Drawing over what waits to be drawn is the one thing it may not do, so `may_start_over` decides
+ */
+#[derive(Default)]
+struct Rows {
+    // the row being filled: its top, how far along it is and its tallest letter
+    top: u32,
+    x: u32,
+    height: u32,
+}
+
+// where a letter went, and whether the atlas started over to hold it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Spot {
+    x: u32,
+    y: u32,
+    started_over: bool,
+}
+
+impl Rows {
+    // where a letter goes, none when it needs the atlas to start over and that is not allowed yet
+    fn place(&mut self, width: u32, height: u32, may_start_over: bool) -> Option<Spot> {
+        if self.x + width + PADDING > SIZE {
+            self.top += self.height + PADDING;
+            self.x = 0;
+            self.height = 0;
+        }
+
+        let mut started_over = false;
+
+        if self.top + height + PADDING > SIZE {
+            if !may_start_over {
+                return None;
+            }
+
+            *self = Rows::default();
+            started_over = true;
+        }
+
+        let spot = Spot {
+            x: self.x,
+            y: self.top,
+            started_over,
+        };
+
+        self.x += width + PADDING;
+        self.height = self.height.max(height);
+
+        Some(spot)
+    }
+}
 
 /*
  * every letter drawn so far, in one texture of coverage values; letters fill
@@ -36,10 +104,7 @@ pub struct Atlas {
 
     letters: HashMap<Key, Option<Letter>>,
 
-    // the row being filled: its top, how far along it is and its tallest letter
-    row_top: u32,
-    row_x: u32,
-    row_height: u32,
+    rows: Rows,
 }
 
 impl Atlas {
@@ -62,9 +127,7 @@ impl Atlas {
         Self {
             texture,
             letters: HashMap::new(),
-            row_top: 0,
-            row_x: 0,
-            row_height: 0,
+            rows: Rows::default(),
         }
     }
 
@@ -72,35 +135,53 @@ impl Atlas {
         &self.texture
     }
 
-    // none for a letter without pixels, like a space
+    /*
+     * one letter's place in the atlas, its pixels written there
+     *
+     * `reads` says whether quads already gathered read texels of this atlas: starting over draws
+     * over the letters placed before, so while they do it waits, and the caller draws them first
+     * rather than place a letter over what they read
+     */
     pub fn letter(
         &mut self,
         queue: &Queue,
         face: &'static Face<'static>,
         id: u16,
         size: f32,
-    ) -> Option<Letter> {
+        reads: bool,
+    ) -> Placement {
         let key = (std::ptr::from_ref(face) as usize, id, size.to_bits());
 
         if let Some(letter) = self.letters.get(&key) {
-            return *letter;
+            return match letter {
+                Some(letter) => Placement::Letter(*letter),
+                None => Placement::Nothing,
+            };
         }
 
         let Some(pixels) = letter::rasterize(face, id, size) else {
             self.letters.insert(key, None);
 
-            return None;
+            return Placement::Nothing;
         };
 
-        let width = pixels.width;
-        let height = pixels.height;
+        let (width, height) = (pixels.width, pixels.height);
 
         // too big for the atlas at all
         if width + PADDING > SIZE || height + PADDING > SIZE {
-            return None;
+            return Placement::Nothing;
         }
 
-        let (x, y) = self.place(width, height);
+        let Some(spot) = self.rows.place(width, height, !reads) else {
+            return Placement::Overflow;
+        };
+
+        // starting over drops every letter placed before, whose pixels are drawn over
+        if spot.started_over {
+            self.letters.clear();
+        }
+
+        let (x, y) = (spot.x, spot.y);
 
         let target = TexelCopyTextureInfo {
             texture: &self.texture,
@@ -134,30 +215,54 @@ impl Atlas {
 
         self.letters.insert(key, Some(letter));
 
-        Some(letter)
+        Placement::Letter(letter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // a full atlas: every row filled, so the next letter has nowhere to go
+    fn full() -> Rows {
+        Rows {
+            top: SIZE - (1 + PADDING),
+            x: 0,
+            height: 1,
+        }
     }
 
-    // the next free spot in the rows, starting over once the atlas is full
-    fn place(&mut self, width: u32, height: u32) -> (u32, u32) {
-        if self.row_x + width + PADDING > SIZE {
-            self.row_top += self.row_height + PADDING;
-            self.row_x = 0;
-            self.row_height = 0;
-        }
+    /*
+     * a letter that needs the atlas to start over waits for the quads reading it: starting over
+     * draws over the texels they name, so it only happens once nothing reads them
+     */
+    #[test]
+    fn starting_over_waits_for_what_reads_the_atlas() {
+        let mut rows = full();
 
-        if self.row_top + height + PADDING > SIZE {
-            self.letters.clear();
+        assert!(
+            rows.place(4, 4, false).is_none(),
+            "a full atlas was drawn over while quads read it"
+        );
 
-            self.row_top = 0;
-            self.row_x = 0;
-            self.row_height = 0;
-        }
+        assert_eq!(
+            rows.place(4, 4, true)
+                .map(|spot| (spot.x, spot.y, spot.started_over)),
+            Some((0, 0, true)),
+            "a full atlas with nothing reading it never started over"
+        );
+    }
 
-        let spot = (self.row_x, self.row_top);
+    // letters fill a row side by side, the next drops below the tallest of them
+    #[test]
+    fn a_row_fills_across_then_down() {
+        let mut rows = Rows::default();
 
-        self.row_x += width + PADDING;
-        self.row_height = self.row_height.max(height);
+        let at = |x, y, started_over| Some(Spot { x, y, started_over });
 
-        spot
+        assert_eq!(rows.place(10, 12, false), at(0, 0, false));
+        assert_eq!(rows.place(10, 5, false), at(10 + PADDING, 0, false));
+        assert_eq!(rows.place(10, 7, false), at(2 * (10 + PADDING), 0, false));
+        assert_eq!(rows.place(SIZE, 7, false), at(0, 12 + PADDING, false));
     }
 }

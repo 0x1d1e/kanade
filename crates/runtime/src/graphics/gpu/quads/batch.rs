@@ -2,6 +2,7 @@ use vello::wgpu::{Device, Queue};
 
 use ttf_parser::Face;
 
+use crate::graphics::gpu::atlas::Placement;
 use crate::graphics::gpu::picture;
 use crate::graphics::image::Bitmap;
 use crate::graphics::{Area, Color, Corners};
@@ -48,8 +49,28 @@ impl Quads {
         y: f32,
         clips: Clips,
     ) {
-        let Some(letter) = self.atlas.letter(queue, face, id, size) else {
-            return;
+        /*
+         * quads already gathered read the atlas, so one that would make it start over is left for
+         * after they are drawn: placing it now would draw over the texels they name
+         */
+        let reads = !self.waiting.is_empty();
+
+        let letter = match self.atlas.letter(queue, face, id, size, reads) {
+            Placement::Letter(letter) => letter,
+            Placement::Nothing => return,
+            Placement::Overflow => {
+                self.deferred.push(Deferred {
+                    face,
+                    id,
+                    size,
+                    color,
+                    x,
+                    y,
+                    clips,
+                });
+
+                return;
+            }
         };
 
         let area = Area::new(
@@ -188,4 +209,16 @@ impl Quads {
             count: 1,
         });
     }
+}
+
+// a letter put off until the quads gathered before it are drawn
+#[derive(Clone, Copy)]
+pub struct Deferred {
+    pub face: &'static Face<'static>,
+    pub id: u16,
+    pub size: f32,
+    pub color: Color,
+    pub x: f32,
+    pub y: f32,
+    pub clips: Clips,
 }

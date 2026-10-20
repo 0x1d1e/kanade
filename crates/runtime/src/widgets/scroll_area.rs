@@ -92,12 +92,12 @@ impl Widget for ScrollArea {
     fn draw(&self, renderer: &mut Renderer, area: Area) {
         let mut inside = renderer.group();
 
-        reveal::clear();
+        let outer = reveal::enter(self.id);
         self.child.draw(&mut inside, self.child_area(area));
 
         renderer.clip(inside, area, 0.0);
 
-        if let Some(wanted) = reveal::take() {
+        if let Some(wanted) = reveal::leave(self.id, outer) {
             self.bring_into_view(wanted, area);
         }
     }

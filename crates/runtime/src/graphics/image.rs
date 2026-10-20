@@ -8,11 +8,12 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::thread;
+use std::time::SystemTime;
 
 use crate::changes;
 use crate::unpoisoned::MutexExt;
 
-pub use decode::{Format, MOST_PIXELS, decode, decode_png, format};
+pub use decode::{Format, MOST_PIXELS, decode, decode_png, format, side_fits};
 
 // one size for every svg; keying the cache by the shown size would sharpen a big svg that looks soft
 const ICON_SIDE: f32 = 256.0;
@@ -30,7 +31,8 @@ const THUMBNAIL_BYTES: usize = 128 << 20;
 
 // an svg's bytes drawn with the longest side `longest` pixels across: width, height, plain RGBA
 pub fn draw_svg(bytes: &[u8], longest: f32) -> Option<(u32, u32, Vec<u8>)> {
-    svg::rasterize(bytes, longest)
+    // the side bounds the square the drawing fits in, so a request past `MOST_PIXELS` is refused
+    side_fits(longest).then(|| svg::rasterize(bytes, longest))?
 }
 
 // rgba pixels with plain, not premultiplied, alpha
@@ -91,8 +93,22 @@ pub enum ImageState {
  */
 struct Decoded;
 
-// a file and the size it is shrunk to cover (none for its own size)
-type Key = (PathBuf, Option<(u32, u32)>);
+// a file, the size it is shrunk to cover (none for its own size), and the file it was asked for
+//
+// the stamp is the file's modification time and length: a file replaced in place, an icon
+// overwritten by an update or a wallpaper by another, keeps its path, so the stamp is what tells
+// the new one from the old, instead of serving the old pixels forever
+type Key = (PathBuf, Option<(u32, u32)>, Stamp);
+
+// what a file read when it was asked for; one gone or unreadable stamps as none, and reading it
+// fails, so every such ask of that path shares one
+fn stamp(path: &Path) -> Stamp {
+    let metadata = path.metadata().ok()?;
+
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+type Stamp = Option<(SystemTime, u64)>;
 
 enum Slot {
     Loading,
@@ -145,7 +161,7 @@ fn ask(path: &Path, cover: Option<(u32, u32)>) -> (ImageState, Option<Arc<Bitmap
 
     loader.tick += 1;
     let tick = loader.tick;
-    let key = (path.to_path_buf(), cover);
+    let key = (path.to_path_buf(), cover, stamp(path));
 
     if let Some(entry) = loader.entries.get_mut(&key) {
         entry.used = tick;
@@ -207,7 +223,7 @@ fn work() {
 }
 
 fn read_key(key: &Key) -> Option<Bitmap> {
-    let (path, cover) = key;
+    let (path, cover, _) = key;
 
     let image = read(path)?;
 
@@ -301,7 +317,7 @@ impl Loader {
 pub fn forget(image: &Arc<Bitmap>) {
     let mut loader = LOADER.locked();
 
-    loader.entries.retain(|(_, cover), entry| {
+    loader.entries.retain(|(_, cover, _), entry| {
         let same = matches!(&entry.slot, Slot::Ready(kept) if Arc::ptr_eq(kept, image));
 
         cover.is_some() || !same
@@ -317,4 +333,114 @@ pub fn read(path: &Path) -> Option<Bitmap> {
         height,
         pixels: Arc::new(pixels),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::fs;
+    use std::time::Duration;
+
+    // a png of one clear pixel at `path`, of `extra` bytes past its end
+    fn write_png(path: &Path, extra: usize) {
+        write_png_of(path, [0, 0, 0, 0]);
+
+        if extra > 0 {
+            let mut bytes = fs::read(path).unwrap();
+            bytes.extend(std::iter::repeat_n(0, extra));
+            fs::write(path, bytes).unwrap();
+        }
+    }
+
+    // a png of one pixel of `pixels` at `path`
+    fn write_png_of(path: &Path, pixels: [u8; 4]) {
+        let file = fs::File::create(path).unwrap();
+
+        let mut encoder = png::Encoder::new(file, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels).unwrap();
+    }
+
+    /*
+     * an image replaced in place keeps its path, so the cache tells the new file from the old one
+     * by its stamp instead of serving the old pixels; an icon overwritten by an update did that
+     * forever
+     */
+    #[test]
+    fn a_replaced_file_is_asked_for_again() {
+        let path = std::env::temp_dir().join(format!("kanade-replaced-{}.png", std::process::id()));
+
+        write_png(&path, 0);
+        let first = stamp(&path).expect("a file written has a stamp");
+
+        // the same path, written again and a byte longer, so both tell it apart
+        thread::sleep(Duration::from_millis(10));
+        write_png(&path, 1);
+        let second = stamp(&path).expect("a file written again has a stamp");
+
+        assert_ne!(
+            first, second,
+            "a replaced file stamped the same, so its old pixels were served"
+        );
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    /*
+     * the whole path a window takes: a file replaced in place is read again, not answered from the
+     * cache with its old pixels, which is what a stamp-less key did forever
+     */
+    #[test]
+    fn a_replaced_file_is_drawn_from_its_new_pixels() {
+        let path = std::env::temp_dir().join(format!("kanade-newer-{}.png", std::process::id()));
+
+        // a clear pixel, then an opaque one, at the same path
+        write_png(&path, 0);
+        let before = wait_for(&path, [0, 0, 0, 0]);
+
+        thread::sleep(Duration::from_millis(10));
+        write_png_of(&path, [9, 8, 7, 255]);
+
+        let after = wait_for(&path, [9, 8, 7, 255]);
+
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "a file replaced in place was still drawn from its old pixels"
+        );
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    // the bitmap a file is drawn from with `want` as its one pixel, waiting while it is read
+    fn wait_for(path: &Path, want: [u8; 4]) -> Arc<Bitmap> {
+        let started = std::time::Instant::now();
+
+        loop {
+            if let Some(image) = load(path, None)
+                && image.pixels[..] == want
+            {
+                return image;
+            }
+
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the image was never drawn with the pixels it was written with"
+            );
+
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    // a file gone or unreadable stamps as none, one stamp for every such ask of that path
+    #[test]
+    fn a_missing_file_stamps_none() {
+        let path = std::env::temp_dir().join("kanade-nowhere-at-all.png");
+
+        assert_eq!(stamp(&path), None);
+        assert_eq!(stamp(&path), None);
+    }
 }
