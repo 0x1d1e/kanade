@@ -133,12 +133,14 @@ fn entries(reply: &Json, running: &[Running]) -> Vec<Entry> {
 pub struct Titles<'a>(pub &'a [Entry]);
 
 impl LauncherProvider for Titles<'_> {
-    // never for an empty or short query, nor for what other providers answer to a prefix
+    // by title and app name within a fit; an empty query lists every window
     fn find(&self, query: &str) -> Vec<Answer> {
-        if query.chars().count() < FROM
-            || query.starts_with(emoji::PREFIX)
-            || query.starts_with(history::PREFIX)
-        {
+        if query.starts_with(emoji::PREFIX) || query.starts_with(history::PREFIX) {
+            return Vec::new();
+        }
+
+        // an empty query lists every window; a query of one letter lists the apps alone
+        if !query.is_empty() && query.chars().count() < FROM {
             return Vec::new();
         }
 
@@ -240,5 +242,26 @@ mod tests {
         hold(older, vec![entry(1)]);
 
         assert_eq!(titles(), [entry(2)]);
+    }
+
+    // with nothing typed the Windows section lists every open window, by title
+    #[test]
+    fn an_empty_query_lists_every_window() {
+        let entries = [entry(1), entry(2)];
+        let found = Titles(&entries).find("");
+
+        assert_eq!(found.len(), 2);
+        assert!(
+            found.iter().all(|answer| answer.fit == Fit::Prefix),
+            "every window lists as a Prefix"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|answer| matches!(answer.action, Action::Focus(_)))
+        );
+
+        // a query of one letter still lists nothing
+        assert!(Titles(&entries).find("w").is_empty());
     }
 }

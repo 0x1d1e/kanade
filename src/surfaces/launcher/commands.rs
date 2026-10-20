@@ -293,14 +293,19 @@ impl Commands {
 impl LauncherProvider for Commands {
     /*
      * by name within a fit; nothing for a query of one letter or none, nor for `:`, `>` or `@`. A
-     * query that ran a verb before lifts it again while it is remembered, then the higher score
+     * query that ran a verb before lifts it again while it is remembered, then the higher score.
+     * An empty query lists every command, each as a Prefix
      */
     fn find(&self, query: &str) -> Vec<Answer> {
-        if query.chars().count() < FROM
-            || query.starts_with(emoji::PREFIX)
+        if query.starts_with(emoji::PREFIX)
             || query.starts_with(history::PREFIX)
             || query.starts_with(WALLPAPER)
         {
+            return Vec::new();
+        }
+
+        // an empty query lists every command; a query of one letter lists the apps alone
+        if !query.is_empty() && query.chars().count() < FROM {
             return Vec::new();
         }
 
@@ -549,11 +554,20 @@ mod tests {
         assert!(!titles(Rec::Paused).contains(&String::from("Start Recording")));
     }
 
+    // nothing for a prefix of `:`, `>`, `@` or `@`, a one-letter query or a short one, which the
+    // apps list; an empty query lists every command instead
     #[test]
     fn no_row_for_a_prefix_a_short_or_no_query() {
-        for query in ["", "c", ":caffeine", ">caffeine", "@caffeine", "@"] {
+        for query in ["c", ":caffeine", ">caffeine", "@caffeine", "@"] {
             assert!(all().find(query).is_empty(), "{query:?}");
         }
+
+        let empty = all().find("");
+        assert!(!empty.is_empty());
+        assert!(
+            empty.iter().all(|answer| answer.fit == Fit::Prefix),
+            "every command lists as a Prefix"
+        );
     }
 
     // a destination of the same name comes first

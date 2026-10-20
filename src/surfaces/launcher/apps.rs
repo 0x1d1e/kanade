@@ -98,7 +98,7 @@ fn fit(query: &str, name: &str, description: &str, exec: &str) -> Option<Fit> {
 }
 
 // the app's icon, or its name's initial for one without
-fn mark(app: &App) -> Mark {
+pub(super) fn mark(app: &App) -> Mark {
     match &app.icon_file {
         Some(path) => Mark::Picture(path.clone()),
         None => Mark::Tile(
@@ -110,7 +110,7 @@ fn mark(app: &App) -> Mark {
     }
 }
 
-fn answer(app: &App, fit: Fit) -> Answer {
+pub(super) fn answer(app: &App, fit: Fit) -> Answer {
     Answer {
         fit,
         title: app.name.clone(),

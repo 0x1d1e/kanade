@@ -86,17 +86,24 @@ const FROM: usize = 2;
 const ANYWHERE: usize = 3;
 
 impl LauncherProvider for Destinations {
-    // by name within a fit; nothing for a query of one letter or none, which lists the apps
+    /*
+     * by name within a fit; nothing for a query of one letter or none, which lists the apps.
+     * An empty query lists every destination and every Settings page as a Prefix, which the
+     * Launcher's Recents resolve against; a single setting still takes a query
+     */
     fn find(&self, query: &str) -> Vec<Answer> {
         // `@` and whatever follows it opens the grid of wallpapers
         if query.starts_with(WALLPAPER) {
             return self.wallpapers.then(wallpapers).into_iter().collect();
         }
 
-        if query.chars().count() < FROM
-            || query.starts_with(emoji::PREFIX)
-            || query.starts_with(history::PREFIX)
-        {
+        if query.starts_with(emoji::PREFIX) || query.starts_with(history::PREFIX) {
+            return Vec::new();
+        }
+
+        let empty = query.is_empty();
+
+        if !empty && query.chars().count() < FROM {
             return Vec::new();
         }
 
@@ -245,8 +252,11 @@ impl LauncherProvider for Destinations {
         answers.extend(found.into_iter().map(|(.., answer)| answer));
 
         if self.settings {
+            // a recent Settings page lists in the Recents; a setting alone takes a query
             answers.extend(pages(&query));
-            answers.extend(placed(&query));
+            if !empty {
+                answers.extend(placed(&query));
+            }
         }
 
         answers
