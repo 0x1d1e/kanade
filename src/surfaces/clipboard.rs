@@ -288,8 +288,8 @@ impl Search {
      * entry (to the top of the pins, or of the rest), and the ring goes with it. Where it is no
      * longer found, the ring stays on the entry at its place, or the last
      */
-    fn following(mut self, found: &[Entry], id: u64) -> Search {
-        match found.iter().position(|entry| entry.id == id) {
+    fn following(mut self, entries: &[Entry], found: &[usize], id: u64) -> Search {
+        match found.iter().position(|&at| entries[at].id == id) {
             Some(at) => {
                 self.selected = at;
                 self.stop = Stop::Pin;
@@ -308,12 +308,13 @@ impl Search {
 
     // what Enter presses, from the entries the query finds; Clear all is held to act, and `any` is
     // whether there is anything for it to clear
-    fn press(&self, found: &[Entry], any: bool) -> Option<Press> {
+    fn press(&self, entries: &[Entry], found: &[usize], any: bool) -> Option<Press> {
         if self.clear {
             return any.then_some(Press::Clear);
         }
 
-        let entry = found.get(self.selected)?;
+        // the one pressed is copied, as the history may drop it before the copy runs; no other is
+        let entry = entries.get(*found.get(self.selected)?)?;
 
         Some(match self.stop {
             Stop::Entry => Press::Copy(entry.clone()),
@@ -353,12 +354,14 @@ pub fn fit() {
     let visit = IslandService::read().visit();
 
     let (fresh, open) = {
-        let entries = Clipboard::read().entries().to_vec();
+        // borrowed, so a history of pictures is not copied to count it
+        let clipboard = Clipboard::read();
+        let entries = clipboard.entries();
         let query = Search::read().of(visit).query;
 
         (
-            asks(found(&entries, "").len()),
-            asks(found(&entries, &query).len()),
+            asks(found_at(entries, "").len()),
+            asks(found_at(entries, &query).len()),
         )
     };
 
@@ -452,14 +455,6 @@ static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
 // tests that read the one memo take turns
 #[cfg(test)]
 pub(super) static MEMO_TURN: Mutex<()> = Mutex::new(());
-
-// the entries the query finds, newest first
-fn found(entries: &[Entry], query: &str) -> Vec<Entry> {
-    found_at(entries, query)
-        .into_iter()
-        .map(|at| entries[at].clone())
-        .collect()
-}
 
 /*
  * where in `entries` the query finds them, scanned again only when the query or the history
@@ -592,9 +587,11 @@ fn size(bytes: usize) -> String {
 
 // the view's own read of the visit, so this never reads IslandService again
 pub fn surface(monitor: &str, visit: u64) -> Rectangle {
-    let entries = Clipboard::read().entries().to_vec();
+    // the history is borrowed for the whole draw: an entry may hold 16 MiB, and the view only reads
+    let clipboard = Clipboard::read();
+    let entries = clipboard.entries();
     let search = Search::read().of(visit);
-    let found = found(&entries, &search.query);
+    let found = found_at(entries, &search.query);
     let pinned = entries.iter().filter(|entry| entry.pinned).count();
     let search = search.bounded(found.len(), entries.len() > pinned);
 
@@ -606,7 +603,7 @@ pub fn surface(monitor: &str, visit: u64) -> Rectangle {
             &format!("Nothing found for \u{201c}{}\u{201d}", search.query.trim()),
         ))
     } else {
-        Box::new(list(monitor, &found, &search))
+        Box::new(list(monitor, entries, &found, &search))
     };
 
     let shape = view::largest();
@@ -754,22 +751,22 @@ fn state(title: &str, detail: &str) -> Rectangle {
  * the rows scrolled `offset` down, clipped to the list; a thumb in the inset says where while they
  * do not all fit
  */
-fn list(monitor: &str, found: &[Entry], search: &Search) -> Stack {
+fn list(monitor: &str, entries: &[Entry], found: &[usize], search: &Search) -> Stack {
     let (first, end) = shown(search.offset, found.len());
+    let rows = &found[first..end];
 
     // only the rows any part of shows get a preview written
-    for entry in &found[first..end] {
-        preview::request(entry);
+    for &at in rows {
+        preview::request(&entries[at]);
     }
 
     let column = Column::new(
-        found[first..end]
-            .iter()
+        rows.iter()
             .zip(first..)
-            .map(|(entry, index)| {
+            .map(|(&at, index)| {
                 let ring = (index == search.selected && !search.clear).then_some(search.stop);
 
-                Box::new(row(monitor, search.visit, entry, ring)) as Box<dyn Widget>
+                Box::new(row(monitor, search.visit, &entries[at], ring)) as Box<dyn Widget>
             })
             .collect(),
     )
@@ -1059,17 +1056,26 @@ pub fn key(monitor: &str, key: Key) -> bool {
         island.visit()
     };
 
-    let entries = Clipboard::read().entries().to_vec();
-    let any = entries.iter().any(|entry| !entry.pinned);
-    let search = Search::read().of(visit);
-    let found = found(&entries, &search.query);
+    // the history is read to answer the key, and let go of before the Search and the island are
+    // written
+    let (mut search, press) = {
+        let clipboard = Clipboard::read();
+        let entries = clipboard.entries();
+        let any = entries.iter().any(|entry| !entry.pinned);
+        let search = Search::read().of(visit);
+        let found = found_at(entries, &search.query);
 
-    let Some((mut search, presses)) = search.bounded(found.len(), any).step(key, found.len(), any)
-    else {
-        return false;
+        let Some((search, presses)) = search.bounded(found.len(), any).step(key, found.len(), any)
+        else {
+            return false;
+        };
+
+        let press = presses
+            .then(|| search.press(entries, &found, any))
+            .flatten();
+
+        (search, press)
     };
-
-    let press = presses.then(|| search.press(&found, any)).flatten();
 
     // a failed copy and a refused pin are said until the next key
     if search.copying == Copying::Failed {
@@ -1136,12 +1142,16 @@ fn toggle(visit: u64, id: u64) {
 
     // read apart, since `store` writes; the entry moved, so the ring follows it
     let search = Search::read().of(visit);
-    let found = found(Clipboard::read().entries(), &search.query);
 
-    store(Search {
-        full,
-        ..search.following(&found, id)
-    });
+    let follow = {
+        let clipboard = Clipboard::read();
+        let entries = clipboard.entries();
+        let found = found_at(entries, &search.query);
+
+        search.following(entries, &found, id)
+    };
+
+    store(Search { full, ..follow });
 }
 
 /*
@@ -1178,10 +1188,17 @@ fn copied(monitor: &str, visit: u64, done: bool) {
 fn wheel(lines: f32) {
     let visit = IslandService::read().visit();
 
-    let entries = Clipboard::read().entries().to_vec();
     let search = Search::read().of(visit);
-    let count = found(&entries, &search.query).len();
-    let any = entries.iter().any(|entry| !entry.pinned);
+
+    let (count, any) = {
+        let clipboard = Clipboard::read();
+        let entries = clipboard.entries();
+
+        (
+            found_at(entries, &search.query).len(),
+            entries.iter().any(|entry| !entry.pinned),
+        )
+    };
 
     store(search.bounded(count, any).wheel(lines, count));
 }
