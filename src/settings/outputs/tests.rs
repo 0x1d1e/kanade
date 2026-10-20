@@ -626,7 +626,10 @@ fn a_revert_that_fails_keeps_the_file_and_tries_again() {
     let session = control.session.as_ref().unwrap();
 
     assert_eq!(session.stuck.as_deref(), Some("niri is busy"));
-    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+    assert_eq!(session.retry_at, 2_000 + RETRY_MS);
+
+    // the window to Keep is still the one the trial began with: a failed revert does not reopen it
+    assert_eq!(session.deadline, 1_000 + TRIAL_MS);
 
     *fake.refuse.borrow_mut() = None;
     fake.at(7_000);
@@ -659,7 +662,10 @@ fn a_failed_revert_waits_for_its_deadline_after_the_page_leaves() {
     let session = control.session.as_ref().unwrap();
 
     assert_eq!(session.stuck.as_deref(), Some("niri is busy"));
-    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+    assert_eq!(session.retry_at, 2_000 + RETRY_MS);
+
+    // the window to Keep is still the one the trial began with: a failed revert does not reopen it
+    assert_eq!(session.deadline, 1_000 + TRIAL_MS);
 
     // the ticks between the attempt and the deadline: nothing is tried
     let commands = fake.commands.borrow().len();
@@ -1280,7 +1286,7 @@ fn a_revert_that_does_not_answer_keeps_its_file_and_tries_again() {
 
     let session = control.session.as_ref().unwrap();
     assert!(session.stuck.is_some());
-    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+    assert_eq!(session.retry_at, 2_000 + RETRY_MS);
 
     // when the command works again, the retry succeeds
     fake.hangs.set(false);
@@ -1671,3 +1677,4 @@ fn keep_request_succeeds_and_prevents_revert_when_writing_pending_file_fails() {
     assert!(fake.commands.borrow().is_empty());
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
 }
+

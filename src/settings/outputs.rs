@@ -705,13 +705,22 @@ pub fn restore_plan(
         plan.push(position_words(previous.x, previous.y));
     }
 
-    // an output niri cannot be asked about is asked for variable refresh rate only if it had it
-    let vrr_wanted = match shown {
-        Some(output) => {
-            output.vrr_supported
-                && (force.contains(&Field::Vrr) || output.vrr_enabled != (previous.vrr != Vrr::Off))
+    // On demand is invisible: niri reports the output off until a window wants the rate, so
+    // `vrr_enabled` cannot tell it from off. It is therefore sent back only for a trial that changed
+    // the variable refresh rate at all (`force`); for anything else, niri's own change is still
+    // there and the file's `on-demand=true` is what the output does once niri reloads it, so saying
+    // it again would be a change nobody asked for. Off and on are visible, and are restored.
+    let vrr_changed = force.contains(&Field::Vrr);
+    let vrr_wanted = if previous.vrr == Vrr::OnDemand {
+        vrr_changed
+    } else {
+        match shown {
+            Some(output) => {
+                output.vrr_supported
+                    && (vrr_changed || output.vrr_enabled != (previous.vrr != Vrr::Off))
+            }
+            None => vrr_changed || previous.vrr != Vrr::Off,
         }
-        None => force.contains(&Field::Vrr) || previous.vrr != Vrr::Off,
     };
 
     if vrr_wanted {
@@ -940,7 +949,13 @@ pub struct Session {
     pub output: String,
     pub previous: Previous,
     pub edits: BTreeMap<Field, Edit>,
+
+    // when the user's window to Keep ends, and restarts at each change; it never moves back
     pub deadline: u64,
+
+    // when a revert that failed may be tried again; the deadline itself while no revert failed,
+    // so `revert_when_due` and the worker's wait need no other rule
+    pub retry_at: u64,
 
     // why the last revert failed, which the page says while it retries
     pub stuck: Option<String>,
@@ -987,6 +1002,15 @@ impl Controller {
             .map(|session| session.deadline.saturating_sub(now))
     }
 
+    /// Milliseconds until the trial next needs its worker: the deadline, or the retry of a revert
+    /// that failed. None outside a trial. The worker waits on this rather than on a tick, so a
+    /// deadline that passed while its thread was panicking, or blocked in niri, is still due.
+    pub fn wait(&self, now: u64) -> Option<u64> {
+        self.session
+            .as_ref()
+            .map(|session| session.retry_at.max(session.deadline).saturating_sub(now))
+    }
+
     /// Tries `edit` on the output `name` in niri's memory. The first change of a trial writes the
     /// pending file first and does nothing if that fails; a change niri refuses leaves the trial as
     /// it was (and ends it, deleting the file, when it was the first). `hint` is what the config
@@ -1018,6 +1042,15 @@ impl Controller {
         let now = port.now();
 
         if self.session.is_none() {
+            // a fresh, unsaved file is another Kanade's unfinished trial: writing over it would
+            // drop the only record that puts that monitor back, so the change is refused, not made
+            if is_foreign(&self.file, port.unix_ms()) {
+                return Err(String::from(
+                    "Nothing was tried: a change another Kanade left unfinished is on file, and is \
+                     put back the next time Kanade starts",
+                ));
+            }
+
             let previous = Previous::of(output, hint);
             let taken = port.unix_ms();
 
@@ -1030,6 +1063,7 @@ impl Controller {
                 previous,
                 edits: BTreeMap::new(),
                 deadline: now + TRIAL_MS,
+                retry_at: now + TRIAL_MS,
                 stuck: None,
                 taken,
             });
@@ -1052,6 +1086,7 @@ impl Controller {
                 if let Some(session) = &mut self.session {
                     session.edits.insert(edit.field(), edit);
                     session.deadline = now + TRIAL_MS;
+                    session.retry_at = session.retry_at.max(session.deadline);
                     let applied: Vec<Edit> = session.edits.values().cloned().collect();
                     let _ = write_pending(
                         &self.file,
@@ -1070,6 +1105,7 @@ impl Controller {
         if let Some(session) = &mut self.session {
             session.edits.insert(edit.field(), edit);
             session.deadline = now + TRIAL_MS;
+            session.retry_at = session.retry_at.max(session.deadline);
             // niri accepted a change, so the last revert's error is stale: leaving the page then
             // reverts at once, not after the failed revert's own deadline
             session.stuck = None;
@@ -1102,9 +1138,20 @@ impl Controller {
         }
 
         let now = port.now();
-        if requested_at > session.deadline || now > session.deadline + KEEP_GRACE_MS {
+
+        // a request made after the deadline arrived too late, whether or not a tick has run since:
+        // the window the user was given is over, so the change goes back instead of being written.
+        // The grace is the worker's queue only, so a press made inside the window still counts.
+        let late = requested_at > session.deadline;
+
+        if late || now > session.deadline + KEEP_GRACE_MS {
             let _ = self.revert(port);
-            return Err(String::from("The trial has expired"));
+
+            return Err(if late {
+                String::from("The trial has expired")
+            } else {
+                String::from("The trial has expired: Keep came too late")
+            });
         }
 
         let outputs = port.outputs()?;
@@ -1236,7 +1283,7 @@ impl Controller {
         }
 
         if let Some(why) = failed {
-            session.deadline = port.now() + RETRY_MS;
+            session.retry_at = port.now() + RETRY_MS;
             session.stuck = Some(why.clone());
             self.session = Some(session);
 
@@ -1254,14 +1301,15 @@ impl Controller {
 
     /// Reverts the trial when it is due: at once when the page it was made on is gone and no revert
     /// has been tried since, otherwise at its deadline (or `RETRY_MS` after a failed revert).
-    /// `None` while it is not yet time, so a tick before the deadline does nothing.
+    /// `None` while it is not yet time, so a tick before the deadline does nothing. A deadline that
+    /// passed while nothing was watching is due at once: nothing here is counted from a tick.
     pub fn revert_when_due(
         &mut self,
         port: &dyn Port,
         gone: bool,
     ) -> Option<Result<Ended, String>> {
         let session = self.session.as_ref()?;
-        let due = (gone && session.stuck.is_none()) || port.now() >= session.deadline;
+        let due = (gone && session.stuck.is_none()) || port.now() >= session.retry_at;
 
         due.then(|| self.revert(port))
     }
@@ -1276,7 +1324,20 @@ impl Controller {
     /// file. A file marked `saved` is a record of a config change already written: it is deleted
     /// without asking niri. An unsaved file older than `RECOVERY_MS`, or one that cannot be read,
     /// is deleted unread unless niri's live output still shows the unconfirmed trial changes.
+    ///
+    /// A recovery and a trial never share the file: one that holds a trial here (`session`) leaves
+    /// it alone, and a trial begun while a file is here is refused (`is_foreign`), so the file is
+    /// always the one thing it says it is.
     pub fn recover(&mut self, port: &dyn Port) -> Result<Option<String>, String> {
+        // a file that is this shell's own trial's is not left over: taking it would put back the
+        // trial's output while the page still shows the trial, and drop the file that reverts it
+        if let Some(session) = &self.session {
+            return Ok(Some(format!(
+                "Left the pending-output file alone: {} is being changed now",
+                session.output
+            )));
+        }
+
         let Some(text) = fs::read_to_string(&self.file).ok() else {
             return Ok(None);
         };
@@ -1414,6 +1475,26 @@ fn write_pending(
             "Not tried: the file that puts {name} back after a crash could not be written: {error}"
         )
     })
+}
+
+/// Whether the pending file here is one a new trial must not write over. A fresh, unsaved file is
+/// the record of a trial another Kanade was in when it ended: only recovery may put that monitor
+/// back or judge the file stale, and `RECOVERY_MS` is that same judgement here. A `saved` file is a
+/// record of a change already in the config (recovery deletes it), and an old one is a file recovery
+/// would delete unread, so a new trial may replace both without losing a trial.
+fn is_foreign(file: &Path, now: u64) -> bool {
+    let Ok(text) = fs::read_to_string(file) else {
+        return false;
+    };
+    let Some(json) = crate::sources::json::parse(&text) else {
+        return false;
+    };
+    let saved = json.get("saved").and_then(Json::as_bool).unwrap_or(false);
+    let Some(taken) = json.get("taken_ms").and_then(Json::as_u64) else {
+        return false;
+    };
+
+    !saved && now.saturating_sub(taken) <= RECOVERY_MS
 }
 
 fn delete_pending(file: &Path) {
