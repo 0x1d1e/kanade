@@ -694,18 +694,24 @@ pub fn fit() {
         let query = search.query.clone();
 
         // a new visit starts with nothing typed, so it lists the sections
-        let fresh = asks(found(visit, apps.list(), "", rec).layout().listed());
+        let read = apps.found();
+
+        let fresh = asks(found(visit, apps.list(), "", rec, read).layout().listed());
 
         // the actions stand in the list's place, as tall as their rows and the note under them
         let open = match search.panel.is_some() {
             true => {
-                let layout = found(visit, apps.list(), &query, rec).layout();
+                let layout = found(visit, apps.list(), &query, rec, read).layout();
                 let search = search.bounded(&layout);
 
                 asks(search.panel_listed() + search.note_room())
             }
             false if query.trim().is_empty() => fresh,
-            false => asks(found(visit, apps.list(), &query, rec).layout().listed()),
+            false => asks(
+                found(visit, apps.list(), &query, rec, read)
+                    .layout()
+                    .listed(),
+            ),
         };
 
         (fresh, open)
@@ -949,8 +955,12 @@ fn kept(answer: &Answer) -> Option<String> {
     }
 }
 
-// what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit
-fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
+/*
+ * what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit.
+ * `read` says whether the apps were read at all: until they are, an app may be the answer, so the
+ * web is not offered for a query they could still match
+ */
+fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> Found {
     if let Some((_, choices)) = choose::of(visit) {
         return Found::ranked(provider::ranked(&[&Choices(&choices)], query));
     }
@@ -984,7 +994,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
                 query,
             );
 
-            Found::ranked(offered(query, ranked, web::openable))
+            Found::ranked(offered(query, ranked, read, web::openable))
         },
     )
 }
@@ -995,8 +1005,13 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
  * answer it and the web can never outrank an answer (ADR 0130). `openable` is asked only when
  * something is offered, so a query the providers answer reads no PATH
  */
-fn offered(query: &str, ranked: Vec<Answer>, openable: impl FnOnce() -> bool) -> Vec<Answer> {
-    match ranked.is_empty() {
+fn offered(
+    query: &str,
+    ranked: Vec<Answer>,
+    read: bool,
+    openable: impl FnOnce() -> bool,
+) -> Vec<Answer> {
+    match ranked.is_empty() && read {
         true => web::offers(query, openable),
         false => ranked,
     }
@@ -1019,7 +1034,7 @@ fn grouped(query: &str, sections: impl FnOnce() -> Found, ranked: impl FnOnce() 
 pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     let apps = Apps::read();
     let search = Search::read().of(visit);
-    let found = found(visit, apps.list(), &search.query, recording);
+    let found = found(visit, apps.list(), &search.query, recording, apps.found());
     let layout = found.layout();
     let search = search.bounded(&layout);
     let choosing = choose::of(visit);
@@ -1683,7 +1698,8 @@ pub fn key(monitor: &str, key: Key) -> bool {
     };
 
     let search = Search::read().of(visit);
-    let found = found(visit, Apps::read().list(), &search.query, rec);
+    let apps = Apps::read();
+    let found = found(visit, apps.list(), &search.query, rec, apps.found());
     let layout = found.layout();
 
     let Some((mut search, intent)) = search.bounded(&layout).step(key, &layout) else {
@@ -2192,7 +2208,8 @@ fn wheel(lines: f32) {
         return;
     }
 
-    let found = found(visit, Apps::read().list(), &search.query, rec);
+    let apps = Apps::read();
+    let found = found(visit, apps.list(), &search.query, rec, apps.found());
     let layout = found.layout();
 
     store(search.bounded(&layout).wheel(lines, &layout));
@@ -2573,11 +2590,11 @@ mod tests {
         let files = vec![answer("Files")];
 
         assert_eq!(
-            offered("nothing matches this", files.clone(), || true),
+            offered("nothing matches this", files.clone(), true, || true),
             files
         );
 
-        let web = offered("nothing matches this", Vec::new(), || true);
+        let web = offered("nothing matches this", Vec::new(), true, || true);
         assert_eq!(web.len(), 2, "the search and the address");
         assert!(
             web.iter()
@@ -2585,12 +2602,19 @@ mod tests {
         );
 
         // a query no web row is offered for is still nothing at all
-        assert_eq!(offered("x", Vec::new(), || true), Vec::new());
+        assert_eq!(offered("x", Vec::new(), true, || true), Vec::new());
 
         // without the opener there is no row to press, and the state under the field says why
         assert_eq!(
-            offered("nothing matches this", Vec::new(), || false),
+            offered("nothing matches this", Vec::new(), true, || false),
             Vec::new()
+        );
+
+        // an app may still be the answer until the apps are read, so nothing is sent meanwhile
+        assert_eq!(
+            offered("nothing matches this", Vec::new(), false, || true),
+            Vec::new(),
+            "the web waits for the desktop scan"
         );
     }
 }
