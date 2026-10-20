@@ -59,6 +59,13 @@ pub enum Key {
     // select all text, e.g. Ctrl+A
     SelectAll,
 
+    /*
+     * a key whose own letter, with ctrl held, names a shortcut: Ctrl+K, Ctrl+1. A window's on_key
+     * is given no modifiers, so this is how it tells the shortcut from the letter it would
+     * otherwise take for typing
+     */
+    Shortcut(char),
+
     // a key the runtime has no name for yet
     Other,
 }

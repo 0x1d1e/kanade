@@ -136,10 +136,13 @@ impl WaylandState {
             return;
         }
 
-        // a window has no use for a shortcut's letter, which it would take for typing
+        /*
+         * a ctrl key is named as the shortcut it is, so the window does not take its letter for
+         * typing; ctrl+a keeps the name it has always had
+         */
         let key = match key {
             Key::Character('a') if modifiers.ctrl => Key::SelectAll,
-            Key::Character(_) if modifiers.ctrl => Key::Other,
+            Key::Character(letter) if modifiers.ctrl => Key::Shortcut(letter),
             key => key,
         };
 

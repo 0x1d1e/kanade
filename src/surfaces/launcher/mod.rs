@@ -6,8 +6,9 @@
 //! starts and the island closes; a value or an emoji is copied, and the island
 //! closes once it is, or says it was not; a command (`commands`, Kanade's own verbs) runs through the socket and closes the island once answered, or says `Not run`. It says when the apps are still being found and when
 //! nothing matches. With nothing typed it lists sections, a heading over each: the Recents (by
-//! frecency), then Kanade's Commands, the open Windows and the Apps. `kanade dmenu` opens it on a
-//! script's lines alone (`choose`).
+//! frecency), then Kanade's Commands, the open Windows and the Apps. `Ctrl+K` opens the actions of the
+//! selected answer (`actions`) in the list's place, `Ctrl+1` through `Ctrl+9` press the nth answer, and
+//! `kanade dmenu` opens it on a script's lines alone (`choose`).
 
 use std::thread;
 use std::time::Instant;
@@ -38,6 +39,7 @@ use crate::{modules, view};
 use super::visit::Visited;
 use super::{Outline, capture, controls, store};
 
+mod actions;
 mod apps;
 mod calculator;
 pub mod choose;
@@ -50,6 +52,7 @@ mod units;
 pub mod windows;
 
 use apps::{Actions, Apps as AppsProvider};
+use actions::{Act, Panel};
 use calculator::Calculator;
 use choose::{Choices, Choosing};
 use commands::{Commands, Rec};
@@ -114,6 +117,16 @@ pub struct Search {
     offset: f32,
 
     pressing: Pressing,
+
+    // the actions `Ctrl+K` opened over the selected answer, none while the list shows
+    panel: Option<Panel>,
+
+    // where the panel's ring is, and how far its rows scrolled
+    chosen: usize,
+    panel_offset: f32,
+
+    // a pin or unpin the settings file refused, with why, said under the panel's rows
+    note: Option<String>,
 }
 
 /*
@@ -128,6 +141,20 @@ enum Pressing {
 
     // with why
     Failed(Action, String),
+}
+
+/*
+ * what a key asks for once the search has taken it: nothing, the answer the search selects, the nth
+ * answer of the list (`Ctrl+1`), the row of the open panel its ring is on, or the panel of the
+ * answer selected
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intent {
+    Idle,
+    Selected,
+    At(usize),
+    Offer,
+    Panel,
 }
 
 impl Service for Search {
@@ -200,10 +227,16 @@ impl Search {
     }
 
     /*
-     * the search after a key and whether it presses the selected answer, none when the key is not
-     * for the Launcher; `layout` is what the query finds before the key
+     * the search after a key and what it asks for, none when the key is not for the Launcher;
+     * `layout` is what the query finds before the key
      */
-    fn step(mut self, key: Key, layout: &Layout) -> Option<(Search, bool)> {
+    fn step(mut self, key: Key, layout: &Layout) -> Option<(Search, Intent)> {
+        // the panel takes the keys it can act on, and Escape and Ctrl+K close it; a key it has no
+        // use for closes it unacted, so the list is never typed under a panel no key opened for
+        if self.panel.is_some() {
+            return self.stepped_panel(key, layout);
+        }
+
         let last = layout.answers.len().saturating_sub(1);
 
         match key {
@@ -219,7 +252,7 @@ impl Search {
                 }
                 self.selected = 0;
                 self.offset = 0.0;
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::Space => {
                 if self.select_all {
@@ -233,7 +266,20 @@ impl Search {
                 }
                 self.selected = 0;
                 self.offset = 0.0;
-                Some((self, false))
+                Some((self, Intent::Idle))
+            }
+            Key::Shortcut('k') => self.opened(layout),
+
+            // the nth answer, which nothing presses on a list shorter than n
+            Key::Shortcut(letter) => {
+                let at = letter
+                    .to_digit(10)
+                    .filter(|&digit| digit >= 1)
+                    .map(|digit| digit as usize - 1)
+                    .filter(|&at| at <= last)?;
+
+                self.selected = at;
+                Some((self, Intent::At(at)))
             }
             Key::Backspace => {
                 if self.select_all {
@@ -253,7 +299,7 @@ impl Search {
                     self.selected = 0;
                     self.offset = 0.0;
                 }
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::Delete => {
                 if self.select_all {
@@ -272,7 +318,7 @@ impl Search {
                     self.selected = 0;
                     self.offset = 0.0;
                 }
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::Left => {
                 if self.select_all {
@@ -286,7 +332,7 @@ impl Search {
                         .unwrap_or(0);
                     self.caret = prev;
                 }
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::Right => {
                 if self.select_all {
@@ -300,40 +346,108 @@ impl Search {
                         .unwrap_or(self.query.len());
                     self.caret = next;
                 }
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::Home => {
                 self.select_all = false;
                 self.caret = 0;
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::End => {
                 self.select_all = false;
                 self.caret = self.query.len();
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::SelectAll => {
                 if !self.query.is_empty() {
                     self.select_all = true;
                     self.caret = self.query.len();
                 }
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
-            Key::Enter => Some((self, !layout.answers.is_empty())),
+            Key::Enter => Some((
+                self,
+                if layout.answers.is_empty() {
+                    Intent::Idle
+                } else {
+                    Intent::Selected
+                },
+            )),
             Key::Up => {
                 self.select_all = false;
                 self.selected = self.selected.saturating_sub(1);
                 self.offset = layout.reveal(self.offset, self.selected);
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             Key::Down => {
                 self.select_all = false;
                 self.selected = (self.selected + 1).min(last);
                 self.offset = layout.reveal(self.offset, self.selected);
-                Some((self, false))
+                Some((self, Intent::Idle))
             }
             _ => None,
         }
+    }
+
+    // `Ctrl+K`: the actions of the selected answer, or the list once they are open
+    fn opened(mut self, layout: &Layout) -> Option<(Search, Intent)> {
+        if layout.answers.is_empty() {
+            return Some((self, Intent::Idle));
+        }
+
+        self.chosen = 0;
+        self.panel_offset = 0.0;
+
+        Some((self, Intent::Panel))
+    }
+
+    /*
+     * a key while the actions are open: the ring moves over the rows, Enter presses the one it is
+     * on and a click the one clicked; Escape and `Ctrl+K` close the panel unacted, as does a key no
+     * row takes, so the list comes back rather than typing under a panel
+     */
+    fn stepped_panel(mut self, key: Key, layout: &Layout) -> Option<(Search, Intent)> {
+        let last = self.panel.as_ref().map_or(0, |panel| panel.offers.len() - 1);
+
+        match key {
+            Key::Escape | Key::Shortcut('k') => {
+                self.closed();
+                Some((self, Intent::Idle))
+            }
+            Key::Enter => Some((self, Intent::Offer)),
+            Key::Up => {
+                self.chosen = self.chosen.saturating_sub(1);
+                Some((self, Intent::Idle))
+            }
+            Key::Down => {
+                self.chosen = (self.chosen + 1).min(last);
+                Some((self, Intent::Idle))
+            }
+            Key::Shortcut(letter) => {
+                let at = letter
+                    .to_digit(10)
+                    .filter(|&digit| digit >= 1)
+                    .map(|digit| digit as usize - 1)
+                    .filter(|&at| at <= last)?;
+
+                self.chosen = at;
+                Some((self, Intent::Offer))
+            }
+            // a key the panel has no use for closes it, unacted, and the list takes nothing
+            _ => {
+                let _ = layout;
+
+                self.closed();
+                Some((self, Intent::Idle))
+            }
+        }
+    }
+
+    // the actions closed, the selection where it was
+    fn closed(&mut self) {
+        self.panel = None;
+        self.chosen = 0;
+        self.panel_offset = 0.0;
     }
 
     // scrolled by the wheel, the selection kept on a row that shows whole
@@ -358,6 +472,18 @@ impl Search {
         }
         if self.query.is_empty() {
             self.select_all = false;
+        }
+
+        // the panel follows the answers: a query that finds nothing leaves no answer to act on
+        if let Some(panel) = &self.panel {
+            let rows = panel.offers.len().saturating_sub(1);
+
+            self.chosen = self.chosen.min(rows);
+            self.panel_offset = self.panel_offset.max(0.0);
+
+            if layout.answers.is_empty() {
+                self.panel = None;
+            }
         }
 
         self
@@ -1329,29 +1455,148 @@ pub fn key(monitor: &str, key: Key) -> bool {
     let found = found(visit, Apps::read().list(), &search.query, rec);
     let layout = found.layout();
 
-    let Some((mut search, presses)) = search.bounded(&layout).step(key, &layout) else {
+    let Some((mut search, intent)) = search.bounded(&layout).step(key, &layout) else {
         return false;
     };
 
-    let selected = found
-        .get(search.selected)
-        .map(|answer| answer.action.clone());
     let query = search.query.clone();
 
     // a failed press is said until the next key
     if matches!(search.pressing, Pressing::Failed(..)) {
         search.pressing = Pressing::Idle;
     }
+    search.note = None;
+
+    // the answer the panel acts on, or the row of it its ring is on
+    let panel = search.panel.clone();
+    let offer = panel
+        .as_ref()
+        .and_then(|panel| panel.offers.get(search.chosen))
+        .and_then(|offer| offer.act.clone());
 
     store(search);
 
     IslandService::write().attend(monitor, Instant::now());
 
-    if presses && let Some(action) = selected {
-        press(monitor, visit, action, &query);
+    match intent {
+        Intent::Idle => {}
+
+        // `Ctrl+K` opens the actions of the answer selected now, which the view then draws
+        Intent::Panel => opened(visit, &found, search.selected),
+
+        Intent::Selected => {
+            if let Some(answer) = found.get(search.selected) {
+                press(monitor, visit, answer.action.clone(), &query);
+            }
+        }
+
+        // the nth answer, which the list already held
+        Intent::At(at) => {
+            if let Some(answer) = found.get(at) {
+                press(monitor, visit, answer.action.clone(), &query);
+            }
+        }
+
+        Intent::Offer => {
+            if let Some(act) = offer {
+                acted(monitor, visit, &panel, act, &query);
+            }
+        }
     }
 
     true
+}
+
+// the actions of the answer at `at`, read now so what it says of its app and the Dock is current
+fn opened(visit: u64, found: &Found, at: usize) {
+    let Some(answer) = found.get(at) else {
+        return;
+    };
+
+    let apps = Apps::read();
+    let pinned = config::get().pinned.clone();
+    let panel = actions::of(answer, apps.list(), &pinned);
+
+    let mut search = Search::read().of(visit);
+
+    if search.visit != visit {
+        return;
+    }
+
+    search.panel = Some(panel);
+    search.chosen = 0;
+    search.panel_offset = 0.0;
+    store(search);
+}
+
+// what a row of the panel asked for
+fn acted(monitor: &str, visit: u64, panel: &Option<Panel>, act: Act, query: &str) {
+    match act {
+        Act::Press(action) => {
+            // a row that presses the answer closes the panel first, as the answer's press closes
+            // the island
+            if let Some(panel) = panel
+                && panel.offers.iter().any(|offer| offer.act.as_ref() == Some(&Act::Press(action.clone())))
+            {
+                close_panel(visit);
+            }
+
+            press(monitor, visit, action, query);
+        }
+
+        Act::Copy(text) => {
+            close_panel(visit);
+
+            let action = Action::Copy(text.clone());
+
+            if !Search::write().press_waiting(visit, action.clone()) {
+                return;
+            }
+
+            let done = {
+                let monitor = monitor.to_owned();
+                move |done| pressed(&monitor, visit, action, done)
+            };
+
+            if let Err(why) = copy(text, done) {
+                let mut search = Search::read().of(visit);
+                search.press_failed(visit, Action::Copy(String::new()), why);
+                store(search);
+            }
+        }
+
+        Act::Pin { id, pinned } => pinned_to(visit, id, pinned),
+    }
+}
+
+fn close_panel(visit: u64) {
+    let mut search = Search::read().of(visit);
+
+    if search.visit == visit {
+        search.closed();
+        store(search);
+    }
+}
+
+/*
+ * pins the app with desktop file id `id` to the Dock, or unpins it, through the settings file as the
+ * Dock's own menu does; off the view thread, as the write may wait, and the Dock follows the reload
+ */
+fn pinned_to(visit: u64, id: String, pinned: bool) {
+    close_panel(visit);
+
+    thread::spawn(move || {
+        if let Err(why) = settings::set_pinned(&id, pinned) {
+            eprintln!("launcher: cannot set the Dock's pin: {why}");
+
+            let mut search = Search::read().of(visit);
+
+            if search.visit == visit {
+                search.note = Some(why);
+                store(search);
+            }
+        }
+    });
 }
 
 /*
