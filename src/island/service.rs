@@ -144,7 +144,10 @@ struct Island {
     // the pointer is in the input region
     inside: bool,
 
-    // the visit a `kanade dmenu` waits on: neither the hold nor the grace collapses it
+    /*
+     * the visit the island waits on, as `kanade dmenu` does and the first-start tour (ADR 0123):
+     * neither the hold nor the grace collapses it
+     */
     waits: Option<u64>,
 
     /*
@@ -585,8 +588,9 @@ impl IslandService {
     }
 
     /*
-     * a script waits on the Surface open in this visit, as `kanade dmenu` does: it stays open until
-     * the user answers, with Escape, a choice or another Surface, however long they take
+     * the Surface open in this visit waits for the user, as `kanade dmenu` does and the first-start
+     * tour (ADR 0123): it stays open until the user answers, with Escape, a choice or another
+     * Surface, however long they take
      */
     pub fn wait(&mut self, monitor: &str) {
         let visit = self.visit();
@@ -895,6 +899,28 @@ impl IslandService {
 
         // nothing opens while the overview is, and a hold without a Surface would starve the keyboard
         let expanded = self.expanded(monitor);
+
+        /*
+         * the first-start tour waits for the user and takes no keyboard (ADR 0123): it opens over a
+         * start with a window focused, where typing has to reach that window, and it stays until the
+         * user closes it rather than for the hold
+         */
+        if surface == Surface::Welcome {
+            let island = self.island(monitor);
+            island.held = false;
+
+            if island.due.take().is_some() {
+                nudge();
+            }
+
+            // the visit it just opened, which the user's press then ends
+            if expanded {
+                self.wait(monitor);
+            }
+
+            return;
+        }
+
         let island = self.island(monitor);
         island.held = expanded;
 
@@ -1427,6 +1453,42 @@ mod tests {
         island.set_armed(MONITOR, true);
         island.input(MONITOR, Input::Click(Segment::Primary), Instant::now());
         assert_eq!(island.keyboard(MONITOR), Keyboard::Exclusive);
+    }
+
+    /*
+     * the first-start tour (ADR 0123): a start has a window focused, so it takes no keyboard and
+     * typing still reaches that window, and it stays until the user closes it rather than for the
+     * hold an island opened without a press would get
+     */
+    #[test]
+    fn the_welcome_tour_takes_no_keyboard_and_waits_for_the_user() {
+        let now = Instant::now();
+        let mut island = IslandService::new();
+
+        island.open(MONITOR, Surface::Welcome, now);
+
+        // OnDemand focuses only on a press, so typing still reaches the focused window
+        assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+        assert_eq!(island.deadline(), None);
+
+        // it waits on this visit, so neither the hold nor the grace ends it
+        assert!(island.waits(MONITOR));
+        island.expire(now + HOLD + GRACE);
+        assert!(island.expanded(MONITOR));
+
+        island.hover(MONITOR, true, true, now + HOLD);
+        assert_eq!(island.keyboard(MONITOR), Keyboard::OnDemand);
+        island.hover(MONITOR, false, true, now + HOLD + ms(100));
+        island.expire(now + HOLD + GRACE + HOLD);
+        assert!(island.expanded(MONITOR));
+        assert_eq!(island.deadline(), None);
+
+        // the press it waits for dismisses it (`welcome::surface` collapses it, since `expand`
+        // would only claim the island it already shows), and it leaves no keyboard behind
+        island.input(MONITOR, Input::Collapse, now + HOLD + GRACE + HOLD);
+        assert!(!island.expanded(MONITOR));
+        assert_eq!(island.keyboard(MONITOR), Keyboard::None);
+        assert_eq!(island.deadline(), None);
     }
 
     #[test]

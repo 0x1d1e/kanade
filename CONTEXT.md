@@ -199,6 +199,7 @@ Small secondary indicator beside the primary island: timer, VPN, low battery, a 
 The keyboard an island keeps (`Keyboard::Exclusive`) after an IPC or keybind open, so Escape reaches it without a press.
 - **Invariant:** only an island opened without a press holds. The hold ends when the island collapses.
 - **Invariant:** an unattended hold is bounded. An ignored island collapses on its own; only keys the open Surface consumes restart the bound, and typing into a held Surface that does not type collapses it. Once the pointer enters, the hold lasts until the pointer leaves and the grace runs out. A Pin ends it. The one exception is a visit a `kanade dmenu` waits on: as with any dmenu, its hold lasts until the user answers with Escape, a choice or another Surface, since Escape always reaches it. The bound is `HOLD` in `src/island/service.rs`; the niri measurements behind it are in `docs/archived/plan.md` §6.1.
+- **Invariant:** the first-start tour never holds (ADR 0123). It opens at a start that already has a window focused, so it takes no keyboard until it is pressed, and it stays until the user closes it: no hold, no grace, no self-close. Escape, the final advance, a press on it, another Surface opening over it, a typed character, or `kanade island collapse` ends it; so does niri's overview, which ends every open Surface.
 - **Avoid:** hold for a Peek or Surface the user opened. That is the island's Presentation.
 
 ## Pin
