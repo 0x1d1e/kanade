@@ -155,7 +155,7 @@ fn named(action: &Action) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::sources::desktop;
-    use crate::sources::launch::Fields;
+    use crate::sources::launch::{Fields, Launch};
     use std::path::Path;
 
     fn launch(id: &str) -> Launch {
@@ -213,7 +213,11 @@ mod tests {
         let apps = [app()];
         let panel = of(&app_answer(), &apps, &[]);
 
-        let labels: Vec<&str> = panel.offers.iter().map(|offer| offer.label.as_str()).collect();
+        let labels: Vec<&str> = panel
+            .offers
+            .iter()
+            .map(|offer| offer.label.as_str())
+            .collect();
         assert_eq!(
             labels,
             ["Start", "New Private Window", "Copy id", "Pin to the Dock"]
@@ -263,7 +267,11 @@ mod tests {
     // a row that cannot act says why, and carries nothing to press
     #[test]
     fn a_row_that_cannot_act_says_why() {
-        let panel = of(&answer(Action::Paste(7)), &[app()], &[String::from("firefox.desktop")]);
+        let panel = of(
+            &answer(Action::Paste(7)),
+            &[app()],
+            &[String::from("firefox.desktop")],
+        );
 
         let copy = &panel.offers[1];
         let pin = &panel.offers[2];

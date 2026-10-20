@@ -51,8 +51,8 @@ mod provider;
 mod units;
 pub mod windows;
 
+use actions::{Act, Offer, Panel};
 use apps::{Actions, Apps as AppsProvider};
-use actions::{Act, Panel};
 use calculator::Calculator;
 use choose::{Choices, Choosing};
 use commands::{Commands, Rec};
@@ -88,6 +88,10 @@ const ROW_INSET: f32 = 8.0;
 
 // a section's heading, above the answers it names
 const HEADER: f32 = 26.0;
+
+// a row of the actions `Ctrl+K` opens, and the line under them that says a pin was refused
+const OFFER: f32 = 40.0;
+const NOTE: f32 = 22.0;
 
 const ICON: f32 = 28.0;
 const ICON_GAP: f32 = 12.0;
@@ -234,7 +238,7 @@ impl Search {
         // the panel takes the keys it can act on, and Escape and Ctrl+K close it; a key it has no
         // use for closes it unacted, so the list is never typed under a panel no key opened for
         if self.panel.is_some() {
-            return self.stepped_panel(key, layout);
+            return self.stepped_panel(key);
         }
 
         let last = layout.answers.len().saturating_sub(1);
@@ -270,7 +274,10 @@ impl Search {
             }
             Key::Shortcut('k') => self.opened(layout),
 
-            // the nth answer, which nothing presses on a list shorter than n
+            /*
+             * the nth answer, which nothing presses on a list shorter than n; any other letter
+             * with ctrl is no key of the Launcher's
+             */
             Key::Shortcut(letter) => {
                 let at = letter
                     .to_digit(10)
@@ -402,25 +409,30 @@ impl Search {
     }
 
     /*
-     * a key while the actions are open: the ring moves over the rows, Enter presses the one it is
-     * on and a click the one clicked; Escape and `Ctrl+K` close the panel unacted, as does a key no
-     * row takes, so the list comes back rather than typing under a panel
+     * a key while the actions are open: the ring moves over the rows, Enter or Space presses the
+     * one it is on and a click the one clicked; Escape and `Ctrl+K` close the panel unacted, as does
+     * a key no row takes, so the list comes back rather than typing under a panel
      */
-    fn stepped_panel(mut self, key: Key, layout: &Layout) -> Option<(Search, Intent)> {
-        let last = self.panel.as_ref().map_or(0, |panel| panel.offers.len() - 1);
+    fn stepped_panel(mut self, key: Key) -> Option<(Search, Intent)> {
+        let last = self
+            .panel
+            .as_ref()
+            .map_or(0, |panel| panel.offers.len().saturating_sub(1));
 
         match key {
             Key::Escape | Key::Shortcut('k') => {
                 self.closed();
                 Some((self, Intent::Idle))
             }
-            Key::Enter => Some((self, Intent::Offer)),
+            Key::Enter | Key::Space => Some((self, Intent::Offer)),
             Key::Up => {
                 self.chosen = self.chosen.saturating_sub(1);
+                self.panel_offset = self.reveal_offer(self.chosen);
                 Some((self, Intent::Idle))
             }
             Key::Down => {
                 self.chosen = (self.chosen + 1).min(last);
+                self.panel_offset = self.reveal_offer(self.chosen);
                 Some((self, Intent::Idle))
             }
             Key::Shortcut(letter) => {
@@ -431,12 +443,11 @@ impl Search {
                     .filter(|&at| at <= last)?;
 
                 self.chosen = at;
+                self.panel_offset = self.reveal_offer(at);
                 Some((self, Intent::Offer))
             }
             // a key the panel has no use for closes it, unacted, and the list takes nothing
             _ => {
-                let _ = layout;
-
                 self.closed();
                 Some((self, Intent::Idle))
             }
@@ -448,6 +459,53 @@ impl Search {
         self.panel = None;
         self.chosen = 0;
         self.panel_offset = 0.0;
+    }
+
+    // the rows of the actions as tall as they ask, before the room caps them
+    fn offers(&self) -> f32 {
+        let rows = self.panel.as_ref().map_or(0, |panel| panel.offers.len());
+
+        (rows as f32 * (OFFER + ROW_GAP) - ROW_GAP).max(0.0)
+    }
+
+    // the room the rows scroll in: what the note, when there is one, leaves under them
+    fn panel_room(&self) -> f32 {
+        (room() - self.note_room()).max(OFFER)
+    }
+
+    // what a note under the rows takes, none while there is nothing to say
+    fn note_room(&self) -> f32 {
+        match self.note.is_some() {
+            true => NOTE + ROW_GAP,
+            false => 0.0,
+        }
+    }
+
+    // how far the rows can scroll: none while they fit
+    fn panel_most(&self) -> f32 {
+        (self.offers() - self.panel_room()).max(0.0)
+    }
+
+    // the rows as tall as they show, scrolling once they reach past the room
+    fn panel_listed(&self) -> f32 {
+        self.offers().min(self.panel_room())
+    }
+
+    // the least scroll from the one now that shows the row at `at` whole
+    fn reveal_offer(&self, at: usize) -> f32 {
+        let top = at as f32 * (OFFER + ROW_GAP);
+
+        self.panel_offset
+            .min(top)
+            .max(top + OFFER - self.panel_room())
+            .clamp(0.0, self.panel_most())
+    }
+
+    // the rows scrolled by the wheel, the ring left where it is
+    fn scrolled_offers(mut self, lines: f32) -> Search {
+        self.panel_offset = (self.panel_offset + lines * WHEEL).clamp(0.0, self.panel_most());
+
+        self
     }
 
     // scrolled by the wheel, the selection kept on a row that shows whole
@@ -479,12 +537,13 @@ impl Search {
             let rows = panel.offers.len().saturating_sub(1);
 
             self.chosen = self.chosen.min(rows);
-            self.panel_offset = self.panel_offset.max(0.0);
 
             if layout.answers.is_empty() {
                 self.panel = None;
             }
         }
+
+        self.panel_offset = self.panel_offset.clamp(0.0, self.panel_most());
 
         self
     }
@@ -628,15 +687,22 @@ pub fn fit() {
 
     let (fresh, open) = {
         let apps = Apps::read();
-        let query = Search::read().of(visit).query;
+        let search = Search::read().of(visit);
+        let query = search.query.clone();
 
         // a new visit starts with nothing typed, so it lists the sections
         let fresh = asks(found(visit, apps.list(), "", rec).layout().listed());
 
-        let open = if query.trim().is_empty() {
-            fresh
-        } else {
-            asks(found(visit, apps.list(), &query, rec).layout().listed())
+        // the actions stand in the list's place, as tall as their rows and the note under them
+        let open = match search.panel.is_some() {
+            true => {
+                let layout = found(visit, apps.list(), &query, rec).layout();
+                let search = search.bounded(&layout);
+
+                asks(search.panel_listed() + search.note_room())
+            }
+            false if query.trim().is_empty() => fresh,
+            false => asks(found(visit, apps.list(), &query, rec).layout().listed()),
         };
 
         (fresh, open)
@@ -944,7 +1010,9 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     let emoji = query.starts_with(emoji::PREFIX);
     let history = history(query);
 
-    let list: Box<dyn Widget> = if !found.is_empty() {
+    let list: Box<dyn Widget> = if let Some(panel) = &search.panel {
+        Box::new(panel_view(monitor, &search, panel))
+    } else if !found.is_empty() {
         Box::new(list(monitor, &found, &layout, &search))
     } else if choosing.is_some() {
         Box::new(state(
@@ -1247,6 +1315,147 @@ fn state(title: &str, detail: &str) -> Rectangle {
 }
 
 /*
+ * the actions of the answer the Launcher selected, in the list's place: a row for each, the ring on
+ * the one Enter presses, scrolled by the wheel and pressed by a click, and under them why a pin the
+ * settings file refused was not kept
+ */
+fn panel_view(monitor: &str, search: &Search, panel: &Panel) -> Stack {
+    let end = search.panel_offset + search.panel_room();
+
+    let shown: Vec<Box<dyn Widget>> = panel
+        .offers
+        .iter()
+        .enumerate()
+        .filter_map(|(at, offer)| {
+            let top = at as f32 * (OFFER + ROW_GAP);
+
+            (top + OFFER > search.panel_offset && top < end).then(|| {
+                let chosen = at == search.chosen;
+
+                Box::new(
+                    offer_row(monitor, search.visit, offer, chosen)
+                        .translate(0.0, top - search.panel_offset),
+                ) as Box<dyn Widget>
+            })
+        })
+        .collect();
+
+    let viewport = Rectangle::new()
+        .width(width())
+        .height(search.panel_listed())
+        .clip()
+        .align_child(Start, Start)
+        .semantics(|| Semantics::new(Role::Menu, "actions"))
+        .on_scroll(|Scroll { y, .. }| wheel_panel(y))
+        .child(
+            Stack::new(shown)
+                .width(width())
+                .height(search.panel_listed()),
+        );
+
+    let mut layers = children![viewport];
+
+    let most = search.panel_most();
+
+    if most > 0.0 {
+        let length = (search.panel_room() * search.panel_room() / search.offers()).max(TARGET);
+        let at = (search.panel_room() - length) * search.panel_offset / most;
+
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(3.0)
+                .height(length)
+                .radius(radius::HAIRLINE)
+                .fill(theme::island().surface_container_high)
+                .translate(width() + 7.0, at),
+        ));
+    }
+
+    if let Some(note) = &search.note {
+        layers.push(Box::new(
+            Rectangle::new()
+                .width(width())
+                .height(NOTE)
+                .align_child(Start, Center)
+                .translate(0.0, search.panel_listed() + ROW_GAP)
+                .child(
+                    Text::new(note)
+                        .size(theme::text::LABEL_SMALL)
+                        .color(theme::signals().critical)
+                        .weight(theme::text::MEDIUM)
+                        .elide(),
+                ),
+        ));
+    }
+
+    Stack::new(layers)
+        .width(width())
+        .height(search.panel_listed() + search.note_room())
+}
+
+/*
+ * one row of the actions: its name, what it acts on under it, and the ring on the one Enter presses.
+ * A row that cannot act is dimmed and takes no press, its second line saying why
+ */
+fn offer_row(monitor: &str, visit: u64, offer: &Offer, chosen: bool) -> Rectangle {
+    let mut lines = children![
+        Text::new(&offer.label)
+            .size(theme::text::BODY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::SEMIBOLD)
+            .elide()
+    ];
+
+    if !offer.detail.is_empty() {
+        lines.push(Box::new(
+            Text::new(&offer.detail)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::MEDIUM)
+                .elide(),
+        ));
+    }
+
+    let row = Rectangle::new()
+        .width(width())
+        .height(OFFER)
+        .radius(radius::ROW)
+        .padding(Padding {
+            top: 0.0,
+            right: ROW_INSET + 4.0,
+            bottom: 0.0,
+            left: ROW_INSET + ICON_GAP,
+        })
+        .align_child(Start, Center)
+        .child(Column::new(lines).width(Parent).gap(1.0));
+
+    let row = if chosen {
+        row.fill(theme::island().surface_container)
+    } else {
+        row
+    };
+
+    let Some(act) = &offer.act else {
+        return row.opacity(theme::DISABLED);
+    };
+
+    let monitor = monitor.to_owned();
+    let act = act.clone();
+
+    row.identity(("launcher-action", &offer.label))
+        .cursor(Cursor::Pointer)
+        .semantics(|| {
+            Semantics::new(Role::MenuItem, "action")
+                .label(offer.label.as_str())
+                .selected(chosen)
+        })
+        .on_click(super::on_left(move || {
+            act_on(&monitor, visit, act.clone());
+        }))
+        .border_if(chosen)
+}
+
+/*
  * the rows scrolled `offset` down, clipped to the list; a thumb in the inset says where while they
  * do not all fit. A heading is drawn where it stands, so the answers under it keep their place
  */
@@ -1467,7 +1676,9 @@ pub fn key(monitor: &str, key: Key) -> bool {
     }
     search.note = None;
 
-    // the answer the panel acts on, or the row of it its ring is on
+    // the answer the panel acts on, or the row of it its ring is on; read before the search is
+    // stored, which moves it
+    let selected = search.selected;
     let panel = search.panel.clone();
     let offer = panel
         .as_ref()
@@ -1482,10 +1693,10 @@ pub fn key(monitor: &str, key: Key) -> bool {
         Intent::Idle => {}
 
         // `Ctrl+K` opens the actions of the answer selected now, which the view then draws
-        Intent::Panel => opened(visit, &found, search.selected),
+        Intent::Panel => opened(visit, &found, selected),
 
         Intent::Selected => {
-            if let Some(answer) = found.get(search.selected) {
+            if let Some(answer) = found.get(selected) {
                 press(monitor, visit, answer.action.clone(), &query);
             }
         }
@@ -1499,7 +1710,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
         Intent::Offer => {
             if let Some(act) = offer {
-                acted(monitor, visit, &panel, act, &query);
+                acted(monitor, visit, act, &query);
             }
         }
     }
@@ -1529,39 +1740,55 @@ fn opened(visit: u64, found: &Found, at: usize) {
     store(search);
 }
 
-// what a row of the panel asked for
-fn acted(monitor: &str, visit: u64, panel: &Option<Panel>, act: Act, query: &str) {
+/*
+ * a row of the actions pressed by pointer: the same as Enter on it, over the answer the Launcher
+ * still has selected, and the query it was found by
+ */
+fn act_on(monitor: &str, visit: u64, act: Act) {
+    let search = Search::read().of(visit);
+
+    if search.visit != visit {
+        return;
+    }
+
+    acted(monitor, visit, act, &search.query);
+}
+
+// the actions' rows scrolled by the wheel
+fn wheel_panel(lines: f32) {
+    let visit = IslandService::read().visit();
+    let search = Search::read().of(visit);
+
+    if search.panel.is_none() {
+        return;
+    }
+
+    store(search.scrolled_offers(lines));
+}
+
+// what a row of the actions asked for
+fn acted(monitor: &str, visit: u64, act: Act, query: &str) {
     match act {
         Act::Press(action) => {
-            // a row that presses the answer closes the panel first, as the answer's press closes
-            // the island
-            if let Some(panel) = panel
-                && panel.offers.iter().any(|offer| offer.act.as_ref() == Some(&Act::Press(action.clone())))
-            {
-                close_panel(visit);
-            }
-
+            // the answer's own press closes the island itself, and a desktop action's does too;
+            // only a verb that keeps the island (`Run`) leaves the actions open to be closed here
+            close_panel(visit);
             press(monitor, visit, action, query);
         }
 
         Act::Copy(text) => {
             close_panel(visit);
 
-            let action = Action::Copy(text.clone());
-
-            if !Search::write().press_waiting(visit, action.clone()) {
+            if !Search::write().press_waiting(visit, Action::Copy(text.clone())) {
                 return;
             }
 
-            let done = {
-                let monitor = monitor.to_owned();
-                move |done| pressed(&monitor, visit, action, done)
-            };
+            let monitor = monitor.to_owned();
+            let action = Action::Copy(text.clone());
+            let done = move |done| pressed(&monitor, visit, action, done);
 
             if let Err(why) = copy(text, done) {
-                let mut search = Search::read().of(visit);
-                search.press_failed(visit, Action::Copy(String::new()), why);
-                store(search);
+                Search::write().press_failed(visit, Action::Copy(String::new()), why);
             }
         }
 
@@ -1580,13 +1807,14 @@ fn close_panel(visit: u64) {
 
 /*
  * pins the app with desktop file id `id` to the Dock, or unpins it, through the settings file as the
- * Dock's own menu does; off the view thread, as the write may wait, and the Dock follows the reload
+ * Dock's own menu does; off the view thread, as the write may wait, and the Dock follows the reload.
+ * A refusal is said under the answer's actions, which stay open to try another
  */
 fn pinned_to(visit: u64, id: String, pinned: bool) {
-    close_panel(visit);
+    thread::spawn(move || match settings::set_pinned(&id, pinned) {
+        Ok(()) => {}
 
-    thread::spawn(move || {
-        if let Err(why) = settings::set_pinned(&id, pinned) {
+        Err(why) => {
             eprintln!("launcher: cannot set the Dock's pin: {why}");
 
             let mut search = Search::read().of(visit);
@@ -1899,7 +2127,7 @@ fn pressed(monitor: &str, visit: u64, action: Action, done: Result<(), String>) 
     }
 }
 
-// down scrolls further down the list
+// down scrolls further down the list, or the actions' rows while they show
 fn wheel(lines: f32) {
     let (visit, rec) = {
         let island = IslandService::read();
@@ -1908,6 +2136,12 @@ fn wheel(lines: f32) {
     };
 
     let search = Search::read().of(visit);
+
+    if search.panel.is_some() {
+        store(search.scrolled_offers(lines));
+        return;
+    }
+
     let found = found(visit, Apps::read().list(), &search.query, rec);
     let layout = found.layout();
 
@@ -1929,8 +2163,8 @@ mod tests {
         let mut search = Search::default();
 
         for c in "hello".chars() {
-            let (next, pressed) = search.step(Key::Character(c), &one()).unwrap();
-            assert!(!pressed);
+            let (next, intent) = search.step(Key::Character(c), &one()).unwrap();
+            assert_eq!(intent, Intent::Idle);
             search = next;
         }
         assert_eq!(search.query, "hello");
