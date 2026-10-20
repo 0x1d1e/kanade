@@ -253,6 +253,34 @@ pub fn choice(recording: &Recording, software: bool, fresh: bool) -> Choice {
     )
 }
 
+static VA: Mutex<Option<encode::Va>> = Mutex::new(None);
+
+// how long to wait for gst-inspect-1.0 to list the va plugin's features
+const INSPECT: Duration = Duration::from_secs(2);
+
+pub fn inspect_va() -> encode::Va {
+    let mut cached = VA.locked();
+
+    if let Some(va) = &*cached {
+        return va.clone();
+    }
+
+    let va = if wake::found("gst-inspect-1.0") {
+        match wake::query_within("gst-inspect-1.0", &["va"], INSPECT) {
+            Ok(output) => encode::Va::read(&output),
+            Err(_) => encode::Va::default(),
+        }
+    } else {
+        encode::Va::default()
+    };
+
+    if !va.is_empty() {
+        *cached = Some(va.clone());
+    }
+
+    va
+}
+
 pub fn choice_within(
     recording: &Recording,
     software: bool,
@@ -270,6 +298,7 @@ pub fn choice_within(
         &nodes(),
         &mut Real { fresh },
         deadline,
+        &inspect_va(),
     )
 }
 
@@ -411,8 +440,8 @@ fn downloading(
         }
         let timeout = TRIAL.min(remaining);
         match gstreamer(tried, fresh, timeout) {
-            Probed::Works | Probed::Unknown(_) => Ok(()),
-            Probed::Fails(why) => Err(why),
+            Probed::Works => Ok(()),
+            Probed::Fails(why) | Probed::Unknown(why) => Err(why),
         }
     };
 
@@ -421,8 +450,9 @@ fn downloading(
     }
 
     let mut said = Vec::new();
+    let va = inspect_va();
 
-    for download in encode::downloads(nodes, device, no_va) {
+    for download in encode::downloads(nodes, device, no_va, &va) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             said.push(String::from("probe budget exceeded"));

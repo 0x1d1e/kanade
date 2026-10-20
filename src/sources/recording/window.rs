@@ -253,17 +253,19 @@ fn leftovers(remembered: &[u64], casts: &Json) -> Vec<u64> {
 
 /*
  * the sessions an earlier Kanade made and did not stop, as the ledgers of the Kanades that are gone
- * say, stopped; a ledger of one that runs is left alone. Off the caller's thread, as niri is asked.
- * A session niri still casts after the attempt, or whose niri could not be asked, stays in its ledger
- * for the next start
+ * say, and the ones this pid's own ledger holds from a Kanade that had this pid before, stopped; a
+ * ledger of a Kanade that runs is left alone. Off the caller's thread, as niri is asked. A session
+ * niri still casts after the attempt, or whose niri could not be asked, stays in a ledger for the
+ * next start
  */
 pub fn reclaim() {
     let Some(dir) = ledger_dir() else {
         return;
     };
     let gone = stale(&dir, process::id(), alive);
+    let own = inherit(&dir, process::id());
 
-    if gone.is_empty() {
+    if gone.is_empty() && own.is_empty() {
         return;
     }
 
@@ -275,35 +277,79 @@ pub fn reclaim() {
 
             for file in gone {
                 let text = fs::read_to_string(&file).unwrap_or_default();
-                let (ours, mut kept): (Vec<_>, Vec<_>) = entries(&text)
+                let (ours, kept): (Vec<_>, Vec<_>) = entries(&text)
                     .into_iter()
                     .partition(|(socket, _)| *socket == niri);
                 let ours: Vec<u64> = ours.into_iter().map(|(_, session)| session).collect();
-
-                match &casts {
-                    Ok(casts) => {
-                        for session in leftovers(&ours, casts) {
-                            eprintln!(
-                                "capture: stopping the window cast {session} an earlier run left"
-                            );
-
-                            if !matches!(niri::stop(session), Ok(niri::Acted::Done)) {
-                                eprintln!("capture: cannot stop the cast {session}");
-                                kept.push((niri.clone(), session));
-                            }
-                        }
-                    }
-                    // not known to be gone: tried again at the next start
-                    Err(_) => kept.extend(ours.into_iter().map(|session| (niri.clone(), session))),
-                }
+                let kept = end(&ours, &casts, &niri, kept);
 
                 keep(&file, &kept);
+            }
+
+            if !own.is_empty() {
+                let (ours, kept): (Vec<_>, Vec<_>) =
+                    own.into_iter().partition(|(socket, _)| *socket == niri);
+                let ours: Vec<u64> = ours.into_iter().map(|(_, session)| session).collect();
+                let kept = end(&ours, &casts, &niri, kept);
+
+                amend(|entries| entries.extend(kept));
             }
         });
 
     if let Err(error) = spawned {
         eprintln!("capture: cannot look for window casts an earlier run left: {error}");
     }
+}
+
+/*
+ * the sessions among `ours` that niri still casts stopped, and every one that could not be, for the
+ * ledger: what `kept` already held is kept with them
+ */
+fn end<E>(
+    ours: &[u64],
+    casts: &Result<Json, E>,
+    niri: &str,
+    mut kept: Vec<(String, u64)>,
+) -> Vec<(String, u64)> {
+    match casts {
+        Ok(casts) => {
+            for session in leftovers(ours, casts) {
+                eprintln!("capture: stopping the window cast {session} an earlier run left");
+
+                if !matches!(niri::stop(session), Ok(niri::Acted::Done)) {
+                    eprintln!("capture: cannot stop the cast {session}");
+                    kept.push((niri.to_owned(), session));
+                }
+            }
+        }
+        // not known to be gone: tried again at the next start
+        Err(_) => kept.extend(ours.iter().map(|session| (niri.to_owned(), *session))),
+    }
+
+    kept
+}
+
+/*
+ * this Kanade's own ledger, read and cleared: a pid is reused, so a ledger named for the pid this
+ * run has may be a Kanade's that died with it, and its casts are this run's to end rather than
+ * another's to show
+ */
+fn inherit(dir: &Path, own: u32) -> Vec<(String, u64)> {
+    let file = dir.join(format!("{LEDGERS}.{own}"));
+    let _held = LEDGER.locked();
+    let inherited = fs::read_to_string(&file)
+        .map(|text| entries(&text))
+        .unwrap_or_default();
+
+    if !inherited.is_empty() {
+        eprintln!(
+            "capture: {} window casts an earlier Kanade with this pid made are taken over",
+            inherited.len()
+        );
+        keep(&file, &[]);
+    }
+
+    inherited
 }
 
 /*
@@ -416,6 +462,23 @@ fn amend(change: impl FnOnce(&mut Vec<(String, u64)>)) {
 
 fn remember(session: u64) {
     amend(|entries| entries.push((niri_socket(), session)));
+}
+
+/*
+ * whether `session` is a cast this Kanade made and has not confirmed gone: a window's cast has no
+ * pid behind it (a D-Bus session), so the ledger is the only thing that says it is ours, and one of
+ * ours is not shown as another program's in the privacy dots
+ */
+pub fn ours(session: u64) -> bool {
+    let _held = LEDGER.locked();
+
+    ours_among(&entries_now(), &niri_socket(), session)
+}
+
+fn ours_among(entries: &[(String, u64)], niri: &str, session: u64) -> bool {
+    entries
+        .iter()
+        .any(|(socket, number)| socket == niri && *number == session)
 }
 
 fn forget(session: u64) {
@@ -577,5 +640,29 @@ mod tests {
             entries("junk\n\t\nsock\tx\nsock\t4\n"),
             [(String::from("sock"), 4)]
         );
+    }
+
+    #[test]
+    fn a_window_cast_in_the_ledger_is_ours() {
+        let entries = vec![(String::from("sock1"), 42), (String::from("sock2"), 99)];
+
+        assert!(ours_among(&entries, "sock1", 42));
+        assert!(!ours_among(&entries, "sock1", 43));
+        assert!(!ours_among(&entries, "sock2", 42));
+    }
+
+    #[test]
+    fn a_reused_pid_inherits_and_clears_stale_ledger() {
+        let dir = std::env::temp_dir().join(format!("kanade-test-ledger-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let pid = 99999;
+        let file = dir.join(format!("window-casts.{pid}"));
+        fs::write(&file, "sock\t101\n").unwrap();
+
+        let inherited = inherit(&dir, pid);
+        assert_eq!(inherited, vec![(String::from("sock"), 101)]);
+        assert!(!file.exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
