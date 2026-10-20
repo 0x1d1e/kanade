@@ -561,6 +561,10 @@ fn end_now(serial: u64) {
 
     // the hook is waited for on the asking thread, never the draw thread a press of Now is on
     let call = move || {
+        // the session ends right after, after a further countdown or at once, so a pin made a
+        // moment before reaches its file
+        super::clipboard::pins::flush();
+
         match counting.end {
             Ending::Restart => hooks::fire_and_wait(Event::Reboot),
             Ending::PowerOff => hooks::fire_and_wait(Event::Poweroff),

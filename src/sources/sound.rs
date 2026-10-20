@@ -19,9 +19,12 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+
+use kanade_runtime::MutexExt;
 
 use super::icons;
 use super::notifications::Urgency;
@@ -40,6 +43,36 @@ const OFF: &str = "off";
 const LIMIT: Duration = Duration::from_secs(5);
 
 const NAME_LENGTH: usize = 64;
+
+// how many distinct notes are said at most, so a bad setting heard a thousand times is heard once
+const SAID_MOST: usize = 64;
+
+// the notes already said on stderr, which every notification would otherwise repeat
+static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/*
+ * whether `note` is said now, remembering it: the first time only, and no more than SAID_MOST
+ * different ones, so a setting that goes wrong is said once instead of at every notification
+ */
+fn says(said: &mut Vec<String>, note: &str) -> bool {
+    if said.iter().any(|one| one == note) {
+        return false;
+    }
+    if said.len() >= SAID_MOST {
+        return false;
+    }
+
+    said.push(note.to_owned());
+
+    true
+}
+
+// says `note` on stderr the first time it comes
+fn says_once(note: &str) {
+    if says(&mut SAID.locked(), note) {
+        eprintln!("kanade: notification sound: {note}");
+    }
+}
 
 // what a notification's sender asked for in its hints; none of it is trusted
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -192,8 +225,8 @@ pub fn play(ring: &Ring, sounds: &Sounds) {
     let home = env::var_os("HOME").map(PathBuf::from);
     let (cue, notes) = cue(ring, sounds, home.as_deref(), regular, resolvable);
 
-    for note in notes {
-        eprintln!("kanade: notification sound: {note}");
+    for note in &notes {
+        says_once(note);
     }
 
     let Some(cue) = cue else {
@@ -262,7 +295,7 @@ fn run(player: &str, arguments: &[OsString]) {
     command.args(arguments).stdin(Stdio::null());
 
     if let Ran::Done(Err(why)) = child::run(command, player, LIMIT, || None::<Interrupt<()>>) {
-        eprintln!("kanade: notification sound: {why}");
+        says_once(&why);
     }
 }
 
@@ -507,6 +540,25 @@ mod tests {
             rule: Choice::Default,
             volume: None,
         }
+    }
+
+    // a setting that is wrong is said once, not at every notification that comes
+    #[test]
+    fn a_note_is_said_once_and_only_so_many_times() {
+        let mut said = Vec::new();
+
+        assert!(says(&mut said, "no such sound: glass"));
+        assert!(!says(&mut said, "no such sound: glass"));
+        assert!(says(&mut said, "no such sound: bell"));
+
+        // past the cap, a new one is not said, and nothing already there is forgotten
+        for index in 0..SAID_MOST {
+            says(&mut said, &format!("note {index}"));
+        }
+
+        assert_eq!(said.len(), SAID_MOST);
+        assert!(!says(&mut said, "one more"));
+        assert!(!says(&mut said, "no such sound: glass"));
     }
 
     fn name(name: &str) -> Option<Cue> {

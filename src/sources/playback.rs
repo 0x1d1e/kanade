@@ -183,12 +183,31 @@ pub struct Timeline {
     pub rate: f64,
 }
 
+/*
+ * how long `left` of the track lasts at `rate`, so far off that an Instant cannot hold it: a rate
+ * is the player's own, and one near zero would overflow the sum, which panics. Such a tick is none
+ * rather than a panic: the caller has a nearer one
+ */
+pub fn until(now: Instant, left: Duration, rate: f64) -> Option<Instant> {
+    // a NaN, infinite or non-positive rate has no wait it could mean
+    if !rate.is_finite() || rate <= 0.0 {
+        return None;
+    }
+
+    let after = Duration::try_from_secs_f64(left.as_secs_f64() / rate).ok()?;
+
+    now.checked_add(after)
+}
+
+// `length` of the track at `rate`, or what a Duration holds when that is past it
+fn moved(length: Duration, rate: f64) -> Duration {
+    Duration::try_from_secs_f64(length.as_secs_f64() * rate.max(0.0)).unwrap_or(Duration::MAX)
+}
+
 impl Timeline {
     pub fn position(&self, now: Instant) -> Duration {
-        let moved = now
-            .saturating_duration_since(self.at)
-            .mul_f64(self.rate.max(0.0));
-        let position = self.position + moved;
+        let moved = moved(now.saturating_duration_since(self.at), self.rate);
+        let position = self.position.saturating_add(moved);
 
         if self.length.is_zero() {
             position
@@ -222,9 +241,12 @@ impl Timeline {
             return None;
         }
 
-        let left = Duration::from_secs(position.as_secs() + 1) - position;
+        // a rate the player reports as enormous puts the position at a Duration's end, where the
+        // second after it is not a span this can subtract
+        let next = Duration::from_secs(position.as_secs().checked_add(1)?);
+        let left = next.checked_sub(position)?;
 
-        Some(now + left.div_f64(self.rate))
+        until(now, left, self.rate)
     }
 
     // how far along, 0 to 1; 0 without a length
@@ -293,6 +315,55 @@ pub fn fit(accent: Option<Color>) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a player reports its own rate, and one near zero, a NaN or an enormous one would panic the
+    // tick it asks for: it is none then, so the caller polls instead
+    #[test]
+    fn a_rate_no_wait_could_mean_asks_for_no_tick() {
+        let now = Instant::now();
+        let timeline = |rate: f64| Timeline {
+            position: Duration::ZERO,
+            at: now,
+            length: Duration::ZERO,
+            rate,
+        };
+
+        // a second of the track at these rates is further off than a Duration holds
+        for rate in [1e-20, 1e-300, f64::MIN_POSITIVE] {
+            assert_eq!(timeline(rate).next_second(now), None, "{rate}");
+            assert_eq!(until(now, Duration::from_secs(1), rate), None, "{rate}");
+        }
+
+        // and no rate at all is no wait either, nor a tick that an Instant cannot reach
+        for rate in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(timeline(rate).next_second(now), None, "{rate}");
+            assert_eq!(until(now, Duration::from_secs(1), rate), None, "{rate}");
+        }
+
+        assert_eq!(until(now, Duration::from_secs(1), 1e300), Some(now));
+
+        // the position moves on without panicking too, and a live stream has no length to stop it
+        assert_eq!(
+            timeline(1e300).position(now + Duration::from_secs(1)),
+            Duration::MAX
+        );
+
+        // a position at a Duration's end has no next second to wait for
+        assert_eq!(
+            timeline(1e300).next_second(now + Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            timeline(1e-9).position(now + Duration::from_secs(3600)),
+            Duration::try_from_secs_f64(3600.0 * 1e-9).unwrap()
+        );
+
+        // and a normal rate still says when the next second is
+        assert_eq!(
+            timeline(1.0).next_second(now),
+            Some(now + Duration::from_secs(1))
+        );
+    }
 
     // a seek by key never leaves the track: before its start, or past its end
     #[test]

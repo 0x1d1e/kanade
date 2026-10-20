@@ -35,6 +35,10 @@ const LONGEST_ARGUMENT: usize = 4096;
 // how long past `hooks.timeout` a wait for a command lasts, for it to be killed and reaped
 const SLACK: Duration = Duration::from_secs(2);
 
+// a session end waits for its hook no longer than this, whatever `hooks.timeout` says, so a hooked
+// command that hangs cannot hold a log out, a restart or a power off
+const ENDING: Duration = Duration::from_secs(3);
+
 // how much of a failure `status` and stderr say
 const BRIEF: usize = 120;
 
@@ -104,6 +108,11 @@ impl Event {
             Event::Reboot => "reboot",
             Event::Poweroff => "poweroff",
         }
+    }
+
+    // whether the event ends the session, so its hook is waited for only briefly
+    const fn ends_session(self) -> bool {
+        matches!(self, Event::Logout | Event::Reboot | Event::Poweroff)
     }
 
     // the environment variable the event's value goes in, for the events that have one
@@ -288,19 +297,19 @@ pub const SETTINGS: &[Setting] = &[
         "hooks.logout",
         "On log out",
         Logout,
-        "a command run before logind is asked to end the session, after the countdown or at once; the log out waits for it up to hooks.timeout"
+        "a command run before logind is asked to end the session, after the countdown or at once; the log out waits for it up to hooks.timeout, and at most a few seconds"
     ),
     hook!(
         "hooks.reboot",
         "On restart",
         Reboot,
-        "a command run before logind is asked to restart, after the countdown or at once; the restart waits for it up to hooks.timeout"
+        "a command run before logind is asked to restart, after the countdown or at once; the restart waits for it up to hooks.timeout, and at most a few seconds"
     ),
     hook!(
         "hooks.poweroff",
         "On power off",
         Poweroff,
-        "a command run before logind is asked to power off, after the countdown or at once; the power off waits for it up to hooks.timeout"
+        "a command run before logind is asked to power off, after the countdown or at once; the power off waits for it up to hooks.timeout, and at most a few seconds"
     ),
     Setting {
         key: "hooks.timeout",
@@ -575,14 +584,19 @@ fn send(event: Event, value: Option<&OsStr>) -> Option<Done> {
 
 /*
  * fires an event and waits for the command to end, for an action that must not begin before it;
- * the child runner kills it at `hooks.timeout`, so this waits a little past that at most. Call it
- * off the draw thread
+ * the child runner kills it at `hooks.timeout`, so this waits a little past that at most, and at
+ * ENDING for a session end. Call it off the draw thread
  */
 pub fn fire_and_wait(event: Event) {
     let Some(done) = fire(event) else {
         return;
     };
     let limit = Duration::from_secs(u64::from(config::get().hooks.timeout)) + SLACK;
+    let limit = if event.ends_session() {
+        limit.min(ENDING)
+    } else {
+        limit
+    };
 
     if !done.wait(limit) {
         eprintln!("kanade: the {} hook still runs", event.name());

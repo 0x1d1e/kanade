@@ -458,28 +458,34 @@ pub fn current() -> Option<PathBuf> {
 }
 
 /*
- * the images showing on `output` now as best known: what awww said it shows on each output when
- * last asked, which follows every set through its cache (`watch`), else the one Kanade last set
+ * the images showing on `output` as best known: what awww said it shows on each output when last
+ * asked, which follows every set through its cache (`watch`). An output awww did not report has
+ * none known, not the one Kanade last set, which may well be shown elsewhere; for every output
+ * together, awww having said nothing at all still falls back to that, as it is the one image
+ * Kanade knows is on the screens
  */
 pub fn showing_on(output: &Output) -> Vec<PathBuf> {
-    let mut showing: Vec<PathBuf> = {
-        let shown = Shown::read();
+    known(output, &Shown::read().by, current())
+}
 
-        match output {
-            Output::All => shown.by.values().map(|shown| shown.path.clone()).collect(),
-            Output::Named(name) => shown
-                .on(name)
-                .map(|shown| shown.path.clone())
-                .into_iter()
-                .collect(),
-        }
+// what `showing_on` answers, from awww's reading of each output and the image Kanade last set
+fn known(output: &Output, by: &HashMap<String, Showing>, current: Option<PathBuf>) -> Vec<PathBuf> {
+    let showing: Vec<PathBuf> = match output {
+        Output::All => by.values().map(|shown| shown.path.clone()).collect(),
+        Output::Named(name) => by
+            .get(name)
+            .map(|shown| shown.path.clone())
+            .into_iter()
+            .collect(),
     };
 
-    if showing.is_empty() {
-        showing.extend(current());
+    if !showing.is_empty() {
+        showing
+    } else if *output == Output::All {
+        current.into_iter().collect()
+    } else {
+        Vec::new()
     }
-
-    showing
 }
 
 /*
@@ -1436,6 +1442,41 @@ mod tests {
             Some(first.0.clone())
         );
         assert_eq!(appearance_path(&HashMap::new(), None), None);
+    }
+
+    // an output awww never reported shows nothing, not the image Kanade last set somewhere else
+    #[test]
+    fn an_output_awww_did_not_report_shows_no_wallpaper() {
+        let image = PathBuf::from("/wallpapers/b.png");
+        let other = PathBuf::from("/wallpapers/other.png");
+        let by = HashMap::from([(
+            String::from("eDP-1"),
+            Showing {
+                path: image.clone(),
+                light: None,
+            },
+        )]);
+
+        assert_eq!(
+            known(&Output::Named(String::from("eDP-1")), &by, None),
+            std::slice::from_ref(&image)
+        );
+
+        // awww said nothing of this output, though Kanade last set one
+        assert!(
+            known(
+                &Output::Named(String::from("HDMI-A-1")),
+                &by,
+                Some(other.clone())
+            )
+            .is_empty()
+        );
+
+        // every output together still falls back to it, as the one Kanade knows is showing
+        assert_eq!(
+            known(&Output::All, &HashMap::new(), Some(other.clone())),
+            std::slice::from_ref(&other)
+        );
     }
 
     #[test]

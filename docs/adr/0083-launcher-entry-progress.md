@@ -8,7 +8,7 @@ Apps with a long job but no notification (a browser download, a file manager cop
 
 ## Decision
 
-- A new Module `launcher-entry`, on by default, requires `live`. Its thread (`sources/launcher_entry.rs`) matches `Update` on that interface from any sender and blocks on it, so it wakes nothing at idle (ADR 0004). It is a Module of its own, not a part of `live`, so a user can turn the bus listening off and keep `kanade activity`.
+- A new Module `launcher-entry`, on by default, requires `live`. Its thread (`sources/launcher_entry.rs`) matches `Update` on that interface, takes it only from the app it names where the bus can say who owns that app's name (`GetNameOwner` of the desktop file id without `.desktop`, asked when a sender differs and for a name nobody owned every 30 s), and blocks on it, so it wakes nothing at idle (ADR 0004). It is a Module of its own, not a part of `live`, so a user can turn the bus listening off and keep `kanade activity`.
 - Each entry keeps a small state (`progress-visible`, `progress`), merged from the properties present and of the right kind (a bool, a number); a NaN or out-of-range amount is clamped to 0 to 1. At most 16 apps are tracked.
   - visible and under 1: `live::show` with the id `launcher.<desktop file id>`, the app's desktop entry name as the title, no detail, the amount in whole percent;
   - amount 1: `live::finish`, the Transient done form (ADR 0042), and the state is dropped;
@@ -27,6 +27,7 @@ Apps with a long job but no notification (a browser download, a file manager cop
 
 ## Consequences
 
-- A program that claims to be an app can show an Activity titled with that app's name; the bounds above keep it to two Activities and plain text. The signal's sender is not checked against the app.
+- A program that claims to be an app can show an Activity titled with that app's name; the bounds above keep it to two Activities and plain text. The signal's sender is checked against the app only where the app can be identified on the bus: the desktop file id without `.desktop` is the well-known name a D-Bus activatable app owns, so when that name has an owner the signal must come from it. An app whose id D-Bus cannot name, or whose name nobody owns, is taken as the sender, so the check narrows the exposure without losing an app that does not own a name.
+
 - An app that sends visible progress and dies leaves its Activity up to `live.stale`.
 - Files: `src/sources/launcher_entry.rs`, `src/sources/live.rs`, `src/modules/catalog.rs`.
