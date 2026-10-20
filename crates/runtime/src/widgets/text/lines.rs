@@ -115,17 +115,36 @@ fn wrap(content: &str, font: &Face, size: f32, width: f32) -> Vec<String> {
 
 // drops letters from the end until the rest and "…" fit
 fn elide(line: &str, font: &Face, size: f32, width: f32) -> String {
-    let mut kept = String::from(line.trim_end());
+    let dot = font::measure_letter(font, '…', size).advance;
 
-    loop {
-        let shortened = format!("{kept}…");
+    elided(line.trim_end(), dot, width, |letter| {
+        font::measure_letter(font, letter, size).advance
+    })
+}
 
-        if kept.is_empty() || measure(&shortened, font, size) <= width {
-            return shortened;
+/*
+ * `kept` cut to its longest prefix that still fits with `dot` after it, or none at all, so only
+ * the "…" shows; the advances accumulate once over the line instead of measuring every shorter
+ * copy of it again, which cost a long line a measure per letter dropped
+ */
+fn elided(kept: &str, dot: f32, width: f32, advance: impl Fn(char) -> f32) -> String {
+    let mut pen = 0.0;
+    let mut fitting = 0;
+
+    for (at, letter) in kept.char_indices() {
+        pen += advance(letter);
+
+        if pen + dot <= width {
+            fitting = at + letter.len_utf8();
         }
-
-        kept.pop();
     }
+
+    let mut shortened = String::with_capacity(fitting + '…'.len_utf8());
+
+    shortened.push_str(&kept[..fitting]);
+    shortened.push('…');
+
+    shortened
 }
 
 // where the letters' ink starts and ends, counted from the pen's starting point
@@ -153,4 +172,63 @@ pub fn ink(content: &str, font: &Face, size: f32) -> (f32, f32) {
     }
 
     (left, right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the elision as it was: every shorter copy of the line, the "…" after it, measured whole again
+    fn elided_one_letter_at_a_time(
+        line: &str,
+        width: f32,
+        advance: impl Fn(char) -> f32,
+    ) -> String {
+        let mut kept = String::from(line);
+
+        loop {
+            let shortened = format!("{kept}…");
+            let total: f32 = shortened.chars().map(&advance).sum();
+
+            if kept.is_empty() || total <= width {
+                return shortened;
+            }
+
+            kept.pop();
+        }
+    }
+
+    /*
+     * the sums that replaced a measure per letter dropped have to cut the line where it was cut
+     * before, letter for letter: a long line elided a letter short or a letter long is wrong text
+     */
+    #[test]
+    fn eliding_cuts_where_it_always_did() {
+        // letters of uneven widths, so a sum that drifts shows up as a different cut
+        let advance = |letter: char| match letter {
+            '…' => 7.0,
+            'i' | 'l' | '.' => 3.0,
+            'm' | 'w' => 13.0,
+            ' ' => 4.0,
+            _ => 8.0,
+        };
+
+        // ten thousand letters, the length a long line of text reaches and where the old measure
+        // per letter dropped was slowest
+        let line: String = "the quick brown fox jumps over the lazy dog "
+            .chars()
+            .cycle()
+            .take(10_000)
+            .collect();
+
+        for width in [0.0f32, 7.0, 40.0, 123.5, 1000.0, 7993.25, 40_000.0] {
+            let kept = line.trim_end();
+
+            assert_eq!(
+                elided(kept, advance('…'), width, advance),
+                elided_one_letter_at_a_time(kept, width, advance),
+                "eliding at width {width} cut it elsewhere than it used to"
+            );
+        }
+    }
 }

@@ -9,8 +9,44 @@ use crate::graphics::gpu::texture;
 use super::Quads;
 
 impl Quads {
-    // draws everything gathered onto the canvas, over what is already there
+    /*
+     * draws everything gathered onto the canvas, over what is already there
+     *
+     * a letter put off by a full atlas is placed once the batch before it is drawn, which leaves
+     * nothing reading the texels the atlas starts over on; that takes a second pass, so all of it
+     * is drawn here, before anything gathered after it lands
+     */
     pub fn draw(&mut self, device: &Device, queue: &Queue, canvas: &Texture) {
+        loop {
+            let deferred = std::mem::take(&mut self.deferred);
+
+            self.paint(device, queue, canvas);
+
+            if deferred.is_empty() {
+                return;
+            }
+
+            for letter in deferred {
+                self.letter(
+                    queue,
+                    letter.face,
+                    letter.id,
+                    letter.size,
+                    letter.color,
+                    letter.x,
+                    letter.y,
+                    letter.clips,
+                );
+            }
+
+            /*
+             * nothing reads the atlas after `paint`, so every letter placed above went in, with the
+             * atlas free to start over; this pass draws them and finds nothing left to put off
+             */
+        }
+    }
+
+    fn paint(&mut self, device: &Device, queue: &Queue, canvas: &Texture) {
         if self.waiting.is_empty() {
             return;
         }

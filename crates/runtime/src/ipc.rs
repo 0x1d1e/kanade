@@ -3,6 +3,7 @@ use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::thread;
 use std::time::{Duration, Instant};
 
 // the most a call may send, past the longest `kanade dmenu`, and how long it may take to
@@ -31,13 +32,26 @@ impl IpcReply {
         Self { stream }
     }
 
-    // a caller that stopped reading must not freeze the thread answering it
-    pub fn send(mut self, reply: &str) {
-        let timeout = Some(Duration::from_secs(1));
+    /*
+     * the answer is written off the caller's thread: a caller that stopped reading fills its
+     * socket's buffer, and a write that waited on it where the handler runs would freeze the draw
+     * thread with it. Each answer gets its own thread, so one stuck caller holds up no other, and
+     * no lock is held while a write waits on a reader
+     */
+    pub fn send(self, reply: &str) {
+        let stream = self.stream;
+        let reply = reply.to_owned();
 
-        if self.stream.set_write_timeout(timeout).is_ok() {
-            let _ = self.stream.write_all(reply.as_bytes());
-        }
+        thread::spawn(move || written(stream, &reply));
+    }
+}
+
+// the answer, given up on once the caller has stopped reading it
+fn written(mut stream: UnixStream, reply: &str) {
+    let timeout = Some(Duration::from_secs(1));
+
+    if stream.set_write_timeout(timeout).is_ok() {
+        let _ = stream.write_all(reply.as_bytes());
     }
 }
 
@@ -144,5 +158,54 @@ mod tests {
         let long = vec![b'x'; MOST as usize + 1];
         let error = IpcCall::read(long.as_slice()).err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    use std::io::Read;
+    use std::time::Instant;
+
+    /*
+     * a caller that never reads fills its socket's buffer; the answer waited on it where the
+     * handler ran, freezing the draw thread for the whole write timeout. `send` now hands the
+     * stream to a thread of its own and returns at once
+     */
+    #[test]
+    fn sending_never_waits_for_a_caller_that_stopped_reading() {
+        let (writing, reading) = UnixStream::pair().unwrap();
+
+        // far past what the socket holds, so the write waits on a reader that never comes
+        let answer = "x".repeat(8 << 20);
+
+        let start = Instant::now();
+        IpcReply::new(writing).send(&answer);
+
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "send waited {:?} for a caller that reads nothing",
+            start.elapsed()
+        );
+
+        /*
+         * the caller's end stays open, so the write waits on it rather than failing at once; it is
+         * left open for good, as the writing thread is still waiting on it
+         */
+        std::mem::forget(reading);
+    }
+
+    // an answer reaches a caller that reads it whole
+    #[test]
+    fn an_answer_reaches_the_caller() {
+        let (writing, mut reading) = UnixStream::pair().unwrap();
+
+        IpcReply::new(writing).send("done\n");
+
+        let mut answer = String::new();
+        reading.read_to_string(&mut answer).unwrap();
+
+        assert_eq!(answer, "done\n");
     }
 }
