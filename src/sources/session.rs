@@ -31,8 +31,8 @@ use zbus::zvariant::ObjectPath;
 use super::capture::SHOWN;
 use crate::hooks::{self, Event};
 use crate::island::activity::{
-    Action, Activity, Cause, Countdown, Detail, Ending, Id, Interrupt, Kind, Leave, Leaving, Lifetime,
-    Priority, Scope,
+    Action, Activity, Cause, Countdown, Detail, Ending, Id, Interrupt, Kind, Leave, Leaving,
+    Lifetime, Priority, Scope,
 };
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
@@ -960,7 +960,10 @@ mod tests {
         // never answered, nothing more is asked
         pending.answered(true);
         assert_eq!(pending.ask(), Err(UNANSWERED));
-        assert_eq!(pending.start(Ending::PowerOff, Cause::Asked, now), Err(UNANSWERED));
+        assert_eq!(
+            pending.start(Ending::PowerOff, Cause::Asked, now),
+            Err(UNANSWERED)
+        );
     }
 
     // ended and asked at once: nothing starts in between, and one refused is ended all the same
@@ -972,7 +975,10 @@ mod tests {
         let (first, _) = pending.start(Ending::Restart, Cause::Asked, now).unwrap();
         assert_eq!(pending.end(first.serial), Some((first, Ok(()))));
         assert_eq!(pending.end(first.serial), None);
-        assert_eq!(pending.start(Ending::PowerOff, Cause::Asked, now), Err(BUSY));
+        assert_eq!(
+            pending.start(Ending::PowerOff, Cause::Asked, now),
+            Err(BUSY)
+        );
         assert_eq!(pending.ask(), Err(BUSY));
 
         pending.answered(false);
