@@ -90,12 +90,18 @@ fn offset_of(form: Merge, extent: &dock::Extent) -> f32 {
     }
 }
 
+/*
+ * how far past its body at rest what hangs from the Island stands, clear of the Dock: its strip's
+ * reach from the edge, and its icons grown under the pointer past the strip, to where the merged
+ * window ends (`among`); not BOUNCE, which is the room a Dock's own slide keeps and a merged one
+ * does not
+ */
 fn clearance_of(form: Merge, extent: &dock::Extent) -> f32 {
     match form {
         Merge::Keystone | Merge::Fold => {
             let (island, strip) = depths(extent);
 
-            (strip + extent.strip - (island + TOP + geometry::REST.height)).max(0.0)
+            (strip + extent.strip + extent.rise - (island + TOP + geometry::REST.height)).max(0.0)
         }
         Merge::Crown | Merge::Off => 0.0,
     }
@@ -212,12 +218,25 @@ pub fn shell(monitor: &Monitor) -> Option<Shell> {
     let (form, extent) = joined()?;
     let anchor = config::get().island_placement().anchor;
 
-    Some(arrange(form, anchor, view::canvas(monitor), extent))
+    Some(arrange(
+        form,
+        anchor,
+        view::canvas(monitor),
+        extent,
+        monitor.width as f32,
+    ))
 }
 
-fn arrange(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> Shell {
+// `screen` is the output's width, none when it is not known yet
+fn arrange(
+    form: Merge,
+    anchor: Anchor,
+    canvas: Canvas,
+    extent: dock::Extent,
+    screen: f32,
+) -> Shell {
     match form {
-        Merge::Keystone | Merge::Fold => among(form, anchor, canvas, extent),
+        Merge::Keystone | Merge::Fold => among(form, anchor, canvas, extent, screen),
         Merge::Crown | Merge::Off => crown(form, anchor, canvas, extent),
     }
 }
@@ -254,11 +273,53 @@ fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> S
 }
 
 /*
+ * the room the icons take to either side of the canvas, as much of it as the output holds: the
+ * window is never wider than the output under it, or its far side stands off the screen. The side
+ * the anchor hangs from keeps its room, so the canvas keeps the place its side gives it, the body
+ * with it; the room away from that side takes the cut, where the icons past the output's edge would
+ * be drawn. Centered, the canvas is as far out to one side as the other, so both give way alike,
+ * and the body stays in the middle
+ */
+fn room(along: Along, (left, right): (f32, f32), canvas: Canvas, screen: f32) -> (f32, f32) {
+    let over = left + canvas.width + right - screen;
+
+    if screen <= 0.0 || over <= 0.0 {
+        return (left, right);
+    }
+
+    // a canvas already as wide as the output stays whole, with no icons beside it
+    if over >= left + right {
+        return (0.0, 0.0);
+    }
+
+    // the canvas is no wider than the output, so centered it gives way to an even cut on each side
+    if along == Along::Center {
+        let each = over / 2.0;
+
+        return ((left - each).floor(), (right - each).floor());
+    }
+
+    let (keep, give) = if along == Along::Right {
+        (right, left)
+    } else {
+        (left, right)
+    };
+    let lost = give.min(over);
+    let (keep, give) = ((keep - (over - lost)).floor(), (give - lost).floor());
+
+    if along == Along::Right {
+        (give, keep)
+    } else {
+        (keep, give)
+    }
+}
+
+/*
  * the window holds the Island's canvas and, to either side of its body, the icons as far as they
  * reach with the body at its largest, where it stands nearest the canvas's sides; a Peek or a
  * Surface is not a body that outgrows it
  */
-fn among(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> Shell {
+fn among(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent, screen: f32) -> Shell {
     let (island_off, strip_off) = depths(&extent);
 
     // as far as the icons reach with the pointer growing them
@@ -282,6 +343,8 @@ fn among(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> S
         Along::Left | Along::Right => (left, right),
     };
 
+    // never wider than the output, where the row outgrows it
+    let (left, right) = room(anchor.along, (left, right), canvas, screen);
     let width = left + canvas.width + right;
     let height = (island_off + canvas.height)
         .max(strip_off + extent.strip + extent.rise)
@@ -337,13 +400,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shell_edge_offset_accounts_for_top_and_bottom_canvas_insets() {
-        let canvas = Canvas {
-            width: 500.0,
-            height: 500.0,
-        };
-        let extent = dock::Extent {
+    // a Dock whose plate stands well in from the edge, its icons growing out of it
+    fn extent(rise: f32) -> dock::Extent {
+        dock::Extent {
             width: 300.0,
             height: 50.0,
             depth: 54.0,
@@ -352,8 +411,32 @@ mod tests {
             before: 0.0,
             after: 0.0,
             swell: 0.0,
+            rise,
+        }
+    }
+
+    // a row of apps reaching far past the Island's canvas on either side
+    fn row(swell: f32) -> dock::Extent {
+        dock::Extent {
+            width: 900.0,
+            height: 200.0,
+            depth: 75.0,
+            strip: 71.0,
+            inset: 11.0,
+            before: 700.0,
+            after: 700.0,
+            swell,
             rise: 0.0,
+        }
+    }
+
+    #[test]
+    fn shell_edge_offset_accounts_for_top_and_bottom_canvas_insets() {
+        let canvas = Canvas {
+            width: 500.0,
+            height: 500.0,
         };
+        let extent = extent(0.0);
 
         for edge in [Edge::Top, Edge::Bottom] {
             let shell = arrange(
@@ -364,6 +447,7 @@ mod tests {
                 },
                 canvas,
                 extent,
+                1920.0,
             );
             assert_eq!(
                 shell.edge_offset(
@@ -384,6 +468,58 @@ mod tests {
     fn combined_stays_joined_when_the_island_hides() {
         assert!(joined_visible(ShellMode::Combined, true));
         assert!(joined_visible(ShellMode::Combined, false));
+    }
+
+    /*
+     * the merged window is never wider than the output under it, however many apps the Dock shows:
+     * a window past the output puts its far side off the screen. What is laid out in the window
+     * keeps its place, so a cut side takes the icons past it, not the canvas's place
+     */
+    #[test]
+    fn shell_is_never_wider_than_the_output() {
+        let canvas = Canvas {
+            width: 500.0,
+            height: 500.0,
+        };
+
+        for along in [Along::Left, Along::Center, Along::Right] {
+            for edge in [Edge::Top, Edge::Bottom] {
+                for screen in [0.0, 900.0, 1920.0] {
+                    let shell = arrange(
+                        Merge::Keystone,
+                        Anchor { edge, along },
+                        canvas,
+                        row(0.0),
+                        screen,
+                    );
+
+                    if screen > 0.0 {
+                        assert!(shell.size.0 <= screen, "{along:?} {edge:?} {screen}");
+                    }
+
+                    assert!(shell.island.0 >= 0.0);
+                    assert!(shell.island.0 + canvas.width <= shell.size.0);
+                }
+            }
+        }
+    }
+
+    /*
+     * what hangs from the Island clears the Dock as far out as it reaches, which is past its strip
+     * as far as its icons grow: a Banner under a magnified Dock's grown icons would stand on them
+     */
+    #[test]
+    fn clearance_reaches_past_the_icons_grown() {
+        let plain = extent(0.0);
+        let grown = extent(56.0);
+
+        for form in [Merge::Keystone, Merge::Fold] {
+            assert_eq!(
+                clearance_of(form, &grown) - clearance_of(form, &plain),
+                grown.rise,
+                "{form:?}"
+            );
+        }
     }
 
     #[test]
