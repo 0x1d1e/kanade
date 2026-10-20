@@ -137,6 +137,22 @@ fn output_label(name: &str, key: &str) -> String {
     }
 }
 
+// the paths niri reads only when it starts, so a change to one shows after a restart and not before
+pub const AT_RESTART: [&str; 3] = ["spawn-at-startup", "spawn-sh-at-startup", "environment"];
+
+// what to say of a change to one of those, if it is one
+fn at_restart(ops: &[(&str, Op)]) -> Option<String> {
+    let first = ops.iter().find_map(|(path, _)| {
+        let node = path.split(['.', '[']).next()?;
+
+        AT_RESTART.contains(&node).then_some(node)
+    })?;
+
+    Some(format!(
+        "niri reads {first} when it starts, so this applies after a restart"
+    ))
+}
+
 // what to say of blocks past the first that match the monitor
 fn shadowed(blocks: &[(PathBuf, OutputBlock)]) -> Option<String> {
     let later = blocks.len().checked_sub(1).filter(|&later| later > 0)?;
@@ -314,6 +330,14 @@ pub fn output_form(path: &str) -> Option<Result<(OutputId, String), String>> {
 
     if name.is_empty() {
         return bad();
+    }
+
+    if let Some(char) = name.chars().find(|&char| edit::bidi(char)) {
+        return Some(Err(format!(
+            "{path}: the name holds a bidirectional control character (U+{:04X}), which could make \
+             it read as another monitor's name",
+            char as u32
+        )));
     }
 
     Some(Ok((OutputId::named(&name), key.to_owned())))
@@ -711,7 +735,7 @@ impl Editor<'_> {
                     // in a batch, a key that was not there is not worth a line
                     None if ops.len() > 1 && !matches!(op, Op::DropEmpty) => {}
                     None => said.push(match op {
-                        Op::Set(value) => format!("{path} is {} already", value.v1()),
+                        Op::Set(value) => format!("{path} is {} already", value.shown()),
                         Op::Remove => format!("{path} is not set"),
                         Op::DropEmpty => format!("{path} stays: settings of its own are in it"),
                     }),
@@ -721,7 +745,7 @@ impl Editor<'_> {
                         said.push(match op {
                             Op::Set(value) => format!(
                                 "{path} = {} (was {})",
-                                value.v1(),
+                                value.shown(),
                                 was.as_deref().unwrap_or("unset")
                             ),
                             Op::Remove => format!(
@@ -762,6 +786,11 @@ impl Editor<'_> {
                     "{}: nothing to change",
                     output_label(&id.block_name(), "")
                 ));
+            }
+
+            // what niri reads only when it starts, which a written change does not reach
+            if written && let Some(note) = at_restart(ops) {
+                said.push(note);
             }
 
             let said = said.join("; ");
@@ -965,7 +994,7 @@ impl Editor<'_> {
                     // in a batch, a key that was not there is not worth a line
                     None if ops.len() > 1 && !matches!(op, Op::DropEmpty) => {}
                     None => said.push(match op {
-                        Op::Set(value) => format!("{path} is {} already", value.v1()),
+                        Op::Set(value) => format!("{path} is {} already", value.shown()),
                         Op::Remove | Op::DropEmpty => format!("{path} is not set"),
                     }),
                     Some(edited) => {
@@ -974,7 +1003,7 @@ impl Editor<'_> {
                         said.push(match op {
                             Op::Set(value) => format!(
                                 "{path} = {} (was {})",
-                                value.v1(),
+                                value.shown(),
                                 was.as_deref().unwrap_or("unset")
                             ),
                             Op::Remove | Op::DropEmpty => format!(
@@ -984,6 +1013,11 @@ impl Editor<'_> {
                         });
                     }
                 }
+            }
+
+            // what niri reads only when it starts, which a written change does not reach
+            if written && let Some(note) = at_restart(ops) {
+                said.push(note);
             }
 
             let said = said.join("; ");
@@ -996,8 +1030,28 @@ impl Editor<'_> {
         })
     }
 
+    /// The backup ring's newest after-hash, when it belongs to this config.
+    pub fn last_change_hash(&self) -> Result<String, String> {
+        let last = self
+            .ring()
+            .last()
+            .ok_or("nothing to undo: Kanade has not changed this config")?;
+        if !same_file(&last.config, &self.file) {
+            return Err(format!(
+                "the last change was to {}, not this config",
+                last.config.display()
+            ));
+        }
+        Ok(last.after)
+    }
+
     /// Puts back what the last change replaced, while the file is as that change left it.
     pub fn undo(&self) -> Result<String, String> {
+        self.undo_only(None)
+    }
+
+    /// Undo only if the ring still ends with the change this caller made.
+    pub fn undo_only(&self, after: Option<&str>) -> Result<String, String> {
         self.change(false, |bytes| {
             let ring = self.ring();
             let last = ring
@@ -1008,6 +1062,11 @@ impl Editor<'_> {
                 return Err(format!(
                     "the last change was to {}, not this config",
                     last.config.display()
+                ));
+            }
+            if after.is_some_and(|expected| expected != last.after) {
+                return Err(String::from(
+                    "the last change is not this page's change; undo would lose that. Pick a backup with `backups` and `restore`",
                 ));
             }
             if hash(bytes) != last.after {

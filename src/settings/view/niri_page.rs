@@ -56,19 +56,39 @@ pub fn notices(settings: &Settings) -> Vec<Box<dyn Widget>> {
         None
     };
 
-    notice
+    let mut items: Vec<Box<dyn Widget>> = notice
         .map(|(text, ink)| Box::new(super::notice(&text, ink)) as Box<dyn Widget>)
         .into_iter()
-        .collect()
+        .collect();
+
+    // part of what niri reads, it reads once, when it starts
+    if niri.loaded && niri.restart {
+        items.push(Box::new(super::notice(
+            "Some of this config (spawn-at-startup, environment) niri reads only when it starts, \
+             so a change to it applies after a restart",
+            theme::roles().on_surface_variant,
+        )));
+    }
+
+    items
 }
 
-// whether an option's name, help or path mentions the query
+// whether an option's name, help or path mentions the query from the start of a word, so a letter
+// or two does not list every row; the page's own name counts only as the whole word "niri", which
+// every row would otherwise carry
 pub fn mentions(path: &str, query: &str) -> bool {
-    let mentions = |text: &str| text.to_lowercase().contains(query);
+    let mentions = |text: &str| words(text).any(|word| word.starts_with(query));
 
-    "niri".contains(query)
+    query == "niri"
         || niri::item(path)
             .is_some_and(|item| mentions(item.label) || mentions(item.help) || mentions(item.path))
+}
+
+// the words of `text`, lowercased, with a path's separators counted as breaks
+fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|char: char| !char.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
 }
 
 pub fn row(path: &'static str, settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
@@ -392,4 +412,32 @@ fn number(
         Some(roles.edge()),
         roles,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mentions;
+
+    #[test]
+    fn a_query_is_matched_from_the_start_of_a_word_and_not_inside_one() {
+        // "aps" is inside a word of the row, so it finds nothing
+        assert!(!mentions("layout.gaps", "aps"));
+        assert!(mentions("layout.gaps", "gap"));
+        assert!(mentions("layout.gaps", "gaps"));
+    }
+
+    #[test]
+    fn a_letter_or_two_finds_the_words_it_starts_and_not_every_row() {
+        // the page's own name would otherwise carry every row
+        assert!(!mentions("layout.gaps", "ni"));
+        assert!(!mentions("layout.gaps", "iri"));
+        assert!(mentions("layout.gaps", "niri"));
+    }
+
+    #[test]
+    fn a_path_is_matched_by_its_words() {
+        assert!(mentions("layout.border.width", "border"));
+        assert!(mentions("layout.border.width", "width"));
+        assert!(!mentions("layout.border.width", "der"));
+    }
 }

@@ -15,13 +15,14 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SendError, Sender};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kanade_runtime::TextInput;
 use kanade_runtime::service::Service;
 
 use crate::config::Choices;
 use crate::niri_config::{self, Editor, Reading};
+use crate::sources::niri as ipc;
 
 use super::{Settings, WINDOW};
 
@@ -664,11 +665,23 @@ pub struct State {
     // whether the last change this window made can be undone
     pub undoable: bool,
 
+    // hash of the file after the last page change, so a later external change cannot be undone here
+    undo_after: Option<String>,
+
+    // the file as that change left it
+    undo_stamp: Option<Stamp>,
+
     // whether this window has changed niri's config
     pub touched: bool,
 
+    // whether the config sets something niri reads only when it starts
+    pub restart: bool,
+
     // whether an Undo waits for the worker
     undoing: bool,
+
+    // what became of the reload niri should have made of the last change
+    reload: Option<(String, bool)>,
 
     // counts the changes that may need a text input set again, so the draw thread looks (`sync_inputs`)
     pub generation: u64,
@@ -808,7 +821,25 @@ impl State {
             return Some((String::from("Undoing\u{2026}"), false));
         }
 
-        (!self.busy.is_empty()).then(|| (String::from("Saving\u{2026}"), false))
+        if !self.busy.is_empty() {
+            return Some((String::from("Saving\u{2026}"), false));
+        }
+
+        self.reload.clone()
+    }
+
+    /// What became of the reload niri should have made of the last change: `None` when it has not
+    /// said, which is no trouble of the page's when no niri is listening.
+    fn reloaded(&mut self, applied: Option<bool>) {
+        self.reload = Some(match applied {
+            Some(true) => (String::from("niri reloaded the config"), false),
+            Some(false) => (
+                String::from("niri rejected the config; it keeps the one it had"),
+                true,
+            ),
+            None => (String::from("niri has not reloaded the config yet"), true),
+        });
+        self.generation += 1;
     }
 
     /// Records why a typed value was not sent.
@@ -824,6 +855,7 @@ impl State {
     // a job is posted
     fn begin(&mut self, row: Option<&'static str>) {
         self.footer = None;
+        self.reload = None;
 
         match row {
             Some(row) => {
@@ -842,6 +874,7 @@ impl State {
         self.not_editable = done.read.not_editable;
         self.unreadable = done.read.unreadable;
         self.bare = done.read.bare;
+        self.restart = done.read.restart;
         self.generation += 1;
 
         if let Some(row) = done.row {
@@ -857,7 +890,13 @@ impl State {
                 self.footer = Some(why.clone());
                 self.refused.insert(row, why);
             }
-            (Some(_), _, Some(Ok(_))) => self.undoable |= done.written,
+            (Some(_), _, Some(Ok(_))) => {
+                if done.written {
+                    self.undoable = true;
+                    self.undo_after = done.after;
+                    self.undo_stamp = Some(done.stamp);
+                }
+            }
             (None, true, outcome) => {
                 self.undoing = false;
 
@@ -865,16 +904,41 @@ impl State {
                 // one keeps its button, as the reason may pass
                 match outcome {
                     Some(Err(why)) => self.footer = Some(why),
-                    _ => self.undoable = false,
+                    _ => {
+                        self.undoable = false;
+                        self.undo_after = None;
+                    }
                 }
             }
-            _ => {}
+            // a read shows what the file holds now: a change made after this window's own is not
+            // this window's to undo, so its button goes rather than undoing someone else's change
+            _ => {
+                if self.undoable && Some(done.stamp) != self.undo_stamp {
+                    self.undoable = false;
+                    self.undo_after = None;
+                    self.undo_stamp = None;
+                }
+            }
         }
+    }
+
+    /// The worker died while saving; release every row so the user can try again.
+    fn panicked(&mut self) {
+        let busy = std::mem::take(&mut self.busy);
+        for row in busy {
+            *self.resets.entry(row).or_default() += 1;
+        }
+        self.undoing = false;
+        self.footer = Some(String::from(
+            "The thread editing niri's config stopped unexpectedly; try again",
+        ));
+        self.generation += 1;
     }
 
     /// A window opening starts over: nothing refused, nothing to undo, nothing read.
     pub fn reopen(&mut self) {
         self.footer = None;
+        self.reload = None;
         self.refused.clear();
         self.undoable = false;
         self.touched = false;
@@ -1073,10 +1137,14 @@ pub fn change(row: &'static str, changes: Vec<(&'static str, Option<String>)>) {
     post(Job::Change { row, changes });
 }
 
-/// Undoes the last change this window made.
+/// Undoes the last change this window made, and no other.
 pub fn undo() {
-    Settings::write().niri.begin(None);
-    post(Job::Undo);
+    let mut niri = Settings::write();
+    let after = niri.niri.undo_after.clone();
+
+    niri.niri.begin(None);
+    drop(niri);
+    post(Job::Undo { after });
 }
 
 // ---- the worker ----
@@ -1087,7 +1155,10 @@ enum Job {
         row: &'static str,
         changes: Vec<(&'static str, Option<String>)>,
     },
-    Undo,
+    Undo {
+        // the hash the page's own change left, so a later change by hand is not undone
+        after: Option<String>,
+    },
 }
 
 // what the config gave
@@ -1099,6 +1170,13 @@ struct Read {
 
     // the included files, every one of them, which are watched along with the config
     includes: Vec<PathBuf>,
+
+    // those files as they were before the options were read from them: an include that changes
+    // while it is being read keeps its stamp and would never be read again otherwise
+    include_stamps: Vec<Stamp>,
+
+    // whether niri reads part of the config only when it starts
+    restart: bool,
 
     // the options a bare block in the config itself turns on
     bare: HashSet<&'static str>,
@@ -1112,6 +1190,8 @@ struct Done {
 
     // whether the file differs after the job
     written: bool,
+    after: Option<String>,
+    stamp: Stamp,
     read: Read,
 }
 
@@ -1163,6 +1243,8 @@ fn post(job: Job) {
             undo,
             outcome: (!matches!(job, Job::Read)).then_some(Err(why.clone())),
             written: false,
+            after: None,
+            stamp: Stamp(None),
             read: Read {
                 unreadable: Some(why),
                 ..Read::default()
@@ -1176,7 +1258,15 @@ fn spawn() -> Option<Sender<Job>> {
 
     thread::Builder::new()
         .name(String::from("kanade-niri-config"))
-        .spawn(move || run(&receiver))
+        .spawn(move || {
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&receiver)))
+            {
+                crate::supervise::panicked("kanade-niri-config", &*payload);
+                *WORKER.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                Settings::write().niri.panicked();
+            }
+        })
         .ok()
         .map(|_| sender)
 }
@@ -1184,7 +1274,7 @@ fn spawn() -> Option<Sender<Job>> {
 fn row_of(job: &Job) -> (Option<&'static str>, bool) {
     match job {
         Job::Change { row, .. } => (Some(row), false),
-        Job::Undo => (None, true),
+        Job::Undo { .. } => (None, true),
         Job::Read => (None, false),
     }
 }
@@ -1259,9 +1349,14 @@ fn tick(mut watch: Watch) -> Option<Watch> {
 
 // runs a job and posts what came of it; the files to watch after it
 fn run_job(job: Job) -> Watch {
+    // before the write, so a reload niri makes of it is seen as new
+    let loads = ipc::config_load_state();
     let (done, files, config) = work(job);
+    let wrote = done.written;
+    // the config as the job left it and the includes as they were before they were read; a
+    // count that does not match the files leaves a short list, and the next tick reads again
     let mut seen = vec![config];
-    seen.extend(stamps(&files[1..]));
+    seen.extend(done.read.include_stamps.iter().copied());
 
     Settings::write().niri.done(done);
 
@@ -1270,12 +1365,44 @@ fn run_job(job: Job) -> Watch {
         super::outputs::refresh();
     }
 
+    // niri applies the file itself; the row says Saving... no longer, so the reload is reported after
+    if wrote {
+        confirm(loads);
+    }
+
     Watch {
         files,
         seen,
         opened: kanade_runtime::window_open(WINDOW),
         ticks: 0,
     }
+}
+
+// how long niri is given to report that it loaded the config
+const CONFIRM: Duration = Duration::from_secs(2);
+const TICK: Duration = Duration::from_millis(25);
+
+// waits for niri's own word on the change, when niri has said anything before
+fn confirm(before: ipc::ConfigLoadState) {
+    // no niri listening: nothing will report a load, so nothing is claimed about it
+    if before.count == 0 {
+        return;
+    }
+
+    let deadline = Instant::now() + CONFIRM;
+    let mut applied = None;
+
+    while Instant::now() < deadline {
+        thread::sleep(TICK);
+
+        let now = ipc::config_load_state();
+        if now.count != before.count {
+            applied = Some(!now.last_failed);
+            break;
+        }
+    }
+
+    Settings::write().niri.reloaded(applied);
 }
 
 // the result, the files it read (the config first) and the config's stamp before it was read
@@ -1291,6 +1418,8 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
                     undo,
                     outcome: (!matches!(job, Job::Read)).then(|| Err(why.clone())),
                     written: false,
+                    after: None,
+                    stamp: Stamp(None),
                     read: Read {
                         unreadable: Some(why),
                         ..Read::default()
@@ -1319,7 +1448,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
 
             Some(editor.apply(&changes))
         }
-        Job::Undo => Some(editor.undo()),
+        Job::Undo { after } => Some(editor.undo_only(after.as_deref())),
     };
     let after = Stamp::of(&file);
     let read = read_all(&editor);
@@ -1331,6 +1460,12 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
             undo,
             outcome,
             written: before != after,
+            after: if before != after {
+                editor.last_change_hash().ok()
+            } else {
+                None
+            },
+            stamp: after,
             read,
         },
         files,
@@ -1346,9 +1481,12 @@ fn read_all(editor: &Editor) -> Read {
     };
 
     // every include is watched, not only the ones that set an option now: one that gains one
-    // later must be read again
+    // later must be read again. Stamped before the options are read, not after
     match editor.includes() {
-        Ok(files) => read.includes = files,
+        Ok(files) => {
+            read.include_stamps = stamps(&files);
+            read.includes = files;
+        }
         Err(why) => {
             read.values.clear();
             read.unreadable = Some(why);
@@ -1356,6 +1494,10 @@ fn read_all(editor: &Editor) -> Read {
             return read;
         }
     }
+
+    read.restart = niri_config::AT_RESTART
+        .iter()
+        .any(|node| editor.sets_in_config(node).unwrap_or(false));
 
     for item in ITEMS {
         if matches!(item.control, Control::Drawn { bare_on: true, .. }) {
@@ -1759,6 +1901,10 @@ mod tests {
             read.includes
         );
 
+        // stamped before the options are read, so a change made in between is not lost under a
+        // fresh stamp
+        assert_eq!(read.include_stamps.len(), read.includes.len());
+
         // and the next read picks up an option the include gains
         fs::write(dir.0.join("extra.kdl"), "layout {\n    gaps 42\n}\n").unwrap();
         let read = read_all(&editor);
@@ -1801,6 +1947,8 @@ mod tests {
             undo: false,
             outcome: Some(Ok(String::new())),
             written: true,
+            after: None,
+            stamp: Stamp(None),
             read: Read::default(),
         });
         state.refuse("layout.border.width", String::from("no"));
@@ -1813,6 +1961,120 @@ mod tests {
             .collect();
         assert_eq!(moved.len(), 2, "{moved:?}");
         assert!(moved.contains(&"layout.gaps") && moved.contains(&"layout.border.width"));
+    }
+
+    // a worker that panics never posts its Done: without this the row would say Saving... for good
+    #[test]
+    fn a_panicked_worker_releases_the_row_it_was_saving() {
+        let mut state = State {
+            loaded: true,
+            ..State::default()
+        };
+
+        state.begin(Some("layout.gaps"));
+        state.begin(None);
+        assert_eq!(state.status().unwrap().0, "Undoing\u{2026}");
+
+        state.panicked();
+
+        assert!(!state.shown(item("layout.gaps").unwrap()).busy);
+        assert!(state.status().unwrap().0.contains("stopped"));
+        assert!(state.status().unwrap().1, "it warns");
+
+        // nothing waits any more, so the next press is taken at once
+        state.begin(Some("layout.gaps"));
+        assert_eq!(state.status().unwrap().0, "Saving\u{2026}");
+    }
+
+    // a change made after the page's own is not the page's to undo
+    #[test]
+    fn a_change_made_after_the_pages_own_takes_its_undo_away() {
+        let mut state = State {
+            loaded: true,
+            ..State::default()
+        };
+
+        state.begin(Some("layout.gaps"));
+        state.done(Done {
+            row: Some("layout.gaps"),
+            undo: false,
+            outcome: Some(Ok(String::from("layout.gaps = 12 (was 4)"))),
+            written: true,
+            after: Some(String::from("after")),
+            stamp: Stamp(Some((1, 0, 10))),
+            read: Read::default(),
+        });
+
+        assert!(state.undoable);
+        assert_eq!(state.undo_after.as_deref(), Some("after"));
+
+        // a read that finds the file as the change left it keeps the button
+        state.done(Done {
+            row: None,
+            undo: false,
+            outcome: None,
+            written: false,
+            after: None,
+            stamp: Stamp(Some((1, 0, 10))),
+            read: Read::default(),
+        });
+
+        assert!(state.undoable);
+
+        // one that finds it changed, by the command line or by hand, takes it away
+        state.done(Done {
+            row: None,
+            undo: false,
+            outcome: None,
+            written: false,
+            after: None,
+            stamp: Stamp(Some((2, 0, 10))),
+            read: Read::default(),
+        });
+
+        assert!(!state.undoable);
+        assert_eq!(state.undo_after, None);
+    }
+
+    #[test]
+    fn the_reload_niri_makes_is_said_in_the_footers_place() {
+        let mut state = State {
+            loaded: true,
+            ..State::default()
+        };
+
+        assert_eq!(state.status(), None);
+
+        state.reloaded(Some(true));
+        assert_eq!(
+            state.status().unwrap(),
+            (String::from("niri reloaded the config"), false)
+        );
+
+        state.reloaded(Some(false));
+        assert!(state.status().unwrap().1, "a rejection warns");
+
+        state.reloaded(None);
+        assert!(state.status().unwrap().0.contains("not reloaded"));
+
+        // a press takes it away, and so does a new window
+        state.reloaded(Some(true));
+        state.begin(Some("layout.gaps"));
+        assert_eq!(state.status().unwrap().0, "Saving\u{2026}");
+        assert!(!state.status().unwrap().1);
+
+        state.done(Done {
+            row: Some("layout.gaps"),
+            undo: false,
+            outcome: Some(Ok(String::new())),
+            written: false,
+            after: None,
+            stamp: Stamp(None),
+            read: Read::default(),
+        });
+        state.reloaded(Some(true));
+        state.reopen();
+        assert_eq!(state.status(), None);
     }
 
     #[test]
