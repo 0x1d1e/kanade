@@ -1288,7 +1288,9 @@ pub fn standing(monitor: &Monitor) -> Option<(Edge, Rect)> {
         return None;
     }
 
-    let beyond = Size::of(config.dock_size).icon * (config.magnify.most() - 1.0) + BOUNCE;
+    // `band` already reaches off the edge as far as the icons grow; BOUNCE further is the farthest
+    // the slide's spring swings the strip past its place
+    let beyond = BOUNCE;
 
     band(monitor, place, &items, beyond).map(|strip| (place.anchor.edge, strip))
 }

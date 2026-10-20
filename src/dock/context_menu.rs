@@ -881,8 +881,20 @@ mod tests {
         assert_eq!(scrolled(7, 0.0, 1.2, 10, 3), (7, 0.0));
     }
 
-    // 1920x1080, DockSize::Large, Magnify::Large, BOUNCE: the strip reaches 56 past its rest depth
     const SCREEN: (f32, f32) = (1920.0, 1080.0);
+
+    /*
+     * how far off its edge the user's Dock reaches: `dock.size = "large"` with `magnification =
+     * "large"`, so its icons grow 48 past its 75 deep strip at rest, and the spring swings it BOUNCE
+     * further. The same as its window's height, which the strip is drawn in full: a menu that clears
+     * the strip clears the window
+     */
+    fn strip_depth() -> f32 {
+        let size = super::super::Size::of(crate::look::DockSize::Large);
+        let grown = size.icon * (crate::look::Magnify::Large.most() - 1.0);
+
+        super::super::depth(size) + grown + super::super::BOUNCE
+    }
 
     fn band(edge: Edge, along: (f32, f32), off: (f32, f32)) -> (Edge, Rect) {
         let rect = match edge {
@@ -903,9 +915,26 @@ mod tests {
         (edge, rect)
     }
 
-    // the user's Dock at rest: 106 deep, its icons growing 56 further out of it
     fn bottom_dock() -> (Edge, Rect) {
-        band(Edge::Bottom, (760.0, 1160.0), (918.0, 1080.0))
+        band(
+            Edge::Bottom,
+            (760.0, 1160.0),
+            (SCREEN.1 - strip_depth(), SCREEN.1),
+        )
+    }
+
+    #[test]
+    fn the_strip_reaches_past_its_icons_grown_and_its_spring_once() {
+        assert_eq!(strip_depth(), 131.0);
+        assert_eq!(
+            strip_depth(),
+            super::super::Canvas::of(
+                &[super::super::Piece::Icon],
+                super::super::Size::of(crate::look::DockSize::Large),
+                crate::look::Magnify::Large.most(),
+            )
+            .height
+        );
     }
 
     // the regression: an autohide still sliding out left the icon's slot below the screen, and the menu
@@ -962,7 +991,7 @@ mod tests {
             width: 56.0,
             height: 56.0,
         };
-        let dock = band(Edge::Top, (760.0, 1160.0), (0.0, 106.0));
+        let dock = band(Edge::Top, (760.0, 1160.0), (0.0, strip_depth()));
         let (_, y) = place(at, Edge::Top, SCREEN, (264.0, 300.0), Some(dock));
 
         assert_eq!(y, dock.1.bottom() + GAP);
@@ -992,7 +1021,7 @@ mod tests {
             width: 56.0,
             height: 56.0,
         };
-        let dock = band(Edge::Left, (300.0, 700.0), (0.0, 106.0));
+        let dock = band(Edge::Left, (300.0, 700.0), (0.0, strip_depth()));
         let (x, _) = place(at, Edge::Left, SCREEN, (264.0, 300.0), Some(dock));
 
         assert_eq!(x, dock.1.right() + GAP);
@@ -1007,13 +1036,13 @@ mod tests {
         let dock = bottom_dock();
         assert_eq!(tallest(SCREEN, Some(dock)), dock.1.y - GAP);
 
-        let dock = band(Edge::Top, (760.0, 1160.0), (0.0, 106.0));
+        let dock = band(Edge::Top, (760.0, 1160.0), (0.0, strip_depth()));
         assert_eq!(
             tallest(SCREEN, Some(dock)),
             SCREEN.1 - dock.1.bottom() - GAP
         );
 
-        let dock = band(Edge::Left, (300.0, 700.0), (0.0, 106.0));
+        let dock = band(Edge::Left, (300.0, 700.0), (0.0, strip_depth()));
         assert_eq!(tallest(SCREEN, Some(dock)), SCREEN.1);
 
         let dock = band(Edge::Right, (300.0, 700.0), (1814.0, 1920.0));
@@ -1031,6 +1060,36 @@ mod tests {
 
         assert!(list + 2.0 * INSET <= tall - 2.0 * SCREEN_GAP);
         assert!(rows < size(SCREEN.0, SCREEN.1, 30, true).1);
+    }
+
+    // the whole of it: the rows the room past the strip allows make a panel that place() then keeps
+    // clear of the strip and on the output. Sized to the whole output instead, that same panel stood
+    // on the strip, which is the overlap
+    #[test]
+    fn a_menu_too_tall_for_the_output_still_clears_the_strip() {
+        let at = Rect {
+            x: 940.0,
+            y: 1090.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = bottom_dock();
+        let panel = |rows: usize| 2.0 * INSET + rows as f32 * (ROW + GAP) - GAP + SEPARATOR + GAP;
+
+        let tall = tallest(SCREEN, Some(dock));
+        let (width, rows) = size(SCREEN.0, tall, 30, true);
+        let height = panel(rows);
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (width, height), Some(dock));
+
+        assert!(y + height <= dock.1.y - GAP, "menu {y} reaches the strip");
+        assert!(y >= SCREEN_GAP);
+        assert!(y + height <= SCREEN.1 - SCREEN_GAP);
+
+        let (width, rows) = size(SCREEN.0, SCREEN.1, 30, true);
+        let height = panel(rows);
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (width, height), Some(dock));
+
+        assert!(y + height > dock.1.y - GAP, "the overlap this fixes");
     }
 
     fn menu_of(monitor: &str) -> Open {
