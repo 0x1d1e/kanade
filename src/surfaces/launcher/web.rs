@@ -118,11 +118,7 @@ fn address(query: &str) -> String {
  * and only the spawn decides whether it opened. The reason a failure gives never names the address
  */
 pub fn browse(address: &str) -> Result<(), String> {
-    let child = Command::new(OPEN)
-        .arg(address)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    let child = command(address)
         .spawn()
         .map_err(|error| format!("{OPEN}: {error}"))?;
 
@@ -137,6 +133,18 @@ pub fn browse(address: &str) -> Result<(), String> {
         })
         .map(drop)
         .map_err(|error| format!("{OPEN}: {error}"))
+}
+
+// the one way this module runs anything: the opener, with the address as its only argument
+fn command(address: &str) -> Command {
+    let mut command = Command::new(OPEN);
+    command
+        .arg(address)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    command
 }
 
 #[cfg(test)]
@@ -184,6 +192,17 @@ mod tests {
             "https://mailto:a_20261008T080000Z@google.com"
         );
         assert_eq!(address("--help"), "https://--help");
+    }
+
+    // whatever was typed, the opener gets it as one argument of its own and no shell sees it, so no
+    // word of it can be a command (ADR 0055, 0112)
+    #[test]
+    fn the_opener_gets_the_query_as_one_argument() {
+        let command = command(&address("; rm -rf / && echo"));
+        let argv: Vec<_> = command.get_args().collect();
+
+        assert_eq!(command.get_program(), OPEN);
+        assert_eq!(argv, ["https://; rm -rf / && echo"]);
     }
 
     // a query of one letter, and the prefixes that search something else, send nothing anywhere
