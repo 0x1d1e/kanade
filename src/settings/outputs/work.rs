@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SendError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -363,29 +363,36 @@ fn spawn() -> Option<Sender<Job>> {
 // worker draws the countdown and reverts when the page is left, but it panics, and it sits in
 // `niri msg output` for up to 2 s, and a trial whose deadline died with it would stay on the
 // monitor with nothing counting. The clock takes the trial through `controller`, as the worker
-// does, and never begins one.
-static CLOCK: Mutex<Option<Sender<()>>> = Mutex::new(None);
+// does, and never begins one: it only ever ends a trial that is already there.
+static CLOCK: Mutex<Option<Sender<u64>>> = Mutex::new(None);
 static CLOCK_STARTED: OnceLock<()> = OnceLock::new();
 
 // tells the clock that the trial began, changed or ended, so it counts again
 fn wake_clock() {
     if let Some(woken) = CLOCK.locked().as_ref() {
-        let _ = woken.send(());
+        let _ = woken.send(CLOCK_GENERATION.fetch_add(1, Ordering::Relaxed));
     }
 }
+
+// how many times the clock has been told a trial changed; a clock that saw a different number
+// while it was reverting knows what it did is not the last word, and counts again
+static CLOCK_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn start_clock() {
     CLOCK_STARTED.get_or_init(|| {
         let (woken, woke) = mpsc::channel();
         *CLOCK.locked() = Some(woken);
 
-        crate::supervise::spawn("kanade-outputs-clock", move || clock(&woke));
+        crate::supervise::spawn("kanade-outputs-clock", move || clock(&woke, &Real));
     });
 }
 
-fn clock(woken: &Receiver<()>) {
+// one turn of the clock: sleeps until the trial needs it, then ends the trial through `Port`.
+// `woken` carries a tick per change of the trial, so a trial begun, extended or ended while the
+// clock sleeps is counted from where it is now rather than from the deadline it slept for.
+fn clock(woken: &Receiver<u64>, port: &dyn Port) {
     loop {
-        let wait = match controller(|control| control.wait(Real.now())) {
+        let wait = match controller(|control| control.wait(port.now())) {
             Some(due) => Duration::from_millis(due.max(1)),
             None => {
                 // no trial niri has to be put back from: the worker wakes this thread when that
@@ -398,16 +405,53 @@ fn clock(woken: &Receiver<()>) {
             }
         };
 
+        // a page left is the worker's to notice while it runs, so the clock's own watch is only
+        // a countdown: it wakes at the deadline, or at the next second the page would show
+        let seen = CLOCK_GENERATION.load(Ordering::Relaxed);
+
         match woken.recv_timeout(wait) {
-            // its time is out: the worker may be dead or in niri, so it reverts here, through the
-            // same tick and the same controller, which is due from the trial's own clock
-            Err(RecvTimeoutError::Timeout) => tick(false),
+            // its time is out: the worker may be dead or in niri, so the trial is ended here,
+            // through the same controller the worker uses
+            Err(RecvTimeoutError::Timeout) => {}
 
             // the trial began, changed, or ended: count from where it is now
-            Ok(()) => {}
+            Ok(_) => continue,
             Err(RecvTimeoutError::Disconnected) => return,
         }
+
+        clock_due(port);
+
+        // the worker changed the trial while the clock was ending it: what it did may be stale,
+        // so it looks again at once instead of sleeping for the deadline that was
+        if CLOCK_GENERATION.load(Ordering::Relaxed) != seen {
+            continue;
+        }
     }
+}
+
+// ends the trial the clock waited for, through the controller the worker uses. `gone` is the page
+// or the window left, which the clock cannot see: only the worker can, and it is the one that
+// normally notices it. A trial the config holds (`Session::kept`) is not one the clock ends.
+pub(super) fn clock_due(port: &dyn Port) {
+    let ended = controller(|control| {
+        let output = control.session.as_ref()?.output.clone();
+        let result = control.revert_when_due(port, false)?;
+
+        Some((output, result, control.session.is_none()))
+    });
+
+    let Some((output, result, over)) = ended else {
+        return;
+    };
+
+    ended_trial(result, "Reverted: no answer in time");
+
+    // the page shows what niri has again, as the worker's own tick does
+    if over {
+        Settings::write().outputs.resync(&output, &ALL_AXES);
+    }
+
+    show_trial();
 }
 
 /// Asks niri for the outputs again, off the draw thread.
