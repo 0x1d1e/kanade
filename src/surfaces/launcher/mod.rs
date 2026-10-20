@@ -971,12 +971,12 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> F
         query,
         || sections(apps, destinations, recording),
         || {
-            // read only for a history search, which also subscribes the view to the clipboard
-            let entries = if history(query) {
-                clipboard::Clipboard::read().entries().to_vec()
-            } else {
-                Vec::new()
-            };
+            // read only for a history search, which also subscribes the view to the clipboard;
+            // borrowed, so a history of pictures is not copied to answer the query
+            let history = history(query).then(clipboard::Clipboard::read);
+            let entries = history
+                .as_deref()
+                .map_or(&[][..], clipboard::Clipboard::entries);
 
             let titles = windows::titles();
 
@@ -989,7 +989,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> F
                     &destinations,
                     &commands(config::get().launcher_commands, recording),
                     &Emoji,
-                    &History { entries: &entries },
+                    &History { entries },
                 ],
                 query,
             );
