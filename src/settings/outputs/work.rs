@@ -1,12 +1,15 @@
 //! The Outputs section's worker and the state the page draws (see `outputs`). One thread asks
 //! niri, runs the trial's `niri msg output` commands and writes the config, so no press waits on
-//! them; its results land in the `Settings` Service, which redraws the window. It also keeps the
+//! them; its results land in the `Settings` Service, which redraws the window. It also draws the
 //! clock of a trial: every quarter second it counts down, and it reverts when the time is out or
-//! when the page or the window the trial was made in is gone.
+//! when the page or the window the trial was made in is gone. A second thread, the trial's own,
+//! fires that same retry at the trial's deadline even when the first is dead or blocked, so a
+//! worker that panicked cannot leave a trial with no timer.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SendError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -37,7 +40,8 @@ const RELOAD: Duration = Duration::from_millis(700);
 // plugged in or out, or changed by something else
 const POLL: Duration = Duration::from_secs(2);
 
-// how often the worker looks at the clock of a trial
+// how often the trial's clock looks at a trial: whole seconds of countdown are shown, and a page
+// left is noticed, within it
 const TICK: Duration = Duration::from_millis(250);
 
 // how long a window asked for is given to open before it counts as closed
@@ -338,6 +342,8 @@ fn post(job: Job) {
 fn spawn() -> Option<Sender<Job>> {
     let (sender, receiver) = mpsc::channel();
 
+    start_clock();
+
     thread::Builder::new()
         .name(String::from("kanade-outputs"))
         .spawn(move || {
@@ -353,11 +359,61 @@ fn spawn() -> Option<Sender<Job>> {
         .map(|_| sender)
 }
 
+// the deadline of a trial, and the retries of a revert that failed, on a thread of its own: the
+// worker draws the countdown and reverts when the page is left, but it panics, and it sits in
+// `niri msg output` for up to 2 s, and a trial whose deadline died with it would stay on the
+// monitor with nothing counting. The clock takes the trial through `controller`, as the worker
+// does, and never begins one.
+static CLOCK: Mutex<Option<Sender<()>>> = Mutex::new(None);
+static CLOCK_STARTED: OnceLock<()> = OnceLock::new();
+
+// tells the clock that the trial began, changed or ended, so it counts again
+fn wake_clock() {
+    if let Some(woken) = CLOCK.locked().as_ref() {
+        let _ = woken.send(());
+    }
+}
+
+fn start_clock() {
+    CLOCK_STARTED.get_or_init(|| {
+        let (woken, woke) = mpsc::channel();
+        *CLOCK.locked() = Some(woken);
+
+        crate::supervise::spawn("kanade-outputs-clock", move || clock(&woke));
+    });
+}
+
+fn clock(woken: &Receiver<()>) {
+    loop {
+        let wait = match controller(|control| control.wait(Real.now())) {
+            Some(due) => Duration::from_millis(due.max(1)),
+            None => {
+                // no trial niri has to be put back from: the worker wakes this thread when that
+                // changes. The config holding a trial is no trial to time: the reload decides.
+                if woken.recv().is_err() {
+                    return;
+                }
+
+                continue;
+            }
+        };
+
+        match woken.recv_timeout(wait) {
+            // its time is out: the worker may be dead or in niri, so it reverts here, through the
+            // same tick and the same controller, which is due from the trial's own clock
+            Err(RecvTimeoutError::Timeout) => tick(false),
+
+            // the trial began, changed, or ended: count from where it is now
+            Ok(()) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
 /// Asks niri for the outputs again, off the draw thread.
 pub fn refresh() {
     post(Job::Refresh);
 }
-
 /// Tries a change to an output in niri's memory.
 pub fn edit(output: &str, edit: Edit) {
     post(Job::Edit {
@@ -477,6 +533,9 @@ fn run(receiver: &Receiver<Job>) {
                 handle_worker_panic(&Real, &*payload);
             }
             asked = Instant::now();
+
+            // a press may have begun, extended or ended a trial: its clock counts from there
+            wake_clock();
         }
 
         let open = kanade_runtime::window_open(WINDOW);
@@ -800,6 +859,10 @@ pub(super) fn handle_worker_panic(port: &dyn Port, payload: &(dyn std::any::Any 
             let _ = control.revert(port);
         }
     });
+
+    // a trial this took a revert of, or one the panic left behind because niri refused it, is the
+    // clock's now: it reverts at the deadline even though this worker is going
+    wake_clock();
 }
 
 #[cfg(test)]

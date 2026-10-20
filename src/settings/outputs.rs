@@ -954,8 +954,12 @@ pub struct Session {
     pub deadline: u64,
 
     // when a revert that failed may be tried again; the deadline itself while no revert failed,
-    // so `revert_when_due` and the worker's wait need no other rule
+    // so `revert_when_due` and the trial's clock need no other rule
     pub retry_at: u64,
+
+    // the config holds this trial (a Keep was written): from then it is niri's reload, not a
+    // deadline, that decides between confirming and abandoning it, so no clock reverts it
+    pub kept: bool,
 
     // why the last revert failed, which the page says while it retries
     pub stuck: Option<String>,
@@ -1002,13 +1006,19 @@ impl Controller {
             .map(|session| session.deadline.saturating_sub(now))
     }
 
-    /// Milliseconds until the trial next needs its worker: the deadline, or the retry of a revert
-    /// that failed. None outside a trial. The worker waits on this rather than on a tick, so a
-    /// deadline that passed while its thread was panicking, or blocked in niri, is still due.
+    /// Milliseconds until the trial next needs its clock: `retry_at`, which is the deadline while no
+    /// revert has failed. None outside a trial, or once the config holds it. The trial's clock waits
+    /// on this rather than on a tick, so a deadline that passed while the worker was panicking, or
+    /// blocked in niri, is still due when the clock next looks.
     pub fn wait(&self, now: u64) -> Option<u64> {
-        self.session
-            .as_ref()
-            .map(|session| session.retry_at.max(session.deadline).saturating_sub(now))
+        self.unkept()
+            .map(|session| session.retry_at.saturating_sub(now))
+    }
+
+    /// The trial as niri's still to put back: none once the config holds it (`Session::kept`), and
+    /// none outside a trial.
+    fn unkept(&self) -> Option<&Session> {
+        self.session.as_ref().filter(|session| !session.kept)
     }
 
     /// Tries `edit` on the output `name` in niri's memory. The first change of a trial writes the
@@ -1064,6 +1074,7 @@ impl Controller {
                 edits: BTreeMap::new(),
                 deadline: now + TRIAL_MS,
                 retry_at: now + TRIAL_MS,
+                kept: false,
                 stuck: None,
                 taken,
             });
@@ -1170,6 +1181,13 @@ impl Controller {
         let name = session.output.clone();
         let taken = session.taken;
         let applied: Vec<Edit> = session.edits.values().cloned().collect();
+
+        // the config holds the trial now: the deadline no longer puts the output back, and the
+        // reload's answer does (`confirm_keep`, `abandon_keep`)
+        if let Some(session) = &mut self.session {
+            session.kept = true;
+        }
+
         if write_pending(&self.file, &name, &previous, &applied, taken, true).is_err() {
             delete_pending(&self.file);
         }
@@ -1301,14 +1319,15 @@ impl Controller {
 
     /// Reverts the trial when it is due: at once when the page it was made on is gone and no revert
     /// has been tried since, otherwise at its deadline (or `RETRY_MS` after a failed revert).
-    /// `None` while it is not yet time, so a tick before the deadline does nothing. A deadline that
-    /// passed while nothing was watching is due at once: nothing here is counted from a tick.
+    /// `None` while it is not yet time, so a tick before the deadline does nothing, and none for a
+    /// trial the config holds. A deadline that passed while nothing was watching is due at once:
+    /// nothing here is counted from a tick.
     pub fn revert_when_due(
         &mut self,
         port: &dyn Port,
         gone: bool,
     ) -> Option<Result<Ended, String>> {
-        let session = self.session.as_ref()?;
+        let session = self.unkept()?;
         let due = (gone && session.stuck.is_none()) || port.now() >= session.retry_at;
 
         due.then(|| self.revert(port))
