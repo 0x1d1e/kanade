@@ -80,7 +80,7 @@ That puts SDDM back on its own theme; nothing else of Kanade's is needed for tha
 
 ## Qt 5 and Qt 6
 
-The theme is one QML source for Qt 5.15 and Qt 6. Its `metadata.desktop` says `QtVersion=6`; a Qt 5 SDDM needs that one line changed by hand in the overlay's theme. See [dist/sddm/README.md](../../dist/sddm/README.md) for the theme's files and keys.
+The theme is one QML source for Qt 5.15 and Qt 6. `kanade sddm setup` detects the installed greeter (`sddm-greeter-qt6` or `sddm-greeter`) and writes the matching `QtVersion` into `metadata.desktop` automatically, retaining any existing value on subsequent runs. See [dist/sddm/README.md](../../dist/sddm/README.md) for the theme's files and keys.
 
 ## Undoing it
 

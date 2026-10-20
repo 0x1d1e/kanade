@@ -101,31 +101,52 @@ pub fn pairs(text: &str) -> Vec<(String, String, String)> {
     out
 }
 
+// a regular file's text, and whether that was all of it
+#[derive(Debug)]
+pub struct Read {
+    pub text: String,
+
+    // the file is longer than `MOST_BYTES`, so `text` is its start
+    pub whole: bool,
+}
+
 /*
- * a regular file's text, no more than `MOST_BYTES` of it; none for anything else (a pipe, a device,
- * a directory, reached by name or through a link), which could block or never end. The open does
- * not wait either, in case the file is swapped for a pipe after the check
+ * a regular file's text, no more than `MOST_BYTES` of it, `whole` saying whether that was all of it.
+ * The error is why there is no text: not a regular file (a pipe, a device, a directory, reached by
+ * name or through a link), which could block or never end, or the open or the read failing, as it
+ * failed. The open does not wait either, in case the file is swapped for a pipe after the check
  */
-pub fn read(path: &Path) -> Option<String> {
-    use std::io::Read;
+pub fn read(path: &Path) -> Result<Read, String> {
+    use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt;
 
-    let meta = fs::metadata(path).ok()?;
+    let named = || path.display().to_string();
+    let meta = fs::metadata(path).map_err(|error| format!("{}: {error}", named()))?;
     if !meta.is_file() {
-        return None;
+        return Err(format!("{} is not a file", named()));
     }
 
+    // one byte past the limit says whether there was more, which the file's length alone cannot
     let mut bytes = Vec::new();
     fs::OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
         .open(path)
-        .ok()?
-        .take(MOST_BYTES)
-        .read_to_end(&mut bytes)
-        .ok()?;
+        .and_then(|file| file.take(MOST_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|error| format!("{}: {error}", named()))?;
 
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    let whole = bytes.len() as u64 <= MOST_BYTES;
+    bytes.truncate(MOST_BYTES as usize);
+
+    Ok(Read {
+        whole,
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+// its text, for a caller that only wants that
+pub fn text(path: &Path) -> Option<String> {
+    read(path).ok().map(|read| read.text)
 }
 
 fn extension(name: &str) -> String {
@@ -218,8 +239,8 @@ pub fn classify(dir: &Path, own: bool) -> Class {
     // theme.conf and the user's file over it, which decide what the setting holds
     let mut settings: Vec<(String, String, String)> = Vec::new();
     for conf in ["theme.conf", "theme.conf.user"] {
-        if let Some(text) = read(&dir.join(conf)) {
-            settings.extend(pairs(&text));
+        if let Ok(read) = read(&dir.join(conf)) {
+            settings.extend(pairs(&read.text));
         }
     }
 
@@ -248,7 +269,7 @@ pub fn classify(dir: &Path, own: bool) -> Class {
         listed
             .iter()
             .filter(|rel| extension(&name(rel)) == "qml")
-            .filter_map(|rel| read(&dir.join(rel)))
+            .filter_map(|rel| read(&dir.join(rel)).ok().map(|read| read.text))
             .flat_map(|source| config_keys(&source))
             .find(|key| key.eq_ignore_ascii_case("background"))
     });
@@ -395,5 +416,33 @@ mod tests {
             ("General".into(), "background".into(), "a.png".into())
         );
         assert_eq!(pairs.len(), 2);
+    }
+
+    // a seed over the limit is said to be cut, and why there is no text at all is the real error
+    #[test]
+    fn a_read_says_what_went_wrong_instead_of_nothing() {
+        let dir = std::env::temp_dir().join(format!("kanade-sddm-read-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let big = dir.join("big");
+        fs::write(&big, vec![b'a'; MOST_BYTES as usize + 1]).unwrap();
+        let cut = read(&big).unwrap();
+        assert!(!cut.whole, "cut at the limit");
+        assert_eq!(cut.text.len() as u64, MOST_BYTES);
+
+        let exact = dir.join("exact");
+        fs::write(&exact, vec![b'a'; MOST_BYTES as usize]).unwrap();
+        assert!(read(&exact).unwrap().whole, "the limit itself is whole");
+
+        let missing = read(&dir.join("absent")).unwrap_err();
+        assert!(missing.contains("absent"), "{missing}");
+        assert!(
+            missing.contains("No such file") || missing.contains("os error"),
+            "the open's own error: {missing}"
+        );
+        assert!(read(&dir).unwrap_err().contains("not a file"));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

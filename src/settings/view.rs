@@ -34,9 +34,30 @@ use super::niri;
 use super::outputs;
 use super::ring::{self, Stop};
 use super::{
-    FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change, change_all, font_search, hover, input,
-    inspect, module_filter, path, search, select_font, turn_to, undo,
+    FONT_SEARCH, MODULE_FILTER, SEARCH, Settings, change as super_change,
+    change_all as super_change_all, font_search, hover, input, inspect, module_filter, path,
+    search, select_font, turn_to, undo,
 };
+
+fn change(path: Vec<String>, value: Option<Value>) {
+    let is_login =
+        Settings::read().page == login::PAGE || path.first().is_some_and(|p| p == "sddm");
+    super_change(path, value);
+    if is_login {
+        login::load();
+    }
+}
+
+fn change_all(changes: Vec<(Vec<String>, Option<Value>)>) {
+    let is_login = Settings::read().page == login::PAGE
+        || changes
+            .iter()
+            .any(|(p, _)| p.first().is_some_and(|k| k == "sddm"));
+    super_change_all(changes);
+    if is_login {
+        login::load();
+    }
+}
 
 pub(super) fn hover_wash(roles: &ThemeRoles) -> Color {
     theme::faded(roles.on_surface, 0.08)
@@ -1066,6 +1087,14 @@ fn health_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
     Box::new(Column::new(items).width(inner()).gap(10.0))
 }
 
+fn is_status_warning(text: &str) -> bool {
+    text.contains("not ready")
+        || text.contains("missing")
+        || text.contains("WARNING")
+        || text.contains("cannot read")
+        || text.contains("stale")
+}
+
 /*
  * the Login screen page's status as `kanade sddm status` words it, over whether SDDM reads the
  * overlay, and the root commands still to run, each to copy. Read-only: Kanade never runs them
@@ -1078,12 +1107,18 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         _ if settings.login_loading => (String::from("Checking\u{2026}"), roles.on_surface),
         None => (String::from("Not checked yet"), roles.on_surface),
         Some(Err(_)) => (String::from("Cannot be checked"), signals.warning),
-        Some(Ok(status)) if status.enabled && status.ready => (
-            String::from("Enabled: SDDM reads the ready overlay"),
-            roles.on_surface,
-        ),
+        Some(Ok(status))
+            if status.enabled
+                && status.ready
+                && !status.lines.iter().any(|line| is_status_warning(line)) =>
+        {
+            (
+                String::from("Enabled: SDDM reads the ready overlay"),
+                roles.on_surface,
+            )
+        }
         Some(Ok(status)) if status.enabled => (
-            String::from("Enabled (setup incomplete): SDDM reads the overlay"),
+            String::from("Enabled: SDDM reads the overlay, and a row below is not current"),
             signals.warning,
         ),
         Some(Ok(_)) => (String::from("Not enabled yet"), signals.warning),
@@ -1124,11 +1159,7 @@ fn login_view(settings: &Settings, roles: &ThemeRoles) -> Box<dyn Widget> {
         Some(Err(error)) => items.push(line(error.clone(), roles.on_surface_variant)),
         Some(Ok(status)) => {
             for text in &status.lines {
-                let ink = if text.contains("not ready")
-                    || text.contains("missing")
-                    || text.contains("WARNING")
-                    || text.contains("cannot read")
-                {
+                let ink = if is_status_warning(text) {
                     signals.warning
                 } else {
                     roles.on_surface_variant

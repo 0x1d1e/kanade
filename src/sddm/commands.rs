@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use toml::Value;
@@ -186,18 +186,23 @@ fn shown(value: &str) -> String {
 }
 
 fn info_text(w: &Where, config: &Config, name: &str) -> Result<String, String> {
+    // before anything is built from it or shown: an argument that is not a theme's name is said so,
+    // not echoed, as it may hold an escape sequence
     if !theme_ok(name) {
-        return Err(format!("{name}: not a theme's directory name"));
+        return Err(String::from(
+            "not a theme's directory name: letters, digits, _ . and - only",
+        ));
     }
     let themes = found(w);
     let Some(found) = themes.iter().find(|found| found.name == name) else {
         return Err(format!(
-            "{name}: no such theme (`kanade sddm theme list` lists them)"
+            "{}: no such theme (`kanade sddm theme list` lists them)",
+            plain(name)
         ));
     };
 
     let mut text = String::new();
-    let _ = writeln!(text, "theme: {name}");
+    let _ = writeln!(text, "theme: {}", plain(name));
 
     let installed = w.installed(name);
     match found.source {
@@ -209,7 +214,7 @@ fn info_text(w: &Where, config: &Config, name: &str) -> Result<String, String> {
             let _ = writeln!(
                 text,
                 "from: the overlay only; {} is gone, so `sync` cannot write it",
-                installed.display()
+                plain(&installed.display().to_string())
             );
         }
     }
@@ -218,7 +223,7 @@ fn info_text(w: &Where, config: &Config, name: &str) -> Result<String, String> {
     let _ = writeln!(text, "sync: {}", found.class.does());
 
     if found.source == Source::Installed {
-        if let Some(meta) = class::read(&installed.join("metadata.desktop")) {
+        if let Some(meta) = class::text(&installed.join("metadata.desktop")) {
             for (_, key, value) in class::pairs(&meta) {
                 if ["Name", "Version", "QtVersion", "MainScript", "Theme-API"]
                     .contains(&key.as_str())
@@ -237,11 +242,15 @@ fn info_text(w: &Where, config: &Config, name: &str) -> Result<String, String> {
                     text,
                     "readable by the sddm user: {} entries are not, as {}",
                     closed.len(),
-                    closed[0].display()
+                    plain(&closed[0].display().to_string())
                 );
             }
             Err(error) => {
-                let _ = writeln!(text, "readable by the sddm user: unknown ({error})");
+                let _ = writeln!(
+                    text,
+                    "readable by the sddm user: unknown ({})",
+                    plain(&error.to_string())
+                );
             }
         }
     }
@@ -250,7 +259,7 @@ fn info_text(w: &Where, config: &Config, name: &str) -> Result<String, String> {
     let _ = writeln!(
         text,
         "overlay: {} ({})",
-        overlay.display(),
+        plain(&overlay.display().to_string()),
         if overlay.exists() {
             theme_state(w, name)
         } else {
@@ -329,7 +338,7 @@ fn bring(w: &Where, config: &Config) -> Result<String, String> {
 
 // what the settings file itself holds for `sddm.theme`, whatever the config files over it say
 fn settings_theme() -> Option<String> {
-    let text = class::read(&config::settings_file()?)?;
+    let text = class::text(&config::settings_file()?)?;
     let table = config::settings_table(&text).ok()?;
 
     table.get("sddm")?.get("theme")?.as_str().map(str::to_owned)
@@ -341,44 +350,98 @@ fn choose(name: &str) -> Result<(Config, String), String> {
     let mut text = String::new();
 
     crate::settings::set(&["sddm", "theme"], Some(Value::String(name.to_owned())))?;
-    let _ = writeln!(text, "sddm.theme = {name} (written to the settings file)");
+    let _ = writeln!(
+        text,
+        "sddm.theme = {} (written to the settings file)",
+        plain(name)
+    );
 
     Ok((config::layers(true).0, text))
 }
 
+fn snapshot_picture(picture: &Path) -> Option<Vec<u8>> {
+    match fs::symlink_metadata(picture) {
+        Ok(meta) if meta.is_file() && meta.len() <= 16 << 20 => fs::read(picture).ok(),
+        _ => None,
+    }
+}
+
+fn restore_picture(picture: &Path, saved: Option<&[u8]>) -> Result<(), String> {
+    match saved {
+        Some(bytes) => {
+            if fs::read(picture).is_ok_and(|current| current == bytes) {
+                return Ok(());
+            }
+            super::put_picture(picture, bytes)
+        }
+        None => {
+            if !picture.exists() {
+                return Ok(());
+            }
+            super::plain_target(picture)?;
+            match fs::remove_file(picture) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("{}: {error}", picture.display())),
+            }
+        }
+    }
+}
+
 fn use_text(w: &Where, name: &str) -> Result<String, String> {
+    // validated before it is echoed or a path is built from it; then the one theme that may be
+    // selected, so a refused name cannot be mistaken for one Kanade simply does not support
+    if !theme_ok(name) {
+        return Err(String::from(
+            "not a theme's directory name: letters, digits, _ . and - only",
+        ));
+    }
     if name != super::OWN {
         return Err(String::from(
             "only the root-installed kanade theme can be selected safely",
         ));
-    }
-    if !theme_ok(name) {
-        return Err(format!("{name}: not a theme's directory name"));
     }
     if !found(w)
         .iter()
         .any(|found| found.name == name && found.source != Source::OverlayOnly)
     {
         return Err(format!(
-            "{name}: not an installed SDDM theme (`kanade sddm theme list` lists them)"
+            "{}: not an installed SDDM theme (`kanade sddm theme list` lists them)",
+            plain(name)
         ));
     }
 
     // the setting is written first, as the overlay is built from the files' answer; a failure to
-    // build it puts the settings file's own value back exactly, so a refused theme is not left chosen
-    let before = settings_theme();
+    // build it puts the settings file's own value and any modified picture back exactly
+    let before_theme = settings_theme();
+    let before_picture = snapshot_picture(&w.picture());
     let (config, mut text) = choose(name)?;
 
     match bring(w, &config) {
         Ok(brought) => text.push_str(&brought),
         Err(error) => {
-            let put_back =
-                crate::settings::set(&["sddm", "theme"], before.clone().map(Value::String));
+            let put_theme =
+                crate::settings::set(&["sddm", "theme"], before_theme.clone().map(Value::String));
+            let put_picture = restore_picture(&w.picture(), before_picture.as_deref());
 
-            return Err(match put_back {
-                Ok(()) => format!("{error} (sddm.theme in the settings file is as it was)"),
-                Err(again) => format!("{error} (and sddm.theme could not be put back: {again})"),
-            });
+            let theme_msg = match put_theme {
+                Ok(()) => "sddm.theme in the settings file is as it was",
+                Err(again) => {
+                    return Err(format!(
+                        "{error} (and sddm.theme could not be put back: {again})"
+                    ));
+                }
+            };
+            let picture_msg = match put_picture {
+                Ok(()) => "the picture is as it was",
+                Err(again) => {
+                    return Err(format!(
+                        "{error} ({theme_msg}; and the picture could not be put back: {again})"
+                    ));
+                }
+            };
+
+            return Err(format!("{error} ({theme_msg}; {picture_msg})"));
         }
     }
 
@@ -562,9 +625,66 @@ mod tests {
 
         // a name no directory has is refused before any path is built from it
         for bad in ["../x", "a/b", "", "evil\u{1b}[2J", "x.new"] {
-            assert!(info_text(&w, &Config::default(), bad).is_err(), "{bad}");
-            assert!(use_text(&w, bad).is_err(), "{bad}");
+            let info_err = info_text(&w, &Config::default(), bad).unwrap_err();
+            assert!(!info_err.contains('\u{1b}'), "{info_err}");
+            assert_eq!(
+                info_err,
+                "not a theme's directory name: letters, digits, _ . and - only"
+            );
+            let use_err = use_text(&w, bad).unwrap_err();
+            assert!(!use_err.contains('\u{1b}'), "{use_err}");
+            assert_eq!(
+                use_err,
+                "not a theme's directory name: letters, digits, _ . and - only"
+            );
         }
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn info_strips_control_characters_from_file_paths() {
+        let dir = root("control-info");
+        let w = Where::under(dir.clone());
+        let themes = dir.join(super::super::INSTALLED);
+        let theme = themes.join("breeze");
+        fs::create_dir_all(&theme).unwrap();
+        fs::write(theme.join("metadata.desktop"), "").unwrap();
+        let bad = theme.join("bad\u{1b}[31m.png");
+        fs::write(&bad, "").unwrap();
+        fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let info = info_text(&w, &Config::default(), "breeze").unwrap();
+        assert!(!info.contains('\u{1b}'), "{info}");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_picture_restores_prior_bytes_or_removes_unwanted_file() {
+        let dir = root("restore-pic");
+        let w = Where::under(dir.clone());
+        let pic = w.picture();
+        fs::create_dir_all(pic.parent().unwrap()).unwrap();
+
+        // 1. Snapshot nonexistent, then something creates pic, restore removes it
+        let snap = snapshot_picture(&pic);
+        assert_eq!(snap, None);
+        fs::write(&pic, b"new picture").unwrap();
+        restore_picture(&pic, snap.as_deref()).unwrap();
+        assert!(!pic.exists());
+
+        // 2. Snapshot existing picture, then pic is changed/removed, restore puts it back
+        fs::write(&pic, b"original picture").unwrap();
+        let snap = snapshot_picture(&pic);
+        assert_eq!(snap, Some(b"original picture".to_vec()));
+        fs::write(&pic, b"changed picture").unwrap();
+        restore_picture(&pic, snap.as_deref()).unwrap();
+        assert_eq!(fs::read(&pic).unwrap(), b"original picture");
+
+        fs::remove_file(&pic).unwrap();
+        restore_picture(&pic, snap.as_deref()).unwrap();
+        assert_eq!(fs::read(&pic).unwrap(), b"original picture");
 
         fs::remove_dir_all(dir).unwrap();
     }

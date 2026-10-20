@@ -28,14 +28,22 @@ const SETTLE: Duration = Duration::from_millis(600);
 struct Pending {
     path: Option<PathBuf>,
     running: bool,
+
+    // which worker owns the two above: one that dies of a panic must not clear a newer worker's
+    worker: u64,
 }
 
 impl Pending {
-    // notes the latest wallpaper; whether a worker must be started for it
-    fn submit(&mut self, path: PathBuf) -> bool {
+    // notes the latest wallpaper; the worker to start for it, or none when one already runs
+    fn submit(&mut self, path: PathBuf) -> Option<u64> {
         self.path = Some(path);
 
-        !std::mem::replace(&mut self.running, true)
+        if std::mem::replace(&mut self.running, true) {
+            return None;
+        }
+
+        self.worker += 1;
+        Some(self.worker)
     }
 
     // the wallpaper to write, the latest; none ends the worker
@@ -53,6 +61,7 @@ impl Pending {
 static PENDING: Mutex<Pending> = Mutex::new(Pending {
     path: None,
     running: false,
+    worker: 0,
 });
 
 // what was last said, so a failure that repeats with every wallpaper is said once
@@ -72,14 +81,14 @@ pub fn wallpaper_changed(path: &Path) {
         return;
     }
 
-    let start = PENDING.locked().submit(path.to_owned());
-    if !start {
+    let worker = PENDING.locked().submit(path.to_owned());
+    let Some(worker) = worker else {
         return;
-    }
+    };
 
     let spawned = std::thread::Builder::new()
         .name(String::from("sddm sync"))
-        .spawn(worker);
+        .spawn(move || follow(worker));
 
     if let Err(error) = spawned {
         PENDING.locked().running = false;
@@ -89,21 +98,34 @@ pub fn wallpaper_changed(path: &Path) {
 
 /*
  * a worker that dies of a panic leaves `running` set, which would stop every later change from
- * starting one. Dropped by a panic, it clears it; a worker that ends by itself already has, and a
- * newer worker may be running by then, which it must not clear
+ * starting one, and the path it was given pending, which no worker is left to write. Dropped by a
+ * panic, it clears both; a worker that ends by itself already has, and a newer worker may be
+ * running by then, which it must not clear
  */
-struct Unwound<'a>(&'a Mutex<Pending>);
+struct Unwound<'a> {
+    pending: &'a Mutex<Pending>,
+    worker: u64,
+}
 
 impl Drop for Unwound<'_> {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            self.0.locked().running = false;
+        if !std::thread::panicking() {
+            return;
+        }
+
+        let mut pending = self.pending.locked();
+        if pending.worker == self.worker {
+            pending.path = None;
+            pending.running = false;
         }
     }
 }
 
-fn worker() {
-    let _unwound = Unwound(&PENDING);
+fn follow(worker: u64) {
+    let _unwound = Unwound {
+        pending: &PENDING,
+        worker,
+    };
 
     loop {
         std::thread::sleep(SETTLE);
@@ -142,11 +164,20 @@ fn fresh() -> Config {
  */
 pub fn refresh(
     w: &Where,
-    config: impl FnOnce() -> Config,
+    config: impl Fn() -> Config,
     source: &Path,
-    size: impl FnOnce() -> (u32, u32),
+    size: impl Fn() -> (u32, u32),
 ) -> Result<String, String> {
     let prefix = w.text()?;
+
+    // the size is asked of niri before the lock, so a `kanade sddm sync` waiting on it is not kept
+    // waiting for an IPC round trip; when the config as it reads now says no picture is written,
+    // it is asked under the lock only if the config changed while this waited for it
+    let early = config();
+    let wanted = early.sddm_sync
+        && early.sddm_background == SddmBackground::Wallpaper
+        && early.sddm_theme.as_deref().unwrap_or(OWN) == OWN;
+    let known = wanted.then(&size);
 
     locked(w, || {
         let config = config();
@@ -165,14 +196,14 @@ pub fn refresh(
 
         let key = "backdrop";
         let named = format!("/{}/backdrop.png", super::DATA);
-        let names = class::read(&w.overlay(&want.theme).join(super::USER)).is_some_and(|text| {
-            class::pairs(&text)
+        let names = class::read(&w.overlay(&want.theme).join(super::USER)).is_ok_and(|read| {
+            class::pairs(&read.text)
                 .iter()
                 .any(|(_, set, value)| set == key && *value == named)
         });
 
         if names {
-            let bytes = backdrop(source, size(), want.blur, want.dim)?;
+            let bytes = backdrop(source, known.unwrap_or_else(size), want.blur, want.dim)?;
             put_picture(&w.picture(), &bytes)?;
 
             Ok(format!(
@@ -218,17 +249,21 @@ mod tests {
     fn changes_close_together_are_one_write_of_the_last() {
         let mut pending = Pending::default();
 
-        assert!(pending.submit("/a.png".into()), "the first starts a worker");
-        assert!(!pending.submit("/b.png".into()), "the next joins it");
+        assert_eq!(
+            pending.submit("/a.png".into()),
+            Some(1),
+            "the first starts a worker"
+        );
+        assert_eq!(pending.submit("/b.png".into()), None, "the next joins it");
         assert_eq!(pending.take(), Some("/b.png".into()));
 
         // a change while the worker writes is taken by it, not by another
-        assert!(!pending.submit("/c.png".into()));
+        assert_eq!(pending.submit("/c.png".into()), None);
         assert_eq!(pending.take(), Some("/c.png".into()));
         assert_eq!(pending.take(), None);
 
-        // ended, so the next change starts a worker again
-        assert!(pending.submit("/d.png".into()));
+        // ended, so the next change starts a worker again, with an id of its own
+        assert_eq!(pending.submit("/d.png".into()), Some(2));
     }
 
     #[test]
@@ -252,6 +287,46 @@ mod tests {
         drop(first);
         assert!(second.try_lock().is_ok());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // the niri round trip for the size happens before the flock, so a `kanade sddm sync` waiting on
+    // the lock is not kept waiting for it
+    #[test]
+    fn the_size_is_asked_of_niri_before_the_lock_is_taken() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-size-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let w = Where::under(root.clone());
+        super::super::install_own(&w).unwrap();
+        fs::create_dir_all(w.data()).unwrap();
+        fs::set_permissions(
+            w.data(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let source = root.join("wall.png");
+        fs::write(&source, png(50)).unwrap();
+
+        // the lock file exists before the run, as `hold` makes it
+        drop(super::super::hold(&w).unwrap());
+
+        let asked = std::cell::Cell::new(0);
+        let lock = w.lock.clone().unwrap();
+        let done = refresh(&w, follows, &source, || {
+            asked.set(asked.get() + 1);
+            let held = fs::OpenOptions::new().append(true).open(&lock).unwrap();
+            assert!(
+                held.try_lock().is_ok(),
+                "the overlay's lock is not held while niri is asked for the size"
+            );
+
+            (16, 16)
+        })
+        .unwrap();
+
+        assert!(done.starts_with("picture:"), "{done}");
+        assert_eq!(asked.get(), 1, "asked once, outside the lock");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -456,33 +531,69 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    // a worker that panics does not stop the next change from starting one
+    // a worker that panics does not stop the next change from starting one, and leaves no path of
+    // its own waiting for a worker that will never write it
     #[test]
-    fn a_worker_that_panics_lets_the_next_change_start_another() {
+    fn a_worker_that_panics_clears_its_path_and_lets_the_next_change_start_another() {
         static LOCAL: Mutex<Pending> = Mutex::new(Pending {
             path: None,
             running: false,
+            worker: 0,
         });
 
-        assert!(LOCAL.locked().submit("/a.png".into()));
-        let died = std::thread::spawn(|| {
-            let _unwound = Unwound(&LOCAL);
+        let first = LOCAL.locked().submit("/a.png".into()).unwrap();
+        let died = std::thread::spawn(move || {
+            let _unwound = Unwound {
+                pending: &LOCAL,
+                worker: first,
+            };
+            // a change arrives during the refresh that then fails
+            assert_eq!(LOCAL.locked().submit("/during.png".into()), None);
             panic!("the refresh failed");
         })
         .join();
         assert!(died.is_err());
-        assert!(
+        assert_eq!(LOCAL.locked().take(), None, "nothing is left pending");
+        assert_eq!(
             LOCAL.locked().submit("/b.png".into()),
+            Some(2),
             "a new worker starts"
         );
 
+        // an older worker that panics late leaves a newer one's path and flag alone
+        assert_eq!(LOCAL.locked().take(), Some("/b.png".into()));
+        assert_eq!(LOCAL.locked().submit("/newer.png".into()), None);
+        let died = std::thread::spawn(move || {
+            let _unwound = Unwound {
+                pending: &LOCAL,
+                worker: first,
+            };
+            panic!("an old worker failed late");
+        })
+        .join();
+        assert!(died.is_err());
+        assert_eq!(
+            LOCAL.locked().take(),
+            Some("/newer.png".into()),
+            "the newer worker's path stays"
+        );
+
         // one that ends by itself leaves a newer worker's flag alone
-        let ended = std::thread::spawn(|| {
-            let _unwound = Unwound(&LOCAL);
+        assert_eq!(
+            LOCAL.locked().submit("/c.png".into()),
+            None,
+            "the worker runs on"
+        );
+        assert_eq!(LOCAL.locked().take(), Some("/c.png".into()));
+        let ended = std::thread::spawn(move || {
+            let _unwound = Unwound {
+                pending: &LOCAL,
+                worker: 2,
+            };
         })
         .join();
         assert!(ended.is_ok());
-        assert!(!LOCAL.locked().submit("/c.png".into()));
+        assert_eq!(LOCAL.locked().submit("/d.png".into()), None);
     }
 
     // the wallpaper is only read: a link to it is followed, while the picture is still never written
