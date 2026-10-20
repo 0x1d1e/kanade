@@ -1312,7 +1312,11 @@ fn band(monitor: &Monitor, place: Placement, items: &[Item], beyond: f32) -> Opt
         (monitor.width as f32, monitor.height as f32),
         place.anchor,
         canvas.width,
-        reach(place.anchor.sits(), canvas.width, widest(&pieces, size, most)),
+        reach(
+            place.anchor.sits(),
+            canvas.width,
+            widest(&pieces, size, most),
+        ),
         island_room(place.anchor),
         depth(size) + size.icon * (most - 1.0) + beyond,
     ))

@@ -293,6 +293,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let roles = theme::island();
     let content = rows(&open, offset, end, width - 2.0 * INSET, roles);
     let scroll_monitor = open.monitor.clone();
+    let monitor_width = monitor.width;
 
     let panel = Rectangle::new()
         .width(width)
@@ -312,7 +313,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             Rectangle::new()
                 .width(width - 2.0 * INSET)
                 .height(list_height)
-                .on_scroll(move |delta| scroll(&scroll_monitor, tall, delta.y))
+                .on_scroll(move |delta| scroll(&scroll_monitor, monitor_width, tall, delta.y))
                 .child(Column::new(content).width(width - 2.0 * INSET).gap(GAP)),
         );
 
@@ -408,9 +409,9 @@ fn silence_target(item: &Item) -> Option<crate::sources::notifications::silence:
     crate::sources::notifications::silence::App::named(name, desktop)
 }
 
-fn size(monitor: &Monitor, count: usize, separated: bool) -> (f32, usize) {
+fn size(monitor: &Monitor, count: usize, separated: bool, tall: f32) -> (f32, usize) {
     let width = WIDTH.min((monitor.width as f32 - 2.0 * SCREEN_GAP).max(1.0));
-    let max_height = (monitor.height as f32 - 2.0 * SCREEN_GAP).max(ROW + 2.0 * INSET);
+    let max_height = (tall - 2.0 * SCREEN_GAP).max(ROW + 2.0 * INSET);
     let content_height = (max_height - 2.0 * INSET).max(ROW);
     let visible_rows = (0..=count)
         .rev()
@@ -425,19 +426,20 @@ fn size(monitor: &Monitor, count: usize, separated: bool) -> (f32, usize) {
 }
 
 /*
- * where the menu stands: out from the icon on the side away from the Dock's edge, then clear of the
- * Dock's strip on that edge, then within the output. The icon's rect is the one taken as the menu
- * opened, and an autohide that was still sliding out left it below the screen: the strip, read as it
- * stands, is what the menu goes above, not the screen's own edge
+ * the room a menu may use on the far side of the Dock's strip, as it stands, grown icons included
  */
-fn position(monitor: &Monitor, open: &Open, width: f32, height: f32) -> (f32, f32) {
-    place(
-        open.at,
-        open.edge,
-        (monitor.width as f32, monitor.height as f32),
-        (width, height),
-        super::standing(monitor),
-    )
+fn tallest(screen: (f32, f32), dock: Option<(Edge, Rect)>) -> f32 {
+    let Some((edge, band)) = dock else {
+        return screen.1;
+    };
+
+    match edge {
+        Edge::Top => screen.1 - (band.bottom() + GAP),
+        Edge::Bottom => band.y - GAP,
+
+        // a side dock takes room along the output, not up it
+        Edge::Left | Edge::Right => screen.1,
+    }
 }
 
 fn place(
@@ -663,7 +665,7 @@ fn select(monitor: &str, index: usize) {
     }
 }
 
-fn scroll(monitor: &str, monitor_width: u32, monitor_height: u32, delta: f32) {
+fn scroll(monitor: &str, monitor_width: u32, tall: f32, delta: f32) {
     if delta == 0.0 {
         return;
     }
@@ -675,12 +677,13 @@ fn scroll(monitor: &str, monitor_width: u32, monitor_height: u32, delta: f32) {
     };
     let count = row_count(open);
     let separated = !open.windows_only && count > 1;
+    // the rows fit the room the view gave the menu; the output's height is not it
     let monitor = Monitor {
         name: monitor.to_owned(),
         width: monitor_width,
-        height: monitor_height,
+        height: 0,
     };
-    let visible = size(&monitor, count, separated).1;
+    let visible = size(&monitor, count, separated, tall).1;
     let (next, remainder) = scrolled(open.offset, open.scroll, delta, count, visible);
     open.scroll = remainder;
 
@@ -709,11 +712,11 @@ fn scrolled(offset: usize, pending: f32, delta: f32, count: usize, visible: usiz
     }
 }
 
-fn key_press(monitor: &str, screen_height: u32, key: Key) {
+fn key_press(monitor: &str, tall: f32, key: Key) {
     match key {
         Key::Escape => close(),
-        Key::Up => move_selection(monitor, screen_height, false),
-        Key::Down => move_selection(monitor, screen_height, true),
+        Key::Up => move_selection(monitor, tall, false),
+        Key::Down => move_selection(monitor, tall, true),
         Key::Delete | Key::Backspace => {
             if let Some(selected) = selected(monitor) {
                 close_window(monitor, selected);
@@ -736,7 +739,7 @@ fn selected(monitor: &str) -> Option<usize> {
         .and_then(|open| open.selected)
 }
 
-fn move_selection(monitor: &str, screen_height: u32, down: bool) {
+fn move_selection(monitor: &str, tall: f32, down: bool) {
     let mut menu = Menu::write();
     let Some(open) = menu.open.as_mut().filter(|open| open.monitor == monitor) else {
         menu.quiet();
@@ -754,13 +757,14 @@ fn move_selection(monitor: &str, screen_height: u32, down: bool) {
         (Some(current), true) => (current + 1) % count,
         (Some(current), false) => current.checked_sub(1).unwrap_or(count - 1),
     };
+    // the rows fit the room the view gave the menu; the output's height is not it
     let monitor = Monitor {
         name: open.monitor.clone(),
         width: WIDTH.ceil() as u32 + 2 * SCREEN_GAP as u32,
-        height: screen_height,
+        height: 0,
     };
     let separated = !open.windows_only && count > 1;
-    let visible = size(&monitor, count, separated).1;
+    let visible = size(&monitor, count, separated, tall).1;
 
     if next < open.offset {
         open.offset = next;
