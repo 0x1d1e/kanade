@@ -75,7 +75,14 @@ pub fn send(key: Key, modifiers: Modifiers) -> bool {
     // a text input has no use for these, so they go on to the window's on_key
     if matches!(
         key,
-        Key::Up | Key::Down | Key::PageUp | Key::PageDown | Key::Tab | Key::BackTab | Key::Other
+        Key::Up
+            | Key::Down
+            | Key::PageUp
+            | Key::PageDown
+            | Key::Tab
+            | Key::BackTab
+            | Key::Shortcut(_)
+            | Key::Other
     ) {
         return false;
     }
