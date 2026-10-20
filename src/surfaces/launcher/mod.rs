@@ -997,7 +997,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
  */
 fn offered(query: &str, ranked: Vec<Answer>, openable: impl FnOnce() -> bool) -> Vec<Answer> {
     match ranked.is_empty() {
-        true => web::offers(query, openable()),
+        true => web::offers(query, openable),
         false => ranked,
     }
 }

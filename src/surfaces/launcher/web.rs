@@ -68,10 +68,10 @@ pub fn refused(query: &str, openable: impl FnOnce() -> bool) -> Option<(&'static
  * opens it as an address, with `https` where it names no scheme, so it never begins with a dash
  * `xdg-open` would read as an option of its own
  */
-pub fn offers(query: &str, openable: bool) -> Vec<Answer> {
+pub fn offers(query: &str, openable: impl FnOnce() -> bool) -> Vec<Answer> {
     let query = query.trim();
 
-    if !asked(query) || !openable {
+    if !asked(query) || !openable() {
         return Vec::new();
     }
 
@@ -149,7 +149,7 @@ mod tests {
     // it can add a parameter of its own
     #[test]
     fn the_search_sends_the_query_escaped_to_google() {
-        let found = offers("rust & borrow", true);
+        let found = offers("rust & borrow", || true);
 
         assert_eq!(found.len(), 2);
         assert_eq!(
@@ -183,7 +183,7 @@ mod tests {
     fn only_a_real_query_is_offered() {
         assert!(!asked("x"));
         assert!(asked(" ab "));
-        assert_eq!(offers("x", true), Vec::new());
+        assert_eq!(offers("x", || true), Vec::new());
         assert!(
             refused("x", || false).is_none(),
             "nothing is refused for a query no row would act on"
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn a_missing_opener_is_said_rather_than_offered() {
         assert!(refused("nowhere", || true).is_none());
-        assert_eq!(offers("nowhere", false), Vec::new());
+        assert_eq!(offers("nowhere", || false), Vec::new());
 
         let (title, detail) =
             refused("nowhere", || false).expect("a refusal while the opener is missing");
