@@ -390,7 +390,7 @@ fn start_clock() {
 // one turn of the clock: sleeps until the trial needs it, then ends the trial through `Port`.
 // `woken` carries a tick per change of the trial, so a trial begun, extended or ended while the
 // clock sleeps is counted from where it is now rather than from the deadline it slept for.
-fn clock(woken: &Receiver<u64>, port: &dyn Port) {
+pub(super) fn clock(woken: &Receiver<u64>, port: &dyn Port) {
     loop {
         let wait = match controller(|control| control.wait(port.now())) {
             Some(due) => Duration::from_millis(due.max(1)),
@@ -405,8 +405,8 @@ fn clock(woken: &Receiver<u64>, port: &dyn Port) {
             }
         };
 
-        // a page left is the worker's to notice while it runs, so the clock's own watch is only
-        // a countdown: it wakes at the deadline, or at the next second the page would show
+        // a page left is the worker's to notice while it runs: the clock only counts down to the
+        // trial's own deadline, and the worker wakes it if the trial changes first
         let seen = CLOCK_GENERATION.load(Ordering::Relaxed);
 
         match woken.recv_timeout(wait) {

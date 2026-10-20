@@ -25,6 +25,10 @@ struct Fake {
     // whether the pending file existed at each command
     file: PathBuf,
     file_at_commands: RefCell<Vec<bool>>,
+
+    // when the fake's clock follows real time from here, for a test that runs the trial's own
+    // clock thread: nothing else moves it then
+    real: RefCell<Option<(std::time::Instant, u64)>>,
 }
 
 impl Fake {
@@ -43,12 +47,19 @@ impl Fake {
             hangs: Cell::new(false),
             file: file.to_owned(),
             file_at_commands: RefCell::default(),
+            real: RefCell::default(),
         }
     }
 
     fn at(&self, millis: u64) {
         self.clock.set(millis);
         self.unix.set(self.unix.get() + millis);
+    }
+
+    // the clock runs with real time from where it is, as `Real` does, so a test can run the
+    // trial's own clock thread against it
+    fn follow_real_time(&self) {
+        *self.real.borrow_mut() = Some((std::time::Instant::now(), self.clock.get()));
     }
 
     fn state(&self, name: &str) -> Output {
@@ -162,7 +173,10 @@ impl Port for Fake {
     }
 
     fn now(&self) -> u64 {
-        self.clock.get()
+        match &*self.real.borrow() {
+            Some((start, from)) => from + start.elapsed().as_millis() as u64,
+            None => self.clock.get(),
+        }
     }
 
     fn unix_ms(&self) -> u64 {
@@ -1589,8 +1603,13 @@ fn a_keep_with_no_reload_seen_is_not_reverted_at_start() {
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 1.5);
 }
 
+// the controller is one for the whole process, as it is in the shell: the tests that drive it take
+// this, so one test's trial is never the next one's
+static CONTROL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn injected_worker_panic_triggers_emergency_revert() {
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
     let (dir, fake, _) = setup();
     let before = fake.state("eDP-1");
 
@@ -1684,6 +1703,7 @@ fn keep_request_succeeds_and_prevents_revert_when_writing_pending_file_fails() {
 // from `retry_at` rather than from anything a tick counted, so it still fires.
 #[test]
 fn a_trial_whose_worker_died_is_still_due_at_its_deadline() {
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
     let (dir, fake, _) = setup();
     let before = fake.state("eDP-1");
 
@@ -1755,9 +1775,9 @@ fn the_clock_waits_on_the_retry_at_and_never_on_a_kept_trial() {
     assert_eq!(control.wait(fake.now()), None);
 
     fake.at(session.retry_at + RETRY_MS);
-    work::clock_due(&fake);
 
     // the clock looked, found nothing to time, and put nothing back
+    assert_eq!(control.revert_when_due(&fake, false), None);
     assert!(control.session.as_ref().unwrap().kept);
     assert!(dir.file().exists());
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
@@ -1865,4 +1885,73 @@ fn a_recovery_sends_on_demand_back_only_for_a_trial_that_changed_it() {
         assert_eq!(sent_on_demand, changed_vrr, "{edit:?}");
         assert!(!dir.file().exists());
     }
+}
+
+// the clock thread itself, with no worker at all: it sleeps on the trial's own wait, does not fire
+// before the deadline, and ends the trial when it comes. This is the case the defect was, since
+// nothing else is running to tick.
+#[test]
+fn the_clock_thread_ends_a_trial_the_worker_never_ticks() {
+    use std::time::{Duration, Instant};
+
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+    let (dir, fake, _) = setup();
+    let before = fake.state("eDP-1");
+
+    // the clock sleeps on real time, so the fake's clock is made to follow it
+    fake.follow_real_time();
+    let started = Instant::now();
+
+    work::controller(|control| {
+        *control = Controller::new(dir.file());
+        control
+            .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+            .unwrap();
+
+        // a deadline a moment away rather than fifteen seconds
+        let now = fake.now();
+        let session = control.session.as_mut().unwrap();
+        session.deadline = now + 400;
+        session.retry_at = now + 400;
+    });
+
+    let (woken, woke) = std::sync::mpsc::channel();
+
+    // an observer beside the clock, standing in for the worker's own wake: it looks before the
+    // deadline, waits for the clock to end the trial, then drops the sender so the clock returns
+    let early = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let watched = early.clone();
+    let observer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        watched.store(
+            work::controller(|control| control.session.is_some()),
+            Ordering::Relaxed,
+        );
+
+        let until = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < until && work::controller(|control| control.session.is_some()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        drop(woken);
+    });
+
+    // the clock runs on its own, with no worker and no tick beside it
+    work::clock(&woke, &fake);
+    observer.join().unwrap();
+
+    assert!(
+        early.load(Ordering::Relaxed),
+        "the clock ended the trial before its deadline"
+    );
+    assert!(
+        work::controller(|control| control.session.is_none()),
+        "the clock never ended the trial"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the clock waited for the trial, not for a tick"
+    );
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
 }
