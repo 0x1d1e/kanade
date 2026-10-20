@@ -27,7 +27,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use percent_encoding::percent_decode_str;
+
 use crate::bus::Bus;
+
 use kanade_runtime::service::Service;
 
 use super::apps::Apps;
@@ -269,7 +272,17 @@ fn plain(markup: &str) -> String {
 fn local(path: &str) -> Option<String> {
     let path = path.strip_prefix("file://").unwrap_or(path);
 
-    path.starts_with('/').then(|| path.to_owned())
+    if !path.starts_with('/') {
+        return None;
+    }
+
+    // a sender's url is percent-encoded, so its spaces are `%20`: niri sends its screenshot this
+    // way in the icon hint, named as the file is, and a path read as written finds nothing
+    Some(
+        percent_decode_str(path)
+            .decode_utf8()
+            .map_or_else(|_| path.to_owned(), Into::into),
+    )
 }
 
 /*
@@ -763,5 +776,28 @@ mod tests {
             renamed(None),
             Some(Step::Withdraw(String::from("notification.files.7")))
         );
+    }
+
+    // niri sends its screenshot in the icon hint as a file url, its spaces `%20`: the path it names
+    // is the one on disk, so it must be decoded before the picture can be found and drawn
+    #[test]
+    fn a_file_url_is_read_as_the_path_on_disk() {
+        assert_eq!(
+            local(
+                "file:///home/someone/Pictures/Screenshots/Screenshot%20from%202026-10-20%2015-13-34.png"
+            ),
+            Some(String::from(
+                "/home/someone/Pictures/Screenshots/Screenshot from 2026-10-20 15-13-34.png"
+            ))
+        );
+
+        // a path as it was sent, and one with nothing to decode, are read as written
+        assert_eq!(
+            local("/tmp/plain.png"),
+            Some(String::from("/tmp/plain.png"))
+        );
+
+        // an icon theme name is no file
+        assert_eq!(local("firefox"), None);
     }
 }
