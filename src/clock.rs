@@ -538,6 +538,14 @@ pub fn user_signal(pid: u32) -> io::Result<()> {
     signal_process(pid, Signal::USR1)
 }
 
+/*
+ * kills the process `pid` outright, for a child that does not end when told to and that another
+ * thread waits on, so the caller makes sure it is not reaped, as `interrupt` says
+ */
+pub fn kill_pid(pid: u32) -> io::Result<()> {
+    signal_process(pid, Signal::KILL)
+}
+
 fn signal_process(pid: u32, signal: Signal) -> io::Result<()> {
     let pid = i32::try_from(pid)
         .ok()
@@ -559,14 +567,22 @@ pub fn ignore_sigint() {
 }
 
 /*
- * `command` starts with SIGINT at its default, so `interrupt` ends it even when Kanade was started
- * with SIGINT ignored, as a job run in the background of a script is, which children inherit
+ * `command` starts with SIGINT at its default and unblocked, so `interrupt` ends it even when Kanade
+ * was started with SIGINT ignored or blocked, as a job run in the background of a script is, which
+ * children inherit: a blocked SIGINT is held pending, and the encoder never sees it
  */
 pub fn default_sigint(command: &mut Command) -> &mut Command {
-    // SAFETY: `signal` is async-signal-safe, and the only call between fork and exec
+    // SAFETY: `signal` and `pthread_sigmask` are async-signal-safe, and the only calls between fork
+    // and exec
     unsafe {
         command.pre_exec(|| {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
+
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut set);
+            libc::sigaddset(&mut set, libc::SIGINT);
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+
             Ok(())
         })
     }

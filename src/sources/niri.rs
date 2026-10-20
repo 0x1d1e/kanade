@@ -379,6 +379,17 @@ struct Cast {
 
 // a cast's stream and what it captures; none for Kanade's own capture
 fn cast(cast: &Json) -> Option<(u64, Cast)> {
+    cast_with(cast, |session| {
+        crate::sources::recording::cast_is_ours(session)
+    })
+}
+
+/*
+ * `cast` as a cast, unless it is Kanade's own: the recorder's own pid says so, and a window's cast
+ * has no pid behind it (a D-Bus session), so the ledger of the casts this Kanade made says it. `ours`
+ * is asked only for such a cast, off the draw thread
+ */
+fn cast_with(cast: &Json, ours: impl Fn(u64) -> bool) -> Option<(u64, Cast)> {
     let own = cast.get("pid").and_then(Json::as_u64) == Some(u64::from(std::process::id()));
 
     if own {
@@ -396,6 +407,15 @@ fn cast(cast: &Json) -> Option<(u64, Cast)> {
         Some("WlrScreencopy") => None,
         _ => cast.get("session_id").and_then(Json::as_u64),
     };
+
+    // a window cast Kanade made, whose pid says nothing: its own, not another program's
+    if cast.get("pid").is_none_or(Json::is_null)
+        && target == Target::Window
+        && let Some(session) = cast.get("session_id").and_then(Json::as_u64)
+        && ours(session)
+    {
+        return None;
+    }
 
     let flag = |key, default| cast.get(key).and_then(Json::as_bool).unwrap_or(default);
 
@@ -1106,6 +1126,20 @@ mod tests {
     }
 
     // a cast that retargets, or has a target niri may add later, posts what it captures now
+    #[test]
+    fn a_pid_null_cast_in_our_ledger_is_dropped() {
+        let cast_json = json::parse(
+            r#"{"stream_id":10,"session_id":42,"kind":"PipeWire","target":{"Window":{"id":1}},"pid":null}"#,
+        )
+        .unwrap();
+
+        // when the session is in Kanade's ledger, it is treated as Kanade's own and dropped
+        assert!(cast_with(&cast_json, |session| session == 42).is_none());
+
+        // when the session is someone else's, it is reported
+        assert!(cast_with(&cast_json, |_| false).is_some());
+    }
+
     #[test]
     fn a_cast_says_what_it_captures() {
         let with = |stream: u64, target: &str| {

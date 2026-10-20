@@ -1,6 +1,6 @@
 # Third-party notices
 
-Kanade's own source is under the [MIT License](LICENSE). Code ported from Amane, `crates/runtime` (ADR 0028), `src/bus.rs` and the Services in `src/sources/`, stays under Amane's notice below. Kanade vendors no other third-party code, fonts or artwork: the icons in `src/icons/` are drawn for Kanade. The crates below are fetched by Cargo, each under its own license, and are linked into the `kanade` binary. Anyone distributing that binary must include their copyright and license notices, which each crate ships in its source.
+Kanade's own source is under the [MIT License](LICENSE). Code ported from Amane, `crates/runtime` (ADR 0028), `src/bus.rs` and the Services in `src/sources/`, stays under Amane's notice below. Other than `vendor/vello_encoding` (Apache-2.0 OR MIT, see `vendor/README.md`), Kanade vendors no other third-party code, fonts or artwork: the icons in `src/icons/` are drawn for Kanade. The crates below are fetched by Cargo, each under its own license, and are linked into the `kanade` binary. Anyone distributing that binary must include their copyright and license notices, which each crate ships in its source.
 
 ## Amane
 

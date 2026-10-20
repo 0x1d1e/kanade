@@ -58,6 +58,7 @@ use crate::config;
 use crate::island::activity::{
     Action, Activity, Clip, Detail, Id, Interrupt, Kind, Lifetime, Priority, Scope,
 };
+use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
 use crate::later::{LATER, Later};
 use crate::lock;
@@ -102,6 +103,10 @@ struct Runtime {
 
     // the `kanade` calls waiting on something of the recording
     waiting: Vec<(Wait, Later)>,
+
+    // the serial of a segment whose encoder a stop killed after it did not end of itself, so a
+    // writer that only found the stream short is not reported as one that failed
+    escalated: Option<u64>,
 
     // the last recording that ended, until another starts
     ended: Option<Ended>,
@@ -204,6 +209,7 @@ impl Runtime {
             child: None,
             picker: None,
             waiting: Vec::new(),
+            escalated: None,
             ended: None,
             issued: Vec::new(),
         }
@@ -233,15 +239,21 @@ impl Runtime {
                 pick: Pick::Failed(why),
             }),
             Effect::Cancel => {
-                if let Some(pid) = self.picker.take() {
+                if let Some(pid) = self.picker {
                     // SIGTERM: the picker inherits Kanade's ignored SIGINT
                     drop(clock::terminate_pid(pid));
+
+                    // a picker that ignores SIGTERM would hold the worker, and every later job
+                    escalate_picker(pid);
                 }
             }
             Effect::Spawn { serial, segment } => {
                 if let Some(take) = &self.take {
                     post(running(take, false));
                 }
+
+                // a new segment's encoder is not the one a stop escalated
+                self.escalated = None;
 
                 self.hand(Job::Spawn { serial, segment }, |why| Event::Spawned {
                     serial,
@@ -258,6 +270,7 @@ impl Runtime {
 
                     // a window's encoder that does not end is killed, whatever the writer waits on
                     if held.encoder.is_some() {
+                        self.escalated = Some(held.serial);
                         escalate(held.serial);
                     }
                 }
@@ -265,9 +278,20 @@ impl Runtime {
             Effect::Join { segments } => {
                 // one segment is the file already; joining more takes a while, which is shown
                 if segments > 1
-                    && let Some(take) = &self.take
+                    && let Some(path) = self.take.as_ref().map(|take| take.path.clone())
                 {
-                    post(saving(take));
+                    if let Some(take) = &self.take {
+                        post(saving(take));
+                    }
+
+                    /*
+                     * the file is there already, so a call waiting for it is answered now rather
+                     * than after a join that can outlast the CLI's patience. A failed join still
+                     * refuses whoever waits after it (there is nobody left by then)
+                     */
+                    for later in self.answer(Wait::End) {
+                        later.done(path.clone());
+                    }
                 }
 
                 self.hand(Job::Join { segments }, |why| Event::Joined(Err(why)))
@@ -333,6 +357,19 @@ impl Runtime {
             .as_ref()
             .map(|take| take.path.clone())
             .unwrap_or_default()
+    }
+
+    /*
+     * the wait for a segment's first frame starts once the recorder runs, not when the call
+     * arrived: the probe can take seconds before the recorder is even started, and a call answered
+     * unknown while the frame is still coming says nothing of what happened
+     */
+    fn postpone(&self) {
+        for (waited, later) in &self.waiting {
+            if *waited == Wait::End {
+                later.rearm();
+            }
+        }
     }
 
     // the calls waiting for `wait`, no longer waiting
@@ -456,6 +493,20 @@ impl Runtime {
 // shown for the island, which `Island::write` takes after the runtime's lock, so its end posts after
 fn post(activity: Activity) {
     IslandService::write().post(activity, Instant::now());
+    refit();
+}
+
+/*
+ * a recording that starts, pauses or ends while the Launcher is open changes which rows it offers,
+ * and the island asks for the body height only when a watcher does: the view draws the rows fresh
+ * every frame but may not post a fit itself
+ */
+fn refit() {
+    let launcher = IslandService::read().surface() == Some(Surface::Launcher);
+
+    if launcher {
+        crate::surfaces::launcher::fit();
+    }
 }
 
 /*
@@ -1165,7 +1216,7 @@ fn pick(serial: u64) {
     {
         let mut runtime = RUNTIME.locked();
 
-        if runtime.machine.serial() == Some(serial) {
+        if runtime.picker == Some(child.id()) {
             runtime.picker = None;
         }
     }
@@ -1269,6 +1320,9 @@ fn spawn(serial: u64, segment: u32) {
         gives_way(serial, &why);
     }
 
+    // the frame the call waits for can only come now, the probe having taken part of its wait
+    RUNTIME.locked().postpone();
+
     eprintln!("capture: encoding with {}", encoding.encoder);
 
     if let Source::Window { id, size, .. } = source {
@@ -1367,27 +1421,77 @@ enum Again {
 
 /*
  * what to start again with, from how the segment ran and what the recording has already given up.
- * A failed VA-API download, when the encoder is what failed (`encoder_failed`: not the muxer), goes
- * to EGL once. An encoder that is not software goes to software once, which tries the VA-API
- * download afresh, since the encoder may have failed for its own reasons (a session limit) and
- * software with VA-API can work where EGL cannot import the cast. Nothing else, so no failure
- * loops: EGL is taken once per `no_va` and `no_va` is cleared only by the one step to software
+ * A failed VA-API download, when the encoder is what failed (`fault` is `Fault::Encoder`), goes to
+ * EGL once. An encoder that is not software goes to software once, which tries the VA-API download
+ * afresh, since the encoder may have failed for its own reasons (a session limit) and software with
+ * VA-API can work where EGL cannot import the cast. Nothing else, so no failure loops: EGL is taken
+ * once per `no_va` and `no_va` is cleared only by the one step to software. A `Fault::Vanished`
+ * output is not the encoder's doing and is not tried again: the same target is gone whichever
+ * encoder reads it
  */
-fn again(ran: Ran, no_va: bool, software: bool, encoder_failed: bool) -> Option<Again> {
-    if ran.va && !no_va && encoder_failed {
+fn again(ran: Ran, given: Given, fault: Fault) -> Option<Again> {
+    if fault == Fault::Vanished {
+        return None;
+    }
+
+    if ran.va && !given.no_va && fault == Fault::Encoder {
         Some(Again::Egl)
-    } else if !ran.software && !software {
+    } else if !ran.software && !given.software {
         Some(Again::Software)
     } else {
         None
     }
 }
 
+// what the recording has already given up on, as `Take` keeps it
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Given {
+    // the VA-API download failed, so EGL is used
+    no_va: bool,
+
+    // the software encoder was asked for
+    software: bool,
+}
+
+// what made a segment end without a frame, as far as another start could mend it
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fault {
+    // the encoder, which another download or the software encoder may start
+    Encoder,
+
+    // the muxer, which no other encoder start mends
+    Muxer,
+
+    // the output or window recorded is gone, which nothing mends
+    Vanished,
+}
+
+/*
+ * one step of `falls_back`, pure so the walk is testable: what to start again with and what the
+ * recording has given up afterwards, none when there is nowhere left to go
+ */
+fn step(given: Given, ran: Ran, fault: Fault) -> Option<(Again, Given)> {
+    let again = again(ran, given, fault)?;
+
+    let given = match again {
+        Again::Egl => Given {
+            no_va: true,
+            ..given
+        },
+        Again::Software => Given {
+            no_va: false,
+            software: true,
+        },
+    };
+
+    Some((again, given))
+}
+
 /*
  * a segment whose encoder failed before it wrote a frame, when the recording has a way left to try
  * (`again`, ADR 0116): says so, notes it on the recording and gives the number of the segment to
- * start again. None when it is not to be tried. `encoder_failed` is whether the encoder, and not
- * the muxer, ended badly
+ * start again. None when it is not to be tried. `fault` says what failed, and only the encoder's
+ * own failure is worth another start
  */
 fn falls_back(
     runtime: &mut Runtime,
@@ -1395,7 +1499,7 @@ fn falls_back(
     segment: &Segment,
     written: bool,
     ran: Ran,
-    encoder_failed: bool,
+    fault: Fault,
 ) -> Option<u32> {
     let Segment::Lost(why) = segment else {
         return None;
@@ -1410,24 +1514,35 @@ fn falls_back(
         return None;
     };
 
+    // a program that is not there is said as it is; the software encoder needs the same ones
     if written || now != serial || why.ends_with("not found") {
         return None;
     }
 
     let take = runtime.take.as_mut()?;
+    let given = Given {
+        no_va: take.no_va,
+        software: take.software.is_some(),
+    };
+    let (again, given) = step(given, ran, fault)?;
 
-    match again(ran, take.no_va, take.software.is_some(), encoder_failed)? {
-        Again::Egl => {
-            take.no_va = true;
-            eprintln!(
-                "capture: the encoder failed to start with the VA-API download ({why}); downloading through EGL instead"
-            );
-        }
+    take.no_va = given.no_va;
+
+    match again {
+        Again::Egl => eprintln!(
+            "capture: the encoder failed to start with the VA-API download ({why}); downloading through EGL instead"
+        ),
         Again::Software => {
             take.software = Some(why.clone());
-            take.no_va = false;
+
+            // the muxer's own failure is not the encoder's, and says so
+            let failed = match fault {
+                Fault::Muxer => MUXER,
+                _ => "the encoder",
+            };
+
             eprintln!(
-                "capture: the encoder failed to start ({why}); recording with software x264 instead"
+                "capture: {failed} failed to start ({why}); recording with software x264 instead"
             );
         }
     }
@@ -1476,7 +1591,13 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf, ran: Ran) {
 
             let segment = classify(status, written, said);
 
-            if let Some(number) = falls_back(&mut runtime, serial, &segment, written, ran, true) {
+            // a vanished output is not the encoder's doing: the first error stands
+            let fault = match &segment {
+                Segment::Lost(why) if vanished(why) => Fault::Vanished,
+                _ => Fault::Encoder,
+            };
+
+            if let Some(number) = falls_back(&mut runtime, serial, &segment, written, ran, fault) {
                 // the worker starts it, as any recorder: a program's life is tied to its spawning thread
                 return runtime.hand(
                     Job::Spawn {
@@ -1511,6 +1632,29 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf, ran: Ran) {
 
 // how long an encoder told to stop has before it is killed, and then the writer after it
 const STOPPING: Duration = Duration::from_secs(5);
+
+/*
+ * kills the picker `pid` after `STOPPING` if it is still the one running: a `slurp` that ignores
+ * SIGTERM holds the worker thread, and with it every later recording job
+ */
+fn escalate_picker(pid: u32) {
+    let watching = thread::Builder::new()
+        .name(String::from("capture-record watchdog"))
+        .spawn(move || {
+            thread::sleep(STOPPING);
+
+            if RUNTIME.locked().picker != Some(pid) {
+                return;
+            }
+
+            eprintln!("capture: the picker does not end; killing it");
+            drop(clock::kill_pid(pid));
+        });
+
+    if let Err(error) = watching {
+        eprintln!("capture: cannot watch the picker end: {error}");
+    }
+}
 
 /*
  * kills the encoder of the segment `serial` after `STOPPING` if it is still held, then the writer after
@@ -1618,6 +1762,10 @@ fn classify(status: io::Result<ExitStatus>, written: bool, said: VecDeque<String
  */
 const ENDING: Duration = Duration::from_millis(500);
 const ENDING_TOLD: Duration = Duration::from_secs(3);
+
+// how long the encoder's reader has to finish after it is gone; a descendant holding its stderr
+// would otherwise hold the follow thread
+const SAID_JOINED: Duration = Duration::from_secs(1);
 
 /*
  * starts what records `segment` of a window (ADR 0117), if the recording still waits for it: niri's
@@ -1819,28 +1967,41 @@ fn follow_window(
 
             // niri is asked only when the encoder ended badly, as a window that closed makes it
             let ok = encoder_ok(&encoder);
-            let closed = !ok && window_closed(&encoder_said, || window::open(id) == Some(false));
+            let gone = !ok && window::open(id) == Some(false);
             let mut runtime = RUNTIME.locked();
             let segment_number = match runtime.machine.phase() {
                 Phase::Running { segment, .. } => segment,
                 _ => 1,
             };
+
+            // a stop's own kill of an encoder that did not end is no failure of the encoder's
+            let escalated = runtime.escalated.take_if(|escalated| *escalated == serial);
+            let escalated = escalated.is_some();
+            let blamed = encoder_blamed(&writer, &encoder);
             let segment = classify_window(
                 [writer, encoder],
                 [writer_said, encoder_said],
                 written,
-                closed.then_some(segment_number),
+                gone.then_some(segment_number),
+                escalated,
             );
 
-            if closed
+            if gone
                 && segment == Segment::Written
                 && let Some(take) = runtime.take.as_mut()
             {
                 take.closed = true;
             }
 
-            if !closed
-                && let Some(number) = falls_back(&mut runtime, serial, &segment, written, ran, !ok)
+            let fault = match &segment {
+                Segment::Lost(why) if vanished(why) => Fault::Vanished,
+                _ if blamed => Fault::Encoder,
+                _ => Fault::Muxer,
+            };
+
+            if !gone
+                && let Some(number) =
+                    falls_back(&mut runtime, serial, &segment, written, ran, fault)
             {
                 // the worker starts it, as any recorder: a program's life is tied to its spawning thread
                 return runtime.hand(
@@ -1906,10 +2067,29 @@ fn finish_encoder(
         thread::sleep(Duration::from_millis(20));
     };
 
-    // its pipe is closed now that it is gone
-    let said = said.and_then(|said| said.join().ok()).unwrap_or_default();
+    // its pipe is closed now that it is gone; a reader still holding it is let go, not waited on
+    let said = said.and_then(join_within).unwrap_or_default();
 
     (status, said)
+}
+
+/*
+ * what a thread reading a child's stderr printed, once it has finished, waiting no more than
+ * `SAID_JOINED` for it: a descendant that inherited the pipe keeps it open past the encoder's end,
+ * and the segment is not worth holding for it
+ */
+fn join_within(said: JoinHandle<VecDeque<String>>) -> Option<VecDeque<String>> {
+    let deadline = Instant::now() + SAID_JOINED;
+
+    while !said.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    said.join().ok()
 }
 
 // whether the encoder ended as it should: finished, or told to
@@ -1920,23 +2100,70 @@ fn encoder_ok(status: &io::Result<ExitStatus>) -> bool {
 }
 
 /*
- * whether an encoder that failed did so because its window closed: PipeWire says the target is not
- * found, or niri no longer lists the window (`gone`)
+ * whether the encoder is what ended the segment: it did not end as it should, and the writer did.
+ * A writer that died first (a muxer of its own fault) leaves the encoder to fail on a broken pipe,
+ * and blaming the encoder there would cost a restart that cannot mend it
  */
-fn window_closed(said: &VecDeque<String>, gone: impl FnOnce() -> bool) -> bool {
-    said.iter().any(|line| line.contains("target not found")) || gone()
+fn encoder_blamed(writer: &io::Result<ExitStatus>, encoder: &io::Result<ExitStatus>) -> bool {
+    !encoder_ok(encoder) && writer.as_ref().is_ok_and(|status| status.success())
+}
+
+/*
+ * whether a writer that wrote nothing is only saying its stream was short: it succeeded, printed
+ * nothing, or said the stream had nothing. Anything else it printed is a real failure, which `Empty`
+ * must not hide
+ */
+fn no_stream(writer: &io::Result<ExitStatus>, said: &VecDeque<String>) -> bool {
+    writer.as_ref().is_ok_and(|status| status.success())
+        || said.is_empty()
+        || said.iter().any(|line| {
+            [
+                "no stream",
+                "does not contain any stream",
+                "nothing was encoded",
+            ]
+            .iter()
+            .any(|said| line.contains(said))
+        })
+}
+
+/*
+ * whether `why` names a target that is gone rather than an encoder that would not start: the same
+ * output or window is gone whichever encoder reads it, so another start cannot mend it
+ */
+fn vanished(why: &str) -> bool {
+    let why = why.to_lowercase();
+    let named = ["output", "window", "source", "monitor", "target", "display"]
+        .iter()
+        .any(|what| why.contains(what));
+    let gone = [
+        "not found",
+        "no such",
+        "gone",
+        "not available",
+        "does not exist",
+        "failed to find",
+        "could not find",
+        "cannot find",
+    ]
+    .iter()
+    .any(|gone| why.contains(gone));
+
+    named && gone
 }
 
 /*
  * what the writer and the encoder (in that order) left behind. A window closing ends the encoder,
  * then the writer, with the file whole: that is a segment written, and if no frame was, nothing of
- * this segment (`closed` holds its number when the window closed)
+ * this segment (`closed` holds its number when the window closed). `escalated` is whether a stop
+ * killed the encoder because it did not end of itself, which is no failure of the encoder's
  */
 fn classify_window(
     [writer, encoder]: [io::Result<ExitStatus>; 2],
     [writer_said, encoder_said]: [VecDeque<String>; 2],
     written: bool,
     closed: Option<u32>,
+    escalated: bool,
 ) -> Segment {
     let not_found = |status: &io::Result<ExitStatus>| {
         status
@@ -1953,10 +2180,12 @@ fn classify_window(
     }
 
     let writer_ok = writer.as_ref().is_ok_and(|status| status.success());
+    let blamed = encoder_blamed(&writer, &encoder);
 
     match (writer_ok && written, closed) {
         (true, Some(_)) => return Segment::Written,
-        (true, None) if encoder_ok(&encoder) => return Segment::Written,
+        // a stop that killed an encoder which did write frames is a stop, not a failure
+        (true, None) if encoder_ok(&encoder) || (escalated && written) => return Segment::Written,
         _ => {}
     }
 
@@ -1971,15 +2200,15 @@ fn classify_window(
 
     // told to stop before a frame: the encoder ended, and the writer found no stream, which it may
     // call a failure
-    if !written && encoder_ok(&encoder) {
+    if !written && encoder_ok(&encoder) && no_stream(&writer, &writer_said) {
         return Segment::Empty;
     }
 
-    // the encoder first: when it fails the writer only finds the stream short
-    let (program, status, said) = if encoder_ok(&encoder) {
-        (MUXER, writer, writer_said)
-    } else {
+    // the encoder first when it is what failed; a muxer that died first is what ended the segment
+    let (program, status, said) = if blamed {
         (ENCODER, encoder, encoder_said)
+    } else {
+        (MUXER, writer, writer_said)
     };
 
     if !written
@@ -2089,6 +2318,119 @@ pub fn report(recording: &config::Recording) -> Report {
 // stops the window casts an earlier Kanade left, at start
 pub fn reclaim() {
     window::reclaim();
+
+    // a crash after a resume leaves the segments in a hidden folder, which nothing else joins
+    let spawned = thread::Builder::new()
+        .name(String::from("capture-sweep"))
+        .spawn(sweep);
+
+    if let Err(error) = spawned {
+        eprintln!("capture: cannot look for recordings an earlier run left: {error}");
+    }
+}
+
+/*
+ * joins the segments an earlier run left in a parts folder, as the end of that recording would
+ * have: a crash after a resume leaves the first segment in the file and the rest beside it, and
+ * nothing else would ever put them together
+ */
+fn sweep() {
+    let Some(dir) = capture::home(FOLDER) else {
+        return;
+    };
+
+    for (path, parts, segments) in parts_left(&dir) {
+        if segments == 0 {
+            continue;
+        }
+
+        // a folder that holds only the first segment is that recording's file, put back
+        if segments == 1 && !path.exists() {
+            let first = parts.join(plan::segment(1));
+
+            if move_new(&first, &path).is_ok() {
+                drop(fs::remove_file(parts.join(plan::LIST)));
+                drop(fs::remove_file(parts.join(plan::JOINED)));
+                drop(fs::remove_dir(&parts));
+                eprintln!(
+                    "capture: put back the recording {} an earlier run left",
+                    path.display()
+                );
+            }
+
+            continue;
+        }
+
+        match saved(&parts, &path, segments) {
+            Ok(()) => eprintln!(
+                "capture: joined the {segments} segments of {} an earlier run left",
+                path.display()
+            ),
+            Err(why) => eprintln!(
+                "capture: cannot join what an earlier run left in {}: {why}",
+                parts.display()
+            ),
+        }
+    }
+}
+
+/*
+ * the parts folders in `dir` that hold footage, with the recording file beside each and the number
+ * of its last segment: `.<stem>.parts` beside `<stem>.mp4`, as `parts` names them
+ */
+fn parts_left(dir: &Path) -> Vec<(PathBuf, PathBuf, u32)> {
+    let Ok(listing) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    listing
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let stem = name
+                .to_str()?
+                .strip_prefix('.')?
+                .strip_suffix(".parts")?
+                .to_owned();
+            let parts = entry.path();
+            let path = dir.join(format!("{stem}.mp4"));
+            let segments = last_segment(&parts)?;
+
+            Some((path, parts, segments))
+        })
+        .collect()
+}
+
+// the highest numbered segment in `parts`, none when it holds no footage at all
+fn last_segment(parts: &Path) -> Option<u32> {
+    if !holds_footage(parts) {
+        return None;
+    }
+
+    let entries = fs::read_dir(parts).ok()?;
+    let mut last = 0;
+
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(number) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".mp4"))
+            .filter(|stem| stem.len() >= 3 && stem.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|stem| stem.parse::<u32>().ok())
+        else {
+            continue;
+        };
+
+        last = last.max(number);
+    }
+
+    Some(last)
+}
+
+// whether `session` is a window cast this Kanade made, which the privacy dots do not show as another's
+pub(crate) fn cast_is_ours(session: u64) -> bool {
+    window::ours(session)
 }
 
 // pre-warms encoder probing and window pipelines in a background thread so starting a recording does not wait
@@ -2103,6 +2445,18 @@ pub fn prewarm() {
                 let _ = probe::choice(&recording, false, false);
             }
         });
+}
+
+/*
+ * the shell ends: what is held is let go here, as nothing else would stop the cast a window recording
+ * has and the next start's reclaim would be the only one to
+ */
+pub fn shutdown() {
+    let held = RUNTIME.locked().child.take();
+
+    if let Some(held) = held {
+        abandon(held);
+    }
 }
 
 // saves the first `segments` segments as the recording's file
@@ -2143,8 +2497,22 @@ fn saved(parts: &Path, path: &Path, segments: u32) -> Result<(), String> {
 
     fs::create_dir_all(parts)
         .map_err(|error| format!("cannot keep the segments in {}: {error}", parts.display()))?;
-    move_new(path, &first)
-        .map_err(|error| format!("cannot gather the segments in {}: {error}", parts.display()))?;
+
+    /*
+     * the file holds the first segment unless it is already in the folder, as an interrupted join
+     * leaves it; a recording an earlier run left has both halves where they are
+     */
+    if path.exists() && !first.exists() {
+        move_new(path, &first).map_err(|error| {
+            format!("cannot gather the segments in {}: {error}", parts.display())
+        })?;
+    } else if !first.exists() {
+        return Err(format!(
+            "neither {} nor {} is there",
+            path.display(),
+            first.display()
+        ));
+    }
 
     join_segments(parts, path, segments).inspect_err(|_| {
         // the first segment is the recording as far as it goes, so it is where it was
@@ -2358,44 +2726,64 @@ mod tests {
     #[test]
     fn a_failed_start_gives_way_once_per_step_and_never_loops() {
         let ran = |software, va| Ran { software, va };
+        let given = |no_va, software| Given { no_va, software };
 
         // a VA-API download goes to EGL first, whatever the encoder, when the encoder failed
         assert_eq!(
-            again(ran(false, true), false, false, true),
+            again(ran(false, true), given(false, false), Fault::Encoder),
             Some(Again::Egl)
         );
-        assert_eq!(again(ran(true, true), false, false, true), Some(Again::Egl));
+        assert_eq!(
+            again(ran(true, true), given(false, false), Fault::Encoder),
+            Some(Again::Egl)
+        );
 
         // not when the muxer did: the download is not to blame, so a hardware encoder goes on
         assert_eq!(
-            again(ran(false, true), false, false, false),
+            again(ran(false, true), given(false, false), Fault::Muxer),
             Some(Again::Software)
         );
-        assert_eq!(again(ran(true, true), false, false, false), None);
+        assert_eq!(
+            again(ran(true, true), given(false, false), Fault::Muxer),
+            None
+        );
 
         // software on EGL has nowhere to go
-        assert_eq!(again(ran(true, false), true, true, true), None);
-        assert_eq!(again(ran(true, false), false, false, true), None);
+        assert_eq!(
+            again(ran(true, false), given(true, true), Fault::Encoder),
+            None
+        );
+        assert_eq!(
+            again(ran(true, false), given(false, false), Fault::Encoder),
+            None
+        );
 
         // the walk of a window whose encoder fails every time, as the recording keeps it: the most
         // steps, then none. NVENC on VA-API, then on EGL, then software on VA-API (its own failure
-        // is not the download's), then on EGL
-        let (mut no_va, mut software, mut steps) = (false, false, 0);
+        // is not the download's), then on EGL. It walks `step`, which is what `falls_back` walks
+        let mut state = given(false, false);
+        let mut steps = 0;
+        let mut walked = Vec::new();
 
         loop {
-            let ran = ran(software, !no_va);
+            let ran = ran(state.software, !state.no_va);
 
-            match again(ran, no_va, software, true) {
-                Some(Again::Egl) => no_va = true,
-                Some(Again::Software) => (software, no_va) = (true, false),
-                None => break,
-            }
+            let Some((again, next)) = step(state, ran, Fault::Encoder) else {
+                break;
+            };
 
+            walked.push(again);
+            state = next;
             steps += 1;
             assert!(steps <= 3);
         }
 
         assert_eq!(steps, 3);
+        assert_eq!(
+            walked,
+            [Again::Egl, Again::Software, Again::Egl],
+            "a step that stops clearing no_va loops"
+        );
     }
 
     #[test]
@@ -2669,11 +3057,23 @@ mod tests {
         written: bool,
         closed: Option<u32>,
     ) -> Segment {
+        segment_said(writer, encoder, &["writer"], &["encoder"], written, closed)
+    }
+
+    fn segment_said(
+        writer: io::Result<ExitStatus>,
+        encoder: io::Result<ExitStatus>,
+        writer_said: &[&str],
+        encoder_said: &[&str],
+        written: bool,
+        closed: Option<u32>,
+    ) -> Segment {
         classify_window(
             [writer, encoder],
-            [said(&["writer"]), said(&["encoder"])],
+            [said(writer_said), said(encoder_said)],
             written,
             closed,
+            false,
         )
     }
 
@@ -2714,12 +3114,34 @@ mod tests {
     #[test]
     fn a_window_stopped_before_a_frame_is_empty_and_a_missing_program_is_said() {
         assert_eq!(segment(exited(0), exited(0), false, None), Segment::Empty);
-        // the writer fails on a stream with nothing in it
-        assert_eq!(segment(exited(1), exited(0), false, None), Segment::Empty);
+        // the writer fails on a stream with nothing in it, which is no failure
         assert_eq!(
-            segment(exited(1), killed(libc::SIGINT), false, None),
+            segment_said(
+                exited(1),
+                exited(0),
+                &["nothing was encoded"],
+                &[],
+                false,
+                None
+            ),
             Segment::Empty
         );
+        assert_eq!(
+            segment_said(
+                exited(1),
+                killed(libc::SIGINT),
+                &["Output file does not contain any stream"],
+                &[],
+                false,
+                None
+            ),
+            Segment::Empty
+        );
+        // a writer that failed for its own reason is named, not hidden as an empty segment
+        let Segment::Lost(why) = segment(exited(1), exited(0), false, None) else {
+            panic!("empty");
+        };
+        assert!(why.contains(MUXER) && why.contains("writer"), "{why}");
         // the writer failed: its words, the encoder having only found its pipe closed
         let Segment::Lost(why) = segment(exited(1), exited(0), true, None) else {
             panic!("saved");
@@ -2733,5 +3155,80 @@ mod tests {
             segment(exited(0), exited(127), false, None),
             Segment::Lost(why) if why.contains(ENCODER)
         ));
+    }
+
+    /*
+     * a stop that had to kill an encoder which did write frames saved a recording: the kill is the
+     * stop's, not a failure of the encoder's
+     */
+    #[test]
+    fn an_encoder_a_stop_killed_after_writing_is_a_recording() {
+        let escalated = |writer, encoder, written, closed| {
+            classify_window(
+                [writer, encoder],
+                [said(&["writer"]), said(&["encoder"])],
+                written,
+                closed,
+                true,
+            )
+        };
+
+        assert_eq!(
+            escalated(exited(0), killed(libc::SIGKILL), true, None),
+            Segment::Written
+        );
+        // nothing written is still nothing, the kill or not
+        assert_ne!(
+            escalated(exited(0), killed(libc::SIGKILL), false, None),
+            Segment::Written
+        );
+    }
+
+    /*
+     * a muxer that dies first leaves the encoder to fail on a broken pipe, and a vanished output
+     * cannot be mended by another encoder: neither is the encoder's fault
+     */
+    #[test]
+    fn only_the_encoders_own_failure_is_another_start() {
+        let given = Given {
+            no_va: false,
+            software: false,
+        };
+        let va = Ran {
+            software: false,
+            va: true,
+        };
+
+        assert!(encoder_blamed(&exited(0), &exited(1)));
+        assert!(!encoder_blamed(&exited(1), &exited(1)));
+        assert!(!encoder_blamed(&exited(0), &exited(0)));
+
+        assert_eq!(
+            step(given, va, Fault::Encoder),
+            Some((
+                Again::Egl,
+                Given {
+                    no_va: true,
+                    software: false
+                }
+            ))
+        );
+        // the muxer's own failure is no reason to move the download
+        assert_eq!(
+            step(given, va, Fault::Muxer),
+            Some((
+                Again::Software,
+                Given {
+                    no_va: false,
+                    software: true
+                }
+            ))
+        );
+        // nothing is tried for an output that is gone
+        assert_eq!(step(given, va, Fault::Vanished), None);
+
+        assert!(vanished("the output DP-1 is gone"));
+        assert!(vanished("wf-recorder: no such window"));
+        assert!(!vanished("h264_vaapi: cannot open the device"));
     }
 }

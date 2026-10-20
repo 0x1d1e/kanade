@@ -197,6 +197,21 @@ pub struct Encoding {
 }
 
 impl Encoding {
+    fn rate_control(&self) -> Vec<(&'static str, String)> {
+        let kind = self.encoder.kind;
+        let qp = quantizer(self.quality, kind);
+
+        match kind {
+            Kind::Vaapi => vec![("rc_mode", String::from("CQP")), ("qp", qp.to_string())],
+            Kind::Nvenc => vec![("rc", String::from("constqp")), ("qp", qp.to_string())],
+            Kind::Software => vec![
+                ("preset", String::from("veryfast")),
+                ("crf", qp.to_string()),
+                ("threads", self.threads.to_string()),
+            ],
+        }
+    }
+
     /*
      * what `wf-recorder` is told of it, ahead of the source. `-p` sets an option of the encoder,
      * `-F` replaces the filter between the capture and the encoder, `-x` the pixel format. NVENC and
@@ -204,29 +219,15 @@ impl Encoding {
      */
     pub fn recorder(&self) -> Vec<String> {
         let kind = self.encoder.kind;
-        let qp = quantizer(self.quality, kind);
         let mut arguments = vec![String::from("-c"), String::from(kind.codec())];
-        let mut parameter = |option: String| arguments.extend([String::from("-p"), option]);
 
-        match kind {
-            Kind::Vaapi => {
-                parameter(String::from("rc_mode=CQP"));
-                parameter(format!("qp={qp}"));
-            }
-            Kind::Nvenc => {
-                parameter(String::from("rc=constqp"));
-                parameter(format!("qp={qp}"));
-            }
-            Kind::Software => {
-                parameter(String::from("preset=veryfast"));
-                parameter(format!("crf={qp}"));
-                parameter(format!("threads={}", self.threads));
-            }
+        for (name, value) in self.rate_control() {
+            arguments.extend([String::from("-p"), format!("{name}={value}")]);
         }
 
         COLOR
             .into_iter()
-            .for_each(|option| parameter(String::from(option)));
+            .for_each(|option| arguments.extend([String::from("-p"), String::from(option)]));
 
         match (kind, &self.encoder.node) {
             (Kind::Vaapi, node) => {
@@ -352,6 +353,9 @@ impl Encoding {
             },
         ]);
         arguments.extend(["-c:v", kind.codec()].map(String::from));
+        for (name, value) in self.rate_control() {
+            arguments.extend([format!("-{name}"), value]);
+        }
         arguments.extend(["-frames:v", "1", "-f", "null", "-"].map(String::from));
         arguments
     }
@@ -435,6 +439,63 @@ fn order(path: &str) -> (usize, &str) {
 
 // whether GStreamer names a node's elements `vah264enc`: the lowest numbered of the GPUs that are
 // not NVIDIA is its first
+/*
+ * GStreamer's elements registered by plugin `va` (`gst-inspect-1.0 va`), which names elements per
+ * render node when more than one GPU has VA-API (e.g. `varenderD129h264enc` / `varenderD129postproc`)
+ * or the default `vah264enc` / `vapostproc` on the first. Parsing what GStreamer has replaces
+ * guessing from node names
+ */
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Va {
+    elements: Vec<String>,
+}
+
+impl Va {
+    pub fn read(text: &str) -> Self {
+        let elements = text
+            .lines()
+            .filter_map(|line| {
+                let token = line.split_whitespace().next()?;
+                let name = token.trim_end_matches(':');
+                if name.starts_with("va") {
+                    Some(name.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Self { elements }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+
+    pub fn has(&self, element: &str) -> bool {
+        self.elements.iter().any(|elem| elem == element)
+    }
+
+    /*
+     * whether `node` uses the first/default elements `vah264enc` / `vapostproc` rather than
+     * node-specific ones like `va<node>h264enc`. GStreamer's inspect output decides when present;
+     * an empty inspection falls back to whether this is the lowest numbered non-NVIDIA node
+     */
+    pub fn is_first(&self, nodes: &[Node], node: &Node) -> bool {
+        let name = node.path.rsplit('/').next().unwrap_or(&node.path);
+        let node_specific = format!("va{name}h264enc");
+
+        if self.has(&node_specific) {
+            false
+        } else if self.has("vah264enc") {
+            true
+        } else {
+            is_first(nodes, node)
+        }
+    }
+}
+
+// whether `node` is the first non-NVIDIA render node, as a fallback when GStreamer was not inspected
 pub fn is_first(nodes: &[Node], node: &Node) -> bool {
     nodes
         .iter()
@@ -484,15 +545,16 @@ pub fn candidates(nodes: &[Node], device: Option<&str>) -> Vec<Node> {
  * post-processor of each node of `candidates`, then EGL. With `no_va`, which a live cast sets after
  * a VA-API download failed on it, EGL only, so no trial brings the failed download back
  */
-pub fn downloads(nodes: &[Node], device: Option<&str>, no_va: bool) -> Vec<Download> {
-    let va = match no_va {
+pub fn downloads(nodes: &[Node], device: Option<&str>, no_va: bool, va: &Va) -> Vec<Download> {
+    let candidates = match no_va {
         true => Vec::new(),
         false => candidates(nodes, device),
     };
 
-    va.into_iter()
+    candidates
+        .into_iter()
         .map(|node| Download::Va {
-            first: is_first(nodes, &node),
+            first: va.is_first(nodes, &node),
             node: Some(node.path),
         })
         .chain([Download::Gl])
@@ -548,6 +610,7 @@ pub fn choose(
         nodes,
         probe,
         Instant::now() + PROBE_BUDGET,
+        &Va::default(),
     )
 }
 
@@ -557,6 +620,7 @@ pub fn choose_within(
     nodes: &[Node],
     probe: &mut impl Probe,
     deadline: Instant,
+    va: &Va,
 ) -> Choice {
     let mut notes = Vec::new();
     let kinds: &[Kind] = match preference {
@@ -599,7 +663,7 @@ pub fn choose_within(
                         return None;
                     }
                     let timeout = TRIAL.min(remaining);
-                    let first = is_first(nodes, node);
+                    let first = va.is_first(nodes, node);
 
                     match probe.vaapi(node, first, timeout) {
                         Probed::Works => {
@@ -991,7 +1055,14 @@ mod tests {
         let nodes = hybrid();
         let mut probe = Asked::works(&["software"]);
         let past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-        let choice = choose_within(Preference::Auto, None, &nodes, &mut probe, past);
+        let choice = choose_within(
+            Preference::Auto,
+            None,
+            &nodes,
+            &mut probe,
+            past,
+            &Va::default(),
+        );
         assert_eq!(encoder(&choice), "libx264");
         assert!(
             probe.asked.is_empty(),
@@ -1064,16 +1135,22 @@ mod tests {
         let nodes = hybrid();
 
         assert!(
-            downloads(&nodes, None, false)
+            downloads(&nodes, None, false, &Va::default())
                 .iter()
                 .any(|download| matches!(download, Download::Va { .. }))
         );
-        assert_eq!(downloads(&nodes, None, true), vec![Download::Gl]);
         assert_eq!(
-            downloads(&nodes, Some("/dev/dri/renderD128"), true),
+            downloads(&nodes, None, true, &Va::default()),
             vec![Download::Gl]
         );
-        assert_eq!(downloads(&[], None, false), vec![Download::Gl]);
+        assert_eq!(
+            downloads(&nodes, Some("/dev/dri/renderD128"), true, &Va::default()),
+            vec![Download::Gl]
+        );
+        assert_eq!(
+            downloads(&[], None, false, &Va::default()),
+            vec![Download::Gl]
+        );
     }
 
     // niri casts DMA-BUF only and `pipewiresrc` offers a format only if the next element takes it: a
@@ -1118,7 +1195,7 @@ mod tests {
     }
 
     // what is probed is what is run: the trial of an encoder carries the filter and codec of its
-    // recorder's arguments
+    // recorder's arguments, and the same rate control
     #[test]
     fn a_trial_encodes_with_the_recorders_codec_and_filter() {
         let vaapi = encoding(Kind::Vaapi, Quality::High).trial().join(" ");
@@ -1126,11 +1203,42 @@ mod tests {
         assert!(vaapi.contains("-init_hw_device vaapi=va:/dev/dri/renderD128"));
         assert!(vaapi.contains(&format!("hwupload,{VAAPI_FILTER}")));
         assert!(vaapi.contains("-c:v h264_vaapi"));
+        assert!(vaapi.contains("-rc_mode CQP -qp 20"));
 
         let software = encoding(Kind::Software, Quality::High).trial().join(" ");
 
         assert!(software.contains(SOFTWARE_FILTER));
         assert!(software.contains("-c:v libx264"));
+        assert!(software.contains("-preset veryfast -crf 19 -threads 3"));
         assert!(!software.contains("vaapi"));
+
+        let nvenc = encoding(Kind::Nvenc, Quality::High).trial().join(" ");
+        assert!(nvenc.contains("-rc constqp -qp 20"));
+    }
+
+    #[test]
+    fn gst_inspect_va_output_names_first_and_secondary_node_elements() {
+        let fixture = "\
+Plugin Details:
+  Name                     va
+  Description              VA-API codecs plugin
+
+  vah264enc: VA-API H.264 Encoder in Intel(R) Gen Graphics
+  vapostproc: VA-API Video Postprocessor in Intel(R) Gen Graphics
+  varenderD129h264enc: VA-API H.264 Encoder in AMD Radeon
+  varenderD129postproc: VA-API Video Postprocessor in AMD Radeon
+";
+        let va = Va::read(fixture);
+        assert!(va.has("vah264enc"));
+        assert!(va.has("vapostproc"));
+        assert!(va.has("varenderD129h264enc"));
+        assert!(va.has("varenderD129postproc"));
+
+        let intel = node("/dev/dri/renderD128", Vendor::Intel, true);
+        let amd = node("/dev/dri/renderD129", Vendor::Amd, false);
+        let nodes = vec![intel.clone(), amd.clone()];
+
+        assert!(va.is_first(&nodes, &intel));
+        assert!(!va.is_first(&nodes, &amd));
     }
 }

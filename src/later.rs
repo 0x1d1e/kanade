@@ -18,12 +18,14 @@ struct Waiting {
 
     // what the shell answers when `LATER` passes first
     unsettled: String,
+
+    // when the shell answers unknown; inside the mutex so a rearm wakes the expiring thread
+    deadline: Instant,
 }
 
 struct Shared {
     waiting: Mutex<Waiting>,
     answered: Condvar,
-    deadline: Instant,
 }
 
 // one call's answer, sent by whichever of its holders gets there first
@@ -36,9 +38,9 @@ impl Later {
             waiting: Mutex::new(Waiting {
                 reply: Some(reply),
                 unsettled: format!("the shell did not finish within {LATER:?}; it may still have"),
+                deadline: Instant::now() + LATER,
             }),
             answered: Condvar::new(),
-            deadline: Instant::now() + LATER,
         });
 
         let watching = Arc::clone(&shared);
@@ -57,10 +59,27 @@ impl Later {
             waiting: Mutex::new(Waiting {
                 reply: None,
                 unsettled: String::new(),
+                deadline: Instant::now(),
             }),
             answered: Condvar::new(),
-            deadline: Instant::now(),
         }))
+    }
+
+    /*
+     * gives the source `LATER` more to answer, as work it could not know of when the call arrived
+     * (a probe) took part of the first wait. Answers nothing itself; a detached `Later` has no
+     * client to wait and stays closed
+     */
+    pub fn rearm(&self) {
+        let mut waiting = self.0.waiting.locked();
+
+        if waiting.reply.is_none() {
+            return;
+        }
+
+        waiting.deadline = Instant::now() + LATER;
+        drop(waiting);
+        self.0.answered.notify_all();
     }
 
     // what the shell says if the source does not answer within `LATER`, as only it knows what may still happen
@@ -70,12 +89,18 @@ impl Later {
 
     // whether nothing answered yet and the deadline has not passed
     pub fn open(&self) -> bool {
-        self.0.waiting.locked().reply.is_some() && Instant::now() < self.0.deadline
+        let waiting = self.0.waiting.locked();
+
+        waiting.reply.is_some() && Instant::now() < waiting.deadline
     }
 
     // what is left until the shell answers unknown
     pub fn left(&self) -> Duration {
-        self.0.deadline.saturating_duration_since(Instant::now())
+        self.0
+            .waiting
+            .locked()
+            .deadline
+            .saturating_duration_since(Instant::now())
     }
 
     // the first answer is sent and later ones are dropped
@@ -112,16 +137,30 @@ impl Later {
 }
 
 impl Shared {
-    // answers unknown at the deadline, unless it was answered before
+    // answers unknown at the deadline, unless it was answered before or the deadline moved
     fn expire(&self) {
-        let left = self.deadline.saturating_duration_since(Instant::now());
+        let mut waiting = self.waiting.locked();
 
-        let (mut waiting, _) = self
-            .answered
-            .wait_timeout_while(self.waiting.locked(), left, |waiting| {
-                waiting.reply.is_some()
-            })
-            .unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let Some(deadline) = waiting.reply.as_ref().map(|_| waiting.deadline) else {
+                return;
+            };
+
+            let left = deadline.saturating_duration_since(Instant::now());
+
+            if left.is_zero() {
+                break;
+            }
+
+            let (held, _) = self
+                .answered
+                .wait_timeout_while(waiting, left, |waiting| {
+                    waiting.reply.is_some() && waiting.deadline == deadline
+                })
+                .unwrap_or_else(PoisonError::into_inner);
+
+            waiting = held;
+        }
 
         let Some(reply) = waiting.reply.take() else {
             return;

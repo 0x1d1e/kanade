@@ -79,6 +79,9 @@ fn main() -> ExitCode {
     modules::start(theme::font(App::new()))
         .on_key_release(surfaces::confirm::release)
         .run();
+
+    // a cast niri holds on Kanade's behalf ends with it, rather than with the next start's reclaim
+    sources::recording::shutdown();
     settings::revert_outputs();
     ExitCode::SUCCESS
 }
