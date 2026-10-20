@@ -7,6 +7,7 @@
  */
 
 use std::process::{Command, Stdio};
+use std::thread;
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -112,23 +113,30 @@ fn address(query: &str) -> String {
 
 /*
  * opens `address` in the default browser. It goes as one argument of `xdg-open`, by argv with no
- * shell, so no word of the query is ever a command (ADR 0055, 0112). Waited on off the view thread,
- * as an opener may live as long as the browser it started; the reason a failure gives never names
- * the address
+ * shell, so no word of the query is ever a command (ADR 0055, 0112). Asked, not waited on: an
+ * opener may live as long as the browser it started, so the child is reaped on a thread of its own
+ * and only the spawn decides whether it opened. The reason a failure gives never names the address
  */
 pub fn browse(address: &str) -> Result<(), String> {
-    let opened = Command::new(OPEN)
+    let child = Command::new(OPEN)
         .arg(address)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .spawn()
+        .map_err(|error| format!("{OPEN}: {error}"))?;
 
-    match opened {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("{OPEN} failed ({status})")),
-        Err(error) => Err(format!("{OPEN}: {error}")),
-    }
+    thread::Builder::new()
+        .name("launcher-web".into())
+        .spawn(move || match child.wait_with_output() {
+            Ok(output) if !output.status.success() => {
+                eprintln!("launcher: {OPEN} failed ({})", output.status)
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("launcher: {OPEN}: {error}"),
+        })
+        .map(drop)
+        .map_err(|error| format!("{OPEN}: {error}"))
 }
 
 #[cfg(test)]
