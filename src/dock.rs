@@ -1256,8 +1256,7 @@ fn island_reserved(anchor: Anchor) -> f32 {
  */
 pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
     let items = items(&Windows::read());
-    let config = config::get();
-    let place = config.dock_placement();
+    let place = config::get().dock_placement();
 
     if !modules::on("dock")
         || merge::form().is_some()
@@ -1269,23 +1268,89 @@ pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
         return None;
     }
 
+    band(monitor, place, &items, 0.0).map(|strip| (place.anchor.hang().edge, strip))
+}
+
+/*
+ * the Dock's strip on `monitor` while it shows there, and the edge it sits on: what a menu opened
+ * from one of its icons keeps clear of. `strip` answers for what must keep off the Dock even as it
+ * hides, a Banner, and so is none under autohide; a menu is opened by a click on an icon, which an
+ * autohide has out, and it is drawn over the Dock, so it always gets the strip here. It reaches off
+ * the edge as far as its icons grow, and BOUNCE further, the farthest its spring swings it past its
+ * place, so the menu clears them wherever a slide puts them. Merged, the shell lays the Dock out and
+ * the strip lands in the same place, so a menu keeps clear of it there too. Reading subscribes to
+ * the apps
+ */
+pub fn standing(monitor: &Monitor) -> Option<(Edge, Rect)> {
+    let items = items(&Windows::read());
+    let config = config::get();
+    let place = config.dock_placement();
+
+    if !modules::on("dock") || items.is_empty() {
+        return None;
+    }
+
+    if let Some(shell) = merge::shell(monitor) {
+        let origin = surface_origin(
+            monitor,
+            config.island_placement().anchor,
+            shell.size,
+            Margin::default(),
+        );
+        let (extent, plate) = (&shell.extent, origin.1 + shell.strip);
+
+        // the plate, and past it as far as its icons grow and its spring swings; along the edge the
+        // whole window is the Dock's, and a menu clears the near side alone
+        let (y, edge) = match place.anchor.edge {
+            Edge::Top => (plate, Edge::Top),
+            _ => (plate - extent.rise - BOUNCE, Edge::Bottom),
+        };
+
+        return Some((
+            edge,
+            Rect {
+                x: 0.0,
+                y,
+                width: monitor.width as f32,
+                height: extent.strip + extent.rise + BOUNCE,
+            },
+        ));
+    }
+
+    // `band` already reaches off the edge as far as the icons grow; BOUNCE further is the farthest
+    // the slide's spring swings the strip past its place
+    let beyond = BOUNCE;
+
+    band(monitor, place, &items, beyond).map(|strip| (place.anchor.edge, strip))
+}
+
+/*
+ * the Dock's strip on `monitor` where it stands at rest: as far out, along the edge and off it, as
+ * its icons grow under the pointer, and `beyond` further than that; none with no app to show
+ */
+fn band(monitor: &Monitor, place: Placement, items: &[Item], beyond: f32) -> Option<Rect> {
+    if items.is_empty() || monitor.width == 0 || monitor.height == 0 {
+        return None;
+    }
+
+    let config = config::get();
+    let most = config.magnify.most();
     let size = Size::of(config.dock_size);
-    let pieces = pieces(&items);
-    let canvas = Canvas::of(&pieces, size, config.magnify.most());
-    let strip = dock_strip(
+    let pieces = pieces(items);
+    let canvas = Canvas::of(&pieces, size, most);
+
+    Some(dock_strip(
         (monitor.width as f32, monitor.height as f32),
         place.anchor,
         canvas.width,
         reach(
             place.anchor.sits(),
             canvas.width,
-            widest(&pieces, size, config.magnify.most()),
+            widest(&pieces, size, most),
         ),
         island_room(place.anchor),
-        depth(size) + size.icon * (config.magnify.most() - 1.0),
-    );
-
-    Some((place.anchor.hang().edge, strip))
+        depth(size) + size.icon * (most - 1.0) + beyond,
+    ))
 }
 
 /*

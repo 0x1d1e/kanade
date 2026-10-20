@@ -278,7 +278,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     let count = row_count(&open);
     let separated = !open.windows_only && count > 1;
-    let (width, visible_rows) = size(monitor, count, separated);
+    let screen = (monitor.width as f32, monitor.height as f32);
+    let dock = super::standing(monitor);
+    let tall = tallest(screen, dock);
+    let (width, visible_rows) = size(monitor.width as f32, tall, count, separated);
     let last_offset = count.saturating_sub(visible_rows);
     let offset = open.offset.min(last_offset);
     let end = (offset + visible_rows).min(count);
@@ -286,11 +289,11 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let list_height =
         (end - offset) as f32 * (ROW + GAP) - GAP + if separator { SEPARATOR + GAP } else { 0.0 };
     let height = 2.0 * INSET + list_height;
-    let (x, y) = position(monitor, &open, width, height);
+    let (x, y) = place(open.at, open.edge, screen, (width, height), dock);
     let roles = theme::island();
     let content = rows(&open, offset, end, width - 2.0 * INSET, roles);
     let scroll_monitor = open.monitor.clone();
-    let (monitor_width, monitor_height) = (monitor.width, monitor.height);
+    let monitor_width = monitor.width;
 
     let panel = Rectangle::new()
         .width(width)
@@ -310,15 +313,12 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             Rectangle::new()
                 .width(width - 2.0 * INSET)
                 .height(list_height)
-                .on_scroll(move |delta| {
-                    scroll(&scroll_monitor, monitor_width, monitor_height, delta.y)
-                })
+                .on_scroll(move |delta| scroll(&scroll_monitor, monitor_width, tall, delta.y))
                 .child(Column::new(content).width(width - 2.0 * INSET).gap(GAP)),
         );
 
     if open.windows_only {
         let monitor_name = monitor.name.clone();
-        let height_px = monitor.height;
         let panel = panel.on_hover(hover_panel);
 
         return LayerWindow::new()
@@ -339,7 +339,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             })
             .space(Zone::Ignore)
             .namespace("kanade-dock-menu")
-            .on_key(move |key| key_press(&monitor_name, height_px, key))
+            .on_key(move |key| key_press(&monitor_name, tall, key))
             .child(panel);
     }
 
@@ -349,7 +349,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .on_click(|_| close())
         .child(panel.translate(x, y));
     let monitor_name = monitor.name.clone();
-    let height = monitor.height;
 
     LayerWindow::new()
         .width(Full)
@@ -360,7 +359,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .keyboard(Keyboard::Exclusive)
         .space(Zone::Ignore)
         .namespace("kanade-dock-menu")
-        .on_key(move |key| key_press(&monitor_name, height, key))
+        .on_key(move |key| key_press(&monitor_name, tall, key))
         .child(root)
 }
 
@@ -410,9 +409,9 @@ fn silence_target(item: &Item) -> Option<crate::sources::notifications::silence:
     crate::sources::notifications::silence::App::named(name, desktop)
 }
 
-fn size(monitor: &Monitor, count: usize, separated: bool) -> (f32, usize) {
-    let width = WIDTH.min((monitor.width as f32 - 2.0 * SCREEN_GAP).max(1.0));
-    let max_height = (monitor.height as f32 - 2.0 * SCREEN_GAP).max(ROW + 2.0 * INSET);
+fn size(width: f32, tall: f32, count: usize, separated: bool) -> (f32, usize) {
+    let width = WIDTH.min((width - 2.0 * SCREEN_GAP).max(1.0));
+    let max_height = (tall - 2.0 * SCREEN_GAP).max(ROW + 2.0 * INSET);
     let content_height = (max_height - 2.0 * INSET).max(ROW);
     let visible_rows = (0..=count)
         .rev()
@@ -426,27 +425,75 @@ fn size(monitor: &Monitor, count: usize, separated: bool) -> (f32, usize) {
     (width, visible_rows)
 }
 
-fn position(monitor: &Monitor, open: &Open, width: f32, height: f32) -> (f32, f32) {
-    let x = match open.edge {
-        Edge::Left => open.at.x + open.at.width + GAP,
-        Edge::Right => open.at.x - width - GAP,
-        Edge::Top | Edge::Bottom => open.at.x + (open.at.width - width) / 2.0,
-    };
-    let y = match open.edge {
-        Edge::Top => open.at.y + open.at.height + GAP,
-        Edge::Bottom => open.at.y - height - GAP,
-        Edge::Left | Edge::Right => open.at.y + (open.at.height - height) / 2.0,
+/*
+ * the room a menu may use on the far side of the Dock's strip, as it stands, grown icons included
+ */
+fn tallest(screen: (f32, f32), dock: Option<(Edge, Rect)>) -> f32 {
+    let Some((edge, band)) = dock else {
+        return screen.1;
     };
 
-    (
-        clamp(x, width, monitor.width as f32),
-        clamp(y, height, monitor.height as f32),
-    )
+    match edge {
+        Edge::Top => screen.1 - (band.bottom() + GAP),
+        Edge::Bottom => band.y - GAP,
+
+        // a side dock takes room along the output, not up it
+        Edge::Left | Edge::Right => screen.1,
+    }
 }
 
-fn clamp(position: f32, size: f32, screen: f32) -> f32 {
+fn place(
+    at: Rect,
+    edge: Edge,
+    screen: (f32, f32),
+    panel: (f32, f32),
+    dock: Option<(Edge, Rect)>,
+) -> (f32, f32) {
+    let (width, height) = panel;
+    let x = match edge {
+        Edge::Left => at.x + at.width + GAP,
+        Edge::Right => at.x - width - GAP,
+        Edge::Top | Edge::Bottom => at.x + (at.width - width) / 2.0,
+    };
+    let y = match edge {
+        Edge::Top => at.y + at.height + GAP,
+        Edge::Bottom => at.y - height - GAP,
+        Edge::Left | Edge::Right => at.y + (at.height - height) / 2.0,
+    };
+
+    let (mut left, mut right) = within(width, screen.0);
+    let (mut low, mut high) = within(height, screen.1);
+
+    // the Dock's strip, as far out as its icons grow, keeps the menu on the far side of it
+    if let Some((band_edge, band)) = dock {
+        match band_edge {
+            Edge::Top => low = low.max(band.bottom() + GAP),
+            Edge::Bottom => high = high.min(band.y - GAP - height),
+            Edge::Left => left = left.max(band.right() + GAP),
+            Edge::Right => right = right.min(band.x - GAP - width),
+        }
+    }
+
+    // an output with no room for both keeps the menu on it, over the Dock rather than off the screen
+    let (left, right) = if left > right {
+        within(width, screen.0)
+    } else {
+        (left, right)
+    };
+    let (low, high) = if low > high {
+        within(height, screen.1)
+    } else {
+        (low, high)
+    };
+
+    (x.clamp(left, right), y.clamp(low, high))
+}
+
+// the least and the most a menu `size` long stands at on an output `screen` long, a gap from its edges
+fn within(size: f32, screen: f32) -> (f32, f32) {
     let inset = SCREEN_GAP.min(screen / 2.0);
-    position.clamp(inset, (screen - inset - size).max(inset))
+
+    (inset, (screen - inset - size).max(inset))
 }
 
 fn rows(
@@ -618,7 +665,7 @@ fn select(monitor: &str, index: usize) {
     }
 }
 
-fn scroll(monitor: &str, monitor_width: u32, monitor_height: u32, delta: f32) {
+fn scroll(monitor: &str, monitor_width: u32, tall: f32, delta: f32) {
     if delta == 0.0 {
         return;
     }
@@ -630,12 +677,7 @@ fn scroll(monitor: &str, monitor_width: u32, monitor_height: u32, delta: f32) {
     };
     let count = row_count(open);
     let separated = !open.windows_only && count > 1;
-    let monitor = Monitor {
-        name: monitor.to_owned(),
-        width: monitor_width,
-        height: monitor_height,
-    };
-    let visible = size(&monitor, count, separated).1;
+    let visible = size(monitor_width as f32, tall, count, separated).1;
     let (next, remainder) = scrolled(open.offset, open.scroll, delta, count, visible);
     open.scroll = remainder;
 
@@ -664,11 +706,11 @@ fn scrolled(offset: usize, pending: f32, delta: f32, count: usize, visible: usiz
     }
 }
 
-fn key_press(monitor: &str, screen_height: u32, key: Key) {
+fn key_press(monitor: &str, tall: f32, key: Key) {
     match key {
         Key::Escape => close(),
-        Key::Up => move_selection(monitor, screen_height, false),
-        Key::Down => move_selection(monitor, screen_height, true),
+        Key::Up => move_selection(monitor, tall, false),
+        Key::Down => move_selection(monitor, tall, true),
         Key::Delete | Key::Backspace => {
             if let Some(selected) = selected(monitor) {
                 close_window(monitor, selected);
@@ -691,7 +733,7 @@ fn selected(monitor: &str) -> Option<usize> {
         .and_then(|open| open.selected)
 }
 
-fn move_selection(monitor: &str, screen_height: u32, down: bool) {
+fn move_selection(monitor: &str, tall: f32, down: bool) {
     let mut menu = Menu::write();
     let Some(open) = menu.open.as_mut().filter(|open| open.monitor == monitor) else {
         menu.quiet();
@@ -709,13 +751,8 @@ fn move_selection(monitor: &str, screen_height: u32, down: bool) {
         (Some(current), true) => (current + 1) % count,
         (Some(current), false) => current.checked_sub(1).unwrap_or(count - 1),
     };
-    let monitor = Monitor {
-        name: open.monitor.clone(),
-        width: WIDTH.ceil() as u32 + 2 * SCREEN_GAP as u32,
-        height: screen_height,
-    };
     let separated = !open.windows_only && count > 1;
-    let visible = size(&monitor, count, separated).1;
+    let visible = size(WIDTH.ceil() + 2.0 * SCREEN_GAP, tall, count, separated).1;
 
     if next < open.offset {
         open.offset = next;
@@ -842,6 +879,244 @@ mod tests {
     fn scrolling_past_a_menu_edge_does_not_save_whole_rows() {
         assert_eq!(scrolled(0, 0.0, -1.2, 10, 3), (0, 0.0));
         assert_eq!(scrolled(7, 0.0, 1.2, 10, 3), (7, 0.0));
+    }
+
+    const SCREEN: (f32, f32) = (1920.0, 1080.0);
+
+    /*
+     * how far off its edge the user's Dock reaches: `dock.size = "large"` with `magnification =
+     * "large"`, so its icons grow 48 past its 75 deep strip at rest, and the spring swings it BOUNCE
+     * further. The same as its window's height, which the strip is drawn in full: a menu that clears
+     * the strip clears the window
+     */
+    fn strip_depth() -> f32 {
+        let size = super::super::Size::of(crate::look::DockSize::Large);
+        let grown = size.icon * (crate::look::Magnify::Large.most() - 1.0);
+
+        super::super::depth(size) + grown + super::super::BOUNCE
+    }
+
+    fn band(edge: Edge, along: (f32, f32), off: (f32, f32)) -> (Edge, Rect) {
+        let rect = match edge {
+            Edge::Top | Edge::Bottom => Rect {
+                x: along.0,
+                y: off.0,
+                width: along.1 - along.0,
+                height: off.1 - off.0,
+            },
+            Edge::Left | Edge::Right => Rect {
+                x: off.0,
+                y: along.0,
+                width: off.1 - off.0,
+                height: along.1 - along.0,
+            },
+        };
+
+        (edge, rect)
+    }
+
+    fn bottom_dock() -> (Edge, Rect) {
+        band(
+            Edge::Bottom,
+            (760.0, 1160.0),
+            (SCREEN.1 - strip_depth(), SCREEN.1),
+        )
+    }
+
+    /*
+     * mid-slide: the strip the menu clears is read at rest, and the slide's spring swings the strip
+     * past its place. `strip_depth` is the rest depth, the icons grown, and BOUNCE, so it covers the
+     * farthest the spring puts them; this is that arithmetic on the Dock's own slide, not a copy
+     */
+    #[test]
+    fn the_strip_read_at_rest_covers_its_slide_and_the_icons_grown() {
+        let size = super::super::Size::of(crate::look::DockSize::Large);
+        let most = crate::look::Magnify::Large.most();
+        let rest = super::super::strip_y(true, size, 1000.0, 1.0);
+
+        // out from hidden, through held, and past it as far as the spring swings, the strip stands no
+        // higher than this
+        let highest = (0..=110)
+            .map(|percent| super::super::strip_y(true, size, 1000.0, percent as f32 / 100.0))
+            .fold(f32::MAX, f32::min);
+
+        assert!(highest < rest, "the slide swings past its place");
+
+        // its icons grow off the strip's far side, and the top of the tallest stands `rise` past it
+        let rise = size.icon * (most - 1.0);
+        let icon_top = highest - rise;
+
+        // what a menu keeps clear of: the rest strip, the icons grown, and the spring once
+        assert!(rest - strip_depth() <= icon_top);
+    }
+
+    #[test]
+    fn the_strip_reaches_past_its_icons_grown_and_its_spring_once() {
+        assert_eq!(strip_depth(), 131.0);
+        assert_eq!(
+            strip_depth(),
+            super::super::Canvas::of(
+                &[super::super::Piece::Icon],
+                super::super::Size::of(crate::look::DockSize::Large),
+                crate::look::Magnify::Large.most(),
+            )
+            .height
+        );
+    }
+
+    // the regression: an autohide still sliding out left the icon's slot below the screen, and the menu
+    // landed on the bottom edge over the strip, where the magnified icons grew into it
+    #[test]
+    fn a_menu_from_a_slot_off_the_screen_stays_clear_of_the_strip() {
+        let at = Rect {
+            x: 940.0,
+            y: 1090.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = bottom_dock();
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (264.0, 300.0), Some(dock));
+
+        assert!(y + 300.0 <= dock.1.y - GAP, "menu {y} reaches the strip");
+        assert!(y >= SCREEN_GAP);
+    }
+
+    // without the strip the same slot put the menu on the bottom edge, which is the overlap
+    #[test]
+    fn a_menu_from_a_slot_off_the_screen_without_a_dock_lands_on_the_edge() {
+        let at = Rect {
+            x: 940.0,
+            y: 1090.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (264.0, 300.0), None);
+
+        assert_eq!(y, SCREEN.1 - SCREEN_GAP - 300.0);
+    }
+
+    // a menu opened from a slot on the screen, off a strip that has slid out, keeps clear of it too
+    #[test]
+    fn a_menu_from_a_visible_slot_still_clears_the_strip() {
+        let at = Rect {
+            x: 940.0,
+            y: 960.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = bottom_dock();
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (264.0, 300.0), Some(dock));
+
+        assert_eq!(y, dock.1.y - GAP - 300.0);
+    }
+
+    #[test]
+    fn a_top_dock_keeps_the_menu_below_its_strip() {
+        let at = Rect {
+            x: 940.0,
+            y: -20.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = band(Edge::Top, (760.0, 1160.0), (0.0, strip_depth()));
+        let (_, y) = place(at, Edge::Top, SCREEN, (264.0, 300.0), Some(dock));
+
+        assert_eq!(y, dock.1.bottom() + GAP);
+    }
+
+    // an output with no room for both keeps the menu on it, over the Dock rather than off the screen
+    #[test]
+    fn a_strip_leaving_no_room_still_keeps_the_menu_on_the_output() {
+        let at = Rect {
+            x: 940.0,
+            y: 1090.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = band(Edge::Bottom, (760.0, 1160.0), (200.0, 1080.0));
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (264.0, 900.0), Some(dock));
+
+        assert_eq!(y, SCREEN.1 - SCREEN_GAP - 900.0);
+        assert!(y >= SCREEN_GAP);
+    }
+
+    #[test]
+    fn a_side_dock_keeps_the_menu_off_it() {
+        let at = Rect {
+            x: -30.0,
+            y: 400.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = band(Edge::Left, (300.0, 700.0), (0.0, strip_depth()));
+        let (x, _) = place(at, Edge::Left, SCREEN, (264.0, 300.0), Some(dock));
+
+        assert_eq!(x, dock.1.right() + GAP);
+    }
+
+    // the whole point of the fix: rows are sized to the room past the strip, so an over-tall menu no
+    // longer falls back onto the Dock
+    #[test]
+    fn tallest_leaves_room_past_the_strip_and_only_a_top_or_bottom_one_takes_any() {
+        assert_eq!(tallest(SCREEN, None), SCREEN.1);
+
+        let dock = bottom_dock();
+        assert_eq!(tallest(SCREEN, Some(dock)), dock.1.y - GAP);
+
+        let dock = band(Edge::Top, (760.0, 1160.0), (0.0, strip_depth()));
+        assert_eq!(
+            tallest(SCREEN, Some(dock)),
+            SCREEN.1 - dock.1.bottom() - GAP
+        );
+
+        let dock = band(Edge::Left, (300.0, 700.0), (0.0, strip_depth()));
+        assert_eq!(tallest(SCREEN, Some(dock)), SCREEN.1);
+
+        let dock = band(Edge::Right, (300.0, 700.0), (1814.0, 1920.0));
+        assert_eq!(tallest(SCREEN, Some(dock)), SCREEN.1);
+    }
+
+    // the user's 1920x1080 with a bottom dock: the room past the strip, not the whole output, sizes
+    // the rows. A menu too tall for that room is cut to it rather than standing on the Dock
+    #[test]
+    fn rows_fit_the_room_past_the_strip() {
+        let dock = bottom_dock();
+        let tall = tallest(SCREEN, Some(dock));
+        let (_, rows) = size(SCREEN.0, tall, 30, true);
+        let list = rows as f32 * (ROW + GAP) - GAP + SEPARATOR + GAP;
+
+        assert!(list + 2.0 * INSET <= tall - 2.0 * SCREEN_GAP);
+        assert!(rows < size(SCREEN.0, SCREEN.1, 30, true).1);
+    }
+
+    // the whole of it: the rows the room past the strip allows make a panel that place() then keeps
+    // clear of the strip and on the output. Sized to the whole output instead, that same panel stood
+    // on the strip, which is the overlap
+    #[test]
+    fn a_menu_too_tall_for_the_output_still_clears_the_strip() {
+        let at = Rect {
+            x: 940.0,
+            y: 1090.0,
+            width: 56.0,
+            height: 56.0,
+        };
+        let dock = bottom_dock();
+        let panel = |rows: usize| 2.0 * INSET + rows as f32 * (ROW + GAP) - GAP + SEPARATOR + GAP;
+
+        let tall = tallest(SCREEN, Some(dock));
+        let (width, rows) = size(SCREEN.0, tall, 30, true);
+        let height = panel(rows);
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (width, height), Some(dock));
+
+        assert!(y + height <= dock.1.y - GAP, "menu {y} reaches the strip");
+        assert!(y >= SCREEN_GAP);
+        assert!(y + height <= SCREEN.1 - SCREEN_GAP);
+
+        let (width, rows) = size(SCREEN.0, SCREEN.1, 30, true);
+        let height = panel(rows);
+        let (_, y) = place(at, Edge::Bottom, SCREEN, (width, height), Some(dock));
+
+        assert!(y + height > dock.1.y - GAP, "the overlap this fixes");
     }
 
     fn menu_of(monitor: &str) -> Open {
