@@ -113,10 +113,10 @@ Not worth changing, by this review:
 - [ ] Merged Docks on the left or right of an edge are only roughly aligned with the Island's body.
 - [ ] The Island's hover area and the Dock's overlap in a band; hover is notified for both.
 - [ ] A Keystone's window is as wide as the icons at the largest body, and its row is laid out every frame the Island morphs.
-- [ ] Many apps with a wide Surface open overflow a Keystone's window.
+- [ ] Many apps with a wide Surface open overflow a Keystone's window: `src/merge.rs:285` takes `let width = left + canvas.width + right;` with no clamp to the output, while the height at `:287` is bounded by the strip. It needs `.min(monitor.width)`.
 - [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
-- [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons).
+- [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons). `clearance_of` at `src/merge.rs:93` omits `extent.rise` while the merged window's own height at `:287` and the Dock's plate at `src/dock.rs:1306` both include it, so the gap is `size.icon * (most - 1.0)` — 56 px at `size = "large"`, `magnification = "large"`.
 - [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; it does not reserve space while autohiding.
 - [x] A non-liquid union has no border.
   - Describes a removed finish: `look::Finish` has no liquid variant, and the union's rim comes from `pane.wgsl:69-71`.
@@ -169,22 +169,24 @@ Not worth changing, by this review:
 
 Unfixed, no visual change wanted. Fixed in the same pass: notification `image-data` sizes checked against the bytes sent, font fallback skips unparseable files, dead backdrop mip pyramid removed.
 
-- [ ] `Atlas::place` wraps and clears while earlier glyphs of the same batch still wait for `Quads::draw`; the write lands before the draw. Needs a flush before the wrap; only when one frame holds over a 1024x1024 atlas of distinct glyphs.
-- [ ] `ipc` answers on the UI thread (1 s read timeout) and `request_frames` follows every call; handlers may change state outside a Service, so the redraw stays until each is checked.
+- [x] `Atlas::place` defers a glyph that would wrap rather than overwriting it: `Placement::{Letter, Nothing, Overflow}` returns `Overflow` where the row would wrap, `batch.rs` pushes a `Deferred` entry, and `Quads::draw` re-places it once the batch has drawn, so the order is safe and terminates (a letter larger than the atlas is `Nothing`, not deferred).
+- [ ] `ipc` reads and runs its handlers inline (1 s read timeout) and `request_frames` follows every call; the reply write is off the UI thread with a 1 s timeout, but handlers may still change state outside a Service, so the redraw stays until each is checked.
 - [ ] `update_surface` commits a layer change, then `present` commits the frame; the first commit is how a hidden window shows again. A property-only change could skip it.
 - [ ] `open_normal` runs the view once only to read title and size.
 - [ ] `Brightness` and `Palette` poll every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
 - [ ] `elide` and the `tail` helpers re-measure from the start per removed letter (quadratic).
 - [ ] `disc_angle`'s `DISC` is one process-wide state, so two monitors showing the disc advance it twice per refresh.
-- [ ] `Reveal`'s `HONORED` is one cell for all scroll areas; a serial one surface used can hide the same serial in another.
+- [x] `Reveal`'s `HONORED` is a `HashMap` keyed by each scroll area's own name, so a serial one area used does not hide the same serial in another (`crates/runtime/src/widgets/reveal.rs`).
 
 ## From the trend-improvements review (unfixed polish)
 
-- [ ] Lock: a hung PAM module holds the one check at a time (no watchdog); `Dark` in `crates/lock/src/wake.rs` never expires; `kanade status` prints the grace with `idle.lock` off and the raw service name; `clean` keeps Unicode format characters; `Kind::Text` accepts a path as `lock.pam_service`; the interleaving model in `src/lock/mod.rs` lacks `grant` and `touch`.
-- [ ] Lyrics: a paused track gets no local `.lrc`; `now + until.div_f64(rate)` in `media.rs` and `next_second` panic for a tiny MPRIS `Rate`; `mpris:url` may point at any readable `.lrc`; lyric text keeps control and bidi characters; stale `.part` files in the cache are never pruned.
-- [ ] Calendar subscriptions: feeds are fetched one by one (16 dead hosts hold `Reread` for minutes), all are due at start with no jitter, each keeps up to 5 MiB resident; ureq honors proxy environment variables, undocumented.
-- [ ] Wallpaper: `showing_on(Named)` falls back to the last image Kanade set when awww is not queried.
-- [ ] Focus: `status()` lists caffeine after it ended late; `night_light::turn(true)` that saved but did not reload leaves the mode unrecorded in `Held`; a user's DND off-then-on during Focus looks the same as untouched.
+- [ ] Lock: a hung PAM module holds the one check at a time (no watchdog) — a decision, not a defect; `Dark` in `crates/lock/src/wake.rs` never expires; `kanade status` prints the grace with `idle.lock` off and the raw service name; `clean` keeps Unicode format characters; `Kind::Text` accepts a path as `lock.pam_service`; the interleaving model in `src/lock/mod.rs` lacks `grant` and `touch`.
+- [ ] Lyrics: a paused track gets no local `.lrc`; `mpris:url` may point at any readable `.lrc`; lyric text keeps control and bidi characters.
+  - Premise no longer holds for the other two: the rate maths is total now (`until()`/`moved()` with a checked `next_second`) instead of dividing by `div_f64`, and the cache's `.part` files are swept.
+- [ ] Calendar subscriptions: feeds are fetched one by one (16 dead hosts hold `Reread` for minutes), each keeps up to 5 MiB resident; ureq honors proxy environment variables, undocumented.
+  - Premise no longer holds for the start jitter: a feed's first read is staggered.
+- [x] Wallpaper: `showing_on(Output::Named)` no longer falls back to the last image Kanade set; `known()` answers from awww alone, and only `Output::All` still falls back when awww reports nothing (`src/sources/wallpaper.rs:472`).
+- [x] Focus: `status()` no longer lists expired caffeine, `night_light::turn(true)` that saved but did not reload is recorded in `Held`, and a user's DND off-then-on during Focus no longer looks untouched (`turns_off` compares the exact revision; `src/sources/focus.rs`).
 - [ ] Notifications: four or more updating progress notifications rotate the three shown Activities (ADR 0059).
 
 ## Semantic tree (#21, ADR 0095)
@@ -195,10 +197,11 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## From the research-improvements review (unfixed)
 
-- [ ] Session hooks: the wait on a `logout`, `reboot` or `poweroff` hook has no cap, so a hung hook delays the action.
-- [ ] D-Bus signals are not checked for their sender: the portal's `SettingChanged` (accessibility) and the Unity `LauncherEntry` signal (badges) can be sent by any session-bus client.
-- [ ] DDC: i2c bus numbers are kept from the first scan and go stale when a monitor is replugged.
-- [ ] Banners: the reply fields are named per pane (`banner-reply-0..5`) and the runtime keeps text under that name, so two outputs showing a reply-capable Banner at once would share a draft. Banners show on the focused output only, so it needs niri's focus unknown (`focused_output` none).
+- [x] Session hooks: the wait on a `logout`, `reboot` or `poweroff` hook is capped at `hooks.timeout` plus slack, and an ending session takes the lower `ENDING` ceiling (`src/hooks.rs:594-599`), so a hung hook no longer delays the action.
+- [x] D-Bus signals are checked for their sender: the portal's `SettingChanged` (accessibility) goes through `trusts()` and the Unity `LauncherEntry` signal (badges) through a `Senders` owner cache, fail-open on an unowned or invalid name and fail-closed only on a differing owner (a strict equality would break Chromium's progress).
+- [x] DDC: `monitors()` re-reads sysfs on each call and resolves each connector's `ddc` link through `canonicalize` to its `i2c-dev` node, so a replugged monitor's new bus number is found (`src/sources/ddc.rs:169`).
+- [x] Banners: `reply_field(monitor, pane)` interns one name per output and pane, so two outputs showing a reply-capable Banner at once keep separate drafts (`src/banners/mod.rs:570`).
+  - The residual is small and different: each `(monitor, pane)` pair leaks a `&'static str` into a never-evicted map, bounded by outputs times panes.
 - [ ] E2E not reached: IME against a live fcitx5/ibus (none installed), the lock-screen layout label (needs two layouts), hold-to-confirm for Session, portal reduced-motion, `focus.auto` with a real cast. DDC/CI works on a Dell P1917S when the bus is given, but an NVIDIA connector has no `ddc` link, so no monitor is found: a fallback matching the connector's EDID to the `/dev/i2c-*` buses is the fix.
 
 ## appearance.sync and the GTK file chooser
@@ -207,7 +210,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## Launcher commands and dictation (ADR 0111, 0112, low-level, unfixed)
 
-- [ ] Dictation's `paste` fallback copies the one-line `typed(text)`, so a multi-line dictation loses its line breaks on the fallback path.
+- [x] Dictation's `paste` copies the raw `text`, so a multi-line dictation keeps its line breaks on the fallback path; only `Insert::Type` is flattened through `insert::typed` (`src/sources/dictation/run.rs:623`).
 - [ ] A recording stopped just before the session locks can capture audio until the recorder exits (at most the 3 s kill timeout); documented in ADR 0111.
 - [ ] Launcher decayed frecency (ADR 0127) keeps up to 300 items and 20 learned queries each; not verified live on an all-day session.
 
@@ -229,7 +232,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
 - [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout); a second Kanade's start sweeps the running one's too, which the running one rewrites on the next draw.
 - [ ] The runtime's thumbnail cache keeps a decoded thumbnail of a deleted preview until it evicts it (512 copies, 128 MiB).
-- [ ] A preview decodes arbitrary copied image bytes (up to 16 MiB) in the runtime's decoder, whose dimension limits are unchecked (decompression-bomb risk).
+- [x] A preview's copied image bytes are bounded before they are decoded: `decode_png` calls `count(width, height)` and `bytes_fit(size)` before allocating, against `MOST_PIXELS` (`crates/runtime/src/graphics/image/decode.rs:94`), so a decompression bomb is refused rather than decoded.
 - [ ] `kanade ui press` closing the Surface is older than this change.
 - [ ] An unpin puts the entry at the top of the rest, not where its age would; entries keep no time.
 - [ ] Not run: the Surface (thumbnails, the pin stop and button, the footer copy) and the idle numbers with a history of pictures.
@@ -310,7 +313,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
   - Done: the box is gone for text and images; rows keep their one-line preview and thumbnails and take its room; ADR 0114, the wiki and the design are updated. Not run on the session: the Surface's layout.
 - [ ] niri strip minimap Surface: the columns and windows of each workspace on niri's scrolling strip, click to focus. Nothing like it exists in Kanade.
 - [ ] Column and window controls from the Island, tied to the focused window: consume or expel, column width presets, move to workspace.
-- [ ] Per-app volume mixer in Controls (today only the output and input devices).
+- [x] Per-app volume mixer in Controls: each playing app gets its own level (`Line::Stream`/`Line::Route` in `src/surfaces/controls/audio.rs`, from `Stream` in `src/sources/audio.rs:101`), and a stream can be moved to another output.
+  - Premise no longer holds: the mixer exists.
 - [ ] Emoji grid picker with recents, as a Surface (optional; `:emoji` search in the Launcher already exists).
 - [ ] Desktop widgets on the desktop layer (clock, weather, calendar, media); scope to be decided.
 
