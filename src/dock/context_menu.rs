@@ -923,6 +923,33 @@ mod tests {
         )
     }
 
+    /*
+     * mid-slide: the strip the menu clears is read at rest, and the slide's spring swings the strip
+     * past its place. `strip_depth` is the rest depth, the icons grown, and BOUNCE, so it covers the
+     * farthest the spring puts them; this is that arithmetic on the Dock's own slide, not a copy
+     */
+    #[test]
+    fn the_strip_read_at_rest_covers_its_slide_and_the_icons_grown() {
+        let size = super::super::Size::of(crate::look::DockSize::Large);
+        let most = crate::look::Magnify::Large.most();
+        let rest = super::super::strip_y(true, size, 1000.0, 1.0);
+
+        // out from hidden, through held, and past it as far as the spring swings, the strip stands no
+        // higher than this
+        let highest = (0..=110)
+            .map(|percent| super::super::strip_y(true, size, 1000.0, percent as f32 / 100.0))
+            .fold(f32::MAX, f32::min);
+
+        assert!(highest < rest, "the slide swings past its place");
+
+        // its icons grow off the strip's far side, and the top of the tallest stands `rise` past it
+        let rise = size.icon * (most - 1.0);
+        let icon_top = highest - rise;
+
+        // what a menu keeps clear of: the rest strip, the icons grown, and the spring once
+        assert!(rest - strip_depth() <= icon_top);
+    }
+
     #[test]
     fn the_strip_reaches_past_its_icons_grown_and_its_spring_once() {
         assert_eq!(strip_depth(), 131.0);
