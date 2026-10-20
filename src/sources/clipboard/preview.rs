@@ -1,24 +1,25 @@
 //! The previews of the clipboard's pictures (ADR 0114): the runtime draws images from files, so a
 //! picture's bytes are written, only once a row that shows it is built, to `$XDG_RUNTIME_DIR/
-//! kanade-clipboard/<id>.<ext>`, a tmpfs, owner-only (the directory 0700, a file 0600). Never anywhere
-//! else: with no runtime directory there is no preview. A preview is deleted with its entry, whether
-//! removed, evicted or cleared, and what a Kanade that ended left is swept at start. Its name is the
-//! entry's id and an extension from a fixed table of types, nothing the copy itself says. The bytes
-//! and the paths are never logged.
+//! kanade-clipboard/<pid>/<id>.<ext>`, a tmpfs, owner-only (the directories 0700, a file 0600). Never
+//! anywhere else: with no runtime directory there is no preview. A preview is deleted with its entry,
+//! whether removed, evicted or cleared, and the folders of the Kanades that ended, and no other, are
+//! swept at start. Its name is the entry's id and an extension from a fixed table of types, nothing
+//! the copy itself says. The bytes and the paths are never logged.
 
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use kanade_runtime::{MutexExt, service::Service};
 
 use super::{Clipboard, Content, Entry};
-use crate::atomic::{self, Mode};
+use crate::atomic::{self, Mode, Staged};
 use crate::supervise;
 
 const FOLDER: &str = "kanade-clipboard";
@@ -40,36 +41,47 @@ fn extension(mime: &str) -> Option<&'static str> {
 
 // the folder the previews live in
 #[derive(Debug)]
-struct Dir(PathBuf);
+struct Dir {
+    // the folder of this process's own previews, named by its pid under `root`; a second Kanade,
+    // or a restart racing the one it replaces, never writes into it or deletes from it
+    own: PathBuf,
+
+    // the folder every Kanade's are under
+    root: PathBuf,
+}
 
 impl Dir {
-    // the folder under the runtime directory `runtime`, if it is an absolute path to a directory
+    // the folders under the runtime directory `runtime`, if it is an absolute path to a directory
     fn under(runtime: Option<OsString>) -> Option<Dir> {
         let runtime = PathBuf::from(runtime?);
 
-        (runtime.is_absolute() && runtime.is_dir()).then(|| Dir(runtime.join(FOLDER)))
+        (runtime.is_absolute() && runtime.is_dir())
+            .then(|| Dir::of(runtime.join(FOLDER), process::id()))
+    }
+
+    // the folder of the process `pid`'s previews, under the shared `root`
+    fn of(root: PathBuf, pid: u32) -> Dir {
+        Dir {
+            own: root.join(pid.to_string()),
+            root,
+        }
     }
 
     // the preview of the entry `id`: its id and the extension of its type, if it has one
     fn path(&self, id: u64, mime: &str) -> Option<PathBuf> {
-        Some(self.0.join(format!("{id}.{}", extension(mime)?)))
+        Some(self.own.join(format!("{id}.{}", extension(mime)?)))
     }
 
-    // writes the bytes whole and private, the folder made 0700 when missing
-    fn write(&self, id: u64, mime: &str, bytes: &[u8]) -> io::Result<PathBuf> {
-        let path = self
-            .path(id, mime)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::Unsupported))?;
-
-        atomic::write(&path, bytes, Mode::Private)?;
-
-        Ok(path)
+    // writes the bytes whole and private into a file beside `path`, flushed but not yet renamed
+    // over it, so publishing it is all a caller must take turns for; the folder is made 0700
+    fn stage(&self, path: &Path, bytes: &[u8]) -> io::Result<Staged> {
+        atomic::stage(path, bytes, Mode::Private)
     }
 
-    // deletes every preview whose entry `live` does not know. A part an unfinished write left is not
-    // taken, it is finished or removed by that write, or swept at start
+    // deletes every preview in this process's folder whose entry `live` does not know. A part an
+    // unfinished write left is not taken, it is finished or removed by that write, or swept at start
     fn retain(&self, live: impl Fn(u64) -> bool) {
-        let Ok(files) = fs::read_dir(&self.0) else {
+        let Ok(files) = fs::read_dir(&self.own) else {
             return;
         };
 
@@ -96,10 +108,48 @@ impl Dir {
         }
     }
 
-    // deletes the folder and what is in it
+    /*
+     * deletes what the Kanades that are no longer running left in the shared root: the folder of one
+     * whose process is gone, this one's own (a crash under the same pid leaves it stale, as the ids
+     * start again at 1), and a preview an older Kanade wrote in the root itself. A running Kanade's
+     * folder, and a part one is writing, are left alone
+     */
     fn sweep(&self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return;
+        };
+
+        let ours = process::id();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
+
+            if directory {
+                let name = entry.file_name();
+                let pid = name.to_str().and_then(|name| name.parse::<u32>().ok());
+
+                if pid.is_some_and(|pid| pid == ours || !atomic::alive(pid)) {
+                    let _ = fs::remove_dir_all(&path);
+                }
+
+                continue;
+            }
+
+            // this Kanade writes only into its own folder, so a bare preview in the root is an
+            // older Kanade's, which swept the whole root and so kept none of it either
+            if preview_name(&entry.file_name().to_string_lossy()) {
+                let _ = fs::remove_file(&path);
+            }
+        }
     }
+}
+
+// whether `name` is what a preview of this Kanade's is called: an id and a known extension
+fn preview_name(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(id, extension)| {
+        id.parse::<u64>().is_ok() && EXTENSIONS.iter().any(|(_, known)| *known == extension)
+    })
 }
 
 fn dir() -> Option<&'static Dir> {
@@ -157,7 +207,12 @@ struct Work {
 
 static WORK: LazyLock<Mutex<Work>> = LazyLock::new(Mutex::default);
 
-// writing and deleting take turns, so a preview is never deleted as it is written
+/*
+ * writing and deleting take turns, so a preview is never deleted as it is written or registered
+ * after it. What it keeps one at a time is the publish: the bytes are written whole beside the
+ * preview first, off it, since the decode that makes them may hold megabytes and take as long as it
+ * takes
+ */
 static TURN: Mutex<()> = Mutex::new(());
 
 /*
@@ -204,26 +259,55 @@ pub fn request(entry: &Entry) {
     }
 }
 
-// writes one preview and says it is ready, unless its entry went meanwhile
+/*
+ * says a preview could not be written, by its cause only, never the path or the picture
+ */
+fn failed(id: u64, error: io::Error) {
+    eprintln!(
+        "kanade: cannot write a clipboard preview ({})",
+        error.kind()
+    );
+    WORK.locked().failed.insert(id);
+}
+
+/*
+ * writes one preview and says it is ready, unless its entry went meanwhile. The bytes and the flush
+ * are done before `TURN`, so deleting never waits behind a picture being written: only taking turns
+ * to publish the finished file, or to find the entry gone, holds it
+ */
 fn make(Job { id, mime, bytes }: Job) {
     let Some(dir) = dir() else { return };
+    let Some(path) = dir.path(id, &mime) else {
+        WORK.locked().pending.remove(&id);
 
+        return;
+    };
+
+    let staged = match dir.stage(&path, &bytes) {
+        Ok(staged) => staged,
+        Err(error) => {
+            failed(id, error);
+            WORK.locked().pending.remove(&id);
+
+            return;
+        }
+    };
+
+    // the entry may have gone while the bytes were written; dropped uncommitted, the file is removed
     {
         let _turn = TURN.locked();
 
-        if Clipboard::read().has(id) {
-            match dir.write(id, &mime, &bytes) {
-                Ok(path) => {
-                    Previews::write().ready.insert(id, path);
+        // bound first: a read held through the write of `Previews` would hold two Services at once
+        let kept = Clipboard::read().has(id);
+
+        if !kept {
+            drop(staged);
+        } else {
+            match staged.commit(&path) {
+                Ok(()) => {
+                    drop(Previews::write().ready.insert(id, path));
                 }
-                Err(error) => {
-                    // the cause only, never the path or the picture
-                    eprintln!(
-                        "kanade: cannot write a clipboard preview ({})",
-                        error.kind()
-                    );
-                    WORK.locked().failed.insert(id);
-                }
+                Err(error) => failed(id, error),
             }
         }
     }
@@ -238,13 +322,14 @@ fn make(Job { id, mime, bytes }: Job) {
 pub fn reconcile() {
     let Some(dir) = dir() else { return };
 
-    let _turn = TURN.locked();
-
     let live: HashSet<u64> = Clipboard::read()
         .entries()
         .iter()
         .map(|entry| entry.id)
         .collect();
+
+    // the read is let go of before the turn, which a running write takes
+    let _turn = TURN.locked();
 
     dir.retain(|id| live.contains(&id));
 
@@ -257,13 +342,17 @@ pub fn reconcile() {
     WORK.locked().failed.retain(|id| live.contains(id));
 }
 
-// at start: nothing a Kanade before it left on tmpfs stays
+/*
+ * at start: the folders of the Kanades that ended, and no other's; one running beside this one
+ * keeps its previews, as does this one's own after a crash under the same pid
+ */
 pub fn sweep() {
     if let Some(dir) = dir() {
         dir.sweep();
     }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -292,8 +381,17 @@ mod tests {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
-    fn names(dir: &Dir) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(&dir.0)
+    // a preview written as `make` writes one: staged whole, then renamed over its name
+    fn write(dir: &Dir, id: u64, mime: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.path(id, mime).unwrap();
+
+        dir.stage(&path, bytes).unwrap().commit(&path).unwrap();
+
+        path
+    }
+
+    fn names(path: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(path)
             .map(|files| {
                 files
                     .flatten()
@@ -318,7 +416,7 @@ mod tests {
             ("image/webp", "7.webp"),
             ("image/gif", "7.gif"),
         ] {
-            assert_eq!(dir.path(7, mime), Some(dir.0.join(name)), "{mime}");
+            assert_eq!(dir.path(7, mime), Some(dir.own.join(name)), "{mime}");
         }
 
         for mime in [
@@ -331,24 +429,30 @@ mod tests {
             assert_eq!(dir.path(7, mime), None, "{mime:?}");
         }
 
-        let path = dir.write(7, "image/png", b"bytes").unwrap();
+        let path = write(&dir, 7, "image/png", b"bytes");
 
-        assert_eq!(path, runtime.join(FOLDER).join("7.png"));
+        assert_eq!(
+            path,
+            runtime
+                .join(FOLDER)
+                .join(process::id().to_string())
+                .join("7.png")
+        );
         assert_eq!(fs::read(&path).unwrap(), b"bytes");
         assert_eq!(bits(&path), 0o600);
-        assert_eq!(bits(&dir.0), 0o700);
-        assert!(dir.write(8, "image/bmp", b"x").is_err());
-        assert_eq!(names(&dir), ["7.png"]);
+        assert_eq!(bits(&dir.own), 0o700);
+        assert!(dir.path(8, "image/bmp").is_none());
+        assert_eq!(names(&dir.own), ["7.png"]);
 
         let _ = fs::remove_dir_all(&runtime);
     }
 
-    // a preview whose file is gone, deleted by another Kanade's start or by hand, is missing again
+    // a preview whose file is gone, deleted by hand, is missing again
     #[test]
     fn a_ready_preview_whose_file_is_gone_is_missing() {
         let runtime = temporary("gone");
         let dir = Dir::under(Some(runtime.clone().into_os_string())).unwrap();
-        let path = dir.write(7, "image/png", b"x").unwrap();
+        let path = write(&dir, 7, "image/png", b"x");
 
         let mut previews = Previews::default();
         previews.ready.insert(7, path.clone());
@@ -380,7 +484,7 @@ mod tests {
         let write_all = |clipboard: &Clipboard| {
             for entry in clipboard.entries() {
                 if let Content::Image { mime, bytes } = &entry.content {
-                    dir.write(entry.id, mime, bytes).unwrap();
+                    write(&dir, entry.id, mime, bytes);
                 }
             }
         };
@@ -390,11 +494,11 @@ mod tests {
         }
 
         write_all(&clipboard);
-        assert_eq!(names(&dir), ["1.png", "2.png", "3.png"]);
+        assert_eq!(names(&dir.own), ["1.png", "2.png", "3.png"]);
 
         clipboard.remove(2);
         dir.retain(|id| clipboard.has(id));
-        assert_eq!(names(&dir), ["1.png", "3.png"]);
+        assert_eq!(names(&dir.own), ["1.png", "3.png"]);
 
         // pinned, entry 1 outlives the bound that evicts the rest
         assert_eq!(clipboard.pin(1), Pinning::Changed);
@@ -407,16 +511,16 @@ mod tests {
         dir.retain(|id| clipboard.has(id));
 
         assert!(!clipboard.has(3), "evicted");
-        assert!(names(&dir).contains(&String::from("1.png")));
-        assert!(!names(&dir).contains(&String::from("3.png")));
+        assert!(names(&dir.own).contains(&String::from("1.png")));
+        assert!(!names(&dir.own).contains(&String::from("3.png")));
 
         clipboard.clear();
         dir.retain(|id| clipboard.has(id));
-        assert_eq!(names(&dir), ["1.png"]);
+        assert_eq!(names(&dir.own), ["1.png"]);
 
         clipboard.remove(1);
         dir.retain(|id| clipboard.has(id));
-        assert!(names(&dir).is_empty());
+        assert!(names(&dir.own).is_empty());
 
         let _ = fs::remove_dir_all(&runtime);
     }
@@ -427,19 +531,76 @@ mod tests {
         let runtime = temporary("stray");
         let dir = Dir::under(Some(runtime.clone().into_os_string())).unwrap();
 
-        dir.write(1, "image/png", b"x").unwrap();
-        fs::write(dir.0.join("notanid.png"), b"x").unwrap();
-        fs::write(dir.0.join("2.exe"), b"x").unwrap();
-        fs::write(dir.0.join(".3.png.1.1.part"), b"x").unwrap();
+        write(&dir, 1, "image/png", b"x");
+        fs::write(dir.own.join("notanid.png"), b"x").unwrap();
+        fs::write(dir.own.join("2.exe"), b"x").unwrap();
+        fs::write(dir.own.join(".3.png.1.1.part"), b"x").unwrap();
 
         dir.retain(|id| id == 1);
-        assert_eq!(names(&dir), [".3.png.1.1.part", "1.png"]);
+        assert_eq!(names(&dir.own), [".3.png.1.1.part", "1.png"]);
+
+        // sweeping where nothing is there is not an error
+        let _ = fs::remove_dir_all(&runtime);
+        dir.sweep();
+    }
+
+    /*
+     * one Kanade's start sweeps only the folders of the Kanades that ended: a second one running
+     * beside it, or the one a restart is racing, keeps its previews. The folder is named by the pid,
+     * and this one's own is taken, as a crash under a reused pid leaves it stale
+     */
+    #[test]
+    fn a_sweep_leaves_a_running_kanades_previews_alone() {
+        let runtime = temporary("sweep");
+        let root = runtime.join(FOLDER);
+
+        // a process this test keeps alive, standing in for the Kanade beside this one
+        let mut running = process::Command::new("sleep").arg("30").spawn().unwrap();
+        let live = running.id();
+
+        // a child reaped, so its number is certainly not a live process's
+        let mut done = process::Command::new("true").spawn().unwrap();
+        let gone = done.id();
+        done.wait().unwrap();
+
+        let dir = Dir::of(root.clone(), process::id());
+        let beside = Dir::of(root.clone(), live);
+        let ended = Dir::of(root.clone(), gone);
+
+        write(&beside, 1, "image/png", b"live");
+        write(&ended, 1, "image/png", b"gone");
+        write(&dir, 1, "image/png", b"stale");
+
+        // an older Kanade's, written in the root before the folders were per process
+        fs::write(root.join("4.png"), b"root").unwrap();
+        fs::write(root.join("notes.txt"), b"not ours").unwrap();
 
         dir.sweep();
-        assert!(!dir.0.exists());
 
-        // sweeping what is not there is not an error
+        assert_eq!(
+            names(&beside.own),
+            ["1.png"],
+            "the running one keeps its own"
+        );
+        assert_eq!(fs::read(beside.own.join("1.png")).unwrap(), b"live");
+        assert!(!ended.own.exists(), "the one that ended loses its folder");
+        assert!(!dir.own.exists(), "this one's, left by a crash, goes too");
+        assert!(
+            !root.join("4.png").exists(),
+            "an older Kanade's preview goes"
+        );
+        assert!(
+            root.join("notes.txt").exists(),
+            "a name that is not a preview is not ours to take"
+        );
+        assert_eq!(names(&root), [live.to_string(), String::from("notes.txt")]);
+
+        drop(running.kill());
+        drop(running.wait());
+
+        // what it left now is a folder whose process is gone, so the next start takes it
         dir.sweep();
+        assert_eq!(names(&root), ["notes.txt"]);
 
         let _ = fs::remove_dir_all(&runtime);
     }

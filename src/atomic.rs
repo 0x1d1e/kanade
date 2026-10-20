@@ -112,9 +112,9 @@ pub fn sweep(path: &Path) {
     }
 }
 
-// whether a process of that number exists: 0 and the negatives name no process, so a part named
-// with one is not this sweep's to remove
-fn alive(pid: u32) -> bool {
+/// Whether a process of that number exists: 0 and the negatives name no process, so a part named
+/// with one is not this sweep's to remove, and a folder named with one is not a Kanade's.
+pub fn alive(pid: u32) -> bool {
     let Some(pid) = i32::try_from(pid)
         .ok()
         .and_then(rustix::process::Pid::from_raw)
