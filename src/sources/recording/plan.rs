@@ -247,20 +247,16 @@ pub fn recorder(source: &Source, audio: Audio, file: &str, encoding: &Encoding) 
 const SQUARE_PIXELS: &str = "video/x-raw(ANY),pixel-aspect-ratio=1/1";
 
 /*
- * the output of `videorate`: 30 fps, any memory (the source is DMA-BUF). Without a fixed framerate,
- * a static window that only damages once produces a single-frame recording whose duration is one
- * frame period instead of the wall-clock capture time
- */
-const PACED: &str = "video/x-raw(ANY),framerate=30/1";
-
-/*
  * the arguments of `gst-launch-1.0` for one segment of a window: the PipeWire node niri casts it on,
  * encoded as `encoding` says at the window's size, written to stdout as H.264 for `muxer`.
  * Interrupted, it ends the stream (`-e`) rather than cut it off.
  *
  * `keepalive-time` and `resend-last` make `pipewiresrc` re-emit the last buffer every second when
- * the window is static (no damage). `videorate` then duplicates that into a steady 30 fps stream,
- * so the recording's duration matches the wall clock even when nothing redraws
+ * the window is static (no damage), so a still window keeps producing buffers and `muxer` stamps
+ * them by the wall clock into the duration it really had. Nothing here paces the frames (no
+ * `videorate`): a variable frame rate is the recording (ADR 0117). `pipewiresrc` offers no fixed
+ * framerate, and fed caps that fix none, `videorate` emits a single frame: a 30 s take became a
+ * file of 2 s. It must never be added back for the still-window case
  */
 pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> {
     let mut arguments: Vec<String> = [
@@ -273,10 +269,6 @@ pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> 
         "resend-last=true",
         "!",
         SQUARE_PIXELS,
-        "!",
-        "videorate",
-        "!",
-        PACED,
         "!",
     ]
     .map(String::from)
@@ -497,39 +489,35 @@ mod tests {
         }
     }
 
-    // `pipewiresrc` gives a cast no pixel aspect, which `vapostproc` takes as 1/2147483647 and then
-    // cannot calculate borders for: a window resized mid-take was stretched, not bordered (live)
+    /*
+     * a confirmed defect, once, at the seam it crossed: `pipewiresrc` gives a cast no pixel aspect,
+     * which `vapostproc` takes as 1/2147483647 and then cannot calculate borders for (a window
+     * resized mid-take was stretched, not bordered, live), and the cast gives no fixed framerate,
+     * which `videorate` then answered with a single frame (a 30 s take became a 2 s file, live)
+     */
     #[test]
-    fn a_windows_cast_is_held_to_square_pixels_before_the_converter() {
+    fn a_windows_cast_is_held_to_square_pixels_and_never_paced() {
         let arguments = encoder(7, (640, 480), &vaapi());
         let at = |word: &str| arguments.iter().position(|found| found == word);
         let source = at("pipewiresrc");
         let keepalive = at("keepalive-time=1000");
         let resend = at("resend-last=true");
         let held = at("video/x-raw(ANY),pixel-aspect-ratio=1/1");
-        let rate = at("videorate");
-        let paced = at("video/x-raw(ANY),framerate=30/1");
         let converter = at("vapostproc");
 
         assert!(
-            source.is_some()
-                && keepalive.is_some()
-                && resend.is_some()
-                && held.is_some()
-                && rate.is_some()
-                && paced.is_some()
-                && converter.is_some(),
+            source.is_some() && keepalive.is_some() && resend.is_some() && held.is_some(),
             "{arguments:?}"
         );
         assert!(
-            source < keepalive
-                && keepalive < held
-                && resend < held
-                && held < rate
-                && rate < paced
-                && paced < converter,
+            source < keepalive && keepalive < held && resend < held && held < converter,
             "{arguments:?}"
         );
+
+        // the frames keep the time they arrived at: nothing here forces a framerate
+        for paced in ["videorate", "video/x-raw(ANY),framerate=30/1"] {
+            assert!(!arguments.iter().any(|word| word == paced), "{arguments:?}");
+        }
     }
 
     #[test]
