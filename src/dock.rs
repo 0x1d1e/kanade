@@ -1277,15 +1277,44 @@ pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
  * hides, a Banner, and so is none under autohide; a menu is opened by a click on an icon, which an
  * autohide has out, and it is drawn over the Dock, so it always gets the strip here. It reaches off
  * the edge as far as its icons grow, and BOUNCE further, the farthest its spring swings it past its
- * place, so the menu clears them wherever a slide puts them. Reading subscribes to the apps
+ * place, so the menu clears them wherever a slide puts them. Merged, the shell lays the Dock out and
+ * the strip lands in the same place, so a menu keeps clear of it there too. Reading subscribes to
+ * the apps
  */
 pub fn standing(monitor: &Monitor) -> Option<(Edge, Rect)> {
     let items = items(&Windows::read());
     let config = config::get();
     let place = config.dock_placement();
 
-    if !modules::on("dock") || merge::form().is_some() {
+    if !modules::on("dock") || items.is_empty() {
         return None;
+    }
+
+    if let Some(shell) = merge::shell(monitor) {
+        let origin = surface_origin(
+            monitor,
+            config.island_placement().anchor,
+            shell.size,
+            Margin::default(),
+        );
+        let (extent, plate) = (&shell.extent, origin.1 + shell.strip);
+
+        // the plate, and past it as far as its icons grow and its spring swings; along the edge the
+        // whole window is the Dock's, and a menu clears the near side alone
+        let (y, edge) = match place.anchor.edge {
+            Edge::Top => (plate, Edge::Top),
+            _ => (plate - extent.rise - BOUNCE, Edge::Bottom),
+        };
+
+        return Some((
+            edge,
+            Rect {
+                x: 0.0,
+                y,
+                width: monitor.width as f32,
+                height: extent.strip + extent.rise + BOUNCE,
+            },
+        ));
     }
 
     // `band` already reaches off the edge as far as the icons grow; BOUNCE further is the farthest
