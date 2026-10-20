@@ -25,6 +25,10 @@ struct Fake {
     // whether the pending file existed at each command
     file: PathBuf,
     file_at_commands: RefCell<Vec<bool>>,
+
+    // when the fake's clock follows real time from here, for a test that runs the trial's own
+    // clock thread: nothing else moves it then
+    real: RefCell<Option<(std::time::Instant, u64)>>,
 }
 
 impl Fake {
@@ -43,12 +47,19 @@ impl Fake {
             hangs: Cell::new(false),
             file: file.to_owned(),
             file_at_commands: RefCell::default(),
+            real: RefCell::default(),
         }
     }
 
     fn at(&self, millis: u64) {
         self.clock.set(millis);
         self.unix.set(self.unix.get() + millis);
+    }
+
+    // the clock runs with real time from where it is, as `Real` does, so a test can run the
+    // trial's own clock thread against it
+    fn follow_real_time(&self) {
+        *self.real.borrow_mut() = Some((std::time::Instant::now(), self.clock.get()));
     }
 
     fn state(&self, name: &str) -> Output {
@@ -162,7 +173,10 @@ impl Port for Fake {
     }
 
     fn now(&self) -> u64 {
-        self.clock.get()
+        match &*self.real.borrow() {
+            Some((start, from)) => from + start.elapsed().as_millis() as u64,
+            None => self.clock.get(),
+        }
     }
 
     fn unix_ms(&self) -> u64 {
@@ -626,7 +640,10 @@ fn a_revert_that_fails_keeps_the_file_and_tries_again() {
     let session = control.session.as_ref().unwrap();
 
     assert_eq!(session.stuck.as_deref(), Some("niri is busy"));
-    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+    assert_eq!(session.retry_at, 2_000 + RETRY_MS);
+
+    // the window to Keep is still the one the trial began with: a failed revert does not reopen it
+    assert_eq!(session.deadline, 1_000 + TRIAL_MS);
 
     *fake.refuse.borrow_mut() = None;
     fake.at(7_000);
@@ -659,7 +676,10 @@ fn a_failed_revert_waits_for_its_deadline_after_the_page_leaves() {
     let session = control.session.as_ref().unwrap();
 
     assert_eq!(session.stuck.as_deref(), Some("niri is busy"));
-    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+    assert_eq!(session.retry_at, 2_000 + RETRY_MS);
+
+    // the window to Keep is still the one the trial began with: a failed revert does not reopen it
+    assert_eq!(session.deadline, 1_000 + TRIAL_MS);
 
     // the ticks between the attempt and the deadline: nothing is tried
     let commands = fake.commands.borrow().len();
@@ -1280,7 +1300,7 @@ fn a_revert_that_does_not_answer_keeps_its_file_and_tries_again() {
 
     let session = control.session.as_ref().unwrap();
     assert!(session.stuck.is_some());
-    assert_eq!(session.deadline, 2_000 + RETRY_MS);
+    assert_eq!(session.retry_at, 2_000 + RETRY_MS);
 
     // when the command works again, the retry succeeds
     fake.hangs.set(false);
@@ -1583,8 +1603,13 @@ fn a_keep_with_no_reload_seen_is_not_reverted_at_start() {
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 1.5);
 }
 
+// the controller is one for the whole process, as it is in the shell: the tests that drive it take
+// this, so one test's trial is never the next one's
+static CONTROL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn injected_worker_panic_triggers_emergency_revert() {
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
     let (dir, fake, _) = setup();
     let before = fake.state("eDP-1");
 
@@ -1670,4 +1695,263 @@ fn keep_request_succeeds_and_prevents_revert_when_writing_pending_file_fails() {
 
     assert!(fake.commands.borrow().is_empty());
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+}
+
+// ---- Vera's four, each at the seam it crossed ----
+
+// Vera 1: a worker that panicked left no timer. The trial's own clock is the timer, and it is due
+// from `retry_at` rather than from anything a tick counted, so it still fires.
+#[test]
+fn a_trial_whose_worker_died_is_still_due_at_its_deadline() {
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+    let (dir, fake, _) = setup();
+    let before = fake.state("eDP-1");
+
+    // the trial is the controller's, not a local: it survives the worker that began it
+    work::controller(|control| {
+        *control = Controller::new(dir.file());
+        control
+            .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+            .unwrap();
+    });
+
+    let deadline = work::controller(|control| control.session.as_ref().unwrap().deadline);
+
+    // the worker is dead: nothing ticks, so only the clock's own wait can find the trial due
+    fake.at(deadline - 1);
+    assert_eq!(
+        work::controller(|control| control.wait(fake.now())),
+        Some(1),
+        "the clock waits on the deadline, not on a tick"
+    );
+
+    // a panic in the worker's own thread, taken the way `spawn` takes it
+    let panic = std::panic::catch_unwind(|| panic!("simulated worker thread panic"));
+    assert!(panic.is_err());
+
+    // nothing has run yet; the clock is what ends it, through the same controller
+    assert!(work::controller(|control| control.session.is_some()));
+    fake.at(deadline);
+    work::clock_due(&fake);
+
+    assert!(work::controller(|control| control.session.is_none()));
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
+}
+
+// the clock's wait is `retry_at` and nothing else: a failed revert's retry, and the end of a trial
+// the config holds, are the two things that move it
+#[test]
+fn the_clock_waits_on_the_retry_at_and_never_on_a_kept_trial() {
+    let (dir, fake, mut control) = setup();
+
+    assert_eq!(control.wait(fake.now()), None);
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    let session = control.session.clone().unwrap();
+
+    assert_eq!(
+        control.wait(fake.now()),
+        Some(session.retry_at - fake.now())
+    );
+
+    // a failed revert moves the retry, and the clock with it
+    *fake.refuse.borrow_mut() = Some(String::from("niri is busy"));
+    fake.at(2_000);
+    assert!(control.revert(&fake).is_err());
+
+    let session = control.session.clone().unwrap();
+    assert_eq!(
+        control.wait(fake.now()),
+        Some(session.retry_at - fake.now())
+    );
+
+    // a Keep the config took is not the clock's to revert: niri's reload decides
+    *fake.refuse.borrow_mut() = None;
+    control.keep(&fake).unwrap();
+    assert!(control.session.as_ref().unwrap().kept);
+    assert_eq!(control.wait(fake.now()), None);
+
+    fake.at(session.retry_at + RETRY_MS);
+
+    // the clock looked, found nothing to time, and put nothing back
+    assert_eq!(control.revert_when_due(&fake, false), None);
+    assert!(control.session.as_ref().unwrap().kept);
+    assert!(dir.file().exists());
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+}
+
+// Vera 2: a recovery could overwrite, or be overwritten by, a new trial's file. Neither side may
+// touch the other's: the file is one trial's.
+#[test]
+fn a_recovery_and_a_new_trial_never_share_the_pending_file() {
+    let (dir, fake, _) = setup();
+    crashed(&dir, &fake);
+
+    // a fresh controller does not write over a file another Kanade left: that file is the only
+    // record that puts that monitor back, so the change is refused rather than the file dropped
+    let mut other = Controller::new(dir.file());
+    let refused = other
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap_err();
+
+    assert!(refused.contains("another Kanade"), "{refused}");
+    assert!(other.session.is_none());
+    assert!(dir.file().exists());
+
+    // and a controller that holds a trial leaves the file for it: recovery does not take it
+    let mut held = Controller::new(dir.file());
+    let text = fs::read_to_string(dir.file()).unwrap();
+    fs::remove_file(dir.file()).unwrap();
+    held.try_edit(&fake, "eDP-1", Edit::Scale(1.25), None)
+        .unwrap();
+    fs::write(dir.file(), text).unwrap();
+
+    let said = held.recover(&fake).unwrap().unwrap();
+    assert!(said.contains("being changed now"), "{said}");
+    assert!(held.session.is_some());
+    assert!(dir.file().exists());
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 1.25);
+}
+
+// Vera 3: a Keep pressed after the deadline, but before a tick noticed, still wrote the config.
+// The request carries when it was made, so the deadline is checked rather than the tick.
+#[test]
+fn a_keep_made_after_the_deadline_is_refused_even_before_a_tick() {
+    let (dir, fake, mut control) = setup();
+    let before = fake.state("eDP-1");
+
+    control
+        .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+        .unwrap();
+    let session = control.session.clone().unwrap();
+
+    // the press came one millisecond after the window closed, and no tick has run since
+    let late = session.deadline + 1;
+    fake.at(late);
+
+    let refused = control.keep_request(&fake, session.id, late).unwrap_err();
+
+    assert_eq!(refused, "The trial has expired");
+    assert!(control.session.is_none());
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
+
+    // nothing was written to the config either
+    assert!(fake.written.borrow().is_empty());
+}
+
+// Vera 4: on-demand is invisible in niri's report, so a recovery sent it back on every trial, even
+// one that never touched the variable refresh rate. Only a trial that changed it sends it back.
+#[test]
+fn a_recovery_sends_on_demand_back_only_for_a_trial_that_changed_it() {
+    let applied: [(Edit, bool); 2] = [(Edit::Scale(2.0), false), (Edit::Vrr(Vrr::On), true)];
+
+    for (edit, changed_vrr) in applied {
+        let (dir, fake, _) = setup();
+
+        let mut shown = panel();
+        shown.vrr_enabled = false;
+        fake.outputs.borrow_mut()[0] = shown.clone();
+
+        let previous = Previous {
+            enabled: true,
+            mode: shown.current_mode().map(|mode| mode.text()),
+            scale: 1.0,
+            transform: Transform::Normal,
+            x: 0,
+            y: 0,
+            vrr: Vrr::OnDemand,
+        };
+        let json = serde_json::json!({
+            "output": "eDP-1",
+            "taken_ms": fake.unix_ms(),
+            "previous": previous.to_json(),
+            "applied": [edit.to_json()],
+        });
+        fs::write(dir.file(), json.to_string()).unwrap();
+
+        let mut control = Controller::new(dir.file());
+        control.recover(&fake).unwrap();
+
+        let sent_on_demand = fake
+            .commands
+            .borrow()
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "--on-demand"));
+
+        assert_eq!(sent_on_demand, changed_vrr, "{edit:?}");
+        assert!(!dir.file().exists());
+    }
+}
+
+// the clock thread itself, with no worker at all: it sleeps on the trial's own wait, does not fire
+// before the deadline, and ends the trial when it comes. This is the case the defect was, since
+// nothing else is running to tick.
+#[test]
+fn the_clock_thread_ends_a_trial_the_worker_never_ticks() {
+    use std::time::{Duration, Instant};
+
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+    let (dir, fake, _) = setup();
+    let before = fake.state("eDP-1");
+
+    // the clock sleeps on real time, so the fake's clock is made to follow it
+    fake.follow_real_time();
+    let started = Instant::now();
+
+    work::controller(|control| {
+        *control = Controller::new(dir.file());
+        control
+            .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+            .unwrap();
+
+        // a deadline a moment away rather than fifteen seconds
+        let now = fake.now();
+        let session = control.session.as_mut().unwrap();
+        session.deadline = now + 400;
+        session.retry_at = now + 400;
+    });
+
+    let (woken, woke) = std::sync::mpsc::channel();
+
+    // an observer beside the clock, standing in for the worker's own wake: it looks before the
+    // deadline, waits for the clock to end the trial, then drops the sender so the clock returns
+    let early = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let watched = early.clone();
+    let observer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        watched.store(
+            work::controller(|control| control.session.is_some()),
+            Ordering::Relaxed,
+        );
+
+        let until = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < until && work::controller(|control| control.session.is_some()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        drop(woken);
+    });
+
+    // the clock runs on its own, with no worker and no tick beside it
+    work::clock(&woke, &fake);
+    observer.join().unwrap();
+
+    assert!(
+        early.load(Ordering::Relaxed),
+        "the clock ended the trial before its deadline"
+    );
+    assert!(
+        work::controller(|control| control.session.is_none()),
+        "the clock never ended the trial"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the clock waited for the trial, not for a tick"
+    );
+    assert!(!dir.file().exists());
+    assert_eq!(fake.state("eDP-1"), before);
 }
