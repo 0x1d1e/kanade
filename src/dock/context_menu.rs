@@ -278,7 +278,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
     let count = row_count(&open);
     let separated = !open.windows_only && count > 1;
-    let (width, visible_rows) = size(monitor, count, separated);
+    let screen = (monitor.width as f32, monitor.height as f32);
+    let dock = super::standing(monitor);
+    let tall = tallest(screen, dock);
+    let (width, visible_rows) = size(monitor, count, separated, tall);
     let last_offset = count.saturating_sub(visible_rows);
     let offset = open.offset.min(last_offset);
     let end = (offset + visible_rows).min(count);
@@ -286,11 +289,10 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let list_height =
         (end - offset) as f32 * (ROW + GAP) - GAP + if separator { SEPARATOR + GAP } else { 0.0 };
     let height = 2.0 * INSET + list_height;
-    let (x, y) = position(monitor, &open, width, height);
+    let (x, y) = place(open.at, open.edge, screen, (width, height), dock);
     let roles = theme::island();
     let content = rows(&open, offset, end, width - 2.0 * INSET, roles);
     let scroll_monitor = open.monitor.clone();
-    let (monitor_width, monitor_height) = (monitor.width, monitor.height);
 
     let panel = Rectangle::new()
         .width(width)
@@ -310,15 +312,12 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             Rectangle::new()
                 .width(width - 2.0 * INSET)
                 .height(list_height)
-                .on_scroll(move |delta| {
-                    scroll(&scroll_monitor, monitor_width, monitor_height, delta.y)
-                })
+                .on_scroll(move |delta| scroll(&scroll_monitor, tall, delta.y))
                 .child(Column::new(content).width(width - 2.0 * INSET).gap(GAP)),
         );
 
     if open.windows_only {
         let monitor_name = monitor.name.clone();
-        let height_px = monitor.height;
         let panel = panel.on_hover(hover_panel);
 
         return LayerWindow::new()
@@ -339,7 +338,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             })
             .space(Zone::Ignore)
             .namespace("kanade-dock-menu")
-            .on_key(move |key| key_press(&monitor_name, height_px, key))
+            .on_key(move |key| key_press(&monitor_name, tall, key))
             .child(panel);
     }
 
@@ -349,7 +348,6 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .on_click(|_| close())
         .child(panel.translate(x, y));
     let monitor_name = monitor.name.clone();
-    let height = monitor.height;
 
     LayerWindow::new()
         .width(Full)
@@ -360,7 +358,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .keyboard(Keyboard::Exclusive)
         .space(Zone::Ignore)
         .namespace("kanade-dock-menu")
-        .on_key(move |key| key_press(&monitor_name, height, key))
+        .on_key(move |key| key_press(&monitor_name, tall, key))
         .child(root)
 }
 
