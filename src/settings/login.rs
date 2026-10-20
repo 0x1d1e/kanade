@@ -16,7 +16,7 @@ pub const PAGE: &str = "login";
 
 /*
  * reads the status on a worker, if none runs, and puts it in the Service. Called when the page
- * shows and by its refresh link: a changed row is seen at the next one
+ * shows, by its refresh link, and after a changed row is written
  */
 pub fn load() {
     {

@@ -165,7 +165,9 @@ impl Where {
     }
 
     // SDDM's own config, in the order it reads it (sddm.conf(5)), later winning: the system's
-    // directory, the local one, then /etc/sddm.conf. A directory's files go by name, ignoring case
+    // directory, the local one, then /etc/sddm.conf. SDDM sorts files in a drop-in directory
+    // using Qt's QDir::LocaleAware (upstream src/common/ConfigReader.cpp); sorting by ASCII
+    // lowercase approximates this order without pulling in full locale-aware collation
     fn configs(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
 
@@ -532,8 +534,11 @@ fn backdrop(source: &Path, size: (u32, u32), blur: u32, dim: u32) -> Result<Vec<
     }
 
     Err(format!(
-        "{named}: still over {} MiB at a third of the screen's size",
-        MOST_BYTES >> 20
+        "{named}: still over {} MiB at {}% of the screen's size ({}% smaller each side, {} times)",
+        MOST_BYTES >> 20,
+        (SHRINK.powi(TRIES as i32) * 100.0).round() as u32,
+        ((1.0 - SHRINK) * 100.0).round() as u32,
+        TRIES
     ))
 }
 
@@ -689,6 +694,12 @@ fn plan(installed: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>, String> {
                 }
                 Ok(meta) if meta.is_file() => out.push((rel, Some(path))),
                 _ => {}
+            }
+
+            // counted as it goes, so one huge directory trips the cap while it is read, not whole
+            // before the next directory it enters finds it too large
+            if out.len() > MOST {
+                return Err(format!("{}: too large for a theme", dir.display()));
             }
         }
 
@@ -993,7 +1004,7 @@ fn target_qt_version(w: &Where, overlay: &Path) -> u8 {
     }
 
     let overlay_meta = overlay.join("metadata.desktop");
-    if let Some(content) = class::read(&overlay_meta)
+    if let Some(content) = class::text(&overlay_meta)
         && let Some(ver) = qt_version_of(&content)
     {
         return ver;
@@ -1009,7 +1020,7 @@ pub fn configured_qt_version(config: &Config) -> u8 {
 fn configured_qt_version_under(w: &Where, config: &Config) -> u8 {
     let theme = config.sddm_theme.as_deref().unwrap_or(OWN);
     let overlay_meta = w.overlay(theme).join("metadata.desktop");
-    if let Some(content) = class::read(&overlay_meta)
+    if let Some(content) = class::text(&overlay_meta)
         && let Some(v) = qt_version_of(&content)
     {
         return v;
@@ -1020,7 +1031,7 @@ fn configured_qt_version_under(w: &Where, config: &Config) -> u8 {
     }
 
     let installed_meta = w.installed(theme).join("metadata.desktop");
-    if let Some(content) = class::read(&installed_meta)
+    if let Some(content) = class::text(&installed_meta)
         && let Some(v) = qt_version_of(&content)
     {
         return v;
@@ -1043,7 +1054,7 @@ fn copy_own(w: &Where, overlay: &Path) -> Result<usize, String> {
             std::borrow::Cow::Borrowed(*text)
         };
 
-        if class::read(&path).is_some_and(|have| have == content.as_ref()) {
+        if class::text(&path).as_deref() == Some(content.as_ref()) {
             continue;
         }
 
@@ -1073,20 +1084,11 @@ fn legacy_settings(overlay: &Path) -> (Option<String>, Option<String>) {
         return (None, None);
     }
     let read_plain = |name: &str| {
-        use std::io::Read;
-
-        let path = overlay.join(name);
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
-            .open(path)
-            .ok()?;
-        if !file.metadata().ok()?.is_file() {
-            return None;
-        }
-        let mut text = String::new();
-        file.take(64 << 10).read_to_string(&mut text).ok()?;
-        Some(text)
+        // a seed cut at the limit is not the file the user wrote, so it is not written back
+        class::read(&overlay.join(name))
+            .ok()
+            .filter(|read| read.whole)
+            .map(|read| read.text)
     };
     let qt =
         read_plain("metadata.desktop").and_then(|text| qt_version_of(&text).map(|v| v.to_string()));
@@ -1213,7 +1215,7 @@ fn pointed(w: &Where) -> (Said, Said) {
     let (mut dir, mut current) = (None, None);
 
     for file in w.configs() {
-        if let Some(text) = class::read(&file) {
+        if let Some(text) = class::text(&file) {
             read_theme(&text, &file, &mut dir, &mut current);
         }
     }
@@ -1292,7 +1294,7 @@ fn theme_state(w: &Where, theme: &str) -> String {
                 } else {
                     std::borrow::Cow::Borrowed(*text)
                 };
-                !class::read(&overlay.join(name)).is_some_and(|have| have == expected.as_ref())
+                class::text(&overlay.join(name)).as_deref() != Some(expected.as_ref())
             })
             .count()
         {
@@ -1464,10 +1466,27 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
         Err(_) => String::from("picture: none"),
     });
 
-    let written = class::read(&overlay.join(USER)).is_some();
+    let user = class::read(&overlay.join(USER));
+    let names_backdrop = user.as_ref().is_ok_and(|read| {
+        read.whole
+            && class::pairs(&read.text).iter().any(|(_, key, value)| {
+                key == "backdrop" && value == &format!("/{DATA}/backdrop.png")
+            })
+    });
+    let written = if want.theme == OWN {
+        names_backdrop
+    } else {
+        user.is_ok()
+    };
     lines.push(format!(
         "{USER}: {}",
-        if written { "written" } else { "none" }
+        match &user {
+            Ok(_) if want.theme == OWN && !names_backdrop => {
+                format!("stale: does not name /{DATA}/backdrop.png")
+            }
+            Ok(_) => String::from("written"),
+            Err(_) => String::from("none"),
+        }
     ));
 
     // setup is required before SDDM is pointed at the executable theme
@@ -1633,7 +1652,9 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
     for dir in [
         Some(w.prefix().join("themes")),
         Some(w.data()),
-        (want.theme != OWN).then(|| w.installed(&want.theme)),
+        // a removed installed theme is said once, above; checking its modes again only adds a
+        // warning about a directory that is gone
+        (want.theme != OWN && w.installed(&want.theme).exists()).then(|| w.installed(&want.theme)),
     ]
     .into_iter()
     .flatten()
@@ -1795,7 +1816,7 @@ pub fn sync() -> ExitCode {
  * link would send the write (or the user's idea of the file) somewhere else, and a file with other
  * names is one the user did not make for this
  */
-fn plain_target(path: &Path) -> Result<(), String> {
+pub(super) fn plain_target(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(format!(
             "{} is a symbolic link; remove it, and Kanade writes the file",
@@ -1814,7 +1835,7 @@ fn plain_target(path: &Path) -> Result<(), String> {
 }
 
 // the picture at `path`, replaced whole: what the login screen reads is never half written
-fn put_picture(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(super) fn put_picture(path: &Path, bytes: &[u8]) -> Result<(), String> {
     plain_target(path)?;
 
     atomic::write(path, bytes, Mode::Exactly(0o644))
@@ -2360,9 +2381,9 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(class::read(&pipe), None);
+        assert!(class::read(&pipe).is_err(), "a pipe is not a file");
         symlink("/dev/zero", root.join("zero")).unwrap();
-        assert_eq!(class::read(&root.join("zero")), None);
+        assert!(class::read(&root.join("zero")).is_err());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -2629,7 +2650,8 @@ mod tests {
 
     #[test]
     fn sync_preserves_user_configured_qt5_metadata() {
-        let root = std::env::temp_dir().join(format!("kanade-sddm-qt5-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("kanade-sddm-qt5setup-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let w = Where::under(root.clone());
         let overlay = w.overlay(OWN);
@@ -2710,5 +2732,91 @@ mod tests {
         assert_eq!(target_qt_version(&w, &overlay), 6);
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    // setup writes metadata.desktop for the greeter it finds, so a Qt 5 SDDM needs no hand edit
+    #[test]
+    fn setup_writes_the_qt_version_of_the_greeter_it_finds() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-qt5find-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let bin = root.join("usr/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let greeter = bin.join("sddm-greeter");
+        fs::write(&greeter, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&greeter, Permissions::from_mode(0o755)).unwrap();
+        let w = Where::under(root.clone());
+        fs::create_dir_all(w.prefix()).unwrap();
+        fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
+
+        install_own(&w).unwrap();
+        let meta = fs::read_to_string(w.overlay(OWN).join("metadata.desktop")).unwrap();
+        assert_eq!(qt_version_of(&meta), Some(5), "{meta}");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // the theme's own files carry the data path the Rust side writes to, so the two cannot drift
+    #[test]
+    fn the_theme_names_the_data_path_the_rust_side_writes() {
+        let path = format!("/{DATA}/backdrop.png");
+
+        for (name, text) in THEME {
+            if *name == "Sanitize.js" || *name == "theme.conf" {
+                assert!(text.contains(&path), "{name} names {path}");
+            }
+        }
+    }
+
+    // a theme of more entries than a theme can hold is refused while it is read, not after
+    #[test]
+    fn a_directory_over_the_entry_cap_is_refused_as_it_is_read() {
+        let dir = std::env::temp_dir().join(format!("kanade-sddm-many-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for n in 0..4001 {
+            fs::write(dir.join(format!("file{n}")), "").unwrap();
+        }
+
+        let error = plan(&dir).unwrap_err();
+        assert!(error.contains("too large for a theme"), "{error}");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // a removed installed theme is said once; its modes are not checked again as a directory gone
+    #[test]
+    fn the_doctor_does_not_check_the_modes_of_a_removed_installed_theme() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-gone-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let w = Where::under(root.clone());
+        fs::create_dir_all(w.prefix()).unwrap();
+        fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(w.prefix().join("themes"), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.data()).unwrap();
+        fs::set_permissions(w.data(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.overlay("maya")).unwrap();
+        fs::set_permissions(w.overlay("maya"), Permissions::from_mode(0o755)).unwrap();
+
+        let config = Config {
+            sddm_theme: Some(String::from("maya")),
+            ..Config::default()
+        };
+        let found = diagnose(&w, &config);
+        let said: Vec<&str> = found.iter().map(|finding| finding.text.as_str()).collect();
+
+        assert!(
+            said.iter()
+                .any(|text| text.contains("installed theme cannot be read")),
+            "{said:?}"
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|text| text.contains("modes could not be checked")),
+            "{said:?}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
