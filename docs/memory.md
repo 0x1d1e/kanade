@@ -30,6 +30,32 @@ Columns, in MiB: the shell's `rss`, `pss`, `anon` and PSS of mapped files (`file
 
 What the Surfaces show changes the numbers, so record it with each baseline: the config, the calendars and their events, the weather location, a media player and its art, the tray items, and notifications (empty at start, kept only in memory) and clipboard history (empty at start but for the pins, which are loaded from `$XDG_STATE_HOME/kanade/clipboard-pins` at start and so count in the first sample, a pinned picture in full; ADR 0115; a picture the Clipboard Surface showed also has its preview file on tmpfs, `$XDG_RUNTIME_DIR/kanade-clipboard`, RAM that RSS misses, and its decoded thumbnail; ADR 0114). To include cold cache and slab, as on a first start after boot, drop the caches before starting the shell: `sync; echo 3 | sudo tee /proc/sys/vm/drop_caches`.
 
+## Baseline, two monitors
+
+2026-10-20, `main` at 65480a0, release build, files cached. Two monitors: eDP-1 1920x1080 at 144 Hz and HDMI-A-5 1280x1024 at 60.02 Hz, both scale 1. No Kanade config file, calendars or Google Calendar events, weather location, or media player; one tray host (blueman). One run in a fresh transient unit. The shell drew with Intel UHD Graphics (ADL-S GT0.5, Vulkan, integrated GPU). `kanade.service` was restored after the run.
+
+```
+                   rss     pss    anon    file     gpu gpu-res |  cgroup    peak    anon   cache   shmem  slab-r  others
+rest             270.2   260.5   181.6    78.9   131.9   129.9 |   335.7   478.1   187.0     0.0   142.5     0.2    16.3
+controls         276.8   267.1   188.2    78.9   131.9   129.9 |   342.3   478.1   193.6     0.0   142.5     0.2    16.3
+media            284.7   275.0   196.0    78.9   133.9   131.9 |   352.8   478.1   201.4     0.0   144.5     0.2    16.3
+notifications    284.7   275.0   196.1    78.9   133.9   131.9 |   352.7   478.1   201.5     0.0   144.5     0.2    16.3
+launcher         291.4   281.7   202.8    78.9   133.9   131.9 |   359.4   478.1   208.2     0.0   144.5     0.2    16.3
+tray             291.0   281.3   202.4    78.9   133.9   131.9 |   358.7   478.1   209.2     0.0   144.5     0.2    16.2
+clipboard        292.2   282.5   203.6    78.9   133.9   131.9 |   360.0   478.1   209.0     0.0   144.5     0.2    16.2
+calendar         300.1   290.4   211.5    78.9   129.9   127.9 |   363.6   478.1   216.9     0.0   140.5     0.2    16.2
+weather          303.3   293.6   214.7    78.9   131.9   129.9 |   369.4   478.1   220.1     0.0   142.5     0.2    16.3
+collapse         310.1   300.4   221.4    78.9   135.9   133.9 |   379.7   478.1   226.8     0.0   146.5     0.2    16.3
+settings         349.6   339.9   260.6    79.3   246.8   244.8 |   530.5   532.0   267.6     0.1   257.3     0.4    16.3
+closed           356.1   346.4   267.0    79.3   218.0   216.0 |   508.8   534.8   272.4     0.1   228.5     0.4    16.3
+locked           396.2   373.6   281.2    79.5   218.0   216.0 |   548.2   548.8   286.6     0.1   254.3     0.5    16.3
+unlocked         374.5   364.5   284.4    80.0   220.0   218.0 |   531.6   588.4   289.8     3.9   230.5     0.5    16.3
+```
+
+The unit journal reported `588.4M memory peak`. The lock accepted the password and the full script exited 0. PAM also logged `pam_unix(login:account): setuid failed: Operation not permitted`; the same warning appears in prior `kanade.service` logs, and did not prevent this unlock.
+
+Compared with the 2026-10-13 baseline, Rest RSS is 57 MiB higher, GPU buffers are 25 MiB higher, and the peak after unlock is 133 MiB higher. This run has a second monitor and a blueman tray host, so the setups are not directly comparable. Settings uses 115 MiB more GPU buffers than Rest; 86 MiB remain after closing Settings. Locking adds 40 MiB RSS and no GPU buffers; after unlock, RSS remains 18 MiB above the closed sample.
+
 ## Baseline
 
 2026-10-13, `main` at 51d9f6b, release build, files cached. The same machine and setup as the baselines below (one monitor, no config, calendars, weather location, media player or tray items), NVIDIA 615.78.08. One run, after the Island, Dock and Banners went solid black (ADR 0049) and the image blur path was dropped. Run with `KANADE_FRAMES=1` in the unit, which only prints to a file.
