@@ -8,7 +8,8 @@
 //! nothing matches. With nothing typed it lists sections, a heading over each: the Recents (by
 //! frecency), then Kanade's Commands, the open Windows and the Apps. `Ctrl+K` opens the actions of the
 //! selected answer (`actions`) in the list's place, `Ctrl+1` through `Ctrl+9` press the nth answer, and
-//! `kanade dmenu` opens it on a script's lines alone (`choose`).
+//! `kanade dmenu` opens it on a script's lines alone (`choose`). A query nothing answers offers to
+//! search Google for it or open it in the browser (`web`, ADR 0130).
 
 use std::thread;
 use std::time::Instant;
@@ -49,6 +50,7 @@ mod emoji;
 mod history;
 mod provider;
 mod units;
+pub mod web;
 pub mod windows;
 
 use actions::{Act, Offer, Panel};
@@ -196,6 +198,7 @@ impl Search {
         match action {
             Action::Copy(_) => Some(String::from("Not copied")),
             Action::Paste(_) => Some(String::from("Not copied")),
+            Action::Browse(_) => Some(format!("Not opened: {why}")),
             Action::Open(_) => Some(format!("Not opened: {why}")),
             // `dispatch` worded it, as it knows whether the verb may have run
             Action::Run(_) => Some(why.clone()),
@@ -967,7 +970,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
 
             let titles = windows::titles();
 
-            Found::ranked(provider::ranked(
+            let ranked = provider::ranked(
                 &[
                     &Calculator,
                     &AppsProvider(apps, destinations.wallpapers),
@@ -979,9 +982,24 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
                     &History { entries: &entries },
                 ],
                 query,
-            ))
+            );
+
+            Found::ranked(offered(query, ranked, web::openable))
         },
     )
+}
+
+/*
+ * what a typed query lists: what the providers found, or, when none of them found anything, the
+ * web's two rows. The fallback lives here, off the providers' own list, so a provider can never
+ * answer it and the web can never outrank an answer (ADR 0130). `openable` is asked only when
+ * something is offered, so a query the providers answer reads no PATH
+ */
+fn offered(query: &str, ranked: Vec<Answer>, openable: impl FnOnce() -> bool) -> Vec<Answer> {
+    match ranked.is_empty() {
+        true => web::offers(query, openable()),
+        false => ranked,
+    }
 }
 
 /*
@@ -1031,6 +1049,10 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     } else if !apps.found() && !emoji {
         // read once the Module starts, so only a Launcher opened at once waits
         Box::new(state("Finding apps", ""))
+    } else if let Some((title, detail)) = web::refused(query, web::openable) {
+        // nothing answers it and the browser cannot be opened, so the row says why rather than
+        // offering a search that would do nothing (ADR 0130)
+        Box::new(state(title, &detail))
     } else {
         Box::new(state(
             if emoji {
@@ -1951,6 +1973,7 @@ fn press(monitor: &str, visit: u64, action: Action, query: &str) {
         Action::Copy(text) => copy(text.clone(), done),
         Action::Paste(id) => paste(*id, done),
         Action::Run(verb) => run(verb, done),
+        Action::Browse(address) => browse(address.clone(), done),
         Action::Launch(..)
         | Action::Perform(..)
         | Action::Focus(_)
@@ -2067,6 +2090,33 @@ fn run(
         .map_err(|error| {
             eprintln!("launcher: cannot run {verb:?} ({error})");
             commands::not_run(&error.to_string())
+        })
+}
+
+/*
+ * opens `address` in the default browser through `xdg-open`, by argv with no shell (ADR 0130), off
+ * the view thread as an opener may live as long as the browser it started. The row says it is not
+ * opened if it is not; the query is never logged, here or anywhere (ADR 0019)
+ */
+fn browse(
+    address: String,
+    done: impl FnOnce(Result<(), String>) + Send + 'static,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("launcher-browse".into())
+        .spawn(move || {
+            let browsed = web::browse(&address);
+
+            if let Err(why) = &browsed {
+                eprintln!("launcher: opening the browser: {why}");
+            }
+
+            done(browsed)
+        })
+        .map(drop)
+        .map_err(|error| {
+            eprintln!("launcher: cannot open the browser ({error})");
+            error.to_string()
         })
 }
 
@@ -2513,6 +2563,34 @@ mod tests {
             grouped("    ", Found::default, ranked).answers,
             Vec::new(),
             "a query of spaces is nothing typed"
+        );
+    }
+
+    // the web stands in for the ranking only when the ranking found nothing, so it never outranks
+    // an answer and a provider never offers it (ADR 0130)
+    #[test]
+    fn the_web_is_offered_only_when_nothing_answers() {
+        let files = vec![answer("Files")];
+
+        assert_eq!(
+            offered("nothing matches this", files.clone(), || true),
+            files
+        );
+
+        let web = offered("nothing matches this", Vec::new(), || true);
+        assert_eq!(web.len(), 2, "the search and the address");
+        assert!(
+            web.iter()
+                .all(|answer| matches!(answer.action, Action::Browse(_)))
+        );
+
+        // a query no web row is offered for is still nothing at all
+        assert_eq!(offered("x", Vec::new(), || true), Vec::new());
+
+        // without the opener there is no row to press, and the state under the field says why
+        assert_eq!(
+            offered("nothing matches this", Vec::new(), || false),
+            Vec::new()
         );
     }
 }

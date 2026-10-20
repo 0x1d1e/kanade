@@ -873,10 +873,16 @@ notifications dnd on until <HH:MM>
         requires: &[CORE],
         optional: &["wallpaper", "windows"],
         warns: None,
-        needs: &[Need {
-            on: Provider::Program(clipboard::COPY),
-            without: "no copying a calculator value or an emoji",
-        }],
+        needs: &[
+            Need {
+                on: Provider::Program(clipboard::COPY),
+                without: "no copying a calculator value or an emoji",
+            },
+            Need {
+                on: Provider::Program(surfaces::launcher::web::OPEN),
+                without: "no web search, and no address opened in the browser",
+            },
+        ],
         settings: config::LAUNCHER,
         hooks: Hooks::NONE,
         verbs: &[

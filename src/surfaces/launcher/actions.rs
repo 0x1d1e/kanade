@@ -85,6 +85,7 @@ fn pressing(answer: &Answer) -> Offer {
         Action::Copy(_) => "Copy",
         Action::Paste(_) => "Paste",
         Action::Choose(_) => "Choose",
+        Action::Browse(_) => "Open in the browser",
     };
 
     Offer {
@@ -115,6 +116,9 @@ fn copied(action: &Action) -> Offer {
         Action::Copy(text) => copies("Copy", text.clone()),
         Action::Paste(_) => cannot("A copied entry has no path or id"),
         Action::Choose(_) => cannot("A choice has no path or id"),
+        // the address is what a web row sends, and it is the query itself, so there is nothing of
+        // the machine to copy out of it
+        Action::Browse(_) => cannot("A web search copies nothing"),
     }
 }
 

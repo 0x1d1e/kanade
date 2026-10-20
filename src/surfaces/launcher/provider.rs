@@ -82,6 +82,12 @@ pub enum Action {
 
     // answers the dmenu waiting with the place of the line chosen
     Choose(usize),
+
+    /*
+     * opens this `https` address with `xdg-open`, by argv with no shell (ADR 0130). The one answer
+     * the Launcher sends what was typed off the machine, so its row says where it goes
+     */
+    Browse(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
