@@ -307,10 +307,10 @@ fn charge(shown: Option<Charge>, now: Reading, at: Thresholds) -> Option<Charge>
     (critical || percent <= at.low || shown.is_some()).then_some(Charge { percent, critical })
 }
 
-// what the critical battery asks of the session Module
+// what the critical battery asks of the session Module, with the percent it reads
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ask {
-    CountDown(Ending),
+    CountDown(Ending, u8),
     Cancel(u64),
 }
 
@@ -349,7 +349,7 @@ impl Guard {
     fn next(
         &mut self,
         draining: bool,
-        critical: bool,
+        critical: Option<Charge>,
         end: Option<Ending>,
         now: Instant,
     ) -> Option<Ask> {
@@ -361,10 +361,11 @@ impl Guard {
         }
 
         let due = self.again.is_none_or(|at| at <= now);
-        let end = end.filter(|_| critical && self.armed && due)?;
+        let charge = critical.filter(|_| self.armed && due)?;
+        let end = end?;
         self.armed = false;
 
-        Some(Ask::CountDown(end))
+        Some(Ask::CountDown(end, charge.percent))
     }
 
     fn started(&mut self, serial: u64) {
@@ -398,14 +399,14 @@ fn ending(action: CriticalAction) -> Option<Ending> {
 fn ask(guard: &mut Guard, ask: Ask) {
     match ask {
         Ask::Cancel(serial) => session::cancel(serial),
-        Ask::CountDown(_) if !modules::on("session") => {
+        Ask::CountDown(_, _) if !modules::on("session") => {
             eprintln!(
                 "kanade: battery: battery.critical_action needs the session Module, which is off"
             );
         }
         // a battery critical as Kanade starts, read before the session thread is
-        Ask::CountDown(_) if !session::started() => guard.retry(),
-        Ask::CountDown(end) => match session::count_down(end) {
+        Ask::CountDown(_, _) if !session::started() => guard.retry(),
+        Ask::CountDown(end, percent) => match session::count_down(end, percent) {
             Ok(serial) => guard.started(serial),
             Err(why) => {
                 eprintln!("kanade: battery: cannot count down, asking again: {why}");
@@ -481,7 +482,7 @@ pub fn follow() {
                 }
             }
 
-            let critical = next.is_some_and(|charge| charge.critical);
+            let critical = next.filter(|charge| charge.critical);
             let end = ending(config::get().battery.critical_action);
 
             if let Some(next) = guard.next(reading.draining, critical, end, Instant::now()) {
@@ -591,22 +592,22 @@ mod tests {
         let now = Instant::now();
         let mut guard = Guard::new();
 
-        assert_eq!(guard.next(true, false, end, now), None);
+        assert_eq!(guard.next(true, None, end, now), None);
         assert_eq!(
-            guard.next(true, true, end, now),
-            Some(Ask::CountDown(Ending::Suspend))
+            guard.next(true, shown(5, true), end, now),
+            Some(Ask::CountDown(Ending::Suspend, 5))
         );
         guard.started(7);
 
         // Cancel, or waking on battery after it ran out, starts no other
-        assert_eq!(guard.next(true, true, end, now), None);
+        assert_eq!(guard.next(true, shown(5, true), end, now), None);
 
         // a charger cancels it and re-arms
-        assert_eq!(guard.next(false, false, end, now), Some(Ask::Cancel(7)));
-        assert_eq!(guard.next(false, false, end, now), None);
+        assert_eq!(guard.next(false, None, end, now), Some(Ask::Cancel(7)));
+        assert_eq!(guard.next(false, None, end, now), None);
         assert_eq!(
-            guard.next(true, true, end, now),
-            Some(Ask::CountDown(Ending::Suspend))
+            guard.next(true, shown(5, true), end, now),
+            Some(Ask::CountDown(Ending::Suspend, 5))
         );
     }
 
@@ -615,10 +616,10 @@ mod tests {
         let now = Instant::now();
         let mut guard = Guard::new();
 
-        assert_eq!(guard.next(true, true, None, now), None);
+        assert_eq!(guard.next(true, shown(5, true), None, now), None);
         assert_eq!(
-            guard.next(true, true, Some(Ending::Hibernate), now),
-            Some(Ask::CountDown(Ending::Hibernate))
+            guard.next(true, shown(5, true), Some(Ending::Hibernate), now),
+            Some(Ask::CountDown(Ending::Hibernate, 5))
         );
     }
 
@@ -631,28 +632,28 @@ mod tests {
         let mut guard = Guard::new();
 
         assert_eq!(
-            guard.next(true, true, end, at(0)),
-            Some(Ask::CountDown(Ending::PowerOff))
+            guard.next(true, shown(5, true), end, at(0)),
+            Some(Ask::CountDown(Ending::PowerOff, 5))
         );
         guard.refused(at(0));
 
-        assert_eq!(guard.next(true, true, end, at(4)), None);
+        assert_eq!(guard.next(true, shown(5, true), end, at(4)), None);
         assert_eq!(
-            guard.next(true, true, end, at(5)),
-            Some(Ask::CountDown(Ending::PowerOff))
+            guard.next(true, shown(5, true), end, at(5)),
+            Some(Ask::CountDown(Ending::PowerOff, 5))
         );
         guard.refused(at(5));
 
         // the wait doubles
-        assert_eq!(guard.next(true, true, end, at(14)), None);
+        assert_eq!(guard.next(true, shown(5, true), end, at(14)), None);
         assert_eq!(
-            guard.next(true, true, end, at(15)),
-            Some(Ask::CountDown(Ending::PowerOff))
+            guard.next(true, shown(5, true), end, at(15)),
+            Some(Ask::CountDown(Ending::PowerOff, 5))
         );
         guard.started(3);
 
         // started, it counts down once as before
-        assert_eq!(guard.next(true, true, end, at(100)), None);
-        assert_eq!(guard.next(false, false, end, at(101)), Some(Ask::Cancel(3)));
+        assert_eq!(guard.next(true, shown(5, true), end, at(100)), None);
+        assert_eq!(guard.next(false, None, end, at(101)), Some(Ask::Cancel(3)));
     }
 }

@@ -7,6 +7,10 @@
 //! is subscribed to, so no change falls between; each change reads the config again. A desktop
 //! with no portal says nothing, and nothing changes. The thread blocks on the signal, so it adds
 //! no idle wakeups of its own.
+//!
+//! Only the portal's own signals count, as anyone on the session bus may send a `SettingChanged`:
+//! the sender must be the unique name that owns `org.freedesktop.portal.Desktop`, asked of the bus
+//! whenever a sender differs so a portal that restarts is followed instead of refused.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,6 +21,8 @@ const DESTINATION: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const SETTINGS: &str = "org.freedesktop.portal.Settings";
 const NAMESPACE: &str = "org.freedesktop.appearance";
+const DBUS: &str = "org.freedesktop.DBus";
+const BUS_PATH: &str = "/org/freedesktop/DBus";
 
 static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
 static CONTRAST: AtomicBool = AtomicBool::new(false);
@@ -47,7 +53,15 @@ pub fn follow() {
         reload::reload();
     }
 
+    // the unique name that owns the portal, asked again whenever a signal comes from another, so a
+    // portal that restarts is followed
+    let mut owner: Option<String> = None;
+
     for signal in signals {
+        if !trusts(&mut owner, signal.sender(), || owner_of(DESTINATION)) {
+            continue;
+        }
+
         let [namespace, key, value] = signal.arguments() else {
             continue;
         };
@@ -75,6 +89,36 @@ fn read() -> Preferences {
     );
 
     Preferences::of(all.get(NAMESPACE))
+}
+
+// the unique name that owns `name` on the session bus, none when nobody owns it or there is no bus
+fn owner_of(name: &str) -> Option<String> {
+    let owner = Bus::session().call(
+        DBUS,
+        BUS_PATH,
+        DBUS,
+        "GetNameOwner",
+        &[Argument::from(name)],
+    );
+    let owner = owner.text();
+
+    (!owner.is_empty()).then(|| owner.to_owned())
+}
+
+/*
+ * whether a signal from `sender` is the one whose name `cached` holds, asking `ask` when it is not:
+ * an empty sender, and a name nobody owns, is never trusted
+ */
+fn trusts(cached: &mut Option<String>, sender: &str, ask: impl FnOnce() -> Option<String>) -> bool {
+    if sender.is_empty() {
+        return false;
+    }
+
+    if cached.as_deref() != Some(sender) {
+        *cached = ask();
+    }
+
+    cached.as_deref() == Some(sender)
 }
 
 // whether it differs from what was stored
@@ -127,6 +171,28 @@ mod tests {
                 .map(|(key, value)| ((*key).to_owned(), value.clone()))
                 .collect::<BTreeMap<_, _>>(),
         )
+    }
+
+    #[test]
+    fn only_the_portals_own_signals_count() {
+        let portal = || Some(String::from(":1.7"));
+        let mut cached = None;
+
+        // the portal's own signal, and the owner asked once for it
+        assert!(trusts(&mut cached, ":1.7", portal));
+        assert_eq!(cached.as_deref(), Some(":1.7"));
+
+        // another sender: the owner is asked again, and a stranger's signal is dropped
+        assert!(!trusts(&mut cached, ":1.9", portal));
+        assert!(trusts(&mut cached, ":1.7", || panic!("not asked again")));
+
+        // a portal that restarted took a new name, and is followed
+        assert!(!trusts(&mut cached, ":1.9", || None));
+        assert!(trusts(&mut cached, ":1.9", || Some(String::from(":1.9"))));
+
+        // no sender at all is never the portal
+        cached = Some(String::from(":1.9"));
+        assert!(!trusts(&mut cached, "", || panic!("not asked for nothing")));
     }
 
     #[test]

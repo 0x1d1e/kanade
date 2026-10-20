@@ -11,7 +11,8 @@ use kanade_runtime::{
 
 use crate::icon::Icon;
 use crate::island::activity::{
-    Action, Activity, Awake, Clip, Detail, Dictation, Hardware, Leave, Leaving, Reminder, Track,
+    Action, Activity, Awake, Cause, Clip, Detail, Dictation, Hardware, Leave, Leaving, Reminder,
+    Track,
 };
 use crate::island::fade::Dissolve;
 use crate::island::geometry::{self, Rect};
@@ -478,6 +479,7 @@ pub(super) fn session(
         Leaving::Counting {
             end,
             countdown,
+            cause,
             serial,
         } => (
             Leave::Ending(*end),
@@ -486,19 +488,25 @@ pub(super) fn session(
                 session::doing(*end),
                 session::left(countdown, now)
             ),
-            "Unless cancelled",
+            match cause {
+                // they asked for it, so the small form keeps its one line as it always said
+                Cause::Asked => String::from("Unless cancelled"),
+
+                // a battery's is the reason it runs at all, so it takes that line
+                Cause::Battery(percent) => format!("Battery at {percent}%"),
+            },
             serial.as_str(),
         ),
         Leaving::Failed { leave, why, serial } => (
             *leave,
             format!("{} failed", surfaces::session::name(*leave)),
-            why.as_str(),
+            why.clone(),
             serial.as_str(),
         ),
         Leaving::Unanswered { leave, serial } => (
             *leave,
             format!("{} may still happen", surfaces::session::name(*leave)),
-            session::NO_ANSWER,
+            String::from(session::NO_ANSWER),
             serial.as_str(),
         ),
     };
@@ -507,7 +515,7 @@ pub(super) fn session(
         presentation,
         (surfaces::session::icon(leave), theme::island().on_surface),
         &title,
-        line,
+        &line,
         Pills {
             actions,
             subject,

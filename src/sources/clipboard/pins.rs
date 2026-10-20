@@ -17,8 +17,10 @@ use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
+use std::time::Duration;
 
 use kanade_runtime::{MutexExt, service::Service};
 
@@ -37,6 +39,9 @@ const HEADER_BYTES: usize = MIME_BYTES + 64;
 
 // the largest file a valid store comes to: the pins' bytes and, for each, its header and newline
 const FILE_BYTES: usize = PIN_BYTES + PINS * (HEADER_BYTES + 1) + HEADER_BYTES;
+
+// how long `flush` waits for the worker to say the file holds the pins
+const FLUSHED: Duration = Duration::from_secs(5);
 
 // what the file on disk allows to be done to it, from how it was read at start
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,36 +342,129 @@ fn saving() -> MutexGuard<'static, Store> {
     SAVING.locked()
 }
 
+// who may be waiting for a save to reach the file
+struct Asked {
+    // hears once the file holds the pins, none for a save nobody waits on
+    done: Option<Sender<()>>,
+}
+
+// the one worker that writes the file, started by the first ask
+static ASKERS: Mutex<Option<Sender<Asked>>> = Mutex::new(None);
+
+fn askers() -> MutexGuard<'static, Option<Sender<Asked>>> {
+    ASKERS.locked()
+}
+
 /*
  * writes the pins as they are when the save gets its turn, off the caller's thread, so a save that
- * runs late never writes an older set. The history is read only to take the pins, and no lock is
- * held across the disk
+ * runs late never writes an older set. One worker takes the asks, so a burst of changes past what
+ * one write carries is one further write, not one write each. The history is read only to take the
+ * pins, and no lock is held across the disk
  */
 pub fn save_soon() {
-    let spawned = thread::Builder::new()
-        .name("clipboard-pins".into())
-        .spawn(|| {
-            let mut store = saving();
+    ask(None);
+}
 
-            if *store == Store::Held {
-                return;
+/*
+ * saves now and waits for the file to hold the pins: for the end of the shell, so a pin made a
+ * moment before it is not lost. A worker that cannot be started writes on this thread instead
+ */
+pub fn flush() {
+    let (done, waited) = mpsc::channel();
+
+    ask(Some(done));
+
+    // the worker keeps the channel open for the whole process, so a worker that panicked would
+    // otherwise wait here for good
+    if waited.recv_timeout(FLUSHED).is_err() {
+        eprintln!("kanade: the clipboard pins may not have been saved");
+    }
+}
+
+fn ask(done: Option<Sender<()>>) {
+    if let Some(asked) = sender() {
+        if let Err(mpsc::SendError(unsent)) = asked.send(Asked { done }) {
+            // the worker is gone, so the pins are written here rather than lost
+            save_now();
+            if let Some(done) = unsent.done {
+                let _ = done.send(());
             }
+        }
 
-            let Some(path) = file() else { return };
+        return;
+    }
 
-            let pins: Vec<Content> = Clipboard::read()
-                .entries()
-                .iter()
-                .filter(|entry| entry.pinned)
-                .map(|entry| entry.content.clone())
-                .collect();
+    // no worker could start: written here, so a pin is never lost for want of a thread
+    save_now();
+}
 
-            if let Err(error) = save(&path, &pins, &mut store) {
+// the worker's ask channel, started the first time one is needed
+fn sender() -> Option<Sender<Asked>> {
+    let mut askers = askers();
+
+    if askers.is_none() {
+        let (send, asked) = mpsc::channel();
+        let started = thread::Builder::new()
+            .name("clipboard-pins".into())
+            .spawn(move || follow(asked));
+
+        match started {
+            Ok(_) => *askers = Some(send),
+            Err(error) => {
                 eprintln!("kanade: cannot save the clipboard pins ({})", error.kind());
+                return None;
             }
-        });
+        }
+    }
 
-    if let Err(error) = spawned {
+    askers.clone()
+}
+
+// every ask until the shell ends, each burst of them one write
+fn follow(asked: Receiver<Asked>) {
+    while let Ok(first) = asked.recv() {
+        let done = batch(first, &asked);
+
+        save_now();
+
+        for done in done {
+            let _ = done.send(());
+        }
+    }
+}
+
+/*
+ * the waiters one write answers: the ask taken and every ask that queued meanwhile, so a burst of
+ * changes costs one write and each waiter hears of the file that holds what it asked for
+ */
+fn batch(first: Asked, asked: &Receiver<Asked>) -> Vec<Sender<()>> {
+    let mut done: Vec<Sender<()>> = first.done.into_iter().collect();
+
+    while let Ok(next) = asked.try_recv() {
+        done.extend(next.done);
+    }
+
+    done
+}
+
+// the pins as they are now to the file, on this thread
+fn save_now() {
+    let mut store = saving();
+
+    if *store == Store::Held {
+        return;
+    }
+
+    let Some(path) = file() else { return };
+
+    let pins: Vec<Content> = Clipboard::read()
+        .entries()
+        .iter()
+        .filter(|entry| entry.pinned)
+        .map(|entry| entry.content.clone())
+        .collect();
+
+    if let Err(error) = save(&path, &pins, &mut store) {
         eprintln!("kanade: cannot save the clipboard pins ({})", error.kind());
     }
 }
@@ -425,6 +523,31 @@ mod tests {
         assert_eq!(bits(path.parent().unwrap()), 0o700);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // a burst of changes is one write, not one ~16 MiB write each, and every waiter hears of it
+    #[test]
+    fn a_burst_of_changes_is_one_batch() {
+        let (send, asked) = mpsc::channel();
+        let (one, waited_one) = mpsc::channel();
+        let (two, waited_two) = mpsc::channel();
+
+        send.send(Asked { done: Some(one) }).unwrap();
+        send.send(Asked { done: None }).unwrap();
+        send.send(Asked { done: Some(two) }).unwrap();
+
+        let done = batch(asked.recv().unwrap(), &asked);
+        assert_eq!(done.len(), 2);
+
+        for waiter in done {
+            waiter.send(()).unwrap();
+        }
+        assert!(waited_one.try_recv().is_ok());
+        assert!(waited_two.try_recv().is_ok());
+
+        // the queue is empty now, so the next ask is a batch of its own
+        send.send(Asked { done: None }).unwrap();
+        assert!(batch(asked.recv().unwrap(), &asked).is_empty());
     }
 
     #[test]

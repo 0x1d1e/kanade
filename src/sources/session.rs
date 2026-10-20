@@ -31,8 +31,8 @@ use zbus::zvariant::ObjectPath;
 use super::capture::SHOWN;
 use crate::hooks::{self, Event};
 use crate::island::activity::{
-    Action, Activity, Countdown, Detail, Ending, Id, Interrupt, Kind, Leave, Leaving, Lifetime,
-    Priority, Scope,
+    Action, Activity, Cause, Countdown, Detail, Ending, Id, Interrupt, Kind, Leave, Leaving,
+    Lifetime, Priority, Scope,
 };
 use crate::island::presentation::Surface;
 use crate::island::service::IslandService;
@@ -147,6 +147,7 @@ impl Pending {
     fn start(
         &mut self,
         end: Ending,
+        cause: Cause,
         now: Instant,
     ) -> Result<(Counting, Option<Counting>), &'static str> {
         if let Some(why) = self.asking.refusal() {
@@ -156,6 +157,7 @@ impl Pending {
 
         let counting = Counting {
             end,
+            cause,
             countdown: Countdown::new(COUNTDOWN, now),
             serial: self.issued,
         };
@@ -299,6 +301,9 @@ pub struct Counting {
     pub end: Ending,
     pub countdown: Countdown,
 
+    // the user's, or a critical battery's at that percent
+    pub cause: Cause,
+
     // which one, so a press meant for one since replaced does nothing
     pub serial: u64,
 }
@@ -347,7 +352,7 @@ pub fn request(leave: Leave) -> Result<String, String> {
             Ok(String::from("suspending; a refusal shows on the island"))
         }
         Leave::Ending(end) => {
-            start(end, Instant::now())?;
+            start(end, Cause::Asked, Instant::now())?;
             Ok(format!(
                 "{} in {} s; cancel on the island or in `kanade session menu`",
                 doing(end).to_lowercase(),
@@ -485,14 +490,14 @@ fn next_tick(countdown: &Countdown, now: Instant) -> Instant {
 
 /*
  * a new countdown, in place of any already counting; refused when no thread would end it, or while
- * logind has not answered the last request
+ * logind has not answered the last request. `cause` says why it runs, which its Surface shows
  */
-fn start(end: Ending, now: Instant) -> Result<u64, String> {
+fn start(end: Ending, cause: Cause, now: Instant) -> Result<u64, String> {
     let started = if wake() {
         let mut pending = pending();
 
         pending
-            .start(end, now)
+            .start(end, cause, now)
             .map(|(counting, replaced)| (counting, replaced, pending.refused.take()))
             .map_err(String::from)
     } else {
@@ -527,10 +532,11 @@ fn start(end: Ending, now: Instant) -> Result<u64, String> {
 
 /*
  * a countdown to `end` asked by Kanade itself, as a critical battery does, from any thread; the
- * serial names it, to cancel it by. A refusal shows on the island too
+ * serial names it, to cancel it by, and `percent` is the battery's, which the countdown names. A
+ * refusal shows on the island too
  */
-pub fn count_down(end: Ending) -> Result<u64, String> {
-    start(end, Instant::now())
+pub fn count_down(end: Ending, percent: u8) -> Result<u64, String> {
+    start(end, Cause::Battery(percent), Instant::now())
 }
 
 fn dismiss(serial: u64) {
@@ -561,6 +567,10 @@ fn end_now(serial: u64) {
 
     // the hook is waited for on the asking thread, never the draw thread a press of Now is on
     let call = move || {
+        // the session ends right after, after a further countdown or at once, so a pin made a
+        // moment before reaches its file
+        super::clipboard::pins::flush();
+
         match counting.end {
             Ending::Restart => hooks::fire_and_wait(Event::Reboot),
             Ending::PowerOff => hooks::fire_and_wait(Event::Poweroff),
@@ -756,6 +766,7 @@ fn activity(counting: Counting) -> Activity {
     .with_detail(Detail::Session(Leaving::Counting {
         end: counting.end,
         countdown: counting.countdown,
+        cause: counting.cause,
         serial: counting.serial.to_string(),
     }))
 }
@@ -902,10 +913,10 @@ mod tests {
         let now = Instant::now();
         let mut pending = Pending::new();
 
-        let (first, replaced) = pending.start(Ending::Restart, now).unwrap();
+        let (first, replaced) = pending.start(Ending::Restart, Cause::Asked, now).unwrap();
         assert_eq!(replaced, None);
 
-        let (second, replaced) = pending.start(Ending::PowerOff, now).unwrap();
+        let (second, replaced) = pending.start(Ending::PowerOff, Cause::Asked, now).unwrap();
         assert_eq!(replaced, Some(first));
 
         // a Cancel or Now meant for the one replaced
@@ -940,16 +951,19 @@ mod tests {
 
         assert_eq!(pending.ask(), Ok(()));
         assert_eq!(pending.ask(), Err(BUSY));
-        assert_eq!(pending.start(Ending::Restart, now), Err(BUSY));
+        assert_eq!(pending.start(Ending::Restart, Cause::Asked, now), Err(BUSY));
 
         pending.answered(false);
-        assert!(pending.start(Ending::Restart, now).is_ok());
+        assert!(pending.start(Ending::Restart, Cause::Asked, now).is_ok());
         assert_eq!(pending.ask(), Ok(()));
 
         // never answered, nothing more is asked
         pending.answered(true);
         assert_eq!(pending.ask(), Err(UNANSWERED));
-        assert_eq!(pending.start(Ending::PowerOff, now), Err(UNANSWERED));
+        assert_eq!(
+            pending.start(Ending::PowerOff, Cause::Asked, now),
+            Err(UNANSWERED)
+        );
     }
 
     // ended and asked at once: nothing starts in between, and one refused is ended all the same
@@ -958,14 +972,17 @@ mod tests {
         let now = Instant::now();
         let mut pending = Pending::new();
 
-        let (first, _) = pending.start(Ending::Restart, now).unwrap();
+        let (first, _) = pending.start(Ending::Restart, Cause::Asked, now).unwrap();
         assert_eq!(pending.end(first.serial), Some((first, Ok(()))));
         assert_eq!(pending.end(first.serial), None);
-        assert_eq!(pending.start(Ending::PowerOff, now), Err(BUSY));
+        assert_eq!(
+            pending.start(Ending::PowerOff, Cause::Asked, now),
+            Err(BUSY)
+        );
         assert_eq!(pending.ask(), Err(BUSY));
 
         pending.answered(false);
-        let (second, _) = pending.start(Ending::PowerOff, now).unwrap();
+        let (second, _) = pending.start(Ending::PowerOff, Cause::Asked, now).unwrap();
         assert_eq!(pending.ask(), Ok(()));
         assert_eq!(pending.end(second.serial), Some((second, Err(BUSY))));
         assert_eq!(pending.counting, None);
@@ -978,6 +995,7 @@ mod tests {
         let counting = |serial| Counting {
             end: Ending::Restart,
             countdown: Countdown::new(COUNTDOWN, now),
+            cause: Cause::Asked,
             serial,
         };
         let mut island = IslandService::new();
@@ -993,6 +1011,32 @@ mod tests {
             island.presentation("eDP-1"),
             Presentation::Expanded(Surface::Session)
         );
+    }
+
+    /*
+     * why a countdown runs is kept with it, so a Surface tells a critical battery's suspend from one
+     * the user asked for; a battery's carries the percent it read
+     */
+    #[test]
+    fn a_countdown_keeps_why_it_runs() {
+        let now = Instant::now();
+        let mut pending = Pending::new();
+
+        let (asked, _) = pending.start(Ending::Restart, Cause::Asked, now).unwrap();
+        assert_eq!(asked.cause, Cause::Asked);
+
+        let (battery, replaced) = pending
+            .start(Ending::Suspend, Cause::Battery(5), now)
+            .unwrap();
+        assert_eq!(replaced.map(|counting| counting.cause), Some(Cause::Asked));
+        assert_eq!(battery.cause, Cause::Battery(5));
+
+        let detail = activity(battery).detail().clone();
+        let Detail::Session(Leaving::Counting { end, cause, .. }) = detail else {
+            panic!("a countdown's Activity holds its countdown");
+        };
+        assert_eq!(end, Ending::Suspend);
+        assert_eq!(cause, Cause::Battery(5));
     }
 
     /*

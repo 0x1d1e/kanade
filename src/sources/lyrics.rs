@@ -518,7 +518,8 @@ impl Cache {
         }
     }
 
-    // expired misses go, then the oldest answers past `CACHE_FILES`
+    // expired misses go, then the oldest answers past `CACHE_FILES`; a `.part` a killed write left
+    // between staging and renaming goes too, by the same rule every write of the cache sweeps with
     fn prune(&self) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
@@ -528,6 +529,12 @@ impl Cache {
 
         for entry in entries.flatten() {
             let path = entry.path();
+
+            if let Some(target) = staged(&path) {
+                atomic::sweep(&target);
+                continue;
+            }
+
             let extension = path.extension().and_then(|extension| extension.to_str());
 
             if !matches!(extension, Some("lrc" | "none")) {
@@ -552,6 +559,22 @@ impl Cache {
             }
         }
     }
+}
+
+/*
+ * the file a staged write in the cache is for: the `.{name}.{pid}.{n}.part` a killed write leaves
+ * between staging and renaming, as `atomic` names it, gives `{name}`. None for anything else
+ */
+fn staged(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let rest = name.strip_prefix('.')?.strip_suffix(".part")?;
+    let (rest, number) = rest.rsplit_once('.')?;
+    let (target, pid) = rest.rsplit_once('.')?;
+
+    let numbered = number.parse::<u64>().is_ok() && pid.parse::<u32>().is_ok();
+    let named = !target.is_empty() && !target.starts_with('.');
+
+    (numbered && named).then(|| path.with_file_name(target))
 }
 
 struct Worker {
@@ -911,6 +934,34 @@ mod tests {
             Some(Cached::Found(String::from("[00:01.00]x")))
         );
         assert!(!dir.join("cache/n.none").exists());
+
+        drop(fs::remove_dir_all(&dir));
+    }
+
+    // a write killed between staging and renaming leaves a hidden part; the next write sweeps it,
+    // along with this one, whose process is gone
+    #[test]
+    fn a_part_of_a_killed_write_does_not_stay_in_the_cache() {
+        let dir = scratch("part");
+        let cache = Cache { dir: dir.clone() };
+
+        // a child, reaped, so its number is certainly not a live process's
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+
+        let gone = dir.join(format!(".n.lrc.{dead}.0.part"));
+        let live = dir.join(format!(".n.lrc.{}.0.part", std::process::id()));
+        let unrelated = dir.join(".not-a-part");
+        for part in [&gone, &live, &unrelated] {
+            fs::write(part, b"half a file").unwrap();
+        }
+
+        cache.write("n", &Cached::Found(String::from("[00:01.00]x")));
+
+        assert!(!gone.exists(), "the dead process's part is swept");
+        assert!(live.exists(), "this process's own part is left alone");
+        assert!(unrelated.exists(), "a name that is no part is left alone");
 
         drop(fs::remove_dir_all(&dir));
     }

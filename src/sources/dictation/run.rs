@@ -593,9 +593,10 @@ impl Tools for Programs {
  * does `chosen`; the tool failing is not the end of the text, which is copied then. `again` decides
  * afresh, and is asked just before the keys are sent: a window that took the focus, or a lock, while
  * the clipboard was set gets the copy, and none (the dictation was cancelled) gets nothing more. What
- * is typed or pasted is the text as one line without control characters (`insert::typed`), so a
- * terminal is never given a line break or an escape. Returns what was done. Neither the text nor
- * what the tools print goes in an error
+ * is typed is the text as one line without control characters (`insert::typed`), so a terminal is
+ * never given a line break or an escape; a paste copies the text as it was said, since the target's
+ * bracketed paste is what makes its line breaks safe and a copy may be read in an editor. Returns
+ * what was done. Neither the text nor what the tools print goes in an error
  */
 fn perform(
     tools: &impl Tools,
@@ -620,9 +621,9 @@ fn perform(
             },
         },
         Insert::Paste => {
-            // the clipboard holds what Ctrl+V would paste, so it is the one-line text too; marked
-            // sensitive either way. The chord is what may fail or be held back
-            let done = copy(&insert::typed(text), Reason::ToolFailed)?;
+            // the clipboard holds what Ctrl+V pastes, marked sensitive; the chord is what may fail
+            // or be held back, and the copy already made is then the answer
+            let done = copy(text, Reason::ToolFailed)?;
 
             match again() {
                 None => cancelled(),
@@ -874,8 +875,9 @@ mod tests {
 
     const WILD: &str = "ls\nrm -rf x\u{1b}[2J\u{3}";
 
+    // the clipboard gets the text as it was said, line breaks and all, as a copy anywhere else does
     #[test]
-    fn a_paste_puts_one_line_without_controls_on_the_clipboard() {
+    fn a_paste_copies_the_text_as_it_was_said() {
         let fake = Fake::default();
 
         let done = perform(&fake, WILD, Insert::Paste, || Some(Insert::Paste));
@@ -883,7 +885,7 @@ mod tests {
         assert_eq!(done, Ok(Insert::Paste));
         assert_eq!(
             *fake.done.borrow(),
-            ["copy true \"ls rm -rf x [2J\"", "chord"]
+            [format!("copy true {WILD:?}"), String::from("chord")]
         );
     }
 

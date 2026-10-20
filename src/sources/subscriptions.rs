@@ -261,6 +261,27 @@ fn file_name(url: &str) -> String {
     format!("{hex}.ics")
 }
 
+/*
+ * how far past `now` a feed's first fetch waits: a feed with a copy from a run before is spread
+ * over the interval by a digest of its address, so a start or an interval change does not ask every
+ * feed at once and the hosts do not see a burst. A feed never fetched waits for nothing
+ */
+fn jitter(url: &str, kept: bool, interval: Duration) -> Duration {
+    if !kept {
+        return Duration::ZERO;
+    }
+
+    let hash = digest::digest(&digest::SHA256, url.as_bytes());
+    let mut bytes = [0u8; 8];
+
+    bytes.copy_from_slice(&hash.as_ref()[..8]);
+
+    let at = (u64::from_be_bytes(bytes) >> 11) as f64 / (1_u64 << 53) as f64;
+    let spread = interval.mul_f64(at);
+
+    spread.min(interval)
+}
+
 // what a feed said last, to ask again only for a change
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Validators {
@@ -392,7 +413,7 @@ impl Worker {
 
             if !same {
                 entry.backoff = Backoff::new(RETRY, interval);
-                entry.due = now;
+                entry.due = now + jitter(url, entry.text.is_some(), interval);
             }
 
             self.entries.push(entry);
@@ -417,10 +438,10 @@ impl Worker {
                 kept: text.is_some(),
                 ..Feed::default()
             },
-            text,
             validators: Validators::default(),
             backoff: Backoff::new(RETRY, self.interval),
-            due: now,
+            due: now + jitter(url, text.is_some(), self.interval),
+            text,
         }
     }
 
@@ -735,6 +756,30 @@ mod tests {
             name,
             file_name("https://example.org/secret-token/other.ics")
         );
+    }
+
+    // a start asks each feed with a copy at its own moment across the interval, not all at once;
+    // one never fetched is asked at once, so a new subscription shows soon
+    #[test]
+    fn a_feed_known_from_before_is_asked_at_its_own_moment() {
+        let interval = Duration::from_secs(3600);
+        let urls = [
+            "https://a.example.org/feed.ics",
+            "https://b.example.org/feed.ics",
+            "https://c.example.org/feed.ics",
+        ];
+
+        let spread: Vec<Duration> = urls.iter().map(|url| jitter(url, true, interval)).collect();
+
+        assert!(spread.iter().all(|spread| *spread <= interval));
+        assert!(spread.iter().any(|spread| *spread > Duration::ZERO));
+        assert_ne!(spread[0], spread[1]);
+
+        // the same feed waits at the same moment each start, so a restart does not reshuffle them
+        assert_eq!(jitter(urls[0], true, interval), spread[0]);
+
+        // never fetched: at once, whatever the address
+        assert_eq!(jitter(urls[0], false, interval), Duration::ZERO);
     }
 
     // a good answer is mirrored under a hashed name; a later failure keeps that copy on disk, and

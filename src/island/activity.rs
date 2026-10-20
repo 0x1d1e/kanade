@@ -574,16 +574,27 @@ pub enum Ending {
     Hibernate,
 }
 
+/*
+ * why a countdown runs: the user asked for it, from the Session Surface or `kanade session`, or a
+ * critical battery at that percent did, so its Surface tells an automatic ending from an asked one
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    Asked,
+    Battery(u8),
+}
+
 // an Ending counting down, or one asked that did not happen or may yet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Leaving {
     /*
      * asked of logind once `countdown` runs out; `serial` names this countdown, so a stale Cancel
-     * never cancels a newer one
+     * never cancels a newer one, and `cause` says why it runs
      */
     Counting {
         end: Ending,
         countdown: Countdown,
+        cause: Cause,
         serial: String,
     },
 

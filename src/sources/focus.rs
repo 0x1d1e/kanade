@@ -149,16 +149,25 @@ pub fn toggle() {
     }
 }
 
-// "off", or "on" with the pieces it turned on
+/*
+ * "off", or "on" with the pieces it turned on. A piece the user changed since, or that ended on
+ * its own, is not Focus's any more, so it is not listed
+ */
 pub fn status() -> String {
     let Some(held) = *HELD.locked() else {
         return String::from("off");
     };
     let how = if held.auto { " (screen cast)" } else { "" };
     let pieces: Vec<&str> = [
-        (held.dnd.is_some(), "do not disturb"),
-        (held.caffeine.is_some(), "caffeine"),
-        (held.night_light.is_some(), "night light"),
+        (
+            turns_off(held.dnd, Some(notifications::dnd_revision())),
+            "do not disturb",
+        ),
+        (turns_off(held.caffeine, caffeine::newest()), "caffeine"),
+        (
+            turns_off(held.night_light, Some(night_light::revision())),
+            "night light",
+        ),
     ]
     .into_iter()
     .filter_map(|(turned, name)| turned.then_some(name))
@@ -264,7 +273,15 @@ fn engage(problems: &mut Vec<String>) -> Held {
     if modules::on("night-light") && turns_on(wanted.night_light, light_off) {
         match night_light::turn(true) {
             Ok(()) => held.night_light = Some(night_light::revision()),
-            Err(why) => problems.push(format!("night light: {why}")),
+            Err(why) => {
+                // the setting may have been saved and only the reload failed, so it is Focus's to
+                // turn off again; the mode still off it never turned on, and is not
+                if config::get().night_light.mode != NightMode::Off {
+                    held.night_light = Some(night_light::revision());
+                }
+
+                problems.push(format!("night light: {why}"));
+            }
         }
     }
 

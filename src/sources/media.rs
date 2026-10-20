@@ -652,11 +652,11 @@ fn lyric(player: &Player, now: Instant) -> (Option<String>, Option<Instant>) {
 
     let shown = lyrics::line(&wanted, player.timeline.position(now));
 
-    // no new line comes while paused or stopped, and a moving timeline gets there at its rate
+    // no new line comes while paused or stopped, and a moving timeline gets there at its rate;
+    // a rate near zero would overflow the moment, so no line waits that far
     let next = shown
         .until
-        .zip((player.timeline.rate > 0.0).then_some(player.timeline.rate))
-        .map(|(until, rate)| now + until.div_f64(rate));
+        .and_then(|until| playback::until(now, until, player.timeline.rate));
 
     (shown.text, next)
 }

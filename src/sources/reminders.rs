@@ -201,7 +201,7 @@ pub fn plan(candidates: &[Candidate], fired: &Fired, lead: Option<i64>, now: i64
     let mut due: BTreeMap<String, Due> = BTreeMap::new();
 
     for candidate in candidates {
-        let occurrence = format!("{}|{}", candidate.event, candidate.start);
+        let occurrence = occurrence(&candidate.event, candidate.start);
 
         for lead in leads(candidate, lead) {
             let key = format!("{occurrence}|{}", lead.key);
@@ -467,13 +467,20 @@ struct Shown {
     // when it goes on its own
     until: i64,
 
-    // the titles a MORE stands for
-    of: Vec<String>,
+    // the reminders a MORE stands for
+    of: Vec<Of>,
 
     // the meeting it joins, none for a MORE
     link: Option<String>,
 
     said: Option<Reminder>,
+}
+
+// a reminder a MORE stands for: its occurrence, and what it is
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Of {
+    occurrence: String,
+    title: String,
 }
 
 // the monitor's state, kept across a restart of its loop
@@ -591,13 +598,8 @@ impl Monitor {
                 .map(|due| (due.to + LATE).min(now + HELD).max(now + LATE))
                 .max()
                 .unwrap_or(now + LATE);
-            let mut of: Vec<String> = self
-                .shown
-                .iter()
-                .find(|shown| shown.key == MORE)
-                .map(|shown| shown.of.clone())
-                .unwrap_or_default();
-            of.extend(more.iter().map(|due| due.title.clone()));
+
+            let of = stands(self.more(), &self.present(), &more);
 
             self.shown.retain(|shown| shown.key != MORE);
             self.shown.push(Shown {
@@ -610,6 +612,18 @@ impl Monitor {
                 link: None,
                 said: None,
             });
+        } else if self.shown.iter().any(|shown| shown.key == MORE) {
+            // a MORE kept past the batch that made it: one of its events deleted since drops from
+            // it, so neither a count nor a title grows for good
+            let present = self.present();
+            let of = stands(self.more(), &present, &[]);
+
+            if of.is_empty() {
+                withdraw(MORE);
+                self.shown.retain(|shown| shown.key != MORE);
+            } else if let Some(shown) = self.shown.iter_mut().find(|shown| shown.key == MORE) {
+                shown.of = of;
+            }
         }
 
         // gone on their own
@@ -655,6 +669,23 @@ impl Monitor {
         next
     }
 
+    // what a MORE stands for, none while none shows
+    fn more(&self) -> Vec<Of> {
+        self.shown
+            .iter()
+            .find(|shown| shown.key == MORE)
+            .map(|shown| shown.of.clone())
+            .unwrap_or_default()
+    }
+
+    // the occurrences the calendars hold now, as `plan` keys them
+    fn present(&self) -> Vec<String> {
+        self.candidates
+            .iter()
+            .map(|candidate| occurrence(candidate.event.as_str(), candidate.start))
+            .collect()
+    }
+
     fn hear(&mut self, event: Event) {
         match event {
             Event::Changed | Event::Timer => {}
@@ -685,6 +716,31 @@ impl Monitor {
             !goes
         });
     }
+}
+
+// what a MORE stands for: those it stood for whose occurrence the calendars still hold, and the
+// ones due past AT_ONCE now, once each; both in the order they came, so a count never grows for good
+fn stands(before: Vec<Of>, present: &[String], more: &[&Due]) -> Vec<Of> {
+    let mut of: Vec<Of> = before
+        .into_iter()
+        .filter(|of| present.contains(&of.occurrence))
+        .collect();
+
+    for due in more {
+        if !of.iter().any(|of| of.occurrence == due.occurrence) {
+            of.push(Of {
+                occurrence: due.occurrence.clone(),
+                title: due.title.clone(),
+            });
+        }
+    }
+
+    of
+}
+
+// an occurrence as `plan` keys it
+fn occurrence(event: &str, start: i64) -> String {
+    format!("{event}|{start}")
 }
 
 // the planner's reading of an occurrence; its event by a digest of its UID, which the file keeps
@@ -779,7 +835,12 @@ fn reads(shown: &Shown, now: i64) -> Reminder {
             } else {
                 format!("{count} more reminders")
             },
-            when: shown.of.join(", "),
+            when: shown
+                .of
+                .iter()
+                .map(|of| of.title.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             short: format!("+{count}"),
         };
     }
@@ -1062,6 +1123,45 @@ mod tests {
         assert_eq!(plan.show[0].title, "event 0");
         assert_eq!(plan.more.len(), 2);
         assert_eq!(plan.record.len(), 5);
+    }
+
+    // a MORE that only ever appends would grow for good and keep the title of an event deleted
+    #[test]
+    fn a_more_stands_for_what_the_calendars_still_hold_once_each() {
+        let of = |occurrence: &str, title: &str| Of {
+            occurrence: occurrence.into(),
+            title: title.into(),
+        };
+
+        let before = vec![of("gone|1", "Gone"), of("kept|2", "Kept")];
+        let present = vec![String::from("kept|2")];
+        let due = |event: &str, start: i64| Due {
+            occurrence: super::occurrence(event, start),
+            title: event.into(),
+            to: start,
+            ends: false,
+            due: NOW,
+            link: None,
+        };
+        let (a, b) = (due("a", NOW), due("b", NOW + MINUTE));
+
+        // an event the calendars no longer hold drops, and a due now joins once, never twice
+        let stood = stands(before, &present, &[&a, &b, &a]);
+        assert_eq!(
+            stood,
+            [
+                of("kept|2", "Kept"),
+                of(&a.occurrence, "a"),
+                of(&b.occurrence, "b"),
+            ]
+        );
+
+        // asked again with the same calendar, it neither grows nor loses one
+        let present: Vec<String> = ["kept|2", a.occurrence.as_str(), b.occurrence.as_str()]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(stands(stood.clone(), &present, &[&a, &b]), stood);
     }
 
     #[test]

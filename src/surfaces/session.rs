@@ -10,7 +10,7 @@ use kanade_runtime::{Key, Rectangle, children};
 
 use super::pad::{self, Focus};
 use crate::icon::Icon;
-use crate::island::activity::{Ending, Leave};
+use crate::island::activity::{Cause, Ending, Leave};
 use crate::island::presentation::Surface;
 use crate::modules;
 use crate::sources::session::warning;
@@ -104,13 +104,17 @@ fn tiles(ring: Option<At>) -> Rectangle {
     pad::tiles(row)
 }
 
-// what is left, then Cancel and Now along the bottom
+// what is left, why it runs, then what it would lose, with Cancel and Now along the bottom
 fn countdown(counting: &Counting, ring: Option<At>) -> impl kanade_runtime::Widget + use<> {
     let left = session::left(&counting.countdown, Instant::now());
+    let mut notes = cause(counting.cause);
+
+    // the cause leads, since it says why the countdown runs at all, and what would be lost follows
+    notes.extend(warning::lines(counting.serial));
     let said = pad::noted(
         icon(Leave::Ending(counting.end)),
         format!("{} in {left} s", session::doing(counting.end)),
-        warning::lines(counting.serial),
+        notes,
     );
 
     let (cancel, now) = (At::Cancel(*counting), At::Now(*counting));
@@ -128,6 +132,17 @@ fn countdown(counting: &Counting, ring: Option<At>) -> impl kanade_runtime::Widg
     ]);
 
     pad::stacked(said, pills)
+}
+
+/*
+ * why the countdown runs, as its own note, empty for one the user asked: they know, and the notes
+ * are room the warnings need. A critical battery's is always said, at whatever percent it read
+ */
+fn cause(cause: Cause) -> Vec<String> {
+    match cause {
+        Cause::Asked => Vec::new(),
+        Cause::Battery(percent) => vec![format!("Battery at {percent}%")],
+    }
 }
 
 pub fn icon(leave: Leave) -> Icon {
@@ -251,6 +266,7 @@ mod tests {
         Counting {
             end: Ending::Restart,
             countdown: Countdown::new(Duration::from_secs(30), Instant::now()),
+            cause: Cause::Asked,
             serial,
         }
     }
