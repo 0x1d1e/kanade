@@ -204,6 +204,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 - [ ] Dictation's `paste` fallback copies the one-line `typed(text)`, so a multi-line dictation loses its line breaks on the fallback path.
 - [ ] A recording stopped just before the session locks can capture audio until the recorder exits (at most the 3 s kill timeout); documented in ADR 0111.
+- [ ] Launcher decayed frecency (ADR 0127) keeps up to 300 items and 20 learned queries each; not verified live on an all-day session.
 
 ## Live actions (ADR 0110, review, low-level, unfixed)
 

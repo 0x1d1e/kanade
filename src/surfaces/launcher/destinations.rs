@@ -6,8 +6,10 @@
  * is done in the Surface they open
  */
 
+use crate::clock;
 use crate::icon::Icon;
 use crate::settings;
+use crate::sources::recents;
 
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
 use super::{emoji, history};
@@ -33,6 +35,28 @@ pub enum Destination {
 
     // Settings, on the page of this name
     Settings(&'static str),
+}
+
+impl Destination {
+    // the name its launches are kept under (`sources::recents`), which is the destination's
+    pub fn name(&self) -> &'static str {
+        match self {
+            Destination::Wifi => "wifi",
+            Destination::Bluetooth => "bluetooth",
+            Destination::Notifications => "notifications",
+            Destination::Controls => "controls",
+            Destination::Weather => "weather",
+            Destination::Tray => "tray",
+            Destination::Session => "session",
+            Destination::Timer => "timer",
+            Destination::Capture => "capture",
+            Destination::Clipboard => "clipboard",
+            Destination::Calendar => "calendar",
+            Destination::Wallpapers => "wallpapers",
+            Destination::Keys => "keys",
+            Destination::Settings(page) => page,
+        }
+    }
 }
 
 // which destinations exist now: their Module is on and, for a radio, the machine has one
@@ -77,6 +101,7 @@ impl LauncherProvider for Destinations {
         }
 
         let query = query.to_lowercase();
+        let now = clock::unix_seconds();
         let mut answers = Vec::new();
 
         let tiles = [
@@ -186,22 +211,38 @@ impl LauncherProvider for Destinations {
             ),
         ];
 
-        for (offered, icon, title, detail, names, destination) in tiles {
-            let fit = names
-                .iter()
-                .filter_map(|name| provider::fit(&query, name))
-                .min();
+        let mut found: Vec<(u8, f64, Answer)> = Vec::new();
 
-            if let Some(fit) = fit.filter(|_| offered) {
-                answers.push(Answer {
-                    fit,
-                    title: title.to_owned(),
-                    detail: detail.to_owned(),
-                    mark: Mark::Icon(icon),
-                    action: Action::Open(destination),
-                });
+        recents::with(|usage| {
+            for (offered, icon, title, detail, names, destination) in tiles {
+                let fit = names
+                    .iter()
+                    .filter_map(|name| provider::fit(&query, name))
+                    .min();
+
+                let Some(fit) = fit.filter(|_| offered) else {
+                    continue;
+                };
+
+                let key = recents::destination(destination.name());
+
+                found.push((
+                    usage.learned(&key, &query, now),
+                    usage.score(&key, now),
+                    Answer {
+                        fit,
+                        title: title.to_owned(),
+                        detail: detail.to_owned(),
+                        mark: Mark::Icon(icon),
+                        action: Action::Open(destination),
+                    },
+                ));
             }
-        }
+        });
+
+        // stable, so the rest stay in the order of the tiles
+        found.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.total_cmp(&left.1)));
+        answers.extend(found.into_iter().map(|(.., answer)| answer));
 
         if self.settings {
             answers.extend(pages(&query));

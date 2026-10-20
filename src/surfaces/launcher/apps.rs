@@ -1,5 +1,6 @@
 // the apps `sources::apps` lists, as a Launcher provider; pressing one starts it
 
+use crate::clock;
 use crate::sources::apps::App;
 use crate::sources::recents::{self, Usage};
 
@@ -11,17 +12,20 @@ pub struct Apps<'a>(pub &'a [App], pub bool);
 
 impl LauncherProvider for Apps<'_> {
     fn find(&self, query: &str) -> Vec<Answer> {
-        recents::with(|usage| self.found(query, usage))
+        let now = clock::unix_seconds();
+
+        recents::with(|usage| self.found(query, usage, now))
     }
 }
 
 impl Apps<'_> {
     /*
-     * by name within a fit, the more started first, since the list is sorted so; an empty query
-     * finds every app, those started last before the rest. A count orders only apps that fit alike,
-     * so it never lifts an app over a better fit
+     * by name within a fit, the higher score first, since the list is sorted so; an empty query
+     * finds every app, the highest scores before the rest. A query that started an app before
+     * lifts it again while it is remembered. The score orders only apps that fit alike, so it never
+     * lifts one over a better fit
      */
-    fn found(&self, query: &str, usage: &Usage) -> Vec<Answer> {
+    fn found(&self, query: &str, usage: &Usage, now: i64) -> Vec<Answer> {
         // an emoji search or the Wallpapers destination, which no app answers
         if query.starts_with(emoji::PREFIX)
             || query.starts_with(history::PREFIX)
@@ -32,14 +36,14 @@ impl Apps<'_> {
 
         let query = query.to_lowercase();
 
-        // with nothing typed, the apps started lately come first, newest first
+        // with nothing typed, the apps with the highest scores come first
         let recent = if query.is_empty() {
-            usage.recent()
+            usage.recent(now)
         } else {
             Vec::new()
         };
 
-        let mut answers: Vec<(usize, u32, Answer)> = self
+        let mut answers: Vec<(u8, usize, f64, Answer)> = self
             .0
             .iter()
             .filter_map(|app| {
@@ -49,18 +53,26 @@ impl Apps<'_> {
                     app.description.as_deref().unwrap_or_default(),
                     app.command(),
                 )?;
-                let place = recent.iter().position(|id| *id == app.id);
+                let key = recents::app(&app.id);
+                let place = recent.iter().position(|recent| *recent == key.as_str());
 
                 Some((
+                    usage.learned(&key, &query, now),
                     place.unwrap_or(usize::MAX),
-                    usage.count(&app.id),
+                    usage.score(&key, now),
                     answer(app, place.map_or(fit, |_| Fit::Recent)),
                 ))
             })
             .collect();
 
         // stable, so the rest stay by name
-        answers.sort_by_key(|&(place, count, _)| (place, std::cmp::Reverse(count)));
+        answers.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then(left.1.cmp(&right.1))
+                .then(right.2.total_cmp(&left.2))
+        });
 
         answers.into_iter().map(|(.., answer)| answer).collect()
     }
@@ -116,7 +128,9 @@ pub struct Actions<'a>(pub &'a [App], pub bool);
 
 impl LauncherProvider for Actions<'_> {
     fn find(&self, query: &str) -> Vec<Answer> {
-        recents::with(|usage| self.found(query, usage))
+        let now = clock::unix_seconds();
+
+        recents::with(|usage| self.found(query, usage, now))
     }
 }
 
@@ -124,9 +138,9 @@ impl Actions<'_> {
     /*
      * an action's name by `provider::fit`, else every word in the app's name and its own; none
      * for an empty or short query, which lists apps, nor for what other providers answer. The
-     * more started its app, the sooner within a fit
+     * higher its app's score, the sooner within a fit
      */
-    fn found(&self, query: &str, usage: &Usage) -> Vec<Answer> {
+    fn found(&self, query: &str, usage: &Usage, now: i64) -> Vec<Answer> {
         if !self.1
             || query.chars().count() < FROM
             || query.starts_with(emoji::PREFIX)
@@ -136,7 +150,7 @@ impl Actions<'_> {
         }
 
         let query = query.to_lowercase();
-        let mut answers: Vec<(u32, Answer)> = Vec::new();
+        let mut answers: Vec<(f64, Answer)> = Vec::new();
 
         for app in self.0 {
             for action in &app.actions {
@@ -153,7 +167,7 @@ impl Actions<'_> {
                 };
 
                 answers.push((
-                    usage.count(&app.id),
+                    usage.score(&recents::app(&app.id), now),
                     Answer {
                         fit,
                         title: action.name.clone(),
@@ -170,7 +184,7 @@ impl Actions<'_> {
         }
 
         // stable, so the rest stay by app name
-        answers.sort_by_key(|&(count, _)| std::cmp::Reverse(count));
+        answers.sort_by(|left, right| right.0.total_cmp(&left.0));
 
         answers.into_iter().map(|(_, answer)| answer).collect()
     }
@@ -207,19 +221,20 @@ mod tests {
     }
 
     // usage orders apps that fit a query alike and never lifts one over a better fit; with
-    // nothing typed the apps started lately come first
+    // nothing typed the higher scores come first, and they fade as the score halves
     #[test]
     fn usage_never_outranks_a_better_fit() {
         let apps = [app("Files"), app("Profiles"), app("Filezilla")];
         let mut usage = Usage::default();
+        let now = clock::unix_seconds();
 
         for _ in 0..5 {
-            usage.start("Profiles.desktop");
+            usage.start(&recents::app("Profiles.desktop"), "", now);
         }
-        usage.start("Filezilla.desktop");
+        usage.start(&recents::app("Filezilla.desktop"), "", now);
 
-        let names = |query| {
-            let mut found = Apps(&apps, false).found(query, &usage);
+        let names = |usage: &Usage, query: &str, now: i64| {
+            let mut found = Apps(&apps, false).found(query, usage, now);
 
             // as `provider::ranked` orders, stable
             found.sort_by_key(|answer| answer.fit);
@@ -229,8 +244,18 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        assert_eq!(names("files"), ["Files", "Profiles"]);
-        assert_eq!(names("file"), ["Filezilla", "Files", "Profiles"]);
-        assert_eq!(names(""), ["Filezilla", "Profiles", "Files"]);
+        assert_eq!(names(&usage, "files", now), ["Files", "Profiles"]);
+        assert_eq!(
+            names(&usage, "file", now),
+            ["Filezilla", "Files", "Profiles"]
+        );
+
+        // five starts beat one, and a start a month later beats those five
+        assert_eq!(names(&usage, "", now), ["Profiles", "Filezilla", "Files"]);
+
+        let later = now + 30 * 86_400;
+        usage.start(&recents::app("Filezilla.desktop"), "", later);
+
+        assert_eq!(names(&usage, "", later), ["Filezilla", "Profiles", "Files"]);
     }
 }

@@ -9,10 +9,11 @@
 use std::time::Duration;
 
 use crate::cli::{self, Call, Reply};
+use crate::clock;
 use crate::icon::Icon;
 use crate::island::activity::Leave;
 use crate::lock;
-use crate::sources::{live, recording};
+use crate::sources::{live, recents, recording};
 
 use super::destinations::WALLPAPER;
 use super::provider::{self, Action, Answer, Fit, LauncherProvider, Mark};
@@ -290,7 +291,10 @@ impl Commands {
 }
 
 impl LauncherProvider for Commands {
-    // by name within a fit; nothing for a query of one letter or none, nor for `:`, `>` or `@`
+    /*
+     * by name within a fit; nothing for a query of one letter or none, nor for `:`, `>` or `@`. A
+     * query that ran a verb before lifts it again while it is remembered, then the higher score
+     */
     fn find(&self, query: &str) -> Vec<Answer> {
         if query.chars().count() < FROM
             || query.starts_with(emoji::PREFIX)
@@ -301,30 +305,43 @@ impl LauncherProvider for Commands {
         }
 
         let query = query.to_lowercase();
+        let now = clock::unix_seconds();
 
-        TABLE
-            .iter()
-            .filter(|command| self.offers(command.gate) && self.suits(command.verb))
-            .filter_map(|command| {
-                let title = command.title.to_lowercase();
-                let fit = command
-                    .aliases
-                    .iter()
-                    .copied()
-                    .chain([title.as_str()])
-                    .filter_map(|name| provider::fit(&query, name))
-                    .min()?;
+        recents::with(|usage| {
+            let mut answers: Vec<(u8, f64, Answer)> = TABLE
+                .iter()
+                .filter(|command| self.offers(command.gate) && self.suits(command.verb))
+                .filter_map(|command| {
+                    let title = command.title.to_lowercase();
+                    let fit = command
+                        .aliases
+                        .iter()
+                        .copied()
+                        .chain([title.as_str()])
+                        .filter_map(|name| provider::fit(&query, name))
+                        .min()?;
+                    let key = recents::command(command.verb);
 
-                Some(Answer {
-                    // never over an app or a destination of the name
-                    fit: fit.max(BEST),
-                    title: command.title.to_owned(),
-                    detail: command.detail.to_owned(),
-                    mark: Mark::Icon(command.icon),
-                    action: Action::Run(command.verb),
+                    Some((
+                        usage.learned(&key, &query, now),
+                        usage.score(&key, now),
+                        Answer {
+                            // never over an app or a destination of the name
+                            fit: fit.max(BEST),
+                            title: command.title.to_owned(),
+                            detail: command.detail.to_owned(),
+                            mark: Mark::Icon(command.icon),
+                            action: Action::Run(command.verb),
+                        },
+                    ))
                 })
-            })
-            .collect()
+                .collect();
+
+            // stable, so the rest stay in the table's order
+            answers.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.total_cmp(&left.1)));
+
+            answers.into_iter().map(|(.., answer)| answer).collect()
+        })
     }
 }
 

@@ -1028,6 +1028,7 @@ fn row(
 
     let monitor = monitor.to_owned();
     let action = answer.action.clone();
+    let query = Search::read().of(visit).query;
 
     row.identity(&answer.action)
         .semantics(|| {
@@ -1036,7 +1037,7 @@ fn row(
                 .selected(selected)
         })
         .on_click(super::on_left(move || {
-            press(&monitor, visit, action.clone());
+            press(&monitor, visit, action.clone(), &query);
         }))
 }
 
@@ -1098,6 +1099,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     let selected = found
         .get(search.selected)
         .map(|answer| answer.action.clone());
+    let query = search.query.clone();
 
     // a failed press is said until the next key
     if matches!(search.pressing, Pressing::Failed(..)) {
@@ -1109,7 +1111,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
     IslandService::write().attend(monitor, Instant::now());
 
     if presses && let Some(action) = selected {
-        press(monitor, visit, action);
+        press(monitor, visit, action, &query);
     }
 
     true
@@ -1119,7 +1121,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
  * what starts, is copied or set is in the way of nothing, so the island closes; a copy, a wallpaper
  * or a verb once it is done. One of those at a time
  */
-fn press(monitor: &str, visit: u64, action: Action) {
+fn press(monitor: &str, visit: u64, action: Action, query: &str) {
     if let Action::Choose(index) = action {
         choose::chosen(visit, index);
         view::collapse(monitor);
@@ -1140,7 +1142,7 @@ fn press(monitor: &str, visit: u64, action: Action) {
         let monitor = monitor.to_owned();
         let action_for_result = action.clone();
 
-        sources::recents::used(id);
+        sources::recents::used(&sources::recents::app(id), query);
 
         // off the view thread, as niri's or the bus's answer may take its patience
         thread::spawn(move || {
@@ -1168,11 +1170,14 @@ fn press(monitor: &str, visit: u64, action: Action) {
         return;
     }
 
-    if let Action::Run(verb) = &action
-        && commands::clears_island(verb)
-    {
-        run_cleared(monitor, verb);
-        return;
+    if let Action::Run(verb) = &action {
+        // counted before it runs, as an app is: a verb that may have run was still asked for
+        sources::recents::used(&sources::recents::command(verb), query);
+
+        if commands::clears_island(verb) {
+            run_cleared(monitor, verb);
+            return;
+        }
     }
 
     if let Action::Perform(launch, id, action_name) = &action {
@@ -1189,7 +1194,7 @@ fn press(monitor: &str, visit: u64, action: Action) {
         let monitor = monitor.to_owned();
         let action_for_result = action.clone();
 
-        sources::recents::used(id);
+        sources::recents::used(&sources::recents::app(id), query);
 
         // off the view thread, as the bus's or niri's answer may take its patience
         thread::spawn(move || {
@@ -1205,9 +1210,14 @@ fn press(monitor: &str, visit: u64, action: Action) {
 
     // the island changes Surface, so this is no copy to wait on
     if let Action::Open(destination) = &action {
+        let key = sources::recents::destination(destination.name());
+
         if let Err(why) = open(monitor, destination) {
             Search::write().open_refused(visit, action, why);
+        } else {
+            sources::recents::used(&key, query);
         }
+
         return;
     }
 
