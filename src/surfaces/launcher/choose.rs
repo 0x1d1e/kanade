@@ -346,6 +346,28 @@ mod tests {
         assert_eq!(Asked::parse(&words), None);
     }
 
+    // a fresh dmenu has an empty query; it must still list every line, or Enter chooses nothing
+    #[test]
+    fn an_empty_query_finds_every_line() {
+        let lines = ["one", "two", "three"];
+        let choices: Vec<Choice> = lines
+            .iter()
+            .map(|line| Choice {
+                shown: (*line).to_owned(),
+                lower: (*line).to_owned(),
+            })
+            .collect();
+
+        let found = Choices(&choices).find("");
+
+        assert_eq!(found.len(), lines.len());
+        for (index, answer) in found.iter().enumerate() {
+            assert_eq!(answer.title, lines[index]);
+            assert_eq!(answer.action, Action::Choose(index));
+            assert_eq!(answer.fit, provider::Fit::Prefix);
+        }
+    }
+
     #[test]
     fn a_line_shows_as_plain_text() {
         assert_eq!(shown("a\tb\r\u{1b}[1m", LONGEST), "a b  [1m");

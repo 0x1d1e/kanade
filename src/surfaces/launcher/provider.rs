@@ -198,7 +198,8 @@ fn match_score(query: &str, name: &str) -> Option<i32> {
         let mut current = vec![None::<i32>; name.len()];
 
         // the best score at a column already passed, so a jump over two or more characters
-        // starts from the best of them, not only from two columns back
+        // starts from the best of them, not only from two columns back. A jump costs one point
+        // however far it skips, not one per character skipped: `fx` in `Firefox` scores 5
         let mut passed: Option<i32> = None;
         for (column, &(name_char, camel)) in name.iter().enumerate() {
             let adjacent = column.checked_sub(1).and_then(|before| previous[before]);
@@ -251,6 +252,12 @@ pub fn fit(query: &str, name: &str) -> Option<Fit> {
         return Some(Fit::Exact);
     }
 
+    // an empty query finds every name, and finds it as a prefix; it never goes through the score,
+    // so no threshold can admit or reject it
+    if query.is_empty() {
+        return Some(Fit::Prefix);
+    }
+
     match_score(&query, name)?;
 
     if name_lowered.starts_with(&query) {
@@ -295,7 +302,10 @@ mod tests {
 
     #[test]
     fn fuzzy_match_empty_and_non_ascii_inputs() {
-        assert_eq!(fit("", "Firefox"), None);
+        // an empty query finds every name, as it did before the score: the name is the query when
+        // both are empty, else it starts with it
+        assert_eq!(fit("", "Firefox"), Some(Fit::Prefix));
+        assert_eq!(fit("", ""), Some(Fit::Exact));
         assert_eq!(fit("fir", ""), None);
         assert_eq!(fit("cafe", "Café"), Some(Fit::Within));
         assert_eq!(fit("火", "火狐"), Some(Fit::Prefix));
