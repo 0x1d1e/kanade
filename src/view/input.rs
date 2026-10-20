@@ -136,6 +136,12 @@ pub fn key(monitor: &str, key: Key) {
         return;
     }
 
+    // the Launcher's actions are a level of it, so Escape closes them for the list, as a
+    // sub-surface's Escape goes back rather than collapsing the island (`CONTEXT.md` Sub-surface)
+    if modules::on("launcher") && surfaces::launcher::key(monitor, key) {
+        return;
+    }
+
     if key == Key::Escape {
         if surfaces::welcome::key(monitor, key) {
             return;
@@ -148,7 +154,6 @@ pub fn key(monitor: &str, key: Key) {
     } else {
         let used = (modules::on("notification-surface")
             && surfaces::notifications::key(monitor, key))
-            || (modules::on("launcher") && surfaces::launcher::key(monitor, key))
             || (modules::on("clipboard-surface") && surfaces::clipboard::key(monitor, key))
             || (modules::on("wallpaper-surface") && surfaces::wallpapers::key(monitor, key))
             || (modules::on("keys-surface") && surfaces::keys::key(monitor, key));
