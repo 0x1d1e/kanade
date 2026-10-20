@@ -42,8 +42,8 @@ Not worth changing, by this review:
 - [x] `sources/json.rs` is `serde_json::Value` with `parse`, `array` and `quote`; the hand-rolled parser is gone.
 - [x] `sources/mirror.rs` is the calendar-sync file mirror for Google; `clock::unix_seconds` replaces four copies.
 - [x] A Service's panic reaches `kanade status` (`service::on_panic`, set by `supervise::follow_services`); the restart delay is one constant.
-- [ ] About 80 comment blocks run over four lines (worst: `shadow.rs:1`, `dock.rs:1344`, `view/mod.rs:729`, `calendar.rs:1087`). Each states real constraints, so cut them one by one, not in bulk.
-- [ ] ADR 0003 still says "std-only JSON parser"; history, left as written.
+- [ ] 501 comment blocks run over four lines (worst: `sources/recording/encode.rs:244`, `sources/recording/plan.rs:302`, `surfaces/launcher/calculator.rs:1`, `shadow.rs:1`, `dock.rs:1342`). Each states real constraints, so cut them one by one, not in bulk. The earlier citations of `view/mod.rs:729` and `calendar.rs:1087` were wrong: the first is inside `#[cfg(test)]`, the second is a `.padding(..)` call.
+- [x] ADR 0003 still says "std-only JSON parser"; history, left as written.
 
 ## Architecture (whole-codebase review, third)
 
@@ -57,7 +57,8 @@ Not worth changing, by this review:
 - Not taken: a shared remote-sync loop for Google and weather. Only the three-way `recv` / `recv_timeout` wait is common; what a timeout means, the due test and the message set differ, so a helper would need as many parameters as it saves lines.
 - Not taken: a `Target` table for the appearance adapters' `apply` and `disable`; their sequencing differs per target (Zen's marker block, GTK's restore state).
 - [x] `Image::blurred`, the loader's blur key and `graphics/image/soften.rs` are gone (no caller after ADR 0049).
-- [ ] Dead after ADR 0049: `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
+- [x] Dead after ADR 0049: `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
+  - Premise no longer holds: ADR 0057's Blur made the pane translucent again (`pane::BLUR_FILL`), so the cut is live. Keep it.
 - [ ] A plain (unmerged) pane needs no shader: a `Rectangle` fill would drop the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
 - [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
 
@@ -96,11 +97,13 @@ Not worth changing, by this review:
 ## Panes (glass removed, ADR 0049)
 
 - [x] The magnified Dock no longer reaches a Banner: `dock::strip` includes the grown icons (ADR 0030).
-- [ ] A write of any Service but `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
+- [x] A write of any Service but `Pointers` redraws every window that read it: see Invalidation under Architecture (only `IslandService` is per output, and it is not safe to scope in one pass).
+  - Duplicate of the Invalidation item above; this one is the cross-reference.
 
 ## Island sizes (ADR 0030)
 
-- [ ] A side-edge Banner's window is full height.
+- [x] A side-edge Banner's window is full height.
+  - `banners/mod.rs:315` already sets `monitor.height as f32` when `hang.sideways()`.
 - [ ] An upright Compact drops titles to the app's tile; a rotated, book-spine title could keep them.
 - [ ] An upright Rest and Compact have one length each (`geometry::rest`, `compact`), so a form that needs less (the timer) or more (a Rest with the battery) is padded or tight; the shape could take the primary Activity's Kind and the Rest's battery setting.
 - [ ] A body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two.
@@ -115,9 +118,11 @@ Not worth changing, by this review:
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
 - [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons).
 - [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; it does not reserve space while autohiding.
-- [ ] A non-liquid union has no border.
+- [x] A non-liquid union has no border.
+  - Describes a removed finish: `look::Finish` has no liquid variant, and the union's rim comes from `pane.wgsl:69-71`.
 - [ ] Fold has no dots for running apps at rest and no keyboard focus hold; its Tray and hover Peek need a right click.
-- [ ] Overview and fullscreen use the existing covered path only.
+- [x] Overview and fullscreen use the existing covered path only.
+  - A statement of an accepted limitation (`view/covered.rs:17-21`), not open work.
 
 ## Idle Island
 
