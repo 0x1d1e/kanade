@@ -90,12 +90,18 @@ fn offset_of(form: Merge, extent: &dock::Extent) -> f32 {
     }
 }
 
+/*
+ * how far past its body at rest what hangs from the Island stands, clear of the Dock: its strip's
+ * reach from the edge, and its icons grown under the pointer past the strip, to where the merged
+ * window ends (`among`); not BOUNCE, which is the room a Dock's own slide keeps and a merged one
+ * does not
+ */
 fn clearance_of(form: Merge, extent: &dock::Extent) -> f32 {
     match form {
         Merge::Keystone | Merge::Fold => {
             let (island, strip) = depths(extent);
 
-            (strip + extent.strip - (island + TOP + geometry::REST.height)).max(0.0)
+            (strip + extent.strip + extent.rise - (island + TOP + geometry::REST.height)).max(0.0)
         }
         Merge::Crown | Merge::Off => 0.0,
     }
@@ -337,13 +343,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shell_edge_offset_accounts_for_top_and_bottom_canvas_insets() {
-        let canvas = Canvas {
-            width: 500.0,
-            height: 500.0,
-        };
-        let extent = dock::Extent {
+    // a Dock whose plate stands well in from the edge, its icons growing out of it
+    fn extent(rise: f32) -> dock::Extent {
+        dock::Extent {
             width: 300.0,
             height: 50.0,
             depth: 54.0,
@@ -352,8 +354,17 @@ mod tests {
             before: 0.0,
             after: 0.0,
             swell: 0.0,
-            rise: 0.0,
+            rise,
+        }
+    }
+
+    #[test]
+    fn shell_edge_offset_accounts_for_top_and_bottom_canvas_insets() {
+        let canvas = Canvas {
+            width: 500.0,
+            height: 500.0,
         };
+        let extent = extent(0.0);
 
         for edge in [Edge::Top, Edge::Bottom] {
             let shell = arrange(
@@ -384,6 +395,24 @@ mod tests {
     fn combined_stays_joined_when_the_island_hides() {
         assert!(joined_visible(ShellMode::Combined, true));
         assert!(joined_visible(ShellMode::Combined, false));
+    }
+
+    /*
+     * what hangs from the Island clears the Dock as far out as it reaches, which is past its strip
+     * as far as its icons grow: a Banner under a magnified Dock's grown icons would stand on them
+     */
+    #[test]
+    fn clearance_reaches_past_the_icons_grown() {
+        let plain = extent(0.0);
+        let grown = extent(56.0);
+
+        for form in [Merge::Keystone, Merge::Fold] {
+            assert_eq!(
+                clearance_of(form, &grown) - clearance_of(form, &plain),
+                grown.rise,
+                "{form:?}"
+            );
+        }
     }
 
     #[test]
