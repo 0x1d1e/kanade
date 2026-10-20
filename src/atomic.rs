@@ -71,6 +71,61 @@ impl Drop for Staged {
     }
 }
 
+/// Removes the `.<name>.<pid>.<n>.part` files beside `path` whose process is gone: what a write
+/// killed between staging and renaming leaves. A live process's part is left alone, as is this one's.
+pub fn sweep(path: &Path) {
+    let Some(name) = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let ours = process::id();
+
+    for entry in entries.flatten() {
+        let part = entry.file_name().to_string_lossy().into_owned();
+
+        // `.{name}.{pid}.{n}.part`, and nothing else
+        let Some(rest) = part
+            .strip_prefix(&format!(".{name}."))
+            .and_then(|rest| rest.strip_suffix(".part"))
+        else {
+            continue;
+        };
+        let mut fields = rest.split('.');
+        let (Some(pid), Some(number), None) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(_)) = (pid.parse::<u32>(), number.parse::<u64>()) else {
+            continue;
+        };
+
+        if pid != ours && !alive(pid) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+// whether a process of that number exists: 0 and the negatives name no process, so a part named
+// with one is not this sweep's to remove
+fn alive(pid: u32) -> bool {
+    let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    else {
+        return true;
+    };
+
+    // signal 0: only the lookup, which fails when no such process exists
+    rustix::process::test_kill_process(pid).is_ok()
+}
+
 fn stage_with(
     path: &Path,
     bytes: &[u8],
@@ -94,6 +149,10 @@ fn stage_with(
     if let Mode::Private | Mode::Exactly(_) = mode {
         options.mode(0o600);
     }
+
+    // a part left by a crash whose process is gone is swept here, so one signal does not leave
+    // the directory with a hidden file in it for good
+    sweep(path);
 
     // hidden and unique, so it is never read as the file and two writers never share one; a part
     // left by a crash under a reused pid is stepped over, not taken over or deleted
@@ -158,6 +217,36 @@ mod tests {
         // the directory is the file, so the rename fails and the part is removed
         assert!(write(&dir.join("state"), b"x", Mode::Shared).is_err());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_part_of_a_process_that_is_gone_is_swept_and_one_of_a_live_one_is_kept() {
+        let dir = env::temp_dir().join(format!("kanade-atomic-sweep-{}", process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // a child, reaped, so its number is certainly not a live process's
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+
+        let gone = dir.join(format!(".file.{dead}.0.part"));
+        let live = dir.join(format!(".file.{}.0.part", process::id()));
+        let other = dir.join(".file.0.0.part");
+        let mine = dir.join(".another.0.0.part");
+        for part in [&gone, &live, &other, &mine] {
+            fs::write(part, b"part").unwrap();
+        }
+
+        write(&dir.join("file"), b"new", Mode::Shared).unwrap();
+
+        assert!(!gone.exists(), "the dead process's part is swept");
+        assert!(live.exists(), "a live process's part is left alone");
+        assert!(other.exists(), "a name that is not a pid is left alone");
+        assert!(mine.exists(), "another file's part is left alone");
+        assert_eq!(fs::read(dir.join("file")).unwrap(), b"new");
 
         let _ = fs::remove_dir_all(&dir);
     }

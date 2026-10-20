@@ -317,6 +317,103 @@ fn undo_works_only_while_the_file_is_as_the_change_left_it() {
 }
 
 #[test]
+fn undo_only_refuses_a_change_made_after_the_pages_own() {
+    let dir = Dir::new("undo-only", CONFIG);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+
+    // the page's change, with its hash
+    let page = editor(&dir, &validate);
+
+    page.set("layout.gaps", "12").unwrap();
+
+    let ours = page.last_change_hash().unwrap();
+
+    assert_eq!(
+        ours,
+        Ring::new(&dir.state(), &dir.config()).last().unwrap().after
+    );
+
+    // then a change from the command line, over the same state, which becomes the ring's newest
+    let cli = editor(&dir, &validate);
+
+    cli.set("layout.gaps", "20").unwrap();
+
+    let after_cli = dir.text();
+
+    assert_ne!(cli.last_change_hash().unwrap(), ours);
+
+    // the page's undo would put back what the CLI changed, so it refuses and the file stands
+    let why = page.undo_only(Some(&ours)).unwrap_err();
+
+    assert!(why.contains("not this page's change"), "{why}");
+    assert_eq!(dir.text(), after_cli);
+
+    // while the CLI's own undo, with no hash to hold it, still undoes the CLI's change
+    cli.undo().unwrap();
+
+    assert_eq!(dir.text(), CONFIG.replace("gaps 4", "gaps 12"));
+}
+
+#[test]
+fn a_bare_node_says_it_is_on_and_not_nothing() {
+    let dir = Dir::new("bare", CONFIG);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+    let id = OutputId::named("DP-1");
+
+    // on, a bare node: the message says what the file holds, not an empty value
+    let said = editor
+        .set_output(
+            &id,
+            "variable-refresh-rate",
+            output_value("variable-refresh-rate", "").unwrap(),
+        )
+        .unwrap();
+
+    assert!(!said.contains("=  ("), "{said}");
+    assert!(said.contains("= true (was unset)"), "{said}");
+
+    // set again, nothing changes, and the message still has no gap
+    let said = editor
+        .set_output(
+            &id,
+            "variable-refresh-rate",
+            output_value("variable-refresh-rate", "").unwrap(),
+        )
+        .unwrap();
+
+    assert!(!said.contains("  "), "{said}");
+    assert!(said.contains("is true already"), "{said}");
+
+    // and off, removed: what was there is the bare node
+    let said = editor.remove_output(&id, "variable-refresh-rate").unwrap();
+
+    assert!(said.contains("(was true)"), "{said}");
+}
+
+#[test]
+fn a_change_niri_reads_only_at_a_start_says_so() {
+    let dir = Dir::new("restart", CONFIG);
+    let seen = RefCell::new(Vec::new());
+    let validate = fake(&seen);
+    let editor = editor(&dir, &validate);
+
+    let said = editor
+        .set("environment.QT_QPA_PLATFORMTHEME", "qt6ct")
+        .unwrap();
+
+    assert!(said.contains("when it starts"), "{said}");
+    assert!(said.contains("restart"), "{said}");
+
+    // a path niri reads as it goes says nothing of a restart
+    let said = editor.set("layout.gaps", "12").unwrap();
+
+    assert!(!said.contains("restart"), "{said}");
+}
+
+#[test]
 fn backups_list_and_restore_through_the_same_checks() {
     let dir = Dir::new("restore", "layout {\n    gaps 1\n}\n");
     let seen = RefCell::new(Vec::new());

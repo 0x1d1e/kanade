@@ -171,6 +171,14 @@ impl Value {
         }
     }
 
+    /// As `get` shows it, for a message: a node with no entry at all is the bare node, `true`.
+    pub fn shown(&self) -> String {
+        match self {
+            Value::Props(props) if props.is_empty() => String::from("true"),
+            value => value.v1(),
+        }
+    }
+
     fn of(value: &KdlValue) -> Option<Value> {
         match value {
             KdlValue::Bool(value) => Some(Value::Bool(*value)),
@@ -332,6 +340,15 @@ pub fn segments(path: &str) -> Result<Vec<&str>, String> {
     Ok(segments)
 }
 
+/// Whether `char` is a bidirectional control character (Unicode Bidi_Control), which could make a
+/// name read as another one: it is refused wherever a name is written or typed.
+pub fn bidi(char: char) -> bool {
+    matches!(
+        char,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 // a name Kanade writes bare
 fn writable_name(name: &str) -> bool {
     name.chars()
@@ -360,6 +377,9 @@ struct Leaf {
     arguments: Vec<Range<usize>>,
     values: Vec<KdlValue>,
     props: Vec<(String, KdlValue)>,
+
+    // where each entry sits, arguments and properties in file order
+    entries: Vec<Range<usize>>,
 
     // where the last entry (argument or property) ends
     entries_end: Option<usize>,
@@ -396,6 +416,11 @@ impl Leaf {
                 .iter()
                 .filter_map(|entry| Some((entry.name()?.value().to_owned(), entry.value().clone())))
                 .collect(),
+            entries: node
+                .entries()
+                .iter()
+                .map(|entry| span!(entry.span()))
+                .collect(),
             entries_end: node
                 .entries()
                 .iter()
@@ -426,6 +451,16 @@ impl Leaf {
             .collect::<Vec<_>>()
             .join(" ")
     }
+
+    // the node's properties, each from its name to the end of its value, for a change that keeps
+    // the spacing and the comments around it: an argument is no property
+    fn prop_spans(&self) -> Vec<Range<usize>> {
+        self.entries
+            .iter()
+            .filter(|entry| !self.arguments.iter().any(|argument| argument == *entry))
+            .cloned()
+            .collect()
+    }
 }
 
 // a block, or the file, that the rest of a path can be made in
@@ -439,6 +474,10 @@ enum Parent {
         inner: Range<usize>,
         // the indent of its first child, when that stands first on its line
         child_indent: Option<String>,
+        // the one its own line has
+        indent: String,
+        // what its indent adds to its parent's, when it adds anything: this block's own step
+        step: Option<String>,
     },
 }
 
@@ -533,9 +572,18 @@ fn search(
             children,
             inner.clone(),
             Parent::Block {
-                node: span,
+                node: span.clone(),
                 inner,
-                child_indent: first,
+                child_indent: first.clone(),
+                indent: indent_at(text, span.start).to_owned(),
+                step: first.and_then(|child| {
+                    let outer = indent_at(text, span.start);
+
+                    child
+                        .strip_prefix(outer)
+                        .filter(|step| !step.is_empty())
+                        .map(str::to_owned)
+                }),
             },
             segments,
             pick,
@@ -929,6 +977,12 @@ fn indent_at(text: &str, at: usize) -> &str {
     &text[line..line + blanks]
 }
 
+// `outer` with one more level under it: the step its own children take, or the file's, so a file
+// mixing tabs and spaces gets no indent of either kind in the middle of the other
+fn deeper(outer: &str, step: &str) -> String {
+    format!("{outer}{step}")
+}
+
 // what one level of nesting is in this file, from the first block that has a child on its own line
 fn unit(text: &str, document: &KdlDocument) -> String {
     for node in document.nodes() {
@@ -1035,10 +1089,14 @@ fn create(
 
             if let Some(sync) = sync {
                 let at = span!(sync.span()).start;
-                let spaced = text[..at].ends_with("\n\n") || text[..at].ends_with("\n\r\n");
-                let lead = if spaced || at == 0 { "" } else { eol };
+                // the include's own line, which may be indented, and the blank line before it
+                let line = text[..at].rfind('\n').map_or(0, |end| end + 1);
+                let blanks = &text[line..at];
+                let before = if blanks.trim().is_empty() { line } else { at };
+                let spaced = text[..before].ends_with("\n\n") || text[..before].ends_with("\n\r\n");
+                let lead = if spaced || before == 0 { "" } else { eol };
 
-                return Ok((at..at, format!("{lead}{body}{eol}")));
+                return Ok((before..before, format!("{lead}{body}{eol}")));
             }
 
             let lead = if text.is_empty() || text.ends_with("\n\n") || text.ends_with("\n\r\n") {
@@ -1055,6 +1113,8 @@ fn create(
             node,
             inner,
             child_indent,
+            indent: outer,
+            step,
         } => {
             let close = node.end.saturating_sub(1);
 
@@ -1066,18 +1126,17 @@ fn create(
 
             let line = text[..close].rfind('\n').map_or(0, |end| end + 1);
             let own_line = line > node.start && text[line..close].trim().is_empty();
-            let outer = indent_at(text, node.start);
+            // the step its own children take, else the file's
+            let step = step.as_deref().unwrap_or(&unit);
 
             if own_line {
-                let indent = child_indent
-                    .clone()
-                    .unwrap_or_else(|| format!("{outer}{unit}"));
+                let indent = child_indent.clone().unwrap_or_else(|| deeper(outer, step));
 
                 return Ok((line..line, chain(missing, leaf, &indent, &unit, eol)));
             }
 
             if text[inner.clone()].trim().is_empty() {
-                let indent = format!("{outer}{unit}");
+                let indent = deeper(outer, step);
                 let body = chain(missing, leaf, &indent, &unit, eol);
 
                 return Ok((inner.clone(), format!("{eol}{body}{outer}")));
@@ -1246,6 +1305,16 @@ pub fn apply_in(
         return Err(String::from("output: a block needs a name"));
     }
 
+    if let Block::New(name) = block
+        && let Some(char) = name.chars().find(|&char| bidi(char))
+    {
+        return Err(format!(
+            "output: the name holds U+{:04X}, a bidirectional control character that could make it \
+             read as another monitor's; not written",
+            char as u32
+        ));
+    }
+
     let mut segments = vec!["output"];
 
     segments.extend_from_slice(below);
@@ -1401,14 +1470,7 @@ fn apply_at(
                         return Ok(None);
                     }
 
-                    let end = leaf.entries_end.unwrap_or(leaf.name_end);
-                    let with = if props.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" {}", value.v1())
-                    };
-
-                    vec![(leaf.name_end..end, with)]
+                    props_splice(text, leaf, props)
                 }
                 (_, Value::Props(_)) => {
                     return Err(format!(
@@ -1501,15 +1563,87 @@ fn apply_at(
     Ok(Some(format!("{bom}{edited}")))
 }
 
-// whether a node's properties are these, in this order
+// The splices that give a node with no argument the properties `want`: each property the node
+// already has is spliced where it stands, and one it lacks is added at the end, so the file's own
+// order, the blanks and the comments between the entries stay byte for byte (`x=0   y=0` becomes
+// `x=1   y=2`); a property dropped goes with the blanks before it and no comment of another.
+fn props_splice(text: &str, leaf: &Leaf, want: &[(String, Value)]) -> Vec<Splice> {
+    let end = leaf.entries_end.unwrap_or(leaf.name_end);
+
+    if want.is_empty() {
+        return vec![(leaf.name_end..end, String::new())];
+    }
+
+    let spans = leaf.prop_spans();
+
+    if leaf.props.is_empty() || spans.len() != leaf.props.len() {
+        return vec![(
+            leaf.name_end..end,
+            format!(" {}", Value::Props(want.to_vec()).v1()),
+        )];
+    }
+
+    let mut splices = Vec::new();
+    let mut last = leaf.name_end;
+
+    for ((name, _), span) in leaf.props.iter().zip(&spans) {
+        match want.iter().find(|(wanted, _)| wanted == name) {
+            Some((_, value)) => {
+                let written = format!("{name}={}", value.v1());
+
+                if text[span.clone()] != written {
+                    splices.push((span.clone(), written));
+                }
+            }
+            // the blanks after it, or the ones before it when a comment stands in between, and
+            // nothing else
+            None => {
+                let after = &text[span.end..];
+                let trailing = after.len() - after.trim_start_matches([' ', '\t']).len();
+                let before = &text[last..span.start];
+                let (from, to) = if trailing > 0 {
+                    (span.start, span.end + trailing)
+                } else if before.chars().all(|char| matches!(char, ' ' | '\t')) {
+                    (span.start - before.len(), span.end)
+                } else {
+                    (span.start, span.end)
+                };
+
+                splices.push((from..to, String::new()));
+            }
+        }
+
+        last = span.end;
+    }
+
+    let added: Vec<(String, Value)> = want
+        .iter()
+        .filter(|(wanted, _)| !leaf.props.iter().any(|(name, _)| name == wanted))
+        .cloned()
+        .collect();
+
+    if !added.is_empty() {
+        let at = splices
+            .iter()
+            .map(|(range, _)| range.start)
+            .min()
+            .map_or(end, |first| first.min(end));
+
+        splices.push((at..at, format!(" {}", Value::Props(added).v1())));
+    }
+
+    splices
+}
+
+// whether a node's properties are these, in any order: KDL property names are unique, so their
+// order says nothing and a change keeps the file's own
 fn props_are(have: &[(String, KdlValue)], want: &[(String, Value)]) -> bool {
     have.len() == want.len()
-        && have
-            .iter()
-            .zip(want)
-            .all(|((name, value), (want_name, want_value))| {
+        && want.iter().all(|(want_name, want_value)| {
+            have.iter().any(|(name, value)| {
                 name == want_name && Value::of(value).as_ref() == Some(want_value)
             })
+        })
 }
 
 #[cfg(test)]
@@ -1637,6 +1771,39 @@ mod tests {
         assert_eq!(
             edited,
             "layout {\n    gaps 4\n}\n\nprefer-no-csd\n\ninclude optional=true \"kanade.kdl\" // Kanade appearance sync\n"
+        );
+    }
+
+    #[test]
+    fn a_new_node_before_an_indented_include_takes_its_line_and_no_whitespace_of_its_own() {
+        let text = "layout {\n    gaps 4\n}\n\n  include optional=true \"kanade.kdl\"\n";
+        let edited = set(text, "prefer-no-csd", "true").unwrap().unwrap();
+
+        // no line holding only blanks, and the include keeps the indent it had
+        assert_eq!(
+            edited,
+            "layout {\n    gaps 4\n}\n\nprefer-no-csd\n\n  include optional=true \"kanade.kdl\"\n"
+        );
+
+        // taking the node away again leaves the include where it was, with the blank line before
+        // it that the insert made
+        assert_eq!(
+            unset(&edited, "prefer-no-csd").unwrap().unwrap(),
+            "layout {\n    gaps 4\n}\n\n\n  include optional=true \"kanade.kdl\"\n"
+        );
+    }
+
+    #[test]
+    fn a_file_mixing_tabs_and_spaces_gets_its_own_step_under_a_block() {
+        // the block's own step is a tab, though the file's first step is four spaces
+        let text = "layout {\n    gaps 4\n    focus-ring {\n    \twidth 3\n    }\n}\n";
+        let edited = set(text, "layout.focus-ring.active-color", "red")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            edited,
+            "layout {\n    gaps 4\n    focus-ring {\n    \twidth 3\n    \tactive-color \"red\"\n    }\n}\n"
         );
     }
 
@@ -2057,6 +2224,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_name_that_could_read_as_another_is_refused() {
+        // U+202E reverses what follows it, so a name could show as another monitor's
+        for (char, code) in [
+            ('\u{061c}', "U+061C"),
+            ('\u{200e}', "U+200E"),
+            ('\u{200f}', "U+200F"),
+            ('\u{202a}', "U+202A"),
+            ('\u{202e}', "U+202E"),
+            ('\u{2066}', "U+2066"),
+            ('\u{2069}', "U+2069"),
+        ] {
+            let name = format!("DP-1{char}eviled");
+            let refused = in_block("", &Block::New(name.clone()), "scale", "2").unwrap_err();
+
+            assert!(refused.contains(code), "{code}: {refused}");
+            assert!(refused.contains("bidirectional"), "{code}: {refused}");
+        }
+
+        // and a name with none of them is written as it always was
+        assert!(in_block("", &Block::New("DP-1".into()), "scale", "2").is_ok());
+    }
+
     fn props(text: &str) -> Value {
         Value::parse_props(text).unwrap()
     }
@@ -2068,6 +2258,48 @@ mod tests {
             &segments(below).unwrap(),
             &Op::Set(value),
         )
+    }
+
+    #[test]
+    fn a_property_change_keeps_the_spacing_and_comments_between_the_others() {
+        let text = "output \"DP-1\" {\n    position   x=0   y=0   // left\n    scale 2\n}\n";
+
+        let moved = put(text, 0, "position", props("x=-1920 y=0"))
+            .unwrap()
+            .unwrap();
+
+        // x is spliced where it was; y is the same and stays byte for byte
+        assert_eq!(
+            moved,
+            "output \"DP-1\" {\n    position   x=-1920   y=0   // left\n    scale 2\n}\n"
+        );
+
+        // a comment between two properties stays when both change
+        let commented = "output \"DP-1\" {\n    position x=0 /* here */ y=0\n}\n";
+        let both = put(commented, 0, "position", props("x=1 y=2"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            both,
+            "output \"DP-1\" {\n    position x=1 /* here */ y=2\n}\n"
+        );
+
+        // and the file's own order is kept, as KDL property names are unique
+        let ordered = "output \"DP-1\" {\n    position y=0 x=0\n}\n";
+        let kept = put(ordered, 0, "position", props("x=1 y=2"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(kept, "output \"DP-1\" {\n    position y=2 x=1\n}\n");
+        assert_eq!(block_hit(&kept, 0, "position").as_deref(), Some("y=2 x=1"));
+
+        // a property dropped goes with the blanks before it and nothing else
+        let dropped = put(&both, 0, "position", props("y=2")).unwrap().unwrap();
+        assert_eq!(
+            dropped,
+            "output \"DP-1\" {\n    position /* here */ y=2\n}\n"
+        );
     }
 
     #[test]
