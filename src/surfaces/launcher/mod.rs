@@ -5,7 +5,9 @@
 //! keys move the selection, Enter presses the selected answer and a click the one clicked. An app
 //! starts and the island closes; a value or an emoji is copied, and the island
 //! closes once it is, or says it was not; a command (`commands`, Kanade's own verbs) runs through the socket and closes the island once answered, or says `Not run`. It says when the apps are still being found and when
-//! nothing matches. `kanade dmenu` opens it on a script's lines alone (`choose`).
+//! nothing matches. With nothing typed it lists sections, a heading over each: the Recents (by
+//! frecency), then Kanade's Commands, the open Windows and the Apps. `kanade dmenu` opens it on a
+//! script's lines alone (`choose`).
 
 use std::thread;
 use std::time::Instant;
@@ -13,7 +15,7 @@ use std::time::Instant;
 use kanade_runtime::service::{self, Service};
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Center, Column, Cursor, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Size, Stack,
+    Center, Column, Cursor, End, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Size, Stack,
     Start, Text, Widget, children,
 };
 
@@ -54,7 +56,7 @@ use commands::{Commands, Rec};
 use destinations::{Destination, Destinations};
 use emoji::Emoji;
 use history::History;
-use provider::{Action, Answer, Mark};
+use provider::{Action, Answer, Fit, LauncherProvider, Mark};
 
 // the content's width, which every row fills, as wide as the largest body (`island.width`)
 fn width() -> f32 {
@@ -80,6 +82,9 @@ const ROWS: usize = 5;
 const ROW_GAP: f32 = 6.0;
 const ROW: f32 = (LEAST_LIST - (ROWS - 1) as f32 * ROW_GAP) / ROWS as f32;
 const ROW_INSET: f32 = 8.0;
+
+// a section's heading, above the answers it names
+const HEADER: f32 = 26.0;
 
 const ICON: f32 = 28.0;
 const ICON_GAP: f32 = 12.0;
@@ -196,10 +201,10 @@ impl Search {
 
     /*
      * the search after a key and whether it presses the selected answer, none when the key is not
-     * for the Launcher; `count` is how many answers the query finds before the key
+     * for the Launcher; `layout` is what the query finds before the key
      */
-    fn step(mut self, key: Key, count: usize) -> Option<(Search, bool)> {
-        let last = count.saturating_sub(1);
+    fn step(mut self, key: Key, layout: &Layout) -> Option<(Search, bool)> {
+        let last = layout.answers.len().saturating_sub(1);
 
         match key {
             Key::Character(letter) => {
@@ -314,17 +319,17 @@ impl Search {
                 }
                 Some((self, false))
             }
-            Key::Enter => Some((self, count > 0)),
+            Key::Enter => Some((self, !layout.answers.is_empty())),
             Key::Up => {
                 self.select_all = false;
                 self.selected = self.selected.saturating_sub(1);
-                self.offset = reveal(self.offset.clamp(0.0, most(count)), self.selected);
+                self.offset = layout.reveal(self.offset, self.selected);
                 Some((self, false))
             }
             Key::Down => {
                 self.select_all = false;
                 self.selected = (self.selected + 1).min(last);
-                self.offset = reveal(self.offset.clamp(0.0, most(count)), self.selected);
+                self.offset = layout.reveal(self.offset, self.selected);
                 Some((self, false))
             }
             _ => None,
@@ -332,21 +337,21 @@ impl Search {
     }
 
     // scrolled by the wheel, the selection kept on a row that shows whole
-    fn wheel(mut self, lines: f32, count: usize) -> Search {
-        let most = most(count);
+    fn wheel(mut self, lines: f32, layout: &Layout) -> Search {
+        let most = layout.most();
 
         self.offset = (self.offset.clamp(0.0, most) + lines * WHEEL).clamp(0.0, most);
 
-        let (first, last) = whole(self.offset, count);
+        let (first, last) = layout.whole(self.offset);
         self.selected = self.selected.clamp(first, last);
 
         self
     }
 
     // what the view draws; a query no longer finding as many leaves the selection on the last one
-    fn bounded(mut self, count: usize) -> Search {
-        self.selected = self.selected.min(count.saturating_sub(1));
-        self.offset = self.offset.clamp(0.0, most(count));
+    fn bounded(mut self, layout: &Layout) -> Search {
+        self.selected = self.selected.min(layout.answers.len().saturating_sub(1));
+        self.offset = self.offset.clamp(0.0, layout.most());
         self.caret = self.caret.min(self.query.len());
         while !self.query.is_char_boundary(self.caret) {
             self.caret = self.caret.saturating_sub(1);
@@ -359,30 +364,133 @@ impl Search {
     }
 }
 
-// how far `count` rows can scroll: none while they fit
-fn most(count: usize) -> f32 {
-    (content(count) - room()).max(0.0)
+/*
+ * the list as the search scrolls it: a row for each answer and, with nothing typed, a heading
+ * before each section's first. A heading has its own height, so the rows below keep their place
+ * whatever a section holds
+ */
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Layout {
+    // each row top down, with its top and height
+    rows: Vec<(Line, f32, f32)>,
+
+    // the top of each answer's row
+    answers: Vec<f32>,
+
+    // the list's height, headings and gaps included
+    content: f32,
 }
 
-fn content(count: usize) -> f32 {
-    count as f32 * ROW + count.saturating_sub(1) as f32 * ROW_GAP
+// a row of the list: a section's heading, or the answer at that place
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    Heading(&'static str),
+    Answer(usize),
 }
 
-// how tall `count` answers ask the body to be, or a state for none; the island caps it (ADR 0030)
-fn asks(count: usize) -> f32 {
-    let list = if count == 0 { STATE } else { content(count) };
+// a heading over a run of answers, and the answer it starts at
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Section {
+    title: &'static str,
+    at: usize,
+}
+
+impl Layout {
+    // the answers alone, as a ranked query finds them
+    #[cfg(test)]
+    fn plain(count: usize) -> Layout {
+        Layout::of(&[], count)
+    }
+
+    fn of(sections: &[Section], count: usize) -> Layout {
+        let mut rows = Vec::with_capacity(count + sections.len());
+        let mut answers = Vec::with_capacity(count);
+        let mut top = 0.0;
+        let mut next = sections.iter().peekable();
+
+        for at in 0..count {
+            // a section with nothing to list shows no heading
+            while let Some(section) = next.peek()
+                && section.at <= at
+            {
+                rows.push((Line::Heading(section.title), top, HEADER));
+                top += HEADER + ROW_GAP;
+                next.next();
+            }
+
+            answers.push(top);
+            rows.push((Line::Answer(at), top, ROW));
+            top += ROW + ROW_GAP;
+        }
+
+        Layout {
+            rows,
+            answers,
+            content: (top - ROW_GAP).max(0.0),
+        }
+    }
+
+    // how far the list can scroll: none while it fits
+    fn most(&self) -> f32 {
+        (self.content - room()).max(0.0)
+    }
+
+    // the list as tall as its rows, scrolling once they reach past the room
+    fn listed(&self) -> f32 {
+        self.content.min(room())
+    }
+
+    // the least scroll from `offset` that shows the answer at `at` whole
+    fn reveal(&self, offset: f32, at: usize) -> f32 {
+        let Some(&top) = self.answers.get(at) else {
+            return offset.clamp(0.0, self.most());
+        };
+
+        offset
+            .min(top)
+            .max(top + ROW - room())
+            .clamp(0.0, self.most())
+    }
+
+    // the first and last answers that show whole at `offset`, the nearest when none does
+    fn whole(&self, offset: f32) -> (usize, usize) {
+        let end = offset + room();
+        let mut first = None;
+        let mut last = 0;
+
+        for (at, &top) in self.answers.iter().enumerate() {
+            if top + ROW <= end + 0.5 && top >= offset - 0.5 {
+                first.get_or_insert(at);
+                last = at;
+            }
+        }
+
+        first.map_or_else(
+            || {
+                let nearest = self
+                    .answers
+                    .iter()
+                    .position(|&top| top + ROW > offset)
+                    .unwrap_or(self.answers.len().saturating_sub(1));
+
+                (nearest, nearest)
+            },
+            |first| (first, last),
+        )
+    }
+}
+
+// how tall a list `list` pixels high asks the body to be, or a state for none; the island caps it
+// (ADR 0030)
+fn asks(list: f32) -> f32 {
+    let list = if list <= 0.0 { STATE } else { list };
 
     2.0 * INSET + FIELD + GAP + list
 }
 
-// the list as tall as its rows, scrolling once they reach past the room
-fn listed(count: usize) -> f32 {
-    content(count).min(room())
-}
-
 /*
- * tells the island how tall the Launcher asks to be: a new visit lists every app, the one open what
- * its query found. After each change of the apps or the search, never from a view
+ * tells the island how tall the Launcher asks to be: a new visit lists the sections, the one open
+ * what its query found. After each change of the apps or the search, never from a view
  */
 pub fn fit() {
     let _ordered = super::fitting();
@@ -396,11 +504,16 @@ pub fn fit() {
         let apps = Apps::read();
         let query = Search::read().of(visit).query;
 
-        // a new visit lists every app
-        (
-            asks(apps.list().len()),
-            asks(found(visit, apps.list(), &query, rec).len()),
-        )
+        // a new visit starts with nothing typed, so it lists the sections
+        let fresh = asks(found(visit, apps.list(), "", rec).layout().listed());
+
+        let open = if query.trim().is_empty() {
+            fresh
+        } else {
+            asks(found(visit, apps.list(), &query, rec).layout().listed())
+        };
+
+        (fresh, open)
     };
 
     super::ask(Surface::Launcher, fresh, Some((visit, open)));
@@ -418,41 +531,6 @@ pub fn start() {
     service::watch::<windows::Held>(fit);
     service::watch::<IslandService>(choose::follow);
     fit();
-}
-
-fn top(row: usize) -> f32 {
-    row as f32 * (ROW + ROW_GAP)
-}
-
-// the least scroll from `offset` that shows `row` whole
-fn reveal(offset: f32, row: usize) -> f32 {
-    let top = top(row);
-
-    offset.min(top).max(top + ROW - room())
-}
-
-/*
- * the rows any part of shows at `offset`, as a range; only these are built, so a morph doesn't
- * lay out and draw every answer each frame
- */
-fn shown(offset: f32, count: usize) -> (usize, usize) {
-    let step = ROW + ROW_GAP;
-    let first = (offset / step).floor() as usize;
-    let end = ((offset + room()) / step).ceil() as usize;
-
-    (first.min(count), end.min(count))
-}
-
-// the first and last rows that show whole at `offset`
-fn whole(offset: f32, count: usize) -> (usize, usize) {
-    let step = ROW + ROW_GAP;
-    let first = (offset / step).ceil() as usize;
-    let last = ((offset + room() + ROW_GAP) / step).floor() as usize;
-
-    (
-        first.min(count.saturating_sub(1)),
-        last.saturating_sub(1).min(count.saturating_sub(1)),
-    )
 }
 
 // whether the query searches the clipboard history, which it does only with its Module on
@@ -554,35 +632,177 @@ pub fn recorded(island: &IslandService) -> Rec {
     }
 }
 
-// what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit
-fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Vec<Answer> {
-    if let Some((_, choices)) = choose::of(visit) {
-        return provider::ranked(&[&Choices(&choices)], query);
+// what the providers find for the query in `visit`: best first, or, with nothing typed, the
+// empty query's sections under a heading each
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Found {
+    answers: Vec<Answer>,
+
+    // a heading over the answers it starts at, in the order they list
+    sections: Vec<Section>,
+}
+
+impl Found {
+    // what a query finds, with no heading
+    fn ranked(answers: Vec<Answer>) -> Found {
+        Found {
+            answers,
+            sections: Vec::new(),
+        }
     }
 
-    // read only for a history search, which also subscribes the view to the clipboard
-    let entries = if history(query) {
-        clipboard::Clipboard::read().entries().to_vec()
-    } else {
-        Vec::new()
-    };
+    fn layout(&self) -> Layout {
+        Layout::of(&self.sections, self.answers.len())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.answers.is_empty()
+    }
+
+    fn get(&self, at: usize) -> Option<&Answer> {
+        self.answers.get(at)
+    }
+}
+
+/*
+ * the empty query's sections, in the order the plan gives them: the Recents by frecency, then
+ * Kanade's Commands, the open Windows and the Apps. An answer the Recents show is taken out of the
+ * section it would list in, so nothing lists twice, and a recent that no longer exists is left out
+ */
+fn sections(apps: &[App], destinations: Destinations, recording: Rec) -> Found {
+    let titles = windows::titles();
+    let commands = commands(config::get().launcher_commands, recording);
+    let apps = AppsProvider(apps, destinations.wallpapers);
+
+    let mut found_apps = apps.find("");
+    let mut found_commands = commands.find("");
+    let mut found_destinations = destinations.find("");
+    let found_windows = windows::Titles(&titles).find("");
+
+    // the Recents, highest score first, each taken from the answers it would list among
+    let recent = sources::recents::with(|usage| {
+        usage
+            .recent(crate::clock::unix_seconds())
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    });
+
+    let mut recents = Vec::new();
+
+    for key in recent {
+        let key = key.as_str();
+        let found = if key.starts_with("command:") {
+            &mut found_commands
+        } else if key.starts_with("destination:") {
+            &mut found_destinations
+        } else {
+            &mut found_apps
+        };
+
+        if let Some(at) = found
+            .iter()
+            .position(|answer| kept(answer).as_deref() == Some(key))
+        {
+            let mut answer = found.remove(at);
+            answer.fit = Fit::Recent;
+            recents.push(answer);
+        }
+    }
+
+    gathered([
+        ("Recents", recents),
+        ("Commands", found_commands),
+        ("Windows", found_windows),
+        ("Apps", found_apps),
+    ])
+}
+
+/*
+ * the sections laid out in the order given, each under its heading, and none for a section that
+ * found nothing: a heading over no answers says nothing
+ */
+fn gathered(sections: [(&'static str, Vec<Answer>); 4]) -> Found {
+    let mut answers = Vec::new();
+    let mut placed = Vec::new();
+
+    for (title, found) in sections {
+        if found.is_empty() {
+            continue;
+        }
+
+        placed.push(Section {
+            title,
+            at: answers.len(),
+        });
+        answers.extend(found);
+    }
+
+    Found {
+        answers,
+        sections: placed,
+    }
+}
+
+// the key `sources::recents` keeps an answer under, none for one it never tracks
+fn kept(answer: &Answer) -> Option<String> {
+    match &answer.action {
+        Action::Launch(_, id) | Action::Perform(_, id, _) => Some(sources::recents::app(id)),
+        Action::Run(verb) => Some(sources::recents::command(verb)),
+        Action::Open(destination) => Some(sources::recents::destination(destination.name())),
+        _ => None,
+    }
+}
+
+// what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit
+fn found(visit: u64, apps: &[App], query: &str, recording: Rec) -> Found {
+    if let Some((_, choices)) = choose::of(visit) {
+        return Found::ranked(provider::ranked(&[&Choices(&choices)], query));
+    }
 
     let destinations = destinations();
-    let titles = windows::titles();
 
-    provider::ranked(
-        &[
-            &Calculator,
-            &AppsProvider(apps, destinations.wallpapers),
-            &Actions(apps, config::get().launcher_actions),
-            &windows::Titles(&titles),
-            &destinations,
-            &commands(config::get().launcher_commands, recording),
-            &Emoji,
-            &History { entries: &entries },
-        ],
+    grouped(
         query,
+        || sections(apps, destinations, recording),
+        || {
+            // read only for a history search, which also subscribes the view to the clipboard
+            let entries = if history(query) {
+                clipboard::Clipboard::read().entries().to_vec()
+            } else {
+                Vec::new()
+            };
+
+            let titles = windows::titles();
+
+            Found::ranked(provider::ranked(
+                &[
+                    &Calculator,
+                    &AppsProvider(apps, destinations.wallpapers),
+                    &Actions(apps, config::get().launcher_actions),
+                    &windows::Titles(&titles),
+                    &destinations,
+                    &commands(config::get().launcher_commands, recording),
+                    &Emoji,
+                    &History { entries: &entries },
+                ],
+                query,
+            ))
+        },
     )
+}
+
+/*
+ * the answers a query finds: with nothing typed the empty query's sections, and the ranking
+ * itself for anything typed; each is built only when it is the one to list, so a typed query never
+ * asks the providers for an empty one
+ */
+fn grouped(query: &str, sections: impl FnOnce() -> Found, ranked: impl FnOnce() -> Found) -> Found {
+    if query.trim().is_empty() {
+        sections()
+    } else {
+        ranked()
+    }
 }
 
 // the view's own read of the visit and the recording, so this never reads IslandService again
@@ -590,7 +810,8 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     let apps = Apps::read();
     let search = Search::read().of(visit);
     let found = found(visit, apps.list(), &search.query, recording);
-    let search = search.bounded(found.len());
+    let layout = found.layout();
+    let search = search.bounded(&layout);
     let choosing = choose::of(visit);
 
     let query = search.query.trim();
@@ -598,7 +819,7 @@ pub fn surface(monitor: &str, visit: u64, recording: Rec) -> Rectangle {
     let history = history(query);
 
     let list: Box<dyn Widget> = if !found.is_empty() {
-        Box::new(list(monitor, &found, &search))
+        Box::new(list(monitor, &found, &layout, &search))
     } else if choosing.is_some() {
         Box::new(state(
             "No matching choices",
@@ -901,54 +1122,51 @@ fn state(title: &str, detail: &str) -> Rectangle {
 
 /*
  * the rows scrolled `offset` down, clipped to the list; a thumb in the inset says where while they
- * do not all fit
+ * do not all fit. A heading is drawn where it stands, so the answers under it keep their place
  */
-fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
-    let (first, end) = shown(search.offset, found.len());
+fn list(monitor: &str, found: &Found, layout: &Layout, search: &Search) -> Stack {
+    let end = search.offset + room();
 
-    let column = Column::new(
-        found[first..end]
-            .iter()
-            .zip(first..)
-            .map(|(answer, index)| {
-                let selected = index == search.selected;
-                let failed = search.failed(&answer.action);
+    let shown: Vec<Box<dyn Widget>> = layout
+        .rows
+        .iter()
+        .filter(|(_, top, height)| top + height > search.offset && *top < end)
+        .map(|(line, top, _)| {
+            let at = top - search.offset;
 
-                Box::new(row(
-                    monitor,
-                    search.visit,
-                    answer,
-                    selected,
-                    failed.as_deref(),
-                )) as Box<dyn Widget>
-            })
-            .collect(),
-    )
-    .width(width())
-    .gap(ROW_GAP);
+            match line {
+                Line::Heading(title) => {
+                    Box::new(heading(title).translate(0.0, at)) as Box<dyn Widget>
+                }
+                Line::Answer(index) => {
+                    let answer = &found.answers[*index];
+                    let selected = *index == search.selected;
+                    let failed = search.failed(&answer.action);
+
+                    Box::new(
+                        row(monitor, search.visit, answer, selected, failed.as_deref())
+                            .translate(0.0, at),
+                    ) as Box<dyn Widget>
+                }
+            }
+        })
+        .collect();
 
     let viewport = Rectangle::new()
         .width(width())
-        .height(listed(found.len()))
+        .height(layout.listed())
         .clip()
         .align_child(Start, Start)
         .semantics(|| Semantics::new(Role::List, "results"))
         .on_scroll(|Scroll { y, .. }| wheel(y))
-        .child(
-            Rectangle::new()
-                .width(width())
-                .height(content(end - first))
-                .align_child(Start, Start)
-                .translate(0.0, top(first) - search.offset)
-                .child(column),
-        );
+        .child(Stack::new(shown).width(width()).height(layout.listed()));
 
     let mut layers = children![viewport];
 
-    let most = most(found.len());
+    let most = layout.most();
 
     if most > 0.0 {
-        let length = (room() * room() / content(found.len())).max(TARGET);
+        let length = (room() * room() / layout.content).max(TARGET);
         let at = (room() - length) * search.offset / most;
 
         layers.push(Box::new(
@@ -961,9 +1179,27 @@ fn list(monitor: &str, found: &[Answer], search: &Search) -> Stack {
         ));
     }
 
-    Stack::new(layers)
+    Stack::new(layers).width(width()).height(layout.listed())
+}
+
+// a section's heading, as the Keys Surface's groups draw theirs
+fn heading(title: &str) -> Rectangle {
+    Rectangle::new()
         .width(width())
-        .height(listed(found.len()))
+        .height(HEADER)
+        .padding(Padding {
+            top: 0.0,
+            right: ROW_INSET,
+            bottom: 0.0,
+            left: ROW_INSET,
+        })
+        .align_child(Start, End)
+        .child(
+            Text::new(title)
+                .size(theme::text::LABEL_SMALL)
+                .color(theme::island().on_surface_variant)
+                .weight(theme::text::SEMIBOLD),
+        )
 }
 
 /*
@@ -1091,8 +1327,9 @@ pub fn key(monitor: &str, key: Key) -> bool {
 
     let search = Search::read().of(visit);
     let found = found(visit, Apps::read().list(), &search.query, rec);
+    let layout = found.layout();
 
-    let Some((mut search, presses)) = search.bounded(found.len()).step(key, found.len()) else {
+    let Some((mut search, presses)) = search.bounded(&layout).step(key, &layout) else {
         return false;
     };
 
@@ -1426,9 +1663,10 @@ fn wheel(lines: f32) {
     };
 
     let search = Search::read().of(visit);
-    let count = found(visit, Apps::read().list(), &search.query, rec).len();
+    let found = found(visit, Apps::read().list(), &search.query, rec);
+    let layout = found.layout();
 
-    store(search.bounded(count).wheel(lines, count));
+    store(search.bounded(&layout).wheel(lines, &layout));
 }
 
 #[cfg(test)]
@@ -1436,12 +1674,17 @@ mod tests {
     use super::*;
     use kanade_runtime::Key;
 
+    // a list of one answer, as the search tests step over
+    fn one() -> Layout {
+        Layout::plain(1)
+    }
+
     #[test]
     fn search_typing_and_caret_navigation() {
         let mut search = Search::default();
 
         for c in "hello".chars() {
-            let (next, pressed) = search.step(Key::Character(c), 1).unwrap();
+            let (next, pressed) = search.step(Key::Character(c), &one()).unwrap();
             assert!(!pressed);
             search = next;
         }
@@ -1449,36 +1692,36 @@ mod tests {
         assert_eq!(search.caret, 5);
 
         // Left arrow moves caret backwards
-        let (next, _) = search.step(Key::Left, 1).unwrap();
+        let (next, _) = search.step(Key::Left, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 4);
 
-        let (next, _) = search.step(Key::Left, 1).unwrap();
+        let (next, _) = search.step(Key::Left, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 3);
 
         // Home moves to start
-        let (next, _) = search.step(Key::Home, 1).unwrap();
+        let (next, _) = search.step(Key::Home, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 0);
 
         // Left at 0 stays at 0
-        let (next, _) = search.step(Key::Left, 1).unwrap();
+        let (next, _) = search.step(Key::Left, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 0);
 
         // Right moves forward
-        let (next, _) = search.step(Key::Right, 1).unwrap();
+        let (next, _) = search.step(Key::Right, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 1);
 
         // End moves to query end
-        let (next, _) = search.step(Key::End, 1).unwrap();
+        let (next, _) = search.step(Key::End, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 5);
 
         // Right at query end stays at end
-        let (next, _) = search.step(Key::Right, 1).unwrap();
+        let (next, _) = search.step(Key::Right, &one()).unwrap();
         search = next;
         assert_eq!(search.caret, 5);
     }
@@ -1487,16 +1730,16 @@ mod tests {
     fn search_insert_at_caret() {
         let mut search = Search::default();
         for c in "hllo".chars() {
-            search = search.step(Key::Character(c), 1).unwrap().0;
+            search = search.step(Key::Character(c), &one()).unwrap().0;
         }
         // Move caret to between 'h' and 'l'
-        search = search.step(Key::Left, 1).unwrap().0;
-        search = search.step(Key::Left, 1).unwrap().0;
-        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
         assert_eq!(search.caret, 1);
 
         // Insert 'e'
-        search = search.step(Key::Character('e'), 1).unwrap().0;
+        search = search.step(Key::Character('e'), &one()).unwrap().0;
         assert_eq!(search.query, "hello");
         assert_eq!(search.caret, 2);
     }
@@ -1505,40 +1748,40 @@ mod tests {
     fn search_backspace_and_delete_at_caret() {
         let mut search = Search::default();
         for c in "world".chars() {
-            search = search.step(Key::Character(c), 1).unwrap().0;
+            search = search.step(Key::Character(c), &one()).unwrap().0;
         }
 
         // Backspace at end
-        search = search.step(Key::Backspace, 1).unwrap().0;
+        search = search.step(Key::Backspace, &one()).unwrap().0;
         assert_eq!(search.query, "worl");
         assert_eq!(search.caret, 4);
 
         // Move to position 2 (after "wo")
-        search = search.step(Key::Left, 1).unwrap().0;
-        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
         assert_eq!(search.caret, 2);
 
         // Delete deletes character after caret ('r')
-        search = search.step(Key::Delete, 1).unwrap().0;
+        search = search.step(Key::Delete, &one()).unwrap().0;
         assert_eq!(search.query, "wol");
         assert_eq!(search.caret, 2);
 
         // Backspace deletes character before caret ('o')
-        search = search.step(Key::Backspace, 1).unwrap().0;
+        search = search.step(Key::Backspace, &one()).unwrap().0;
         assert_eq!(search.query, "wl");
         assert_eq!(search.caret, 1);
 
         // Home then Backspace does nothing
-        search = search.step(Key::Home, 1).unwrap().0;
+        search = search.step(Key::Home, &one()).unwrap().0;
         assert_eq!(search.caret, 0);
-        search = search.step(Key::Backspace, 1).unwrap().0;
+        search = search.step(Key::Backspace, &one()).unwrap().0;
         assert_eq!(search.query, "wl");
         assert_eq!(search.caret, 0);
 
         // End then Delete does nothing
-        search = search.step(Key::End, 1).unwrap().0;
+        search = search.step(Key::End, &one()).unwrap().0;
         assert_eq!(search.caret, 2);
-        search = search.step(Key::Delete, 1).unwrap().0;
+        search = search.step(Key::Delete, &one()).unwrap().0;
         assert_eq!(search.query, "wl");
         assert_eq!(search.caret, 2);
     }
@@ -1547,22 +1790,22 @@ mod tests {
     fn search_multibyte_utf8_caret() {
         let mut search = Search::default();
         for c in "café".chars() {
-            search = search.step(Key::Character(c), 1).unwrap().0;
+            search = search.step(Key::Character(c), &one()).unwrap().0;
         }
         assert_eq!(search.query, "café");
         assert_eq!(search.caret, 5); // 'é' is 2 bytes
 
         // Left moves across 'é' (2 bytes)
-        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
         assert_eq!(search.caret, 3);
 
         // Backspace deletes 'f'
-        search = search.step(Key::Backspace, 1).unwrap().0;
+        search = search.step(Key::Backspace, &one()).unwrap().0;
         assert_eq!(search.query, "caé");
         assert_eq!(search.caret, 2);
 
         // Delete deletes 'é'
-        search = search.step(Key::Delete, 1).unwrap().0;
+        search = search.step(Key::Delete, &one()).unwrap().0;
         assert_eq!(search.query, "ca");
         assert_eq!(search.caret, 2);
     }
@@ -1571,49 +1814,49 @@ mod tests {
     fn search_select_all_and_replacement() {
         let mut search = Search::default();
         for c in "abc".chars() {
-            search = search.step(Key::Character(c), 1).unwrap().0;
+            search = search.step(Key::Character(c), &one()).unwrap().0;
         }
         assert_eq!(search.query, "abc");
 
         // Select all
-        search = search.step(Key::SelectAll, 1).unwrap().0;
+        search = search.step(Key::SelectAll, &one()).unwrap().0;
         assert!(search.select_all);
 
         // Typing replacement character replaces entire query
-        search = search.step(Key::Character('z'), 1).unwrap().0;
+        search = search.step(Key::Character('z'), &one()).unwrap().0;
         assert_eq!(search.query, "z");
         assert_eq!(search.caret, 1);
         assert!(!search.select_all);
 
         // Select all then Backspace clears
-        search = search.step(Key::SelectAll, 1).unwrap().0;
-        search = search.step(Key::Backspace, 1).unwrap().0;
+        search = search.step(Key::SelectAll, &one()).unwrap().0;
+        search = search.step(Key::Backspace, &one()).unwrap().0;
         assert_eq!(search.query, "");
         assert_eq!(search.caret, 0);
         assert!(!search.select_all);
 
         // Select all then Delete clears
         for c in "test".chars() {
-            search = search.step(Key::Character(c), 1).unwrap().0;
+            search = search.step(Key::Character(c), &one()).unwrap().0;
         }
-        search = search.step(Key::SelectAll, 1).unwrap().0;
-        search = search.step(Key::Delete, 1).unwrap().0;
+        search = search.step(Key::SelectAll, &one()).unwrap().0;
+        search = search.step(Key::Delete, &one()).unwrap().0;
         assert_eq!(search.query, "");
         assert_eq!(search.caret, 0);
         assert!(!search.select_all);
 
         // Select all then Left arrow cancels selection, caret at 0
         for c in "word".chars() {
-            search = search.step(Key::Character(c), 1).unwrap().0;
+            search = search.step(Key::Character(c), &one()).unwrap().0;
         }
-        search = search.step(Key::SelectAll, 1).unwrap().0;
-        search = search.step(Key::Left, 1).unwrap().0;
+        search = search.step(Key::SelectAll, &one()).unwrap().0;
+        search = search.step(Key::Left, &one()).unwrap().0;
         assert!(!search.select_all);
         assert_eq!(search.caret, 0);
 
         // Select all then Right arrow cancels selection, caret at end
-        search = search.step(Key::SelectAll, 1).unwrap().0;
-        search = search.step(Key::Right, 1).unwrap().0;
+        search = search.step(Key::SelectAll, &one()).unwrap().0;
+        search = search.step(Key::Right, &one()).unwrap().0;
         assert!(!search.select_all);
         assert_eq!(search.caret, 4);
     }
@@ -1671,6 +1914,126 @@ mod tests {
             Some(String::from(
                 "Not launched: its Path /nonexistent/directory/bad is no directory"
             ))
+        );
+    }
+
+    fn answer(title: &str) -> Answer {
+        Answer {
+            fit: Fit::Prefix,
+            title: title.to_owned(),
+            detail: String::new(),
+            mark: Mark::Tile(title.to_owned()),
+            action: Action::Copy(title.to_owned()),
+        }
+    }
+
+    // the empty query lists the four sections in the plan's order, a heading over each, and a
+    // section that found nothing shows none
+    #[test]
+    fn sections_list_in_order_under_a_heading_each() {
+        let found = gathered([
+            ("Recents", vec![answer("Files")]),
+            ("Commands", vec![answer("Toggle Caffeine")]),
+            ("Windows", vec![answer("kanade")]),
+            ("Apps", vec![answer("Blender"), answer("Zed")]),
+        ]);
+
+        let titles: Vec<&str> = found.sections.iter().map(|section| section.title).collect();
+        assert_eq!(titles, ["Recents", "Commands", "Windows", "Apps"]);
+        assert_eq!(found.answers.len(), 5);
+
+        let headings: Vec<&str> = found
+            .layout()
+            .rows
+            .iter()
+            .filter_map(|(line, ..)| match line {
+                Line::Heading(title) => Some(*title),
+                Line::Answer(_) => None,
+            })
+            .collect();
+        assert_eq!(headings, ["Recents", "Commands", "Windows", "Apps"]);
+
+        // a section with nothing to list leaves no heading behind
+        let empty = gathered([
+            ("Recents", Vec::new()),
+            ("Commands", vec![answer("Toggle Caffeine")]),
+            ("Windows", Vec::new()),
+            ("Apps", vec![answer("Blender")]),
+        ]);
+
+        let titles: Vec<&str> = empty.sections.iter().map(|section| section.title).collect();
+        assert_eq!(titles, ["Commands", "Apps"]);
+        assert_eq!(empty.sections[1].at, 1);
+    }
+
+    // a heading takes its own place above the answers it names, so the rows below keep their place
+    // and the answers' rows are the ones the selection moves over
+    #[test]
+    fn a_heading_offsets_the_rows_below_it() {
+        let found = gathered([
+            ("Recents", vec![answer("Files")]),
+            ("Commands", vec![answer("Toggle Caffeine")]),
+            ("Windows", Vec::new()),
+            ("Apps", vec![answer("Blender")]),
+        ]);
+        let layout = found.layout();
+
+        // heading, Recents' answer, heading, Commands' answer, heading, Apps' answer
+        assert_eq!(layout.rows.len(), 6);
+        assert_eq!(layout.answers.len(), 3);
+        assert!(layout.answers[0] < layout.answers[1]);
+        assert!(layout.answers[1] < layout.answers[2]);
+        assert_eq!(
+            layout.answers[1] - layout.answers[0],
+            ROW + ROW_GAP + HEADER + ROW_GAP
+        );
+        assert_eq!(
+            layout.answers[0],
+            layout.rows[0].1 + HEADER + ROW_GAP,
+            "the first answer sits under its heading"
+        );
+
+        // a ranked query, with no headings, keeps its rows in single steps
+        let ranked = Layout::plain(3);
+        assert_eq!(ranked.rows.len(), 3);
+        assert_eq!(ranked.answers[1] - ranked.answers[0], ROW + ROW_GAP);
+    }
+
+    // scrolling moves the selection over answers only, never onto a heading
+    #[test]
+    fn the_selection_moves_over_answers_only() {
+        let found = gathered([
+            ("Recents", vec![answer("Files")]),
+            ("Commands", vec![answer("Toggle Caffeine")]),
+            ("Windows", Vec::new()),
+            ("Apps", vec![answer("Blender")]),
+        ]);
+        let layout = found.layout();
+
+        let mut search = Search::default();
+        for _ in 0..10 {
+            search = search.step(Key::Down, &layout).unwrap().0;
+        }
+        assert_eq!(search.selected, 2, "the last answer, not a heading");
+
+        for _ in 0..10 {
+            search = search.step(Key::Up, &layout).unwrap().0;
+        }
+        assert_eq!(search.selected, 0);
+    }
+
+    // a typed query goes back to the ranking, and only then asks the providers for one: the
+    // sections' closure panics if it is reached
+    #[test]
+    fn typing_a_character_lists_the_ranking_again() {
+        let sections = || panic!("a typed query must not build the empty query's sections");
+        let ranked = || Found::ranked(vec![answer("Files")]);
+
+        assert_eq!(grouped("f", sections, ranked).sections, []);
+        assert_eq!(
+            grouped("    ", Found::default, ranked).answers,
+            Vec::new(),
+            "a query of spaces is nothing typed"
         );
     }
 }
