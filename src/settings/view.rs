@@ -923,16 +923,23 @@ fn found_heading(
     )
 }
 
+/*
+ * a card's rows, the same `CARD_INSET` in from its edge on every side, so a row's hover wash stays
+ * clear of the card's corner instead of meeting it. The inset and `radius::CARD` are the same, so a
+ * row's straight edge begins where the card's corner ends and the row keeps its own smaller
+ * `radius::ROW`: a nested radius of `radius::CARD - CARD_INSET` would be square here. The height
+ * grows by what the padding takes, so the column still fits exactly
+ */
 fn card_of(rows: Vec<Box<dyn Widget>>, roles: &ThemeRoles) -> Rectangle {
     let column = Column::new(rows).width(inner());
-    let height = fixed(Widget::height(&column));
+    let height = fixed(Widget::height(&column)) + 2.0 * CARD_INSET;
 
     Rectangle::new()
         .width(content())
         .height(height)
         .radius(radius::CARD)
         .fill(roles.card())
-        .padding(sides(CARD_INSET))
+        .padding(CARD_INSET)
         .child(column)
 }
 
