@@ -237,11 +237,16 @@ fn arrange(
 ) -> Shell {
     match form {
         Merge::Keystone | Merge::Fold => among(form, anchor, canvas, extent, screen),
-        Merge::Crown | Merge::Off => crown(form, anchor, canvas, extent),
+        Merge::Crown | Merge::Off => crown(form, anchor, canvas, extent, screen),
     }
 }
 
-fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> Shell {
+/*
+ * the Dock stands beside the Island's body on the same edge, its plate as wide as its own row. The
+ * window holds the canvas and what the plate reaches past it beside the anchor, the side the anchor
+ * hangs from keeping the place its side gives it
+ */
+fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent, screen: f32) -> Shell {
     let offset = offset_of(form, &extent);
 
     // the Dock's plate lines up with the Island's body along the side it sits against
@@ -249,7 +254,22 @@ fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> S
         Along::Center => 0.0,
         Along::Left | Along::Right => TOP,
     };
-    let width = canvas.width.max(extent.width + side).ceil();
+
+    // what the plate reaches past the canvas along the edge: in from the side it sits against, or
+    // half as far on each side centered
+    let past = match anchor.along {
+        Along::Left | Along::Right => (extent.width + side - canvas.width).max(0.0).ceil(),
+        Along::Center => ((extent.width - canvas.width) / 2.0).max(0.0),
+    };
+    let (left, right) = match anchor.along {
+        Along::Left => (0.0, past),
+        Along::Right => (past, 0.0),
+        Along::Center => (past, past),
+    };
+
+    // never wider than the output, where the plate outgrows it
+    let (left, right) = room(anchor.along, (left, right), canvas, screen);
+    let width = (left + canvas.width + right).ceil();
     let height = (canvas.height + offset).max(extent.height).ceil();
 
     let across = |size: f32, gap: f32| match anchor.along {
@@ -273,12 +293,12 @@ fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent) -> S
 }
 
 /*
- * the room the icons take to either side of the canvas, as much of it as the output holds: the
- * window is never wider than the output under it, or its far side stands off the screen. The side
- * the anchor hangs from keeps its room, so the canvas keeps the place its side gives it, the body
- * with it; the room away from that side takes the cut, where the icons past the output's edge would
- * be drawn. Centered, the canvas is as far out to one side as the other, so both give way alike,
- * and the body stays in the middle
+ * the room the Dock takes beside the canvas, as much of it as the output holds: the window is never
+ * wider than the output under it, or its far side stands off the screen. That room is the icons' in a
+ * Keystone or a Fold, and a Crown's plate past the canvas; either way what gives is the Dock past the
+ * output's edge. The side the anchor hangs from keeps its room, so the canvas keeps the place its
+ * side gives it, the body with it; the room away from that side takes the cut. Centered, the canvas
+ * is as far out to one side as the other, so both give way alike, and the body stays in the middle
  */
 fn room(along: Along, (left, right): (f32, f32), canvas: Canvas, screen: f32) -> (f32, f32) {
     let over = left + canvas.width + right - screen;
@@ -287,7 +307,7 @@ fn room(along: Along, (left, right): (f32, f32), canvas: Canvas, screen: f32) ->
         return (left, right);
     }
 
-    // a canvas already as wide as the output stays whole, with no icons beside it
+    // a canvas already as wide as the output stays whole, with no Dock beside it
     if over >= left + right {
         return (0.0, 0.0);
     }
@@ -482,26 +502,111 @@ mod tests {
             height: 500.0,
         };
 
-        for along in [Along::Left, Along::Center, Along::Right] {
-            for edge in [Edge::Top, Edge::Bottom] {
-                for screen in [0.0, 900.0, 1920.0] {
-                    let shell = arrange(
-                        Merge::Keystone,
-                        Anchor { edge, along },
-                        canvas,
-                        row(0.0),
-                        screen,
-                    );
+        for form in [Merge::Keystone, Merge::Crown] {
+            for along in [Along::Left, Along::Center, Along::Right] {
+                for edge in [Edge::Top, Edge::Bottom] {
+                    for screen in [0.0, 900.0, 1920.0] {
+                        let shell = arrange(form, Anchor { edge, along }, canvas, row(0.0), screen);
 
-                    if screen > 0.0 {
-                        assert!(shell.size.0 <= screen, "{along:?} {edge:?} {screen}");
+                        if screen > 0.0 {
+                            assert!(
+                                shell.size.0 <= screen,
+                                "{form:?} {along:?} {edge:?} {screen}"
+                            );
+                        }
+
+                        assert!(shell.island.0 >= 0.0);
+                        assert!(shell.island.0 + canvas.width <= shell.size.0);
                     }
-
-                    assert!(shell.island.0 >= 0.0);
-                    assert!(shell.island.0 + canvas.width <= shell.size.0);
                 }
             }
         }
+    }
+
+    /*
+     * a Crown is never wider than the output and gives way at the side away from its anchor alone:
+     * the Island and the Dock's plate keep the place on the screen the anchor gives them, and what
+     * is cut is the row past the output's edge. Each is held to the place the unclamped shell laid
+     * out, so a clamp never drags the body off its anchor as a narrower window would
+     */
+    #[test]
+    fn a_crown_gives_way_only_past_the_outputs_edge() {
+        let canvas = Canvas {
+            width: 500.0,
+            height: 500.0,
+        };
+        let wide = row(0.0);
+
+        // where the window's left edge stands on the output, as view::placed puts it
+        let origin = |along: Along, width: f32, screen: f32| match along {
+            Along::Left => 0.0,
+            Along::Center => ((screen - width) / 2.0).floor(),
+            Along::Right => screen - width,
+        };
+
+        for along in [Along::Left, Along::Center, Along::Right] {
+            for edge in [Edge::Top, Edge::Bottom] {
+                // none, so a shell laid out with no output to answer to
+                let free = arrange(Merge::Crown, Anchor { edge, along }, canvas, wide, 0.0);
+
+                for screen in [500.0, 700.0, 800.0, 900.0, 1920.0] {
+                    let shell = arrange(Merge::Crown, Anchor { edge, along }, canvas, wide, screen);
+                    let at = format!("{along:?} {edge:?} {screen}");
+
+                    assert!(shell.size.0 <= screen, "{at}");
+                    assert!(shell.island.0 >= 0.0, "{at}");
+                    assert!(shell.island.0 + canvas.width <= shell.size.0, "{at}");
+
+                    // the Island and the plate stand exactly where they would with no edge to fit
+                    let (had, now) = (
+                        origin(along, free.size.0, screen),
+                        origin(along, shell.size.0, screen),
+                    );
+
+                    assert!(
+                        (had + free.island.0 - now - shell.island.0).abs() == 0.0,
+                        "{at}"
+                    );
+                    assert!(
+                        (had + free.dock.0 - now - shell.dock.0).abs() == 0.0,
+                        "{at}"
+                    );
+                }
+            }
+        }
+
+        // the output holds the plate, so nothing gives way: 908 px of shell for a 900 px row
+        let roomy = arrange(
+            Merge::Crown,
+            Anchor {
+                edge: Edge::Top,
+                along: Along::Right,
+            },
+            canvas,
+            wide,
+            1920.0,
+        );
+        assert_eq!(
+            (roomy.size.0, roomy.island.0, roomy.dock.0),
+            (908.0, 408.0, 0.0)
+        );
+
+        // 900 px of output: the window gives up its 8 px past the output's edge, the plate keeping
+        // its place with its far end cut, and stands where it did
+        let tight = arrange(
+            Merge::Crown,
+            Anchor {
+                edge: Edge::Top,
+                along: Along::Right,
+            },
+            canvas,
+            wide,
+            900.0,
+        );
+        assert_eq!(
+            (tight.size.0, tight.island.0, tight.dock.0),
+            (900.0, 400.0, -8.0)
+        );
     }
 
     /*
