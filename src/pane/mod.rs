@@ -9,7 +9,7 @@ mod body;
 mod shader;
 
 pub use self::blob::{Dot, blob};
-pub use self::blur::{FILL as BLUR_FILL, behind as blurred};
+pub use self::blur::{FILL as BLUR_FILL, behind as blurred, blurs};
 pub use self::body::{Body, Join};
 pub use self::shader::shader;
 

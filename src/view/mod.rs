@@ -324,7 +324,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
         .as_ref()
         .zip(laid.as_ref())
         .is_some_and(|(shell, laid)| shell.form != Merge::Fold || laid.held > 0.0);
-    let blur_shown = (out > 0.0 || sliding || merged_dock_visible) && (!covered || raised);
+    let blur_shown = (pane::blurs(out) || sliding || merged_dock_visible) && (!covered || raised);
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut pane = None;
 

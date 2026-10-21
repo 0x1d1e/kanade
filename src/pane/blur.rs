@@ -20,6 +20,16 @@ pub fn on() -> bool {
 }
 
 /*
+ * whether a pane showing `shown` of itself, 1 whole and 0 gone, blurs what lies behind it: the whole
+ * time any of it shows, and never once it is gone. The compositor's blur cannot fade, so a threshold
+ * inside a fade pops it off and on mid-fade, under a pane that is still there to be read; gone is the
+ * only moment at which it can go without being missed
+ */
+pub fn blurs(shown: f32) -> bool {
+    shown > 0.0
+}
+
+/*
  * the rects of a window the compositor blurs behind, for panes whose outlines are `bodies` in
  * coordinates whose origin is the window's corner at `origin`; none unless panes blur. Whole pixels,
  * each wholly inside its outline, so no blur shows past a pane's edge
@@ -194,4 +204,18 @@ fn united(a: f32, b: f32, blend: f32) -> f32 {
     let pull = (blend - (a - b).abs()).max(0.0) / blend.max(1e-4);
 
     a.min(b) - pull * pull * blend * 0.25
+}
+
+#[cfg(test)]
+mod tests {
+    use super::blurs;
+
+    // blurred for as long as any of the pane shows, which is the whole of a fade, and not at all once
+    // it is gone: a pane gone asks for no outline, so the window asks for no blur
+    #[test]
+    fn a_pane_blurs_while_any_of_it_shows() {
+        assert!(!blurs(0.0));
+        assert!(blurs(0.5));
+        assert!(blurs(1.0));
+    }
 }
