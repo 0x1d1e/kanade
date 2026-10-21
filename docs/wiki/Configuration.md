@@ -201,6 +201,8 @@ transition_duration = 1000
 actions = true
 # Kanade's own commands, like Toggle Caffeine or Screenshot Area, are rows of the Launcher once two letters of their name are typed; pressing one runs it
 commands = true
+# "island" opens the Launcher in the Island's own body; "detached" opens it in a window of its own, centred on the focused output
+style = "island"
 
 [calendar]
 # iCalendar (.ics) files and directories of them, read recursively, else $XDG_DATA_HOME/calendars

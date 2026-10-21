@@ -2665,6 +2665,25 @@ pub const LAUNCHER: &[Setting] = &[
         restart: false,
         per_output: false,
     },
+    Setting {
+        key: "launcher.style",
+        label: "Where it opens",
+        help: "\"island\" opens the Launcher in the Island's own body; \"detached\" opens it in a window of its own, centred on the focused output",
+        hint: Some("Open the Launcher in the Island or on its own"),
+        kind: Kind::Choice(
+            Choices::labeled(
+                LauncherStyle::NAMES,
+                &[("island", "In the Island"), ("detached", "Centred window")],
+            ),
+            Field {
+                get: |config| config.launcher_style.name(),
+                set: |config, name| config.launcher_style = LauncherStyle::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
 ];
 
 pub const SETTINGS: &[Setting] = &[Setting {
