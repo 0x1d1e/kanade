@@ -46,6 +46,7 @@ use kanade_runtime::{MutexExt, service::Service};
 use rustix::fs::{CWD, RenameFlags, renameat_with};
 use rustix::io::Errno;
 
+use self::encode::QUIET;
 use self::machine::{Effect, Event, Machine, Phase, Pick, Segment};
 pub use self::plan::{Audio, ENCODER, JOINER, PICKER, RECORDER, Rect};
 use self::plan::{MUXER, Source};
@@ -1434,7 +1435,11 @@ fn again(ran: Ran, given: Given, fault: Fault) -> Option<Again> {
         return None;
     }
 
-    if ran.va && !given.no_va && fault == Fault::Encoder {
+    // a stall says nothing about which stage stopped, so the download that may have stalled is
+    // changed first, as for an encoder that failed
+    let encoder = matches!(fault, Fault::Encoder | Fault::Stalled);
+
+    if ran.va && !given.no_va && encoder {
         Some(Again::Egl)
     } else if !ran.software && !given.software {
         Some(Again::Software)
@@ -1458,6 +1463,11 @@ struct Given {
 enum Fault {
     // the encoder, which another download or the software encoder may start
     Encoder,
+
+    // the chain stopped receiving buffers, so nothing was written: the cast, the download or the
+    // encoder is what stalled, and only another chain can tell. Walked as the encoder is, since a
+    // stalled take has nothing to lose and a cast that truly delivers nothing ends the walk
+    Stalled,
 
     // the muxer, which no other encoder start mends
     Muxer,
@@ -1529,21 +1539,31 @@ fn falls_back(
     take.no_va = given.no_va;
 
     match again {
-        Again::Egl => eprintln!(
-            "capture: the encoder failed to start with the VA-API download ({why}); downloading through EGL instead"
-        ),
+        // a stall is not the download's doing only: the chain says nothing about what stopped
+        Again::Egl => match fault {
+            Fault::Stalled => {
+                eprintln!("capture: {why}; downloading through EGL instead and recording on")
+            }
+            _ => eprintln!(
+                "capture: the encoder failed to start with the VA-API download ({why}); downloading through EGL instead"
+            ),
+        },
         Again::Software => {
             take.software = Some(why.clone());
 
             // the muxer's own failure is not the encoder's, and says so
             let failed = match fault {
                 Fault::Muxer => MUXER,
+                Fault::Stalled => "the picture",
                 _ => "the encoder",
             };
 
-            eprintln!(
-                "capture: {failed} failed to start ({why}); recording with software x264 instead"
-            );
+            match fault {
+                Fault::Stalled => eprintln!("capture: {failed} stopped ({why}); recording on"),
+                _ => eprintln!(
+                    "capture: {failed} failed to start ({why}); recording with software x264 instead"
+                ),
+            }
         }
     }
 
@@ -1978,6 +1998,10 @@ fn follow_window(
             let escalated = runtime.escalated.take_if(|escalated| *escalated == serial);
             let escalated = escalated.is_some();
             let blamed = encoder_blamed(&writer, &encoder);
+
+            // what the guard saw, before `classify_window` takes the encoder's words. A window that
+            // closed ends the cast and trips the guard too, which is a recording saved, not a stall
+            let quiet = !gone && stalled(&encoder_said);
             let segment = classify_window(
                 [writer, encoder],
                 [writer_said, encoder_said],
@@ -1995,6 +2019,7 @@ fn follow_window(
 
             let fault = match &segment {
                 Segment::Lost(why) if vanished(why) => Fault::Vanished,
+                _ if quiet => Fault::Stalled,
                 _ if blamed => Fault::Encoder,
                 _ => Fault::Muxer,
             };
@@ -2128,6 +2153,17 @@ fn no_stream(writer: &io::Result<ExitStatus>, said: &VecDeque<String>) -> bool {
 }
 
 /*
+ * whether the encoder's own words say the chain stopped receiving buffers, from the `watchdog`
+ * element (`encode::guard`). Its element error is the only thing that names it, so a chain that
+ * failed for another reason is left to the usual reading. Both spellings: the element's own name in
+ * the error's first line, and the words it carries
+ */
+fn stalled(said: &VecDeque<String>) -> bool {
+    said.iter()
+        .any(|line| line.contains("GstWatchdog") || line.contains("Watchdog triggered"))
+}
+
+/*
  * whether `why` names a target that is gone rather than an encoder that would not start: the same
  * output or window is gone whichever encoder reads it, so another start cannot mend it
  */
@@ -2202,6 +2238,17 @@ fn classify_window(
     // call a failure
     if !written && encoder_ok(&encoder) && no_stream(&writer, &writer_said) {
         return Segment::Empty;
+    }
+
+    /*
+     * the guard ended the chain because no buffer arrived for `QUIET`, and the window is still
+     * there: a stall, said as one rather than as an encoder that failed to start. What stalled (the
+     * cast, the download, the encoder) is not visible from here, so the words claim none of them.
+     * After the closed cases above, because a window that closes ends the cast and so trips the
+     * guard too, and that is a recording saved, not a stall
+     */
+    if closed.is_none() && stalled(&encoder_said) {
+        return Segment::Lost(format!("no picture arrived for {}s", QUIET.as_secs()));
     }
 
     // the encoder first when it is what failed; a muxer that died first is what ended the segment
@@ -3155,6 +3202,93 @@ mod tests {
             segment(exited(0), exited(127), false, None),
             Segment::Lost(why) if why.contains(ENCODER)
         ));
+    }
+
+    /*
+     * a confirmed defect, once, at the seam it crossed: a window's chain that stopped receiving
+     * buffers hung until the user stopped the take, because nothing failed and `falls_back` only
+     * walks a `Segment::Lost`. The guard (`encode::guard`) now ends it, and what it says must be
+     * read as the stall it is, not as an encoder that would not start
+     */
+    #[test]
+    fn a_chain_the_guard_stopped_is_a_stall_and_walks_the_fallback() {
+        let stopped = [
+            "ERROR: from element /GstPipeline:pipeline0/GstWatchdog:watchdog0: Watchdog triggered",
+        ];
+
+        // nothing written, the window still there: a stall, named as one and not as the encoder
+        let Segment::Lost(why) = segment_said(
+            exited(234),
+            exited(1),
+            &["Output file does not contain any stream"],
+            &stopped,
+            false,
+            None,
+        ) else {
+            panic!("not a stall");
+        };
+
+        assert!(why.contains("no picture arrived"), "{why}");
+        assert!(why.contains(&QUIET.as_secs().to_string()), "{why}");
+        assert!(!why.contains("failed to start"), "{why}");
+
+        // a window that closed ends the cast and trips the guard too, and that is a saving, not a
+        // stall: the closed cases are read before it
+        assert_eq!(
+            segment_said(exited(0), exited(1), &["writer"], &stopped, true, Some(1)),
+            Segment::Written
+        );
+
+        // a stall walks to EGL and then to software, as a failed encoder does, and stops there
+        let ran = Ran {
+            software: false,
+            va: true,
+        };
+        let given = Given {
+            no_va: false,
+            software: false,
+        };
+        let (again, after) = step(given, ran, Fault::Stalled).expect("nowhere to go");
+
+        assert_eq!(
+            (again, after),
+            (
+                Again::Egl,
+                Given {
+                    no_va: true,
+                    ..given
+                }
+            )
+        );
+
+        let (again, after) = step(after, ran, Fault::Stalled).expect("nowhere to go");
+
+        assert_eq!(
+            (again, after),
+            (
+                Again::Software,
+                Given {
+                    no_va: false,
+                    software: true
+                }
+            )
+        );
+
+        // software tries the VA-API download once more (the stall may have been the encoder's own),
+        // then there is nowhere left: three restarts at most, as for a failed encoder
+        let (again, after) = step(after, ran, Fault::Stalled).expect("nowhere to go");
+
+        assert_eq!(
+            (again, after),
+            (
+                Again::Egl,
+                Given {
+                    no_va: true,
+                    software: true
+                }
+            )
+        );
+        assert_eq!(step(after, ran, Fault::Stalled), None);
     }
 
     /*
