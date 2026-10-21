@@ -427,7 +427,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
     let mut cards: Vec<Box<dyn Widget>> = Vec::new();
     let mut areas = Vec::new();
 
-    // the outlines of the cards the compositor blurs behind, the ones shown whole
+    // the outlines of the cards the compositor blurs behind, each while any of it shows
     let mut outlines = Vec::new();
 
     if !placed.is_empty() {
@@ -486,7 +486,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             let at = now_look.at;
             let body = pane_body(at, now_look.radius);
 
-            if now_look.seen >= 1.0 && !covered {
+            if pane::blurs(now_look.seen) && !covered {
                 outlines.push(body);
             }
 

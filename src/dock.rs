@@ -1107,11 +1107,12 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         .space(Zone::Ignore)
         .namespace("kanade-dock")
         .visible(items)
-        // the strip's outline in the window, which the margins offset in the pane's canvas
+        // the strip's outline in the window, which the margins offset in the pane's canvas; aside
+        // is how far it has faded for the Island, so how much of it shows is the rest
         .blur(pane::blurred(
             (items
-                && shown > 0.0
-                && aside <= 0.0
+                && pane::blurs(shown)
+                && pane::blurs(1.0 - aside)
                 && !view::covered(monitor, || IslandService::read().overview()))
             .then(|| body(strip_at)),
             (margin.left as f32, margin.top as f32),
