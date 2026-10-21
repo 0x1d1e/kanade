@@ -244,6 +244,17 @@ choice! {
 }
 
 choice! {
+    // where the Launcher opens, `launcher.style` (ADR 0131)
+    LauncherStyle {
+        // the Island's own Surface, inside its body
+        Island = "island",
+
+        // a layer window of its own, centred on the focused output
+        Detached = "detached",
+    }
+}
+
+choice! {
     // what the lock screen shows behind the clock, `lock.backdrop`
     LockBackdrop {
         // the wallpaper shown on the output, softly blurred, like macOS

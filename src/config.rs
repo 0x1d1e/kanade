@@ -45,8 +45,8 @@ use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
 use crate::island::service::Timings;
 use crate::look::{
-    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
-    Merge, Placement, SddmBackground, ShellMode, Tone, UiDescribe, Visualizer,
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LauncherStyle, LockBackdrop,
+    LyricsSource, Magnify, Merge, Placement, SddmBackground, ShellMode, Tone, UiDescribe, Visualizer,
 };
 use crate::modules;
 use crate::sources::accessibility;
@@ -214,6 +214,9 @@ pub struct Config {
 
     // `launcher.commands`: Kanade's own verbs, like Toggle Caffeine, are rows of the Launcher (ADR 0112)
     pub launcher_commands: bool,
+
+    // `launcher.style`: the Island's own Surface, or a layer window of its own (ADR 0131)
+    pub launcher_style: LauncherStyle,
 
     // `settings.health_notice`: the one-time first-start Peek of checks that need attention (ADR 0088)
     pub health_notice: bool,
@@ -602,6 +605,7 @@ impl Default for Config {
             device_events: true,
             launcher_actions: true,
             launcher_commands: true,
+            launcher_style: LauncherStyle::default(),
             health_notice: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
@@ -4575,6 +4579,7 @@ mod tests {
                 "wallpaper.transition_duration",
                 "launcher.actions",
                 "launcher.commands",
+                "launcher.style",
                 "calendar.paths",
                 "calendar.reminder",
                 "calendar.subscriptions",
