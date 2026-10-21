@@ -191,9 +191,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## Semantic tree (#21, ADR 0095)
 
-- [ ] Name the rest of the controls with `.semantics(...)`: Banners, Notifications, Clipboard (its rows, `pin`, `delete`, `clear` and the search are named), Calendar, Weather, Wallpaper, Timer, Capture, Tray, Session, Media, Settings buttons, and the Controls sub-surfaces (Wi-Fi, Bluetooth, Sound, Arrange). Content they show (titles, bodies, SSIDs, tracks) must be `.content(...)`, never `.label(...)`.
-  - A control whose click handler is on a parent of the annotated rectangle is not pressable by name.
-  - Not run: a live session pass of `kanade ui` (see the report for the steps).
+- [x] The surfaces this item named are already annotated, `.on_click`/`.on_hold` sites against `.semantics(` sites: banners/mod.rs 4/3, surfaces/clipboard.rs 3/7, calendar.rs 4/7, wallpapers.rs 2/4, tray/mod.rs 6/7, media.rs 4/6, pad.rs 2/3, controls/list.rs 4/5, controls/arrange.rs 3/4, controls/audio.rs 1/3, settings/view.rs 9/16. Timer, Capture and Session draw through `pill` (`src/surfaces/pad.rs:297`) and the Controls switches and profile segments carry their own (`src/surfaces/controls/mod.rs:845`, `:1122`), so annotating those files again would regress them. A live `kanade ui describe` names the Island, the Dock's items and the nine Controls nodes, and `wait 'app#2' --window kanade-dock` resolves; a node answers by its id, not a `name` field (`src/ui.rs:54`, `crates/runtime/src/ui.rs:257`), and `TextInput` targets annotate themselves (`crates/runtime/src/widgets/text_input/targets.rs:58`).
+  - The one pressable left unnamed is the Dock context menu's action rows, which were never on this list (`src/dock/context_menu.rs:639`); the other `on_click` rectangles without semantics of their own wrap the annotated control or dismiss (`src/dock/context_menu.rs:349`, `src/gesture/mod.rs:663`, `src/settings/view.rs:3084`).
 
 ## From the research-improvements review (unfixed)
 
