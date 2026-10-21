@@ -119,14 +119,14 @@ fn key_press(monitor: &str, visit: u64, key: Key) -> bool {
     typed(monitor, visit, rec, key)
 }
 
-// closes the detached Launcher, wherever it is open; nothing while none is
+// closes the detached Launcher, on the output it stands on; nothing while none is open
 pub fn close() {
     let mut island = IslandService::write();
+    let monitor = island.detached_on().map(|(monitor, _)| monitor.to_owned());
 
-    if island.detached_on().is_some() {
-        island.input("", Input::Collapse, Instant::now());
-    } else {
-        island.quiet();
+    match monitor {
+        Some(monitor) => island.input(&monitor, Input::Collapse, Instant::now()),
+        None => island.quiet(),
     }
 }
 
