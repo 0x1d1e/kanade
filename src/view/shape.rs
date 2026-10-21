@@ -26,9 +26,13 @@ fn largest_on(monitor: &Monitor) -> Shape {
 
 // the output whose Island is drawn (`On`), else where a Surface is open
 fn drawn(monitors: &Monitors) -> Option<&Monitor> {
-    let on = ON
-        .with_borrow(Clone::clone)
-        .or_else(|| IslandService::read().expanded_on().map(str::to_owned))?;
+    let island = IslandService::read();
+    let on = ON.with_borrow(Clone::clone).or_else(|| {
+        island
+            .expanded_on()
+            .map(str::to_owned)
+            .or_else(|| island.detached_on().map(|(monitor, _)| monitor.to_owned()))
+    })?;
 
     monitors.all().iter().find(|monitor| monitor.name == on)
 }

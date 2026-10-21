@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use crate::changes;
-use crate::input::KeyHandler;
+use crate::input::{KeyHandler, LostHandler};
 use crate::unpoisoned::MutexExt;
 use crate::{Key, Widget};
 
@@ -23,6 +23,8 @@ pub struct Window {
     pub(crate) root: Option<Box<dyn Widget>>,
 
     pub(crate) on_key: Option<KeyHandler>,
+
+    pub(crate) on_lost: Option<LostHandler>,
 }
 
 impl Window {
@@ -39,6 +41,8 @@ impl Window {
             root: None,
 
             on_key: None,
+
+            on_lost: None,
         }
     }
 
@@ -78,6 +82,13 @@ impl Window {
 
     pub fn on_key(mut self, handler: impl Fn(Key) + 'static) -> Self {
         self.on_key = Some(Rc::new(handler));
+
+        self
+    }
+
+    // the keyboard focus left the window
+    pub fn on_lost(mut self, handler: impl Fn() + 'static) -> Self {
+        self.on_lost = Some(Rc::new(handler));
 
         self
     }

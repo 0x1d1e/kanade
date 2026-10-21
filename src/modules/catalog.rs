@@ -911,7 +911,7 @@ notifications dnd on until <HH:MM>
             // read now, so the Launcher opens on a list
             apps::refresh();
             surfaces::launcher::start();
-            app
+            app.window_per_monitor(surfaces::launcher::detached::window)
         },
     },
     // the notification list on the island; Banners show them without it

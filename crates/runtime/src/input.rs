@@ -7,7 +7,7 @@ pub(crate) mod released;
 mod target;
 
 pub use pointer::Pointer;
-pub use target::{Handlers, KeyHandler, Target, anchor, clip, nest};
+pub use target::{Handlers, KeyHandler, LostHandler, Target, anchor, clip, nest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Button {

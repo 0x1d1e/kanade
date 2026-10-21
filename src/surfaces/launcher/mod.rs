@@ -46,6 +46,7 @@ mod calculator;
 pub mod choose;
 mod commands;
 mod destinations;
+pub mod detached;
 mod emoji;
 mod history;
 mod provider;
@@ -722,6 +723,8 @@ pub fn fit() {
 
 // at start: the body follows the apps and the search from now on
 pub fn start() {
+    service::watch::<config::Reloads>(follow_style);
+    follow_style();
     service::watch::<Connectivity>(follow_radios);
     service::watch::<Adapter>(follow_radios);
     follow_radios();
@@ -732,6 +735,35 @@ pub fn start() {
     service::watch::<windows::Held>(fit);
     service::watch::<IslandService>(choose::follow);
     fit();
+}
+
+/*
+ * `launcher.style`, pushed in: `island/` never reads the config, so the place the Launcher opens is
+ * a field of its own Service, set here at start and on each reload. A change while the Launcher is
+ * open closes it where it is rather than moving it: the place it opens is not the place it stands
+ * (ADR 0131)
+ */
+fn follow_style() {
+    let style = config::get().launcher_style;
+
+    // the open Launcher, read under the same write that sets the style, so no opening lands between
+    let open = {
+        let mut island = IslandService::write();
+
+        if island.launcher_style() == style {
+            island.quiet();
+
+            return;
+        }
+
+        island.set_launcher_style(style);
+
+        island.open_launcher_on()
+    };
+
+    if let Some(monitor) = open {
+        view::collapse(&monitor);
+    }
 }
 
 // whether the query searches the clipboard history, which it does only with its Module on
@@ -1697,6 +1729,15 @@ pub fn key(monitor: &str, key: Key) -> bool {
         (island.visit(), recorded(&island))
     };
 
+    typed(monitor, visit, rec, key)
+}
+
+/*
+ * the keys a Launcher's visit takes, once something says it is the one showing: the search, its
+ * sections and its actions, and the press the key came to. Both hosts call this, so a detached
+ * Launcher searches and presses exactly as one in the Island does (ADR 0131)
+ */
+fn typed(monitor: &str, visit: u64, rec: Rec, key: Key) -> bool {
     let search = Search::read().of(visit);
     let apps = Apps::read();
     let found = found(visit, apps.list(), &search.query, rec, apps.found());

@@ -49,6 +49,36 @@ pub enum Surface {
     Welcome,
 }
 
+/*
+ * where the Launcher opens, `launcher.style` (ADR 0131): pushed in by a watcher, since only a view
+ * may read the config. Detached, the Island never expands to it, and a window of its own draws it
+ */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LauncherStyle {
+    #[default]
+    Island,
+    Detached,
+}
+
+impl LauncherStyle {
+    pub const NAMES: &[&str] = &["island", "detached"];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LauncherStyle::Island => "island",
+            LauncherStyle::Detached => "detached",
+        }
+    }
+
+    // an unknown name is the default; the config checks names before it gets here
+    pub fn named(name: &str) -> Self {
+        match name {
+            "detached" => LauncherStyle::Detached,
+            _ => LauncherStyle::Island,
+        }
+    }
+}
+
 impl Surface {
     // the Surface a Kind is also, the only one an Activity may open itself (`Interrupt::AutoExpand`)
     pub fn own(kind: Kind) -> Option<Surface> {
@@ -295,6 +325,12 @@ pub struct Presentations {
     // the Surfaces that never open, since their Module is off
     withheld: Vec<Surface>,
 
+    // where the Launcher opens, pushed in from the config; Detached, it never expands an island
+    launcher_style: LauncherStyle,
+
+    // the output the detached Launcher shows on, with this opening's visit (ADR 0131)
+    detached: Option<(String, u64)>,
+
     // how many tray items there are, the same on every island
     tray: usize,
 }
@@ -307,6 +343,54 @@ impl Presentations {
 
     pub fn offers(&self, surface: Surface) -> bool {
         !self.withheld.contains(&surface)
+    }
+
+    /*
+     * the input the detached Launcher answers itself: `launcher.style = "detached"` opens it as
+     * its own visit rather than an island's Surface, and a Collapse or a Preempt ends that visit.
+     * False for anything else, which the islands take as they always do
+     */
+    fn detached_and_takes(&mut self, monitor: &str, input: Input) -> bool {
+        if !self.detached() {
+            return false;
+        }
+
+        match input {
+            Input::Open(Surface::Launcher) => {
+                self.visits += 1;
+                self.detached = Some((monitor.to_owned(), self.visits));
+
+                true
+            }
+
+            Input::Collapse => self.detached.take().is_some(),
+
+            // a Critical Activity closes it and then displaces what an island shows, if anything
+            Input::Preempt if self.detached.take().is_some() => false,
+
+            _ => false,
+        }
+    }
+
+    // the config's `launcher.style`, at start and on each reload
+    pub fn set_launcher_style(&mut self, style: LauncherStyle) {
+        self.launcher_style = style;
+    }
+
+    pub fn launcher_style(&self) -> LauncherStyle {
+        self.launcher_style
+    }
+
+    // the Launcher drawn by a window of its own, so no island expands to it (ADR 0131)
+    fn detached(&self) -> bool {
+        self.launcher_style == LauncherStyle::Detached
+    }
+
+    // the output the detached Launcher shows on, and its visit while it is open
+    pub fn detached_on(&self) -> Option<(&str, u64)> {
+        self.detached
+            .as_ref()
+            .map(|(monitor, visit)| (monitor.as_str(), *visit))
     }
 
     /*
@@ -426,6 +510,15 @@ impl Presentations {
             return;
         }
 
+        /*
+         * the detached Launcher is a window of its own, so no island expands to it: it opens as
+         * its own visit, which its keys and its search belong to, and Escape ends that visit
+         * (ADR 0131)
+         */
+        if self.detached_and_takes(monitor, input) {
+            return;
+        }
+
         let now = self.get(monitor);
         let island = self.island(monitor);
 
@@ -480,7 +573,7 @@ impl Presentations {
 
     // at most one island is Expanded, opening one collapses any other; a withheld Surface opens nowhere
     fn expand(&mut self, monitor: &str, surface: Surface) {
-        if !self.offers(surface) {
+        if !self.offers(surface) || surface == Surface::Launcher && self.detached() {
             return;
         }
 
@@ -704,6 +797,53 @@ mod tests {
         presentations.input(MONITOR, Input::Collapse);
         presentations.set_overview(true);
         assert_eq!(presentations.under(MONITOR, Primary), None);
+    }
+
+    /*
+     * ADR 0131: a detached Launcher is a window of its own, so the Island must not expand to it,
+     * while everything else the islands open still does; and Escape ends its visit alone
+     */
+    #[test]
+    fn a_detached_launcher_never_expands_an_island() {
+        let mut presentations = Presentations::default();
+        presentations.set_launcher_style(LauncherStyle::Detached);
+        let before = presentations.visit();
+
+        presentations.input(MONITOR, Input::Open(Surface::Launcher));
+        assert_eq!(presentations.get(MONITOR), Rest);
+        assert_eq!(presentations.detached_on(), Some((MONITOR, before + 1)));
+
+        presentations.input(MONITOR, Input::Collapse);
+        assert_eq!(presentations.detached_on(), None);
+
+        // another Surface opens as it always did
+        presentations.input(MONITOR, Input::Open(Controls));
+        assert_eq!(presentations.get(MONITOR), Expanded(Controls));
+    }
+
+    /*
+     * ADR 0131: the place the Launcher opens is not the place it stands, so a change of style while
+     * it opens reports the output it stood on, which its own watcher closes, rather than carrying
+     * the visit over from one host to the other
+     */
+    #[test]
+    fn a_style_change_reports_the_open_launcher_rather_than_moving_it() {
+        let mut presentations = Presentations::default();
+
+        presentations.input(MONITOR, Input::Open(Surface::Launcher));
+        assert_eq!(
+            presentations.expanded().map(|(_, surface)| surface),
+            Some(Surface::Launcher)
+        );
+
+        presentations.set_launcher_style(LauncherStyle::Detached);
+
+        // the new style alone moves nothing: the open visit stays where it opened
+        assert_eq!(
+            presentations.expanded().map(|(_, surface)| surface),
+            Some(Surface::Launcher)
+        );
+        assert_eq!(presentations.detached_on(), None);
     }
 
     #[test]

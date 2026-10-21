@@ -43,6 +43,7 @@ use crate::hooks::{self, Commands};
 use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
+use crate::island::presentation::LauncherStyle;
 use crate::island::service::Timings;
 use crate::look::{
     Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
@@ -214,6 +215,9 @@ pub struct Config {
 
     // `launcher.commands`: Kanade's own verbs, like Toggle Caffeine, are rows of the Launcher (ADR 0112)
     pub launcher_commands: bool,
+
+    // `launcher.style`: the Island's own Surface, or a layer window of its own (ADR 0131)
+    pub launcher_style: LauncherStyle,
 
     // `settings.health_notice`: the one-time first-start Peek of checks that need attention (ADR 0088)
     pub health_notice: bool,
@@ -602,6 +606,7 @@ impl Default for Config {
             device_events: true,
             launcher_actions: true,
             launcher_commands: true,
+            launcher_style: LauncherStyle::default(),
             health_notice: true,
             idle: Stages {
                 dim: Some(Duration::from_secs(270)),
@@ -2661,6 +2666,25 @@ pub const LAUNCHER: &[Setting] = &[
         restart: false,
         per_output: false,
     },
+    Setting {
+        key: "launcher.style",
+        label: "Where it opens",
+        help: "\"island\" opens the Launcher in the Island's own body; \"detached\" opens it in a window of its own, centred on the focused output",
+        hint: Some("Open the Launcher in the Island or on its own"),
+        kind: Kind::Choice(
+            Choices::labeled(
+                LauncherStyle::NAMES,
+                &[("island", "In the Island"), ("detached", "Centred window")],
+            ),
+            Field {
+                get: |config| config.launcher_style.name(),
+                set: |config, name| config.launcher_style = LauncherStyle::named(name),
+            },
+        ),
+        example: None,
+        restart: false,
+        per_output: false,
+    },
 ];
 
 pub const SETTINGS: &[Setting] = &[Setting {
@@ -4575,6 +4599,7 @@ mod tests {
                 "wallpaper.transition_duration",
                 "launcher.actions",
                 "launcher.commands",
+                "launcher.style",
                 "calendar.paths",
                 "calendar.reminder",
                 "calendar.subscriptions",
