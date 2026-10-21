@@ -1000,6 +1000,9 @@ mod tests {
 
     // every post for this stream, and why it ended
     fn posts(lines: &[&str]) -> (Vec<Seen>, io::ErrorKind) {
+        // `watch` writes the one `Niri` every test shares, so the tests that run it take turns
+        let _running = RUNNING.lock().unwrap();
+
         let mut posts = Vec::new();
         let mut posted = Seen::default();
 
@@ -1395,9 +1398,14 @@ mod tests {
         assert_eq!(lost, io::ErrorKind::Other);
     }
 
+    // `run` writes the one `Niri` every test shares, so the tests that run it take turns
+    static RUNNING: Mutex<()> = Mutex::new(());
+
     // the core is told once, then niri is gone for good
     #[test]
     fn losing_the_stream_degrades_to_every_monitor_focused() {
+        let _running = RUNNING.lock().unwrap();
+
         let text = [OK, WORKSPACES, &overview(true), &cast(1)].join("\n");
         let mut posts = Vec::new();
 
@@ -1439,6 +1447,8 @@ mod tests {
 
     #[test]
     fn losing_the_stream_marks_niri_disconnected() {
+        let _running = RUNNING.lock().unwrap();
+
         let text = [OK, WORKSPACES].join("\n");
         let mut posted = Seen::default();
 
