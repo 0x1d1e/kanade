@@ -257,6 +257,11 @@ const SQUARE_PIXELS: &str = "video/x-raw(ANY),pixel-aspect-ratio=1/1";
  * `videorate`): a variable frame rate is the recording (ADR 0117). `pipewiresrc` offers no fixed
  * framerate, and fed caps that fix none, `videorate` emits a single frame: a 30 s take became a
  * file of 2 s. It must never be added back for the still-window case
+ *
+ * `encoding.guard()` follows the square-pixel caps and ends the chain when buffers stop arriving
+ * for `QUIET`, so a chain that hangs is a failure `falls_back` gets, not one that waits forever.
+ * It sits before the encoding chain, where it sees what the cast delivers rather than what the
+ * encoder has got round to emitting
  */
 pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> {
     let mut arguments: Vec<String> = [
@@ -274,6 +279,7 @@ pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> 
     .map(String::from)
     .to_vec();
 
+    arguments.extend(encoding.guard());
     arguments.extend(encoding.chain(size));
     arguments.extend(
         [
@@ -420,7 +426,7 @@ pub fn joiner<'a>(list: &'a str, joined: &'a str) -> [&'a str; 15] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::encode::{Encoder, Kind, Quality};
+    use super::super::encode::{Encoder, Kind, QUIET, Quality};
     use super::*;
 
     #[test]
@@ -517,6 +523,51 @@ mod tests {
         // the frames keep the time they arrived at: nothing here forces a framerate
         for paced in ["videorate", "video/x-raw(ANY),framerate=30/1"] {
             assert!(!arguments.iter().any(|word| word == paced), "{arguments:?}");
+        }
+    }
+
+    /*
+     * an enforced boundary: a window's chain must end when buffers stop arriving, or a wedged one
+     * waits until the user stops the take. The guard must sit between the cast's caps and the
+     * encoding chain, never after the encoder: `x264enc` holds its first byte for 9 s at a still
+     * window's cadence, and a guard there would fail a take that is recording correctly
+     */
+    #[test]
+    fn a_windows_chain_is_guarded_before_it_encodes() {
+        let encoding = vaapi();
+        let arguments = encoder(7, (640, 480), &encoding);
+        let at = |word: &str| arguments.iter().position(|found| found == word);
+        let (held, guard, converter, encoder_element) = (
+            at(SQUARE_PIXELS),
+            at("watchdog"),
+            at("vapostproc"),
+            at("vah264enc"),
+        );
+
+        assert!(
+            held.is_some() && guard.is_some() && converter.is_some(),
+            "{arguments:?}"
+        );
+        assert!(held < guard && guard < converter, "{arguments:?}");
+        assert!(guard < encoder_element, "{arguments:?}");
+
+        // the guard is the same in every arm, and a trial without it could pass where a chain cannot
+        for kind in [Kind::Vaapi, Kind::Nvenc, Kind::Software] {
+            let arm = Encoding {
+                encoder: Encoder {
+                    kind,
+                    ..encoding.encoder.clone()
+                },
+                ..vaapi()
+            };
+            let trial = arm.gst_trial();
+
+            assert_eq!(
+                arm.guard(),
+                ["watchdog", "timeout=3000", "!"].map(String::from).to_vec()
+            );
+            assert!(trial.iter().any(|word| word == "watchdog"), "{trial:?}");
+            assert!(trial.contains(&format!("timeout={}", QUIET.as_millis())));
         }
     }
 

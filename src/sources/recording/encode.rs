@@ -13,6 +13,15 @@ pub const PROBE_BUDGET: Duration = Duration::from_millis(3000);
 pub const TRIAL: Duration = Duration::from_millis(1500);
 pub const MAX_VAAPI_CANDIDATES: usize = 2;
 
+/*
+ * how long a window's chain may go without a buffer before that is a fault. `pipewiresrc` re-emits
+ * the last buffer every second (`keepalive-time=1000`), so a window that is merely still keeps the
+ * chain fed, and the VA-API encoder emits its first byte 0.6 s in (measured against a cast that
+ * delivers one buffer a second). Three of those periods, and under the 5 s a `start` waits, so a
+ * chain started again still has time to answer it
+ */
+pub const QUIET: Duration = Duration::from_secs(3);
+
 // the encoder `wf-recorder` is given for each kind (`ffmpeg -encoders`)
 const VAAPI: &str = "h264_vaapi";
 const NVENC: &str = "h264_nvenc";
@@ -242,6 +251,26 @@ impl Encoding {
     }
 
     /*
+     * the elements that end a window's chain when no buffer arrives for `QUIET`: `watchdog`
+     * (`gst-plugins-bad`) passes buffers through and raises an element error when they stop, which
+     * `gst-launch-1.0` exits on, so the segment ends as a failure `falls_back` sees instead of one
+     * that hangs until the take is stopped. It catches a cast that delivers nothing and an encoder
+     * that stops taking what arrives (the chain pushes, so a wedged encoder stalls the flow through
+     * it just the same). Without it a still window and a wedged chain are the same silence. It must
+     * sit before the encoding chain: `x264enc` holds its first byte for 9 s at a still window's
+     * cadence, which is no fault of the chain's
+     *
+     * It does not depend on the encoding; it is here so the chain and its trial cannot drift apart
+     */
+    pub fn guard(&self) -> Vec<String> {
+        let timeout = format!("timeout={}", QUIET.as_millis());
+
+        ["watchdog", timeout.as_str(), "!"]
+            .map(String::from)
+            .to_vec()
+    }
+
+    /*
      * the GStreamer elements of a window's pipeline from the first converter to the encoder, the
      * `!` between them included, at `size`. `add-borders` keeps the aspect, so a window that is
      * resized stays whole in the frame, provided the cast is held to square pixels
@@ -374,6 +403,8 @@ impl Encoding {
         .map(String::from)
         .to_vec();
 
+        // the guard is part of what a window's chain is, so a trial without its element fails here
+        arguments.extend(self.guard());
         arguments.extend(self.chain((256, 144)));
         arguments.extend(["!", "fakesink"].map(String::from));
         arguments
