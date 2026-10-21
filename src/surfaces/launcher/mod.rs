@@ -46,6 +46,7 @@ mod calculator;
 pub mod choose;
 mod commands;
 mod destinations;
+pub mod detached;
 mod emoji;
 mod history;
 mod provider;
@@ -1714,6 +1715,15 @@ pub fn key(monitor: &str, key: Key) -> bool {
         (island.visit(), recorded(&island))
     };
 
+    typed(monitor, visit, rec, key)
+}
+
+/*
+ * the keys a Launcher's visit takes, once something says it is the one showing: the search, its
+ * sections and its actions, and the press the key came to. Both hosts call this, so a detached
+ * Launcher searches and presses exactly as one in the Island does (ADR 0131)
+ */
+fn typed(monitor: &str, visit: u64, rec: Rec, key: Key) -> bool {
     let search = Search::read().of(visit);
     let apps = Apps::read();
     let found = found(visit, apps.list(), &search.query, rec, apps.found());

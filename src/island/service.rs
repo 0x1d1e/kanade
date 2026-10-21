@@ -342,8 +342,13 @@ impl IslandService {
         self.presentations.set_launcher_style(style);
     }
 
+    // where the Launcher opens, and while Detached the output and visit it shows on, if any
     pub fn launcher_style(&self) -> LauncherStyle {
         self.presentations.launcher_style()
+    }
+
+    pub fn detached_on(&self) -> Option<(&str, u64)> {
+        self.presentations.detached_on()
     }
 
     // the tray items there are now; the pointer at Rest shows them, a slot each
