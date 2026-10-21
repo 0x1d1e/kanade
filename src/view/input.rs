@@ -50,7 +50,10 @@ pub(crate) fn claim() {
 // closes an open Surface or ends a pinned Peek
 pub(crate) fn collapse(monitor: &str) {
     let island = IslandService::read();
-    let raised = island.expanded(monitor) || island.pinned(monitor);
+    let detached = island
+        .detached_on()
+        .is_some_and(|(name, _)| name == monitor);
+    let raised = detached || island.expanded(monitor) || island.pinned(monitor);
     drop(island);
 
     if raised {

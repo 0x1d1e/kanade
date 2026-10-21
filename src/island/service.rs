@@ -351,6 +351,19 @@ impl IslandService {
         self.presentations.detached_on()
     }
 
+    // the output the Launcher stands on, in either host, if it is open at all
+    pub fn open_launcher_on(&self) -> Option<String> {
+        self.presentations
+            .detached_on()
+            .map(|(monitor, _)| monitor.to_owned())
+            .or_else(|| {
+                self.presentations
+                    .expanded()
+                    .filter(|&(_, surface)| surface == Surface::Launcher)
+                    .map(|(monitor, _)| monitor.to_owned())
+            })
+    }
+
     // the tray items there are now; the pointer at Rest shows them, a slot each
     pub fn set_tray(&mut self, count: usize, now: Instant) {
         self.presentations.set_tray(count);
@@ -1017,7 +1030,14 @@ impl IslandService {
      * work that ends after its Surface closed never collapses the next one
      */
     pub fn finish(&mut self, monitor: &str, visit: u64, surface: Surface, now: Instant) {
-        if self.visit() == visit && self.presentation(monitor) == Presentation::Expanded(surface) {
+        // the detached Launcher is no island's Surface, so its own visit ends it (ADR 0131)
+        let detached = surface == Surface::Launcher
+            && self.presentations.detached_on() == Some((monitor, visit));
+
+        if detached
+            || self.visit() == visit
+                && self.presentation(monitor) == Presentation::Expanded(surface)
+        {
             self.input(monitor, Input::Collapse, now);
         }
     }

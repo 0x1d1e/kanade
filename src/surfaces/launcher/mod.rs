@@ -738,17 +738,31 @@ pub fn start() {
 }
 
 /*
- * `launcher.style`, pushed in: `island/` never reads the config, so the place the Launcher opens
- * is a field of its own Service, set here at start and on each reload (ADR 0131)
+ * `launcher.style`, pushed in: `island/` never reads the config, so the place the Launcher opens is
+ * a field of its own Service, set here at start and on each reload. A change while the Launcher is
+ * open closes it where it is rather than moving it: the place it opens is not the place it stands
+ * (ADR 0131)
  */
 fn follow_style() {
     let style = config::get().launcher_style;
-    let mut island = IslandService::write();
 
-    if island.launcher_style() == style {
-        island.quiet();
-    } else {
+    // the open Launcher, read under the same write that sets the style, so no opening lands between
+    let open = {
+        let mut island = IslandService::write();
+
+        if island.launcher_style() == style {
+            island.quiet();
+
+            return;
+        }
+
         island.set_launcher_style(style);
+
+        island.open_launcher_on()
+    };
+
+    if let Some(monitor) = open {
+        view::collapse(&monitor);
     }
 }
 

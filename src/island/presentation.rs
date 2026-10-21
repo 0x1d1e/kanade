@@ -821,6 +821,31 @@ mod tests {
         assert_eq!(presentations.get(MONITOR), Expanded(Controls));
     }
 
+    /*
+     * ADR 0131: the place the Launcher opens is not the place it stands, so a change of style while
+     * it opens reports the output it stood on, which its own watcher closes, rather than carrying
+     * the visit over from one host to the other
+     */
+    #[test]
+    fn a_style_change_reports_the_open_launcher_rather_than_moving_it() {
+        let mut presentations = Presentations::default();
+
+        presentations.input(MONITOR, Input::Open(Surface::Launcher));
+        assert_eq!(
+            presentations.expanded().map(|(_, surface)| surface),
+            Some(Surface::Launcher)
+        );
+
+        presentations.set_launcher_style(LauncherStyle::Detached);
+
+        // the new style alone moves nothing: the open visit stays where it opened
+        assert_eq!(
+            presentations.expanded().map(|(_, surface)| surface),
+            Some(Surface::Launcher)
+        );
+        assert_eq!(presentations.detached_on(), None);
+    }
+
     #[test]
     fn the_tray_strip_opens_surfaces_and_gives_way_to_an_activity() {
         let mut presentations = Presentations::default();
