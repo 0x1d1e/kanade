@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::input::KeyHandler;
+use crate::input::{KeyHandler, LostHandler};
 use crate::{Full, Key, Widget};
 
 pub struct LayerWindow {
@@ -28,6 +28,9 @@ pub struct LayerWindow {
     pub(crate) root: Option<Box<dyn Widget>>,
 
     pub(crate) on_key: Option<KeyHandler>,
+
+    // keys only arrive while the window is focused, so this says when they stop
+    pub(crate) on_lost: Option<LostHandler>,
 }
 
 pub struct LayerWindowNeedsWidth;
@@ -206,6 +209,13 @@ impl LayerWindow {
         self
     }
 
+    // the keyboard focus left the window, as a click elsewhere or another window taking it does
+    pub fn on_lost(mut self, handler: impl Fn() + 'static) -> Self {
+        self.on_lost = Some(Rc::new(handler));
+
+        self
+    }
+
     pub fn child(mut self, child: impl Widget + 'static) -> Self {
         self.root = Some(Box::new(child));
 
@@ -246,6 +256,8 @@ impl LayerWindowNeedsHeight {
             root: None,
 
             on_key: None,
+
+            on_lost: None,
         }
     }
 }

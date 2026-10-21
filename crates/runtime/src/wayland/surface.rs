@@ -10,7 +10,7 @@ use wayland_client::{
 
 use crate::changes::Reads;
 use crate::graphics::Gpu;
-use crate::input::{KeyHandler, Pointer};
+use crate::input::{KeyHandler, LostHandler, Pointer};
 use crate::{InputArea, LayerWindow, Monitor, Widget, Window};
 
 use super::{
@@ -49,6 +49,9 @@ pub struct OpenWindow {
     // both come from the last drawn view, so input matches what is on screen
     pub pointer: Pointer,
     pub on_key: Option<KeyHandler>,
+
+    // the keyboard left this window, which a window that only stands while focused closes on
+    pub on_lost: Option<LostHandler>,
 
     // the gpu draws into the surface, so it has to go first when both are dropped
     pub gpu: Gpu,
@@ -165,6 +168,13 @@ impl View {
     }
 }
 
+// what a window draws and what it does with input, which every kind of window gives the same way
+pub struct Parts {
+    pub root: Option<Box<dyn Widget>>,
+    pub on_key: Option<KeyHandler>,
+    pub on_lost: Option<LostHandler>,
+}
+
 impl Content {
     // the name KANADE_FRAMES logs the window under
     pub fn name(&self) -> &'static str {
@@ -175,10 +185,18 @@ impl Content {
     }
 
     // the widgets and the key handler, drawn and used the same way by every kind of window
-    pub fn into_parts(self) -> (Option<Box<dyn Widget>>, Option<KeyHandler>) {
+    pub fn into_parts(self) -> Parts {
         match self {
-            Content::Layer(window) => (window.root, window.on_key),
-            Content::Normal(window) => (window.root, window.on_key),
+            Content::Layer(window) => Parts {
+                root: window.root,
+                on_key: window.on_key,
+                on_lost: window.on_lost,
+            },
+            Content::Normal(window) => Parts {
+                root: window.root,
+                on_key: window.on_key,
+                on_lost: window.on_lost,
+            },
         }
     }
 }

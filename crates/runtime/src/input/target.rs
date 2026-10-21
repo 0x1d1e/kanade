@@ -15,6 +15,8 @@ pub type ClickHandler = Rc<dyn Fn(Button)>;
 pub type HoverHandler = Rc<dyn Fn(bool)>;
 pub type ScrollHandler = Rc<dyn Fn(Scroll)>;
 pub type KeyHandler = Rc<dyn Fn(Key)>;
+// the keyboard focus left the window, for what only stands while it is there
+pub type LostHandler = Rc<dyn Fn()>;
 pub type PointHandler = Rc<dyn Fn(Point)>;
 pub type DropHandler = Rc<dyn Fn(Vec<PathBuf>)>;
 pub type HoldHandler = Rc<dyn Fn(bool)>;

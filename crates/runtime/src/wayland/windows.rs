@@ -87,6 +87,7 @@ impl WaylandState {
 
             pointer: Pointer::default(),
             on_key: None,
+            on_lost: None,
 
             gpu,
 

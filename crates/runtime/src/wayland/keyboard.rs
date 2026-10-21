@@ -41,6 +41,18 @@ impl KeyboardHandler for WaylandState {
         focus::clear();
         released::send();
 
+        /*
+         * a window that only stands while it is focused, like a detached Launcher, hears it here
+         * and closes; taken out of the window first, since the handler may redraw or open another
+         */
+        let lost = self
+            .window(surface)
+            .and_then(|window| window.on_lost.clone());
+
+        if let Some(lost) = lost {
+            lost();
+        }
+
         self.request_frame_on(surface);
     }
 

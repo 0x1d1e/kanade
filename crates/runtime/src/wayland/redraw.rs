@@ -40,10 +40,10 @@ impl OpenWindow {
             return;
         }
 
-        let (root, on_key) = content.into_parts();
+        let parts = content.into_parts();
 
         // a window without a child has nothing to show, which is a mistake but not a crash
-        let Some(root) = root else {
+        let Some(root) = parts.root else {
             eprintln!("kanade: {name} has no child to draw, see child()");
 
             return;
@@ -58,7 +58,8 @@ impl OpenWindow {
         // the handlers are rebuilt with the view, so each frame replaces the last frame's
         self.pointer.set_targets(frame.targets);
 
-        self.on_key = on_key;
+        self.on_key = parts.on_key;
+        self.on_lost = parts.on_lost;
 
         /*
          * an animation that has not arrived yet needs the next frame too; asking
