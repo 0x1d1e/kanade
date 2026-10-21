@@ -113,7 +113,8 @@ Not worth changing, by this review:
 - [ ] Merged Docks on the left or right of an edge are only roughly aligned with the Island's body.
 - [ ] The Island's hover area and the Dock's overlap in a band; hover is notified for both.
 - [ ] A Keystone's window is as wide as the icons at the largest body, and its row is laid out every frame the Island morphs.
-- [ ] Many apps with a wide Surface open overflow a Keystone's window: `src/merge.rs:285` takes `let width = left + canvas.width + right;` with no clamp to the output, while the height at `:287` is bounded by the strip. It needs `.min(monitor.width)`.
+- [x] Many apps with a wide Surface open overflow a Keystone's window: `src/merge.rs:285` takes `let width = left + canvas.width + right;` with no clamp to the output, while the height at `:287` is bounded by the strip. It needs `.min(monitor.width)`.
+  - Premise no longer holds: `among()` clamps the room beside the canvas before it sizes the window (`src/merge.rs:367`, the width at `:368`; commit 59c4f61), as `crown()` does (`:271`, the width at `:272`; 3f0e362), and the canvas is cut to the output before either (`src/view/shape.rs:109`, `Canvas::within` at `src/island/geometry.rs:46-49`), so a wide Surface open cannot grow it past the monitor. `shell_is_never_wider_than_the_output` (`src/merge.rs:499`) asserts `shell.size.0 <= screen` for both forms, every `Along` and `Edge`, at 900 and 1920; what it pins is the geometry — no one has opened a wide Surface on a merged Keystone and looked.
 - [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
 - [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons). `clearance_of` at `src/merge.rs:93` omits `extent.rise` while the merged window's own height at `:287` and the Dock's plate at `src/dock.rs:1306` both include it, so the gap is `size.icon * (most - 1.0)` — 56 px at `size = "large"`, `magnification = "large"`.
@@ -175,6 +176,9 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] `open_normal` runs the view once only to read title and size.
 - [ ] `Brightness` and `Palette` poll every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
 - [ ] `elide` and the `tail` helpers re-measure from the start per removed letter (quadratic).
+  - `fn tail(query: &str, width: f32) -> Text` is byte-identical in all three copies (`src/surfaces/clipboard.rs:690`, `src/surfaces/search.rs:83`, `src/surfaces/launcher/mod.rs:1236`), so the fix is one copy and two deletions, not three rewrites.
+  - The cost is `(1..letters.len())` over cut positions, each building a fresh `String` and a fresh `Text` and calling `.find(fits)` (`src/surfaces/clipboard.rs:707-715`), so it shapes the text once per removed letter; a binary search over the cuts, or the prefix's width subtracted, is O(log n) or O(n).
+  - One copy has no natural home: the callers are three surfaces' own modules, so it wants a file all of them reach, not a local move.
 - [ ] `disc_angle`'s `DISC` is one process-wide state, so two monitors showing the disc advance it twice per refresh.
 - [x] `Reveal`'s `HONORED` is a `HashMap` keyed by each scroll area's own name, so a serial one area used does not hide the same serial in another (`crates/runtime/src/widgets/reveal.rs`).
 
