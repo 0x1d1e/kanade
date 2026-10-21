@@ -722,6 +722,8 @@ pub fn fit() {
 
 // at start: the body follows the apps and the search from now on
 pub fn start() {
+    service::watch::<config::Reloads>(follow_style);
+    follow_style();
     service::watch::<Connectivity>(follow_radios);
     service::watch::<Adapter>(follow_radios);
     follow_radios();
@@ -732,6 +734,21 @@ pub fn start() {
     service::watch::<windows::Held>(fit);
     service::watch::<IslandService>(choose::follow);
     fit();
+}
+
+/*
+ * `launcher.style`, pushed in: `island/` never reads the config, so the place the Launcher opens
+ * is a field of its own Service, set here at start and on each reload (ADR 0131)
+ */
+fn follow_style() {
+    let style = config::get().launcher_style;
+    let mut island = IslandService::write();
+
+    if island.launcher_style() == style {
+        island.quiet();
+    } else {
+        island.set_launcher_style(style);
+    }
 }
 
 // whether the query searches the clipboard history, which it does only with its Module on

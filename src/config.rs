@@ -43,10 +43,11 @@ use crate::hooks::{self, Commands};
 use crate::idle::schedule::Stages;
 use crate::island::geometry::{self, Shape};
 use crate::island::motion::{Mode, REDUCED_FADE};
+use crate::island::presentation::LauncherStyle;
 use crate::island::service::Timings;
 use crate::look::{
-    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LauncherStyle, LockBackdrop,
-    LyricsSource, Magnify, Merge, Placement, SddmBackground, ShellMode, Tone, UiDescribe, Visualizer,
+    Along, Anchor, Bounce, DockSize, Edge, Entrance, Finish, LockBackdrop, LyricsSource, Magnify,
+    Merge, Placement, SddmBackground, ShellMode, Tone, UiDescribe, Visualizer,
 };
 use crate::modules;
 use crate::sources::accessibility;

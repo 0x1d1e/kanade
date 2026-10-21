@@ -13,7 +13,9 @@ use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
 use super::geometry::{self, Canvas, Hang, Holds, Shape, Sizes, TimePeek};
 use super::motion::{Mode, Spring};
-use super::presentation::{Content, Input, Presentation, Presentations, Prior, Segment, Surface};
+use super::presentation::{
+    Content, Input, LauncherStyle, Presentation, Presentations, Prior, Segment, Surface,
+};
 use super::satellites::{Mark, Satellites};
 
 // how long a morph takes, by what it changes, see `response`: 0.8 of 180, 220 and 180 ms
@@ -333,6 +335,15 @@ impl IslandService {
     // the Surfaces whose Module is off, once at start: none of them opens, by click, command or AutoExpand
     pub fn withhold(&mut self, surfaces: &[Surface]) {
         self.presentations.withhold(surfaces);
+    }
+
+    // `launcher.style`, at start and on each reload, from a watcher outside this module (ADR 0131)
+    pub fn set_launcher_style(&mut self, style: LauncherStyle) {
+        self.presentations.set_launcher_style(style);
+    }
+
+    pub fn launcher_style(&self) -> LauncherStyle {
+        self.presentations.launcher_style()
     }
 
     // the tray items there are now; the pointer at Rest shows them, a slot each
@@ -827,7 +838,15 @@ impl IslandService {
      * the open island, and with none open there is nowhere to open
      */
     pub fn resolve(&self, command: Command) -> Result<Option<Effect>, NoFocus> {
-        let open = self.presentations.expanded();
+        /*
+         * the detached Launcher is no island's Surface, but a window of its own on an output, and
+         * an IPC close or toggle reaches it the same way (ADR 0131)
+         */
+        let open = self.presentations.expanded().or_else(|| {
+            self.presentations
+                .detached_on()
+                .map(|(monitor, _)| (monitor, Surface::Launcher))
+        });
 
         // an island open on another output is not the focused one's to close
         let focused = open.filter(|&(monitor, _)| self.focused(monitor));
