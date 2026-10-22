@@ -1053,6 +1053,24 @@ pub struct Setting {
     pub per_output: bool,
 }
 
+impl Setting {
+    // every field a key does not write: no example, read on reload, the same on every output. A key
+    // that differs from it writes that field and takes the rest from here
+    pub const DEFAULT: Setting = Setting {
+        key: "",
+        label: "",
+        help: "",
+        hint: None,
+        kind: Kind::Switch(Field {
+            get: |_| false,
+            set: |_, _| {},
+        }),
+        example: None,
+        restart: false,
+        per_output: false,
+    };
+}
+
 // where in `Config` a key's value goes, as the one type its Kind reads
 pub struct Field<T> {
     pub get: fn(&Config) -> T,
@@ -1522,9 +1540,7 @@ pub const ISLAND: &[Setting] = &[
                 config.island.motion = if reduced { Mode::Reduced } else { Mode::Spring };
             },
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "clock",
@@ -1546,9 +1562,8 @@ pub const ISLAND: &[Setting] = &[
                 },
             },
         ),
-        example: None,
-        restart: false,
         per_output: true,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timings.hover",
@@ -1559,9 +1574,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island.hover,
             set: |config, hover| config.island.hover = hover,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timings.expand",
@@ -1572,9 +1585,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island.expand,
             set: |config, expand| config.island.expand = expand,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timings.surface_change",
@@ -1585,9 +1596,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island.surface_change,
             set: |config, change| config.island.surface_change = change,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timings.collapse",
@@ -1598,9 +1607,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island.collapse,
             set: |config, collapse| config.island.collapse = collapse,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timings.grace",
@@ -1611,9 +1618,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island.grace,
             set: |config, grace| config.island.grace = grace,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     // the island's, since `workspace` reads it as well as `osd`
     Setting {
@@ -1625,9 +1630,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.osd,
             set: |config, osd| config.osd = osd,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "theme.palette",
@@ -1639,8 +1642,7 @@ pub const ISLAND: &[Setting] = &[
             set: |config, palette| config.palette = palette,
         }),
         example: Some("\"~/Pictures/wallpaper.jpg\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "shell.mode",
@@ -1654,9 +1656,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.shell.mode = ShellMode::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "shell.edge",
@@ -1670,9 +1670,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.shell.anchor.edge = Edge::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "shell.align",
@@ -1686,9 +1684,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.shell.anchor.along = Along::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.tone",
@@ -1702,9 +1698,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.appearance.tone = Tone::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.finish",
@@ -1718,9 +1712,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.appearance.finish = Finish::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.sync",
@@ -1731,9 +1723,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.appearance.sync,
             set: |config, sync| config.appearance.sync = sync,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.accessibility",
@@ -1744,9 +1734,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.appearance.accessibility,
             set: |config, follow| config.appearance.accessibility = follow,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "animation.speed",
@@ -1760,9 +1748,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, speed| config.animation_speed = speed,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.motion",
@@ -1776,9 +1762,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.island.damping = Bounce::named(name).damping(),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.font",
@@ -1793,7 +1777,7 @@ pub const ISLAND: &[Setting] = &[
 
         // the runtime takes the font as the app starts
         restart: true,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "appearance.scale",
@@ -1807,9 +1791,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, scale| config.appearance.scale = scale,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.edge",
@@ -1823,9 +1805,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.island_place.anchor.edge = Edge::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.align",
@@ -1839,9 +1819,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.island_place.anchor.along = Along::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.width",
@@ -1855,9 +1833,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, px| config.largest.width = px,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.height",
@@ -1871,9 +1847,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, px| config.largest.height = px,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.autohide",
@@ -1884,9 +1858,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island_place.autohide,
             set: |config, on| config.island_place.autohide = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.reserve",
@@ -1897,9 +1869,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island_place.reserve,
             set: |config, on| config.island_place.reserve = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.wheel",
@@ -1910,9 +1880,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.island_wheel,
             set: |config, on| config.island_wheel = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "island.device_events",
@@ -1923,9 +1891,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.device_events,
             set: |config, on| config.device_events = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "rest.clock",
@@ -1936,9 +1902,8 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.rest.clock,
             set: |config, on| config.rest.clock = on,
         }),
-        example: None,
-        restart: false,
         per_output: true,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "rest.battery",
@@ -1949,9 +1914,8 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.rest.battery,
             set: |config, on| config.rest.battery = on,
         }),
-        example: None,
-        restart: false,
         per_output: true,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "rest.peek.battery",
@@ -1962,9 +1926,8 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.rest.peek_battery,
             set: |config, on| config.rest.peek_battery = on,
         }),
-        example: None,
-        restart: false,
         per_output: true,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "rest.peek.weather",
@@ -1975,9 +1938,8 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.rest.weather,
             set: |config, on| config.rest.weather = on,
         }),
-        example: None,
-        restart: false,
         per_output: true,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "rest.peek.agenda",
@@ -1988,9 +1950,8 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.rest.agenda,
             set: |config, on| config.rest.agenda = on,
         }),
-        example: None,
-        restart: false,
         per_output: true,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "privacy.indicators",
@@ -2001,9 +1962,7 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.privacy_indicators,
             set: |config, on| config.privacy_indicators = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "banners.entrance",
@@ -2017,9 +1976,7 @@ pub const ISLAND: &[Setting] = &[
                 set: |config, name| config.entrance = Entrance::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     // the island's, since it cannot be turned off
     Setting {
@@ -2031,11 +1988,10 @@ pub const ISLAND: &[Setting] = &[
             get: |config| config.off.clone(),
             set: |config, off| config.off = off,
         }),
-        example: None,
 
         // the runtime registers windows only at start
         restart: true,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2049,9 +2005,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
             get: |config| config.notification_sound,
             set: |config, on| config.notification_sound = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.fullscreen_silence",
@@ -2062,9 +2016,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
             get: |config| config.notification_fullscreen_silence,
             set: |config, on| config.notification_fullscreen_silence = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.sound_file",
@@ -2076,8 +2028,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
             set: |config, file| config.notification_sounds.file = file,
         }),
         example: Some("\"~/Music/ding.oga\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.sound_volume",
@@ -2091,9 +2042,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
                 set: |config, volume| config.notification_sounds.volume = volume,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.sound_low",
@@ -2105,8 +2054,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
             set: |config, sound| config.notification_sounds.low = sound,
         }),
         example: Some("\"off\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.sound_normal",
@@ -2118,8 +2066,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
             set: |config, sound| config.notification_sounds.normal = sound,
         }),
         example: Some("\"message-new-instant\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.sound_critical",
@@ -2131,8 +2078,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
             set: |config, sound| config.notification_sounds.critical = sound,
         }),
         example: Some("\"~/Music/alarm.oga\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "notifications.rules",
@@ -2146,8 +2092,7 @@ pub const NOTIFICATIONS: &[Setting] = &[
         example: Some(
             "[{ app = \"Slack\", banner = false }, { summary = \"battery\", bypass_dnd = true }]",
         ),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2160,9 +2105,7 @@ pub const OSD: &[Setting] = &[Setting {
         get: |config| config.osd_layout,
         set: |config, on| config.osd_layout = on,
     }),
-    example: None,
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 pub const WINDOWS: &[Setting] = &[Setting {
@@ -2175,8 +2118,7 @@ pub const WINDOWS: &[Setting] = &[Setting {
         set: |config, apps| config.apps = apps,
     }),
     example: Some("{ jetbrains-idea = \"intellij-idea-ultimate-edition\" }"),
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 pub const GESTURES: &[Setting] = &[Setting {
@@ -2189,8 +2131,7 @@ pub const GESTURES: &[Setting] = &[Setting {
         set: |config, gestures| config.gestures = gestures,
     }),
     example: Some("{ circle = \"launcher open\", check = \"island collapse\" }"),
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 pub const DOCK: &[Setting] = &[
@@ -2204,8 +2145,7 @@ pub const DOCK: &[Setting] = &[
             set: |config, pinned| config.pinned = pinned,
         }),
         example: Some("[\"firefox\", \"kitty\"]"),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.edge",
@@ -2219,9 +2159,7 @@ pub const DOCK: &[Setting] = &[
                 set: |config, name| config.dock_place.anchor.edge = Edge::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.align",
@@ -2235,9 +2173,7 @@ pub const DOCK: &[Setting] = &[
                 set: |config, name| config.dock_place.anchor.along = Along::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.autohide",
@@ -2248,9 +2184,7 @@ pub const DOCK: &[Setting] = &[
             get: |config| config.dock_place.autohide,
             set: |config, on| config.dock_place.autohide = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.reserve",
@@ -2261,9 +2195,7 @@ pub const DOCK: &[Setting] = &[
             get: |config| config.dock_place.reserve,
             set: |config, on| config.dock_place.reserve = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.magnification",
@@ -2277,9 +2209,7 @@ pub const DOCK: &[Setting] = &[
                 set: |config, name| config.magnify = Magnify::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.size",
@@ -2293,9 +2223,7 @@ pub const DOCK: &[Setting] = &[
                 set: |config, name| config.dock_size = DockSize::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dock.merge",
@@ -2309,9 +2237,7 @@ pub const DOCK: &[Setting] = &[
                 set: |config, name| config.merge = Merge::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2326,8 +2252,7 @@ pub const WALLPAPER: &[Setting] = &[
             set: |config, wallpapers| config.wallpapers = wallpapers,
         }),
         example: Some("\"~/Pictures/Wallpapers\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "wallpaper.per_monitor",
@@ -2338,9 +2263,7 @@ pub const WALLPAPER: &[Setting] = &[
             get: |config| config.wallpaper_per_monitor,
             set: |config, on| config.wallpaper_per_monitor = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "wallpaper.transition",
@@ -2354,9 +2277,7 @@ pub const WALLPAPER: &[Setting] = &[
                 set: |config, kind| config.transition.kind = kind,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "wallpaper.transition_duration",
@@ -2367,9 +2288,7 @@ pub const WALLPAPER: &[Setting] = &[
             get: |config| config.transition.duration,
             set: |config, duration| config.transition.duration = duration,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2386,9 +2305,7 @@ pub const TIMER: &[Setting] = &[
                 set: |config, minutes| config.pomodoro.work = minutes,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timer.pomodoro.break",
@@ -2402,9 +2319,7 @@ pub const TIMER: &[Setting] = &[
                 set: |config, minutes| config.pomodoro.short = minutes,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timer.pomodoro.long_break",
@@ -2418,9 +2333,7 @@ pub const TIMER: &[Setting] = &[
                 set: |config, minutes| config.pomodoro.long = minutes,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "timer.pomodoro.rounds",
@@ -2434,9 +2347,7 @@ pub const TIMER: &[Setting] = &[
                 set: |config, rounds| config.pomodoro.rounds = rounds,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2451,8 +2362,7 @@ pub const CALENDAR: &[Setting] = &[Setting {
         set: |config, calendars| config.calendars = calendars,
     }),
     example: Some("[\"~/.local/share/calendars\", \"~/Documents/holidays.ics\"]"),
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 // the longest lead `calendar.reminder` takes, a week
@@ -2475,9 +2385,7 @@ pub const REMINDERS: &[Setting] = &[Setting {
             },
         },
     ),
-    example: None,
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 // how many feeds `calendar.subscriptions` takes
@@ -2503,8 +2411,7 @@ pub const SUBSCRIPTIONS: &[Setting] = &[
             set: |config, urls| config.subscriptions = urls,
         }),
         example: Some("[\"https://example.org/holidays.ics\", \"webcal://example.org/team.ics\"]"),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "calendar.subscription_interval",
@@ -2521,9 +2428,7 @@ pub const SUBSCRIPTIONS: &[Setting] = &[
                 },
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2539,8 +2444,7 @@ pub const WEATHER: &[Setting] = &[
             set: |config, location| config.location = location,
         }),
         example: Some("[52.52, 13.41]"),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "weather.place",
@@ -2552,8 +2456,7 @@ pub const WEATHER: &[Setting] = &[
             set: |config, place| config.place = place,
         }),
         example: Some("\"Berlin\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "weather.units",
@@ -2581,9 +2484,7 @@ pub const WEATHER: &[Setting] = &[
                 },
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2600,9 +2501,7 @@ pub const MEDIA: &[Setting] = &[
                 set: |config, name| config.visualizer = Visualizer::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "media.lyrics",
@@ -2616,9 +2515,7 @@ pub const MEDIA: &[Setting] = &[
                 set: |config, name| config.lyrics = LyricsSource::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2634,9 +2531,7 @@ pub const UI: &[Setting] = &[Setting {
             set: |config, name| config.ui_describe = UiDescribe::named(name),
         },
     ),
-    example: None,
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 pub const LAUNCHER: &[Setting] = &[
@@ -2649,9 +2544,7 @@ pub const LAUNCHER: &[Setting] = &[
             get: |config| config.launcher_actions,
             set: |config, on| config.launcher_actions = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "launcher.commands",
@@ -2662,9 +2555,7 @@ pub const LAUNCHER: &[Setting] = &[
             get: |config| config.launcher_commands,
             set: |config, on| config.launcher_commands = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "launcher.style",
@@ -2681,9 +2572,7 @@ pub const LAUNCHER: &[Setting] = &[
                 set: |config, name| config.launcher_style = LauncherStyle::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2696,9 +2585,7 @@ pub const SETTINGS: &[Setting] = &[Setting {
         get: |config| config.health_notice,
         set: |config, on| config.health_notice = on,
     }),
-    example: None,
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 pub const LIVE_STALE: Range = Range {
@@ -2718,9 +2605,7 @@ pub const LIVE: &[Setting] = &[Setting {
             set: |config, stale| config.live_stale = stale,
         },
     ),
-    example: None,
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 // the longest `lock.grace`, so a lock the idle Module asked for is never open for long (ADR 0066)
@@ -2739,9 +2624,7 @@ pub const LOCK: &[Setting] = &[
                 set: |config, name| config.lock_backdrop = LockBackdrop::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "lock.pam_service",
@@ -2753,8 +2636,7 @@ pub const LOCK: &[Setting] = &[
             set: |config, service| config.lock_pam = service,
         }),
         example: Some("\"login\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "lock.grace",
@@ -2768,9 +2650,7 @@ pub const LOCK: &[Setting] = &[
                 set: |config, seconds| config.lock_grace = seconds,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2796,8 +2676,7 @@ pub const SDDM: &[Setting] = &[
             set: |config, theme| config.sddm_theme = theme,
         }),
         example: Some("\"kanade\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "sddm.background",
@@ -2811,9 +2690,7 @@ pub const SDDM: &[Setting] = &[
                 set: |config, name| config.sddm_background = SddmBackground::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "sddm.background_path",
@@ -2825,8 +2702,7 @@ pub const SDDM: &[Setting] = &[
             set: |config, path| config.sddm_background_path = path,
         }),
         example: Some("\"~/Pictures/login.png\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "sddm.surface",
@@ -2838,8 +2714,7 @@ pub const SDDM: &[Setting] = &[
             set: |config, surface| config.sddm_surface = surface,
         }),
         example: Some("\"#0c0d11\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "sddm.blur",
@@ -2853,9 +2728,7 @@ pub const SDDM: &[Setting] = &[
                 set: |config, blur| config.sddm_blur = blur,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "sddm.dim",
@@ -2869,9 +2742,7 @@ pub const SDDM: &[Setting] = &[
                 set: |config, dim| config.sddm_dim = dim,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "sddm.sync",
@@ -2882,9 +2753,7 @@ pub const SDDM: &[Setting] = &[
             get: |config| config.sddm_sync,
             set: |config, on| config.sddm_sync = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2918,9 +2787,7 @@ pub const IDLE: &[Setting] = &[
                 set: |config, seconds| config.idle.dim = after(seconds),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "idle.lock",
@@ -2934,9 +2801,7 @@ pub const IDLE: &[Setting] = &[
                 set: |config, seconds| config.idle.lock = after(seconds),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "idle.screen_off",
@@ -2950,9 +2815,7 @@ pub const IDLE: &[Setting] = &[
                 set: |config, seconds| config.idle.screen_off = after(seconds),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "idle.suspend",
@@ -2966,9 +2829,7 @@ pub const IDLE: &[Setting] = &[
                 set: |config, seconds| config.idle.suspend = after(seconds),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -2985,9 +2846,7 @@ pub const BATTERY: &[Setting] = &[
                 set: |config, low| config.battery.low = low,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "battery.critical",
@@ -3001,9 +2860,7 @@ pub const BATTERY: &[Setting] = &[
                 set: |config, critical| config.battery.critical = critical,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "battery.critical_action",
@@ -3025,9 +2882,7 @@ pub const BATTERY: &[Setting] = &[
                 set: |config, name| config.battery.critical_action = CriticalAction::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -3050,9 +2905,8 @@ pub const BRIGHTNESS: &[Setting] = &[Setting {
             set: |config, name| config.brightness_backend = Backend::named(name),
         },
     ),
-    example: None,
     restart: true,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 pub const RECORDING: &[Setting] = &[
@@ -3076,9 +2930,7 @@ pub const RECORDING: &[Setting] = &[
                 set: |config, name| config.recording.quality = Quality::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "recording.encoder",
@@ -3100,9 +2952,7 @@ pub const RECORDING: &[Setting] = &[
                 set: |config, name| config.recording.encoder = Preference::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "recording.device",
@@ -3114,8 +2964,7 @@ pub const RECORDING: &[Setting] = &[
             set: |config, device| config.recording.device = device,
         }),
         example: Some("\"/dev/dri/renderD128\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -3135,9 +2984,7 @@ pub const DICTATE: &[Setting] = &[
                 set: |config, name| config.dictate.insert = Insertion::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "dictate.never_in",
@@ -3149,8 +2996,7 @@ pub const DICTATE: &[Setting] = &[
             set: |config, apps| config.dictate.never_in = apps,
         }),
         example: Some("[\"org.keepassxc.KeePassXC\"]"),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -3170,9 +3016,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
                 set: |config, name| config.night_light.mode = NightMode::named(name),
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "night-light.temperature",
@@ -3186,9 +3030,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
                 set: |config, kelvin| config.night_light.temperature = kelvin,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "night-light.sunset",
@@ -3200,8 +3042,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
             set: |config, time| config.night_light.sunset = time,
         }),
         example: Some("\"20:00\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "night-light.sunrise",
@@ -3213,8 +3054,7 @@ pub const NIGHT_LIGHT: &[Setting] = &[
             set: |config, time| config.night_light.sunrise = time,
         }),
         example: Some("\"07:00\""),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -3240,9 +3080,7 @@ pub const FOCUS: &[Setting] = &[
             get: |config| config.focus.dnd,
             set: |config, on| config.focus.dnd = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "focus.caffeine",
@@ -3253,9 +3091,7 @@ pub const FOCUS: &[Setting] = &[
             get: |config| config.focus.caffeine,
             set: |config, on| config.focus.caffeine = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "focus.night_light",
@@ -3266,9 +3102,7 @@ pub const FOCUS: &[Setting] = &[
             get: |config| config.focus.night_light,
             set: |config, on| config.focus.night_light = on,
         }),
-        example: None,
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
     Setting {
         key: "focus.auto",
@@ -3289,8 +3123,7 @@ pub const FOCUS: &[Setting] = &[
             },
         ),
         example: Some("[\"cast\"]"),
-        restart: false,
-        per_output: false,
+        ..Setting::DEFAULT
     },
 ];
 
@@ -3303,9 +3136,7 @@ pub const CONTROLS: &[Setting] = &[Setting {
         get: |config| config.tiles.clone(),
         set: |config, tiles| config.tiles = tiles,
     }),
-    example: None,
-    restart: false,
-    per_output: false,
+    ..Setting::DEFAULT
 }];
 
 // a desktop file id, given with or without its `.desktop`
