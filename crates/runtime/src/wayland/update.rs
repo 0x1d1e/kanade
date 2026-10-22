@@ -12,13 +12,17 @@ use super::{
 };
 
 impl OpenWindow {
-    // settings changed by input or services reach the compositor before anything is drawn
-    pub fn update_surface(&mut self, content: &Content) {
+    /*
+     * settings changed by input or services reach the compositor before anything is drawn; true
+     * when a change is queued that only a commit sends, which the caller makes when it draws no
+     * frame to carry it
+     */
+    pub fn update_surface(&mut self, content: &Content) -> bool {
         // a normal window's title and size are only read when it opens
         let window = match content {
             Content::Layer(window) => window,
 
-            Content::Normal(_) => return,
+            Content::Normal(_) => return false,
         };
 
         self.update_input_region(window);
@@ -37,13 +41,13 @@ impl OpenWindow {
             settings: current,
         } = &mut self.role
         else {
-            return;
+            return false;
         };
 
         let settings = Settings::new(window, ui_scale::ui_scale());
 
         if settings == *current {
-            return;
+            return false;
         }
 
         let was_visible = current.visible;
@@ -56,16 +60,17 @@ impl OpenWindow {
                 self.hide();
             }
 
-            return;
+            return false;
         }
 
         /*
-         * a commit without a buffer also shows a hidden window again,
-         * the compositor answers with a configure and drawing starts there
+         * the frame this window is about to present carries these out with its own commit; only a
+         * window that presents none needs the commit here, and that commit without a buffer is
+         * also what shows a hidden window again, the compositor answering with a configure
          */
         layer::apply(layer_surface, &settings);
 
-        self.role.commit();
+        true
     }
 
     // only a changed region is sent, it takes effect with the next commit like the rest

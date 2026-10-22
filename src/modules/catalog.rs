@@ -154,7 +154,7 @@ pub const ALL: &[Module] = &[
 
             app.window_per_monitor(view::reserve)
                 .window_per_monitor(view::island)
-                .ipc(cli::HANDLER, ipc::answer)
+                .ipc(cli::HANDLER, ipc::answer, ipc::draws)
         },
     },
     // a switch the island's niri stream tells of

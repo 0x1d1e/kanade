@@ -42,10 +42,15 @@ impl OpenWindow {
             _ => name,
         };
 
-        self.update_surface(&content);
+        // whether a layer change still needs a commit, which only the frame below would make
+        let changed = self.update_surface(&content);
 
         // 0 until the compositor configures the window, and again while it is hidden
         if self.width == 0 || self.height == 0 {
+            if changed {
+                self.role.commit();
+            }
+
             return;
         }
 
@@ -62,6 +67,10 @@ impl OpenWindow {
         // a window without a child has nothing to show, which is a mistake but not a crash
         let Some(root) = parts.root else {
             eprintln!("kanade: {name} has no child to draw, see child()");
+
+            if changed {
+                self.role.commit();
+            }
 
             return;
         };
@@ -106,7 +115,7 @@ impl OpenWindow {
         self.last_frame = Some(started);
 
         // a skipped frame commits nothing, so the request goes out on its own
-        if !presented && frame.moving {
+        if !presented && (frame.moving || changed) {
             self.role.commit();
         }
     }

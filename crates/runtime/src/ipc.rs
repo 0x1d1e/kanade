@@ -22,6 +22,28 @@ pub struct IpcCall {
  */
 type Handler = fn(&[String], IpcReply);
 
+/*
+ * whether a call changes what a window draws itself, on top of whatever Services it writes: a
+ * handler that leaves every change to a Service does not, since the write already asked the event
+ * loop for the frames of the windows that read it. Marking every window for a call that drew
+ * nothing only drew frames the change never needed
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Draws {
+    Yes,
+    No,
+}
+
+impl Draws {
+    pub fn of(draws: bool) -> Self {
+        if draws { Draws::Yes } else { Draws::No }
+    }
+
+    pub fn any(self) -> bool {
+        self == Draws::Yes
+    }
+}
+
 // where one call's answer goes; the caller waits on it until it is sent or dropped
 pub struct IpcReply {
     stream: UnixStream,
@@ -55,9 +77,17 @@ fn written(mut stream: UnixStream, reply: &str) {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Registered {
+    pub handler: Handler,
+
+    // read before the handler runs, from the words of the call alone
+    pub draws: fn(&[String]) -> Draws,
+}
+
 #[derive(Default)]
 pub struct IpcHandlers {
-    pub by_name: HashMap<String, Handler>,
+    pub by_name: HashMap<String, Registered>,
 }
 
 impl IpcCall {
@@ -122,18 +152,26 @@ impl<R: Read> Read for Bounded<R> {
 }
 
 impl IpcHandlers {
-    pub fn insert(&mut self, name: &str, handler: Handler) {
-        self.by_name.insert(String::from(name), handler);
+    pub fn insert(&mut self, name: &str, handler: Handler, draws: fn(&[String]) -> Draws) {
+        self.by_name
+            .insert(String::from(name), Registered { handler, draws });
     }
 
-    // the reply is whatever the handler sends, so an unknown name answers in words too
-    pub fn run(&self, call: &IpcCall, reply: IpcReply) {
-        let Some(handler) = self.by_name.get(&call.name) else {
+    /*
+     * runs one call, answering what it drew: the reply is whatever the handler sends, so an
+     * unknown name answers in words too, and draws nothing
+     */
+    pub fn run(&self, call: &IpcCall, reply: IpcReply) -> Draws {
+        let Some(registered) = self.by_name.get(&call.name) else {
             reply.send(&format!("no handler named {}", call.name));
-            return;
+            return Draws::No;
         };
 
-        handler(&call.arguments, reply);
+        let draws = (registered.draws)(&call.arguments);
+
+        (registered.handler)(&call.arguments, reply);
+
+        draws
     }
 }
 
@@ -158,6 +196,53 @@ mod tests {
         let long = vec![b'x'; MOST as usize + 1];
         let error = IpcCall::read(long.as_slice()).err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    fn answering(_: &[String], reply: IpcReply) {
+        reply.send("answered");
+    }
+
+    fn drawn(_: &[String]) -> Draws {
+        Draws::Yes
+    }
+
+    fn undrawn(_: &[String]) -> Draws {
+        Draws::No
+    }
+
+    /*
+     * what a call drew is its handler's answer, which the event loop reads to know whether the
+     * windows must be drawn again: a handler that leaves its change to a Service write is not,
+     * and a name with no handler is answered in words and draws nothing either
+     */
+    #[test]
+    fn a_call_answers_what_its_handler_drew() {
+        let mut handlers = IpcHandlers::default();
+
+        handlers.insert("drawn", answering, drawn);
+        handlers.insert("undrawn", answering, undrawn);
+
+        for (name, expected) in [("drawn", Draws::Yes), ("undrawn", Draws::No)] {
+            let call = IpcCall::read(format!("{name}\n").as_bytes()).unwrap();
+            let (writing, mut reading) = UnixStream::pair().unwrap();
+
+            assert_eq!(handlers.run(&call, IpcReply::new(writing)), expected);
+
+            let mut answer = String::new();
+            reading.read_to_string(&mut answer).unwrap();
+
+            assert_eq!(answer, "answered");
+        }
+
+        let call = IpcCall::read("unknown\n".as_bytes()).unwrap();
+        let (writing, mut reading) = UnixStream::pair().unwrap();
+
+        assert_eq!(handlers.run(&call, IpcReply::new(writing)), Draws::No);
+
+        let mut answer = String::new();
+        reading.read_to_string(&mut answer).unwrap();
+
+        assert_eq!(answer, "no handler named unknown");
     }
 }
 

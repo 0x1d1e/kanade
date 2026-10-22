@@ -1,7 +1,7 @@
 use crate::allocator;
 use crate::graphics::font;
 use crate::input::released;
-use crate::ipc::{IpcHandlers, IpcReply};
+use crate::ipc::{Draws, IpcHandlers, IpcReply};
 use crate::wayland::WaylandApp;
 use crate::window::Named;
 use crate::{LayerWindow, Monitor, Window};
@@ -51,9 +51,16 @@ impl App {
     }
 
     // lets `kanade <name> [arguments...]` run the handler while the shell is running; it answers
-    // through the reply, at once or once it knows
-    pub fn ipc(mut self, name: &str, handler: fn(&[String], IpcReply)) -> Self {
-        self.handlers.insert(name, handler);
+    // through the reply, at once or once it knows. `draws` says whether a call changes what a
+    // window draws beyond the Services it writes: the windows are drawn again after one that
+    // does, and a call that only writes Services is left to the frames that write asked for
+    pub fn ipc(
+        mut self,
+        name: &str,
+        handler: fn(&[String], IpcReply),
+        draws: fn(&[String]) -> Draws,
+    ) -> Self {
+        self.handlers.insert(name, handler, draws);
 
         self
     }

@@ -46,12 +46,19 @@ pub fn insert(handle: &LoopHandle<'static, WaylandState>, handlers: IpcHandlers)
     handle
         .insert_source(source, move |(), _, state| {
             for (call, reply) in taken() {
-                handlers.run(&call, reply);
+                let draws = handlers.run(&call, reply);
 
-                // a `kanade ui` call was queued for the windows, which this has
+                /*
+                 * a `kanade ui` call was queued for the windows, which this has; an act pressed,
+                 * typed or scrolled in one asks for that window's own frame there, while a describe
+                 * or a find only read them. A call that drew nothing itself left every change to a
+                 * Service, whose write already asked for the frames of the windows that read it
+                 */
                 state.serve_ui();
 
-                state.request_frames();
+                if draws.any() {
+                    state.request_frames();
+                }
             }
         })
         .expect("failed to insert ipc wake ping");

@@ -4,8 +4,8 @@
 use std::time::Instant;
 
 use crate::sources::notifications::Notifications;
-use kanade_runtime::IpcReply;
 use kanade_runtime::service::Service;
+use kanade_runtime::{Draws, IpcReply};
 
 use crate::cli::{self, Call, Reply};
 use crate::gesture;
@@ -73,6 +73,105 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
         Ok(call) => reply.send(&run(call).encode()),
         Err(refused) => reply.send(&refused.encode()),
     }
+}
+
+/*
+ * what a call draws beyond the Services it writes, from its words, before the handler runs. A
+ * `Write` of a Service already marks it, so the event loop draws every window that read it; a call
+ * whose handler leaves every change to such a write therefore needs no redraw of its own. What it
+ * must have is a redraw of its own when it changes something no Service carries.
+ *
+ * `Yes` is kept for the four that do, and for anything a later call adds without a decision here:
+ *
+ * - `settings` and `close-settings` open or close a window of the runtime's;
+ * - `gesture` draws, records or closes the overlay window, which appears from hidden;
+ * - `osd` shows a Surface at once;
+ * - `brightness` writes a monitor's level to the DDC thread, which returns a quiet write, so
+ *   nothing else would draw the Controls tile or the OSD it moved.
+ *
+ * `No` is everything else, which changes what a window shows only through a Service or the config:
+ *
+ * - the Island's own state (`IslandService`), and a Source's Service, which the `watch`es derive
+ *   from (`activity`, `notifications clear`, `clipboard clear`, `caffeine`, `dnd`, `focus`,
+ *   `dictate`, `battery`, `media`, `wifi`, `bluetooth`, `power-profile`, `wallpaper`,
+ *   `reminders`, `weather`, `subscriptions`, `session`, `lock`, `dmenu`);
+ * - the Settings file, which `settings::refresh` puts in the Settings Service and
+ *   `config::announce` in the `Reloads` one, so the Settings window and every view of the config
+ *   draw from those writes (`reload`, `night-light`, `modules enable|disable`);
+ * - a window the runtime opens or closes, which `open_window`/`close_window` mark every window for;
+ * - a `ui` act, which draws the one window it reached through that window's own
+ *   `request_frame_on` (`crates/runtime/src/wayland/ui.rs`), so the call draws nothing itself;
+ * - nothing at all: an answer read from state (`status`, `modules`, `lock status`, `idle status`,
+ *   `validate`, `activity pressed`), a refusal, a file outside the config (`gesture forget`), a
+ *   describe or a find in the windows, or a call niri or a daemon carries out over its own socket
+ *   (a screenshot, a cast, a wallpaper through awww, a profile through power-profiles-daemon).
+ *
+ * A call that does not parse changes nothing. A call whose Module is off is answered with a
+ * refusal, and reads no Module here to say so: `modules::on` is read by views, so asking it on this
+ * thread would note a read for a window that is not drawing
+ */
+pub fn draws(arguments: &[String]) -> Draws {
+    let words: Vec<&str> = arguments.iter().map(String::as_str).collect();
+
+    let Ok((_, call)) = cli::parse(&words) else {
+        return Draws::No;
+    };
+
+    Draws::of(match call {
+        // a window of the runtime's is opened or closed
+        Call::Settings(_) | Call::CloseSettings => true,
+
+        // the overlay window, which `gesture::window` draws, appears from hidden or fades
+        Call::Gesture(gesture::Request::Draw | gesture::Request::Record(_)) => true,
+
+        // a Surface shown at once
+        Call::Osd(_) => true,
+
+        // the DDC path writes quietly, so this is the only redraw its level gets; a status is a read
+        Call::Brightness(brightness::Request::Status) => false,
+
+        Call::Brightness(_) => true,
+
+        Call::Island(_)
+        | Call::Timer(_)
+        | Call::Live(_)
+        | Call::Dmenu(_)
+        | Call::ClearNotifications
+        | Call::ClearClipboard
+        | Call::Screenshot(_)
+        | Call::Cast(_)
+        | Call::PickColor
+        | Call::Record(_)
+        | Call::Caffeine(_)
+        | Call::Dictate(_)
+        | Call::Battery(_)
+        | Call::Media(_)
+        | Call::Wifi(_)
+        | Call::Bluetooth(_)
+        | Call::PowerProfile(_)
+        | Call::Wallpaper(_)
+        | Call::NightLight(_)
+        | Call::Dnd(_)
+        | Call::Focus(_)
+        | Call::Google(_)
+        | Call::Reminders(_)
+        | Call::Weather(_)
+        | Call::Subscriptions(_)
+        | Call::Session(_)
+        | Call::Reload
+        | Call::Validate
+        | Call::Turn(_, _)
+        // written to its own file, or listed, and no overlay is drawn for it
+        | Call::Gesture(gesture::Request::Forget(_) | gesture::Request::List)
+        // the lock screen is `crates/lock`'s own process, and the lock's state is a Service
+        | Call::Lock
+        | Call::LockStatus
+        | Call::IdleStatus
+        | Call::Status
+        | Call::Modules
+        // an act draws the one window it reached through that window's own `request_frame_on`
+        | Call::Ui(_) => false,
+    })
 }
 
 fn run(call: Call) -> Reply {
