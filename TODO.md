@@ -174,11 +174,11 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] `update_surface` commits a layer change, then `present` commits the frame; the first commit is how a hidden window shows again. A property-only change could skip it.
 - [ ] `open_normal` runs the view once only to read title and size.
 - [ ] `Brightness` polls every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
-- [ ] `elide` and the `tail` helpers re-measure from the start per removed letter (quadratic).
-  - `fn tail(query: &str, width: f32) -> Text` is byte-identical in all three copies (`src/surfaces/clipboard.rs:690`, `src/surfaces/search.rs:83`, `src/surfaces/launcher/mod.rs:1236`), so the fix is one copy and two deletions, not three rewrites.
-  - The cost is `(1..letters.len())` over cut positions, each building a fresh `String` and a fresh `Text` and calling `.find(fits)` (`src/surfaces/clipboard.rs:707-715`), so it shapes the text once per removed letter; a binary search over the cuts, or the prefix's width subtracted, is O(log n) or O(n).
-  - One copy has no natural home: the callers are three surfaces' own modules, so it wants a file all of them reach, not a local move.
-- [ ] `disc_angle`'s `DISC` is one process-wide state, so two monitors showing the disc advance it twice per refresh.
+- [x] `elide` and the `tail` helpers re-measured from the start per removed letter (quadratic).
+  - Premise no longer holds: there is one `fn tail` (`src/surfaces/search.rs:83`) and it halves into the cut that fits, one `Text` measured per probe, so it shapes the text O(log n) times rather than once per removed letter; `clipboard.rs` and `launcher/mod.rs` both call `super::search::tail` (`src/surfaces/clipboard.rs:653`, `src/surfaces/launcher/mod.rs:1364`).
+  - `fn elided` accumulates the advances once over the line (`crates/runtime/src/widgets/text/lines.rs:130`), pinned letter for letter against eliding one at a time by `elided_one_letter_at_a_time` (`:182`).
+- [x] `disc_angle`'s `DISC` was one process-wide state, so two monitors showing the disc advanced it twice per refresh.
+  - Premise no longer holds: the angle is keyed by output name, so each output turns only its own, pinned by `a_disc_on_one_output_turns_only_its_own_angle` (`src/view/media.rs:491`).
 - [x] `Reveal`'s `HONORED` is a `HashMap` keyed by each scroll area's own name, so a serial one area used does not hide the same serial in another (`crates/runtime/src/widgets/reveal.rs`).
 
 ## From the trend-improvements review (unfixed polish)
@@ -228,8 +228,10 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 ## Clipboard pins and previews (ADR 0114, 0115, low-level, unfixed)
 
 - [ ] Pins persist (ADR 0115) as one file rewritten whole on each change, up to 16 MiB; one save thread per change, each taking the latest set, so a burst of pins writes more than needed.
+  - Premise no longer holds for the thread half: `follow` is one long-lived worker (`src/sources/clipboard/pins.rs:462`) and `batch` drains the asks that queued during a write into that one write (`:478`), so a burst is one batch, pinned by `a_burst_of_changes_is_one_batch` (`:568`). The whole-file rewrite stands.
 - [ ] A newer Kanade's pins file, or one that could not be read at start, turns saving off for the run; a damaged one is kept as `clipboard-pins.bak`, which Kanade never removes.
-- [ ] A pin change right before exit may not be saved: the save thread is detached.
+- [x] A pin change right before exit may not be saved: the save thread is detached.
+  - Premise no longer holds: the clean exit calls `pins::flush()` (`src/main.rs:88`), which saves and waits for the file, and `ASKED` (`src/sources/clipboard/pins.rs:382`) keeps it from writing where no pin changed this run.
 - [ ] Not run: a restart with pinned text and pictures on the session (pins back in order, thumbnails regenerated, Launcher `>`, unpin removes them from the file).
 
 - [x] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.

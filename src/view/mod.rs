@@ -394,6 +394,7 @@ pub fn island(monitor: &Monitor) -> LayerWindow {
     if !island.overview() {
         under.extend(satellites(
             island.satellites(&monitor.name),
+            &monitor.name,
             body_rect,
             hang,
             canvas,
@@ -584,6 +585,7 @@ fn form_holder(
             && let Some(form) = split(
                 &content,
                 island.track(&monitor.name),
+                &monitor.name,
                 island.swap(&monitor.name, now),
                 now,
             )

@@ -83,5 +83,9 @@ fn main() -> ExitCode {
     // a cast niri holds on Kanade's behalf ends with it, rather than with the next start's reclaim
     sources::recording::shutdown();
     settings::revert_outputs();
+
+    // the save worker is detached, so a pin made a moment before the shell ends waits here for its file
+    sources::clipboard::pins::flush();
+
     ExitCode::SUCCESS
 }

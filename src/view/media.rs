@@ -1,6 +1,7 @@
 //! The Media forms, and the tiles, art and visualizer other forms borrow.
 
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::Instant;
 
 use kanade_runtime::{
@@ -225,18 +226,35 @@ const TURN: f32 = 8.0;
 // the longest step the disc turns by between two draws, so one after a long rest does not spin on
 const STEP: f32 = 0.1;
 
-// where the disc stands, in degrees, and when it last turned
-static DISC: Mutex<Option<(Instant, f32)>> = Mutex::new(None);
+// where the disc stands on each output, in degrees, and when it last turned; one output drawing it
+// must not turn another's, so each keeps its own
+static DISC: LazyLock<Mutex<HashMap<String, (Instant, f32)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /*
- * the cover as a disc in a Satellite: it turns clockwise while the track plays and keeps its angle
- * while paused, so pausing never snaps it back. Reduced motion holds it still
+ * the cover as a disc in a Satellite on `output`: it turns clockwise while the track plays and
+ * keeps its angle while paused, so pausing never snaps it back. Reduced motion holds it still
  */
-pub(crate) fn disc(track: &Track, side: f32, now: Instant) -> Rectangle {
-    let mut disc = DISC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (last, angle) = disc.unwrap_or((now, 0.0));
+pub(crate) fn disc(track: &Track, output: &str, side: f32, now: Instant) -> Rectangle {
+    let angle = turn(track.playing, output, now);
 
-    let angle = if track.playing && config::get().island.motion != Mode::Reduced {
+    Rectangle::new()
+        .width(side)
+        .height(side)
+        .rotate(angle)
+        .child(art(track, side, side / 2.0))
+}
+
+// the angle the disc on `output` stands at when drawn now, in degrees: each output has its own, so
+// two showing it turn it once per refresh between them, not twice
+fn turn(playing: bool, output: &str, now: Instant) -> f32 {
+    let mut disc = DISC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // the key is built only for an output the map does not hold yet, not on every frame it turns
+    let entry = disc.entry(String::from(output)).or_insert((now, 0.0));
+    let (last, angle) = *entry;
+
+    let angle = if playing && config::get().island.motion != Mode::Reduced {
         request_frame();
 
         let step = now.saturating_duration_since(last).as_secs_f32().min(STEP);
@@ -246,13 +264,9 @@ pub(crate) fn disc(track: &Track, side: f32, now: Instant) -> Rectangle {
         angle
     };
 
-    *disc = Some((now.max(last), angle));
+    *entry = (now.max(last), angle);
 
-    Rectangle::new()
-        .width(side)
-        .height(side)
-        .rotate(angle)
-        .child(art(track, side, side / 2.0))
+    angle
 }
 
 // the track's accent fitted to the island, or the neutral foreground for grey art and none
@@ -431,6 +445,7 @@ mod tests {
     use super::*;
     use kanade_runtime::service::Service;
     use kanade_runtime::{Size, Widget};
+    use std::time::Duration;
 
     #[test]
     fn audio_bars_renders_four_bars_sized_by_audio() {
@@ -469,5 +484,36 @@ mod tests {
         let row = state(true, Color::rgb(255, 255, 255), Instant::now());
         assert_eq!(Widget::height(&row), Size::Fixed(TALL));
         cava::Spectrum::write().bars = None;
+    }
+
+    /*
+     * the defect this keys the angle by output for: one process-wide angle turned twice per
+     * refresh when two monitors drew the disc, so it spun at double speed on both
+     */
+    #[test]
+    fn a_disc_on_one_output_turns_only_its_own_angle() {
+        let t0 = Instant::now();
+        let quarter = Duration::from_millis(500);
+
+        assert_eq!(turn(true, "eDP-1", t0), 0.0);
+
+        let one = turn(true, "eDP-1", t0 + quarter);
+
+        assert!(one > 0.0);
+
+        // a second output drawn now starts its own angle instead of taking this one's
+        assert_eq!(turn(true, "HDMI-A-5", t0 + quarter), 0.0);
+
+        // and the first keeps its own, rather than the two draws adding up
+        assert_eq!(turn(true, "eDP-1", t0 + quarter), one);
+
+        // each turns on from its own last draw: the second has stepped once, the first twice
+        let first = turn(true, "eDP-1", t0 + 2 * quarter);
+        let second = turn(true, "HDMI-A-5", t0 + 2 * quarter);
+
+        assert!(first > one && second < first);
+
+        // a paused track keeps the angle it had
+        assert_eq!(turn(false, "eDP-1", t0 + 3 * quarter), first);
     }
 }

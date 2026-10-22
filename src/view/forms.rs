@@ -119,6 +119,7 @@ pub(super) fn sized(presentation: Presentation) -> Rectangle {
 pub(super) fn split(
     content: &Content,
     track: Option<&Dissolve<Track>>,
+    output: &str,
     swap: f32,
     now: Instant,
 ) -> Option<Rectangle> {
@@ -156,7 +157,9 @@ pub(super) fn split(
     if let Some(satellite) = &content.satellite {
         let (x, y) = at(along * (1.0 - swap), geometry::SEGMENT_INSET);
 
-        segments.push(Box::new(segment(satellite, trailing, now).translate(x, y)));
+        segments.push(Box::new(
+            segment(satellite, output, trailing, now).translate(x, y),
+        ));
     }
 
     Some(
@@ -167,7 +170,7 @@ pub(super) fn split(
 }
 
 // the top Satellite grown into the body's end: what it is, then its mark
-pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle {
+pub(super) fn segment(activity: &Activity, output: &str, at: Rect, now: Instant) -> Rectangle {
     let mut row = Vec::<Box<dyn Widget>>::new();
 
     match activity.detail() {
@@ -196,7 +199,7 @@ pub(super) fn segment(activity: &Activity, at: Rect, now: Instant) -> Rectangle 
         _ => {}
     }
 
-    row.push(satellite_mark(activity, now));
+    row.push(satellite_mark(activity, output, now));
 
     let segment = Rectangle::new()
         .width(at.width)

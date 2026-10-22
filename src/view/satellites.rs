@@ -17,6 +17,7 @@ use super::status::{charge_tone, timer_tone};
 // the Satellites, then the ones past the cap as one "+N"
 pub(super) fn satellites(
     satellites: &Satellites,
+    output: &str,
     body: Rect,
     hang: Hang,
     canvas: Canvas,
@@ -34,7 +35,7 @@ pub(super) fn satellites(
         .into_iter()
         .map(|shown| {
             let mark = match shown.mark {
-                Mark::Activity(activity) => satellite_mark(activity, now),
+                Mark::Activity(activity) => satellite_mark(activity, output, now),
                 Mark::Overflow(count) => label(format!("+{count}"), theme::island().on_surface),
             };
             let at = geometry::satellite(body, hang, canvas, shown.slot, shown.presence);
@@ -92,7 +93,7 @@ pub(super) fn satellites(
  * or its mark, the night light its sunset, a refusal or no answer a mark in the critical tone, the
  * rest their Kind
  */
-pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widget> {
+pub(super) fn satellite_mark(activity: &Activity, output: &str, now: Instant) -> Box<dyn Widget> {
     match activity.detail() {
         // the mark of a paused recording is the pause, as a label that long would not fit
         Detail::Recording(Clip::Recording { paused: true, .. }) => {
@@ -101,7 +102,7 @@ pub(super) fn satellite_mark(activity: &Activity, now: Instant) -> Box<dyn Widge
         Detail::Recording(_) => label(String::from("Rec"), theme::signals().capture),
         Detail::Caffeine(_) => Box::new(Icon::Cup.draw(14.0)),
         Detail::Dictation(_) => Box::new(Icon::Microphone.draw(14.0)),
-        Detail::Media(track) => Box::new(super::media::disc(track, 20.0, now)),
+        Detail::Media(track) => Box::new(super::media::disc(track, output, 20.0, now)),
         Detail::Live(job) => super::live::satellite(job),
         Detail::NightLight(_) => Box::new(Icon::Sunset.draw(14.0)),
         Detail::Hardware(event) => Box::new(mark(event.class).draw(14.0)),

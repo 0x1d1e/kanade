@@ -17,6 +17,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
@@ -377,6 +378,9 @@ struct Asked {
 // the one worker that writes the file, started by the first ask
 static ASKERS: Mutex<Option<Sender<Asked>>> = Mutex::new(None);
 
+// whether anything asked for a save this run, so the end of the shell writes only then
+static ASKED: AtomicBool = AtomicBool::new(false);
+
 fn askers() -> MutexGuard<'static, Option<Sender<Asked>>> {
     ASKERS.locked()
 }
@@ -393,9 +397,15 @@ pub fn save_soon() {
 
 /*
  * saves now and waits for the file to hold the pins: for the end of the shell, so a pin made a
- * moment before it is not lost. A worker that cannot be started writes on this thread instead
+ * moment before it is not lost. A worker that cannot be started writes on this thread instead.
+ * Nothing is written where no pin changed this run, so a shell whose pins were left alone leaves
+ * the file as it found it
  */
 pub fn flush() {
+    if !ASKED.load(Ordering::Relaxed) {
+        return;
+    }
+
     let (done, waited) = mpsc::channel();
 
     ask(Some(done));
@@ -408,6 +418,8 @@ pub fn flush() {
 }
 
 fn ask(done: Option<Sender<()>>) {
+    ASKED.store(true, Ordering::Relaxed);
+
     if let Some(asked) = sender() {
         if let Err(mpsc::SendError(unsent)) = asked.send(Asked { done }) {
             // the worker is gone, so the pins are written here rather than lost
