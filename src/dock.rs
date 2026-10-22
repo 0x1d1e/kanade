@@ -23,8 +23,9 @@ use std::time::{Duration, Instant};
 
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
-    Button, Center, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor, Monitors,
-    Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone, request_frame,
+    Button, Center, Color, Column, Cursor, End, Horizontal, Layer, LayerWindow, Margin, Monitor,
+    Monitors, Padding, Parent, Rectangle, Row as Line, Stack, Start, Vertical, Widget, Zone,
+    request_frame,
 };
 use kanade_runtime::{MutexExt, service::Service};
 
@@ -355,6 +356,9 @@ pub(crate) struct Laid {
 
     // where the pointer reaches it, in its window; none while it takes none
     pub(crate) area: Option<Rect>,
+
+    // how far the plate reaches past the Island's body toward the edge, for a Fold's dots at rest
+    pub(crate) dots: f32,
 }
 
 /*
@@ -730,6 +734,7 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
         aside,
         layers,
         area: area.filter(|_| !items.is_empty()),
+        dots: 0.0,
     }
 }
 
@@ -803,7 +808,15 @@ pub(crate) fn between(
         left.width - wings.left.width,
         right.width - wings.right.width,
     );
-    let plate = shell.plate(body, radius, unfold, swelled);
+
+    /*
+     * folded and at rest the apps running show as dots between the body and the edge, which the
+     * plate holds while the icons are in it; they take no more room than the strip has, and the
+     * plate is the strip once they are out, so nothing jumps as the Fold unfolds
+     */
+    let dots = if folds { DOT_ROOM } else { 0.0 };
+    let rest = shell.dotted(body, dots);
+    let plate = shell.plate(rest, radius, unfold, swelled);
 
     // the icons nearest the Island come out first and go in last
     let icons_before = pieces[..wings.cut]
@@ -833,6 +846,49 @@ pub(crate) fn between(
     let mut layers: Vec<Box<dyn Widget>> = Vec::new();
     let mut slots = items.iter();
     let axes = Axes::of(place.anchor);
+
+    /*
+     * folded, the icons are inside the body at rest, so the apps running show as their dots alone,
+     * along the body's side on the Dock's edge: what the icons bring with them as they come out, and
+     * no row at all while a larger body, as a Surface, holds them in
+     */
+    if folds {
+        let rest = shell.unfold(1.0, body.height) * (1.0 - unfold);
+        let running: Vec<&Item> = items
+            .iter()
+            .filter(|item| !item.windows.is_empty())
+            .collect();
+
+        if rest > 0.0 && !running.is_empty() {
+            let room = body.width - 2.0 * size.inset();
+            let pitch = room / running.len() as f32;
+
+            for (index, item) in running.iter().enumerate() {
+                let Some((width, height, color)) = dot(item, axes, &roles) else {
+                    continue;
+                };
+                let centre = body.x + size.inset() + pitch * (index as f32 + 0.5);
+
+                layers.push(Box::new(
+                    Rectangle::new()
+                        .width(width)
+                        .height(height)
+                        .radius(DOT / 2.0)
+                        .fill(color)
+                        .opacity(rest)
+                        .translate(
+                            centre - width / 2.0,
+                            // between the body and the edge, where the icon's own dot stands once out
+                            if far {
+                                plate.rect.bottom() - BELOW - DOT
+                            } else {
+                                plate.rect.y + BELOW
+                            },
+                        ),
+                ));
+            }
+        }
+    }
 
     for (index, piece) in pieces.iter().enumerate() {
         let before = index < wings.cut;
@@ -969,6 +1025,7 @@ pub(crate) fn between(
         aside: 0.0,
         layers,
         area: (!items.is_empty()).then_some(area),
+        dots,
     }
 }
 
@@ -981,6 +1038,7 @@ impl Laid {
             held: self.held,
             swelled: self.swelled,
             area: self.area,
+            dots: self.dots,
         }
     }
 
@@ -1846,6 +1904,32 @@ fn reached(bottom: bool, size: Size, height: f32, strip_y: f32, side: f32) -> (f
     }
 }
 
+/*
+ * a running app's dot, `DOT` across and wider while one of its windows has the focus, the warning
+ * colour while one asks for attention; none for an app with no window. The unmerged row places it
+ * under its icon, a Fold at rest in the Island's body, both by this one rule
+ */
+fn dot(item: &Item, axes: Axes, roles: &ThemeRoles) -> Option<(f32, f32, Color)> {
+    if item.windows.is_empty() {
+        return None;
+    }
+
+    let focused = item.windows.iter().any(|window| window.focused);
+    let urgent = item.windows.iter().any(|window| window.urgent);
+
+    let color = if urgent {
+        theme::signals().warning
+    } else if focused {
+        roles.on_surface
+    } else {
+        roles.on_surface_variant
+    };
+
+    let (width, height) = axes.size(if focused { FOCUSED_DOT } else { DOT }, DOT);
+
+    Some((width, height, color))
+}
+
 // an item's icon, `side` across, its dot between it and the edge while it runs, and its click
 fn slot(
     item: &Item,
@@ -1858,19 +1942,7 @@ fn slot(
 ) -> Rectangle {
     let mut column: Vec<Box<dyn Widget>> = vec![mark(&item.app, side, roles)];
 
-    if !item.windows.is_empty() {
-        let focused = item.windows.iter().any(|window| window.focused);
-        let urgent = item.windows.iter().any(|window| window.urgent);
-
-        let color = if urgent {
-            theme::signals().warning
-        } else if focused {
-            roles.on_surface
-        } else {
-            roles.on_surface_variant
-        };
-
-        let (width, height) = axes.size(if focused { FOCUSED_DOT } else { DOT }, DOT);
+    if let Some((width, height, color)) = dot(item, axes, roles) {
         let dot = Rectangle::new()
             .width(width)
             .height(height)
@@ -2656,5 +2728,47 @@ mod tests {
             reach(Along::Center, canvas.width, widest),
             (0.0, canvas.width)
         );
+    }
+
+    fn running(focused: bool, urgent: bool) -> Item {
+        Item {
+            app: App::Unmatched(Some("kitty".to_owned())),
+            windows: vec![Window {
+                id: WindowId(1),
+                app_id: Some("kitty".to_owned()),
+                focused,
+                urgent,
+            }],
+            pin: None,
+        }
+    }
+
+    /*
+     * the dot says what runs, so a Fold at rest shows it with the icon still in the body; an app
+     * with no window has none, and a focused one is the wider dot, as the row alone draws it
+     */
+    #[test]
+    fn a_running_app_has_a_dot_and_one_with_no_window_none() {
+        let axes = Axes::of(Anchor::BOTTOM);
+        let roles = theme::ISLAND_DARK;
+
+        let quiet = dot(&running(false, false), axes, &roles).expect("a running app has a dot");
+        let focused = dot(&running(true, false), axes, &roles).expect("a running app has a dot");
+        let urgent = dot(&running(false, true), axes, &roles).expect("a running app has a dot");
+
+        assert_eq!(quiet.0, DOT);
+        assert_eq!(focused.0, FOCUSED_DOT);
+        assert_eq!(quiet.1, DOT);
+        assert_eq!(focused.1, DOT);
+        assert_eq!(quiet.2, roles.on_surface_variant);
+        assert_eq!(focused.2, roles.on_surface);
+        assert_eq!(urgent.2, theme::signals().warning);
+
+        let pinned = Item {
+            windows: Vec::new(),
+            ..running(false, false)
+        };
+
+        assert_eq!(dot(&pinned, axes, &roles), None);
     }
 }

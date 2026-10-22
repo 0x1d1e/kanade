@@ -97,6 +97,10 @@ pub struct Dock {
 
     // where the pointer reaches it; none while it takes none
     pub area: Option<Rect>,
+
+    // how far the plate reaches past the body toward the edge at rest, for the dots a Fold shows
+    // with its icons in it
+    pub dots: f32,
 }
 
 /*
@@ -176,7 +180,12 @@ impl Scene {
                 united(
                     body,
                     origin,
-                    shell.plate(at, body.radius, unfold, dock.swelled),
+                    shell.plate(
+                        shell.dotted(at, dock.dots),
+                        body.radius,
+                        unfold,
+                        dock.swelled,
+                    ),
                 )
             }
             (.., Some(plate)) => united(body, origin, plate),
@@ -276,6 +285,7 @@ mod tests {
                 island: (0.0, island_y),
                 dock: (0.0, 0.0),
                 strip: 0.0,
+                bottom: edge == geometry::Edge::Bottom,
             };
             let stand = Stand {
                 canvas,

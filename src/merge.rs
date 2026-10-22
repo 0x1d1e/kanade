@@ -136,6 +136,9 @@ pub struct Shell {
 
     // among the icons, where the strip starts down the window
     pub strip: f32,
+
+    // whether the Dock hangs from the output's bottom edge
+    pub bottom: bool,
 }
 
 // the Dock's plate under the Island's body, and its corners' radius
@@ -210,6 +213,36 @@ impl Shell {
                 height: bottom - top,
             },
             radius: toward(body_radius, radius::CARD),
+        }
+    }
+
+    /*
+     * the Island's `body` at rest, grown `dots` toward the edge it hangs from, as much of that as
+     * the strip holds: a Fold keeps the apps running as dots between the body and the edge while
+     * their icons are in it. The body itself stays where it is, and the grown rect is never past
+     * the strip, so the plate is the same at the last of the way out as at rest
+     */
+    pub fn dotted(&self, body: Rect, dots: f32) -> Rect {
+        let strip = self.strip;
+        let room = if self.bottom {
+            strip + self.extent.strip - body.bottom()
+        } else {
+            body.y - strip
+        }
+        .max(0.0);
+        let room = dots.min(room);
+
+        if self.bottom {
+            Rect {
+                height: body.height + room,
+                ..body
+            }
+        } else {
+            Rect {
+                y: body.y - room,
+                height: body.height + room,
+                ..body
+            }
         }
     }
 }
@@ -289,6 +322,7 @@ fn crown(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent, scre
         island: (across(canvas.width, 0.0), island_y),
         dock: (across(extent.width, side), dock_y),
         strip: 0.0,
+        bottom: anchor.edge == Edge::Bottom,
     }
 }
 
@@ -384,6 +418,7 @@ fn among(form: Merge, anchor: Anchor, canvas: Canvas, extent: dock::Extent, scre
         island: (left, island_y),
         dock: (0.0, 0.0),
         strip,
+        bottom: anchor.edge == Edge::Bottom,
     }
 }
 

@@ -120,7 +120,7 @@ Not worth changing, by this review:
 - [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; it does not reserve space while autohiding.
 - [x] A non-liquid union has no border.
   - Describes a removed finish: `look::Finish` has no liquid variant, and the union's rim comes from `pane.wgsl:69-71`.
-- [ ] Fold has no dots for running apps at rest and no keyboard focus hold; its Tray and hover Peek need a right click.
+- [ ] Fold has no keyboard focus hold; its Tray and hover Peek need a right click. Its dots for running apps at rest show (`dock::dot`, `dock::between`, `merge::Shell::dotted`).
 - [x] Overview and fullscreen use the existing covered path only.
   - A statement of an accepted limitation (`view/covered.rs:17-21`), not open work.
 
