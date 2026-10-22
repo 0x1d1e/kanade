@@ -166,6 +166,19 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::unpoisoned::MutexExt;
+    use std::sync::{Mutex, MutexGuard};
+
+    /*
+     * `READY` is the process's one queue of calls waiting for the loop, and `taken` is what the
+     * loop does with it: two tests draining it at once each see the other's call, or the empty
+     * queue the other was about to fill. Each test here takes the queue for its own
+     */
+    fn the_queue_turn() -> MutexGuard<'static, ()> {
+        static CALLS: Mutex<()> = Mutex::new(());
+
+        CALLS.locked()
+    }
 
     /*
      * the loop accepted the stream and answered at once, while the call itself is still being
@@ -174,6 +187,8 @@ mod tests {
      */
     #[test]
     fn a_client_that_sends_nothing_does_not_block_the_loop() {
+        let _turn = the_queue_turn();
+
         let (shell, client) = UnixStream::pair().unwrap();
 
         let start = Instant::now();
@@ -196,6 +211,8 @@ mod tests {
     // a call that arrives whole reaches the loop
     #[test]
     fn a_call_reaches_the_loop() {
+        let _turn = the_queue_turn();
+
         let (shell, mut client) = UnixStream::pair().unwrap();
 
         request(shell);
