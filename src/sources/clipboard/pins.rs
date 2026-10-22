@@ -17,7 +17,6 @@ use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
@@ -375,14 +374,29 @@ struct Asked {
     done: Option<Sender<()>>,
 }
 
-// the one worker that writes the file, started by the first ask
-static ASKERS: Mutex<Option<Sender<Asked>>> = Mutex::new(None);
+/*
+ * the one worker that writes the file, started by the first ask, and whether anything asked for a
+ * save this run, so the end of the shell writes only then. Both live under one lock: an ask may
+ * come from the watcher's thread as well as the draw thread, and the flag is stored under it and
+ * read under it, so a save asked for before the shell ends is one the flush sees
+ */
+struct Askers {
+    worker: Option<Sender<Asked>>,
+    asked: bool,
+}
 
-// whether anything asked for a save this run, so the end of the shell writes only then
-static ASKED: AtomicBool = AtomicBool::new(false);
+static ASKERS: Mutex<Askers> = Mutex::new(Askers {
+    worker: None,
+    asked: false,
+});
 
-fn askers() -> MutexGuard<'static, Option<Sender<Asked>>> {
+fn askers() -> MutexGuard<'static, Askers> {
     ASKERS.locked()
+}
+
+// whether a save was asked for this run, under the lock `ask` stores it under
+fn asked() -> bool {
+    askers().asked
 }
 
 /*
@@ -402,7 +416,7 @@ pub fn save_soon() {
  * the file as it found it
  */
 pub fn flush() {
-    if !ASKED.load(Ordering::Relaxed) {
+    if !asked() {
         return;
     }
 
@@ -418,9 +432,16 @@ pub fn flush() {
 }
 
 fn ask(done: Option<Sender<()>>) {
-    ASKED.store(true, Ordering::Relaxed);
+    let mut askers = askers();
+    askers.asked = true;
 
-    if let Some(asked) = sender() {
+    let worker = worker(&mut askers);
+
+    // the guard goes before any disk below: a write takes the saving lock, and no lock is held
+    // across the disk
+    drop(askers);
+
+    if let Some(asked) = worker {
         if let Err(mpsc::SendError(unsent)) = asked.send(Asked { done }) {
             // the worker is gone, so the pins are written here rather than lost
             save_now();
@@ -432,22 +453,24 @@ fn ask(done: Option<Sender<()>>) {
         return;
     }
 
-    // no worker could start: written here, so a pin is never lost for want of a thread
+    // no worker could start: written here, so a pin is never lost for want of a thread, and the
+    // waiter hears of the file rather than of the write it did itself
     save_now();
+    if let Some(done) = done {
+        let _ = done.send(());
+    }
 }
 
-// the worker's ask channel, started the first time one is needed
-fn sender() -> Option<Sender<Asked>> {
-    let mut askers = askers();
-
-    if askers.is_none() {
+// the worker's ask channel, started the first time one is needed, under the caller's guard
+fn worker(askers: &mut Askers) -> Option<Sender<Asked>> {
+    if askers.worker.is_none() {
         let (send, asked) = mpsc::channel();
         let started = thread::Builder::new()
             .name("clipboard-pins".into())
             .spawn(move || follow(asked));
 
         match started {
-            Ok(_) => *askers = Some(send),
+            Ok(_) => askers.worker = Some(send),
             Err(error) => {
                 eprintln!("kanade: cannot save the clipboard pins ({})", error.kind());
                 return None;
@@ -455,7 +478,7 @@ fn sender() -> Option<Sender<Asked>> {
         }
     }
 
-    askers.clone()
+    askers.worker.clone()
 }
 
 // every ask until the shell ends, each burst of them one write

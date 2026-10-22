@@ -72,8 +72,18 @@ fn main() -> ExitCode {
     supervise::follow_services();
     settings::recover_outputs();
 
-    // `systemctl --user restart` or Ctrl+C mid-trial puts a monitor back before the shell ends
-    if let Err(why) = clock::on_terminate(settings::revert_outputs) {
+    /*
+     * `systemctl --user restart` or Ctrl+C mid-trial puts a monitor back before the shell ends, and a
+     * pin made a moment before the signal reaches its file first: the signal ends the process where
+     * it is, so the tail below never runs. The flush goes first, as it is bounded by its own limit
+     * (`FLUSHED`) inside the terminate action's, and the revert may take most of that
+     */
+    let terminate = || {
+        sources::clipboard::pins::flush();
+        settings::revert_outputs();
+    };
+
+    if let Err(why) = clock::on_terminate(terminate) {
         eprintln!("kanade: SIGTERM will not put outputs back: {why}");
     }
     modules::start(theme::font(App::new()))
@@ -82,10 +92,11 @@ fn main() -> ExitCode {
 
     // a cast niri holds on Kanade's behalf ends with it, rather than with the next start's reclaim
     sources::recording::shutdown();
-    settings::revert_outputs();
 
-    // the save worker is detached, so a pin made a moment before the shell ends waits here for its file
+    // the save worker is detached, so a pin made a moment before the shell ends waits here for its
+    // file, before the revert that may take most of the wait
     sources::clipboard::pins::flush();
+    settings::revert_outputs();
 
     ExitCode::SUCCESS
 }

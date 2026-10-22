@@ -46,5 +46,5 @@ ADR 0114 left persistence of pins undecided because an entry that passed ADR 001
 - A pin or an unpin with a large picture pinned rewrites up to 16 MiB, off the Surface's thread.
 - A damaged file loses its bad entries from the store with one line on stderr; the file itself is kept as `clipboard-pins.bak`.
 - The `.bak` is plaintext at rest too, 0600, and Kanade never deletes it: it stays until the user removes it, and the wiki says so.
-- A pin change right before exit may not be saved: the save thread is detached and the process may end before it writes.
+- A pin change right before exit is saved: the clean exit, a SIGTERM or SIGINT, and a restart, power off or log out from the Island each wait for the save to reach the file, bounded by its own 5 s limit, and only where a pin changed this run. A SIGKILL still loses a pin made a moment before.
 - Not tested live here: the restart with pins, which needs a run on the session.
