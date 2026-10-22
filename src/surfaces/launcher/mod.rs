@@ -997,6 +997,23 @@ fn kept(answer: &Answer) -> Option<String> {
 }
 
 /*
+ * ADR 0127's order inside a Fit: the class of a query that launched the answer leads, then the
+ * match score (ADR 0126), then the providers' own order. `provider::ranked` gave the last two, so
+ * sorting stably on the Fit and the class alone moves a habit ahead of the noisy in-tier scores and
+ * leaves every answer of an equal class where it lay: `fit` sometimes reads an alias where the
+ * score reads the title, so the score alone is not the better order
+ */
+fn learned_first(answers: &mut [Answer], query: &str, now: i64, usage: &sources::recents::Usage) {
+    let query = query.trim().to_lowercase();
+
+    answers.sort_by_key(|answer| {
+        let learned = kept(answer).map_or(0, |key| usage.learned(&key, &query, now));
+
+        (answer.fit, std::cmp::Reverse(learned))
+    });
+}
+
+/*
  * what the providers last found for a query, and what that depended on. The view runs every frame of
  * a morph (`crates/runtime/src/wayland/redraw.rs`), so ranking eight providers and sorting them
  * again each frame is work the frame does not change: it is kept until one of its inputs does
@@ -1142,7 +1159,7 @@ fn rank(
         query,
         || sections(apps, key, recording),
         || {
-            let ranked = provider::ranked(
+            let mut ranked = provider::ranked(
                 &[
                     &Calculator,
                     &AppsProvider(apps, key.destinations[11]),
@@ -1155,6 +1172,8 @@ fn rank(
                 ],
                 query,
             );
+
+            sources::recents::with(|usage| learned_first(&mut ranked, query, key.now, usage));
 
             Found::ranked(offered(query, ranked, read, web::openable))
         },
@@ -2478,6 +2497,45 @@ mod tests {
             !Arc::ptr_eq(&first, &after),
             "a dropped ranking was not ranked"
         );
+    }
+
+    /*
+     * ADR 0127 puts the query that started an answer ahead of the match score inside a Fit: the
+     * score reads the title while `fit` may read an alias, so a class is observed intent where an
+     * in-tier score is positional noise. Fit stays outer, and ADR 0126's score still orders what no
+     * class lifts
+     */
+    #[test]
+    fn a_learned_query_leads_the_match_score_within_a_fit() {
+        let now = crate::clock::unix_seconds();
+        let apps = [app("Firefox"), app("Fable X")];
+        let titles = |answers: &[Answer]| {
+            answers
+                .iter()
+                .map(|answer| answer.title.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // both fit `fx` alike, and `Fable X` answers it better by the score alone
+        let mut ranked = provider::ranked(&[&AppsProvider(&apps, false)], "fx");
+
+        assert!(ranked.iter().all(|answer| answer.fit == Fit::Terms));
+        assert_eq!(titles(&ranked), ["Fable X.desktop", "Firefox.desktop"]);
+
+        // `Firefox` was started by `fx`, so it leads the better score, as the ranking orders it
+        let mut usage = sources::recents::Usage::default();
+        usage.start(&sources::recents::app("Firefox.desktop"), "fx", now);
+        learned_first(&mut ranked, "fx", now, &usage);
+
+        assert_eq!(titles(&ranked), ["Firefox.desktop", "Fable X.desktop"]);
+
+        // the same class never lifts an answer over a better Fit
+        usage.start(&sources::recents::app("Fable X.desktop"), "fx", now);
+        let nearer = [app("fx"), app("Fable X")];
+        let mut ranked = provider::ranked(&[&AppsProvider(&nearer, false)], "fx");
+        learned_first(&mut ranked, "fx", now, &usage);
+
+        assert_eq!(titles(&ranked), ["fx.desktop", "Fable X.desktop"]);
     }
 
     #[test]
