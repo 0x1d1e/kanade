@@ -128,15 +128,6 @@ impl Ring {
         }
     }
 
-    /// `bytes` kept as the newest backup, at `now_ms` or just after the newest; the pinned
-    /// original too if there is none yet; the oldest beyond `KEPT` dropped. Says the backup's name.
-    #[allow(dead_code)]
-    pub fn save(&self, bytes: &[u8], now_ms: u64) -> io::Result<String> {
-        let file = self.stage(bytes, now_ms)?;
-        self.prune();
-        Ok(file)
-    }
-
     /// Drops a backup just saved, for a change that did not happen.
     pub fn discard(&self, file: &str) {
         let _ = fs::remove_file(self.dir.join(file));
@@ -222,7 +213,8 @@ mod tests {
 
         for n in 0..25u64 {
             // the same millisecond each time: the names still differ and order by when saved
-            ring.save(format!("v{n}").as_bytes(), 1000).unwrap();
+            ring.stage(format!("v{n}").as_bytes(), 1000).unwrap();
+            ring.prune();
         }
 
         let list = ring.list();
@@ -273,7 +265,8 @@ mod tests {
 
         // Fill ring to capacity KEPT (20)
         for n in 0..KEPT as u64 {
-            ring.save(format!("v{n}").as_bytes(), 1000 + n).unwrap();
+            ring.stage(format!("v{n}").as_bytes(), 1000 + n).unwrap();
+            ring.prune();
         }
         assert_eq!(ring.list().len(), KEPT);
 

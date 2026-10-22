@@ -1213,19 +1213,6 @@ impl Controller {
         Ok(Ended::Kept(said, after))
     }
 
-    /// Writes the trial's changes to the config, all in one. The trial's recovery state (the
-    /// session and the pending file) is kept until `confirm_keep` or `abandon_keep`: the caller
-    /// waits for niri to reload the config before deciding.
-    #[allow(dead_code)]
-    pub fn keep(&mut self, port: &dyn Port) -> Result<Ended, String> {
-        let Some(session) = &self.session else {
-            return Err(String::from("There is nothing to keep"));
-        };
-        let id = session.id;
-        let now = port.now();
-        self.keep_request(port, id, now)
-    }
-
     /// The reload succeeded and niri agrees: delete the pending file and end the trial.
     pub fn confirm_keep(&mut self) {
         self.session = None;

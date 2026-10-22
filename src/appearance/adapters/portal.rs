@@ -20,11 +20,6 @@ const DIRS: [&str; 2] = ["gtk-3.0", "gtk-4.0"];
 pub(super) const GTK_UNIT: &str = "xdg-desktop-portal-gtk.service";
 pub(super) const GNOME_UNIT: &str = "xdg-desktop-portal-gnome.service";
 
-// both GTK portal backends; each implements FileChooser and AppChooser, and `portals.conf` picks
-// which draws a dialog, so both are restarted; the base `xdg-desktop-portal` is never restarted
-#[allow(dead_code)]
-const UNITS: [&str; 2] = [GTK_UNIT, GNOME_UNIT];
-
 // rapid wallpaper changes restart them at most this often; the last one still lands
 const MIN_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -107,16 +102,6 @@ pub(super) fn restart_gnome() -> bool {
     }
     restart_unit(GNOME_UNIT);
     true
-}
-
-// `try-restart` does nothing for a unit that is not running, so it never starts a portal; the
-// worker does not wait for it
-#[allow(dead_code)]
-pub(super) fn restart() {
-    restart_gtk();
-    if can_restart_gnome() {
-        restart_unit(GNOME_UNIT);
-    }
 }
 
 fn restart_unit(unit: &'static str) {
@@ -218,19 +203,6 @@ mod tests {
             super::super::GtkConfig::ALL.map(super::super::GtkConfig::dir),
             DIRS
         );
-    }
-
-    #[test]
-    fn restarts_both_gtk_portal_backends_and_never_the_base_portal() {
-        assert_eq!(
-            UNITS,
-            [
-                "xdg-desktop-portal-gtk.service",
-                "xdg-desktop-portal-gnome.service"
-            ]
-        );
-        assert!(!UNITS.contains(&"xdg-desktop-portal.service"));
-        assert_eq!(DIRS, ["gtk-3.0", "gtk-4.0"]);
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Finding out which encoder works (ADR 0116, Update): the render nodes under `/sys/class/drm`, and
 //! a real encode of one frame by `ffmpeg` (for `wf-recorder`) or `gst-launch-1.0` (for a window),
-//! killed when it takes too long. `encode::choose` decides from what these find. That an encoder
-//! works is kept for the life of the process, so a recording starts without waiting for the probe
-//! again; that one failed, for a minute; that it overran or could not be tried (no `ffmpeg`), not at
-//! all. `kanade doctor` always asks again.
+//! killed when it takes too long. `encode::choose_within` decides from what these find. That an
+//! encoder works is kept for the life of the process, so a recording starts without waiting for the
+//! probe again; that one failed, for a minute; that it overran or could not be tried (no `ffmpeg`),
+//! not at all. `kanade doctor` always asks again.
 
 use std::fs;
 use std::path::Path;

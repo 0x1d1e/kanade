@@ -74,11 +74,6 @@ impl Niri {
     }
 }
 
-#[allow(dead_code)]
-pub fn is_connected() -> bool {
-    Niri::read().connected
-}
-
 impl Service for Niri {
     fn new() -> Self {
         Self::default()
@@ -1472,7 +1467,6 @@ mod tests {
             || {},
         );
 
-        assert!(!is_connected());
         assert!(!Niri::read().is_connected());
     }
 }

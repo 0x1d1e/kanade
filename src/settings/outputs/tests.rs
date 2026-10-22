@@ -273,6 +273,14 @@ fn setup() -> (Dir, Fake, Controller) {
     (dir, fake, control)
 }
 
+// a Keep made now, as the worker's own does: the session's id and when it was asked for
+fn keep(control: &mut Controller, fake: &Fake) -> Result<Ended, String> {
+    let session = control.session.as_ref().unwrap();
+    let (id, requested_at) = (session.id, fake.now());
+
+    control.keep_request(fake, id, requested_at)
+}
+
 #[test]
 fn an_include_matched_by_edid_blocks_a_trial_before_the_live_edit() {
     let monitor = panel();
@@ -476,7 +484,7 @@ fn the_pending_file_is_there_before_niri_is_told_and_gone_when_the_trial_ends() 
     // what the file holds is the state before the first change, not the last
     assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 1.5);
 
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
     // keep no longer deletes the file; confirm_keep does
     assert!(dir.file().exists());
     control.confirm_keep();
@@ -743,7 +751,7 @@ fn keep_writes_every_change_of_the_trial_at_once() {
         .unwrap();
 
     assert_eq!(
-        control.keep(&fake),
+        keep(&mut control, &fake),
         Ok(Ended::Kept(
             String::from("written"),
             Some(String::from("after"))
@@ -777,7 +785,7 @@ fn a_keep_the_engine_refuses_leaves_the_trial_to_run_out() {
     fake.cannot_write.set(true);
 
     assert_eq!(
-        control.keep(&fake),
+        keep(&mut control, &fake),
         Err(String::from("niri refuses the config"))
     );
     assert!(control.session.is_some());
@@ -1163,7 +1171,7 @@ fn a_keep_is_confirmed_only_after_confirm_keep_is_called() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
 
     // the file is still there after keep, before confirm
     assert!(dir.file().exists());
@@ -1183,7 +1191,7 @@ fn abandon_keep_clears_session_but_leaves_the_file() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
 
     control.abandon_keep();
 
@@ -1324,7 +1332,7 @@ fn a_keep_whose_load_fails_can_be_reverted() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
 
     // the load failed: revert puts the output back, the file goes with it
     assert!(dir.file().exists());
@@ -1538,7 +1546,7 @@ fn failed_config_reload_undoes_config_before_reverting_output() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
     let loaded = Some(crate::sources::niri::ConfigLoadState {
         count: 1,
         last_failed: true,
@@ -1558,7 +1566,7 @@ fn failed_config_undo_keeps_pending_recovery_file_and_reverts_output() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
     fake.cannot_undo.set(true);
     let loaded = Some(crate::sources::niri::ConfigLoadState {
         count: 1,
@@ -1579,7 +1587,7 @@ fn reload_confirmed_deletes_recovery_file_even_if_niri_differs() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
 
     // The pending recovery file and session exist after keep
     assert!(dir.file().exists());
@@ -1604,7 +1612,7 @@ fn a_keep_with_no_reload_seen_is_not_reverted_at_start() {
     control
         .try_edit(&fake, "eDP-1", Edit::Scale(1.5), None)
         .unwrap();
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
 
     // no ConfigLoaded update was seen in the window: the trial ends and the file records a
     // change already written
@@ -1672,7 +1680,7 @@ fn an_exit_after_a_keep_and_before_its_reload_does_not_put_the_output_back() {
         control
             .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
             .unwrap();
-        control.keep(&fake).unwrap();
+        keep(control, &fake).unwrap();
 
         // the config holds it; niri's reload has not come yet
         assert!(control.session.as_ref().unwrap().kept);
@@ -1839,7 +1847,7 @@ fn the_clock_waits_on_the_retry_at_and_never_on_a_kept_trial() {
 
     // a Keep the config took is not the clock's to revert: niri's reload decides
     *fake.refuse.borrow_mut() = None;
-    control.keep(&fake).unwrap();
+    keep(&mut control, &fake).unwrap();
     assert!(control.session.as_ref().unwrap().kept);
     assert_eq!(control.wait(fake.now()), None);
 

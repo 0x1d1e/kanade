@@ -628,23 +628,6 @@ pub struct Choice {
  * software, said in the notes. A probe that could not run (`Unknown`) lets VA-API and software
  * through, which a failure then falls back from at run time, and NVENC only when it is named
  */
-#[allow(dead_code)]
-pub fn choose(
-    preference: Preference,
-    device: Option<&str>,
-    nodes: &[Node],
-    probe: &mut impl Probe,
-) -> Choice {
-    choose_within(
-        preference,
-        device,
-        nodes,
-        probe,
-        Instant::now() + PROBE_BUDGET,
-        &Va::default(),
-    )
-}
-
 pub fn choose_within(
     preference: Preference,
     device: Option<&str>,
@@ -891,6 +874,23 @@ mod tests {
         fn software(&mut self, _timeout: Duration) -> Probed {
             self.answer(String::from("software"))
         }
+    }
+
+    // the choice a recording makes now, on the whole probe budget
+    fn choose(
+        preference: Preference,
+        device: Option<&str>,
+        nodes: &[Node],
+        probe: &mut impl Probe,
+    ) -> Choice {
+        choose_within(
+            preference,
+            device,
+            nodes,
+            probe,
+            Instant::now() + PROBE_BUDGET,
+            &Va::default(),
+        )
     }
 
     fn encoder(choice: &Choice) -> String {
