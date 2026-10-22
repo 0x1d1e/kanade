@@ -223,6 +223,8 @@ impl WaylandState {
 
         // the window's gpu is already dropped; the shared pool is what a larger target left behind
         if normal {
+            // its last frames are freed before the pool is built again
+            crate::graphics::drain();
             crate::graphics::release_pool();
             crate::allocator::trim_heap();
         }

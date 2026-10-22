@@ -3,6 +3,7 @@ mod clip;
 mod convert;
 mod cut;
 mod dispatch;
+mod drain;
 mod flush;
 mod forget;
 mod glyph;
@@ -43,6 +44,7 @@ use pass::Pass;
 use shader::Shader;
 use shared::Shared;
 
+pub(crate) use drain::{after_frame, drain, note_submitted};
 pub(crate) use shared::release_pool;
 
 /*

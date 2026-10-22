@@ -100,6 +100,14 @@ impl OpenWindow {
 
         let presented = self.present(frame.renderer);
 
+        /*
+         * the frame is on screen, so its time is measured; the wait below frees what it held and
+         * would otherwise be counted as part of presenting, drain.rs
+         */
+        let shown = Instant::now();
+
+        crate::graphics::after_frame();
+
         // the trim runs on the next wake, after this frame returns and its tree is dropped
         crate::memory::note_drawn();
 
@@ -107,7 +115,7 @@ impl OpenWindow {
             started,
             viewed,
             drawn,
-            presented: Instant::now(),
+            presented: shown,
         };
 
         timing::log(name, self.width, self.height, self.last_frame, &timing);

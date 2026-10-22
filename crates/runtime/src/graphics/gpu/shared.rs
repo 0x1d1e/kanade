@@ -51,11 +51,14 @@ pub fn get(surface: &Surface) -> Shared {
     SHARED.with_borrow_mut(|shared| shared.get_or_insert_with(|| open(surface)).clone())
 }
 
+// the device every window draws on, none before the first one has opened
+pub(super) fn current() -> Option<Shared> {
+    SHARED.with_borrow(Clone::clone)
+}
+
 // vello's pool lives in the renderer; replacing it on this device drops those buffers
 pub(crate) fn release_pool() {
-    let shared = SHARED.with(|slot| slot.borrow().clone());
-
-    let Some(shared) = shared else {
+    let Some(shared) = current() else {
         return;
     };
 

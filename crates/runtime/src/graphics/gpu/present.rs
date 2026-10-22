@@ -42,7 +42,7 @@ impl Gpu {
             [1.0, 0.0, 0.0, 0.0],
         );
 
-        self.queue.submit([encoder.finish()]);
+        super::note_submitted(self.queue.submit([encoder.finish()]));
 
         self.give_back(canvas);
 
