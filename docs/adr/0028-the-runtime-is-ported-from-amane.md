@@ -26,3 +26,4 @@ After ADR 0027's step 1 Kanade read none of Amane's state. What it still took wa
 - Kanade now maintains a renderer it did not write. Its gaps (shaders take no textures, no key release, no key repeat) can be fixed in the runtime instead of in a crate beside it.
 - An installed Kanade from before this change listens on `amane.sock`, so the new `kanade` CLI cannot reach it. Restart the shell after updating: until then the CLI says no shell is running, and a second shell could start beside the old one.
 - The Settings window's app id is `kanade`, not `amane`: a niri window rule matching `amane` needs updating.
+- Settings is a normal window on the runtime's connection, the only UI toolkit Kanade adopts. It is the proof the port reached a real form, not a toy: 3,283 lines of view drawing every control the config declares. No second UI toolkit is adopted beside it, since one pipeline and one connection are the point of ADR 0026 and this one.

@@ -18,8 +18,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace    # targeted unit tests, incl. the island/ purity check (see Tests and CI)
 cargo run                 # the shell
 scripts/dev               # cargo build, restart the shell on each save; a failed build keeps the old one
+cargo install --locked --root "$HOME/.cargo" --path . --force   # what the unit runs
 ```
 
+- `kanade.service` runs the installed `~/.cargo/bin/kanade`, never `target/debug`. After a commit the running shell is still the old binary: install, then `systemctl --user restart kanade.service`, or the session is testing code that is no longer on disk.
 - `Cargo.toml` and `Cargo.lock` are authoritative for every build. Add dependencies there as needed; none speculatively.
 - Only one Kanade per session. Stop any other (`failed to listen: kanade is already running`) first.
 - Zero idle frames check: `KANADE_FRAMES=1 scripts/dev` prints frames only when something draws.

@@ -299,7 +299,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 - [x] Liquid glass: update it to match Vitreus (reference checkout at `/home/k/Projects/acknowledgements/Vitreus/`: `liquid.wgsl`, `cardrip.wgsl` and its README). A reference to learn from, not to copy; if code is ported, the license and acknowledgements rules apply (THIRD_PARTY_NOTICES.md).
   - Abandoned by the user; not done. The branch `feat/glass-frost-light` is kept.
-- [ ] Settings window: change it to GPUI (now the runtime's own UI).
+- [x] Settings window: change it to GPUI (now the runtime's own UI).
+  - Done before it was written: `src/settings/view.rs:10-21` draws with `kanade_runtime`'s own widgets (`Button`, `TextInput`, `ScrollArea`, `Row`, `Column`, `Window`), and the window opens through `kanade_runtime::open_window` (`src/settings/mod.rs:320`) on the runtime's one Wayland connection (`crates/runtime/src/wayland.rs:270`), beside the lock's (`crates/lock/src/client.rs:225`) and no other. Zed's `gpui` would be a second toolkit, a second event loop and a second Vulkan device in the one process, which ADR 0026 and 0028 exist to prevent; the item was written six days after the port (`e8d49d5`), and its "(now the runtime's own UI)" is the port itself. What the runtime genuinely lacks for Settings is nothing: every `config::Kind` has a runtime control. Reopen only if the motive is accessibility, and the answer then is an AccessKit or AT-SPI adapter over `crates/runtime/src/ui.rs`, not a toolkit swap.
   - Needs an ADR, and a decision on how it coexists with the runtime of ADR 0028.
 - [ ] niri config editor: edit niri's `config.kdl` from Kanade's settings (ADR 0119).
   - Slice 1 done: the text engine and `kanade niri-config validate|get|set|remove|undo|backups|restore` (byte-span splices, `niri validate` before the replace, backup ring, undo; symlinks, include-owned nodes and repeated nodes refused).
