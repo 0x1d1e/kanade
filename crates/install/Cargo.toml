@@ -13,6 +13,6 @@ name = "kanade-install"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 portable-pty = "0.9"

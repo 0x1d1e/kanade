@@ -19,7 +19,7 @@ use crossterm::terminal::{
 };
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -105,7 +105,10 @@ fn run() -> i32 {
             return 1;
         }
     };
-    if let Err(err) = terminal.clear() {
+    // `Terminal::clear` asks the terminal for its cursor position first, and one that does not
+    // answer aborts the installer. `wipe` has already cleared the screen and the buffers are
+    // new, so clear the screen directly.
+    if let Err(err) = terminal.backend_mut().clear_region(ClearType::All) {
         drop(terminal);
         drop(guard);
         eprintln!("failed to open the terminal: {err}");
@@ -151,7 +154,7 @@ fn run() -> i32 {
             if let Some(active) = run_state.as_ref() {
                 active.resize(column_width(cols), body_rows(rows));
             }
-            let _ = terminal.clear();
+            let _ = terminal.backend_mut().clear_region(ClearType::All);
             continue;
         }
         let Event::Key(key) = happened else {
