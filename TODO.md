@@ -42,7 +42,7 @@ Not worth changing, by this review:
 - [x] `sources/json.rs` is `serde_json::Value` with `parse`, `array` and `quote`; the hand-rolled parser is gone.
 - [x] `sources/mirror.rs` is the calendar-sync file mirror for Google; `clock::unix_seconds` replaces four copies.
 - [x] A Service's panic reaches `kanade status` (`service::on_panic`, set by `supervise::follow_services`); the restart delay is one constant.
-- [ ] 501 comment blocks run over four lines (worst: `sources/recording/encode.rs:244`, `sources/recording/plan.rs:302`, `surfaces/launcher/calculator.rs:1`, `shadow.rs:1`, `dock.rs:1342`). Each states real constraints, so cut them one by one, not in bulk. The earlier citations of `view/mod.rs:729` and `calendar.rs:1087` were wrong: the first is inside `#[cfg(test)]`, the second is a `.padding(..)` call.
+- [ ] 191 `/* */` blocks run over four lines and 137 runs of `//` lines do (counted over `src/` and `crates/`, interior lines). Each states real constraints, so cut them one by one, not in bulk. The longest are `src/sources/recording/plan.rs:249` (15 interior lines), `src/sources/recording/encode.rs:273` (11), `src/sources/recording/plan.rs:300` and `src/sources/recording/encode.rs:253` (10 each), then `src/surfaces/launcher/calculator.rs:1`, `src/shadow.rs:1` and `src/dock.rs:1408` (9 each). Earlier counts and citations were wrong: `encode.rs:244` is a `match` arm and `dock.rs:1342` a `dock_strip(` call, not comment blocks; `view/mod.rs:729` is inside `#[cfg(test)]` and `calendar.rs:1087` a `.padding(..)` call.
 - [x] ADR 0003 still says "std-only JSON parser"; history, left as written.
 
 ## Architecture (whole-codebase review, third)
@@ -60,8 +60,6 @@ Not worth changing, by this review:
 - [x] Dead after ADR 0049: `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
   - Premise no longer holds: ADR 0057's Blur made the pane translucent again (`pane::BLUR_FILL`), so the cut is live. Keep it.
 - [ ] A plain (unmerged) pane needs no shader: a `Rectangle` fill would drop the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
-- [ ] `sources/palette.rs` polls every 500 ms; a change event could replace it.
-
 ## Architecture (#208 review)
 
 - [x] Input and invalidation (ADR 0034, 0035; a copy redraws only its pane's readers)
@@ -117,7 +115,8 @@ Not worth changing, by this review:
   - Premise no longer holds: `among()` clamps the room beside the canvas before it sizes the window (`src/merge.rs:367`, the width at `:368`; commit 59c4f61), as `crown()` does (`:271`, the width at `:272`; 3f0e362), and the canvas is cut to the output before either (`src/view/shape.rs:109`, `Canvas::within` at `src/island/geometry.rs:46-49`), so a wide Surface open cannot grow it past the monitor. `shell_is_never_wider_than_the_output` (`src/merge.rs:499`) asserts `shell.size.0 <= screen` for both forms, every `Along` and `Edge`, at 900 and 1920; what it pins is the geometry — no one has opened a wide Surface on a merged Keystone and looked.
 - [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
 - [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
-- [ ] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons). `clearance_of` at `src/merge.rs:93` omits `extent.rise` while the merged window's own height at `:287` and the Dock's plate at `src/dock.rs:1306` both include it, so the gap is `size.icon * (most - 1.0)` — 56 px at `size = "large"`, `magnification = "large"`.
+- [x] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons). `clearance_of` at `src/merge.rs:93` omits `extent.rise` while the merged window's own height at `:287` and the Dock's plate at `src/dock.rs:1306` both include it, so the gap is `size.icon * (most - 1.0)` — 56 px at `size = "large"`, `magnification = "large"`.
+  - Premise no longer holds: `clearance_of` subtracts `extent.rise` for Keystone and Fold (`src/merge.rs:93-101`), and `clearance_reaches_past_the_icons_grown` (`:617`) pins that the clearance grows by exactly `rise`.
 - [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; it does not reserve space while autohiding.
 - [x] A non-liquid union has no border.
   - Describes a removed finish: `look::Finish` has no liquid variant, and the union's rim comes from `pane.wgsl:69-71`.
@@ -152,7 +151,7 @@ Not worth changing, by this review:
 
 - Calendar Surface: no undo for a removed event, and recurrence, place and a reminder cannot be typed (a file that holds them keeps them, ADR 0113); a change is read, checked and written in separate steps, so another writer between them wins.
 - Calendar Surface: after "Changed elsewhere" the open field keeps its old baseline until Escape; the pointer hold on an event's Remove shows the key wording "Keep holding d to remove".
-- Text fields: Ctrl+A does not select all (pre-existing, not from ADR 0113). An open Calendar edit field survives the Surface collapsing and reopening (pre-existing). A `kanade ui press` is followed by the Surface collapsing after about 0.5 s (pre-existing).
+- Text fields: an open Calendar edit field survives the Surface collapsing and reopening (pre-existing). A `kanade ui press` is followed by the Surface collapsing after about 0.5 s (pre-existing).
 
 ## Design audit (not done)
 
@@ -174,7 +173,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] `ipc` reads and runs its handlers inline (1 s read timeout) and `request_frames` follows every call; the reply write is off the UI thread with a 1 s timeout, but handlers may still change state outside a Service, so the redraw stays until each is checked.
 - [ ] `update_surface` commits a layer change, then `present` commits the frame; the first commit is how a hidden window shows again. A property-only change could skip it.
 - [ ] `open_normal` runs the view once only to read title and size.
-- [ ] `Brightness` and `Palette` poll every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
+- [ ] `Brightness` polls every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
 - [ ] `elide` and the `tail` helpers re-measure from the start per removed letter (quadratic).
   - `fn tail(query: &str, width: f32) -> Text` is byte-identical in all three copies (`src/surfaces/clipboard.rs:690`, `src/surfaces/search.rs:83`, `src/surfaces/launcher/mod.rs:1236`), so the fix is one copy and two deletions, not three rewrites.
   - The cost is `(1..letters.len())` over cut positions, each building a fresh `String` and a fresh `Text` and calling `.find(fits)` (`src/surfaces/clipboard.rs:707-715`), so it shapes the text once per removed letter; a binary search over the cuts, or the prefix's width subtracted, is O(log n) or O(n).
@@ -185,7 +184,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 ## From the trend-improvements review (unfixed polish)
 
 - [ ] Lock: a hung PAM module holds the one check at a time (no watchdog) — a decision, not a defect; `Dark` in `crates/lock/src/wake.rs` never expires; `kanade status` prints the grace with `idle.lock` off and the raw service name; `clean` keeps Unicode format characters; `Kind::Text` accepts a path as `lock.pam_service`; the interleaving model in `src/lock/mod.rs` lacks `grant` and `touch`.
-- [ ] Lyrics: a paused track gets no local `.lrc`; `mpris:url` may point at any readable `.lrc`; lyric text keeps control and bidi characters.
+- [ ] Lyrics: a paused track gets no local `.lrc`; a `.lrc` is read only beside a `file://` track, so one named like a network stream's URL is never found; lyric text keeps control and bidi characters.
   - Premise no longer holds for the other two: the rate maths is total now (`until()`/`moved()` with a checked `next_second`) instead of dividing by `div_f64`, and the cache's `.part` files are swept.
 - [ ] Calendar subscriptions: feeds are fetched one by one (16 dead hosts hold `Reread` for minutes), each keeps up to 5 MiB resident; ureq honors proxy environment variables, undocumented.
   - Premise no longer holds for the start jitter: a feed's first read is staggered.
@@ -223,7 +222,8 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 ## Notification sounds (ADR 0118, review, low-level, unfixed)
 
-- [ ] The stderr note for a layer that cannot be used prints for every notification, even one dropped because a sound already plays (`cue()` emits the notes before the `PLAYING` check): dedupe or rate-limit it.
+- [x] The stderr note for a layer that cannot be used prints for every notification, even one dropped because a sound already plays (`cue()` emits the notes before the `PLAYING` check): dedupe or rate-limit it.
+  - Premise no longer holds: `says_once` (`src/sources/sound.rs:71`) says each note once, up to `SAID_MOST` (64) different ones, and `play` passes every note through it (`:229`).
 
 ## Clipboard pins and previews (ADR 0114, 0115, low-level, unfixed)
 
@@ -232,8 +232,10 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [ ] A pin change right before exit may not be saved: the save thread is detached.
 - [ ] Not run: a restart with pinned text and pictures on the session (pins back in order, thumbnails regenerated, Launcher `>`, unpin removes them from the file).
 
-- [ ] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
-- [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout); a second Kanade's start sweeps the running one's too, which the running one rewrites on the next draw.
+- [x] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
+  - Premise no longer holds for both: the bytes and their flush happen before `TURN` is taken (`src/sources/clipboard/preview.rs:318-341`), and the Surface's `fit` borrows the history instead of copying it (`src/surfaces/clipboard.rs:355-359`).
+- [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout).
+  - Premise no longer holds for the second half: `sweep` deletes only the folders of pids that are gone or this shell's own (`src/sources/clipboard/preview.rs:133`), so a second Kanade's start leaves a running one's previews alone.
 - [ ] The runtime's thumbnail cache keeps a decoded thumbnail of a deleted preview until it evicts it (512 copies, 128 MiB).
 - [x] A preview's copied image bytes are bounded before they are decoded: `decode_png` calls `count(width, height)` and `bytes_fit(size)` before allocating, against `MOST_PIXELS` (`crates/runtime/src/graphics/image/decode.rs:94`), so a decompression bomb is refused rather than decoded.
 - [ ] `kanade ui press` closing the Surface is older than this change.
@@ -307,7 +309,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
     - `clock::on_terminate` also replaces an inherited ignored SIGINT (a background job of a script) with its handler; `main.rs` words a failure to start it as "SIGTERM will not put outputs back", which also covers SIGINT.
     - Not run live (an agent may not change outputs): `niri msg output <name> position set -- -1920 0` (the `--` form is only from `--help` and clap's rules), SIGTERM mid-trial (`systemctl --user restart kanade` should put the monitor back before the restart), typing in a position field during the 15 s.
   - Outputs slice 1 done (engine only, no UI): `output "<name>"` blocks addressed by ordinal, resolved as niri does (first match, includes in order, include-owned refused), properties (`position x= y=`, `variable-refresh-rate on-demand=true`), reset, and `kanade niri-config get|set|remove 'output["name"].key'` (ADR 0119 amendment). Slices 2-3 pending: the Settings Outputs section (live try over `niri msg output`, a confirm bar, a pending-revert file), then the canvas and the rest. Not run on the session: no `niri msg output` was run; the engine was tested on temp configs and `niri validate` only. `max-bpc` is not in niri 26.04's parser, so it is left out.
-  - Unfixed, low-level (review of outputs slice 1): `Props` set replaces the entry list and collapses its spacing (`x=0   y=0` becomes `x=1 y=2` with single spaces); comments between the entries of a `Props` node are dropped on Set; bidirectional control characters in an output name are written as is; the message of a remove of a never-set `variable-refresh-rate` reads `variable-refresh-rate =  (was ...)` with an empty value in one path.
+  - [x] Fixed (review of outputs slice 1): `Props` set splices each property where it stands, so untouched spacing and the comments between the entries stay (`position   x=0   y=0` keeps its blanks); a bare node in a message says `true (was unset)` instead of an empty value (`niri_config/tests.rs:376`); an `output` block's new name holding a bidirectional control character is refused (`edit.rs:1312`).
   - Checked for the class of the border bug (a node niri reads from a block's presence), over the page's rows and `hot-corners`, `animations`, `tab-indicator` and `insert-hint`: only `layout.border` reads a bare block as on (niri-config/src/lib.rs, `recursion == 0`, top-level config only). `layout.focus-ring`/`shadow` blocks with neither flag keep their default; `hot-corners` is value-read (a bare block turns no corner on, and niri's default top-left corner is not the block's doing); `animations`, `tab-indicator` and `insert-hint` are presence-flag reads whose `off`/`on` a bare block leaves alone. No mismatch, so no code change.
   - Fixed: a search of one or two letters ("n", "ni") no longer lists every row; `niri_page::mentions` matches from the start of a word, and the page's own name only as the whole word "niri".
   - Low-level, unfixed: a panicked worker leaves its rows busy (`Saving…`) until the window reopens.

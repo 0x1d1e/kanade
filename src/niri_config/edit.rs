@@ -1132,12 +1132,12 @@ fn create(
             if own_line {
                 let indent = child_indent.clone().unwrap_or_else(|| deeper(outer, step));
 
-                return Ok((line..line, chain(missing, leaf, &indent, &unit, eol)));
+                return Ok((line..line, chain(missing, leaf, &indent, step, eol)));
             }
 
             if text[inner.clone()].trim().is_empty() {
                 let indent = deeper(outer, step);
-                let body = chain(missing, leaf, &indent, &unit, eol);
+                let body = chain(missing, leaf, &indent, step, eol);
 
                 return Ok((inner.clone(), format!("{eol}{body}{outer}")));
             }

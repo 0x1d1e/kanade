@@ -80,7 +80,7 @@ pub fn field(icon: Icon, query: &str, placeholder: &str, width: f32) -> Rectangl
 }
 
 // the end of `query` that fits in `width`, an ellipsis before it when the start is cut
-fn tail(query: &str, width: f32) -> Text {
+pub(super) fn tail(query: &str, width: f32) -> Text {
     let text = |shown: &str| {
         Text::new(shown)
             .size(QUERY)
@@ -96,16 +96,31 @@ fn tail(query: &str, width: f32) -> Text {
     }
 
     let letters: Vec<char> = query.chars().collect();
+    let shown = |cut: usize| -> String {
+        std::iter::once('\u{2026}')
+            .chain(letters[cut..].iter().copied())
+            .collect()
+    };
 
-    (1..letters.len())
-        .map(|cut| {
-            text(&format!(
-                "\u{2026}{}",
-                letters[cut..].iter().collect::<String>()
-            ))
-        })
-        .find(fits)
-        .unwrap_or_else(|| text("\u{2026}"))
+    /*
+     * each letter left out narrows the text, so the cut that fits is halved into: a probe measures
+     * its candidate once, where trying every cut in turn measured the same letters again and again
+     */
+    let (mut low, mut high) = (1usize, letters.len());
+    let mut cut = letters.len();
+
+    while low <= high {
+        let middle = low + (high - low) / 2;
+
+        if fits(&text(&shown(middle))) {
+            cut = middle;
+            high = middle - 1;
+        } else {
+            low = middle + 1;
+        }
+    }
+
+    text(&shown(cut))
 }
 
 // what it means, `width` by `height` where the list goes: its icon, a title and a detail line

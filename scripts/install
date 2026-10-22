@@ -16,7 +16,8 @@
 #     --niri        install the niri package even with --shell-only; still no niri config then
 #     --sddm        install SDDM with niri, theme it, enable it for the next boot; do not start it
 #     --sddm-greeter keep|niri   login screen display server, with --sddm (default keep, or niri on hybrid NVIDIA)
-#     --uninstall   removes Kanade's binary, completions, unit, icon and build checkout; configs and packages stay
+#     --uninstall   removes Kanade's binary, completions, unit, icon, build checkout and the root-owned SDDM
+#                   files it wrote; configs, the unit's .bak copies and packages stay
 #     --yes         skip the TUI; a piped run with a terminal otherwise execs kanade-install
 #     --ref REF     compile that branch or tag instead of downloading install-0.1; refused from a checkout
 set -eu
@@ -293,7 +294,12 @@ launch_tui() {
     if [ "$optional" = 1 ]; then
         set -- "$@" --optional
     fi
-    exec "$tmp/kanade-install" "$@" < /dev/tty > /dev/tty 2>&1
+    # The TUI runs as a child rather than as this shell's replacement (`exec`), so the copy of this
+    # script it reads is removed when it ends, however it ends
+    trap 'rm -rf "$tmp"' EXIT
+    status=0
+    "$tmp/kanade-install" "$@" < /dev/tty > /dev/tty 2>&1 || status=$?
+    exit "$status"
 }
 
 # an NVIDIA GPU beside another device. Xorg can start on the one with no screens; niri does not.
@@ -533,12 +539,51 @@ main() {
             fi
         fi
         systemctl --user disable --now kanade.service || true
-        rm -f "$config/systemd/user/kanade.service" "$config/systemd/user/kanade.service".bak* \
+        # the unit is Kanade's, so the hand-edited copies beside it are kept: they are what a user
+        # changed it to, and nothing else holds them
+        rm -f "$config/systemd/user/kanade.service" \
             "$data/icons/hicolor/256x256/apps/kanade.png" "$data/bash-completion/completions/kanade" \
             "$config/fish/completions/kanade.fish" "$data/zsh/site-functions/_kanade"
         rm -rf "$data/kanade/src"
         systemctl --user daemon-reload
-        echo "removed Kanade; kept your configs, niri's kanade.kdl include and the packages"
+
+        # --sddm's root-owned files. Only the ones this script writes, named here: another theme's
+        # overlay, /etc/sddm.conf and every other drop-in stay. A sudo that is refused leaves them
+        # too, and the note below says which are still there
+        sddm_files='/etc/sddm.conf.d/zz-kanade.conf /etc/sddm.conf.d/zy-kanade-greeter.conf
+/usr/local/share/kanade-sddm/niri-greeter.kdl /usr/local/share/kanade-sddm/themes/kanade
+/usr/local/share/kanade-sddm-data/backdrop.png'
+        sddm_present=
+        for file in $sddm_files; do
+            if [ -e "$file" ] || [ -L "$file" ]; then
+                sddm_present="$sddm_present $file"
+            fi
+        done
+        if [ -n "$sddm_present" ]; then
+            echo "removing the SDDM files the installer wrote (sudo):$sddm_present"
+            # shellcheck disable=SC2086 # the list is split on purpose
+            sudo rm -f $sddm_present || true
+            # only when empty: another theme's overlay in themes/ stays, and so does the directory
+            sudo rmdir /usr/local/share/kanade-sddm/themes /usr/local/share/kanade-sddm \
+                /usr/local/share/kanade-sddm-data 2> /dev/null || true
+        fi
+        sddm_left=
+        for file in $sddm_files; do
+            if [ -e "$file" ] || [ -L "$file" ]; then
+                sddm_left="$sddm_left $file"
+            fi
+        done
+
+        echo "removed Kanade; kept your configs, the systemd unit copies (kanade.service.bak*), niri's kanade.kdl include and the packages"
+        if [ -n "$sddm_left" ]; then
+            echo "left these root-owned SDDM files, which sudo could not remove; remove them yourself:" >&2
+            for file in $sddm_left; do
+                echo "  sudo rm -f $file" >&2
+            done
+            echo "  (they point SDDM at Kanade's theme; without them SDDM falls back to its own)" >&2
+        elif [ -n "$sddm_present" ]; then
+            echo "removed the SDDM files it wrote; /etc/sddm.conf and other drop-ins are untouched"
+        fi
         exit 0
     fi
 

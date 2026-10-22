@@ -4,6 +4,18 @@
 //! what restarts, so a restart neither posts it again nor forgets to withdraw it. A source's thread
 //! starts with `spawn`, so its whole body is supervised, setup too. What went wrong with each
 //! source, a panic or giving up, is kept for `kanade status`.
+//!
+//! A source that returns is not restarted: some are done once their work is finished (`seed`), and
+//! one that ends because its bus went away must not spin. So a return is recorded like a panic,
+//! which `kanade status` shows, and the source that can go on after one runs its own loop with
+//! `crate::backoff` (as `battery`, `seat` and `wallpaper::watch` do). `niri` is one such: per ADR
+//! 0071 its stream is never reconnected, so a return there is final.
+//!
+//! A return is a fault only for a source meant to run for the session. One whose returning is its
+//! whole design, as `wallpaper::seed` filling an empty folder once, starts with `spawn_once` and
+//! records nothing: `kanade status` is how the user finds real trouble, so a standing line for a
+//! source that did exactly what it is for would drown it. What is worth saying without being
+//! trouble, as hardware the machine does not have, `note` says once.
 
 use std::any::Any;
 use std::io;
@@ -19,7 +31,8 @@ pub const RESTART: Duration = service::RESTART_DELAY;
 
 /*
  * runs `run` until it returns; a panic, already printed by the panic hook, is logged and `run`
- * runs again after `RESTART`, so a source that keeps panicking never spins
+ * runs again after `RESTART`, so a source that keeps panicking never spins. A return ends it, and
+ * says so once
  */
 pub fn run(name: &str, run: impl FnMut()) {
     keep(name, run, thread::sleep);
@@ -31,7 +44,21 @@ pub fn run(name: &str, run: impl FnMut()) {
  * it again whole. One that cannot start a thread is stopped
  */
 pub fn spawn(name: &str, source: impl FnMut() + Send + 'static) {
-    if let Err(error) = start(name, source, thread::sleep) {
+    spawn_ending(name, source, End::Early);
+}
+
+/*
+ * a source whose returning is its own end, not a fault: a one-shot that does its work and is done
+ * (`wallpaper-seed`), or a holder that hands over to a daemon already running. A panic still
+ * restarts it, and a source that has to say why it ended says it itself with `stopped`; a plain
+ * return records nothing, so `status` keeps no standing line for a source that did what it is for
+ */
+pub fn spawn_once(name: &str, source: impl FnMut() + Send + 'static) {
+    spawn_ending(name, source, End::ByDesign);
+}
+
+fn spawn_ending(name: &str, source: impl FnMut() + Send + 'static, end: End) {
+    if let Err(error) = start(name, source, thread::sleep, end) {
         let why = format!("cannot start a thread: {error}");
 
         eprintln!("kanade: {name} {why}");
@@ -39,25 +66,62 @@ pub fn spawn(name: &str, source: impl FnMut() + Send + 'static) {
     }
 }
 
+// whether a source that returns ended early, which `status` says, or as designed, which it does not
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    Early,
+    ByDesign,
+}
+
 fn start(
     name: &str,
     source: impl FnMut() + Send + 'static,
     sleep: impl FnMut(Duration) + Send + 'static,
+    end: End,
 ) -> io::Result<JoinHandle<()>> {
     let owned = name.to_owned();
 
     thread::Builder::new()
         .name(name.to_owned())
-        .spawn(move || keep(&owned, source, sleep))
+        .spawn(move || keep_ending(&owned, source, sleep, end))
 }
 
-fn keep(name: &str, mut run: impl FnMut(), mut sleep: impl FnMut(Duration)) {
-    while let Err(payload) = panic::catch_unwind(AssertUnwindSafe(&mut run)) {
-        panicked(name, payload.as_ref());
-        eprintln!("kanade: {name} panicked, running it again in {RESTART:?}");
+fn keep(name: &str, run: impl FnMut(), sleep: impl FnMut(Duration)) {
+    keep_ending(name, run, sleep, End::Early);
+}
 
-        sleep(RESTART);
+fn keep_ending(name: &str, mut run: impl FnMut(), mut sleep: impl FnMut(Duration), end: End) {
+    loop {
+        match panic::catch_unwind(AssertUnwindSafe(&mut run)) {
+            Err(payload) => {
+                panicked(name, payload.as_ref());
+                eprintln!("kanade: {name} panicked, running it again in {RESTART:?}");
+
+                sleep(RESTART);
+            }
+
+            Ok(()) => {
+                if end == End::Early {
+                    returned(name);
+                }
+
+                return;
+            }
+        }
     }
+}
+
+// a source's run ended on its own, which `status` says; said once, as a restart is recorded as a
+// panic
+fn returned(name: &str) {
+    if trouble(name, |trouble| trouble.stopped.is_some()) {
+        return;
+    }
+
+    let why = String::from("it ended");
+
+    eprintln!("kanade: {name} ended");
+    stopped(name, why);
 }
 
 // what went wrong with one source, by its name; several threads may share one
@@ -94,7 +158,11 @@ impl Trouble {
 // in the order each first went wrong; a source that never did is not here
 static TROUBLES: Mutex<Vec<(String, Trouble)>> = Mutex::new(Vec::new());
 
-fn trouble(name: &str, change: impl FnOnce(&mut Trouble)) {
+// what is worth saying of a source that is not in trouble, by name, in the order noted
+static NOTES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+// `change` is handed the source's Trouble, and says something back to the caller
+fn trouble<T>(name: &str, change: impl FnOnce(&mut Trouble) -> T) -> T {
     let mut troubles = TROUBLES.locked();
 
     let at = match troubles.iter().position(|(each, _)| each == name) {
@@ -105,7 +173,7 @@ fn trouble(name: &str, change: impl FnOnce(&mut Trouble)) {
         }
     };
 
-    change(&mut troubles[at].1);
+    change(&mut troubles[at].1)
 }
 
 // a Service's panics, which the runtime restarts, are kept for `status` like a source's
@@ -132,13 +200,39 @@ pub fn stopped(name: &str, why: String) {
     trouble(name, |trouble| trouble.stopped = Some(why));
 }
 
-// a line for each panic count and each stop, the sources in the order they first went wrong
+/*
+ * what is worth knowing of a source that is not in trouble, said once, as hardware the machine
+ * does not have: a feature silently absent is not damage, but it is not silence either. Said once
+ * however often the source says it, as a source may run again
+ */
+pub fn note(name: &str, what: String) {
+    let mut notes = NOTES.locked();
+
+    if notes.iter().any(|(each, _)| each == name) {
+        return;
+    }
+
+    eprintln!("kanade: {name}: {what}");
+    notes.push((name.to_owned(), what));
+}
+
+// a line for each panic count and each stop, the sources in the order they first went wrong, then
+// a note per source that is not in trouble
 pub fn status() -> Vec<String> {
-    TROUBLES
+    let mut lines: Vec<String> = TROUBLES
         .locked()
         .iter()
         .flat_map(|(name, trouble)| trouble.lines(name))
-        .collect()
+        .collect();
+
+    lines.extend(
+        NOTES
+            .locked()
+            .iter()
+            .map(|(name, what)| format!("source {name}: {what}")),
+    );
+
+    lines
 }
 
 #[cfg(test)]
@@ -244,7 +338,10 @@ mod tests {
             run(name, || {});
         };
 
-        start(name, source, |_| {}).unwrap().join().unwrap();
+        start(name, source, |_| {}, End::Early)
+            .unwrap()
+            .join()
+            .unwrap();
 
         assert_eq!(setups.iter().collect::<Vec<_>>(), [1, 2]);
         assert_eq!(
@@ -252,7 +349,11 @@ mod tests {
                 .into_iter()
                 .filter(|line| line.starts_with("source test setup "))
                 .collect::<Vec<_>>(),
-            ["source test setup panicked once: setup failed"]
+            [
+                "source test setup panicked once: setup failed",
+                // its second run finishes, which is a stop now, not silence
+                "source test setup stopped: it ended",
+            ]
         );
     }
 
@@ -263,5 +364,65 @@ mod tests {
         keep("test", || runs += 1, |_| panic!("no restart"));
 
         assert_eq!(runs, 1);
+    }
+
+    // a source that ended rather than panicked is said once, not at every restart that ends again
+    #[test]
+    fn a_source_that_returns_is_reported_once() {
+        let name = "test returned";
+        let lines = || {
+            status()
+                .into_iter()
+                .filter(|line| line.starts_with(&format!("source {name} ")))
+                .collect::<Vec<_>>()
+        };
+
+        keep(name, || {}, |_| panic!("no restart"));
+
+        assert_eq!(lines(), [format!("source {name} stopped: it ended")]);
+
+        keep(name, || {}, |_| panic!("no restart"));
+
+        assert_eq!(lines(), [format!("source {name} stopped: it ended")]);
+    }
+
+    // a source that is done by design records nothing, while one that ends early still does: the
+    // same return, told apart by how its spawn said its return should be read
+    #[test]
+    fn a_one_shot_that_returns_is_no_trouble_but_an_early_end_is() {
+        let once = "test one-shot";
+        let early = "test ended early";
+
+        start(once, || {}, |_| panic!("no restart"), End::ByDesign)
+            .unwrap()
+            .join()
+            .unwrap();
+        start(early, || {}, |_| panic!("no restart"), End::Early)
+            .unwrap()
+            .join()
+            .unwrap();
+
+        let lines: Vec<String> = status()
+            .into_iter()
+            .filter(|line| line.contains(once) || line.contains(early))
+            .collect();
+
+        assert_eq!(lines, [format!("source {early} stopped: it ended")]);
+    }
+
+    // said once, and not as trouble: a machine without the hardware is not a broken source
+    #[test]
+    fn a_note_is_said_once_and_is_not_trouble() {
+        let name = "test note";
+
+        note(name, String::from("this machine has none"));
+        note(name, String::from("this machine has none"));
+
+        let lines: Vec<String> = status()
+            .into_iter()
+            .filter(|line| line.contains(name))
+            .collect();
+
+        assert_eq!(lines, [format!("source {name}: this machine has none")]);
     }
 }

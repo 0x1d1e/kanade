@@ -91,13 +91,25 @@ pub struct Banners {
 
     // from niri; none while unknown or without niri, which counts every monitor as focused
     focused_output: Option<String>,
+
+    // what FITTED was when it last held the timers of the Banners the column left out
+    fitted: HashMap<String, Vec<u32>>,
 }
+
+/*
+ * per output, the Banners its column had room for when it last drew, the nearest the Island
+ * first. A view may not write a Service, so it leaves this here and nudges; the thread that holds
+ * the Stack reads it, and a Banner the stack shows but this leaves out holds its time until there
+ * is room for it again
+ */
+static FITTED: LazyLock<Mutex<HashMap<String, Vec<u32>>>> = LazyLock::new(Mutex::default);
 
 impl Service for Banners {
     fn new() -> Self {
         Self {
             stack: Stack::default(),
             focused_output: None,
+            fitted: HashMap::new(),
         }
     }
 
@@ -118,6 +130,15 @@ impl Service for Banners {
 
             for (id, version) in left {
                 Notifications::expire(id, version);
+            }
+
+            // an output drew other Banners than it had: the ones it left out hold their time
+            if Self::read().fitted != *FITTED.locked() {
+                let mut banners = Self::write();
+
+                if !banners.fit() {
+                    banners.quiet();
+                }
             }
 
             // no deadline waits forever, recv_timeout falls back to recv on overflow
@@ -155,6 +176,37 @@ impl Banners {
     // fullscreen silence: quiet Banners wait; false when it already was
     pub fn hold(&mut self, held: bool, now: Instant) -> bool {
         self.stack.set_held(held, now)
+    }
+
+    /*
+     * what the column has room for, as it last drew it: the Banners the stack shows but that leaves
+     * out hold their time until there is room for them again. False when none changed
+     */
+    fn fit(&mut self) -> bool {
+        let drawn = self.drawn();
+
+        self.fitted = FITTED.locked().clone();
+        self.stack.place(&drawn, Instant::now())
+    }
+
+    /*
+     * what the Banners show: only the focused output draws them, so only its column says; with no
+     * niri every monitor does, and each one's counts. An output that has not drawn yet pushes
+     * nothing out, as nothing knows its room
+     */
+    fn drawn(&self) -> Vec<u32> {
+        let fitted = FITTED.locked();
+
+        match &self.focused_output {
+            Some(focused) => fitted
+                .get(focused)
+                .cloned()
+                .unwrap_or_else(|| self.stack.shown().map(|banner| banner.id).collect()),
+            None => fitted
+                .values()
+                .flat_map(|ids| ids.iter().copied())
+                .collect(),
+        }
     }
 
     pub fn contains(&self, id: u32) -> bool {
@@ -227,10 +279,47 @@ pub fn forget_gone() {
 
     MOTIONS.locked().retain(|monitor, _| monitors.has(monitor));
     PANES.locked().retain(|monitor, _| monitors.has(monitor));
+
+    // the Banners those outputs left out have room again
+    let left = {
+        let mut fitted = FITTED.locked();
+        let known = fitted.len();
+
+        fitted.retain(|monitor, _| monitors.has(monitor));
+        known - fitted.len()
+    };
+
+    let mut banners = Banners::write();
+
+    if left == 0 || !banners.fit() {
+        banners.quiet();
+        return;
+    }
+
+    drop(banners);
+    nudge();
 }
 
 fn nudge() {
     NUDGE.nudge();
+}
+
+/*
+ * what an output's column had room for, as it drew it, `nearest` the Island first. A view may not
+ * write a Service, so it leaves them here and nudges the Banners' thread, which holds or releases
+ * the times of the ones left out
+ */
+fn fit(monitor: &str, nearest: Vec<u32>) {
+    let mut fitted = FITTED.locked();
+
+    if fitted.get(monitor) == Some(&nearest) {
+        return;
+    }
+
+    fitted.insert(monitor.to_owned(), nearest);
+    drop(fitted);
+
+    nudge();
 }
 
 impl Banner {
@@ -373,6 +462,12 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
         }
     };
     let shown = fitting(shown, &heights, from, lane.end, hang);
+
+    // the ones the column had no room for hold their time until there is room again
+    fit(
+        &monitor.name,
+        shown.iter().map(|banner| banner.id).collect(),
+    );
 
     let (placed, moving) = {
         let mut motions = MOTIONS.locked();
@@ -695,7 +790,8 @@ fn rest_body(hang: Hang, canvas: Canvas, shift: Shift) -> Rect {
 
 /*
  * the Banners `shown`, nearest the Island first, that hang between `from` and the column's `end`;
- * the first always, clipped if it must be
+ * the first always, clipped if it must be. The rest keep their place in the Stack, which holds
+ * their time until there is room for them again (`Stack::place`)
  */
 fn fitting(
     shown: Vec<Banner>,

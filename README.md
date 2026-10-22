@@ -97,7 +97,7 @@ For existing niri setups or selective installs, pass options after `sh -s --`:
 - `--yes`: Skips the TUI.
 - `--optional`: Installs optional feature packages and enables Bluetooth, UPower, and power-profiles-daemon services.
 - `--ref`: Compiles that branch or tag, including `--ref main`. Does not download the `install-0.1` binary.
-- `--uninstall`: Removes the Kanade binary, completions, systemd unit, and desktop icon.
+- `--uninstall`: Removes the Kanade binary, completions, systemd unit, and desktop icon, and keeps the `kanade.service.bak.*` copies; removes the root-owned SDDM files `--sddm` wrote, with `sudo`, and nothing else.
 
 ### Manual Build
 

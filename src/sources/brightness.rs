@@ -2,10 +2,12 @@
 //! a change to the backlight file; half a second keeps brightness keys feeling live. Set through
 //! logind, since the file belongs to root.
 //!
-//! Without a backlight, or with `brightness.backend = "ddc"`, the level is that of the external
-//! monitor on the focused output, over DDC/CI (ADR 0082). A monitor's level is read once, on the
-//! `ddc` thread, and kept: the poll never touches the bus, and a change made on the monitor's own
-//! buttons is not seen.
+//! Without a backlight, or with `brightness.backend = "ddcci"` (the accepted values are `auto`,
+//! `backlight` and `ddcci`; anything else is read as `auto`), the level is that of the external
+//! monitor on the focused output, over DDC/CI (ADR 0082). With no external monitor focused there,
+//! the one chosen before stands, its index clamped to the monitors now present. A monitor's level is
+//! read once, on the `ddc` thread, and kept: the poll never touches the bus, and a change made on
+//! the monitor's own buttons is not seen.
 
 use std::fs;
 use std::path::{Path, PathBuf};

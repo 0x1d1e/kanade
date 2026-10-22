@@ -66,8 +66,10 @@ pub(super) fn hud(
     let come = 1.0 - (1.0 - coming.clamp(0.0, 1.0)).powi(3);
     let go = going.clamp(0.0, 1.0).powi(2);
 
-    // it moves until it is gone; the expiry itself redraws the Island
-    request_frame();
+    // it moves until it is gone; the expiry itself redraws the Island, so a settled one asks for nothing
+    if come < 1.0 || go < 1.0 {
+        request_frame();
+    }
 
     let roles = theme::island();
     let edge = 10.0;

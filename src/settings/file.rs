@@ -280,7 +280,23 @@ fn edit(table: &mut toml::Table, path: &[String], value: Option<Value>) -> Resul
 
 // the part is hidden, so it is never read as a layer
 fn write(file: &Path, text: &str) -> io::Result<()> {
-    atomic::write(file, text.as_bytes(), Mode::Shared)
+    atomic::write(file, text.as_bytes(), mode(file))
+}
+
+/*
+ * The mode the file keeps: the user's own when it is already private, else 0600. The file can hold
+ * `calendar.subscriptions`, and a feed's address is often its only secret (ADR 0062), so Kanade's
+ * own window makes a new one private rather than leaving it to the umask, and does not widen one
+ * that already grants nothing to group or other (0400, 0600). A file the umask left at 0644, which
+ * is what Kanade wrote before this, is narrowed once.
+ */
+fn mode(file: &Path) -> Mode {
+    use std::os::unix::fs::PermissionsExt;
+
+    match fs::metadata(file).map(|meta| meta.permissions().mode() & 0o777) {
+        Ok(bits) if bits & 0o077 == 0 => Mode::Exactly(bits),
+        _ => Mode::Exactly(0o600),
+    }
 }
 
 #[cfg(test)]
@@ -505,6 +521,43 @@ mod tests {
         // resetting the key that does not apply is what fixes it
         set_one(&file, &Config::default(), &path("clock"), None).unwrap();
         assert!(!fs::read_to_string(&file).unwrap().contains("13h"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    // the file can hold `calendar.subscriptions`, and a feed's address is often its only secret
+    // (ADR 0062): Kanade's own window writes it, so a new one is the owner's alone rather than the
+    // umask's, and one already private keeps its own bits
+    #[test]
+    fn the_file_is_private_and_keeps_the_private_mode_it_had() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("kanade-mode-{}", std::process::id()));
+        let file = dir.join("settings.toml");
+        let bits = |file: &Path| fs::metadata(file).unwrap().permissions().mode() & 0o777;
+
+        // a new file is 0600 whatever the umask leaves behind
+        set_one(
+            &file,
+            &Config::default(),
+            &path("clock"),
+            Some(Value::String(String::from("12h"))),
+        )
+        .unwrap();
+        assert_eq!(bits(&file), 0o600);
+
+        // one the user narrowed keeps its bits, and one the umask left wide is narrowed
+        for (set, kept, clock) in [(0o400, 0o400, "24h"), (0o644, 0o600, "12h")] {
+            fs::set_permissions(&file, fs::Permissions::from_mode(set)).unwrap();
+            set_one(
+                &file,
+                &Config::default(),
+                &path("clock"),
+                Some(Value::String(String::from(clock))),
+            )
+            .unwrap();
+            assert_eq!(bits(&file), kept, "from {set:o}");
+        }
 
         fs::remove_dir_all(dir).unwrap();
     }

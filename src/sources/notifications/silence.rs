@@ -55,6 +55,10 @@ impl App {
 }
 
 fn token(text: &str) -> Option<String> {
+    let text: String = text
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
     let text = text.trim().to_lowercase();
     if text.is_empty() { None } else { Some(text) }
 }
@@ -123,7 +127,8 @@ fn load() -> Vec<App> {
     parse(&text)
 }
 
-// one app a line, `desktop<TAB>name`, either field empty
+// one app a line, `desktop<TAB>name`, either field empty. A line without a tab names no app, and a
+// tab or a newline inside a field is cut out, so one app never reads as two
 fn parse(text: &str) -> Vec<App> {
     text.lines()
         .filter_map(|line| {
@@ -203,6 +208,25 @@ mod tests {
                 },
             ]
         );
+    }
+
+    // an app's name comes from a program, so a tab or a newline in it must not split the line or
+    // start another one: it is cut out, and what it would have made is never read as another app
+    #[test]
+    fn a_silence_file_carries_no_control_characters() {
+        let app = App::named("Tabs\tand\nnewlines", "org.example\ttabs").unwrap();
+
+        assert_eq!(app.name.as_deref(), Some("tabsandnewlines"));
+        assert_eq!(app.desktop.as_deref(), Some("org.exampletabs"));
+
+        /*
+         * a file an older writer left one in reads without a panic: the tab after the first stays
+         * in that line's name, cut out of the app it names, and never starts another app
+         */
+        let old = parse("org.example\tTa\tbs\n");
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].desktop.as_deref(), Some("org.example"));
+        assert_eq!(old[0].name.as_deref(), Some("tabs"));
     }
 
     #[test]

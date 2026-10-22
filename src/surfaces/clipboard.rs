@@ -650,7 +650,7 @@ fn field(query: &str) -> Rectangle {
             .align(Center),
         )
     } else {
-        Box::new(Row::new(children![tail(query, room), caret]).align(Center))
+        Box::new(Row::new(children![super::search::tail(query, room), caret]).align(Center))
     };
 
     Rectangle::new()
@@ -684,35 +684,6 @@ fn field(query: &str) -> Rectangle {
             .gap(ICON_GAP)
             .align(Center),
         )
-}
-
-// the end of `query` that fits in `width`, an ellipsis before it when the start is cut
-fn tail(query: &str, width: f32) -> Text {
-    let text = |shown: &str| {
-        Text::new(shown)
-            .size(QUERY)
-            .color(theme::island().on_surface)
-            .weight(theme::text::MEDIUM)
-    };
-    let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
-
-    let whole = text(query);
-
-    if fits(&whole) {
-        return whole;
-    }
-
-    let letters: Vec<char> = query.chars().collect();
-
-    (1..letters.len())
-        .map(|cut| {
-            text(&format!(
-                "\u{2026}{}",
-                letters[cut..].iter().collect::<String>()
-            ))
-        })
-        .find(fits)
-        .unwrap_or_else(|| text("\u{2026}"))
 }
 
 // what it means, in the middle of where the rows go

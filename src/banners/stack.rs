@@ -41,6 +41,11 @@ pub struct Banner {
     // and how long it shows over its urgency's time
     pub history: bool,
     pub bypass_dnd: bool,
+
+    /*
+     * how long it shows, over its urgency's time: a rule's own time, else what its sender asked
+     * with `expire_timeout`. `Duration::ZERO` is a sender that asked for it never to expire
+     */
     pub timeout: Option<Duration>,
 }
 
@@ -54,13 +59,17 @@ impl Banner {
         self.critical() || self.bypass_dnd
     }
 
-    // none is sticky
+    // none is sticky: a Critical one, or one whose sender asked for it never to expire
     fn length(&self) -> Option<Duration> {
-        self.timeout.or(match self.urgency {
-            Urgency::Low => Some(LOW),
-            Urgency::Normal => Some(NORMAL),
-            Urgency::Critical => None,
-        })
+        match self.timeout {
+            Some(asked) if asked.is_zero() => None,
+            Some(asked) => Some(asked),
+            None => match self.urgency {
+                Urgency::Low => Some(LOW),
+                Urgency::Normal => Some(NORMAL),
+                Urgency::Critical => None,
+            },
+        }
     }
 }
 
@@ -77,6 +86,9 @@ enum Timer {
 struct Shown {
     banner: Banner,
     timer: Timer,
+
+    // what is left of its time while it has no room in the column, none when it has
+    held: Option<Duration>,
 
     // a reply is being typed, so it stays until sent or closed, however long that takes
     drafting: bool,
@@ -126,8 +138,11 @@ impl Stack {
             .iter()
             .position(|shown| shown.banner.id == banner.id)
         {
-            // a replacement under a draft keeps it, unless the new version takes no reply or is
-            // from another sender, whose text the draft must not be sent to
+            /*
+             * a replacement under a draft keeps it while it still takes a reply, from the sender
+             * that made the notification: one from another sender never reaches here with a
+             * field, as the daemon gives such a replacement none, so the text is not sent to it
+             */
             let drafting = self.shown[index].drafting
                 && banner.reply.is_some()
                 && banner.toast.app == self.shown[index].banner.toast.app;
@@ -148,6 +163,7 @@ impl Stack {
             } else {
                 timer(&banner, self.hovered, now)
             };
+            shown.held = None;
             shown.banner = banner;
             return;
         }
@@ -269,6 +285,11 @@ impl Stack {
         self.hovered = inside;
 
         for shown in &mut self.shown {
+            // one with no room in the column keeps what it had until it is placed again
+            if shown.held.is_some() {
+                continue;
+            }
+
             shown.timer = match (shown.timer, inside) {
                 (Timer::Running(until), true) => {
                     Timer::Paused(until.saturating_duration_since(now))
@@ -307,12 +328,17 @@ impl Stack {
             timer(&shown.banner, hovered, now)
         };
 
+        // its time starts afresh once it is placed again
+        shown.held = None;
+
         true
     }
 
     // takes down every Banner whose time ran out, and shows queued ones in their place
     pub fn expire(&mut self, now: Instant) {
-        let over = |shown: &Shown| matches!(shown.timer, Timer::Running(until) if until <= now);
+        let over = |shown: &Shown| {
+            shown.held.is_none() && matches!(shown.timer, Timer::Running(until) if until <= now)
+        };
 
         for shown in self.shown.iter().filter(|shown| over(shown)) {
             if !shown.banner.history {
@@ -325,15 +351,52 @@ impl Stack {
         self.promote(now);
     }
 
-    // when a Banner's time runs out next
+    // when a Banner's time runs out next; a Banner with no room in the column has none
     pub fn deadline(&self) -> Option<Instant> {
         self.shown
             .iter()
+            .filter(|shown| shown.held.is_none())
             .filter_map(|shown| match shown.timer {
                 Timer::Running(until) => Some(until),
                 _ => None,
             })
             .min()
+    }
+
+    /*
+     * the Banners the column has room for, `drawn`: the others keep their place in the stack and
+     * hold their time until there is room for them again, so one pushed out by a Surface opening
+     * does not run out unseen
+     */
+    pub fn place(&mut self, drawn: &[u32], now: Instant) -> bool {
+        let hovered = self.hovered;
+        let mut changed = false;
+
+        for shown in &mut self.shown {
+            if drawn.contains(&shown.banner.id) {
+                let Some(left) = shown.held.take() else {
+                    continue;
+                };
+
+                // what it had left runs from now, the pointer on the Banners still holding it
+                shown.timer = match shown.timer {
+                    Timer::Sticky => Timer::Sticky,
+                    Timer::Paused(_) => Timer::Paused(left),
+                    Timer::Running(_) if hovered => Timer::Paused(left),
+                    Timer::Running(_) => Timer::Running(now + left),
+                };
+                changed = true;
+            } else if shown.held.is_none() {
+                shown.held = Some(match shown.timer {
+                    Timer::Sticky => Duration::ZERO,
+                    Timer::Paused(left) => left,
+                    Timer::Running(until) => until.saturating_duration_since(now),
+                });
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     // newest first
@@ -378,6 +441,7 @@ impl Stack {
             self.shown.push(Shown {
                 banner,
                 timer,
+                held: None,
                 drafting: false,
             });
         }
@@ -656,5 +720,37 @@ mod tests {
         );
         assert!(drafting.drafting(1));
         assert!(drafting.shown().any(|banner| banner.id == 1));
+    }
+
+    /*
+     * a Banner the column has no room for keeps its time until it is placed again, so it does not
+     * run out unseen while a Surface covers the room it would hang in
+     */
+    #[test]
+    fn a_banner_with_no_room_holds_its_time_until_it_is_placed_again() {
+        let now = Instant::now();
+        let mut stack = Stack::default();
+
+        stack.arrive(banner(1, Urgency::Low), false, now);
+        stack.arrive(banner(2, Urgency::Normal), false, now);
+
+        // both placed: the Low one's time is the next to run out
+        assert!(!stack.place(&[2, 1], now));
+        assert_eq!(stack.deadline(), Some(now + LOW));
+
+        // the column has room for one only: the other holds its time, past its own deadline
+        let later = now + Duration::from_secs(30);
+        assert!(stack.place(&[2], now));
+        assert_eq!(stack.deadline(), Some(now + NORMAL));
+
+        stack.expire(later);
+        assert!(stack.contains(1));
+
+        // room again: what it had left runs from now
+        assert!(stack.place(&[2, 1], later));
+        assert_eq!(stack.deadline(), Some(later + LOW));
+
+        stack.expire(later + LOW);
+        assert!(!stack.contains(1));
     }
 }

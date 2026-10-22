@@ -13,6 +13,19 @@ use super::WaylandState;
 // the compositor counts a fractional scale in 120ths, so 150 means 1.25
 const DENOMINATOR: f32 = 120.0;
 
+// the least and the most a scale may be, the range the UI scale has (ui_scale.rs)
+const LEAST: f32 = 0.5;
+const MOST: f32 = 4.0;
+
+/*
+ * a scale as the compositor sent it, kept to one a surface can be told: a scale of 0 or less is a
+ * wl_surface protocol error that ends the client, and a huge one overflows the buffer; none when it
+ * is not a number, since no surface can be drawn at that either
+ */
+pub(super) fn sane(scale: f32) -> Option<f32> {
+    scale.is_finite().then(|| scale.clamp(LEAST, MOST))
+}
+
 /*
  * what a surface needs to show at a scale like 1.25: the compositor says the
  * exact scale, and the viewport shows the bigger buffer at the window's size
@@ -61,7 +74,12 @@ impl Dispatch<WpFractionalScaleV1, WlSurface> for WaylandState {
             return;
         };
 
-        window.scale = scale as f32 / DENOMINATOR;
+        // a scale the compositor cannot be told leaves the last one, which draws a sane surface
+        let Some(scale) = sane(scale as f32 / DENOMINATOR) else {
+            return;
+        };
+
+        window.scale = scale;
 
         state.redraw_on(surface);
     }

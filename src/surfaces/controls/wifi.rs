@@ -204,6 +204,36 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
         .gap(GAP)
 }
 
+// a dot per character typed
+fn dots(count: usize) -> Text {
+    Text::new("\u{2022}".repeat(count))
+        .size(DOTS)
+        .color(theme::island().on_surface)
+        .weight(theme::text::MEDIUM)
+}
+
+/*
+ * the most of `count` dots that fit: a longer run of dots is always wider, so the count is halved
+ * into rather than built and measured from the longest down, one build a letter typed
+ */
+fn visible(count: usize, fits: impl Fn(&Text) -> bool) -> usize {
+    let (mut low, mut high) = (0usize, count);
+    let mut shown = 0;
+
+    while low <= high {
+        let middle = low + (high - low) / 2;
+
+        if fits(&dots(middle)) {
+            shown = middle;
+            low = middle + 1;
+        } else {
+            high = middle.saturating_sub(1);
+        }
+    }
+
+    shown
+}
+
 // a dot per character typed, the last ones while they do not fit, then the caret
 fn field(secret: &Secret) -> Rectangle {
     let room = WIDTH - 2.0 * FIELD_INSET - TARGET - ICON_GAP - CARET;
@@ -213,12 +243,6 @@ fn field(secret: &Secret) -> Rectangle {
         .height(DOTS + 4.0)
         .fill(theme::island().on_surface);
 
-    let dots = |count: usize| {
-        Text::new("\u{2022}".repeat(count))
-            .size(DOTS)
-            .color(theme::island().on_surface)
-            .weight(theme::text::MEDIUM)
-    };
     let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= room);
 
     let typed: Box<dyn Widget> = if secret.is_empty() {
@@ -233,11 +257,7 @@ fn field(secret: &Secret) -> Rectangle {
             .align(Center),
         )
     } else {
-        let shown = (0..=secret.len())
-            .rev()
-            .map(dots)
-            .find(fits)
-            .unwrap_or_else(|| dots(0));
+        let shown = dots(visible(secret.len(), fits));
 
         Box::new(Row::new(children![shown, caret]).align(Center))
     };

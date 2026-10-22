@@ -5,6 +5,14 @@
 //! and shows nothing of it on the way. Until it wakes, `PrepareForSleep(false)`, no password
 //! unlocks (`lock::sleeping`); then it takes one again.
 //!
+//! A hold that ends without the lock leaves the session unlocked as it sleeps, and two causes end
+//! differently. niri being too slow to confirm is put right: the lock is owed, and asked again as
+//! the machine wakes (`Relock`), at once and then with a backoff, until it holds or the session
+//! locks some other way. A lock that cannot be asked at all is never asked, then or later: with no
+//! PAM service file (`lock::pam`) nothing could unlock the session, so the machine sleeps and
+//! wakes unlocked, deliberately, as a lock nothing can open is worse than none. `kanade doctor`
+//! names the missing service.
+//!
 //! `src/bus.rs`'s `Bus` cannot hold the fd logind's `Inhibit` hands back, so `systemd-inhibit` holds it
 //! (ADR 0011), through setpriv so it dies with Kanade, as caffeine's does. A holder that ends or
 //! cannot start is taken again with a backoff, and `kanade status` says how it stands. Caffeine is
@@ -98,6 +106,62 @@ impl Drop for Delay {
     fn drop(&mut self) {
         drop(self.child.kill());
         drop(self.child.wait());
+    }
+}
+
+/*
+ * the lock a sleep began without, asked again as the machine wakes: at once, then each failure
+ * waits twice as long, as the inhibitor's own retry does
+ */
+struct Relock {
+    backoff: Backoff,
+
+    // None while no lock is owed, or once one holds
+    at: Option<Instant>,
+}
+
+impl Relock {
+    fn new() -> Self {
+        Self {
+            backoff: Backoff::new(FIRST, LONGEST),
+            at: None,
+        }
+    }
+
+    /*
+     * the pre-sleep hold ended without the lock. One that `askable` says may be asked is owed at
+     * once, as the machine wakes; one that cannot be asked at all, as with no PAM service, is not:
+     * asking it would lock the session with nothing to unlock it
+     */
+    fn owed(&mut self, askable: bool, now: Instant) {
+        if askable {
+            self.backoff.reset();
+            self.at = Some(now);
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.at.is_some_and(|at| at <= now)
+    }
+
+    // the machine woke: a lock still owed is asked at once, as waking is a fresh chance
+    fn woke(&mut self, now: Instant) {
+        if self.at.is_some() {
+            self.backoff.reset();
+            self.at = Some(now);
+        }
+    }
+
+    // it holds: nothing more is owed
+    fn held(&mut self) {
+        self.at = None;
+    }
+
+    // asking it failed at `now`: when to try again
+    fn failed(&mut self, now: Instant) -> Instant {
+        let at = now + self.backoff.failed();
+        self.at = Some(at);
+        at
     }
 }
 
@@ -237,7 +301,9 @@ fn run() -> Result<Infallible, String> {
     let mut asleep = false;
     let mut serial = 0;
     let mut retry = Retry::now(Instant::now());
+    let mut relock = Relock::new();
     let mut said = String::new();
+    let mut unheld = String::new();
 
     loop {
         if !asleep && retry.due(Instant::now()) {
@@ -265,8 +331,43 @@ fn run() -> Result<Infallible, String> {
             }
         }
 
+        // a sleep that began without the lock owes one: asked again, now that the machine is awake
+        if !asleep && relock.due(Instant::now()) {
+            match hold_again(patience) {
+                Ok(()) => {
+                    eprintln!("kanade: locked on waking, as sleep began without it");
+                    relock.held();
+                    unheld.clear();
+                }
+                Err(why) => {
+                    let now = Instant::now();
+                    let at = relock.failed(now);
+
+                    // said once, not at every try
+                    if why != unheld {
+                        eprintln!(
+                            "kanade: no lock on waking, asking again in {:?}: {why}",
+                            at - now
+                        );
+                    }
+
+                    unheld = why;
+                }
+            }
+        }
+
+        // the sooner of the inhibitor's next try and the owed lock's
+        let due = if asleep {
+            None
+        } else {
+            match (retry.at, relock.at) {
+                (Some(at), Some(owed)) => Some(at.min(owed)),
+                (at, owed) => at.or(owed),
+            }
+        };
+
         // never disconnected: `tell` is kept
-        let event = match retry.at.filter(|_| !asleep) {
+        let event = match due {
             Some(at) => match events.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(event) => event,
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => continue,
@@ -291,8 +392,20 @@ fn run() -> Result<Infallible, String> {
                 let asked = Instant::now();
 
                 match lock::hold(patience) {
-                    Ok(()) => eprintln!("kanade: locked before sleep"),
-                    Err(why) => eprintln!("kanade: did not lock before sleep: {why}"),
+                    Ok(()) => {
+                        eprintln!("kanade: locked before sleep");
+                        unheld.clear();
+                    }
+                    Err(why) => {
+                        eprintln!("kanade: did not lock before sleep: {why}");
+
+                        /*
+                         * niri too slow is put right as the machine wakes; a lock that cannot be
+                         * asked (no PAM service) is not owed one, as asking it would lock the
+                         * session with nothing to unlock it
+                         */
+                        relock.owed(lock::pam().is_some(), Instant::now());
+                    }
                 }
 
                 // sleep waits for the hook only as long as logind's delay allows
@@ -310,6 +423,9 @@ fn run() -> Result<Infallible, String> {
                 if std::mem::replace(&mut asleep, false) {
                     hooks::fire(hooks::Event::Resume);
                 }
+
+                // a lock the sleep began without is asked as the machine wakes, not later
+                relock.woke(Instant::now());
 
                 if delay.is_none() {
                     retry = Retry::now(Instant::now());
@@ -337,6 +453,18 @@ fn run() -> Result<Infallible, String> {
             Event::Gone(why) => return Err(why),
         }
     }
+}
+
+/*
+ * the lock a sleep began without, asked as the machine wakes. One that holds already needs no
+ * second ask, which would drop a password typed on the lock screen meanwhile (`Requests::request`)
+ */
+fn hold_again(patience: Duration) -> Result<(), String> {
+    if lock::holds() {
+        return Ok(());
+    }
+
+    lock::hold(patience)
 }
 
 /*
@@ -518,4 +646,52 @@ fn patience(connection: &Connection) -> Duration {
         .and_then(|micros| u64::try_from(micros).ok())
         .filter(|&micros| micros > 0)
         .map_or(DELAY, Duration::from_micros)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /*
+     * a sleep that began without the lock owes one asked again as the machine wakes: at once when
+     * niri was too slow, never when no PAM service means no lock may be asked at all
+     */
+    #[test]
+    fn a_sleep_that_began_without_the_lock_asks_it_again_as_the_machine_wakes() {
+        let now = Instant::now();
+        let mut relock = Relock::new();
+        assert!(!relock.due(now));
+
+        // niri did not hold it in time: the wake's first turn asks it
+        relock.owed(true, now);
+        assert!(relock.due(now));
+
+        // held this time: nothing more is owed
+        relock.held();
+        assert!(!relock.due(now));
+
+        // still not held: each ask waits twice as long as the one before
+        let at = relock.failed(now);
+        assert!(!relock.due(now));
+        assert!(relock.due(at));
+        let later = relock.failed(at);
+        assert_eq!(later - at, 2 * FIRST);
+
+        // the next sleep's wake asks it at once, not when that backoff would have
+        let woke = at + Duration::from_secs(1);
+        relock.woke(woke);
+        assert!(relock.due(woke));
+        assert_eq!(relock.at, Some(woke));
+
+        // nothing owed wakes nothing
+        let mut idle = Relock::new();
+        idle.woke(now);
+        assert!(!idle.due(now));
+
+        // no PAM service: no lock may be asked, before sleep or after, so none is owed
+        let mut relock = Relock::new();
+        relock.owed(false, now);
+        assert!(!relock.due(now));
+        assert!(!relock.due(now + LONGEST));
+    }
 }

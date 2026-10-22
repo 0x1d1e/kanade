@@ -244,10 +244,12 @@ pub fn classify(dir: &Path, own: bool) -> Class {
         }
     }
 
+    // what a theme says of itself goes to the terminal, so it is stripped of control characters
+    // here as the setting below is: the file name is as much the theme's text as a value is
     let video = listed
         .iter()
         .find(|rel| VIDEOS.contains(&extension(&name(rel)).as_str()))
-        .map(|rel| name(rel))
+        .map(|rel| plain(&name(rel)))
         .or_else(|| {
             settings
                 .iter()
@@ -391,7 +393,8 @@ mod tests {
         );
     }
 
-    // a theme's name for a file goes to the terminal: nothing in it moves the cursor
+    // a theme's name for a file goes to the terminal: nothing in it moves the cursor, whether the
+    // name is a setting's value or a file of the theme's own
     #[test]
     fn what_a_theme_says_is_shown_without_control_characters() {
         assert_eq!(plain("a\u{1b}[2Jb\n"), "a[2Jb");
@@ -404,6 +407,13 @@ mod tests {
             panic!("a video")
         };
         assert!(!video.contains('\u{1b}'));
+        fs::remove_dir_all(dir).unwrap();
+
+        let dir = theme("escape-file", &[("x\u{1b}[31m.MP4", "")]);
+        let Class::D(video) = classify(&dir, false) else {
+            panic!("a video")
+        };
+        assert!(!video.contains('\u{1b}'), "{video:?}");
         fs::remove_dir_all(dir).unwrap();
     }
 

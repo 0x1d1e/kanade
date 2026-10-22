@@ -4,7 +4,7 @@ use wayland_client::{
     protocol::{wl_output::Transform, wl_output::WlOutput, wl_surface::WlSurface},
 };
 
-use super::WaylandState;
+use super::{WaylandState, scale};
 
 impl CompositorHandler for WaylandState {
     fn scale_factor_changed(
@@ -23,7 +23,12 @@ impl CompositorHandler for WaylandState {
             return;
         }
 
-        window.scale = new_factor as f32;
+        // a scale the compositor cannot be told leaves the last one, which draws a sane surface
+        let Some(scale) = scale::sane(new_factor as f32) else {
+            return;
+        };
+
+        window.scale = scale;
         self.redraw_on(surface);
     }
 

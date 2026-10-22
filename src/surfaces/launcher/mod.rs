@@ -11,9 +11,11 @@
 //! `kanade dmenu` opens it on a script's lines alone (`choose`). A query nothing answers offers to
 //! search Google for it or open it in the browser (`web`, ADR 0130).
 
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use kanade_runtime::MutexExt;
 use kanade_runtime::service::{self, Service};
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
@@ -733,6 +735,13 @@ pub fn start() {
     service::watch::<Search>(fit);
     service::watch::<Choosing>(fit);
     service::watch::<windows::Held>(fit);
+
+    // and the ranking follows them, ranking again when any is written
+    service::watch::<Radios>(forget);
+    service::watch::<Apps>(forget);
+    service::watch::<windows::Held>(forget);
+    service::watch::<clipboard::Clipboard>(forget);
+    service::watch::<config::Reloads>(forget);
     service::watch::<IslandService>(choose::follow);
     fit();
 }
@@ -902,15 +911,15 @@ impl Found {
  * Kanade's Commands, the open Windows and the Apps. An answer the Recents show is taken out of the
  * section it would list in, so nothing lists twice, and a recent that no longer exists is left out
  */
-fn sections(apps: &[App], destinations: Destinations, recording: Rec) -> Found {
-    let titles = windows::titles();
-    let commands = commands(config::get().launcher_commands, recording);
+fn sections(apps: &[App], key: &Inputs, recording: Rec) -> Found {
+    let destinations = destination(key.destinations);
+    let commands = commands(key.launcher_commands, recording);
     let apps = AppsProvider(apps, destinations.wallpapers);
 
     let mut found_apps = apps.find("");
     let mut found_commands = commands.find("");
     let mut found_destinations = destinations.find("");
-    let found_windows = windows::Titles(&titles).find("");
+    let found_windows = windows::Titles(&key.titles).find("");
 
     // the Recents, highest score first, each taken from the answers it would list among
     let recent = sources::recents::with(|usage| {
@@ -988,38 +997,159 @@ fn kept(answer: &Answer) -> Option<String> {
 }
 
 /*
+ * what the providers last found for a query, and what that depended on. The view runs every frame of
+ * a morph (`crates/runtime/src/wayland/redraw.rs`), so ranking eight providers and sorting them
+ * again each frame is work the frame does not change: it is kept until one of its inputs does
+ */
+#[derive(Default)]
+struct Memo {
+    key: Option<Inputs>,
+
+    /*
+     * the apps that `found` was ranked for, kept beside the key and compared rather than hashed: a
+     * compare stops at the first app that differs, while hashing every name and action would cost
+     * about as much as the ranking it saves. Only a ranking that runs copies them
+     */
+    apps: Vec<App>,
+    found: Arc<Found>,
+}
+
+// everything a ranking depends on besides its query, so a change to any of it ranks again
+#[derive(Default, PartialEq, Eq)]
+struct Inputs {
+    visit: u64,
+
+    // the query as typed, before trimming
+    query: String,
+
+    // the query's case is its own: the fit folds it, the recents do not
+    recording: Rec,
+
+    // whether the apps were read yet, and the two config switches
+    read: bool,
+    actions: bool,
+    launcher_commands: bool,
+
+    // which destinations exist, as the flags they are: `Destinations` is not compared, its file
+    // not this one's
+    destinations: [bool; 14],
+
+    // what the ranking read off the services, so a change to any of them ranks again
+    radios: Radios,
+    titles: Vec<windows::Entry>,
+
+    // the clipboard's entries the history search reads, by id
+    history: Option<Vec<u64>>,
+
+    /*
+     * the second the ranking was made in. A score decays with the clock, and the queries that
+     * launched an app are remembered for a while, so the answer is worked out again once a second
+     * at most: fresh enough to watch, and a frame of a morph never re-ranks
+     */
+    now: i64,
+}
+
+static MEMO: LazyLock<Mutex<Memo>> = LazyLock::new(Mutex::default);
+
+/*
+ * what was ranked is dropped, so the next draw ranks again. Called from a watcher: what a Service
+ * was written with is not always what a ranking's inputs show, and the writes that leave them equal
+ * are the ones a comparison alone would miss
+ */
+fn forget() {
+    MEMO.locked().key = None;
+}
+
+/*
  * what the providers find for the query in `visit`, best first; a dmenu's lines alone in its visit.
  * `read` says whether the apps were read at all: until they are, an app may be the answer, so the
  * web is not offered for a query they could still match
+ *
+ * The answer is kept from the frame before, and what it depends on is read every time, so a change
+ * still draws the window that shows it: the Services it reads are read here, not only when the
+ * ranking runs
  */
-fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> Found {
+fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> Arc<Found> {
     if let Some((_, choices)) = choose::of(visit) {
-        return Found::ranked(provider::ranked(&[&Choices(&choices)], query));
+        return Arc::new(Found::ranked(provider::ranked(
+            &[&Choices(&choices)],
+            query,
+        )));
     }
 
     let destinations = destinations();
+    let radios = Radios::read();
+    let titles = windows::titles();
+    let history = history(query).then(clipboard::Clipboard::read);
+    let entries = history
+        .as_deref()
+        .map_or(&[][..], clipboard::Clipboard::entries);
 
+    let key = Inputs {
+        visit,
+        query: query.to_owned(),
+        recording,
+        read,
+        actions: config::get().launcher_actions,
+        launcher_commands: config::get().launcher_commands,
+        destinations: [
+            destinations.wifi,
+            destinations.bluetooth,
+            destinations.notifications,
+            destinations.controls,
+            destinations.weather,
+            destinations.tray,
+            destinations.session,
+            destinations.timer,
+            destinations.capture,
+            destinations.clipboard,
+            destinations.calendar,
+            destinations.wallpapers,
+            destinations.keys,
+            destinations.settings,
+        ],
+        radios: *radios,
+        titles,
+        history: history
+            .as_deref()
+            .map(|held| held.entries().iter().map(|entry| entry.id).collect()),
+        now: crate::clock::unix_seconds(),
+    };
+
+    let mut memo = MEMO.locked();
+    let same = memo.key.as_ref() == Some(&key) && memo.apps == apps;
+
+    if !same {
+        memo.found = Arc::new(rank(apps, query, recording, read, &key, entries));
+        memo.key = Some(key);
+        memo.apps = apps.to_vec();
+    }
+
+    // one reference, so a frame that changes nothing copies no answer
+    Arc::clone(&memo.found)
+}
+
+// what the providers find now, which `found` keeps until its inputs change
+fn rank(
+    apps: &[App],
+    query: &str,
+    recording: Rec,
+    read: bool,
+    key: &Inputs,
+    entries: &[clipboard::Entry],
+) -> Found {
     grouped(
         query,
-        || sections(apps, destinations, recording),
+        || sections(apps, key, recording),
         || {
-            // read only for a history search, which also subscribes the view to the clipboard;
-            // borrowed, so a history of pictures is not copied to answer the query
-            let history = history(query).then(clipboard::Clipboard::read);
-            let entries = history
-                .as_deref()
-                .map_or(&[][..], clipboard::Clipboard::entries);
-
-            let titles = windows::titles();
-
             let ranked = provider::ranked(
                 &[
                     &Calculator,
-                    &AppsProvider(apps, destinations.wallpapers),
-                    &Actions(apps, config::get().launcher_actions),
-                    &windows::Titles(&titles),
-                    &destinations,
-                    &commands(config::get().launcher_commands, recording),
+                    &AppsProvider(apps, key.destinations[11]),
+                    &Actions(apps, key.actions),
+                    &windows::Titles(&key.titles),
+                    &destination(key.destinations),
+                    &commands(key.launcher_commands, recording),
                     &Emoji,
                     &History { entries },
                 ],
@@ -1029,6 +1159,38 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> F
             Found::ranked(offered(query, ranked, read, web::openable))
         },
     )
+}
+
+// the destinations the flags in a ranking's inputs name
+fn destination(flags: [bool; 14]) -> Destinations {
+    let [
+        wifi,
+        bluetooth,
+        notifications,
+        controls,
+        weather,
+        tray,
+        session,
+        timer,
+        capture,
+    ] = flags[..9].try_into().expect("nine of fourteen");
+
+    Destinations {
+        wifi,
+        bluetooth,
+        notifications,
+        controls,
+        weather,
+        tray,
+        session,
+        timer,
+        capture,
+        clipboard: flags[9],
+        calendar: flags[10],
+        wallpapers: flags[11],
+        keys: flags[12],
+        settings: flags[13],
+    }
 }
 
 /*
@@ -1180,7 +1342,7 @@ fn field(query: &str, caret: usize, select_all: bool, placeholder: &str) -> Rect
                     .fill(theme::island().surface_container_high)
                     .radius(radius::HAIRLINE)
                     .align_child(Start, Center)
-                    .child(tail(query, room)),
+                    .child(super::search::tail(query, room)),
                 caret_widget,
             ])
             .align(Center),
@@ -1232,35 +1394,6 @@ fn placeholder() -> &'static str {
     }
 }
 
-// the end of `query` that fits in `width`, an ellipsis before it when the start is cut
-fn tail(query: &str, width: f32) -> Text {
-    let text = |shown: &str| {
-        Text::new(shown)
-            .size(QUERY)
-            .color(theme::island().on_surface)
-            .weight(theme::text::MEDIUM)
-    };
-    let fits = |text: &Text| matches!(text.width(), Size::Fixed(natural) if natural <= width);
-
-    let whole = text(query);
-
-    if fits(&whole) {
-        return whole;
-    }
-
-    let letters: Vec<char> = query.chars().collect();
-
-    (1..letters.len())
-        .map(|cut| {
-            text(&format!(
-                "\u{2026}{}",
-                letters[cut..].iter().collect::<String>()
-            ))
-        })
-        .find(fits)
-        .unwrap_or_else(|| text("\u{2026}"))
-}
-
 fn cursor_text(query: &str, caret: usize, room: f32, caret_widget: Rectangle) -> Box<dyn Widget> {
     let text = |shown: &str| {
         Text::new(shown)
@@ -1287,7 +1420,9 @@ fn cursor_text(query: &str, caret: usize, room: f32, caret_widget: Rectangle) ->
     }
 
     if caret >= query.len() {
-        return Box::new(Row::new(children![tail(query, room), caret_widget]).align(Center));
+        return Box::new(
+            Row::new(children![super::search::tail(query, room), caret_widget]).align(Center),
+        );
     }
 
     let letters: Vec<(usize, char)> = query.char_indices().collect();
@@ -1866,8 +2001,11 @@ fn acted(monitor: &str, visit: u64, act: Act, query: &str) {
             let action = Action::Copy(text.clone());
             let done = move |done| pressed(&monitor, visit, action, done);
 
+            // the action the press was registered with, which is the one `press_failed` matches
+            let registered = Action::Copy(text.clone());
+
             if let Err(why) = copy(text, done) {
-                Search::write().press_failed(visit, Action::Copy(String::new()), why);
+                Search::write().press_failed(visit, registered, why);
             }
         }
 
@@ -2259,11 +2397,87 @@ fn wheel(lines: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sources::{launch, launch::Launch};
     use kanade_runtime::Key;
+    use std::path::Path;
 
     // a list of one answer, as the search tests step over
     fn one() -> Layout {
         Layout::plain(1)
+    }
+
+    // an app that starts `command`, as the desktop scan reads one
+    fn app(id: &str) -> App {
+        let id = format!("{id}.desktop");
+
+        let launch = Launch::of(&launch::Fields {
+            id: &id,
+            name: id.as_str(),
+            icon: None,
+            file: Path::new(""),
+            exec: Some(id.as_str()),
+            path: None,
+            terminal: false,
+            dbus_activatable: false,
+        })
+        .expect("an Exec starts");
+
+        App {
+            name: id.clone(),
+            id,
+            description: None,
+            icon: None,
+            icon_file: None,
+            launch,
+            actions: Vec::new(),
+        }
+    }
+
+    /*
+     * the ranking is kept between frames, so what it answers has to follow its inputs: the same
+     * inputs answer the same and copy nothing, and an app that arrives or leaves ranks again
+     */
+    #[test]
+    fn the_ranking_follows_its_inputs() {
+        let (visit, rec) = (7, Rec::Idle);
+        let one_app = [app("alpha")];
+
+        let first = found(visit, &one_app, "al", rec, true);
+        let again = found(visit, &one_app, "al", rec, true);
+
+        assert_eq!(first, again);
+        assert!(Arc::ptr_eq(&first, &again), "the frame after ranked again");
+
+        // a typed query is another ranking, and the one after it is kept in turn
+        let typed = found(visit, &one_app, "alpha", rec, true);
+        assert!(!Arc::ptr_eq(&first, &typed));
+        assert!(Arc::ptr_eq(
+            &typed,
+            &found(visit, &one_app, "alpha", rec, true)
+        ));
+
+        // an app that arrives is ranked, and answers beside the one before it
+        let two = [app("alpha"), app("alpine")];
+        let more = found(visit, &two, "al", rec, true);
+
+        assert!(more.answers.len() > first.answers.len(), "{more:?}");
+
+        // and one that leaves is ranked again, so its answer goes with it
+        let fewer = found(visit, &one_app, "al", rec, true);
+
+        assert_eq!(first, fewer);
+        assert!(!Arc::ptr_eq(&first, &fewer), "a leaving app was not ranked");
+
+        // a watcher's write drops what was ranked even when the inputs look the same, which is
+        // what a Service written with what the ranking already read needs
+        forget();
+        let after = found(visit, &one_app, "al", rec, true);
+
+        assert_eq!(first, after);
+        assert!(
+            !Arc::ptr_eq(&first, &after),
+            "a dropped ranking was not ranked"
+        );
     }
 
     #[test]

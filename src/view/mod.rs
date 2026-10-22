@@ -66,10 +66,20 @@ pub(crate) use self::toast::toast_tile;
 
 /*
  * sizes the Island to the outputs, the settings and today's next event (ADR 0030), redrawing
- * nothing when they ask for what it already has
+ * nothing when they ask for what it already has. An output that left keeps nothing here either:
+ * the Island itself drops its own, and where it was last drawn goes with it
  */
 pub(crate) fn resize(island: &mut Write<IslandService>) {
     let (wanted, holds) = shape::holds();
+
+    // an output that left keeps no place here either
+    {
+        let mut placed = PLACED.locked();
+
+        if !placed.keys().all(|monitor| holds.contains_key(monitor)) {
+            placed.retain(|monitor, _| holds.contains_key(monitor));
+        }
+    }
 
     if !island.resize(wanted, holds, hang(), Instant::now()) {
         island.quiet();

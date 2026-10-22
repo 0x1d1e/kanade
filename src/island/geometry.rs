@@ -679,7 +679,7 @@ pub fn bounded(shape: Shape, canvas: Canvas) -> Shape {
     let width = shape
         .width
         .min(canvas.width - 2.0 * (TOP + HOVER_PADDING))
-        .max(REST.height);
+        .max(REST.width * 0.75);
     let height = shape
         .height
         .min(canvas.height - 2.0 * (TOP + HOVER_PADDING))

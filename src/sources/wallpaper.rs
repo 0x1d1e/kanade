@@ -21,7 +21,7 @@ use std::io::{self, BufRead};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use inotify::{Inotify, WatchDescriptor, WatchMask};
 use kanade_runtime::{MOST_PIXELS, MutexExt, queue::Queue, service::Service};
@@ -30,6 +30,7 @@ use kanade_runtime::{MOST_PIXELS, MutexExt, queue::Queue, service::Service};
 pub use kanade_runtime::{ImageFormat as Format, image_format as format};
 
 use super::wake;
+use crate::backoff::Backoff;
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
 use crate::{appearance, config, modules, supervise};
@@ -95,6 +96,12 @@ const LIMIT: Duration = Duration::from_secs(10);
 // how often, and how far apart, a daemon not yet answering what it shows is asked again
 const TRIES: u32 = 5;
 const AGAIN: Duration = Duration::from_secs(1);
+
+// how long a watch that ended waits before it is made again, and how long it must have lasted to
+// start over: a cache that keeps disappearing is retried slowly, not in a loop
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const LAST_RETRY: Duration = Duration::from_secs(60);
+const LASTED: Duration = Duration::from_secs(60);
 
 // for awww to write the cache of every output, so one external set is one look
 const SETTLE: Duration = Duration::from_millis(150);
@@ -1061,13 +1068,30 @@ fn cache() -> Option<PathBuf> {
 /*
  * follows a wallpaper set outside Kanade, as by `awww img` in a script: a write to awww's cache
  * looks again, for the lock screen, and replaces the appearance palette. It blocks on inotify, so
- * it costs no idle wakeups
+ * it costs no idle wakeups. A watch that ends, as when awww's cache is deleted or inotify runs out
+ * of watches, is made again after a backoff, so following never stops for the rest of the run
  */
 pub fn watch() {
     let Some(cache) = cache() else { return };
 
-    if let Err(error) = watch_cache(&cache) {
-        eprintln!("kanade: cannot follow wallpapers set outside Kanade: {error}");
+    let mut backoff = Backoff::new(FIRST_RETRY, LAST_RETRY);
+    let mut said = None;
+
+    loop {
+        let started = Instant::now();
+        let error = watch_cache(&cache).err();
+
+        let Some(error) = error else { return };
+
+        // said once, not at every try
+        let why = format!("cannot follow wallpapers set outside Kanade: {error}");
+
+        if said.as_ref() != Some(&why) {
+            eprintln!("kanade: {why}");
+            said = Some(why);
+        }
+
+        std::thread::sleep(backoff.after(started.elapsed(), LASTED));
     }
 }
 

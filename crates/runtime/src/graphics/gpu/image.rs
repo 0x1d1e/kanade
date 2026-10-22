@@ -36,17 +36,15 @@ impl Gpu {
     }
 
     /*
-     * vello throws its image atlas away after a scene without images, but
-     * still counts the images in it as uploaded, so they are sent again; the
-     * atlas is shared, so any window's empty scene drops every window's images
+     * vello's image atlas lives in the shared renderer, and it goes when that renderer is replaced
+     * (shared.rs, when a normal window closes). the images are still counted as uploaded in the
+     * atlas that went, so they are sent again; the atlas is shared, so every window does this
+     *
+     * a scene that resolves no image no longer reaches this: it would leave the atlas a texel wide
+     * and free the one every window's images were in, so flush.rs draws those on a renderer of
+     * their own, which never holds an image
      */
-    pub(super) fn keep_atlas(&mut self, scene: &Scene) {
-        if scene.encoding().resources.patches.is_empty() {
-            self.atlas_drops.set(self.atlas_drops.get() + 1);
-
-            return;
-        }
-
+    pub(super) fn keep_atlas(&mut self) {
         if self.atlas_seen == self.atlas_drops.get() {
             return;
         }

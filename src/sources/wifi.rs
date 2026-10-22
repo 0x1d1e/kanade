@@ -59,6 +59,12 @@ const OVER: f64 = 4.0;
  */
 const LATE: Duration = Duration::from_secs(1);
 
+/*
+ * how long a join waits for its end before giving up on it: a NetworkManager that never deactivates
+ * the attempt would otherwise hold the join's thread, and the typed Secret in it, for good
+ */
+const LONGEST: Duration = Duration::from_secs(120);
+
 // an access point's flags: one with privacy, and the ways its WPA and RSN flags say it keys
 const PRIVACY: u32 = 0x1;
 const KEY_PSK: u32 = 0x100;
@@ -93,7 +99,7 @@ impl Secret {
 
     // what WPA takes: 8 to 63 characters, or the key itself as 64 hex digits
     pub fn fits(&self) -> bool {
-        let length = self.0.len();
+        let length = self.0.chars().count();
 
         (8..=63).contains(&length)
             || (length == 64 && self.0.chars().all(|letter| letter.is_ascii_hexdigit()))
@@ -637,14 +643,19 @@ fn joined(
         let mut waiting = Waiting::new(owner, device, &active);
         let mut late: Option<Instant> = None;
 
+        // a join that is never answered ends by itself, so its thread and its Secret are let go
+        let deadline = Instant::now() + LONGEST;
+
         loop {
             // once over, why it failed may still be on its way, but not for long
-            let next = match late {
-                None => heard.recv().ok(),
-                Some(by) => heard
-                    .recv_timeout(by.saturating_duration_since(Instant::now()))
-                    .ok(),
+            let by = match late {
+                Some(by) => by.min(deadline),
+                None => deadline,
             };
+
+            let next = heard
+                .recv_timeout(by.saturating_duration_since(Instant::now()))
+                .ok();
 
             let Some(next) = next else {
                 break waiting.failed();
@@ -952,6 +963,10 @@ mod tests {
         assert!(!secret(&"g".repeat(64)).fits());
         assert!(secret(&"0f".repeat(32)).fits());
         assert!(!secret(&"a".repeat(65)).fits());
+
+        // characters, not bytes: a CJK passphrase of 30 is legal, and a 4 letter one is not
+        assert!(secret(&"\u{5bc6}\u{7801}".repeat(15)).fits());
+        assert!(!secret("\u{5bc6}\u{7801}").fits());
     }
 
     #[test]

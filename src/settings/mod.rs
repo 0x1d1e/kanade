@@ -304,7 +304,7 @@ pub fn open(page: Option<&'static str>) {
         TextInput::set_text(SEARCH, "");
     }
 
-    reset_inputs();
+    reset_inputs(None);
     let page = Settings::read().page;
     if page == health::PAGE {
         health::load();
@@ -384,6 +384,12 @@ fn written(refused: Option<String>, change: Option<Vec<file::Replaced>>) {
     refresh();
 
     let ok = refused.is_none();
+    let touched: Option<Vec<Vec<String>>> = change.as_ref().map(|list| {
+        list.iter()
+            .filter(|each| each.was != each.now)
+            .map(|each| each.path.clone())
+            .collect()
+    });
     {
         let mut settings = Settings::write();
         settings.refused = refused;
@@ -391,7 +397,7 @@ fn written(refused: Option<String>, change: Option<Vec<file::Replaced>>) {
     }
 
     if ok {
-        reset_inputs();
+        reset_inputs(touched.as_deref());
     }
 }
 
@@ -426,7 +432,9 @@ fn turn_to(page: &'static str) {
     }
 
     TextInput::set_text(SEARCH, "");
-    if page == health::PAGE && !Settings::read().health_loaded {
+    // every time the page opens: the checks run again, so a failure mended since is gone. The
+    // guard against two workers at once is `health::load`'s own
+    if page == health::PAGE {
         health::load();
     }
     if page == login::PAGE {
@@ -512,14 +520,30 @@ fn path(key: &str, entry: Option<&str>) -> Vec<String> {
     key.split('.').chain(entry).map(str::to_owned).collect()
 }
 
-// each text input back to what the files give: a path's value, an empty field to add an entry
-fn reset_inputs() {
+/*
+ * The text inputs of the keys a write changed back to what the files give: a path's value, an empty
+ * field to add an entry. Only those: a value half-typed in another row is the user's until they
+ * submit it, so a switch toggled elsewhere does not silently discard it. `None` sets them all, as a
+ * window opening or an Undo does; `Some` names the keys a write replaced, and one that changed
+ * nothing sets none
+ */
+fn reset_inputs(changed: Option<&[Vec<String>]>) {
     let read = {
         let settings = Settings::read();
         settings.read.clone()
     };
+    let touched = |key: &str| match changed {
+        None => true,
+        Some(paths) => paths
+            .iter()
+            .any(|path| path.len() == 2 && path.join(".") == key),
+    };
 
     for setting in modules::ALL.iter().flat_map(|module| module.settings) {
+        if !touched(setting.key) {
+            continue;
+        }
+
         let text = match &setting.kind {
             Kind::Millis(field) => (field.get)(&read).as_millis().to_string(),
             Kind::Pixels(_, field)
@@ -553,9 +577,12 @@ fn reset_inputs() {
         TextInput::set_text(input(setting), &text);
     }
 
-    let font = read.appearance.font.clone().unwrap_or_default();
-    TextInput::set_text(FONT_SEARCH, &font);
-    Settings::write().font_query = font;
+    // the font search is its own input, and its key is the only one it follows
+    if touched("appearance.font") {
+        let font = read.appearance.font.clone().unwrap_or_default();
+        TextInput::set_text(FONT_SEARCH, &font);
+        Settings::write().font_query = font;
+    }
 }
 
 // the search fields' text input ids

@@ -95,6 +95,9 @@ fn follow(looks: &mpsc::Receiver<()>) {
 
         // new stages count from the start, as after input
         if stages != schedule.stages() {
+            // as is a failure of the stages that were: the next idle period asks with its grace
+            SEEN.locked().failed = None;
+
             let actions = schedule.resumed();
             act(&mut schedule, actions, now);
             schedule = Schedule::since(stages, now);
@@ -110,6 +113,9 @@ fn follow(looks: &mpsc::Receiver<()>) {
 
         if idled != seen {
             if seen.is_some() {
+                // the idle period that failed a lock is over: the next one asks with its grace
+                SEEN.locked().failed = None;
+
                 let actions = schedule.resumed();
                 act(&mut schedule, actions, now);
 

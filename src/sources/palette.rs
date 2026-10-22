@@ -1,13 +1,12 @@
 //! Colors taken from an image, the wallpaper or a cover, most common first (ADR 0027 step 1).
-//! Polled, so both a new file at the same path and a new path are picked up.
+//! Read once when an image is opened: `open` takes them right away, so a new file at the same path
+//! or a new path is read where it is opened, not polled for.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use kanade_runtime::Color;
-use kanade_runtime::service::Service;
 
 use super::wallpaper;
 
@@ -28,60 +27,6 @@ pub struct Palette {
     modified: Option<SystemTime>,
 
     colors: Vec<Color>,
-}
-
-// polled, so both a new file at the same path and a new path are picked up
-impl Service for Palette {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn interval() -> Duration {
-        Duration::from_millis(500)
-    }
-
-    /*
-     * the image is decoded without holding the service,
-     * so the window keeps drawing while a large wallpaper loads
-     */
-    fn listen() {
-        loop {
-            thread::sleep(Self::interval());
-
-            let (path, count, modified) = {
-                let palette = Self::read();
-
-                let Some(path) = palette.path.clone() else {
-                    continue;
-                };
-
-                (path, palette.count, palette.modified)
-            };
-
-            let now = modified_time(&path);
-
-            if now.is_none() || now == modified {
-                continue;
-            }
-
-            let colors = quantize(&path, count);
-
-            // a half written file, the next change brings the rest
-            if colors.is_empty() {
-                continue;
-            }
-
-            let mut palette = Self::write();
-
-            // opened again while decoding, the newer path wins
-            if palette.path.as_deref() != Some(path.as_path()) {
-                continue;
-            }
-
-            palette.modified = now;
-            palette.colors = colors;
-        }
-    }
 }
 
 impl Palette {

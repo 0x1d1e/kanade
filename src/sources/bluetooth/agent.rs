@@ -3,6 +3,10 @@
 //! `Prompt`. BlueZ asks
 //! the agent of the program that asked to pair, so pairings other programs ask, or devices ask,
 //! still go to theirs.
+//!
+//! BlueZ is the only program that may ask, and it is root: every call is taken only from the unique
+//! name that owns `org.bluez`, as `system` takes the daemons' own signals. Any process on the bus
+//! can call this path, and the system bus's policy is not Kanade's to rely on.
 
 use std::hash::{BuildHasher, RandomState};
 use std::mem;
@@ -16,6 +20,10 @@ use crate::supervise;
 
 const PATH: &str = "/org/kanade/bluetooth/agent";
 const AGENT: &str = "org.bluez.Agent1";
+
+// the bus itself, which alone says who owns a name
+const BUS: &str = "org.freedesktop.DBus";
+const BUS_PATH: &str = "/org/freedesktop/DBus";
 
 // shows codes and answers yes or no, typing none: a keyboard pairs by typing the code shown
 const CAPABILITY: &str = "DisplayYesNo";
@@ -70,6 +78,9 @@ const LONGEST_PIN: usize = 16;
 // BlueZ's question the Confirm or Pin prompt waits to answer
 static PENDING: Mutex<Option<Method>> = Mutex::new(None);
 
+// the unique name BlueZ runs as, empty when it is not running or the bus did not say
+static OWNER: Mutex<Option<String>> = Mutex::new(None);
+
 static ANSWERING: Once = Once::new();
 
 /*
@@ -95,9 +106,16 @@ pub fn register() {
         "RegisterAgent",
         &[Argument::Path(PATH.into()), Argument::from(CAPABILITY)],
     );
+
+    // asked again, as BlueZ registering may be one restarted under a new unique name
+    *OWNER.locked() = None;
 }
 
 fn answer(method: Method) {
+    if !from_bluez(&method.sender()) {
+        return;
+    }
+
     let arguments = method.arguments();
     let device = arguments.first().map_or("", Value::text).to_owned();
     let number = |at: usize| arguments.get(at).map_or(0.0, Value::number) as u32;
@@ -162,6 +180,29 @@ fn answer(method: Method) {
         // never asked of an agent that is not the default; unanswered, BlueZ refuses in time
         _ => {}
     }
+}
+
+// the unique name BlueZ runs as, asked of the bus once and again after a pairing, as BlueZ may
+// have restarted and taken a new one; empty while it is not running
+fn owner() -> String {
+    let mut owner = OWNER.locked();
+
+    owner
+        .get_or_insert_with(|| {
+            Bus::system()
+                .call(BUS, BUS_PATH, BUS, "GetNameOwner", &[Argument::from(BLUEZ)])
+                .text()
+                .to_owned()
+        })
+        .clone()
+}
+
+// whether a call came from BlueZ itself: anyone on the bus can name this path, and only the owner
+// of `org.bluez` is the pairing agent's to answer
+fn from_bluez(sender: &str) -> bool {
+    let owner = owner();
+
+    !owner.is_empty() && owner == sender
 }
 
 // the user saw the same passkey on the device, or typed its PIN; an empty PIN answers nothing
@@ -256,5 +297,24 @@ mod tests {
         let full = "0".repeat(15);
         assert_eq!(typed(full.clone(), Some('\u{e9}')), full);
         assert_eq!(typed(full.clone(), Some('9')).len(), 16);
+    }
+
+    // a pairing agent that answers a stranger is a safety matter: anyone on the bus can call its
+    // path, and only BlueZ itself may be answered
+    #[test]
+    fn only_bluezs_own_unique_name_may_ask() {
+        *OWNER.locked() = Some(String::from(":1.7"));
+
+        assert!(from_bluez(":1.7"));
+        assert!(!from_bluez(":1.8"));
+        assert!(!from_bluez(""));
+
+        // BlueZ not running, so nobody is
+        *OWNER.locked() = Some(String::new());
+
+        assert!(!from_bluez(":1.7"));
+        assert!(!from_bluez(""));
+
+        *OWNER.locked() = None;
     }
 }

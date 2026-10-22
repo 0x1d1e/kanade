@@ -36,10 +36,11 @@ use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ExitStatus};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
@@ -131,6 +132,10 @@ struct Held {
 
     // a window's niri session, stopped by whoever takes this out, on every path
     cast: Option<window::Cast>,
+
+    // the encoder's reader, kept with the segment it read so its verdict outlives the join: a
+    // descendant holding the pipe can keep the reader past `SAID_JOINED`
+    said: Option<Arc<Reading>>,
 }
 
 // what a waiting call waits for
@@ -1384,6 +1389,7 @@ fn spawn(serial: u64, segment: u32) {
         writer: child,
         encoder: None,
         cast: None,
+        said: None,
     });
     drop(runtime.feed(Event::Spawned {
         serial,
@@ -1498,16 +1504,16 @@ fn step(given: Given, ran: Ran, fault: Fault) -> Option<(Again, Given)> {
 }
 
 /*
- * a segment whose encoder failed before it wrote a frame, when the recording has a way left to try
- * (`again`, ADR 0116): says so, notes it on the recording and gives the number of the segment to
- * start again. None when it is not to be tried. `fault` says what failed, and only the encoder's
- * own failure is worth another start
+ * a segment whose program failed, when the recording has a way left to try (`again`, ADR 0116):
+ * says so, notes it on the recording and gives the number of the segment to start again, which is
+ * the one it was. None when it is not to be tried. `fault` says what failed, and only the encoder's
+ * own failure, or a stall, is worth another start. A segment that wrote frames keeps them: the one
+ * started again writes to its own file, so nothing recorded is written over or lost
  */
 fn falls_back(
     runtime: &mut Runtime,
     serial: u64,
     segment: &Segment,
-    written: bool,
     ran: Ran,
     fault: Fault,
 ) -> Option<u32> {
@@ -1525,7 +1531,7 @@ fn falls_back(
     };
 
     // a program that is not there is said as it is; the software encoder needs the same ones
-    if written || now != serial || why.ends_with("not found") {
+    if now != serial || why.ends_with("not found") {
         return None;
     }
 
@@ -1585,7 +1591,7 @@ fn gives_way(serial: u64, why: &str) {
 
 /*
  * reads what the recorder prints until it exits, then tells the machine how its segment ended, or
- * starts it again if the one it had never started (`falls_back`)
+ * starts that segment again (`falls_back`) if the recording has a way left to try
  */
 fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf, ran: Ran) {
     survive(
@@ -1617,7 +1623,7 @@ fn follow(said: Option<ChildStderr>, serial: u64, file: PathBuf, ran: Ran) {
                 _ => Fault::Encoder,
             };
 
-            if let Some(number) = falls_back(&mut runtime, serial, &segment, written, ran, fault) {
+            if let Some(number) = falls_back(&mut runtime, serial, &segment, ran, fault) {
                 // the worker starts it, as any recorder: a program's life is tied to its spawning thread
                 return runtime.hand(
                     Job::Spawn {
@@ -1788,6 +1794,83 @@ const ENDING_TOLD: Duration = Duration::from_secs(3);
 const SAID_JOINED: Duration = Duration::from_secs(1);
 
 /*
+ * a child's stderr, read on a thread of its own: the lines as they were printed, and whether the
+ * `watchdog` element (`encode::guard`) ended the chain. The verdict is the reader's, not the lines'
+ * after a join: a descendant that inherited the pipe can keep the reader past `SAID_JOINED`, and a
+ * stall that a slow join lost would be read as the writer's own failure
+ */
+struct Reading {
+    said: Mutex<VecDeque<String>>,
+    watchdog: AtomicBool,
+    done: AtomicBool,
+}
+
+impl Reading {
+    // whether the guard ended the chain, as the reader read it: its own verdict, not a later
+    // reading of lines a join may have lost
+    fn stalled(&self) -> bool {
+        self.watchdog.load(Ordering::Acquire)
+    }
+
+    // whether the reader has finished with the pipe, waiting no more than `within` for it
+    fn ended_within(&self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+
+        while !self.done.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        true
+    }
+
+    // what it printed, as the last lines: once it has finished, or as far as it got by then
+    fn words(&self) -> VecDeque<String> {
+        let _ = self.ended_within(SAID_JOINED);
+
+        self.said.locked().clone()
+    }
+}
+
+/*
+ * reads `said` on a thread of its own, so a full pipe never holds the encoder, keeping the last
+ * `SAID` lines as they are printed and whether the guard ended the chain
+ */
+fn reading(said: ChildStderr) -> io::Result<Arc<Reading>> {
+    let read = Arc::new(Reading {
+        said: Mutex::new(VecDeque::with_capacity(SAID)),
+        watchdog: AtomicBool::new(false),
+        done: AtomicBool::new(false),
+    });
+    let held = Arc::clone(&read);
+
+    thread::Builder::new()
+        .name(String::from("capture-record said"))
+        .spawn(move || {
+            for line in BufReader::new(said).lines().map_while(Result::ok) {
+                if stalled_of(&line) {
+                    held.watchdog.store(true, Ordering::Release);
+                }
+
+                let mut last = held.said.locked();
+
+                if last.len() == SAID {
+                    last.pop_front();
+                }
+
+                last.push_back(line);
+            }
+
+            held.done.store(true, Ordering::Release);
+        })?;
+
+    Ok(read)
+}
+
+/*
  * starts what records `segment` of a window (ADR 0117), if the recording still waits for it: niri's
  * session for it, the encoder reading the session's PipeWire node, and the writer reading the
  * encoder. All of it is told to the machine as one recorder
@@ -1864,29 +1947,30 @@ fn spawn_window(
     };
 
     // read as it is printed, so a full pipe never holds the encoder
-    let encoder_said = encoder.stderr.take().map(|said| {
-        thread::Builder::new()
-            .name(String::from("capture-record said"))
-            .spawn(move || last_lines(Some(said)))
-    });
+    let encoder_said = encoder.stderr.take().map(reading).transpose();
     let writer_said = writer.stderr.take();
+    let encoder_said = match encoder_said {
+        Ok(said) => said,
+        Err(error) => {
+            abandon(Held {
+                serial,
+                writer,
+                encoder: Some(encoder),
+                cast: Some(cast),
+                said: None,
+            });
+            return failed(format!("cannot read {ENCODER}: {error}"));
+        }
+    };
     let held = Held {
         serial,
         writer,
         encoder: Some(encoder),
         cast: Some(cast),
+        said: encoder_said,
     };
-    let encoder_said = match encoder_said.transpose() {
-        Ok(said) => said,
-        Err(error) => {
-            abandon(held);
-            return failed(format!("cannot read {ENCODER}: {error}"));
-        }
-    };
-    let said = (writer_said, encoder_said);
     let ran = Ran::of(&encoding);
     let mut runtime = RUNTIME.locked();
-
     // ended while it started
     if !matches!(runtime.machine.phase(), Phase::Running { serial: now, .. } if now == serial) {
         drop(runtime);
@@ -1895,8 +1979,7 @@ fn spawn_window(
 
     let followed = thread::Builder::new()
         .name(String::from("capture-record"))
-        .spawn(move || follow_window(said, serial, file, id, ran));
-
+        .spawn(move || follow_window(writer_said, serial, file, id, ran));
     if let Err(error) = followed {
         drop(runtime);
         abandon(held);
@@ -1952,13 +2035,7 @@ fn window_programs(
  * it still runs, the niri session always. Only then is the machine told, so a stop is never answered
  * with the session still cast, and a window that closed is a recording that ended, not one that failed
  */
-fn follow_window(
-    (writer_said, encoder_said): (Option<ChildStderr>, Option<JoinHandle<VecDeque<String>>>),
-    serial: u64,
-    file: PathBuf,
-    id: u64,
-    ran: Ran,
-) {
+fn follow_window(writer_said: Option<ChildStderr>, serial: u64, file: PathBuf, id: u64, ran: Ran) {
     survive(
         || {
             let writer_said = last_lines(writer_said);
@@ -1971,7 +2048,7 @@ fn follow_window(
 
             let writer = held.writer.wait();
             let (encoder, encoder_said) = match held.encoder.take() {
-                Some(encoder) => finish_encoder(encoder, encoder_said),
+                Some(encoder) => finish_encoder(encoder, held.said.as_deref()),
                 None => (Ok(ExitStatus::from_raw(0)), VecDeque::new()),
             };
 
@@ -1985,8 +2062,13 @@ fn follow_window(
                 discard_empty(&file);
             }
 
-            // niri is asked only when the encoder ended badly, as a window that closed makes it
-            let ok = encoder_ok(&encoder);
+            /*
+             * niri is asked unless both programs ended as they should: a window that closes ends
+             * its cast, and whether the encoder then fails or ends of itself, the recording is a
+             * saving the Clip is to say closed. Only a stop leaves both ending well with the window
+             * there, which is no reason to ask niri at all
+             */
+            let ok = encoder_ok(&encoder) && writer.as_ref().is_ok_and(|status| status.success());
             let gone = !ok && window::open(id) == Some(false);
             let mut runtime = RUNTIME.locked();
             let segment_number = match runtime.machine.phase() {
@@ -1999,15 +2081,17 @@ fn follow_window(
             let escalated = escalated.is_some();
             let blamed = encoder_blamed(&writer, &encoder);
 
-            // what the guard saw, before `classify_window` takes the encoder's words. A window that
-            // closed ends the cast and trips the guard too, which is a recording saved, not a stall
-            let quiet = !gone && stalled(&encoder_said);
+            // what the guard saw, before `classify_window` takes the encoder's words. The reader's
+            // own verdict, so a join that ran out of time cannot lose it. A window that closed ends
+            // the cast and trips the guard too, which is a recording saved, not a stall
+            let quiet = !gone && held.said.as_ref().is_some_and(|said| said.stalled());
             let segment = classify_window(
                 [writer, encoder],
                 [writer_said, encoder_said],
                 written,
                 gone.then_some(segment_number),
                 escalated,
+                quiet,
             );
 
             if gone
@@ -2017,17 +2101,9 @@ fn follow_window(
                 take.closed = true;
             }
 
-            let fault = match &segment {
-                Segment::Lost(why) if vanished(why) => Fault::Vanished,
-                _ if quiet => Fault::Stalled,
-                _ if blamed => Fault::Encoder,
-                _ => Fault::Muxer,
-            };
+            let fault = fault_of(&segment, quiet, blamed);
 
-            if !gone
-                && let Some(number) =
-                    falls_back(&mut runtime, serial, &segment, written, ran, fault)
-            {
+            if !gone && let Some(number) = falls_back(&mut runtime, serial, &segment, ran, fault) {
                 // the worker starts it, as any recorder: a program's life is tied to its spawning thread
                 return runtime.hand(
                     Job::Spawn {
@@ -2065,7 +2141,7 @@ fn follow_window(
  */
 fn finish_encoder(
     mut encoder: Child,
-    said: Option<JoinHandle<VecDeque<String>>>,
+    said: Option<&Reading>,
 ) -> (io::Result<ExitStatus>, VecDeque<String>) {
     let started = Instant::now();
     let mut told = false;
@@ -2092,29 +2168,12 @@ fn finish_encoder(
         thread::sleep(Duration::from_millis(20));
     };
 
-    // its pipe is closed now that it is gone; a reader still holding it is let go, not waited on
-    let said = said.and_then(join_within).unwrap_or_default();
+    // its pipe is closed now that it is gone; a reader still holding it is let go, not waited on.
+    // What it said is kept, though, as far as it got: a stall is the reader's own verdict, which a
+    // join that ran out of time cannot lose
+    let said = said.map_or_else(VecDeque::new, Reading::words);
 
     (status, said)
-}
-
-/*
- * what a thread reading a child's stderr printed, once it has finished, waiting no more than
- * `SAID_JOINED` for it: a descendant that inherited the pipe keeps it open past the encoder's end,
- * and the segment is not worth holding for it
- */
-fn join_within(said: JoinHandle<VecDeque<String>>) -> Option<VecDeque<String>> {
-    let deadline = Instant::now() + SAID_JOINED;
-
-    while !said.is_finished() {
-        if Instant::now() >= deadline {
-            return None;
-        }
-
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    said.join().ok()
 }
 
 // whether the encoder ended as it should: finished, or told to
@@ -2153,14 +2212,26 @@ fn no_stream(writer: &io::Result<ExitStatus>, said: &VecDeque<String>) -> bool {
 }
 
 /*
- * whether the encoder's own words say the chain stopped receiving buffers, from the `watchdog`
+ * whether one of the encoder's lines says the chain stopped receiving buffers, from the `watchdog`
  * element (`encode::guard`). Its element error is the only thing that names it, so a chain that
  * failed for another reason is left to the usual reading. Both spellings: the element's own name in
  * the error's first line, and the words it carries
  */
-fn stalled(said: &VecDeque<String>) -> bool {
-    said.iter()
-        .any(|line| line.contains("GstWatchdog") || line.contains("Watchdog triggered"))
+fn stalled_of(line: &str) -> bool {
+    line.contains("GstWatchdog") || line.contains("Watchdog triggered")
+}
+
+/*
+ * what made a segment end without a frame, from what the guard saw and what is blamed: the window
+ * path's own reading of `Segment`, kept here so a stall cannot be lost to a writer's words
+ */
+fn fault_of(segment: &Segment, quiet: bool, blamed: bool) -> Fault {
+    match segment {
+        Segment::Lost(why) if vanished(why) => Fault::Vanished,
+        _ if quiet => Fault::Stalled,
+        _ if blamed => Fault::Encoder,
+        _ => Fault::Muxer,
+    }
 }
 
 /*
@@ -2192,7 +2263,8 @@ fn vanished(why: &str) -> bool {
  * what the writer and the encoder (in that order) left behind. A window closing ends the encoder,
  * then the writer, with the file whole: that is a segment written, and if no frame was, nothing of
  * this segment (`closed` holds its number when the window closed). `escalated` is whether a stop
- * killed the encoder because it did not end of itself, which is no failure of the encoder's
+ * killed the encoder because it did not end of itself, which is no failure of the encoder's, and
+ * `stalled` is the guard's verdict, which the reader holds whether or not its join ran out of time
  */
 fn classify_window(
     [writer, encoder]: [io::Result<ExitStatus>; 2],
@@ -2200,6 +2272,7 @@ fn classify_window(
     written: bool,
     closed: Option<u32>,
     escalated: bool,
+    stalled: bool,
 ) -> Segment {
     let not_found = |status: &io::Result<ExitStatus>| {
         status
@@ -2247,7 +2320,7 @@ fn classify_window(
      * After the closed cases above, because a window that closes ends the cast and so trips the
      * guard too, and that is a recording saved, not a stall
      */
-    if closed.is_none() && stalled(&encoder_said) {
+    if closed.is_none() && stalled {
         return Segment::Lost(format!("no picture arrived for {}s", QUIET.as_secs()));
     }
 
@@ -2768,6 +2841,10 @@ fn ended(clip: Clip, preempt: bool) -> Activity {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::process::Command;
+
     use super::*;
 
     #[test]
@@ -3121,6 +3198,7 @@ mod tests {
             written,
             closed,
             false,
+            encoder_said.iter().any(|line| stalled_of(line)),
         )
     }
 
@@ -3291,6 +3369,210 @@ mod tests {
         assert_eq!(step(after, ran, Fault::Stalled), None);
     }
 
+    fn window_take() -> Take {
+        Take {
+            path: String::from("/h/a.mp4"),
+            parts: PathBuf::from("/h/.a.parts"),
+            source: Some(Source::Window {
+                id: 7,
+                size: (800, 600),
+                app: None,
+            }),
+            audio: Audio::None,
+            pausable: true,
+            closed: false,
+            software: None,
+            no_va: false,
+            recording: config::get().recording.clone(),
+        }
+    }
+
+    // a recording running its first segment, with a window's take
+    fn windowed() -> (Runtime, u64) {
+        let mut runtime = Runtime::new();
+
+        runtime.machine.step(Event::Start { pick: false });
+
+        let serial = runtime.machine.serial().expect("a recording");
+
+        runtime.take = Some(window_take());
+
+        (runtime, serial)
+    }
+
+    /*
+     * a confirmed defect: the guard's verdict was read from the encoder's lines once its reader was
+     * joined, and a reader a descendant held past `SAID_JOINED` gave none of them back, so a chain
+     * that had stopped receiving buffers was read as the writer's own failure: no fallback was
+     * walked, and the user got the muxer's "Output file does not contain any stream" for a stall
+     */
+    #[test]
+    fn a_stall_whose_reader_missed_the_deadline_is_still_a_stall() {
+        let (mut printed, pipe) = UnixStream::pair().expect("a pipe");
+        let reader = reading(ChildStderr::from(OwnedFd::from(pipe))).expect("a reader");
+
+        // the guard's own error, as `encode::guard` prints it, then the pipe held open by a
+        // descendant: the reader has its line and never finishes
+        printed
+            .write_all(
+                b"ERROR: from element /GstPipeline:pipeline0/GstWatchdog:watchdog0: Watchdog triggered\n",
+            )
+            .expect("a line");
+        printed.flush().expect("a line");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+
+        while !reader.stalled() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(reader.stalled());
+        assert!(!reader.ended_within(SAID_JOINED));
+
+        // the encoder ended as a guarded one does and the writer is left to say it wrote no
+        // stream, so nothing is blamed on the encoder (`encoder_blamed` is false)
+        let (_, words) = finish_encoder(ended_child(), Some(&reader));
+
+        // the derivation `follow_window` makes: the segment is classified with the guard's verdict,
+        // which the reader holds whether or not a join ran out of time
+        let quiet = reader.stalled();
+        let segment = classify_window(
+            [exited(234), exited(1)],
+            [
+                said(&["Output file does not contain any stream"]),
+                words.clone(),
+            ],
+            true,
+            None,
+            false,
+            quiet,
+        );
+        let fault = fault_of(&segment, quiet, false);
+
+        assert_eq!(fault, Fault::Stalled, "{words:?}");
+
+        // and it is said as the stall it is, not as the muxer's missing stream
+        let Segment::Lost(why) = &segment else {
+            panic!("a stall is lost, not written: {segment:?}");
+        };
+        assert!(why.contains("no picture arrived"), "{why}");
+
+        // and it is walked as a stall: the download is changed first, the encoder not given up
+        let ran = Ran {
+            software: false,
+            va: true,
+        };
+        let (mut runtime, serial) = windowed();
+
+        assert_eq!(
+            falls_back(&mut runtime, serial, &segment, ran, fault),
+            Some(1)
+        );
+
+        let take = runtime.take.as_ref().expect("a take");
+
+        assert!(take.no_va);
+        assert!(take.software.is_none());
+    }
+
+    // an encoder that has ended as it should
+    fn ended_child() -> Child {
+        Command::new("true").spawn().expect("a child")
+    }
+    /*
+     * a confirmed defect: a stall after the segment had written frames ended the recording as
+     * failed instead of walking the encoder fallback, because `falls_back` gave up on any segment
+     * that wrote. A stall now walks it, on the segment it is, so its frames stay where they are
+     */
+    #[test]
+    fn a_stall_after_frames_walks_the_fallback_on_the_same_segment() {
+        let ran = Ran {
+            software: false,
+            va: true,
+        };
+        let (mut runtime, serial) = windowed();
+        let stalled = Segment::Lost(format!("no picture arrived for {}s", QUIET.as_secs()));
+
+        // the download is changed first, on the segment the stall happened in
+        assert_eq!(
+            falls_back(&mut runtime, serial, &stalled, ran, Fault::Stalled),
+            Some(1)
+        );
+        assert!(runtime.take.as_ref().expect("a take").no_va);
+
+        // then the software encoder, as for a failed one
+        assert_eq!(
+            falls_back(&mut runtime, serial, &stalled, ran, Fault::Stalled),
+            Some(1)
+        );
+        assert!(runtime.take.as_ref().expect("a take").software.is_some());
+
+        // a muxer that failed says nothing of the encoder: the walk is not the muxer's
+        let (mut muxer, serial) = windowed();
+        let muxed = Segment::Lost(String::from("ffmpeg ended (exit status: 1): Output file"));
+
+        assert_eq!(
+            falls_back(&mut muxer, serial, &muxed, ran, Fault::Muxer),
+            Some(1)
+        );
+
+        // a program that is not there mends nothing, and neither does a segment that is not lost
+        let (mut missing, serial) = windowed();
+
+        assert_eq!(
+            falls_back(
+                &mut missing,
+                serial,
+                &Segment::Lost(format!("{ENCODER} not found")),
+                ran,
+                Fault::Encoder
+            ),
+            None
+        );
+        assert_eq!(
+            falls_back(&mut missing, serial, &Segment::Written, ran, Fault::Encoder),
+            None
+        );
+
+        // an output that is gone is no encoder's failure
+        let (mut gone, serial) = windowed();
+
+        assert_eq!(
+            falls_back(
+                &mut gone,
+                serial,
+                &Segment::Lost(String::from("the output Virtual-1 is gone")),
+                ran,
+                Fault::Vanished
+            ),
+            None
+        );
+    }
+
+    /*
+     * a confirmed defect: a segment lost on a resume ended the recording as failed and left the
+     * earlier segments in the hidden folder, so the user got a split recording and a Failed clip
+     * for damage to the last segment only. They are joined into the one file instead
+     */
+    #[test]
+    fn a_lost_segment_on_a_resume_still_joins_what_was_recorded() {
+        let dir = scratch("resume-lost");
+        let (path, parts) = (dir.join("a.mp4"), dir.join(".a.parts"));
+
+        // a resume writes its segment beside the file, which holds the first
+        fs::create_dir(&parts).unwrap();
+        fs::write(&path, b"first").unwrap();
+        fs::write(parts.join(plan::segment(2)), b"damaged").unwrap();
+
+        // what the machine asks for after a stall on segment 2: one segment, and it is the file.
+        // The take is a recording saved, not a failed one, so nothing is joined and the file stays
+        assert_eq!(saved(&parts, &path, 1), Ok(()));
+        assert_eq!(fs::read(&path).unwrap(), b"first");
+        // what the stalled segment wrote is kept, not deleted: Kanade deletes only a join's own
+        assert_eq!(fs::read(parts.join(plan::segment(2))).unwrap(), b"damaged");
+        drop(fs::remove_dir_all(&dir));
+    }
+
     /*
      * a stop that had to kill an encoder which did write frames saved a recording: the kill is the
      * stop's, not a failure of the encoder's
@@ -3304,6 +3586,7 @@ mod tests {
                 written,
                 closed,
                 true,
+                false,
             )
         };
 

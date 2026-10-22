@@ -503,13 +503,11 @@ fn header(title: &str, settings: &Settings, roles: &ThemeRoles) -> Rectangle {
 
 // what the files say: a refusal, a problem, a restart waiting, else the last change or where changes go; and Undo
 fn footer(settings: &Settings, roles: &ThemeRoles) -> Rectangle {
-    // the niri page answers for niri's file, and has its own Undo
-    let niri_page = !settings.searching() && settings.page == niri::PAGE
-        || settings.searching()
-            && (settings.niri.touched
-                || settings.niri.undoable
-                || settings.niri.status().is_some()
-                || ring::on_niri_setting());
+    // the niri page answers for niri's file, and has its own Undo. In a search the footer is the
+    // settings file's unless the ring is on one of niri's own rows: niri's page keeps its last
+    // reload after any edit, which says nothing of a setting changed from a result
+    let niri_page = (!settings.searching() && settings.page == niri::PAGE)
+        || (settings.searching() && ring::on_niri_setting());
     let waiting = settings.pending.len();
     let (status, ink) = if niri_page {
         niri_page::status(settings, roles)
@@ -2817,6 +2815,19 @@ fn stepper(
             change(path(key, None), Some(Value::Integer(value as i64)));
         }
     };
+    // a typed number is the user's own, so one outside the range is refused rather than quietly
+    // becoming the nearest end: the config registry refuses it with the same words
+    let typed = move |text: String| match text.trim().parse::<u64>() {
+        Ok(value) if (least..=most).contains(&value) => to(value)(),
+        Ok(_) => {
+            Settings::write().refused = Some(format!(
+                "Not saved: {key}: expected {expected}, from {least} to {most}"
+            ));
+        }
+        Err(_) => {
+            Settings::write().refused = Some(format!("Not saved: {key}: expected {expected}"));
+        }
+    };
     let id = input(setting);
 
     let unit = Text::new(unit)
@@ -2892,14 +2903,7 @@ fn stepper(
                                     .width(NUMBER)
                                     .size(theme::text::LABEL)
                                     .color(roles.on_surface)
-                                    .on_submit(move |text| match text.trim().parse::<u64>() {
-                                        Ok(value) => to(value)(),
-                                        Err(_) => {
-                                            Settings::write().refused = Some(format!(
-                                                "Not saved: {key}: expected {expected}"
-                                            ));
-                                        }
-                                    }),
+                                    .on_submit(typed),
                                 unit,
                             ])
                             .gap(4.0)

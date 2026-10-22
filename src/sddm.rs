@@ -1,11 +1,14 @@
 //! `kanade sddm`: the login screen's look, written from the config by a command that runs without a
 //! shell.
 //!
-//! SDDM reads its theme as the `sddm` user, so what it reads lives in an overlay Kanade owns, outside
+//! SDDM reads its theme as the `sddm` user, so what it reads lives in a root-owned overlay, outside
 //! `/usr/share`: `<prefix>/themes/<theme>` (for Kanade's own theme a copy of the one built into this
 //! binary, for another a directory of links to the installed theme's files, both with a
-//! `theme.conf.user` of Kanade's) and `<prefix>/bg/backdrop.png`. The prefix is made once, by root;
-//! Kanade only prints those commands, never runs sudo and never writes outside what the user owns.
+//! `theme.conf.user` of Kanade's). The one mutable file, the backdrop, is deliberately outside the
+//! overlay SDDM loads code from: `/<DATA>/backdrop.png`, a directory owned by the desktop user, which
+//! is the only path the theme loads from outside its own tree (ADR 0120). The prefix is made once,
+//! by root; Kanade only prints those commands, never runs sudo and never writes outside what the
+//! user owns.
 //! The picture is a re-encoded, blurred and dimmed copy, so it holds none of the original's
 //! metadata, and the login screen's user can read it: `sddm.sync` is off by default for that reason.
 
@@ -53,7 +56,9 @@ const OWN: &str = "kanade";
 
 /*
  * the root everything above is under, `/` but for a test (the hidden `KANADE_SDDM_ROOT`, an
- * absolute directory), so a run never touches `/usr/local` or `/etc`
+ * absolute directory), so a run never touches `/usr/local` or `/etc`. Test-only by intent: it ships
+ * in the binary so a root `kanade sddm setup` can install elsewhere for a test, and it is not a
+ * supported way to run Kanade, which writes the real overlay when it is unset
  */
 const ROOT: &str = "KANADE_SDDM_ROOT";
 
@@ -272,8 +277,8 @@ fn theme_ok(name: &str) -> bool {
  * the `theme.conf.user` for `theme`. Kanade's own theme reads `backdrop` (a picture already
  * blurred and dimmed, so no shade over it), `surface` (the color without one); its file is Kanade's
  * whole. Any other theme reads the picture from `key` (`background` for most, told by its class): its
- * file is the installed theme's own `theme.conf.user` (`installed`, already checked by `user_ini`)
- * with that one key replaced when there is a picture, so what the user set for the theme stays. A value the theme
+ * file is the installed theme's own `theme.conf.user` (`installed`, already through `user_ini`) with
+ * that one key replaced when there is a picture, so what the user set for the theme stays. A value the theme
  * would refuse is an error here, not a file that says nothing.
  */
 #[cfg(test)]
@@ -332,25 +337,35 @@ fn preserve_user_settings(text: &str) -> String {
     out
 }
 
-fn user_ini(text: &str) -> Result<(), String> {
-    if text.len() > 64 << 10 {
-        return Err(String::from("over 64 KiB"));
-    }
+/*
+ * `text` with the lines an ini file may hold: sections, `key=value`, comments and blank lines, each
+ * as it was. A line that is none of those is dropped, not the whole file with it: one stray line in
+ * the `theme.conf.user` a setup preserves must not lose every setting the user made. Over 64 KiB,
+ * whole lines are kept up to the limit
+ */
+fn user_ini(text: &str) -> String {
+    const MOST: usize = 64 << 10;
 
-    for (n, line) in class::unbom(text).lines().map(str::trim).enumerate() {
-        let section = line.starts_with('[') && line.ends_with(']');
-        let comment = line.starts_with('#') || line.starts_with(';');
-        let pair = line.contains('=') && !line.starts_with('[');
+    let mut out = String::new();
 
-        if !(line.is_empty() || section || comment || pair) {
-            return Err(format!(
-                "line {} is not a section, a key or a comment",
-                n + 1
-            ));
+    for line in class::unbom(text).lines() {
+        let trimmed = line.trim();
+        let section = trimmed.starts_with('[') && trimmed.ends_with(']');
+        let comment = trimmed.starts_with('#') || trimmed.starts_with(';');
+        let pair = trimmed.contains('=') && !trimmed.starts_with('[');
+
+        if !(trimmed.is_empty() || section || comment || pair) {
+            continue;
         }
+        if out.len() + line.len() + 1 > MOST {
+            break;
+        }
+
+        out.push_str(line);
+        out.push('\n');
     }
 
-    Ok(())
+    out
 }
 
 /*
@@ -1092,10 +1107,17 @@ fn legacy_settings(overlay: &Path) -> (Option<String>, Option<String>) {
     };
     let qt =
         read_plain("metadata.desktop").and_then(|text| qt_version_of(&text).map(|v| v.to_string()));
-    let user = read_plain(USER).filter(|text| user_ini(text).is_ok());
+    let user = read_plain(USER).map(|text| user_ini(&text));
     (qt, user)
 }
 
+/*
+ * An overlay that is not root-owned and read-only is one an earlier Kanade made for the desktop user
+ * to write: it is moved aside whole to `<prefix>.legacy`, beside it, and a fresh root-owned one is
+ * made in its place. Nothing ever recovers `<prefix>.legacy`: it is left as the user's own copy, to
+ * delete once they have looked at what it held. Its `QtVersion` and `theme.conf.user` are the
+ * settings a setup carries over, which is why they are read before the rename
+ */
 fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), String> {
     let prefix = w.prefix();
     let present = match fs::symlink_metadata(&prefix) {
@@ -1516,7 +1538,7 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
             lines.push(format!("sddm: reads the overlay, theme {}", want.theme));
             if !current {
                 lines.push(format!(
-                    "sddm: WARNING it reads the overlay, whose theme {} is not current; run `kanade sddm sync` or the login screen may fall back to SDDM's default",
+                    "sddm: WARNING it reads the overlay, whose theme {} is not current; run `kanade sddm setup` as root, then `kanade sddm sync`, or the login screen may fall back to SDDM's default",
                     want.theme
                 ));
             }
@@ -1620,9 +1642,17 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
             want.theme
         )));
     } else {
+        // only root installs the executable theme; `sync` writes the picture and never QML
         out.push(Finding::warn(
             format!("sddm: the overlay's theme {} is {state}", want.theme),
-            vec![String::from("run `kanade sddm sync`")],
+            if want.theme == OWN {
+                vec![String::from("as root: kanade sddm setup")]
+            } else {
+                vec![format!(
+                    "only the built-in kanade theme is installed root-owned; SDDM loads {} from the overlay as best effort",
+                    want.theme
+                )]
+            },
         ));
     }
 
@@ -1674,6 +1704,8 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
             "sddm: the sddm user can read the theme (modes)",
         ));
     } else {
+        // `apply` mends the overlay's own modes, so this is a command that works, and the doctor
+        // itself writes nothing
         out.push(Finding::warn(
             format!(
                 "sddm: {} entries the sddm user cannot read, as {}",
@@ -1704,7 +1736,7 @@ fn stale(w: &Where, config: &Config) -> Option<String> {
     let state = theme_state(w, &want.theme);
     (state != "current").then(|| {
         format!(
-            "SDDM reads the overlay, whose theme {} is {state}; run `kanade sddm sync`. If the login screen is already broken, from a text console: sudo rm /etc/sddm.conf.d/{CONF}, then restart sddm",
+            "SDDM reads the overlay, whose theme {} is {state}; run `kanade sddm setup` as root, then `kanade sddm sync`. If the login screen is already broken, from a text console: sudo rm /etc/sddm.conf.d/{CONF}, then restart sddm",
             want.theme
         )
     })
@@ -1843,8 +1875,29 @@ pub(super) fn put_picture(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 /*
- * the directories of the overlay `sync` and the shell write into, checked: the prefix is yours and
- * closed to others, and `themes` and `bg` are directories, not links, made if absent
+ * gives the overlay's own entries the modes the sddm user reads them with, and says which it mended.
+ * Only what is Kanade's to write: `setup` runs as root and leaves the tree root-owned, so an entry it
+ * cannot set is the user's, and the error says so rather than a mode change that failed halfway
+ */
+fn mend(w: &Where) -> Result<Vec<PathBuf>, String> {
+    let mut mended = Vec::new();
+
+    for dir in [w.prefix(), w.prefix().join("themes"), w.data()] {
+        match fs::symlink_metadata(&dir) {
+            Ok(_) => mended
+                .extend(modes(&dir, true).map_err(|error| format!("{}: {error}", dir.display()))?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", dir.display())),
+        }
+    }
+
+    Ok(mended)
+}
+
+/*
+ * the directories of the overlay `sync` and the shell write into, checked: the data directory is the
+ * user's and closed to others, and the executable theme tree is root-owned, with the built-in theme in
+ * it. `sync` never writes into the theme tree; `setup`, as root, is what makes it
  */
 fn ready(w: &Where, prefix: &str) -> Result<(), String> {
     let data = w.data();
@@ -1879,11 +1932,13 @@ fn ready(w: &Where, prefix: &str) -> Result<(), String> {
 }
 
 /*
- * writes the look the config asks for: the theme into the overlay, the picture (or none) and
- * `theme.conf.user`. Everything that can fail on the picture does before anything is written, and the
- * picture is in place before the config that names it. With `wallpaper`, no available wallpaper means
- * no picture; an explicit `path` that is absent or invalid is an error. A theme that reads no picture setting (class
- * B, C or D) is linked and gets none, so what it shows is its own
+ * writes the look the config asks for: the picture (or none) in the data directory and
+ * `theme.conf.user` in the overlay. The executable theme itself is `kanade sddm setup`'s, as root: a
+ * `sync` never writes QML, `theme.conf`, `theme.conf.user`'s theme half or anything else SDDM loads
+ * code from. It does mend the overlay's own modes (ADR 0120), since root made them and the sddm user
+ * must read them. Everything that can fail on the picture does before anything is written. With
+ * `wallpaper`, no available wallpaper means no picture; an explicit `path` that is absent or invalid
+ * is an error
  */
 fn apply(
     w: &Where,
@@ -1899,6 +1954,17 @@ fn apply(
         ));
     }
     ready(w, &prefix)?;
+
+    let mut text = String::new();
+    match mend(w) {
+        Ok(mended) if mended.is_empty() => {}
+        Ok(mended) => {
+            let _ = writeln!(text, "modes: mended {} entries", mended.len());
+        }
+        Err(error) => {
+            let _ = writeln!(text, "modes: not mended ({error})");
+        }
+    }
 
     let bytes = match want.background {
         SddmBackground::Wallpaper => source(&want)
@@ -1917,23 +1983,28 @@ fn apply(
     match bytes {
         Some(bytes) => {
             put_picture(&shown, &bytes)?;
-            Ok(format!(
-                "picture: {} ({})\n",
+            let _ = writeln!(
+                text,
+                "picture: {} ({})",
                 shown.display(),
                 sizes(bytes.len() as u64)
-            ))
+            );
         }
         None => {
             plain_target(&shown)?;
             match fs::remove_file(&shown) {
-                Ok(()) => Ok(format!("picture: removed {}\n", shown.display())),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    Ok(String::from("picture: none\n"))
+                Ok(()) => {
+                    let _ = writeln!(text, "picture: removed {}", shown.display());
                 }
-                Err(error) => Err(format!("{}: {error}", shown.display())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    text.push_str("picture: none\n");
+                }
+                Err(error) => return Err(format!("{}: {error}", shown.display())),
             }
         }
     }
+
+    Ok(text)
 }
 
 /*
@@ -2085,8 +2156,16 @@ mod tests {
                 "x=1"
             ]
         );
-        assert!(user_ini(installed).is_ok());
-        assert!(user_ini("[General]\nnot a setting\n").is_err());
+        assert_eq!(user_ini(installed), installed);
+        // a line that is none of those goes, and the settings around it stay
+        assert_eq!(
+            user_ini("[General]\nfont=Fira\nnot a setting\nshade=1\n"),
+            "[General]\nfont=Fira\nshade=1\n"
+        );
+        // over the limit, whole lines are kept up to it rather than the file going whole
+        let long = format!("[General]\nfont={}\n", "a".repeat(70 << 10));
+        let kept = user_ini(&long);
+        assert!(kept.len() <= 64 << 10 && kept == "[General]\n", "{kept:?}");
 
         // a value that could add a line or that the theme would refuse is not written
         for (theme, picture) in [
@@ -2337,6 +2416,37 @@ mod tests {
                 && note.contains("rm /etc/sddm.conf.d/zz-kanade.conf"),
             "{note}"
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // the doctor said `kanade sddm sync` mends modes, so it does: the overlay's own entries are given
+    // the bits the sddm user reads them with, and what is not Kanade's is said, not changed
+    #[test]
+    fn sync_mends_the_overlay_modes_it_says_it_does() {
+        let root = std::env::temp_dir().join(format!("kanade-sddm-mend-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let w = Where::under(root.clone());
+        fs::create_dir_all(w.prefix()).unwrap();
+        fs::set_permissions(w.prefix(), Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(w.prefix().join("themes")).unwrap();
+        fs::set_permissions(w.prefix().join("themes"), Permissions::from_mode(0o755)).unwrap();
+        install_own(&w).unwrap();
+
+        let script = w.overlay(OWN).join("Main.qml");
+        fs::set_permissions(&script, Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(modes(&w.prefix(), false).unwrap().len(), 1, "closed first");
+
+        let mended = mend(&w).unwrap();
+        assert_eq!(mended, vec![script.clone()]);
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert!(modes(&w.prefix(), false).unwrap().is_empty());
+
+        // a second run has nothing to mend
+        assert!(mend(&w).unwrap().is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }

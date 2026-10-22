@@ -182,18 +182,21 @@ impl Notifications {
             return false;
         }
 
-        let Some(notification) = self
+        // the bus name that created the notification, which a replacement by another one never
+        // takes over: a reply goes to it alone
+        let Some((sender, resident)) = self
             .list
             .iter()
             .find(|notification| notification.id == id)
             .filter(|notification| notification.reply.is_some() && !notification.sender.is_empty())
+            .map(|notification| (notification.sender.clone(), notification.resident))
         else {
             return false;
         };
 
-        server::announce_reply(&notification.sender, id, &text);
+        server::announce_reply(&sender, id, &text);
 
-        if !notification.resident {
+        if !resident {
             self.close(id, Reason::Dismissed);
         }
 
@@ -215,19 +218,32 @@ impl Notifications {
         }
     }
 
-    // a sender may replace its own earlier notification, which keeps its id and place
+    /*
+     * a sender may replace its own earlier notification, which keeps its id and place. Anyone on
+     * the bus can name an id, so a replacement by another sender never becomes the one a reply is
+     * sent to: the creator's bus name stays, and with it the field, unless the replacement itself
+     * asks for one
+     */
     fn add(&mut self, mut notification: Notification, replaces_id: u32) -> u32 {
         notification.version = self.next_version;
         self.next_version += 1;
 
-        let replaced = self.list.iter_mut().find(|old| old.id == replaces_id);
-
-        if let Some(old) = replaced {
+        if let Some(old) = self.list.iter_mut().find(|old| old.id == replaces_id) {
             notification.id = replaces_id;
+
+            if notification.sender != old.sender {
+                notification.sender = old.sender.clone();
+                notification.reply = None;
+            }
 
             image_hint::remove(&old.image);
 
+            let app = notification.app_name.clone();
+
             *old = notification;
+
+            // a replacement may name another app, so the bounds are of the app it names now
+            self.trim(&app, replaces_id);
 
             return replaces_id;
         }
@@ -242,12 +258,16 @@ impl Notifications {
 
         self.list.push(notification);
 
-        // a notification past the bounds closes as expired, the oldest of its app first
-        for old in oldest(&self.list, &app, id) {
-            self.close(old, Reason::Expired);
-        }
+        self.trim(&app, id);
 
         id
+    }
+
+    // a notification past the bounds closes as expired, the oldest of its app first
+    fn trim(&mut self, app: &str, id: u32) {
+        for old in oldest(&self.list, app, id) {
+            self.close(old, Reason::Expired);
+        }
     }
 
     fn close(&mut self, id: u32, reason: Reason) {
@@ -364,6 +384,82 @@ mod tests {
 
         let ids: Vec<u32> = notifications.list.iter().map(|n| n.id).collect();
         assert_eq!(ids, [plain, anonymous, staying]);
+    }
+
+    /*
+     * a reply goes to the one bus name that created the notification. Ids are small and guessable,
+     * so any client may replace one by naming its id; the text the user typed is never sent to it
+     */
+    #[test]
+    fn a_reply_is_never_sent_to_a_sender_that_replaced_the_notification() {
+        let mut notifications = Notifications::new();
+        let asking = |sender: &str| Notification {
+            app_name: String::from("Chat"),
+            reply: Some(String::new()),
+            sender: String::from(sender),
+            ..notification(true)
+        };
+
+        let id = notifications.add(asking(":1.5"), 0);
+        notifications.add(asking(":1.9"), id);
+
+        // the creator's bus name stands, so that is who hears it
+        assert_eq!(
+            notifications
+                .list
+                .iter()
+                .find(|notification| notification.id == id)
+                .map(|notification| notification.sender.as_str()),
+            Some(":1.5")
+        );
+
+        // and a replacement that takes no reply takes the field with it, so there is nothing to
+        // send the draft to at all
+        notifications.add(notification(true), id);
+        assert!(!notifications.send_reply(id, "hi"));
+    }
+
+    // a replacement may name another app, and the bound is of the app it names now
+    #[test]
+    fn a_replacement_by_another_app_keeps_the_per_app_bound() {
+        let mut notifications = Notifications::new();
+
+        let mut ids = Vec::new();
+
+        for app in ["a", "b"] {
+            for _ in 0..PER_APP {
+                ids.push(notifications.add(
+                    Notification {
+                        app_name: String::from(app),
+                        ..notification(true)
+                    },
+                    0,
+                ));
+            }
+        }
+
+        assert_eq!(notifications.list.len(), 2 * PER_APP);
+
+        // each of `a`'s is replaced by one naming `b`: `b` never grows past its bound
+        for id in &ids[..PER_APP] {
+            notifications.add(
+                Notification {
+                    app_name: String::from("b"),
+                    ..notification(true)
+                },
+                *id,
+            );
+
+            let of_b = notifications
+                .list
+                .iter()
+                .filter(|notification| notification.app_name == "b")
+                .count();
+
+            assert!(of_b <= PER_APP, "{of_b} of b");
+        }
+
+        assert!(notifications.list.len() <= 2 * PER_APP);
     }
 
     // an expiry of a version a replacement took over closes nothing, whatever the new one's rule

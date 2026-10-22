@@ -4,17 +4,20 @@ use vello::wgpu::{
     Queue, RenderPassColorAttachment, RenderPassDescriptor, StoreOp, Texture,
 };
 
+use ttf_parser::Face;
+
+use crate::graphics::Color;
 use crate::graphics::gpu::texture;
 
 use super::Quads;
+use super::clip::Clips;
 
 impl Quads {
     /*
      * draws everything gathered onto the canvas, over what is already there
      *
-     * a letter put off by a full atlas is placed once the batch before it is drawn, which leaves
-     * nothing reading the texels the atlas starts over on; that takes a second pass, so all of it
-     * is drawn here, before anything gathered after it lands
+     * a letter that would make a full atlas start over is never gathered here: `letter_in_order`
+     * draws the batch first, so nothing reads the atlas, then places the letter in its own place
      */
     pub fn draw(&mut self, device: &Device, queue: &Queue, canvas: &Texture) {
         loop {
@@ -26,6 +29,10 @@ impl Quads {
                 return;
             }
 
+            /*
+             * nothing reads the atlas after `paint`, so these go in now; `letter_in_order` should
+             * have emptied this already, so this only keeps a letter from being lost
+             */
             for letter in deferred {
                 self.letter(
                     queue,
@@ -38,12 +45,45 @@ impl Quads {
                     letter.clips,
                 );
             }
-
-            /*
-             * nothing reads the atlas after `paint`, so every letter placed above went in, with the
-             * atlas free to start over; this pass draws them and finds nothing left to put off
-             */
         }
+    }
+
+    /*
+     * one letter, drawn where it was gathered
+     *
+     * a letter that would make a full atlas start over is put off until what reads the atlas is
+     * drawn, since placing it now would draw over the texels those quads name. drawn only after
+     * the batch, it would land over quads gathered after it, so what waits is drawn here instead:
+     * that leaves nothing reading the atlas, and the letter goes in right where it belongs
+     */
+    #[allow(clippy::too_many_arguments)]
+    pub fn letter_in_order(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        canvas: &Texture,
+        face: &'static Face<'static>,
+        id: u16,
+        size: f32,
+        color: Color,
+        x: f32,
+        y: f32,
+        clips: Clips,
+    ) {
+        let put_off = self.deferred.len();
+
+        self.letter(queue, face, id, size, color, x, y, clips);
+
+        if self.deferred.len() == put_off {
+            return;
+        }
+
+        // it was put off, so take it back, draw what reads the atlas, then place it where it belongs
+        self.deferred.truncate(put_off);
+
+        self.draw(device, queue, canvas);
+
+        self.letter(queue, face, id, size, color, x, y, clips);
     }
 
     fn paint(&mut self, device: &Device, queue: &Queue, canvas: &Texture) {

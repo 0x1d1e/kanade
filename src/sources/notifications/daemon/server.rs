@@ -163,9 +163,16 @@ fn progress(hint: &Value) -> Option<u8> {
     }
 }
 
-// `expire_timeout`: -1 leaves it to the server and 0 is never, so only a positive one is a time
+/*
+ * `expire_timeout`: -1 leaves the time to the server and 0 is never, which a Banner tells from the
+ * urgency's own time; a positive one is that time
+ */
 fn lasts(milliseconds: f64) -> Option<Duration> {
-    (milliseconds >= 1.0).then(|| Duration::from_millis(milliseconds as u64))
+    if milliseconds == 0.0 {
+        Some(Duration::ZERO)
+    } else {
+        (milliseconds > 0.0).then(|| Duration::from_millis(milliseconds as u64))
+    }
 }
 
 /*
@@ -273,6 +280,16 @@ mod tests {
                 .flat_map(|key| [Value::Text((*key).into()), Value::Text(String::new())])
                 .collect(),
         )
+    }
+
+    // `expire_timeout` keeps 0 apart from -1: 0 is never, which the Banner shows as no time at
+    // all, and -1 leaves the time to the server, which its urgency gives
+    #[test]
+    fn a_sender_that_asks_never_is_not_given_a_time() {
+        assert_eq!(lasts(0.0), Some(Duration::ZERO));
+        assert_eq!(lasts(-1.0), None);
+        assert_eq!(lasts(6000.0), Some(Duration::from_secs(6)));
+        assert_eq!(lasts(-2000.0), None);
     }
 
     // the reply action is a field only while Banners can show one; otherwise a sender gets what it

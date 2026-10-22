@@ -22,7 +22,7 @@ The file is named `zz-` so SDDM, which reads a directory's files in name order, 
 |---|---|
 | `kanade sddm status` | what is written, what SDDM reads, and the root commands still missing |
 | `kanade sddm setup` | run as root; stages and atomically installs the built-in executable theme |
-| `kanade sddm sync` | writes only the mutable backdrop data from the `sddm.*` keys |
+| `kanade sddm sync` | writes only the mutable backdrop data from the `sddm.*` keys, and mends the overlay's read modes |
 | `kanade sddm enable` | `sync`, then the root commands that make SDDM read the overlay |
 | `kanade sddm disable` | removes the picture, stops following the wallpaper, and prints the root commands that undo `enable` |
 | `kanade sddm theme list` | the installed themes, each with its class |
@@ -63,7 +63,7 @@ The built-in executable theme is root-owned so a desktop process cannot replace 
 
 ## After a theme package changes
 
-Another theme's overlay is links to the installed theme's files. When that package is upgraded or removed, the links can lead nowhere and the login screen falls back to SDDM's default or shows no theme. After upgrading or removing a theme package, run `kanade sddm sync` (the Login screen page and `kanade sddm status` say when the theme is out of date). The shell says once at start, on stderr, when SDDM reads the overlay and its theme is not current.
+A third-party theme's overlay is links to that theme's installed files, which `kanade sddm setup` does not build: it installs only the built-in `kanade` theme root-owned, and `kanade sddm theme use` refuses any other theme (`only the root-installed kanade theme can be selected safely`). An overlay a third-party theme left in place can still go stale: when its package is upgraded or removed, the links can lead nowhere and the login screen falls back to SDDM's default or shows no theme. `kanade sddm status` and the Login screen page say when the overlay's theme is not current, and the shell says once at start, on stderr, when SDDM reads the overlay and its theme is not current.
 
 If the login screen is already broken, from a text console (Ctrl+Alt+F3) log in and run:
 

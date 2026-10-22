@@ -15,8 +15,8 @@ use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
 use syn::{
-    Attribute, Expr, ExprCall, ExprPath, ImplItemFn, Item, ItemMod, ItemUse, LitStr, Macro, Meta,
-    MetaList, Path as SynPath, Token, UseRename, UseTree,
+    Attribute, Expr, ExprCall, ExprMethodCall, ExprPath, ImplItemFn, Item, ItemMod, ItemUse, Lit,
+    LitStr, Macro, Meta, MetaList, Path as SynPath, Token, UseRename, UseTree,
 };
 
 const SERVICE: &str = "service";
@@ -318,6 +318,15 @@ fn wayland_stays_in_doctor() {
 const COLOR: &str = "Color";
 const CONSTRUCTORS: [&str; 3] = ["rgb", "rgba", "from"];
 
+/*
+ * what may name a color in a macro body, where only tokens are left to go by: a constructor, or a
+ * field, constant or variable of one, like `surface` or `faded`, so a bare hex literal in a macro
+ * is only flagged beside something that says a color is meant
+ */
+const HINTS: [&str; 9] = [
+    "rgb", "rgba", "from", "color", "colour", "theme", "ink", "fill", "tint",
+];
+
 // finds colors written as literals: `Color::WHITE`, `Color::rgb(1, 2, 3)`, `"#fff"`
 struct Literals {
     // `Color` and whatever a `use` renamed it to
@@ -344,8 +353,19 @@ impl Literals {
         self.names.contains(ty) && CONSTRUCTORS.contains(&name.as_str())
     }
 
-    // macro bodies are opaque to syn, so the same rules run on their tokens
+    /*
+     * macro bodies are opaque to syn, so the same rules run on their tokens. A color type or a
+     * constructor is caught wherever it is named; a bare hex literal only where a color is
+     * plausibly meant, in a body that also names one, so that an unrelated `"cab"` is not a color
+     */
     fn check_tokens(&mut self, tokens: TokenStream) {
+        // whether the body names a color at all, which the groups within it inherit
+        let names = self.hinted(&tokens);
+
+        self.check_body(tokens, names);
+    }
+
+    fn check_body(&mut self, tokens: TokenStream, names: bool) {
         let mut tokens = tokens.into_iter().peekable();
 
         while let Some(token) = tokens.next() {
@@ -371,16 +391,58 @@ impl Literals {
                     }
                 }
                 TokenTree::Literal(literal) => {
-                    if let Ok(text) = syn::parse_str::<LitStr>(&literal.to_string())
+                    if names
+                        && let Ok(text) = syn::parse_str::<LitStr>(&literal.to_string())
                         && hex(&text.value())
                     {
                         self.found.push(format!("in a macro: {literal}"));
                     }
                 }
-                TokenTree::Group(group) => self.check_tokens(group.stream()),
+                // the groups within a body inherit whether it names a color
+                TokenTree::Group(group) => self.check_body(group.stream(), names),
                 TokenTree::Punct(_) => {}
             }
         }
+    }
+
+    /*
+     * whether the tokens name a color at all: the color type, a constant of it, a constructor, or
+     * a member whose name says one, like `x.color(..)` or `theme::faded(..)`
+     */
+    fn hinted(&self, tokens: &TokenStream) -> bool {
+        let mut tokens = tokens.clone().into_iter().peekable();
+
+        while let Some(token) = tokens.next() {
+            match token {
+                TokenTree::Group(group) => {
+                    if self.hinted(&group.stream()) {
+                        return true;
+                    }
+                }
+                TokenTree::Ident(ident) => {
+                    let mut segments = vec![ident.to_string()];
+
+                    while let Some(next) = take_path_segment(&mut tokens) {
+                        segments.push(next);
+                    }
+
+                    let named = segments.iter().any(|segment| {
+                        let lower = segment.to_lowercase();
+
+                        self.names.contains(segment)
+                            || CONSTRUCTORS.contains(&lower.as_str())
+                            || HINTS.contains(&lower.as_str())
+                    });
+
+                    if named || self.constant(&segments) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        false
     }
 }
 
@@ -498,14 +560,38 @@ impl<'ast> Visit<'ast> for Literals {
         visit::visit_expr_call(self, call);
     }
 
-    fn visit_lit_str(&mut self, lit: &'ast LitStr) {
-        if hex(&lit.value()) {
-            self.found.push(format!("{:?}", lit.value()));
+    /*
+     * a string literal on its own is a color only where the code around it says so: `#` in front,
+     * which is how a color is written, a hex string inside a macro that names one, or an argument
+     * of a `Color` constructor. Anything else is left alone, since a plain `"cab"` or `"deadbeef"`
+     * means nothing about color
+     */
+    fn visit_lit_str(&mut self, text: &'ast LitStr) {
+        if text.value().starts_with('#') && hex(&text.value()) {
+            self.found.push(format!("{:?}", text.value()));
         }
+
+        visit::visit_lit_str(self, text);
     }
 
     fn visit_macro(&mut self, mac: &'ast Macro) {
         self.check_tokens(mac.tokens.clone());
+    }
+
+    /*
+     * `"#fff".into()` is a color written as a literal, which no `Color` constructor names: a hex
+     * string handed to `into` is the one other way the runtime makes one
+     */
+    fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+        if call.method == "into"
+            && let Expr::Lit(literal) = &*call.receiver
+            && let Lit::Str(text) = &literal.lit
+            && hex(&text.value())
+        {
+            self.found.push(format!("{:?}", text.value()));
+        }
+
+        visit::visit_expr_method_call(self, call);
     }
 }
 
@@ -729,7 +815,13 @@ mod checker {
         assert!(caught(r#"fn f() -> Color { "fff".into() }"#));
         assert!(caught(r#"fn f() -> Color { "ff000080".into() }"#));
         assert!(caught("fn f() -> Color { \"##fff\".into() }"));
-        assert!(caught(r#"fn f() { let _ = vec!["ff0000"]; }"#));
+        assert!(caught(r#"fn f() { let _ = vec![x.color("ff0000")]; }"#));
+        assert!(caught(
+            r#"fn f() { let _ = vec![Text::new("").color("ff0000")]; }"#
+        ));
+        assert!(caught(
+            r##"fn f() { let _ = vec![theme::faded(Color::WHITE, "#fff")]; }"##
+        ));
         assert!(caught("fn f() { let _ = vec![Color::TRANSPARENT]; }"));
         assert!(caught(
             "fn f() { let _ = vec![Text::new(\"\").color(Color::rgb(1, 2, 3))]; }"
@@ -760,6 +852,13 @@ mod checker {
         assert!(!caught("fn f() { let _ = format!(\"#{}\", 1); }"));
         assert!(!caught("fn f() { let _ = \"#tag\"; }"));
         assert!(!caught(r#"fn f() { let _ = "ffff"; }"#));
+
+        // a hex string that means nothing about color is no color literal
+        assert!(!caught(r#"fn f() { let _ = "cab"; let _ = "deadbeef"; }"#));
+        assert!(!caught(
+            r#"fn f() { let _ = format!("{} {:?}", "cab", vec!["deadbeef"]); }"#
+        ));
+        assert!(!caught(r#"fn f() { let _ = vec!["cab", "deadbeef"]; }"#));
         assert!(!caught(
             "#[cfg(all(test, target_os = \"linux\"))] mod t { const C: Color = Color::RED; }"
         ));

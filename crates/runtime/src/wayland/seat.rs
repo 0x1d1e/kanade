@@ -21,6 +21,9 @@ impl SeatHandler for WaylandState {
     ) {
         match capability {
             Capability::Pointer => {
+                // a seat can offer the pointer again without having said it left
+                self.drop_pointer();
+
                 // the fallback theme draws its icons on a surface of their own
                 let cursor_surface = self.compositor.create_surface(qh);
 
@@ -41,6 +44,9 @@ impl SeatHandler for WaylandState {
             }
 
             Capability::Keyboard => {
+                // a seat can offer the keyboard again without having said it left
+                self.drop_keyboard();
+
                 // the compositor says only how soon and how often keys repeat; this loop does it
                 let keyboard = self
                     .seat
@@ -71,17 +77,9 @@ impl SeatHandler for WaylandState {
         capability: Capability,
     ) {
         match capability {
-            Capability::Pointer => {
-                if let Some(pointer) = self.pointer_device.take() {
-                    pointer.pointer().release();
-                }
-            }
+            Capability::Pointer => self.drop_pointer(),
 
-            Capability::Keyboard => {
-                if let Some(keyboard) = self.keyboard_device.take() {
-                    keyboard.release();
-                }
-            }
+            Capability::Keyboard => self.drop_keyboard(),
 
             _ => {}
         }
@@ -97,6 +95,56 @@ impl SeatHandler for WaylandState {
 }
 
 impl WaylandState {
+    /*
+     * the pointer is gone, so nothing is over it and the next pointer gets its cursor set again:
+     * `show_cursor` keeps the shape it last set, and a re-plugged pointer starts with none
+     */
+    fn drop_pointer(&mut self) {
+        if let Some(pointer) = self.pointer_device.take() {
+            pointer.pointer().release();
+        }
+
+        self.cursor_shown = None;
+    }
+
+    /*
+     * the same teardown the keyboard's own leave does, since a compositor that unplugs the keyboard
+     * may never send one: a text input cannot stay focused with no keyboard, a press that counts
+     * only while its key is held cannot stay held, and a window that stands only while focused
+     * hears it here
+     */
+    fn drop_keyboard(&mut self) {
+        let keyboard = self.keyboard_device.take();
+
+        if keyboard.is_none() && self.keyboard_focus.is_none() {
+            return;
+        }
+
+        let focused = self.keyboard_focus.take();
+
+        let lost = focused.as_ref().and_then(|surface| {
+            self.window(surface)
+                .and_then(|window| window.on_lost.clone())
+        });
+
+        self.modifiers = crate::Modifiers::default();
+
+        crate::input::focus::clear();
+        crate::input::released::send();
+
+        if let Some(keyboard) = keyboard {
+            keyboard.release();
+        }
+
+        if let Some(lost) = lost {
+            lost();
+        }
+
+        if let Some(surface) = focused {
+            self.request_frame_on(&surface);
+        }
+    }
+
     // the clipboard follows the keyboard and drags the pointer, so the first of either brings it
     fn follow_data_device(&mut self, qh: &QueueHandle<Self>, seat: &WlSeat) {
         if self.data_device.is_some() {

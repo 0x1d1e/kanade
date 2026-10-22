@@ -203,6 +203,14 @@ pub fn set(key: &str, raw: &str) -> Result<String, String> {
         ));
     }
 
+    // a Gesture's verb is config, as a hook's command is: both are set in files, never by a verb
+    // or the Settings window (ADR 0106)
+    if matches!(setting.kind, Kind::Gestures(_)) {
+        return Err(format!(
+            "{key} maps a Gesture to a verb, so it is set in a file under the config directory, never here"
+        ));
+    }
+
     let value = parse(setting, raw)?;
 
     settings::set(&path(key), Some(value))?;

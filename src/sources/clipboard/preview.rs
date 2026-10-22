@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use kanade_runtime::{MutexExt, service::Service};
 
@@ -200,10 +201,25 @@ struct Job {
 struct Work {
     pending: HashSet<u64>,
 
-    // not written, and not tried again until the entry is gone
-    failed: HashSet<u64>,
+    /*
+     * a write that failed, and the tries it has had: a failure may be a full tmpfs or a name taken
+     * once, so it is tried again a few times, each after a longer pause, rather than left without a
+     * preview for the rest of its life in the history
+     */
+    failed: HashMap<u64, Tries>,
     jobs: Option<Sender<Job>>,
 }
+
+// the tries of a preview that keeps failing, and when the next may run
+#[derive(Debug, Clone, Copy)]
+struct Tries {
+    count: u32,
+    due: Instant,
+}
+
+// how many times a failing preview is tried, and how long between them
+const TRIES: u32 = 4;
+const RETRY: Duration = Duration::from_secs(30);
 
 static WORK: LazyLock<Mutex<Work>> = LazyLock::new(Mutex::default);
 
@@ -230,8 +246,18 @@ pub fn request(entry: &Entry) {
     }
 
     let mut work = WORK.locked();
+    let now = Instant::now();
 
-    if work.failed.contains(&entry.id) || !work.pending.insert(entry.id) {
+    // a preview that keeps failing is tried again later, not at each row drawn
+    if work
+        .failed
+        .get(&entry.id)
+        .is_some_and(|tries| tries.due > now)
+    {
+        return;
+    }
+
+    if !work.pending.insert(entry.id) {
         return;
     }
 
@@ -260,14 +286,31 @@ pub fn request(entry: &Entry) {
 }
 
 /*
- * says a preview could not be written, by its cause only, never the path or the picture
+ * says a preview could not be written, by its cause only, never the path or the picture, and when
+ * it may be tried again: once past `TRIES`, not for the rest of the entry's life
  */
 fn failed(id: u64, error: io::Error) {
     eprintln!(
         "kanade: cannot write a clipboard preview ({})",
         error.kind()
     );
-    WORK.locked().failed.insert(id);
+
+    let mut work = WORK.locked();
+    let tries = work.failed.entry(id).or_insert(Tries {
+        count: 0,
+        due: Instant::now(),
+    });
+
+    tries.count += 1;
+
+    if tries.count >= TRIES {
+        work.failed.remove(&id);
+    } else {
+        // twice as long each time, so a tmpfs that stays full is not hammered
+        let wait = RETRY * 2u32.saturating_pow(tries.count - 1);
+
+        tries.due = Instant::now() + wait;
+    }
 }
 
 /*
@@ -339,7 +382,7 @@ pub fn reconcile() {
         Previews::write().ready.retain(|id, _| live.contains(id));
     }
 
-    WORK.locked().failed.retain(|id| live.contains(id));
+    WORK.locked().failed.retain(|id, _| live.contains(id));
 }
 
 /*

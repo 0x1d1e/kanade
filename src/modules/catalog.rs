@@ -527,8 +527,9 @@ pub const ALL: &[Module] = &[
             // are read with the island's keyboards
             supervise::spawn("radios", radios::follow);
 
-            // the keyboard's backlight shows whatever else is on, heard from UPower
-            supervise::spawn("kbd-backlight", osd::follow_keyboard);
+            // the keyboard's backlight shows whatever else is on, heard from UPower; a machine
+            // without one ends it at once, which is no fault
+            supervise::spawn_once("kbd-backlight", osd::follow_keyboard);
 
             // a VT switch hands the keyboards and radios to another session, which shows nothing
             supervise::spawn("seat", seat::follow);
@@ -860,10 +861,13 @@ notifications dnd on until <HH:MM>
             },
         }],
         start: |app| {
-            supervise::spawn("wallpaper", wallpaper::follow);
+            // holds awww's daemon only when none answers: with one running, or without setpriv,
+            // there is nothing to hold, so its return is its end
+            supervise::spawn_once("wallpaper", wallpaper::follow);
             supervise::spawn("wallpaper-set", wallpaper::serve);
             supervise::spawn("wallpaper-shown", wallpaper::watch);
-            supervise::spawn("wallpaper-seed", wallpaper::seed);
+            // fills an empty folder once, from the Favorites list: done, not stopped
+            supervise::spawn_once("wallpaper-seed", wallpaper::seed);
             app
         },
     },

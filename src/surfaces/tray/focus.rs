@@ -39,6 +39,9 @@ pub struct Focus {
     // the item whose menu shows, by its key; none is the items
     pub item: Option<u64>,
 
+    // what the menu was entered from: its row, or its chevron, so going back rings the one pressed
+    entered_from: Option<At>,
+
     // the submenus entered, by their entries' ids, outermost first
     pub entered: Vec<i32>,
 
@@ -96,11 +99,19 @@ impl Focus {
             .checked_sub(self.header())
     }
 
-    // into `item`'s menu, at its top
+    // into `item`'s menu, at its top, remembering what entered it for the way back
     pub fn into_menu(self, item: u64) -> Focus {
+        // the target the keyboard was on, when it was on this item's row or chevron; a pointer
+        // press hides the ring, and its chevron is the target a menu is opened from
+        let entered_from = match self.ring.at.clone() {
+            Some(at @ (At::Item(key) | At::Menu(key))) if key == item && self.ring.shown => at,
+            _ => At::Menu(item),
+        };
+
         Focus {
             ring: self.ring.top(),
             item: Some(item),
+            entered_from: Some(entered_from),
             entered: Vec::new(),
             offset: 0.0,
         }
@@ -123,7 +134,9 @@ impl Focus {
             (Some(id), _) => At::Entry(id),
             (None, Some(item)) => {
                 self.item = None;
-                At::Menu(item)
+
+                // the row or the chevron the menu was entered from
+                self.entered_from.take().unwrap_or(At::Menu(item))
             }
             (None, None) => return self,
         };
@@ -151,6 +164,7 @@ impl Focus {
         Focus {
             ring: self.ring.top(),
             item: None,
+            entered_from: None,
             entered: Vec::new(),
             offset: 0.0,
         }

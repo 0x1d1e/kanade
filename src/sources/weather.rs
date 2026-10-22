@@ -191,11 +191,55 @@ impl Forecast {
 // why the forecast could not be fetched
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Problem {
-    // Open-Meteo could not be reached, in ureq's words
-    Offline(String),
+    /*
+     * Open-Meteo could not be reached, by the kind of failure only: ureq's own text names the
+     * request, whose URI holds the location, and it is logged
+     */
+    Offline(Offline),
 
     // Open-Meteo answered, but not with a forecast, in its words or ours
     Refused(String),
+}
+
+// how a request failed to get an answer, without what was asked
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offline {
+    Timeout,
+    HostNotFound,
+    ConnectionFailed,
+    Refused,
+    Unreachable,
+    Other,
+}
+
+impl Offline {
+    fn of(error: &ureq::Error) -> Offline {
+        match error {
+            ureq::Error::Timeout(_) => Offline::Timeout,
+            ureq::Error::HostNotFound => Offline::HostNotFound,
+            ureq::Error::ConnectionFailed => Offline::ConnectionFailed,
+            ureq::Error::Io(error) => match error.kind() {
+                std::io::ErrorKind::ConnectionRefused => Offline::Refused,
+                std::io::ErrorKind::NetworkUnreachable
+                | std::io::ErrorKind::HostUnreachable
+                | std::io::ErrorKind::AddrNotAvailable => Offline::Unreachable,
+                std::io::ErrorKind::TimedOut => Offline::Timeout,
+                _ => Offline::Other,
+            },
+            _ => Offline::Other,
+        }
+    }
+
+    fn why(self) -> &'static str {
+        match self {
+            Offline::Timeout => "the request timed out",
+            Offline::HostNotFound => "Open-Meteo's host was not found",
+            Offline::ConnectionFailed => "the connection failed",
+            Offline::Refused => "the connection was refused",
+            Offline::Unreachable => "the network is unreachable",
+            Offline::Other => "the request failed",
+        }
+    }
 }
 
 impl Problem {
@@ -211,7 +255,7 @@ impl Problem {
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Problem::Offline(why) => write!(f, "Open-Meteo cannot be reached: {why}"),
+            Problem::Offline(why) => write!(f, "Open-Meteo cannot be reached: {}", why.why()),
             Problem::Refused(why) => write!(f, "Open-Meteo gave no forecast: {why}"),
         }
     }
@@ -615,7 +659,7 @@ fn unreached(error: ureq::Error) -> Problem {
         ureq::Error::BodyExceedsLimit(limit) => {
             Problem::Refused(format!("an answer over {} KiB", limit / 1024))
         }
-        error => Problem::Offline(error.to_string()),
+        error => Problem::Offline(Offline::of(&error)),
     }
 }
 
@@ -667,4 +711,27 @@ fn forecast(body: &Value, location: Location, at: i64) -> Option<Forecast> {
         current,
         days,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /*
+     * ureq's own text names the request, whose URI holds the location, and what fails is logged:
+     * only the kind of failure is kept
+     */
+    #[test]
+    fn a_transport_failure_keeps_no_part_of_the_request() {
+        let error = ureq::Error::Io(std::io::Error::other(
+            "https://api.open-meteo.com/v1/forecast?latitude=52.5200&longitude=13.4050",
+        ));
+        let said = unreached(error).to_string();
+
+        assert!(
+            !said.contains("latitude") && !said.contains("open-meteo"),
+            "{said}"
+        );
+        assert!(said.starts_with("Open-Meteo cannot be reached: "), "{said}");
+    }
 }

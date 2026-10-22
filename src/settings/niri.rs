@@ -671,9 +671,6 @@ pub struct State {
     // the file as that change left it
     undo_stamp: Option<Stamp>,
 
-    // whether this window has changed niri's config
-    pub touched: bool,
-
     // whether the config sets something niri reads only when it starts
     pub restart: bool,
 
@@ -811,6 +808,19 @@ impl State {
         }
     }
 
+    /// Records that this window's own change was just written, so the footer's Undo is that change
+    /// and no other (`Editor::undo_only`): the hash the change left, and the file as it left it. The
+    /// Outputs section's Keep and Reset write through the engine themselves and call this, since the
+    /// page's rows are not the only ones that change niri's file.
+    pub fn set_undoable(after: Option<String>) {
+        let stamp = niri_config::target(None).ok().map(|file| Stamp::of(&file));
+        let mut settings = Settings::write();
+
+        settings.niri.undoable = true;
+        settings.niri.undo_after = after;
+        settings.niri.undo_stamp = stamp;
+    }
+
     /// The footer's words and whether they warn, if the page has any beyond its standing line.
     pub fn status(&self) -> Option<(String, bool)> {
         if let Some(refused) = &self.footer {
@@ -859,7 +869,6 @@ impl State {
 
         match row {
             Some(row) => {
-                self.touched = true;
                 self.busy.push(row);
                 self.refused.remove(row);
             }
@@ -941,7 +950,6 @@ impl State {
         self.reload = None;
         self.refused.clear();
         self.undoable = false;
-        self.touched = false;
         self.epoch += 1;
         self.generation += 1;
     }
@@ -1284,6 +1292,10 @@ struct Watch {
     files: Vec<PathBuf>,
     seen: Vec<Stamp>,
 
+    // the read could not reach the config at all: no stamp can tell that it can now, so every poll
+    // reads again until it can
+    unreadable: bool,
+
     // whether the window was seen open; a window asked for opens a moment later, so one not yet
     // open is given a few ticks
     opened: bool,
@@ -1294,6 +1306,20 @@ const GRACE: u32 = 5;
 
 fn stamps(files: &[PathBuf]) -> Vec<Stamp> {
     files.iter().map(|file| Stamp::of(file)).collect()
+}
+
+// what a read watches when the config could not be reached at all: the config's directory, and the
+// config itself. Neither is watched in place of a reading, so the page must also read again at each
+// poll: a directory gains the file without its stamp changing, and a file that is not there has no
+// stamp to differ, so a page opened before the config existed would never notice it appearing.
+fn unwatched() -> Vec<PathBuf> {
+    match niri_config::target(None) {
+        Ok(file) => file
+            .parent()
+            .map(|dir| vec![dir.to_owned(), file.clone()])
+            .unwrap_or_else(|| vec![file]),
+        Err(_) => vec![PathBuf::new()],
+    }
 }
 
 fn run(receiver: &Receiver<Job>) {
@@ -1336,7 +1362,7 @@ fn tick(mut watch: Watch) -> Option<Watch> {
         watch.ticks += 1;
     }
 
-    if stamps(&watch.files) == watch.seen {
+    if !needs_read(&watch) {
         return Some(watch);
     }
 
@@ -1347,12 +1373,20 @@ fn tick(mut watch: Watch) -> Option<Watch> {
     Some(fresh)
 }
 
+// whether the files the page watches say it must read the config again. A read that could not reach
+// the config at all leaves no stamp to differ, so it reads at every poll until one can: a page
+// opened before the config existed must notice it appearing, not wait for the window to be reopened
+fn needs_read(watch: &Watch) -> bool {
+    watch.unreadable || stamps(&watch.files) != watch.seen
+}
+
 // runs a job and posts what came of it; the files to watch after it
 fn run_job(job: Job) -> Watch {
     // before the write, so a reload niri makes of it is seen as new
     let loads = ipc::config_load_state();
     let (done, files, config) = work(job);
     let wrote = done.written;
+    let unreadable = done.read.unreadable.is_some();
     // the config as the job left it and the includes as they were before they were read; a
     // count that does not match the files leaves a short list, and the next tick reads again
     let mut seen = vec![config];
@@ -1375,6 +1409,7 @@ fn run_job(job: Job) -> Watch {
         seen,
         opened: kanade_runtime::window_open(WINDOW),
         ticks: 0,
+        unreadable,
     }
 }
 
@@ -1425,7 +1460,7 @@ fn work(job: Job) -> (Done, Vec<PathBuf>, Stamp) {
                         ..Read::default()
                     },
                 },
-                vec![PathBuf::new()],
+                unwatched(),
                 Stamp(None),
             );
         }
@@ -1984,6 +2019,42 @@ mod tests {
         // nothing waits any more, so the next press is taken at once
         state.begin(Some("layout.gaps"));
         assert_eq!(state.status().unwrap().0, "Saving\u{2026}");
+    }
+
+    // a page opened before the config could be read must notice it appearing: the stamp of a file
+    // that is not there is none, so no comparison of stamps can tell, and the poll reads instead
+    #[test]
+    fn a_config_that_could_not_be_read_is_read_again_at_every_poll() {
+        let dir = Dir::new("");
+        let file = dir.0.join("config.kdl");
+        fs::remove_file(&file).unwrap();
+
+        // the read that found no config: what it watched has no stamp to differ
+        let missing = Watch {
+            files: unwatched(),
+            seen: stamps(&unwatched()),
+            unreadable: true,
+            opened: true,
+            ticks: 0,
+        };
+
+        assert!(needs_read(&missing), "an unreadable config is read again");
+        assert!(
+            !missing.files.contains(&PathBuf::new()),
+            "the config's own directory is watched, not an empty path"
+        );
+
+        // once it is there and read, an unchanged file is not read again
+        fs::write(&file, CONFIG).unwrap();
+        let read = Watch {
+            files: vec![file.clone()],
+            seen: stamps(std::slice::from_ref(&file)),
+            unreadable: false,
+            opened: true,
+            ticks: 0,
+        };
+
+        assert!(!needs_read(&read));
     }
 
     // a change made after the page's own is not the page's to undo

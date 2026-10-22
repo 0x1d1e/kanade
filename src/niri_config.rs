@@ -126,9 +126,16 @@ impl Snapshot {
     }
 }
 
-// `output["name"].key`, as the command line spells it
+/*
+ * `output["name"].key`, as the command line spells it, with what the block's name may hold made
+ * safe for a terminal first: a name comes from the config or from a monitor's EDID, so a control
+ * character in it would otherwise reach the terminal as a sequence, a newline included
+ */
 fn output_label(name: &str, key: &str) -> String {
-    let name = name.replace('\\', "\\\\").replace('"', "\\\"");
+    let name = plain(name)
+        .replace(|c: char| c.is_control(), "")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
 
     if key.is_empty() {
         format!("output[\"{name}\"]")
@@ -1126,8 +1133,14 @@ impl Editor<'_> {
         validate_original: bool,
         plan: impl FnOnce(&[u8]) -> Result<Plan, String>,
     ) -> Result<String, String> {
-        let meta = self.writable()?;
+        // the lock first, so the mode below is the one the file has once it is Kanade's turn, not
+        // one another writer may have replaced in between. What refuses the file outright (the
+        // system config, a link, a missing file) is said before the lock, which needs a path to
+        // resolve
+        self.writable()?;
         let _lock = self.lock()?;
+        let meta = fs::symlink_metadata(&self.file)
+            .map_err(|error| format!("{}: {error}", self.file.display()))?;
         let (snapshot, old) = Snapshot::of(&self.file)?;
 
         if validate_original {
@@ -1316,26 +1329,43 @@ impl Editor<'_> {
     }
 }
 
-// what a pipe gives until it closes, read on a thread so a full pipe never stops the child
+// the most bytes read of one of `niri validate`'s pipes: its first error is far shorter, and a
+// config that makes it print more must not grow Kanade's memory with it
+const MOST_OUTPUT: u64 = 1 << 20;
+
+// what a pipe gives until it closes, read on a thread so a full pipe never stops the child, and no
+// more than `MOST_OUTPUT` of it
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut bytes = Vec::new();
 
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+        if let Some(pipe) = pipe {
+            // the child is killed and reaped by then, so a read that stopped at the cap leaves no
+            // writer blocked on a full pipe for long
+            let _ = pipe.take(MOST_OUTPUT).read_to_end(&mut bytes);
         }
 
         String::from_utf8_lossy(&bytes).into_owned()
     })
 }
 
-/// `niri validate -c <file>`: ok only if niri's own exit code says so and it printed no error;
+/*
+ * the arguments `niri validate` is given for `file`: one `--config=<file>`, never `-c <file>` as
+ * two, so a path that begins with `-` is a value and not an option of its own. `--config` also
+ * takes a path that does not start with `-` the same way
+ */
+fn validate_args(file: &Path) -> Vec<std::ffi::OsString> {
+    let mut config = std::ffi::OsString::from("--config=");
+
+    config.push(file);
+    vec![std::ffi::OsString::from("validate"), config]
+}
+
+/// `niri validate --config=<file>`: ok only if niri's own exit code says so and it printed no error;
 /// else its first error, without color, with the line and column it points at.
 pub fn niri_validate(file: &Path) -> Result<(), String> {
     let mut child = Command::new("niri")
-        .arg("validate")
-        .arg("-c")
-        .arg(file)
+        .args(validate_args(file))
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1359,7 +1389,13 @@ pub fn niri_validate(file: &Path) -> Result<(), String> {
 
                 return Err(String::from("niri validate did not finish in 10 s"));
             }
-            Err(error) => return Err(format!("niri validate: {error}")),
+            Err(error) => {
+                // a child that cannot be waited on is killed rather than left running
+                let _ = child.kill();
+                let _ = child.wait();
+
+                return Err(format!("niri validate: {error}"));
+            }
         }
     };
 
@@ -1386,7 +1422,10 @@ fn verdict(success: bool, output: &str) -> Result<(), String> {
     Err(first_error(&text))
 }
 
-// text without terminal color
+/*
+ * text without terminal color. Its lines stay: what niri printed is read line by line for its first
+ * error
+ */
 fn plain(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -1484,3 +1523,40 @@ pub fn output_editable(id: &OutputId) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod arg_tests {
+    use super::*;
+
+    // a config path that begins with `-` is a value, not an option: `-c -c.kdl` is read by clap as
+    // `-c` with no value, so niri never opened the file
+    #[test]
+    fn a_config_path_that_looks_like_an_option_is_a_value() {
+        let args = validate_args(Path::new("-c.kdl"));
+
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "validate");
+        assert_eq!(args[1], "--config=-c.kdl");
+
+        let plain = validate_args(Path::new("/home/x/config.kdl"));
+        assert_eq!(plain[1], "--config=/home/x/config.kdl");
+    }
+
+    // a block's name comes from the config or a monitor's EDID: neither may carry a control
+    // character, a newline included
+    #[test]
+    fn an_output_label_carries_no_control_characters() {
+        assert_eq!(
+            output_label("DP-1\u{1b}[2J", "mode"),
+            "output[\"DP-1\"].mode"
+        );
+        assert_eq!(output_label("DP-1\nEDID\u{7}", ""), "output[\"DP-1EDID\"]");
+        assert_eq!(output_label("a\"b\\c", ""), "output[\"a\\\"b\\\\c\"]");
+    }
+
+    // niri colors its errors; its lines are what the first error is read from
+    #[test]
+    fn plain_strips_terminal_color() {
+        assert_eq!(plain("\u{1b}[31mred\u{1b}[0m\nnext"), "red\nnext");
+    }
+}

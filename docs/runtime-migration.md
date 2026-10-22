@@ -38,14 +38,17 @@ Runtime work, done when wanted.
       and a check against a live fcitx5 or ibus.
 - [x] UI scale: `appearance.scale` is one multiplier at the runtime's scale seam (ADR 0091), virtual space
       in, compositor pixels out. Not done: a scale per window or output, resizing an open normal window.
-- [x] Per-corner radius (`Rectangle::radius_top_left` and the other three, `Corners`), and the
-      justify overflow spill. A drop shadow and the inner shadow of a rectangle with unequal
-      corners still use the largest corner.
+- [x] Per-corner radius as a type (`Corners`, `graphics/geometry.rs`), used by the gpu clip and
+      image paths, and the justify overflow spill. `Rectangle::radius_top_left` and the other three
+      per-corner builders (`widgets/rectangle.rs:72-88`) are shipped but have no call site: every
+      rectangle sets all four corners alike with `radius`. A drop shadow and the
+      inner shadow of a rectangle with unequal corners still use the largest corner.
 - [x] File drops, as a primitive: `Rectangle::on_drop` takes the paths of a `text/uri-list` let go
       over it. Only absolute `file://` links on this machine count, percent-decoded, no `..`,
       at most 256 files and a 64 KiB list, read on the event loop with the paste's 2 s deadline;
       a list with one bad link is refused whole. The drag is accepted only over a widget with
-      `on_drop`. No consumer yet (the Dock's drop behavior is not built).
+      `on_drop`. One consumer: the Dock offers it on an icon whose app takes files
+      (`src/dock.rs:1992`, filtered by `Launch::takes_files`).
 - [ ] Fold `crates/lock` (session lock in the runtime) into the runtime's
       connection. Drop its `src/boundary.rs` exception with it.
 - [ ] The Island, its Satellites, Surfaces, Banners and OSD as one shape on one

@@ -2,10 +2,12 @@
 //! Module that owns an event fires it from its own Service watcher or source, so one that is off
 //! fires nothing, and so does a `hooks` Module that is off. A fire never waits: the command runs on
 //! a thread of its own through the bounded child runner (`appearance::child`), under `setpriv
-//! --pdeathsig KILL` where setpriv is found, for at most `hooks.timeout`. At most one run of an
-//! event is in flight; a fire meanwhile is dropped, so a slow command never piles up. What went
-//! wrong is kept for `kanade status` and said once on stderr, never as an Activity. Only event names
-//! are logged: a payload, like a wallpaper's path, travels in the child's environment alone.
+//! --pdeathsig KILL`, for at most `hooks.timeout`. A hook is never run without that: one that
+//! outlived Kanade would be a stray process nothing stops, so a system with no setpriv on its PATH
+//! runs none and says so, as `wake::run_guarded` does for the programs a source starts. At most one
+//! run of an event is in flight; a fire meanwhile is dropped, so a slow command never piles up. What
+//! went wrong is kept for `kanade status` and said once on stderr, never as an Activity. Only event
+//! names are logged: a payload, like a wallpaper's path, travels in the child's environment alone.
 
 use std::ffi::{OsStr, OsString};
 use std::panic::{self, AssertUnwindSafe};
@@ -21,7 +23,7 @@ use toml::Value;
 use crate::appearance::child::{self, Ran};
 use crate::config::{self, Field, Kind, Range, Setting};
 use crate::modules;
-use crate::sources::wake;
+use crate::sources::wake::{self, SETPRIV};
 
 pub const MODULE: &str = "hooks";
 
@@ -351,15 +353,15 @@ impl Runner for Process {
         value: Option<&OsStr>,
         timeout: Duration,
     ) -> Result<(), String> {
-        let mut command = if wake::guards() {
-            let mut command = Command::new(wake::SETPRIV);
-            command.args(["--pdeathsig", "KILL"]).args(argv);
-            command
-        } else {
-            let mut command = Command::new(&argv[0]);
-            command.args(&argv[1..]);
-            command
-        };
+        // never without `--pdeathsig`: a hook that outlived Kanade is a stray process nothing stops
+        if !wake::guards() {
+            return Err(format!(
+                "{SETPRIV} is not on PATH, and a hook runs only under it, so it does not outlive Kanade"
+            ));
+        }
+
+        let mut command = Command::new(wake::SETPRIV);
+        command.args(["--pdeathsig", "KILL"]).args(argv);
 
         command.stdin(Stdio::null()).env(EVENT, event.name());
 

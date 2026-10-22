@@ -935,9 +935,16 @@ fn watch(
             Err(error) => return error,
         };
 
-        // a line this reader cannot follow is skipped, the next event still counts
+        /*
+         * a line this reader cannot follow is skipped, the next event still counts. Only its
+         * length is said: a niri event carries window titles, and nothing of niri leaves
+         * `windows` but window ids
+         */
         let Some(event) = json::parse(&line) else {
-            eprintln!("kanade: skipped a niri event that is not JSON: {line}");
+            eprintln!(
+                "kanade: skipped a niri event that is not JSON ({} bytes)",
+                line.len()
+            );
             continue;
         };
 

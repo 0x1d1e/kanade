@@ -124,13 +124,23 @@ pub fn surface(open: bool, visit: u64, held: bool, dnd: Option<bool>) -> Rectang
         Some(Subsurface::Password { ssid, secret }) => {
             wifi::password(ssid, secret, Join::read().failed(ssid))
         }
-        Some(Subsurface::Bluetooth) => bluetooth::devices(
-            &Adapter::read(),
-            &Request::read(),
-            &Prompt::read(),
-            focus.offset,
-            ring.as_ref(),
-        ),
+        Some(Subsurface::Bluetooth) => {
+            let prompt = Prompt::read();
+
+            // a PIN is typed, so no ring shows on its row
+            let ring = match *prompt {
+                Prompt::Pin { .. } => None,
+                _ => ring.as_ref(),
+            };
+
+            bluetooth::devices(
+                &Adapter::read(),
+                &Request::read(),
+                &prompt,
+                focus.offset,
+                ring,
+            )
+        }
         Some(Subsurface::Audio) => {
             audio::sound(&mixer(), *Switching::read(), focus.offset, ring.as_ref())
         }
@@ -1172,15 +1182,12 @@ pub fn key(monitor: &str, key: Key) -> bool {
     // read apart, as typing writes it
     let pin = matches!(*Prompt::read(), Prompt::Pin { .. });
 
-    if focus.sub == Some(Subsurface::Bluetooth)
-        && pin
-        && let Some(typed) = typed_pin(key, focus.ring(&grid).is_some())
-    {
-        match typed {
-            Pin::Letter(letter) => bluez::type_pin(letter),
-            Pin::Pair => bluez::confirm(),
-        }
-
+    /*
+     * a PIN is typed, not ringed, as a password is: Enter pairs, so a PIN typed under a ring that
+     * shows on the row's first target is never answered by cancelling the pairing. Cancel is the
+     * prompt's own pill, under the pointer
+     */
+    if focus.sub == Some(Subsurface::Bluetooth) && pin && typed_pin(key) {
         IslandService::write().attend(monitor, Instant::now());
 
         return true;
@@ -1203,25 +1210,19 @@ pub fn key(monitor: &str, key: Key) -> bool {
     true
 }
 
-// what a key on the Pin prompt does beyond the ring
-#[derive(Debug, PartialEq)]
-enum Pin {
-    // a letter typed, or the last erased for none
-    Letter(Option<char>),
-    Pair,
-}
-
 /*
- * a key on the Pin prompt, none for one the ring takes. Enter pairs only while the ring hides, so
- * it never does other than the button the ring is on
+ * a key the Pin prompt takes: a letter typed, the last erased, or Enter to pair with what it holds.
+ * Whether it did, so one it does not take falls through to the ring
  */
-fn typed_pin(key: Key, ringed: bool) -> Option<Pin> {
+fn typed_pin(key: Key) -> bool {
     match key {
-        Key::Character(letter) => Some(Pin::Letter(Some(letter))),
-        Key::Backspace => Some(Pin::Letter(None)),
-        Key::Enter if !ringed => Some(Pin::Pair),
-        _ => None,
+        Key::Character(letter) => bluez::type_pin(Some(letter)),
+        Key::Backspace => bluez::type_pin(None),
+        Key::Enter => bluez::confirm(),
+        _ => return false,
     }
+
+    true
 }
 
 /*

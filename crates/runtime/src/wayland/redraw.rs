@@ -7,9 +7,18 @@ use crate::graphics::Renderer;
 use crate::timing::{self, Timing};
 use crate::ui_scale;
 
-use super::surface::{OpenWindow, View};
+use super::surface::{Content, OpenWindow, View};
 
 impl OpenWindow {
+    // whether the view drawn says the window is to be shown; a normal window always is
+    fn shown(&self, content: &Content) -> bool {
+        let Content::Layer(window) = content else {
+            return true;
+        };
+
+        window.visible
+    }
+
     // one frame: run the view, send its settings, draw it and show it
     pub fn redraw(&mut self) {
         let started = Instant::now();
@@ -37,6 +46,14 @@ impl OpenWindow {
 
         // 0 until the compositor configures the window, and again while it is hidden
         if self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        /*
+         * a hidden window can still be configured, by a layer surface the compositor resized while
+         * it is unmapped; presenting a buffer then shows it again, so its view says first
+         */
+        if !self.shown(&content) {
             return;
         }
 
@@ -150,12 +167,13 @@ impl OpenWindow {
             }
 
             None => {
-                self.role.wl_surface().set_buffer_scale(self.scale as i32);
+                // a whole number of pixels per logical pixel, at least one: set_buffer_scale(0)
+                // is a protocol error, and a buffer of no pixels shows nothing
+                let whole = self.scale.round().max(1.0) as u32;
 
-                (
-                    self.width * self.scale as u32,
-                    self.height * self.scale as u32,
-                )
+                self.role.wl_surface().set_buffer_scale(whole as i32);
+
+                (self.width * whole, self.height * whole)
             }
         };
 

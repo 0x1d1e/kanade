@@ -412,6 +412,17 @@ impl Machine {
                         "stopped before the screen gave a frame",
                     )))]),
                 ),
+                /*
+                 * a segment lost on its own is damage to that segment alone: the ones before it are
+                 * whole, so they are joined and kept, as one that ended before a frame is. A pause
+                 * the loss came in is over with them: one clip, saved, is better than a Failed one
+                 */
+                Segment::Lost(_) if segment > 1 => (
+                    Phase::Joining,
+                    Step::to(vec![Effect::Join {
+                        segments: segment - 1,
+                    }]),
+                ),
                 Segment::Lost(why) => (Phase::Idle, Step::to(vec![Effect::Over(Err(why))])),
             },
 
@@ -605,6 +616,61 @@ mod tests {
             [Effect::Over(Err(String::from("gone")))]
         );
         assert_eq!(machine.phase(), Phase::Idle);
+    }
+
+    /*
+     * a confirmed defect: a stall or a failure on a resumed segment ended the recording as failed,
+     * throwing away segments that were whole. Pausing, resuming and stalling must leave one clip
+     */
+    #[test]
+    fn a_later_segment_lost_keeps_the_segments_before_it() {
+        let mut machine = recording();
+
+        machine.step(Event::Pause { framed: true });
+        ended(&mut machine, Segment::Written);
+        machine.step(Event::Resume);
+        machine.step(Event::Stop);
+
+        assert_eq!(
+            ended(&mut machine, Segment::Lost(String::from("gone"))).effects,
+            [Effect::Join { segments: 1 }]
+        );
+        assert_eq!(machine.phase(), Phase::Joining);
+        // the last segment's damage does not make the join a failure
+        assert_eq!(
+            machine.step(Event::Joined(Ok(()))).effects,
+            [Effect::Over(Ok(()))]
+        );
+        assert_eq!(machine.phase(), Phase::Idle);
+
+        // and while it records, not only after a stop
+        let mut stalling = self::recording();
+
+        stalling.step(Event::Pause { framed: true });
+        ended(&mut stalling, Segment::Written);
+        stalling.step(Event::Resume);
+
+        assert_eq!(
+            ended(&mut stalling, Segment::Lost(String::from("gone"))).effects,
+            [Effect::Join { segments: 1 }]
+        );
+    }
+
+    // a pause that failed before its frame is no damage to the segments before it either
+    #[test]
+    fn a_later_segment_lost_while_pausing_keeps_the_segments_before_it() {
+        let mut machine = recording();
+
+        machine.step(Event::Pause { framed: true });
+        ended(&mut machine, Segment::Written);
+        machine.step(Event::Resume);
+        machine.step(Event::Pause { framed: true });
+
+        assert_eq!(
+            ended(&mut machine, Segment::Lost(String::from("gone"))).effects,
+            [Effect::Join { segments: 1 }]
+        );
+        assert_eq!(machine.phase(), Phase::Joining);
     }
 
     #[test]

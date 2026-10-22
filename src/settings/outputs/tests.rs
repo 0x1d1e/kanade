@@ -151,7 +151,7 @@ impl Port for Fake {
         Ok(())
     }
 
-    fn write(&self, output: &Output, edits: &[&Edit]) -> Result<String, String> {
+    fn write(&self, output: &Output, edits: &[&Edit]) -> Result<(String, Option<String>), String> {
         if self.cannot_write.get() {
             return Err(String::from("niri refuses the config"));
         }
@@ -161,7 +161,7 @@ impl Port for Fake {
             edits.iter().map(|edit| (*edit).clone()).collect(),
         ));
 
-        Ok(String::from("written"))
+        Ok((String::from("written"), Some(String::from("after"))))
     }
 
     fn undo_write(&self) -> Result<String, String> {
@@ -744,7 +744,10 @@ fn keep_writes_every_change_of_the_trial_at_once() {
 
     assert_eq!(
         control.keep(&fake),
-        Ok(Ended::Kept(String::from("written")))
+        Ok(Ended::Kept(
+            String::from("written"),
+            Some(String::from("after"))
+        ))
     );
 
     // the last of two changes to the same part, one write
@@ -1201,7 +1204,10 @@ fn a_saved_change_left_by_a_crash_is_not_put_back_at_start() {
 
     assert_eq!(
         control.keep_request(&fake, id, requested_at),
-        Ok(Ended::Kept(String::from("written")))
+        Ok(Ended::Kept(
+            String::from("written"),
+            Some(String::from("after"))
+        ))
     );
     // the reload is not confirmed (a timeout, or a SIGKILL during the wait)
     control.abandon_keep();
@@ -1329,41 +1335,48 @@ fn a_keep_whose_load_fails_can_be_reverted() {
 
 // ---- run_error ----
 
+// Every way `child::run_typed` can end but a clean exit means niri may have applied the change, so
+// the trial and its file stay. A reader that died and output over the cap used to read as niri's
+// own refusal, which ends the trial and deletes the file over a change niri may be showing.
 #[test]
 fn run_error_classifies_child_failures_as_unanswered_and_niri_refusals_as_refused() {
     use super::work::run_error;
+    use crate::appearance::child::Error;
 
-    // child::run's own failures: niri may have applied the change
-    assert!(matches!(
-        run_error(String::from("niri msg output timed out after 2000 ms")),
-        RunError::Unanswered(_)
-    ));
-    assert!(matches!(
-        run_error(String::from(
-            "could not run niri msg output: No such file or directory (os error 2)"
+    // Kanade's own side of the run failing: niri may have applied the change
+    for error in [
+        Error::TimedOut(String::from("niri msg output timed out after 2000 ms")),
+        Error::Spawn(String::from(
+            "could not run niri msg output: No such file or directory (os error 2)",
         )),
-        RunError::Unanswered(_)
-    ));
-    assert!(matches!(
-        run_error(String::from("could not read niri msg output output")),
-        RunError::Unanswered(_)
-    ));
-    assert!(matches!(
-        run_error(String::from(
-            "could not wait for niri msg output: interrupted"
+        Error::Reader(String::from("could not read niri msg output output")),
+        Error::Reader(String::from(
+            "could not wait for niri msg output: interrupted",
         )),
-        RunError::Unanswered(_)
-    ));
+        Error::Reader(String::from(
+            "niri msg output stdout reader stopped unexpectedly",
+        )),
+        Error::TooLong(String::from(
+            "niri msg output output exceeded 1048576 bytes",
+        )),
+        Error::Aborted(String::from("appearance sync worker stopped")),
+    ] {
+        assert!(
+            matches!(run_error(error.clone()), RunError::Unanswered(_)),
+            "{error:?}"
+        );
+    }
 
     // niri's own refusals: it told us no
-    assert!(matches!(
-        run_error(String::from("Unknown output \"HDMI-A-5\"")),
-        RunError::Refused(_)
-    ));
-    assert!(matches!(
-        run_error(String::from("error: unexpected argument '--' found")),
-        RunError::Refused(_)
-    ));
+    for why in [
+        "Unknown output \"HDMI-A-5\"",
+        "error: unexpected argument '--' found",
+    ] {
+        assert!(matches!(
+            run_error(Error::Exited(String::from(why))),
+            RunError::Refused(_)
+        ));
+    }
 }
 
 // ---- Recovery findings fixes ----
@@ -1465,7 +1478,13 @@ fn keep_request_within_grace_window_is_accepted() {
     fake.at(deadline + KEEP_GRACE_MS / 2);
 
     let res = control.keep_request(&fake, id, deadline);
-    assert_eq!(res, Ok(Ended::Kept(String::from("written"))));
+    assert_eq!(
+        res,
+        Ok(Ended::Kept(
+            String::from("written"),
+            Some(String::from("after"))
+        ))
+    );
     assert!(dir.file().exists());
     assert!(control.session.is_some());
 }
@@ -1525,7 +1544,7 @@ fn failed_config_reload_undoes_config_before_reverting_output() {
         last_failed: true,
     });
 
-    work::resolve_keep_reload(&mut control, &fake, loaded, false);
+    control.resolve_keep_reload(&fake, loaded);
 
     assert!(control.session.is_none());
     assert!(!dir.file().exists());
@@ -1546,7 +1565,7 @@ fn failed_config_undo_keeps_pending_recovery_file_and_reverts_output() {
         last_failed: true,
     });
 
-    work::resolve_keep_reload(&mut control, &fake, loaded, false);
+    control.resolve_keep_reload(&fake, loaded);
 
     assert!(control.session.is_none());
     assert!(dir.file().exists());
@@ -1571,7 +1590,7 @@ fn reload_confirmed_deletes_recovery_file_even_if_niri_differs() {
         count: 1,
         last_failed: false,
     });
-    work::resolve_keep_reload(&mut control, &fake, loaded, true);
+    control.resolve_keep_reload(&fake, loaded);
 
     // Pending file MUST be deleted and session ended because reload succeeded!
     assert!(!dir.file().exists());
@@ -1589,7 +1608,7 @@ fn a_keep_with_no_reload_seen_is_not_reverted_at_start() {
 
     // no ConfigLoaded update was seen in the window: the trial ends and the file records a
     // change already written
-    work::resolve_keep_reload(&mut control, &fake, None, false);
+    control.resolve_keep_reload(&fake, None);
     assert!(control.session.is_none());
     assert!(dir.file().exists());
 
@@ -1639,6 +1658,50 @@ fn injected_worker_panic_triggers_emergency_revert() {
     assert!(statuses.iter().any(|s| s.contains("kanade-outputs")));
 }
 
+// A Keep writes the config at once and niri's reload confirms it up to 2 s later. Kanade exiting
+// inside that window (a restart, a logout, a `scripts/dev` save) must not put the monitor back: the
+// config holds what the user kept, so a revert there would leave the screen as it was before the
+// Keep with no pending file and nothing said until niri's next reload.
+#[test]
+fn an_exit_after_a_keep_and_before_its_reload_does_not_put_the_output_back() {
+    let _held = CONTROL_LOCK.lock().unwrap_or_else(|held| held.into_inner());
+    let (dir, fake, _) = setup();
+
+    work::controller(|control| {
+        *control = Controller::new(dir.file());
+        control
+            .try_edit(&fake, "eDP-1", Edit::Scale(2.0), None)
+            .unwrap();
+        control.keep(&fake).unwrap();
+
+        // the config holds it; niri's reload has not come yet
+        assert!(control.session.as_ref().unwrap().kept);
+    });
+
+    // the worker dies inside that window
+    let panic = std::panic::catch_unwind(|| panic!("simulated worker thread panic"));
+    let payload = panic.unwrap_err();
+    work::handle_worker_panic(&fake, &*payload);
+
+    // and the exit path, as a restart runs it
+    work::revert_on_exit();
+
+    // neither put the output back: the monitor shows what was kept, and the file is a record of a
+    // change already written, which the next start clears without touching niri
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+    assert!(dir.file().exists());
+
+    // and a start after it clears the file without touching niri
+    fake.commands.borrow_mut().clear();
+    let mut fresh = Controller::new(dir.file());
+    let said = fresh.recover(&fake).unwrap().unwrap();
+
+    assert!(said.contains("saved"), "{said}");
+    assert!(fake.commands.borrow().is_empty());
+    assert_eq!(fake.state("eDP-1").logical.unwrap().scale, 2.0);
+    assert!(!dir.file().exists());
+}
+
 #[test]
 fn keep_request_succeeds_and_prevents_revert_when_writing_pending_file_fails() {
     let (dir, fake, mut control) = setup();
@@ -1672,7 +1735,13 @@ fn keep_request_succeeds_and_prevents_revert_when_writing_pending_file_fails() {
     let kept = control.keep_request(&fake, id, requested_at);
 
     // Config write succeeded, so keep_request succeeds even though writing the pending file failed
-    assert_eq!(kept, Ok(Ended::Kept(String::from("written"))));
+    assert_eq!(
+        kept,
+        Ok(Ended::Kept(
+            String::from("written"),
+            Some(String::from("after"))
+        ))
+    );
 
     // The pending file is deleted or cleared
     let pending_is_cleared = !dir.file().exists()

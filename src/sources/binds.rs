@@ -180,18 +180,28 @@ pub fn places_within_backdrop(
 
     walk(path, false, &mut Vec::new(), read, &mut found)?;
 
-    Ok(found.backdrops.iter().any(|pattern| {
+    // a rule that certainly places it says so, whether or not another cannot be read
+    if found.backdrops.iter().any(|pattern| {
         pattern
             .as_deref()
-            .is_none_or(|pattern| matches(pattern, namespace))
-    }))
+            .is_none_or(|pattern| covers(pattern, namespace) == Some(true))
+    }) {
+        return Ok(true);
+    }
+
+    match unknown(path, found.backdrops.iter().map(Option::as_deref)) {
+        Some(unread) => Err(unread),
+        None => Ok(false),
+    }
 }
 
 /*
- * niri matches a regex, which Kanade has no engine for: a pattern of only literals and anchors is
- * tried as written, any other is taken to match, so that doctor never warns wrongly
+ * whether a layer rule's namespace pattern covers `namespace`: yes, no, or cannot tell. niri
+ * matches a regex, which Kanade has no engine for, so a pattern of only literals and anchors is
+ * tried as written and any other is unknown: guessing yes would let doctor claim a block niri does
+ * not make, and a false ok about notification text on a screencast is worse than a warn
  */
-fn matches(pattern: &str, namespace: &str) -> bool {
+fn covers(pattern: &str, namespace: &str) -> Option<bool> {
     let (start, rest) = match pattern.strip_prefix('^') {
         Some(rest) => (true, rest),
         None => (false, pattern),
@@ -204,15 +214,34 @@ fn matches(pattern: &str, namespace: &str) -> bool {
     if literal.contains([
         '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\', '^', '$',
     ]) {
-        return true;
+        return None;
     }
 
-    match (start, end) {
+    Some(match (start, end) {
         (true, true) => namespace == literal,
         (true, false) => namespace.starts_with(literal),
         (false, true) => namespace.ends_with(literal),
         (false, false) => namespace.contains(literal),
+    })
+}
+
+// a pattern niri reads as a regex Kanade cannot, as the reason a check cannot tell
+fn unreadable(path: &Path, pattern: &str) -> Unread {
+    Unread {
+        file: path.to_owned(),
+        why: format!(
+            "the layer rule match namespace=\"{pattern}\" is a regex Kanade cannot read, so \
+             whether it matches is niri's to say"
+        ),
     }
+}
+
+// the first pattern among `patterns` Kanade cannot read, as what a check answers instead of a guess
+fn unknown<'a>(path: &Path, patterns: impl Iterator<Item = Option<&'a str>>) -> Option<Unread> {
+    patterns
+        .flatten()
+        .find(|pattern| covers(pattern, "").is_none())
+        .map(|pattern| unreadable(path, pattern))
 }
 
 /*
@@ -230,22 +259,36 @@ pub fn xrayed<'a>(
 
     walk(path, false, &mut Vec::new(), read, &mut found)?;
 
-    Ok(namespaces
-        .iter()
-        .copied()
-        .filter(|namespace| {
-            found
-                .xrays
-                .iter()
-                .rev()
-                .find(|(pattern, _)| {
-                    pattern
-                        .as_deref()
-                        .is_none_or(|pattern| matches(pattern, namespace))
-                })
-                .is_none_or(|(_, xray)| *xray)
-        })
-        .collect())
+    let mut xrayed = Vec::new();
+
+    for &namespace in namespaces {
+        // xray unless a rule says otherwise, and the last rule that matches decides; one that
+        // cannot be read before any that certainly matches leaves it unknown
+        let mut xray = true;
+
+        for (pattern, set) in found.xrays.iter().rev() {
+            match pattern.as_deref() {
+                None => {
+                    xray = *set;
+                    break;
+                }
+                Some(pattern) => match covers(pattern, namespace) {
+                    Some(true) => {
+                        xray = *set;
+                        break;
+                    }
+                    Some(false) => {}
+                    None => return Err(unreadable(path, pattern)),
+                },
+            }
+        }
+
+        if xray {
+            xrayed.push(namespace);
+        }
+    }
+
+    Ok(xrayed)
 }
 
 /*
@@ -261,11 +304,20 @@ pub fn blocked_from_screencasts(
 
     walk(path, false, &mut Vec::new(), read, &mut found)?;
 
-    Ok(found.blocks.iter().any(|pattern| {
+    // a rule that certainly blocks it says so, whether or not another cannot be read; a rule
+    // Kanade cannot read is no block it can claim, so the answer is that it cannot tell
+    if found.blocks.iter().any(|pattern| {
         pattern
             .as_deref()
-            .is_none_or(|pattern| matches(pattern, namespace))
-    }))
+            .is_none_or(|pattern| covers(pattern, namespace) == Some(true))
+    }) {
+        return Ok(true);
+    }
+
+    match unknown(path, found.blocks.iter().map(Option::as_deref)) {
+        Some(unread) => Err(unread),
+        None => Ok(false),
+    }
 }
 
 fn walk(
@@ -779,12 +831,11 @@ mod tests {
             placed("layer-rule { match namespace=\"^awww-daemon\"; place-within-backdrop true; }"),
             Ok(true)
         );
-        assert_eq!(
-            placed(
-                "layer-rule { match namespace=\"wallpaper|awww\"; place-within-backdrop true; }"
-            ),
-            Ok(true)
+        // a regex Kanade cannot read is no rule it can claim, so doctor says it cannot tell
+        let unclear = placed(
+            "layer-rule { match namespace=\"wallpaper|awww\"; place-within-backdrop true; }",
         );
+        assert!(matches!(unclear, Err(Unread { ref why, .. }) if why.contains("wallpaper|awww")));
         assert_eq!(
             placed("layer-rule { place-within-backdrop true; }"),
             Ok(true)
@@ -828,7 +879,8 @@ mod tests {
             )),
             Ok(vec!["kanade-dock"])
         );
-        assert_eq!(xrayed(&rule("^kanade(-dock)?$", false)), Ok(vec![]));
+        // a pattern Kanade cannot read is no answer it can give
+        assert!(xrayed(&rule("^kanade(-dock)?$", false)).is_err());
     }
 
     // a Banner shows a notification's text, so the opt-in rule hides it from a screencast
@@ -853,6 +905,44 @@ mod tests {
         assert_eq!(
             blocked(
                 "layer-rule { match namespace=\"^kanade-banners$\"; block-out-from \"screencast\"; }"
+            ),
+            Ok(true)
+        );
+        // a rule with no match blocks every layer, Banners included
+        assert_eq!(
+            blocked("layer-rule { block-out-from \"screencast\"; }"),
+            Ok(true)
+        );
+    }
+
+    /*
+     * the assurance doctor gives about notification text on a screencast: a pattern it cannot read
+     * must never pass for a block, which is what it reported for \"^(kanade-osd)$\"
+     */
+    #[test]
+    fn a_pattern_kanade_cannot_read_is_no_block_it_claims() {
+        let blocked = |text: &str| {
+            let config = files(&[("/c/config.kdl", text)]);
+
+            blocked_from_screencasts(Path::new("/c/config.kdl"), "kanade-banners", &mut |file| {
+                config
+                    .get(file)
+                    .cloned()
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+            })
+        };
+
+        let other = blocked(
+            "layer-rule { match namespace=\"^(kanade-osd)$\"; block-out-from \"screencast\"; }",
+        );
+
+        assert!(matches!(other, Err(Unread { ref why, .. }) if why.contains("^(kanade-osd)$")));
+
+        // a rule that certainly matches still says so beside one that cannot be read
+        assert_eq!(
+            blocked(
+                "layer-rule { match namespace=\"^(kanade-osd)$\"; block-out-from \"screencast\"; }\n\
+                 layer-rule { match namespace=\"^kanade-banners$\"; block-out-from \"screencast\"; }"
             ),
             Ok(true)
         );

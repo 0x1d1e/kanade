@@ -359,10 +359,32 @@ fn choose(name: &str) -> Result<(Config, String), String> {
     Ok((config::layers(true).0, text))
 }
 
-fn snapshot_picture(picture: &Path) -> Option<Vec<u8>> {
+/*
+ * the picture as it is before a theme change, so a failed change puts it back: `None` when there is
+ * nothing at the path, and the bytes when there is. A file Kanade cannot snapshot (a link, one that is
+ * not a file, one over the cap, one it cannot read) is an error and not `None`: the rollback removes
+ * what is at the path when the snapshot is `None`, so calling a real file "no picture" would delete
+ * it
+ */
+fn snapshot_picture(picture: &Path) -> Result<Option<Vec<u8>>, String> {
+    let shown = picture.display();
+
     match fs::symlink_metadata(picture) {
-        Ok(meta) if meta.is_file() && meta.len() <= 16 << 20 => fs::read(picture).ok(),
-        _ => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{shown}: {error}")),
+        Ok(meta) if !meta.is_file() => Err(format!(
+            "{shown} is not a plain file, so Kanade cannot keep it as it is for a failed theme change; \
+             remove it, or make it a file of at most {} MiB, and try again",
+            16
+        )),
+        Ok(meta) if meta.len() > 16 << 20 => Err(format!(
+            "{shown} is over {} MiB, so Kanade cannot keep it as it is for a failed theme change; \
+             make it smaller, or remove it, and try again",
+            16
+        )),
+        Ok(_) => fs::read(picture)
+            .map(Some)
+            .map_err(|error| format!("{shown}: {error}")),
     }
 }
 
@@ -374,8 +396,10 @@ fn restore_picture(picture: &Path, saved: Option<&[u8]>) -> Result<(), String> {
             }
             super::put_picture(picture, bytes)
         }
+        // only ever reached when `snapshot_picture` found nothing at the path, so what is there now
+        // is the change's own
         None => {
-            if !picture.exists() {
+            if fs::symlink_metadata(picture).is_err() {
                 return Ok(());
             }
             super::plain_target(picture)?;
@@ -411,10 +435,14 @@ fn use_text(w: &Where, name: &str) -> Result<String, String> {
         ));
     }
 
+    // the picture is kept before anything is written, and a picture Kanade cannot keep stops the
+    // change here: a rollback that treated a file it could not snapshot as "no picture" would
+    // remove the user's file
+    let before_theme = settings_theme();
+    let before_picture = snapshot_picture(&w.picture())
+        .map_err(|error| format!("{error}; nothing was changed, sddm.theme is as it was"))?;
     // the setting is written first, as the overlay is built from the files' answer; a failure to
     // build it puts the settings file's own value and any modified picture back exactly
-    let before_theme = settings_theme();
-    let before_picture = snapshot_picture(&w.picture());
     let (config, mut text) = choose(name)?;
 
     match bring(w, &config) {
@@ -668,7 +696,7 @@ mod tests {
         fs::create_dir_all(pic.parent().unwrap()).unwrap();
 
         // 1. Snapshot nonexistent, then something creates pic, restore removes it
-        let snap = snapshot_picture(&pic);
+        let snap = snapshot_picture(&pic).unwrap();
         assert_eq!(snap, None);
         fs::write(&pic, b"new picture").unwrap();
         restore_picture(&pic, snap.as_deref()).unwrap();
@@ -676,7 +704,7 @@ mod tests {
 
         // 2. Snapshot existing picture, then pic is changed/removed, restore puts it back
         fs::write(&pic, b"original picture").unwrap();
-        let snap = snapshot_picture(&pic);
+        let snap = snapshot_picture(&pic).unwrap();
         assert_eq!(snap, Some(b"original picture".to_vec()));
         fs::write(&pic, b"changed picture").unwrap();
         restore_picture(&pic, snap.as_deref()).unwrap();
@@ -685,6 +713,30 @@ mod tests {
         fs::remove_file(&pic).unwrap();
         restore_picture(&pic, snap.as_deref()).unwrap();
         assert_eq!(fs::read(&pic).unwrap(), b"original picture");
+
+        // 3. A picture Kanade cannot snapshot is an error, not "no picture": a rollback must not
+        // remove the file it could not read
+        let real = pic.with_file_name("real.png");
+        fs::write(&real, b"the user's own").unwrap();
+        fs::remove_file(&pic).unwrap();
+        std::os::unix::fs::symlink(&real, &pic).unwrap();
+        let error = snapshot_picture(&pic).unwrap_err();
+        assert!(error.contains("not a plain file"), "{error}");
+        assert!(pic.exists() && real.exists(), "the link is left as it was");
+        fs::remove_file(&pic).unwrap();
+
+        // a directory where the picture goes is refused the same way
+        fs::create_dir(&pic).unwrap();
+        assert!(snapshot_picture(&pic).is_err());
+        assert!(pic.is_dir());
+        fs::remove_dir(&pic).unwrap();
+
+        // over the cap is refused too, rather than taken as none
+        let big = vec![b'a'; (16 << 20) + 1];
+        fs::write(&pic, &big).unwrap();
+        let error = snapshot_picture(&pic).unwrap_err();
+        assert!(error.contains("MiB"), "{error}");
+        assert_eq!(fs::read(&pic).unwrap().len(), big.len());
 
         fs::remove_dir_all(dir).unwrap();
     }

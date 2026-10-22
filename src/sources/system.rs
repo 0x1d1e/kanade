@@ -12,11 +12,12 @@
 //! only while the Bluetooth sub-surface shows does the adapter look for devices nearby (`bluetooth`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Once, mpsc};
+use std::sync::{Mutex, Once, mpsc};
 use std::{iter, mem, thread};
 
-use crate::bus::{Bus, Value};
+use crate::bus::{Argument, Bus, Value};
 use crate::hooks::{self, Event};
+use kanade_runtime::MutexExt;
 use kanade_runtime::service::Service;
 
 use super::{bluetooth, network, power, wifi};
@@ -27,6 +28,7 @@ use crate::{modules, supervise};
 
 // the bus itself, the only sender of NameOwnerChanged
 const BUS: &str = "org.freedesktop.DBus";
+const BUS_PATH: &str = "/org/freedesktop/DBus";
 
 // a radio the Controls Surface can switch, or show disabled
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -223,6 +225,35 @@ fn route(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
 }
 
 /*
+ * the unique name NetworkManager runs as, empty when none: a signal is only its own when it comes
+ * from this one, and any process on the bus can send one naming any object. Asked again only once
+ * the bus says the name changed hands
+ */
+static OWNER: Mutex<Option<String>> = Mutex::new(None);
+
+fn network_owner() -> String {
+    // not held across the call, which waits on the bus
+    if let Some(owner) = OWNER.locked().clone() {
+        return owner;
+    }
+
+    let owner = Bus::system()
+        .call(
+            BUS,
+            BUS_PATH,
+            BUS,
+            "GetNameOwner",
+            &[Argument::from(network::NAME)],
+        )
+        .text()
+        .to_owned();
+
+    *OWNER.locked() = Some(owner.clone());
+
+    owner
+}
+
+/*
  * what a join waiting on NetworkManager hears from a signal, if anything, and from which one: the
  * sender, or the one gone
  */
@@ -239,11 +270,18 @@ fn heard(watch: Watch, sender: &str, path: &str, arguments: &[Value]) -> Option<
             wifi::Change::Device(path.into(), number(0)?, number(2)?),
         ),
         Watch::Attempt => (sender, wifi::Change::Attempt(path.into(), number(0)?)),
-        Watch::Removed if first.starts_with(network::ROOT) => {
+        // only NetworkManager's own objects: anyone on the bus can name any path
+        Watch::Removed if first.starts_with(network::ROOT) && sender == network_owner() => {
             (sender, wifi::Change::Removed(first.into()))
         }
-        // NetworkManager stopping, or replaced, but not starting: a join may be asking it to
-        Watch::Owner if sender == BUS && first == network::NAME && !old.is_empty() => {
+        // NetworkManager stopping, replaced, or starting: the owner is asked again next time
+        Watch::Owner if sender == BUS && first == network::NAME => {
+            *OWNER.locked() = None;
+
+            if old.is_empty() {
+                return None;
+            }
+
             (old, wifi::Change::Gone)
         }
         _ => return None,

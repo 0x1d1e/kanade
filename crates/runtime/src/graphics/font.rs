@@ -53,20 +53,40 @@ pub fn load_weighted(family: Option<&str>, weight: Weight) -> &'static Face<'sta
 }
 
 fn read(family: &str, weight: Weight) -> Face<'static> {
-    let fontconfig = Fontconfig::new().expect("failed to start fontconfig");
-
     // regular asks for no style, so plain text finds the same file it always did
     let style = match weight {
         Weight::Regular => None,
         other => Some(other.style()),
     };
 
-    let found = fontconfig.find(family, style).expect("failed to find font");
+    // the family is the user's (`appearance.font`), so one that is not installed, or a broken
+    // fontconfig, draws in a fallback rather than ending the shell
+    if let Some(face) = open_family(family, style) {
+        return face;
+    }
+
+    eprintln!("kanade: no font for {family:?}, drawing with sans-serif");
+
+    open_family("sans-serif", style).unwrap_or_else(built_in)
+}
+
+// the face fontconfig picks for a family, none when it cannot start or finds nothing it can open
+fn open_family(family: &str, style: Option<&str>) -> Option<Face<'static>> {
+    let fontconfig = Fontconfig::new()?;
+
+    let found = fontconfig.find(family, style).ok()?;
 
     // a .ttc file holds several fonts, the index says which one
     let index = found.index.unwrap_or(0) as u32;
 
-    open(&found.path.to_string_lossy(), index).expect("failed to open font")
+    open(&found.path.to_string_lossy(), index)
+}
+
+// the font the fontconfig crate carries, so text draws even when no file can be read
+fn built_in() -> Face<'static> {
+    eprintln!("kanade: no font file to draw with, see appearance.font");
+
+    Face::parse(&[], 0).expect("failed to parse the built-in font")
 }
 
 fn open(path: &str, index: u32) -> Option<Face<'static>> {
@@ -217,4 +237,18 @@ fn load_file(path: &str, index: u32) -> Option<&'static Face<'static>> {
     loaded.insert(key, face);
 
     Some(face)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `appearance.font` is the user's: a family that is not installed draws in a fallback
+    #[test]
+    fn a_family_that_is_not_installed_still_gives_a_font() {
+        let face = read("No Such Family For Kanade", Weight::Regular);
+
+        assert!(face.units_per_em() > 0);
+        assert!(face.glyph_index('a').is_some());
+    }
 }

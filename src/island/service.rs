@@ -3,11 +3,11 @@ use std::sync::LazyLock;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use kanade_runtime::Keyboard;
 use kanade_runtime::queue::Nudge;
 use kanade_runtime::service::Service;
+use kanade_runtime::{Keyboard, Monitors};
 
-use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Scope, Track};
+use super::activity::{Activity, Detail, Frame, Id, Interrupt, Kind, Lifetime, Scope, Track};
 use super::arbiter::{self, Arbiter};
 use super::command::Command;
 use super::fade::{Crossfade, Dissolve};
@@ -287,10 +287,32 @@ impl IslandService {
             self.sizes.peek = peek;
             self.sizes.fits = fits;
             self.sizes.hang = hang;
+            self.forget_gone(now);
             self.retarget(now);
         }
 
         changed
+    }
+
+    /*
+     * an output that left keeps no island and no raised Surface or pin of its own, so nothing
+     * names it again and no state grows with each one plugged in. An AutoExpand on it gives back
+     * what it changed first, since its Surface went with the output
+     */
+    fn forget_gone(&mut self, now: Instant) {
+        let here = Monitors::read();
+        let exists = |monitor: &str| here.has(monitor);
+
+        if self
+            .auto
+            .as_ref()
+            .is_some_and(|auto| !exists(&auto.monitor))
+        {
+            self.restore(now);
+        }
+
+        self.presentations.retain(exists);
+        self.islands.retain(|monitor, _| exists(monitor));
     }
 
     /*
@@ -479,7 +501,8 @@ impl IslandService {
 
     /*
      * whether the OSD floats over a Peek or an open Surface rather than ends it; not over a Peek of
-     * the OSD itself
+     * the OSD itself. Only a Transient Feedback floats, as the view's own fullscreen guard asks:
+     * a Persistent one would float over the Peek for good
      */
     pub fn floats(&self, monitor: &str, frame: &Frame) -> bool {
         let raised = matches!(
@@ -488,6 +511,10 @@ impl IslandService {
         );
 
         frame.feedback()
+            && matches!(
+                frame.primary.as_ref().map(Activity::lifetime),
+                Some(Lifetime::Transient(_))
+            )
             && raised
             && self.presentations.peeked(monitor) != frame.primary.as_ref().map(Activity::id)
     }
@@ -1111,12 +1138,15 @@ impl IslandService {
                 .set_shown(monitor, id(&frame.primary), id(satellite));
         }
 
-        // the top Satellite is a segment of the body while it is Split or a Peek out of one
-        let marks = |frame: &Frame, presentation| {
-            Mark::of(
-                frame,
-                matches!(presentation, Presentation::Split | Presentation::Peek),
-            )
+        /*
+         * the top Satellite is a segment of the body while it is Split; a Peek shows one Activity
+         * alone, so the top Satellite is a dot beside it, unless it is the one peeked
+         */
+        let marks = |frame: &Frame, presentation, peeked: Option<&Id>| {
+            let segment = matches!(presentation, Presentation::Split)
+                || peeked.is_some() && peeked == frame.satellites.first().map(Activity::id);
+
+            Mark::of(frame, segment)
         };
 
         let presentation = self.presentations.untouched();
@@ -1128,7 +1158,7 @@ impl IslandService {
                 untouched_satellite,
                 None,
             ),
-            marks(&untouched, presentation),
+            marks(&untouched, presentation, None),
             self.timings,
             (
                 &self.sizes,
@@ -1140,13 +1170,9 @@ impl IslandService {
 
         for (monitor, frame, satellite) in frames {
             let presentation = self.presentations.get(&monitor);
-            let marks = marks(&frame, presentation);
-            let content = Content::new(
-                presentation,
-                frame.primary,
-                satellite,
-                self.presentations.peeked(&monitor),
-            );
+            let peeked = self.presentations.peeked(&monitor);
+            let marks = marks(&frame, presentation, peeked);
+            let content = Content::new(presentation, frame.primary, satellite, peeked);
 
             if let Some(island) = self.islands.get_mut(&monitor) {
                 let holds = self.sizes.holds(&monitor);
@@ -2940,6 +2966,39 @@ mod tests {
         island.withdraw(timer("b").id(), later);
         assert_eq!(island.presentation(MONITOR), Presentation::Compact);
         assert_eq!(segments(&island), (Some(battery().id().clone()), None));
+    }
+
+    /*
+     * a Peek out of a Split shows one Activity, so the top Satellite is drawn nowhere else: the
+     * dots keep it unless it is the one peeked
+     */
+    #[test]
+    fn a_peek_out_of_a_split_keeps_the_other_satellites_as_dots() {
+        let now = Instant::now();
+        let mut island = focused_on(MONITOR, now);
+        island.post(battery(), now);
+        island.post(timer("a"), now);
+        island.post(timer("b"), now);
+
+        // the pointer over the primary peeks it, and the top Satellite is a dot beside it
+        island.hover(MONITOR, true, true, now);
+        island.set_segment(MONITOR, Segment::Primary);
+        island.expire(now + HOVER_DELAY);
+        assert_eq!(island.presentation(MONITOR), Presentation::Peek);
+
+        let later = now + Duration::from_secs(1);
+        let dots = |island: &IslandService| -> Vec<Mark> {
+            island
+                .satellites(MONITOR)
+                .shown(later)
+                .into_iter()
+                .map(|shown| shown.mark.clone())
+                .collect()
+        };
+        assert_eq!(
+            dots(&island),
+            vec![Mark::Activity(timer("a")), Mark::Activity(timer("b"))]
+        );
     }
 
     /*

@@ -65,27 +65,42 @@ struct Spot {
 impl Rows {
     // where a letter goes, none when it needs the atlas to start over and that is not allowed yet
     fn place(&mut self, width: u32, height: u32, may_start_over: bool) -> Option<Spot> {
-        if self.x + width + PADDING > SIZE {
-            self.top += self.height + PADDING;
-            self.x = 0;
-            self.height = 0;
-        }
+        // a letter too wide for what is left of the row takes the next one
+        let wraps = self.x != 0 && self.x + width + PADDING > SIZE;
 
-        let mut started_over = false;
+        let (top, height_so_far) = if wraps {
+            (self.top + self.height + PADDING, 0)
+        } else {
+            (self.top, self.height)
+        };
 
-        if self.top + height + PADDING > SIZE {
+        /*
+         * a letter with no place left waits for one, so the rows stay where they are: moving them
+         * on for a letter that was never placed would lose the room this row still has
+         */
+        if top + height + PADDING > SIZE {
             if !may_start_over {
                 return None;
             }
 
             *self = Rows::default();
-            started_over = true;
+
+            return self.place(width, height, false).map(|spot| Spot {
+                started_over: true,
+                ..spot
+            });
+        }
+
+        if wraps {
+            self.top = top;
+            self.x = 0;
+            self.height = height_so_far;
         }
 
         let spot = Spot {
             x: self.x,
             y: self.top,
-            started_over,
+            started_over: false,
         };
 
         self.x += width + PADDING;
@@ -167,8 +182,10 @@ impl Atlas {
 
         let (width, height) = (pixels.width, pixels.height);
 
-        // too big for the atlas at all
+        // too big for the atlas at all; it has no place now and none later either
         if width + PADDING > SIZE || height + PADDING > SIZE {
+            self.letters.insert(key, None);
+
             return Placement::Nothing;
         }
 
@@ -176,9 +193,9 @@ impl Atlas {
             return Placement::Overflow;
         };
 
-        // starting over drops every letter placed before, whose pixels are drawn over
+        // starting over draws over every letter placed before, but the blank ones hold no pixels
         if spot.started_over {
-            self.letters.clear();
+            self.letters.retain(|_, letter| letter.is_none());
         }
 
         let (x, y) = (spot.x, spot.y);
@@ -264,5 +281,29 @@ mod tests {
         assert_eq!(rows.place(10, 5, false), at(10 + PADDING, 0, false));
         assert_eq!(rows.place(10, 7, false), at(2 * (10 + PADDING), 0, false));
         assert_eq!(rows.place(SIZE, 7, false), at(0, 12 + PADDING, false));
+    }
+
+    // a letter wider than what is left of the row starts the next one, wasting none of the row
+    #[test]
+    fn a_letter_too_wide_for_the_row_starts_the_next_one() {
+        let mut rows = Rows::default();
+
+        let at = |x, y, started_over| Some(Spot { x, y, started_over });
+
+        assert_eq!(rows.place(1000, 10, false), at(0, 0, false));
+        assert_eq!(rows.place(100, 5, false), at(0, 10 + PADDING, false));
+    }
+
+    // a letter with no place left leaves the rows as they were, so the room this row has is kept
+    #[test]
+    fn a_letter_that_waits_moves_no_row() {
+        let mut rows = full();
+
+        assert!(rows.place(4, 4, false).is_none());
+
+        assert_eq!(
+            (rows.top, rows.x, rows.height),
+            (SIZE - (1 + PADDING), 0, 1)
+        );
     }
 }

@@ -90,6 +90,12 @@ pub enum Daemon {
 
     // another daemon has the bus name, named by its process like "mako"; Kanade never asks again
     Conflict(String),
+
+    /*
+     * there is no session bus to own the name on: nothing arrives, and nothing will until Kanade
+     * starts again, so the thread settles instead of polling for a bus that is not there
+     */
+    NoBus,
 }
 
 // written only by `follow`, read by views
@@ -110,13 +116,29 @@ impl Daemon {
             Daemon::Conflict(other) => {
                 format!("notification daemon: {other}, not Kanade; stop it and restart Kanade")
             }
+            Daemon::NoBus => {
+                String::from("notification daemon: no session bus; start one and restart Kanade")
+            }
         }
     }
 
-    // `owner` is the process that has the bus name, asked only while the daemon is not running
-    fn of(running: bool, owner: impl FnOnce() -> Option<u32>) -> Daemon {
+    /*
+     * `owner` is the process that has the bus name, asked only while the daemon is not running,
+     * and `reachable` whether the bus answers at all. NoBus is for good, as `Bus` tries the session
+     * bus once, so a bus that is not there now never comes back for this Kanade
+     */
+    fn of(
+        running: bool,
+        reachable: impl FnOnce() -> bool,
+        owner: impl FnOnce() -> Option<u32>,
+    ) -> Daemon {
         if running {
             return Daemon::Running;
+        }
+
+        // nothing to ask of a bus that is not there, and nothing to wait for
+        if !reachable() {
+            return Daemon::NoBus;
         }
 
         // the daemon owns it and is about to say so, or no one does yet
@@ -217,7 +239,10 @@ fn progress(notification: &Notification, allowed: bool, tracked: Option<&str>) -
                     body
                 },
                 percent,
-                lasts: notification.timeout(),
+
+                // a sender that asked never to expire leaves it to `live.stale`, which is the most
+                // a notification's progress is kept whatever it asks (ADR 0059)
+                lasts: notification.timeout().filter(|lasts| !lasts.is_zero()),
             })
         }
         Some(100..) => tracked.map(|old| Step::Finish(old.to_owned())),
@@ -243,18 +268,26 @@ pub(crate) fn toast(notification: &Notification) -> Toast {
 
 /*
  * the body's simple markup as one line of text: tags dropped, the five escapes the spec allows read
- * back, line breaks and runs of spaces made one space
+ * back, line breaks and runs of spaces made one space. A '<' with no '>' after it is text, as the
+ * spec says, so the rest of the body is not swallowed
  */
 fn plain(markup: &str) -> String {
     let mut text = String::with_capacity(markup.len());
-    let mut tag = false;
+    let mut rest = markup;
 
-    for character in markup.chars() {
-        match character {
-            '<' => tag = true,
-            '>' if tag => tag = false,
-            _ if tag => {}
-            character => text.push(character),
+    while let Some(character) = rest.chars().next() {
+        rest = &rest[character.len_utf8()..];
+
+        if character != '<' {
+            text.push(character);
+            continue;
+        }
+
+        match rest.find('>') {
+            // a tag, which says nothing of the text
+            Some(end) => rest = &rest[end + 1..],
+            // no tag closes, so this was text
+            None => text.push('<'),
         }
     }
 
@@ -562,13 +595,23 @@ pub fn follow() {
                 }
             }
 
-            // Running and Conflict are for good, so only Starting asks again
+            // Running, Conflict and NoBus are for good, so only Starting asks again
             if daemon == Daemon::Starting {
-                let next = Daemon::of(running, || bus::owner(Bus::session(), NAME));
+                let next = Daemon::of(
+                    running,
+                    || bus::reachable(Bus::session()),
+                    || bus::owner(Bus::session(), NAME),
+                );
 
                 if let Daemon::Conflict(other) = &next {
                     eprintln!(
                         "kanade: {other} is the notification daemon, stop it and restart Kanade to get notifications"
+                    );
+                }
+
+                if let Daemon::NoBus = &next {
+                    eprintln!(
+                        "kanade: no session bus, so Kanade is not the notification daemon; start one and restart Kanade"
                     );
                 }
 
@@ -639,7 +682,8 @@ pub fn follow() {
                 Notifications::expire(id, version);
             }
 
-            // until the daemon has the bus name, nothing it would announce can arrive
+            // until the daemon has the bus name, nothing it would announce can arrive; with no bus
+            // at all nothing ever will, so that settles instead of polling
             let busy = changed || daemon == Daemon::Starting;
             before = now;
             wakes.wait(busy);
@@ -678,6 +722,16 @@ mod tests {
             version: 1,
             effects: Effects::default(),
         }
+    }
+
+    // a '<' with no '>' after it is text, so the rest of the body is not swallowed
+    #[test]
+    fn an_unmatched_angle_bracket_is_text() {
+        assert_eq!(plain("Price < 5"), "Price < 5");
+        // a tag with a space in it is still a tag
+        assert_eq!(plain("a < b > c"), "a c");
+        assert_eq!(plain("<b>bold</b> and <i"), "bold and <i");
+        assert_eq!(plain("&lt;tag&gt;"), "<tag>");
     }
 
     // the id and the steps come from another program's words, so the id always fits `live`

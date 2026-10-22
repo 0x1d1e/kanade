@@ -577,8 +577,9 @@ impl Presentations {
             return;
         }
 
+        // another island expanding ends a pin of any Presentation, not only of a Surface
         for island in self.islands.values_mut() {
-            if matches!(island.raised, Some(Raised::Expanded(_))) {
+            if island.pinned || matches!(island.raised, Some(Raised::Expanded(_))) {
                 island.raise(None);
             }
         }
@@ -648,6 +649,14 @@ impl Presentations {
      */
     pub fn visit(&self) -> u64 {
         self.visits
+    }
+
+    /*
+     * the outputs there are now: an output that left keeps no island, so nothing it raised or
+     * pinned outlives it
+     */
+    pub fn retain(&mut self, here: impl Fn(&str) -> bool) {
+        self.islands.retain(|monitor, _| here(monitor));
     }
 
     // the one Expanded island and its Surface, if any
@@ -1179,6 +1188,39 @@ mod tests {
 
         assert_eq!(presentations.get(MONITOR), Compact);
         assert!(!presentations.pinned(MONITOR));
+    }
+
+    // another island expanding ends a pinned Peek too, not only a pinned Surface
+    #[test]
+    fn another_island_expanding_ends_a_pinned_peek() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_shown(MONITOR, Some(id(Kind::Media)), Some(id(Kind::Timer)));
+        presentations.input(MONITOR, Input::Hover(Segment::Satellite));
+        assert_eq!(presentations.get(MONITOR), Peek);
+
+        presentations.input(MONITOR, Input::RightClick(Segment::Satellite));
+        assert!(presentations.pinned(MONITOR));
+
+        presentations.input(OTHER, Input::Open(Launcher));
+
+        assert_eq!(presentations.get(MONITOR), Split);
+        assert!(!presentations.pinned(MONITOR));
+    }
+
+    // an output that left keeps no island, so its pin or Surface cannot name it again
+    #[test]
+    fn an_output_that_left_keeps_no_island() {
+        let mut presentations = Presentations::default();
+
+        presentations.set_shown(OTHER, Some(id(Kind::Media)), None);
+        presentations.input(OTHER, Input::Open(Controls));
+        assert_eq!(presentations.expanded(), Some((OTHER, Controls)));
+
+        presentations.retain(|monitor| monitor == MONITOR);
+
+        assert_eq!(presentations.expanded(), None);
+        assert_eq!(presentations.get(OTHER), Rest);
     }
 
     #[test]

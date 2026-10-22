@@ -46,7 +46,10 @@ pub struct Notification {
     // the `value` hint: how far along it is, 0 to 100, for a progress Live Activity (ADR 0059)
     pub(crate) value: Option<u8>,
 
-    // `expire_timeout` when the sender gave a positive one
+    /*
+     * `expire_timeout` as the sender gave it: none when it left the time to the server (-1),
+     * `Duration::ZERO` when it asked for the notification never to expire, and its time otherwise
+     */
     pub(crate) timeout: Option<Duration>,
 
     pub(crate) received: SystemTime,
@@ -153,7 +156,8 @@ impl Notification {
         self.value
     }
 
-    // how long the sender asked for it to show, none when it left that to the server or asked never
+    // how long the sender asked for it to show, `Duration::ZERO` when it asked never, and none
+    // when it left that to the server
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }

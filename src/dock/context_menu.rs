@@ -58,7 +58,7 @@ struct Open {
     // the hover list: window rows only, no pin and no actions
     windows_only: bool,
 
-    // the pointer is on that list, so it may take the keyboard for Delete
+    // the pointer is on that list, so a click there may take the keyboard for Delete
     panel: bool,
 }
 
@@ -71,10 +71,6 @@ impl Service for Menu {
 }
 
 pub fn open(monitor: &str, item: &Item, at: Rect, edge: Edge) {
-    if desktop(&item.app).is_none() && !item.pinned() {
-        return;
-    }
-
     CLOSE_TICK.fetch_add(1, Ordering::Relaxed);
     let (monitor, item) = (monitor.to_owned(), item.clone());
     let ticket = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
@@ -317,6 +313,8 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
                 .child(Column::new(content).width(width - 2.0 * INSET).gap(GAP)),
         );
 
+    // the hover list takes the keyboard only once it is clicked, as a Banner's reply field does:
+    // the pointer resting on it must not take the keys of the window the user types into
     if open.windows_only {
         let monitor_name = monitor.name.clone();
         let panel = panel.on_hover(hover_panel);
@@ -333,7 +331,7 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
             })
             .layer(Layer::Overlay)
             .keyboard(if open.panel {
-                Keyboard::Exclusive
+                Keyboard::OnDemand
             } else {
                 Keyboard::None
             })
@@ -378,7 +376,14 @@ fn entries(open: &Open) -> Vec<Entry<'_>> {
         return open.windows.iter().map(Entry::Window).collect();
     }
 
-    let mut entries = vec![Entry::Pin];
+    let mut entries = Vec::new();
+
+    // an app with no desktop entry and no pin has nothing to pin or unpin, so its menu has no row
+    // for it: it still shows its windows and Silence, which is what a right click is for there
+    if desktop(&open.item.app).is_some() || open.item.pinned() {
+        entries.push(Entry::Pin);
+    }
+
     if silence_target(&open.item).is_some() {
         entries.push(Entry::Silence);
     }
@@ -770,48 +775,42 @@ fn activate(monitor: &str, index: usize) {
     };
     let item = open.item.clone();
 
-    if let Some(Entry::Window(window)) = row(&open, index) {
-        carry_out(Press::Focus(window.id));
-        return;
-    }
-
-    if let Some(Entry::Silence) = row(&open, index) {
-        if let Some(app) = silence_target(&item) {
-            crate::sources::notifications::silence::toggle(app);
-        }
-        return;
-    }
-
-    if index == 0 {
-        let Some(id) = item
-            .pin
-            .clone()
-            .or_else(|| desktop(&item.app).map(|entry| entry.id.clone()))
-        else {
-            return;
-        };
-        let pinned = !item.pinned();
-
-        std::thread::spawn(move || {
-            if let Err(error) = crate::settings::set_pinned(&id, pinned) {
-                eprintln!("dock: could not update pinned apps: {error}");
+    match row(&open, index) {
+        Some(Entry::Window(window)) => carry_out(Press::Focus(window.id)),
+        Some(Entry::Silence) => {
+            if let Some(app) = silence_target(&item) {
+                crate::sources::notifications::silence::toggle(app);
             }
-        });
-        return;
+        }
+        Some(Entry::Pin) => {
+            let Some(id) = item
+                .pin
+                .clone()
+                .or_else(|| desktop(&item.app).map(|entry| entry.id.clone()))
+            else {
+                return;
+            };
+            let pinned = !item.pinned();
+
+            std::thread::spawn(move || {
+                if let Err(error) = crate::settings::set_pinned(&id, pinned) {
+                    eprintln!("dock: could not update pinned apps: {error}");
+                }
+            });
+        }
+        Some(Entry::Action(action)) => {
+            let Some(entry) = desktop(&item.app) else {
+                return;
+            };
+            let action = &entry.actions[action];
+
+            carry_out(Press::DesktopAction {
+                launch: action.launch.clone(),
+                id: action.id.clone(),
+            });
+        }
+        None => {}
     }
-
-    let Some(entry) = desktop(&item.app) else {
-        return;
-    };
-    let Some(Entry::Action(action)) = row(&open, index) else {
-        return;
-    };
-    let action = &entry.actions[action];
-
-    carry_out(Press::DesktopAction {
-        launch: action.launch.clone(),
-        id: action.id.clone(),
-    });
 }
 
 // closes the window a row stands for, and the menu with it; the other rows close nothing

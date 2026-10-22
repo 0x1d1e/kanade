@@ -24,12 +24,12 @@ use super::niri::format_number;
 use crate::atomic::{self, Mode as FileMode};
 use crate::niri_config::{Op, OutputId, Value};
 use crate::sources::json::Json;
+use crate::sources::niri as ipc;
 
 pub use work::{
     Monitor, State, edit, input, keep, recover_at_start, refresh, reset, revert, revert_on_exit,
     sync_inputs, typed, typed_position,
 };
-
 /// How long a trial waits for Keep before it reverts, and starts over at each further edit.
 pub const TRIAL_MS: u64 = 15_000;
 
@@ -911,8 +911,9 @@ pub trait Port {
     /// `Unanswered` when the command timed out or could not be checked (niri may have applied it).
     fn run(&self, output: &str, args: &[String]) -> Result<(), RunError>;
 
-    /// Writes `edits` to the output's block in one validated change.
-    fn write(&self, output: &Output, edits: &[&Edit]) -> Result<String, String>;
+    /// Writes `edits` to the output's block in one validated change: what to say of it, and the
+    /// hash the change left, which the page's Undo goes by (`Editor::last_change_hash`).
+    fn write(&self, output: &Output, edits: &[&Edit]) -> Result<(String, Option<String>), String>;
 
     /// Restores what the last `write` replaced.
     fn undo_write(&self) -> Result<String, String>;
@@ -969,11 +970,28 @@ pub struct Session {
 /// How a trial ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ended {
-    Kept(String),
+    // what the write said, and the hash it left: what the page's Undo must match (`undo_only`)
+    Kept(String, Option<String>),
     Reverted,
 
     // put back, but for an output left on because no other would be
     LeftOn(String),
+}
+
+/// What a Keep came to once niri said its word on the reload (`Controller::resolve_keep_reload`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Kept {
+    // niri reloaded the config: the trial is over
+    Confirmed,
+
+    // niri rejected it: the config is back, and what the revert of the output came to
+    Undone(Result<Ended, String>),
+
+    // niri rejected it and the config could not be put back: why, and what the revert came to
+    NotUndone(String, Result<(), String>),
+
+    // niri has not said: the trial is over, its file kept as a record of a change already written
+    Unconfirmed,
 }
 
 pub struct Controller {
@@ -1171,7 +1189,7 @@ impl Controller {
             .find(|output| output.name == session.output)
             .ok_or_else(|| format!("{} is no longer connected", session.output))?;
         let edits: Vec<&Edit> = session.edits.values().collect();
-        let said = port.write(output, &edits)?;
+        let (said, after) = port.write(output, &edits)?;
 
         // the config is written: mark the pending file saved, so a start does not put the monitor
         // back over a change that is already in the file. When writing the saved record fails,
@@ -1192,7 +1210,7 @@ impl Controller {
             delete_pending(&self.file);
         }
 
-        Ok(Ended::Kept(said))
+        Ok(Ended::Kept(said, after))
     }
 
     /// Writes the trial's changes to the config, all in one. The trial's recovery state (the
@@ -1219,6 +1237,43 @@ impl Controller {
     /// touching niri; it is kept only as a record of the change, not to put the monitor back.
     pub fn abandon_keep(&mut self) {
         self.session = None;
+    }
+
+    /// What became of the Keep once niri has said its word on the reload: the one rule for it,
+    /// taken by the worker's own confirmation and by the tests. `loaded` is `ConfigLoaded`'s state
+    /// as it moved, or none when niri said nothing in the window.
+    ///
+    /// A rejected config puts back what was there before the trial: the config by `undo_write`,
+    /// and the output by a revert, or, when the config cannot be put back, only by putting the
+    /// output back and keeping the file for a start to clear. A reload niri made ends the trial:
+    /// the file goes. One that never came leaves the file as a record of a change already in the
+    /// config, since the config holds the trial and the output already shows it.
+    pub fn resolve_keep_reload(
+        &mut self,
+        port: &dyn Port,
+        loaded: Option<ipc::ConfigLoadState>,
+    ) -> Kept {
+        match loaded {
+            Some(state) if state.last_failed => match port.undo_write() {
+                Ok(_) => Kept::Undone(self.revert(port)),
+                Err(why) => {
+                    let reverted = self.revert_compositor(port);
+                    self.abandon_keep();
+
+                    Kept::NotUndone(why, reverted)
+                }
+            },
+            Some(_) => {
+                self.confirm_keep();
+
+                Kept::Confirmed
+            }
+            None => {
+                self.abandon_keep();
+
+                Kept::Unconfirmed
+            }
+        }
     }
 
     /// Puts the output back as niri showed it before the trial, without clearing the session
@@ -1331,6 +1386,17 @@ impl Controller {
         let due = (gone && session.stuck.is_none()) || port.now() >= session.retry_at;
 
         due.then(|| self.revert(port))
+    }
+
+    /// Reverts the trial only while the config does not hold it, for a trial ended from outside the
+    /// page's own clock: Kanade exiting, or the worker dying. A Keep writes the config at once and
+    /// is confirmed up to `CONFIRM_TIMEOUT` later, so a `kept` session is one niri already applies:
+    /// putting the output back then would undo a change the user kept, while the config kept it.
+    /// `None` while there is no trial, or the config holds it.
+    pub fn revert_unkept(&mut self, port: &dyn Port) -> Option<Result<Ended, String>> {
+        self.unkept()?;
+
+        Some(self.revert(port))
     }
 
     /// The trial-timeout case of `revert_when_due`: the tests drive the clock to a deadline with it.

@@ -33,14 +33,17 @@ const BURST: Duration = Duration::from_secs(10);
 // it is read rather than glanced at, so it stays this many times as long as the OSD
 const LINGER: u32 = 3;
 
-// what each watcher has seen, and when each class last showed
+// what each watcher has seen, and what each class showed, by when
 #[derive(Default)]
 struct Seen {
     bluetooth: Bluetooth,
     charger: Charger,
     output: Output,
     wifi: Wifi,
-    shown: HashMap<Class, (Hardware, Instant)>,
+
+    // the events of each class shown within `BURST`, newest last: an A to B to A flap inside it
+    // shows A once, so the newest alone does not say whether A was just shown
+    shown: HashMap<Class, Vec<(Hardware, Instant)>>,
 }
 
 static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
@@ -89,15 +92,18 @@ fn run(step: impl FnOnce(&mut Seen, Instant) -> Option<Hardware>) {
 }
 
 impl Seen {
-    // whether `event` is not the one its class showed within `BURST`; remembers it
+    // whether `event` is not one its class showed within `BURST`; remembers it
     fn fresh(&mut self, event: &Hardware, now: Instant) -> bool {
-        let last = self.shown.get(&event.class);
+        let shown = self.shown.entry(event.class).or_default();
 
-        if last.is_some_and(|(last, at)| last == event && now.duration_since(*at) < BURST) {
+        // only what a burst still covers matters; the rest is dropped as it ages
+        shown.retain(|(_, at)| now.duration_since(*at) < BURST);
+
+        if shown.iter().any(|(last, _)| last == event) {
             return false;
         }
 
-        self.shown.insert(event.class, (event.clone(), now));
+        shown.push((event.clone(), now));
         true
     }
 }
@@ -488,5 +494,17 @@ mod tests {
         assert!(seen.fresh(&other, ago(5, now)));
         assert!(!seen.fresh(&event, now));
         assert!(seen.fresh(&event, now + BURST));
+
+        // A to B to A inside one burst is still one A
+        let mut flap = Seen::default();
+        let next = Hardware {
+            line: String::from("Cafe"),
+            ..event.clone()
+        };
+
+        assert!(flap.fresh(&event, now));
+        assert!(flap.fresh(&next, now));
+        assert!(!flap.fresh(&event, now));
+        assert!(flap.fresh(&event, now + BURST));
     }
 }

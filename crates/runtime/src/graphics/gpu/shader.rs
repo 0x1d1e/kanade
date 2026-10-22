@@ -13,6 +13,14 @@ use vello::wgpu::{
 // the runtime's vertex half, which also gives wgsl shaders their inputs
 const VERTEX: &str = include_str!("shader.wgsl");
 
+// what a shader that could not be read draws: nothing, as if the rectangle had no shader
+const EMPTY: &str = "
+@fragment
+fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+}
+";
+
 const WGSL_INPUTS: &str = "
 @group(0) @binding(0) var<uniform> size: vec2<f32>;
 @group(0) @binding(1) var<uniform> time: f32;
@@ -38,15 +46,22 @@ pub struct Shader {
 }
 
 impl Shader {
-    // .glsl and .frag files are glsl, anything else is wgsl
+    // .glsl and .frag files are glsl, anything else is wgsl; a file that cannot be read draws
+    // nothing, since a shader the user deleted or broke must cost its rectangle, not the shell
     pub fn load(device: &Device, path: &Path) -> Self {
-        let source = fs::read_to_string(path).expect("failed to read shader");
+        let source = match fs::read_to_string(path) {
+            Ok(source) => source,
+
+            Err(error) => {
+                eprintln!("kanade: failed to read shader {}: {error}", path.display());
+
+                return Self::blank(device);
+            }
+        };
 
         let extension = path.extension().and_then(|extension| extension.to_str());
 
         let is_glsl = matches!(extension, Some("glsl" | "frag"));
-
-        let vertex = module(device, ShaderSource::Wgsl(Cow::Borrowed(VERTEX)));
 
         let fragment = if is_glsl {
             let shader = format!("{GLSL_INPUTS}{source}");
@@ -65,6 +80,20 @@ impl Shader {
 
             module(device, ShaderSource::Wgsl(Cow::Owned(shader)))
         };
+
+        Self::built(device, fragment)
+    }
+
+    // a shader that draws nothing, for a file that could not be read
+    fn blank(device: &Device) -> Self {
+        Self::built(
+            device,
+            module(device, ShaderSource::Wgsl(Cow::Borrowed(EMPTY))),
+        )
+    }
+
+    fn built(device: &Device, fragment: ShaderModule) -> Self {
+        let vertex = module(device, ShaderSource::Wgsl(Cow::Borrowed(VERTEX)));
 
         let inputs = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: None,

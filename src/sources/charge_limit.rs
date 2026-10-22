@@ -3,18 +3,21 @@
 //! (`ChargeThresholdEnabled`) and where (`ChargeEndThreshold`), and `EnableChargeThreshold` turns it
 //! on or off. UPower writes the kernel's files; Kanade never does.
 //!
-//! Its thread reads the device once, then again on each of the device's property changes. Turning
+//! Its thread reads the device once, then again on each of the device's property changes; while
+//! UPower names no battery it asks again, ever less often, and says so in `kanade status`. Turning
 //! it on or off is asked on a thread of its own, since UPower may take a moment, so neither the
 //! Controls switch nor `kanade battery limit` waits on the draw thread; a refusal shows on the
 //! switch, with UPower's reason, and `kanade` is answered once UPower has.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
+use std::time::Duration;
 
 use kanade_runtime::service::Service;
 use zbus::blocking::Connection;
 
 use super::osd::UPOWER;
+use crate::backoff::Backoff;
 use crate::bus::{Bus, Value};
 use crate::later::Later;
 
@@ -24,6 +27,11 @@ const ROOT: &str = "/org/freedesktop/UPower";
 
 // UPower's Type for a battery
 const BATTERY: f64 = 2.0;
+
+// the wait before asking again for a battery, doubled at each try up to `LONGEST`: UPower may still
+// be starting, and a machine may have none at all
+const FIRST: Duration = Duration::from_secs(1);
+const LONGEST: Duration = Duration::from_secs(60);
 
 // the serials of the asks, so an older one's answer never takes a newer one's place
 static ISSUED: AtomicU64 = AtomicU64::new(0);
@@ -255,24 +263,46 @@ fn publish(read: ChargeLimit) {
 
 /*
  * runs on its own thread for good: the battery's limit read at start and on each change UPower
- * announces; with no battery UPower knows, it says so and ends
+ * announces. With no battery it asks again after a backoff, as UPower may still be starting or a
+ * battery turn up, and says so while it does; should the bus itself go away, it says that too and
+ * ends, and `supervise` keeps the stop for `kanade status`
  */
 pub fn follow() {
     let bus = Bus::system();
+    let mut backoff = Backoff::new(FIRST, LONGEST);
+    let mut said = false;
 
-    let Some(device) = battery(bus) else {
-        publish(ChargeLimit::default());
-        return;
-    };
+    loop {
+        let Some(device) = battery(bus) else {
+            publish(ChargeLimit::default());
 
-    // watched before the first read, so no change between them is missed
-    let changes = bus.signals_from(&device, PROPERTIES, "PropertiesChanged");
+            if !said {
+                eprintln!("kanade: charge limit: UPower names no battery, asking again");
+                said = true;
+            }
 
-    publish(read(&device));
+            thread::sleep(backoff.failed());
+            continue;
+        };
 
-    for change in changes {
-        if change.arguments().first().map(Value::text) == Some(DEVICE) {
-            publish(read(&device));
+        if said {
+            eprintln!("kanade: charge limit: UPower names a battery again");
+            said = false;
+        }
+
+        backoff.reset();
+
+        // watched before the first read, so no change between them is missed
+        let changes = bus.signals_from(&device, PROPERTIES, "PropertiesChanged");
+
+        publish(read(&device));
+
+        // a battery that has gone away ends the subscription, and is looked for again; the bus
+        // going away leaves none to find, which the next look says
+        for change in changes {
+            if change.arguments().first().map(Value::text) == Some(DEVICE) {
+                publish(read(&device));
+            }
         }
     }
 }

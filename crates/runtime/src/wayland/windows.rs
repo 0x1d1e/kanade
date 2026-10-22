@@ -5,11 +5,11 @@ use wayland_client::{
 
 use crate::changes::{self, Reads};
 use crate::graphics::Gpu;
-use crate::input::Pointer;
+use crate::input::{Pointer, focus, released};
 use crate::ui_scale;
 use crate::unpoisoned::MutexExt;
 use crate::window::OPEN;
-use crate::{frame, service};
+use crate::{Modifiers, frame, service};
 
 use super::{
     WaylandState,
@@ -202,6 +202,9 @@ impl WaylandState {
             window.role.wl_surface() == surface && matches!(window.role, Role::Normal { .. })
         });
 
+        // a window that is gone takes the keyboard with it, whether or not the compositor says so
+        self.forget_focus(surface);
+
         let mut open = OPEN.locked();
         for window in &self.windows {
             if window.role.wl_surface() == surface {
@@ -223,5 +226,25 @@ impl WaylandState {
             crate::graphics::release_pool();
             crate::allocator::trim_heap();
         }
+    }
+
+    /*
+     * the same teardown the keyboard's leave does, for a window that closes instead: until the
+     * compositor sends `wl_keyboard.leave`, keys would still go to the closed window's focused text
+     * input first and be swallowed by it, and the input method would stay enabled with a stale caret
+     */
+    fn forget_focus(&mut self, surface: &WlSurface) {
+        if self.keyboard_focus.as_ref() != Some(surface) {
+            return;
+        }
+
+        self.keyboard_focus = None;
+        self.modifiers = Modifiers::default();
+
+        focus::clear();
+        released::send();
+
+        // the compositor's input method has no surface with the keyboard left, so it is disabled
+        self.sync_ime();
     }
 }

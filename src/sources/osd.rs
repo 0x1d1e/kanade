@@ -27,7 +27,7 @@ use kanade_runtime::{MutexExt, service::Service};
 
 use super::seat;
 use super::wake::{Announcer, Pace, Wakes};
-use crate::bus::{Bus, Value};
+use crate::bus::{Argument, Bus, Value};
 use crate::config;
 use crate::island::activity::{
     Activity, Detail, Device, Id, Interrupt, Kind, Layout, Lifetime, Mode, Priority, Scope, Volume,
@@ -199,6 +199,19 @@ pub const UPOWER: &str = "org.freedesktop.UPower";
 const KBD_BACKLIGHT: &str = "/org/freedesktop/UPower/KbdBacklight";
 const KBD_INTERFACE: &str = "org.freedesktop.UPower.KbdBacklight";
 
+// the unique name UPower runs as, empty when none
+fn owner_of(bus: &Bus) -> String {
+    bus.call(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "GetNameOwner",
+        &[Argument::from(UPOWER)],
+    )
+    .text()
+    .to_owned()
+}
+
 // a level of the keyboard's backlight out of the highest, as a percent
 fn keyboard_percent(level: f64, highest: f64) -> Option<u8> {
     (highest > 0.0).then(|| (level.clamp(0.0, highest) * 100.0 / highest).round() as u8)
@@ -207,10 +220,14 @@ fn keyboard_percent(level: f64, highest: f64) -> Option<u8> {
 /*
  * runs on its own thread for good, or until the system bus or the backlight is gone; waits on
  * UPower, so it never wakes on its own. Each change shows, from its key, which only the firmware
- * hears on many laptops, or from any program
+ * hears on many laptops, or from any program. A machine with no keyboard backlight ends it at
+ * once: nothing is wrong, but the feature is silently absent, so `status` notes it
  */
 pub fn follow_keyboard() {
     let bus = Bus::system();
+
+    // the unique name UPower runs as, so no other sender's signal shows a level
+    let mut owner = owner_of(&bus);
 
     // subscribed before the read, so no change falls between them
     let signals = bus.signals(KBD_INTERFACE, "BrightnessChanged");
@@ -225,10 +242,24 @@ pub fn follow_keyboard() {
         .number();
 
     if highest <= 0.0 {
+        supervise::note(
+            "kbd-backlight",
+            String::from("no keyboard backlight on this machine, so its level never shows"),
+        );
         return;
     }
 
     for signal in signals.filter(|signal| signal.path() == KBD_BACKLIGHT) {
+        // anyone on the bus can send this signal, so only the one UPower runs as counts, asked
+        // again when another speaks: a UPower that restarted is followed too
+        if signal.sender() != owner {
+            owner = owner_of(&bus);
+        }
+
+        if signal.sender() != owner {
+            continue;
+        }
+
         let level = signal.arguments().first().map_or(-1.0, Value::number);
 
         if let Some(percent) = keyboard_percent(level, highest) {

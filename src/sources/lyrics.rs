@@ -332,7 +332,23 @@ pub fn parse(text: &str) -> Vec<Line> {
         .collect()
 }
 
-// the text of a line without its word-by-word stamps, like `<00:12.30>`, and cut to a sane length
+// whether `letter` is an invisible format character (Unicode Cf): zero-width, joiners, direction
+// marks and the like, which could reorder or hide what a line says
+fn is_format(letter: char) -> bool {
+    matches!(letter,
+        '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}'
+        | '\u{890}'..='\u{891}' | '\u{8e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+        | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}'
+        | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{110bd}' | '\u{110cd}'
+        | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}'
+        | '\u{e0001}' | '\u{e0020}'..='\u{e007f}')
+}
+
+/*
+ * the text of a line without its word-by-word stamps, like `<00:12.30>`, without control or format
+ * characters, which a server's answer could otherwise use to reorder or hide it, and cut to a sane
+ * length
+ */
 fn words(text: &str) -> String {
     let mut plain = String::new();
     let mut rest = text;
@@ -352,7 +368,12 @@ fn words(text: &str) -> String {
     }
     plain.push_str(rest);
 
-    plain.trim().chars().take(LINE_CHARS).collect()
+    plain
+        .trim()
+        .chars()
+        .filter(|letter| !letter.is_control() && !is_format(*letter))
+        .take(LINE_CHARS)
+        .collect()
 }
 
 // `mm:ss`, `mm:ss.x`, `mm:ss.xx` or `mm:ss.xxx` (also `:` before the fraction), in milliseconds
@@ -844,6 +865,14 @@ mod tests {
                 (59.5, "twice"),
             ]
         );
+    }
+
+    // a line is drawn as it reads: no control or bidi character reorders or hides it
+    #[test]
+    fn a_line_keeps_no_control_or_format_character() {
+        let line = &parse("[00:01.00]a\u{202e}b\u{1b}[31m c\u{200b}d\n")[0].text;
+
+        assert_eq!(line, "ab[31m cd");
     }
 
     #[test]

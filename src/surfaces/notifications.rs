@@ -352,17 +352,36 @@ pub fn fit() {
     let visit = IslandService::read().visit();
     let open = Focus::read().of(visit, false).open;
 
-    let shapes = |open: &[u64]| -> Vec<Shape> {
-        match *Daemon::read() {
-            Daemon::Running => rows(open).iter().map(Entry::shape).collect(),
-            Daemon::Starting | Daemon::Conflict(_) => Vec::new(),
+    /*
+     * the notifications are read and turned into cards once, and the rows are grouped from those:
+     * the body asks for the list with the stacks closed and with the ones this visit opened, and
+     * reading the daemon twice for the same list held every other Surface's fit behind both
+     */
+    let (fresh, now) = match *Daemon::read() {
+        Daemon::Running => {
+            let cards = cards();
+            let now = shapes(&cards, &open);
+
+            let fresh = match open.is_empty() {
+                true => asks(&now),
+                false => asks(&shapes(&cards, &[])),
+            };
+
+            (fresh, asks(&now))
+        }
+        Daemon::Starting | Daemon::Conflict(_) | Daemon::NoBus => {
+            let none = Vec::new();
+
+            (asks(&none), asks(&none))
         }
     };
 
-    let fresh = asks(&shapes(&[]));
-    let now = asks(&shapes(&open));
-
     super::ask(Surface::Notifications, fresh, Some((visit, now)));
+}
+
+// the shapes the list has with `open`'s stacks showing
+fn shapes(cards: &[Card], open: &[u64]) -> Vec<Shape> {
+    rows_of(cards, open).iter().map(Entry::shape).collect()
 }
 
 // at start: the body follows the notifications and the stacks open from now on
@@ -539,9 +558,14 @@ fn group(app: &str) -> u64 {
  * newest, or a head and each of them while its key is in `open`; one alone is a card
  */
 fn rows(open: &[u64]) -> Vec<Entry> {
+    rows_of(&cards(), open)
+}
+
+// the rows `cards` make, the stacks in `open` showing their own cards under their head
+fn rows_of(cards: &[Card], open: &[u64]) -> Vec<Entry> {
     let mut apps: Vec<Vec<Card>> = Vec::new();
 
-    for card in cards() {
+    for card in cards.iter().cloned() {
         match apps
             .iter_mut()
             .find(|cards| cards.first().is_some_and(|first| first.app == card.app))
@@ -615,7 +639,9 @@ pub fn surface(monitor: &str, open: bool, visit: u64, held: bool, dnd: bool) -> 
             "Stop it and restart Kanade to see notifications here",
         )),
         // the daemon gets the bus name within a moment of starting, so nothing says anything yet
-        Daemon::Starting => Box::new(Rectangle::new().width(width()).height(STATE.min(room()))),
+        Daemon::Starting | Daemon::NoBus => {
+            Box::new(Rectangle::new().width(width()).height(STATE.min(room())))
+        }
         Daemon::Running if cards.is_empty() => Box::new(state(
             Icon::Bell.draw(28.0),
             "No notifications",

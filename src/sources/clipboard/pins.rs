@@ -265,7 +265,7 @@ pub fn read(path: &Path) -> (Vec<Content>, Store) {
 
     match frames(&bytes) {
         Ok(mut frames) => {
-            let pins = frames.by_ref().collect();
+            let pins = within_caps(&mut frames);
 
             if frames.damaged() {
                 eprintln!("kanade: the clipboard pins file is damaged, kept as a .bak");
@@ -283,6 +283,32 @@ pub fn read(path: &Path) -> (Vec<Content>, Store) {
             (Vec::new(), Store::Damaged)
         }
     }
+}
+
+/*
+ * the pins `frames` holds, as far as the pins' caps allow: at most `PINS` and `PIN_BYTES`, which is
+ * what `Clipboard::adopt` keeps. The caps are enforced here, while reading, since a store of legal
+ * size can hold a million one-byte entries, and reading them all first would hold them all
+ */
+fn within_caps(frames: &mut Frames<'_>) -> Vec<Content> {
+    let mut pins: Vec<Content> = Vec::new();
+    let mut bytes = 0;
+
+    for content in frames.by_ref() {
+        let size = content.len();
+
+        if pins.len() >= PINS || bytes + size > PIN_BYTES {
+            // a file with more than the caps allow is not one Kanade wrote: what it holds past
+            // them is left unread, and the file is kept aside rather than dropped on the next save
+            frames.lose();
+            break;
+        }
+
+        bytes += size;
+        pins.push(content);
+    }
+
+    pins
 }
 
 // the damaged store to `<path>.bak`, owner-only, over an older backup: the remains of the latest damage
@@ -679,18 +705,30 @@ mod tests {
         assert_eq!(decoded(&bytes), [text("kept")]);
     }
 
+    // a store as large as one may be, of entries of one byte each: reading it makes at most the
+    // pins the caps allow, never one String per entry
     #[test]
-    fn a_hostile_count_of_tiny_entries_is_read_lazily() {
-        // a store as large as one may be, of entries of one byte each
+    fn a_hostile_count_of_tiny_entries_is_read_within_the_caps() {
         let mut bytes = b"kanade-clipboard-pins 1\n".to_vec();
         while bytes.len() + 9 < FILE_BYTES {
             bytes.extend_from_slice(b"text 1\nx\n");
         }
 
-        // the reader takes only what it needs; here the caps are the history's to apply
-        let taken: Vec<Content> = frames(&bytes).unwrap().take(PINS + 1).collect();
+        let mut store = frames(&bytes).unwrap();
+        let taken = within_caps(&mut store);
 
-        assert_eq!(taken.len(), PINS + 1);
+        assert_eq!(taken.len(), PINS);
+        assert!(store.damaged());
+
+        // and such a file is kept aside, not dropped on the next save
+        let dir = temporary("hostile");
+        let path = dir.join("clipboard-pins");
+
+        fs::write(&path, &bytes).unwrap();
+
+        let (pins, store) = read(&path);
+        assert_eq!(pins.len(), PINS);
+        assert_eq!(store, Store::Damaged);
     }
 
     // the largest store the caps allow is not refused as oversized

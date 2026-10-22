@@ -577,13 +577,13 @@ pub(crate) fn lay(monitor: &Monitor, merged: bool) -> Laid {
     let extra = grow * (most - 1.0);
 
     // where along the row at rest the pointer is, so the icon that grows most is the one under it
-    let at = pointer.map(|pointer| {
+    let at = pointer.zip(pointer_at(&monitor.name)).map(|(_, x)| {
         under(
             &pieces,
             size,
             canvas,
             along,
-            pointer.x - rest_left,
+            x - rest_left,
             rest_left,
             extra,
         )
@@ -786,18 +786,12 @@ pub(crate) fn between(
     let extra = pointer.map_or(0.0, |pointer| pointer.grow(now))
         * (config.magnify.most() - 1.0)
         * unfold.min(1.0);
-    let (grown_before, grown_after) = pointer.map_or_else(
+    let (grown_before, grown_after) = pointer.zip(pointer_at(&monitor.name)).map_or_else(
         || (vec![1.0; wings.cut], vec![1.0; pieces.len() - wings.cut]),
-        |pointer| {
+        |(_, x)| {
             (
-                swell(&pieces[..wings.cut], size, body.x - pointer.x, extra, true),
-                swell(
-                    &pieces[wings.cut..],
-                    size,
-                    pointer.x - body.right(),
-                    extra,
-                    false,
-                ),
+                swell(&pieces[..wings.cut], size, body.x - x, extra, true),
+                swell(&pieces[wings.cut..], size, x - body.right(), extra, false),
             )
         },
     );
@@ -2358,9 +2352,6 @@ impl Service for Pointers {
 }
 
 struct Pointer {
-    // across the window, the last place the pointer was, kept as the icons shrink back after it
-    x: f32,
-
     inside: bool,
 
     /*
@@ -2389,7 +2380,6 @@ impl Pointer {
         grow.damp(CRITICAL);
 
         Self {
-            x: 0.0,
             inside: false,
             growing: false,
             grow,
@@ -2565,25 +2555,48 @@ pub fn forget_gone() {
         Pointers::write().by.retain(|monitor, _| here(monitor));
     }
 
+    if !POINTED.locked().keys().all(here) {
+        POINTED.locked().retain(|monitor, _| here(monitor));
+    }
+
     DRAWN.locked().retain(|monitor, _| here(monitor));
     context_menu::forget_gone(&monitors);
 }
 
+// where the pointer is on this output's Dock, kept without a write while the icons still grow to it
+static POINTED: LazyLock<Mutex<HashMap<String, f32>>> = LazyLock::new(Default::default);
+
+/*
+ * the pointer moved to `x` on this output's Dock. The place is kept here, out of `Pointers`, so a
+ * move writes nothing a view reads: the icons grow to it as it is, and `Pointers` is written only
+ * when they start growing, which draws the Dock
+ */
 fn pointed(monitor: &str, x: f32) {
     // without magnification nothing follows the pointer along the Dock
     if config::get().magnify == Magnify::Off {
         return;
     }
 
-    let unchanged = |pointers: &Pointers| {
+    let (growing, inside) = {
+        let pointers = Pointers::read();
+
         pointers
             .by
             .get(monitor)
-            .is_some_and(|pointer| pointer.x == x && pointer.growing == pointer.inside)
+            .map_or((false, false), |pointer| (pointer.growing, pointer.inside))
     };
 
-    if unchanged(&Pointers::read()) {
-        return;
+    {
+        let mut pointed = POINTED.locked();
+        let same = pointed.get(monitor) == Some(&x);
+
+        // the last place stays after the pointer leaves, so the icons shrink back toward it
+        pointed.insert(monitor.to_owned(), x);
+
+        // growing already, or nowhere to grow from, a move changes nothing a window draws
+        if (same && growing) || !inside {
+            return;
+        }
     }
 
     let animation_speed = config::get().animation_speed;
@@ -2597,15 +2610,22 @@ fn pointed(monitor: &str, x: f32) {
         .entry(monitor.to_owned())
         .or_insert_with(Pointer::new);
 
-    pointer.x = x;
-
-    if pointer.inside && !pointer.growing {
-        pointer.growing = true;
-        pointer.retime(now);
-        pointer
-            .grow
-            .to([100.0], config::scale_animation(GROW, animation_speed), now);
+    // from the first move after the pointer comes in, as its x is only known then
+    if pointer.growing || !pointer.inside {
+        pointers.quiet();
+        return;
     }
+
+    pointer.growing = true;
+    pointer.retime(now);
+    pointer
+        .grow
+        .to([100.0], config::scale_animation(GROW, animation_speed), now);
+}
+
+// where the pointer last was on this output's Dock, across its window, while it is there
+fn pointer_at(monitor: &str) -> Option<f32> {
+    POINTED.locked().get(monitor).copied()
 }
 
 #[cfg(test)]

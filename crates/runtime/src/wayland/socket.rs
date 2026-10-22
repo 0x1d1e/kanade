@@ -1,52 +1,134 @@
-use std::fs::{self, Permissions};
+use std::fs::{self, File, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
+use std::sync::{LazyLock, OnceLock};
+use std::thread;
 use std::time::Duration;
 
 use smithay_client_toolkit::reexports::calloop::{
-    Interest, LoopHandle, Mode, PostAction, generic::Generic,
+    Interest, LoopHandle, Mode, PostAction, generic::Generic, ping::Ping,
 };
 
 use crate::ipc::{IpcCall, IpcHandlers, IpcReply, ipc_socket};
+use crate::queue::Queue;
 
 use super::WaylandState;
+
+// the lock that keeps a second shell of the session out, held until this process exits
+static CLAIM: OnceLock<File> = OnceLock::new();
+
+// calls read off the loop's thread, waiting for it to take them
+static READY: LazyLock<Queue<(IpcCall, IpcReply)>> = LazyLock::new(Queue::new);
+
+// the loop, woken when a call is ready
+static WAKE: OnceLock<Ping> = OnceLock::new();
 
 pub fn insert(handle: &LoopHandle<'static, WaylandState>, handlers: IpcHandlers) {
     let source = Generic::new(listen(), Interest::READ, Mode::Level);
 
     handle
-        .insert_source(source, move |_, listener, state| {
-            // a failed call only loses that call, the shell keeps running
+        .insert_source(source, move |_, listener, _| {
+            // a failed call only loses that call, the shell keeps running; the call itself is
+            // read off this thread, since a client that never finishes sending would otherwise
+            // freeze drawing, input and frame callbacks for its whole read timeout
             if let Ok((stream, _)) = listener.accept() {
-                answer(stream, &handlers);
+                request(stream);
+            }
+
+            Ok(PostAction::Continue)
+        })
+        .expect("failed to insert ipc socket");
+
+    let (ping, source) = smithay_client_toolkit::reexports::calloop::ping::make_ping()
+        .expect("failed to create ipc wake ping");
+
+    handle
+        .insert_source(source, move |(), _, state| {
+            for (call, reply) in taken() {
+                handlers.run(&call, reply);
 
                 // a `kanade ui` call was queued for the windows, which this has
                 state.serve_ui();
 
                 state.request_frames();
             }
-
-            Ok(PostAction::Continue)
         })
-        .expect("failed to insert ipc socket");
+        .expect("failed to insert ipc wake ping");
+
+    // a call read before this point is taken by the first wake, which this asks for
+    let _ = WAKE.set(ping.clone());
+
+    ping.ping();
+}
+
+/*
+ * reads one call on a thread of its own and hands it to the loop: a client that sends nothing, or
+ * drips its call, costs the shell a thread and its own deadline, never a frame
+ */
+fn request(stream: UnixStream) {
+    thread::spawn(move || {
+        // a client that never finishes sending must not hold this thread either
+        if stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .is_err()
+        {
+            return;
+        }
+
+        let Ok(call) = IpcCall::read(&stream) else {
+            return;
+        };
+
+        READY.send((call, IpcReply::new(stream)));
+
+        if let Some(ping) = WAKE.get() {
+            ping.ping();
+        }
+    });
+}
+
+// what the threads read since the loop last looked
+fn taken() -> Vec<(IpcCall, IpcReply)> {
+    let ready = READY.receiver();
+
+    let mut calls = Vec::new();
+
+    while let Ok(call) = ready.try_recv() {
+        calls.push(call);
+    }
+
+    calls
 }
 
 fn listen() -> UnixListener {
     let path = ipc_socket();
 
-    // a socket that still answers belongs to another running shell
+    // a socket that still answers belongs to a shell of an older build, which holds no lock
     if UnixStream::connect(&path).is_ok() {
         panic!("failed to listen: kanade is already running");
     }
 
-    // what is left is a leftover file from a shell that did not exit cleanly
-    let _ = fs::remove_file(&path);
+    claim(&path);
 
-    let listener = UnixListener::bind(&path).expect("failed to create ipc socket");
+    /*
+     * bound under a name of its own and renamed into place: the socket at the path never holds the
+     * umask's mode, which would let another user connect before it is made private
+     */
+    let staging = path.with_extension("binding");
+
+    let _ = fs::remove_file(&staging);
+
+    let listener = UnixListener::bind(&staging).expect("failed to create ipc socket");
 
     // whoever can connect can act on the shell (`kanade ui` presses and types), so only its user can
-    fs::set_permissions(&path, Permissions::from_mode(0o600))
+    fs::set_permissions(&staging, Permissions::from_mode(0o600))
         .expect("failed to make ipc socket private");
+
+    // what is left at the path is the socket of a shell that did not exit cleanly
+    let _ = fs::remove_file(&path);
+
+    fs::rename(&staging, &path).expect("failed to place ipc socket");
 
     // the event loop only wakes this up when a client is waiting, so accept must never block
     listener
@@ -56,17 +138,86 @@ fn listen() -> UnixListener {
     listener
 }
 
-fn answer(stream: UnixStream, handlers: &IpcHandlers) {
-    // a client that never finishes sending must not freeze the shell
-    let timeout = Some(Duration::from_secs(1));
+/*
+ * one shell per session: the lock is held for as long as this process runs, so two shells starting
+ * together cannot both claim the socket, and neither removes the other's live one
+ */
+fn claim(path: &Path) {
+    let lock = path.with_extension("lock");
 
-    if stream.set_read_timeout(timeout).is_err() {
-        return;
+    let file = File::create(&lock).expect("failed to create ipc lock");
+
+    file.try_lock()
+        .expect("failed to listen: kanade is already running");
+
+    // kept until the process exits, which is what holds the lock
+    let _ = CLAIM.set(file);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+
+    /*
+     * the loop accepted the stream and answered at once, while the call itself is still being
+     * read on another thread: a client that sends nothing used to freeze every frame, key and
+     * pointer event for the whole read timeout, once per connect
+     */
+    #[test]
+    fn a_client_that_sends_nothing_does_not_block_the_loop() {
+        let (shell, client) = UnixStream::pair().unwrap();
+
+        let start = Instant::now();
+
+        request(shell);
+
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "accepting waited {:?} on a client that sends nothing",
+            start.elapsed()
+        );
+
+        // nothing was handed to the loop, and the reader is still waiting on the client
+        assert!(taken().is_empty());
+
+        // the client's end stays open, so the reader waits rather than seeing a call end early
+        std::mem::forget(client);
     }
 
-    let Ok(call) = IpcCall::read(&stream) else {
-        return;
-    };
+    // a call that arrives whole reaches the loop
+    #[test]
+    fn a_call_reaches_the_loop() {
+        let (shell, mut client) = UnixStream::pair().unwrap();
 
-    handlers.run(&call, IpcReply::new(stream));
+        request(shell);
+
+        IpcCall::new("describe", &[String::from("dock")])
+            .write(&mut client)
+            .unwrap();
+
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let start = Instant::now();
+
+        let calls = loop {
+            let calls = taken();
+
+            if !calls.is_empty() {
+                break calls;
+            }
+
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the call never reached the loop"
+            );
+
+            thread::sleep(Duration::from_millis(5));
+        };
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.name, "describe");
+        assert_eq!(calls[0].0.arguments, ["dock"]);
+    }
 }

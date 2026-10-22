@@ -58,6 +58,9 @@ const SESSION: &str = "org.freedesktop.login1.Session";
 // the bus itself, as the sender of an error it answers in logind's place
 const BUS: &str = "org.freedesktop.DBus";
 
+// how much of what logind said is kept, which is room for a whole sentence
+const SAID: usize = 120;
+
 /*
  * the bus's errors for a call it never delivered, beside those starting a logind that could not
  * start, its own or systemd's it passes on; any other of its own, like NoReply, may come after
@@ -714,12 +717,18 @@ fn never_carried_out(error: &zbus::Error) -> bool {
     }
 }
 
-// logind's own words for a refusal, else zbus's
+/*
+ * logind's own words for a refusal, else zbus's, cleaned and cut short before they are kept: any
+ * program can put its words in an inhibitor's reason, which logind repeats, and the Surface draws
+ * them. Never logged
+ */
 fn said(error: &zbus::Error) -> String {
-    match error {
+    let text = match error {
         zbus::Error::MethodError(_, Some(description), _) => description.clone(),
         error => error.to_string(),
-    }
+    };
+
+    warning::clean(&text, SAID)
 }
 
 /*
@@ -1332,6 +1341,25 @@ mod tests {
         island.withdraw(&failed_id(), now);
         island.withdraw(&Id::new(Kind::Battery, "low"), now);
         island.set_niri(None, false, now);
+    }
+
+    /*
+     * logind repeats an inhibiting program's own words, and any program can inhibit: what it says
+     * is cleaned and cut short before the Surface draws it, and never logged
+     */
+    #[test]
+    fn a_refusal_in_another_programs_words_is_cleaned() {
+        let (bus, _) = heard(Some((
+            None,
+            "org.freedesktop.login1.BlockedByInhibitorLock",
+            "no\u{202e}pe \u{1b}[31mblocked\nby a burner",
+        )));
+        let refused = manager(&bus, "Reboot").unwrap_err();
+        let Failure::Refused(why) = refused else {
+            panic!("logind's own error is a refusal");
+        };
+
+        assert_eq!(why, "nope [31mblocked by a burner");
     }
 
     // a session path logind could not take is refused, never sent and so never latching
