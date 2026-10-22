@@ -89,6 +89,14 @@ pub fn titles() -> Vec<Entry> {
     Held::read().entries.clone()
 }
 
+/*
+ * the one `Held` is the process's, so a test that writes it is another test's input: the
+ * Launcher's ranking reads these titles, and a write landing between two of its calls ranks them
+ * again. Every test that writes them takes this turn, and so does a test that reads them twice
+ */
+#[cfg(test)]
+pub(super) static TITLES_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // the windows of niri's `Windows` reply, by title, each with its app as the Dock knows it
 fn entries(reply: &Json, running: &[Running]) -> Vec<Entry> {
     let Some(windows) = reply.get("Windows").and_then(Json::as_array) else {
@@ -198,6 +206,7 @@ pub fn focus(id: u64) -> String {
 mod tests {
     use super::*;
     use crate::sources::json;
+    use kanade_runtime::MutexExt;
 
     // niri's reply is outside input: an entry without an id is skipped, a missing title or app id is empty
     #[test]
@@ -235,6 +244,8 @@ mod tests {
     // a slow answer to an earlier refresh came last and replaced the newer titles
     #[test]
     fn an_answer_to_an_older_refresh_does_not_replace_a_newer_one() {
+        let _turn = TITLES_TURN.locked();
+
         let older = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
         let newer = ASKED.fetch_add(1, Ordering::SeqCst) + 1;
 

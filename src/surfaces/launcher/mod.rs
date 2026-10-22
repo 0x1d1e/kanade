@@ -2455,9 +2455,15 @@ mod tests {
     /*
      * the ranking is kept between frames, so what it answers has to follow its inputs: the same
      * inputs answer the same and copy nothing, and an app that arrives or leaves ranks again
+     *
+     * Its inputs are read from Services the process shares, and the window titles among them are
+     * written by a test in this module's own tree: the turn keeps that write out of these calls,
+     * which read the titles as equal between them
      */
     #[test]
     fn the_ranking_follows_its_inputs() {
+        let _turn = windows::TITLES_TURN.locked();
+
         let (visit, rec) = (7, Rec::Idle);
         let one_app = [app("alpha")];
 
