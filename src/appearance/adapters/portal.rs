@@ -205,6 +205,12 @@ mod tests {
         );
     }
 
+    // the base portal holds the session's screens, casts and dialogs: only the two frontends restart
+    #[test]
+    fn restarting_a_portal_never_restarts_the_base_one() {
+        assert!(![GTK_UNIT, GNOME_UNIT].contains(&"xdg-desktop-portal.service"));
+    }
+
     #[test]
     fn restarts_once_for_a_burst_and_only_after_a_change() {
         let start = Instant::now();

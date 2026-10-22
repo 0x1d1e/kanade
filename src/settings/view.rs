@@ -1253,7 +1253,7 @@ fn label(
 
     if shown
         .iter()
-        .any(|setting| setting.restart && settings.pending(setting.key))
+        .any(|setting| setting.tail.restart && settings.pending(setting.key))
     {
         marks.push(Box::new(restart(roles)));
     }
@@ -1276,7 +1276,7 @@ fn label(
 
     let detail = shown
         .iter()
-        .find(|setting| setting.hint.is_some())
+        .find(|setting| setting.tail.hint.is_some())
         .filter(|_| settings.inspect)
         .map(|setting| capitalized(setting.help));
 
@@ -1586,7 +1586,7 @@ fn control(
         Kind::Path(_) | Kind::Text(_) | Kind::Node(_) => (
             Box::new(field_with_hint(
                 input(setting),
-                setting.example.unwrap_or("").trim_matches('"'),
+                setting.tail.example.unwrap_or("").trim_matches('"'),
                 roles,
                 move |text| {
                     let text = text.trim();
@@ -3171,8 +3171,8 @@ fn restart(roles: &ThemeRoles) -> Text {
 
 // the line a setting shows under its name, saying when it takes a restart
 fn help(setting: &Setting) -> String {
-    let mut help = capitalized(setting.hint.unwrap_or(setting.help));
-    if setting.restart {
+    let mut help = capitalized(setting.tail.hint.unwrap_or(setting.help));
+    if setting.tail.restart {
         help.push_str(". Takes a restart");
     }
 

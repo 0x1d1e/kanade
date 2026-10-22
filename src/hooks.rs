@@ -21,7 +21,7 @@ use kanade_runtime::MutexExt;
 use toml::Value;
 
 use crate::appearance::child::{self, Ran};
-use crate::config::{self, Field, Kind, Range, Setting};
+use crate::config::{self, Field, Kind, Range, Setting, Tail};
 use crate::modules;
 use crate::sources::wake::{self, SETPRIV};
 
@@ -218,14 +218,16 @@ macro_rules! hook {
             key: $key,
             label: $label,
             help: $help,
-            hint: None,
             kind: Kind::Argv(Field {
                 get: |config| config.hooks.argv[Event::$event as usize].clone(),
                 set: |config, argv| config.hooks.argv[Event::$event as usize] = argv,
             }),
-            example: Some("[\"notify-send\", \"Kanade\", \"hook\"]"),
-            restart: false,
-            per_output: false,
+            tail: Tail {
+                hint: None,
+                example: Some("[\"notify-send\", \"Kanade\", \"hook\"]"),
+                restart: false,
+                per_output: false,
+            },
         }
     };
 }
@@ -317,7 +319,6 @@ pub const SETTINGS: &[Setting] = &[
         key: "hooks.timeout",
         label: "Hook timeout",
         help: "a command still running after this is killed; one run of an event at a time, a fire meanwhile is dropped",
-        hint: None,
         kind: Kind::Seconds(
             TIMEOUT,
             Field {
@@ -325,9 +326,7 @@ pub const SETTINGS: &[Setting] = &[
                 set: |config, seconds| config.hooks.timeout = seconds,
             },
         ),
-        example: None,
-        restart: false,
-        per_output: false,
+        tail: Tail::DEFAULT,
     },
 ];
 

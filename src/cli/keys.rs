@@ -19,7 +19,7 @@ pub fn schema() -> String {
     let keys = |output: bool| {
         let mut root = Map::new();
 
-        for setting in config::settings().filter(|setting| !output || setting.per_output) {
+        for setting in config::settings().filter(|setting| !output || setting.tail.per_output) {
             let mut at = &mut root;
             let mut path = setting.key.split('.').peekable();
 
@@ -138,7 +138,7 @@ fn leaf(setting: &Setting, defaults: &config::Config) -> Json {
     };
 
     let mut description = setting.help.to_owned();
-    if setting.restart {
+    if setting.tail.restart {
         description.push_str("; takes a restart");
     }
     leaf["description"] = json!(description);
@@ -235,7 +235,7 @@ fn path(key: &str) -> Vec<&str> {
 fn after(setting: &Setting) -> Result<String, String> {
     let mut said = get(setting.key)?;
 
-    if setting.restart {
+    if setting.tail.restart {
         said.push_str("# takes a restart\n");
     }
 
@@ -293,7 +293,7 @@ mod tests {
             assert!(found.get("type").is_some(), "{}", setting.key);
             assert_eq!(
                 at(output, setting.key).is_some(),
-                setting.per_output,
+                setting.tail.per_output,
                 "{}",
                 setting.key
             );
