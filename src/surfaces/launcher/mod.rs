@@ -20,7 +20,7 @@ use kanade_runtime::service::{self, Service};
 use kanade_runtime::ui::{Role, Semantics};
 use kanade_runtime::{
     Center, Column, Cursor, End, Image, Key, Padding, Parent, Rectangle, Row, Scroll, Size, Stack,
-    Start, Text, Widget, children,
+    Start, Text, Widget, children, paste, single_line,
 };
 
 use crate::config;
@@ -157,8 +157,9 @@ enum Pressing {
 
 /*
  * what a key asks for once the search has taken it: nothing, the answer the search selects, the nth
- * answer of the list (`Ctrl+1`), the row of the open panel its ring is on, or the panel of the
- * answer selected
+ * answer of the list (`Ctrl+1`), the row of the open panel its ring is on, the panel of the answer
+ * selected, the clipboard's text read for the query (`Ctrl+V`), or the selected query copied
+ * (`Ctrl+C`)
  */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Intent {
@@ -167,6 +168,8 @@ enum Intent {
     At(usize),
     Offer,
     Panel,
+    Paste,
+    Copy,
 }
 
 impl Service for Search {
@@ -282,6 +285,12 @@ impl Search {
                 Some((self, Intent::Idle))
             }
             Key::Shortcut('k') => self.opened(layout),
+
+            // the clipboard's text comes later, on the event loop, and goes in at the caret
+            Key::Shortcut('v') => Some((self, Intent::Paste)),
+
+            // nothing is selected in the query, so there is nothing of it to copy
+            Key::Shortcut('c') => self.select_all.then_some((self, Intent::Copy)),
 
             /*
              * the nth answer, which nothing presses on a list shorter than n; any other letter
@@ -420,7 +429,9 @@ impl Search {
     /*
      * a key while the actions are open: the ring moves over the rows, Enter or Space presses the
      * one it is on and a click the one clicked; Escape and `Ctrl+K` close the panel unacted, as does
-     * a key no row takes, so the list comes back rather than typing under a panel
+     * a key no row takes, so the list comes back rather than typing under a panel. `Ctrl+V` and
+     * `Ctrl+C` are no row's key, so they close the panel and edit the query the list shows, as
+     * they do with no panel open
      */
     fn stepped_panel(mut self, key: Key) -> Option<(Search, Intent)> {
         let last = self
@@ -432,6 +443,17 @@ impl Search {
             Key::Escape | Key::Shortcut('k') => {
                 self.closed();
                 Some((self, Intent::Idle))
+            }
+            Key::Shortcut('v') => {
+                self.closed();
+                Some((self, Intent::Paste))
+            }
+            Key::Shortcut('c') => {
+                let copy = self.select_all;
+
+                self.closed();
+
+                copy.then_some((self, Intent::Copy))
             }
             Key::Enter | Key::Space => Some((self, Intent::Offer)),
             Key::Up => {
@@ -461,6 +483,28 @@ impl Search {
                 Some((self, Intent::Idle))
             }
         }
+    }
+
+    // `Ctrl+V`: `text` goes in where the caret is, over the selection a `Ctrl+A` made
+    fn pasted(mut self, text: &str) -> Option<Search> {
+        let line = single_line(text);
+
+        if line.is_empty() {
+            return None;
+        }
+
+        if self.select_all {
+            self.query.clear();
+            self.caret = 0;
+            self.select_all = false;
+        }
+
+        self.query.insert_str(self.caret, &line);
+        self.caret += line.len();
+        self.selected = 0;
+        self.offset = 0.0;
+
+        Some(self)
     }
 
     // the actions closed, the selection where it was
@@ -1932,6 +1976,9 @@ fn typed(monitor: &str, visit: u64, rec: Rec, key: Key) -> bool {
 
     let query = search.query.clone();
 
+    // what `Ctrl+C` copies, read before the search is stored, which moves it
+    let selected_query = search.select_all.then(|| search.query.clone());
+
     // a failed press is said until the next key
     if matches!(search.pressing, Pressing::Failed(..)) {
         search.pressing = Pressing::Idle;
@@ -1975,9 +2022,66 @@ fn typed(monitor: &str, visit: u64, rec: Rec, key: Key) -> bool {
                 acted(monitor, visit, act, &query);
             }
         }
+
+        Intent::Paste => ask_for_paste(monitor, visit),
+
+        Intent::Copy => {
+            if let Some(selected) = selected_query {
+                copied(selected);
+            }
+        }
     }
 
     true
+}
+
+/*
+ * `Ctrl+V`: the runtime reads the clipboard's text on the event loop and calls back with it, which
+ * is why the query is read again there rather than taken from the search this key stored. A visit
+ * that ended, or a Launcher that is no longer showing, takes nothing; a clipboard that is not text
+ * never calls back at all, and leaves the query as it was
+ */
+fn ask_for_paste(monitor: &str, visit: u64) {
+    let monitor = monitor.to_owned();
+
+    paste::request(Box::new(move |text| {
+        // a visit that ended, or a Launcher that is no longer showing, takes nothing
+        if !showing(&monitor, visit) {
+            return;
+        }
+
+        // the read is its own statement, so the lock is given back before `store` takes it again
+        let pasted = Search::read().of(visit).pasted(&text);
+
+        // storing it draws the new query, and the watch on the search refits the list
+        if let Some(search) = pasted {
+            store(search);
+
+            IslandService::write().attend(&monitor, Instant::now());
+        }
+    }));
+}
+
+/*
+ * whether `visit` is still the Launcher this monitor shows, in either host (ADR 0131): a paste or a
+ * copy that lands after it closed changes nothing
+ */
+fn showing(monitor: &str, visit: u64) -> bool {
+    let island = IslandService::read();
+
+    match island.detached_on() {
+        Some((name, open)) => name == monitor && open == visit,
+        None => {
+            island.presentation(monitor) == Presentation::Expanded(Surface::Launcher)
+                && island.visit() == visit
+        }
+    }
+}
+
+// `Ctrl+C` on the selected query: it goes on the clipboard off the draw thread, and a refusal only
+// logs, in `copy`, as a Launcher answer's does
+fn copied(text: String) {
+    let _ = copy(text, |_| {});
 }
 
 // the actions of the answer at `at`, read now so what it says of its app and the Dock is current
@@ -2293,7 +2397,8 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
     }
 }
 
-// puts `text` on the clipboard off the draw thread, then tells `done` how it went
+// puts `text` on the clipboard off the draw thread, then tells `done` how it went; a refusal is
+// logged here, so a caller that only copies has nothing left to say about it
 fn copy(
     text: String,
     done: impl FnOnce(Result<(), String>) + Send + 'static,
@@ -2304,14 +2409,14 @@ fn copy(
             let copied = clipboard::put(&text).map_err(|error| error.to_string());
 
             if let Err(why) = &copied {
-                eprintln!("kanade: cannot copy a Launcher answer ({why})");
+                eprintln!("kanade: cannot copy from the Launcher ({why})");
             }
 
             done(copied);
         })
         .map(drop)
         .map_err(|error| {
-            eprintln!("kanade: cannot copy a Launcher answer ({error})");
+            eprintln!("kanade: cannot copy from the Launcher ({error})");
             error.to_string()
         })
 }

@@ -168,6 +168,16 @@ impl WaylandState {
 
         on_key(key);
 
+        /*
+         * a window's handler cannot reach the compositor either, so a paste it asked for (a Surface
+         * with a field of its own, like the Launcher's) is read here too, on the event loop. Only a
+         * ctrl key asks, and a text input is never given one, so no request is left over from the
+         * branch above
+         */
+        if let Some(done) = paste::take() {
+            self.paste(done, surface);
+        }
+
         // a service the handler changed wakes its own readers, this window redraws for the rest
         self.request_frame_on(surface);
     }

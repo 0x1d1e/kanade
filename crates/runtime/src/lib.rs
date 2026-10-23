@@ -47,6 +47,7 @@ pub use input::cursor_names::{
     ResizeBottomRight, ResizeHorizontal, ResizeLeft, ResizeRight, ResizeTop, ResizeTopLeft,
     ResizeTopRight, ResizeVertical, Text, Wait,
 };
+pub use input::paste;
 pub use input::{Button, Cursor, Key, Modifiers, Point, Scroll};
 pub use ipc::{Draws, IpcCall, IpcReply, ipc_socket};
 pub use layer_window::{
@@ -59,7 +60,7 @@ pub use style::{Fill, Image, Mask, Radius, Shadow};
 pub use unpoisoned::{MutexExt, RwLockExt};
 pub use widgets::{
     Arc, Canvas, Circle, Column, Line, Path, Rectangle, Reveal, Rise, Row, ScrollArea, Shape,
-    Stack, Text, TextInput, Widget,
+    Stack, Text, TextInput, Widget, single_line,
 };
 
 pub use placement::Justify::{SpaceAround, SpaceBetween, SpaceEvenly};

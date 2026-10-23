@@ -405,8 +405,9 @@ fn word_right(chars: &[char], from: usize) -> usize {
     at
 }
 
-// an input is one line: line breaks and tabs become a space, other control characters go
-fn single_line(text: &str) -> String {
+// an input is one line: line breaks and tabs become a space, other control characters go; a Surface
+// with a field of its own (`src/surfaces/launcher`) pastes the same way
+pub fn single_line(text: &str) -> String {
     let mut line = String::with_capacity(text.len());
 
     let mut letters = text.chars().peekable();

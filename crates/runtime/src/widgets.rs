@@ -26,7 +26,7 @@ pub use scroll_area::ScrollArea;
 pub use shape::{Arc, Circle, Line, Path, Shape};
 pub use stack::Stack;
 pub use text::Text;
-pub use text_input::TextInput;
+pub use text_input::{TextInput, single_line};
 
 pub trait Widget {
     fn width(&self) -> Size;

@@ -2,6 +2,8 @@ mod field;
 mod fields;
 mod targets;
 
+pub use field::single_line;
+
 use std::rc::Rc;
 
 use crate::graphics::{Area, Renderer};
