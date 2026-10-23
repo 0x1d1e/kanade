@@ -17,6 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use kanade_runtime::{queue::Queue, service::Service};
@@ -38,6 +39,9 @@ const PATIENCE: Duration = Duration::from_secs(30);
 
 // the redirects followed, each of them https too
 const REDIRECTS: u32 = 3;
+
+// how many feeds may be fetched at once; a slow or silent host never blocks another feed
+const IN_FLIGHT: usize = 4;
 
 // the wait after a first failure
 const RETRY: Duration = Duration::from_secs(5 * 60);
@@ -192,6 +196,10 @@ enum Message {
 
     // the config was read again
     Reread,
+
+    // a fetch finished for the entry at `index` with `generation`; the result is applied only if
+    // the entry's generation still matches, so a late answer from a superseded fetch is dropped
+    Fetched(usize, u64, Result<Fetched, Problem>),
 }
 
 // the fetch thread's queue, which outlives a restart of it
@@ -367,6 +375,11 @@ struct Entry {
     backoff: Backoff,
     due: Instant,
     state: Feed,
+
+    // incremented each time a fetch starts, so a late result from a superseded fetch is dropped
+    generation: u64,
+    // whether a fetch for this feed is in flight, so at most one fetch per feed at a time
+    fetching: bool,
 }
 
 struct Worker {
@@ -374,6 +387,9 @@ struct Worker {
     dir: Option<PathBuf>,
     interval: Duration,
     entries: Vec<Entry>,
+
+    // how many fetches are in flight, capped at IN_FLIGHT
+    in_flight: usize,
 
     // whether the files on disk may differ from the entries, which is mirrored
     stale: bool,
@@ -386,6 +402,7 @@ impl Worker {
             dir,
             interval: Duration::from_secs(u64::from(config::get().subscription_interval) * 60),
             entries: Vec::new(),
+            in_flight: 0,
             stale: true,
         }
     }
@@ -442,45 +459,73 @@ impl Worker {
             backoff: Backoff::new(RETRY, self.interval),
             due: now + jitter(url, text.is_some(), self.interval),
             text,
+            generation: 0,
+            fetching: false,
         }
     }
 
-    // fetches each feed that is due; then mirrors, when anything changed
-    fn fetch_due(&mut self, now: Instant) {
-        for entry in &mut self.entries {
-            if entry.due > now {
+    // submits a fetch for every due entry that is not already fetching, up to IN_FLIGHT in flight;
+    // each fetch runs on its own thread and wakes this worker through the queue when done
+    fn submit_due(&mut self, now: Instant) {
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            if self.in_flight >= IN_FLIGHT {
+                break;
+            }
+            if entry.fetching || entry.due > now {
                 continue;
             }
 
-            // a 304 is only meaningful against a copy
-            let known = entry.text.is_some().then_some(&entry.validators);
+            // a 304 is only meaningful against a copy; clone so the fetch thread is 'static
+            let known = entry.text.is_some().then(|| entry.validators.clone());
+            let url = entry.url.clone();
+            let agent = self.agent.clone();
+            let generation = entry.generation.wrapping_add(1);
+            entry.generation = generation;
+            entry.fetching = true;
+            self.in_flight += 1;
 
-            match fetch(&self.agent, &entry.url, known) {
-                Ok(fetched) => {
-                    if let Fetched::New(text, validators) = fetched {
-                        self.stale |= entry.text.as_ref() != Some(&text);
-                        entry.text = Some(text);
-                        entry.validators = validators;
-                    }
+            thread::spawn(move || {
+                let result = fetch(&agent, &url, known.as_ref());
+                QUEUE.send(Message::Fetched(index, generation, result));
+            });
+        }
+    }
 
-                    entry.backoff.reset();
-                    entry.due = now + self.interval;
-                    entry.state = Feed {
-                        problem: None,
-                        synced: Some(clock::unix_seconds()),
-                        kept: entry.text.is_some(),
-                    };
+    // applies a finished fetch's result to its entry, dropping it if the generation no longer
+    // matches (the entry was re-fetched or removed in the meantime)
+    fn apply_fetched(&mut self, index: usize, generation: u64, result: Result<Fetched, Problem>) {
+        let now = Instant::now();
+        let Some(entry) = self.entries.get_mut(index) else {
+            return;
+        };
+        if entry.generation != generation {
+            return;
+        }
+        entry.fetching = false;
+        self.in_flight = self.in_flight.saturating_sub(1);
+
+        match result {
+            Ok(fetched) => {
+                if let Fetched::New(text, validators) = fetched {
+                    self.stale |= entry.text.as_ref() != Some(&text);
+                    entry.text = Some(text);
+                    entry.validators = validators;
                 }
-                Err(problem) => {
-                    entry.backoff.failed();
-                    entry.due = now + entry.backoff.wait();
-                    entry.state.problem = Some(problem);
-                }
+
+                entry.backoff.reset();
+                entry.due = now + self.interval;
+                entry.state = Feed {
+                    problem: None,
+                    synced: Some(clock::unix_seconds()),
+                    kept: entry.text.is_some(),
+                };
+            }
+            Err(problem) => {
+                entry.backoff.failed();
+                entry.due = now + entry.backoff.wait();
+                entry.state.problem = Some(problem);
             }
         }
-
-        self.mirror();
-        self.publish();
     }
 
     // writes what changed, and deletes the files of feeds gone
@@ -553,11 +598,21 @@ impl Worker {
         self.reread(Instant::now());
 
         loop {
-            self.fetch_due(Instant::now());
+            // ask every feed that is due, at most IN_FLIGHT at a time; each fetch runs on its
+            // own thread and wakes this worker through the queue when done
+            self.submit_due(Instant::now());
 
+            // nothing in flight: mirror any changes and publish the feeds' state
+            if self.in_flight == 0 && self.stale {
+                self.mirror();
+                self.publish();
+            }
+
+            // how long until the next feed that is not already being fetched is due
             let wait = self
                 .entries
                 .iter()
+                .filter(|entry| !entry.fetching)
                 .map(|entry| entry.due)
                 .min()
                 .map(|due| due.saturating_duration_since(Instant::now()));
@@ -585,6 +640,9 @@ impl Worker {
                 Some(Message::Reread) => {
                     self.reread(Instant::now());
                     self.publish();
+                }
+                Some(Message::Fetched(index, generation, result)) => {
+                    self.apply_fetched(index, generation, result);
                 }
                 None => {}
             }
@@ -794,16 +852,32 @@ mod tests {
         ]);
         let now = Instant::now();
         let mut worker = Worker::new(agent(false), Some(dir.clone()));
-        let entry = worker.entry(&url, now);
+        let mut entry = worker.entry(&url, now);
         let file = dir.join(&entry.name);
+        let known = entry.text.is_some().then(|| entry.validators.clone());
+        let generation = entry.generation.wrapping_add(1);
+        entry.generation = generation;
+        entry.fetching = true;
+        worker.in_flight = 1;
+        let result = fetch(&agent(false), &entry.url, known.as_ref());
         worker.entries.push(entry);
-
-        worker.fetch_due(now);
+        worker.apply_fetched(0, generation, result);
+        worker.mirror();
         assert_eq!(fs::read_to_string(&file).ok().as_deref(), Some(FEED));
         assert_eq!(worker.entries[0].state.problem, None);
 
         worker.entries[0].due = now;
-        worker.fetch_due(now);
+        let known = worker.entries[0]
+            .text
+            .is_some()
+            .then(|| worker.entries[0].validators.clone());
+        let generation = worker.entries[0].generation.wrapping_add(1);
+        worker.entries[0].generation = generation;
+        worker.entries[0].fetching = true;
+        worker.in_flight = 1;
+        let result = fetch(&agent(false), &worker.entries[0].url, known.as_ref());
+        worker.apply_fetched(0, generation, result);
+        worker.mirror();
         assert_eq!(worker.entries[0].state.problem, Some(Problem::Status(503)));
         assert!(worker.entries[0].state.kept);
         assert!(worker.entries[0].due > now);
