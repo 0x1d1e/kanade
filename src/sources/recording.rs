@@ -516,12 +516,11 @@ fn refit() {
 }
 
 /*
- * `why` a recording was lost, and where what was recorded of it is, if any: the file and the
- * segments are kept, never deleted unless they were joined. A folder with no more than the empty
- * files Kanade made in it is let go, and says nothing of what was recorded. A file at `path` is
- * named only while it is Kanade's: with the first segment still in the folder it was not put back,
- * so the file there appeared meanwhile and is someone else's, the name is said to be taken, and the
- * footage is in the folder alone
+ * `why` a recording was lost, and where what was recorded of it is, if any: the file and segments
+ * are kept, never deleted unless joined. A folder with no more than Kanade's empty files is let go,
+ * saying nothing of what was recorded. A file at `path` is named only while Kanade's: with the
+ * first segment still in the folder it was not put back, so a file there appeared meanwhile and is
+ * someone else's — the name is taken, the footage is in the folder alone
  */
 fn kept(path: &Path, parts: &Path, why: String) -> String {
     let named = fs::metadata(path).is_ok_and(|file| file.is_file() && file.len() > 0);
@@ -1428,13 +1427,12 @@ enum Again {
 
 /*
  * what to start again with, from how the segment ran and what the recording has already given up.
- * A failed VA-API download, when the encoder is what failed (`fault` is `Fault::Encoder`), goes to
- * EGL once. An encoder that is not software goes to software once, which tries the VA-API download
- * afresh, since the encoder may have failed for its own reasons (a session limit) and software with
- * VA-API can work where EGL cannot import the cast. Nothing else, so no failure loops: EGL is taken
- * once per `no_va` and `no_va` is cleared only by the one step to software. A `Fault::Vanished`
- * output is not the encoder's doing and is not tried again: the same target is gone whichever
- * encoder reads it
+ * A failed VA-API download, when the encoder failed (`fault` is `Fault::Encoder`), goes to EGL once.
+ * A non-software encoder goes to software once, which tries the VA-API download afresh: the encoder
+ * may have failed for its own reasons and software with VA-API can work where EGL cannot import the
+ * cast. Nothing else — no failure loops: EGL is taken once per `no_va`, and `no_va` is cleared only
+ * by the step to software. A `Fault::Vanished` output is not tried again: the same target is gone
+ * whichever encoder reads it
  */
 fn again(ran: Ran, given: Given, fault: Fault) -> Option<Again> {
     if fault == Fault::Vanished {
