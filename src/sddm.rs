@@ -1478,7 +1478,7 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
         Ok(closed) => lines.push(format!(
             "modes: {} entries sddm cannot read, as {}; root must fix executable theme permissions",
             closed.len(),
-            closed[0].display()
+            class::plain(&closed[0].display().to_string())
         )),
         Err(error) => lines.push(format!("modes: {error}")),
     }
@@ -1710,7 +1710,7 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
             format!(
                 "sddm: {} entries the sddm user cannot read, as {}",
                 closed.len(),
-                closed[0].display()
+                class::plain(&closed[0].display().to_string())
             ),
             vec![String::from(
                 "`kanade sddm sync` mends the overlay's; an installed theme's are its package's",
