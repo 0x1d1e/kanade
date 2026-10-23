@@ -69,17 +69,28 @@ pub fn networks(
 
 // what a network's row says under its name, and whether that is an error
 fn status(network: &wifi::Network, join: &Join) -> Option<(&'static str, bool)> {
+    let failed = join.failed(&network.ssid);
+
+    /*
+     * a join that came up but whose profile could not be saved is joined, and that is the one thing
+     * its row must say: read as plainly connected, it is forgotten at reboot
+     */
     if network.link == Link::Joined {
-        return Some(("Connected", false));
+        return Some(match failed {
+            Some(Failure::NotSaved(_)) => ("Connected, not saved", true),
+            _ => ("Connected", false),
+        });
     }
 
     if network.link == Link::Joining || join.joining(&network.ssid) {
         return Some(("Connecting\u{2026}", false));
     }
 
-    match join.failed(&network.ssid) {
+    match failed {
         Some(Failure::WrongPassword) => return Some(("Wrong password", true)),
         Some(Failure::Other) => return Some(("Couldn\u{2019}t connect", true)),
+        // it came up, so it is connected before the list of networks says so
+        Some(Failure::NotSaved(_)) => return Some(("Connected, not saved", true)),
         None => {}
     }
 
@@ -167,6 +178,11 @@ pub fn password(ssid: &str, secret: &Secret, failure: Option<Failure>) -> Column
     let (note, error) = match failure {
         Some(Failure::WrongPassword) => ("Wrong password, try again", true),
         Some(Failure::Other) => ("Couldn\u{2019}t connect, try again", true),
+        /*
+         * the network took the password, so it is not asked again; the entry is only reachable
+         * while the join still reads as one that needs a password
+         */
+        Some(Failure::NotSaved(_)) => ("Connected, not saved", true),
         None => ("8 to 63 characters", false),
     };
 

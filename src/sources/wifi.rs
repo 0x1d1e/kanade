@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::bus::{Argument, Bus, Value};
 use kanade_runtime::{MutexExt, service::Service};
+use zbus::blocking::Connection;
 
 use super::network::{NAME, ROOT};
 use super::system::Watched;
@@ -221,10 +222,13 @@ impl Service for Networks {
 }
 
 // why a join failed
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     WrongPassword,
     Other,
+
+    // the network is up, but its profile could not be saved: why NetworkManager refused
+    NotSaved(String),
 }
 
 // the last join asked from here, until another or a disconnect
@@ -248,7 +252,7 @@ impl Join {
     // how the join of `ssid` failed, if it was the last one asked
     pub fn failed(&self, ssid: &str) -> Option<Failure> {
         match self {
-            Join::Failed(failed, failure) if failed == ssid => Some(*failure),
+            Join::Failed(failed, failure) if failed == ssid => Some(failure.clone()),
             _ => None,
         }
     }
@@ -673,35 +677,82 @@ fn joined(
 
     drop(listening);
 
-    for (profile, method) in tidy(made.as_deref(), network.profile.as_deref(), ended) {
-        bus.call(owner, profile, PROFILE, method, &[]);
-    }
+    let call = |profile: &str, method: &str| profile_call(owner, profile, method);
 
-    ended
+    tidy(made.as_deref(), network.profile.as_deref(), ended, &call)
 }
 
 /*
  * what becomes of the profile a join `made` and the `old` one it replaces once the join `ended`:
  * the one made is saved, and the old one, with the old password, deleted so it does not come back;
  * failed, the one made is deleted. With NetworkManager gone, so are its profiles: nothing is asked
+ *
+ * A save that fails is the join failing: the network is up, but it is not remembered, and a join
+ * reads as done only when it is. A delete that fails is said on stderr and kept: the join is up
+ * and usable, and the profile it could not remove holds a password that no longer works, which the
+ * next join to that network replaces. So a save that fails ends it there: the network is up on the
+ * profile it made, and neither it nor the one it would have replaced is deleted
  */
-fn tidy<'a>(
-    made: Option<&'a str>,
-    old: Option<&'a str>,
+fn tidy(
+    made: Option<&str>,
+    old: Option<&str>,
     ended: Ended,
-) -> Vec<(&'a str, &'static str)> {
-    match (made, ended) {
-        (Some(made), Ended::Up) => [(made, "Save")]
-            .into_iter()
-            .chain(old.map(|old| (old, "Delete")))
-            .collect(),
-        (Some(made), Ended::Failed(_)) => vec![(made, "Delete")],
-        _ => Vec::new(),
+    call: &impl Fn(&str, &str) -> Result<(), String>,
+) -> Ended {
+    let deleted = |profile: &str| {
+        if let Err(why) = call(profile, "Delete") {
+            eprintln!("kanade: wifi: cannot remove a saved network: {why}");
+        }
+    };
+
+    match (made, &ended) {
+        (Some(made), Ended::Up) => {
+            if let Err(why) = call(made, "Save") {
+                return Ended::Failed(Failure::NotSaved(why));
+            }
+
+            if let Some(old) = old {
+                deleted(old);
+            }
+
+            ended
+        }
+
+        // the join failed, so what it made goes; the old one stays, nothing having replaced it
+        (Some(made), Ended::Failed(_)) => {
+            deleted(made);
+
+            ended
+        }
+
+        // gone or nothing made: its profiles went with it, and a network it already had needs none
+        _ => ended,
     }
 }
 
-// how a join ends: up, failed, or with the NetworkManager it asked gone
-#[derive(Debug, Clone, Copy, PartialEq)]
+/*
+ * a call on one of NetworkManager's profiles over a connection of its own, which says why it was
+ * refused, unlike `Bus`, which answers nothing whatever went wrong: a save that quietly failed
+ * would leave a joined network forgotten at reboot
+ */
+fn profile_call(owner: &str, profile: &str, method: &str) -> Result<(), String> {
+    let bus = Connection::system().map_err(|error| said_by(&error))?;
+
+    bus.call_method(Some(owner), profile, Some(PROFILE), method, &())
+        .map(drop)
+        .map_err(|error| said_by(&error))
+}
+
+fn said_by(error: &zbus::Error) -> String {
+    match error {
+        zbus::Error::MethodError(_, Some(description), _) => description.clone(),
+        error => error.to_string(),
+    }
+}
+
+// how a join ends: up, failed, or with the NetworkManager it asked gone. Not `Copy`: a failure
+// that could not save a profile carries what NetworkManager said
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Ended {
     Up,
     Failed(Failure),
@@ -980,6 +1031,95 @@ mod tests {
     // the NetworkManager a join asked, by its unique name
     const OWNER: &str = ":1.9";
 
+    /*
+     * a profile save that fails is the join failing, not a join that reads as done and is
+     * forgotten at reboot; a delete that fails is only said, and leaves the join as it ended. A
+     * NetworkManager that replaced the join's may reuse its paths, and one gone that is not the
+     * join's takes nothing with it
+     */
+    #[test]
+    fn a_save_that_fails_is_the_join_failing_and_a_delete_that_fails_is_only_said() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let call = |profile: &str, method: &str| {
+            asked
+                .borrow_mut()
+                .push((profile.to_owned(), method.to_owned()));
+
+            match method {
+                "Save" => Err(String::from("No such object")),
+                _ => Ok(()),
+            }
+        };
+
+        assert_eq!(
+            tidy(Some("/s/9"), Some("/s/7"), Ended::Up, &call),
+            Ended::Failed(Failure::NotSaved(String::from("No such object")))
+        );
+        assert_eq!(
+            *asked.borrow(),
+            [(String::from("/s/9"), String::from("Save"))],
+            "the network is up on the profile it made, so neither it nor the old one is deleted"
+        );
+
+        // a delete that fails is said, and the join that saved is still up
+        asked.borrow_mut().clear();
+        let delete_fails = |profile: &str, method: &str| {
+            asked
+                .borrow_mut()
+                .push((profile.to_owned(), method.to_owned()));
+
+            match method {
+                "Save" => Ok(()),
+                _ => Err(String::from("No such object")),
+            }
+        };
+
+        assert_eq!(
+            tidy(Some("/s/9"), Some("/s/7"), Ended::Up, &delete_fails),
+            Ended::Up
+        );
+
+        // the join failed: the profile it made is deleted, and what failed it stands
+        asked.borrow_mut().clear();
+        assert_eq!(
+            tidy(
+                Some("/s/9"),
+                Some("/s/7"),
+                Ended::Failed(Failure::WrongPassword),
+                &delete_fails
+            ),
+            Ended::Failed(Failure::WrongPassword)
+        );
+        assert_eq!(
+            *asked.borrow(),
+            [(String::from("/s/9"), String::from("Delete"))],
+            "the old profile is left alone: nothing was saved to replace it"
+        );
+
+        // NetworkManager gone: neither is asked, and nothing new is said
+        asked.borrow_mut().clear();
+        assert_eq!(
+            tidy(Some("/s/9"), Some("/s/7"), Ended::Gone, &delete_fails),
+            Ended::Gone
+        );
+        assert_eq!(
+            *asked.borrow(),
+            [],
+            "the paths were the old NetworkManager's; a new one may have given them to others"
+        );
+
+        // a join that made no profile asks nothing: a network it already had needs none
+        assert_eq!(
+            tidy(None, Some("/s/7"), Ended::Up, &delete_fails),
+            Ended::Up
+        );
+        assert_eq!(
+            tidy(None, Some("/s/7"), Ended::Gone, &delete_fails),
+            Ended::Gone
+        );
+        assert_eq!(*asked.borrow(), [], "still nothing asked");
+    }
+
     impl From<Change> for Heard {
         fn from(change: Change) -> Self {
             Self {
@@ -987,28 +1127,5 @@ mod tests {
                 change,
             }
         }
-    }
-
-    /*
-     * a NetworkManager that replaced the join's may reuse its paths, and one gone that is not the
-     * join's takes nothing with it
-     */
-    #[test]
-    fn a_join_saves_or_deletes_what_it_made_but_nothing_once_networkmanager_is_gone() {
-        let (made, old) = (Some("/s/9"), Some("/s/7"));
-
-        assert_eq!(
-            tidy(made, old, Ended::Up),
-            [("/s/9", "Save"), ("/s/7", "Delete")]
-        );
-        assert_eq!(
-            tidy(made, old, Ended::Failed(Failure::WrongPassword)),
-            [("/s/9", "Delete")]
-        );
-        assert_eq!(tidy(None, old, Ended::Up), []);
-
-        // the paths were the old NetworkManager's; a new one may have given them to others
-        assert_eq!(tidy(made, old, Ended::Gone), []);
-        assert_eq!(tidy(None, old, Ended::Gone), []);
     }
 }
