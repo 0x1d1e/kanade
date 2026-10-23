@@ -1327,12 +1327,9 @@ pub fn strip(monitor: &Monitor) -> Option<(geometry::Edge, Rect)> {
 /*
  * the Dock's strip on `monitor` while it shows there, and the edge it sits on: what a menu opened
  * from one of its icons keeps clear of. `strip` answers for what must keep off the Dock even as it
- * hides, a Banner, and so is none under autohide; a menu is opened by a click on an icon, which an
- * autohide has out, and it is drawn over the Dock, so it always gets the strip here. It reaches off
- * the edge as far as its icons grow, and BOUNCE further, the farthest its spring swings it past its
- * place, so the menu clears them wherever a slide puts them. Merged, the shell lays the Dock out and
- * the strip lands in the same place, so a menu keeps clear of it there too. Reading subscribes to
- * the apps
+ * hides (a Banner); none under autohide. It reaches off the edge as far as its icons grow, and
+ * BOUNCE further, the farthest its spring swings past its place. Merged, the shell lays the Dock
+ * out and the strip lands in the same place, so a menu keeps clear of it there too.
  */
 pub fn standing(monitor: &Monitor) -> Option<(Edge, Rect)> {
     let items = items(&Windows::read());
@@ -1458,15 +1455,10 @@ fn beside(island: Anchor, dock: Anchor) -> bool {
 
 // how far a body of the Island on `anchor` reaches off its edge: its height, or its width on a side
 /*
- * how far, 0 to 1, the Dock has faded out of the way of the Island, so it never covers it; and
- * whether the Island moves `near` it, so the fade wants frames, as its spring may swing past where
- * it heads or coast on, turned back mid growth. Only where the Island's body or Satellites reach
- * across the row at rest, now or where the body heads. Beside it, gone before an Island grown past
- * its small forms, as an open Surface, reaches the Dock, and not for the few pixels a Peek swings
- * past its height. On the other side of the edge, gone at once, so it is gone before the body
- * arrives; a Satellite sends it away as it touches the row. On another edge, gone at once where
- * the body or a Satellite reaches the strip `depth` off its edge. Its own magnification under the
- * pointer never sends it away
+ * how far, 0 to 1, the Dock has faded out of the Island's way: the Island's body or Satellites
+ * reaching across the row now or where the body heads sends the fade toward 0; beside the Island,
+ * or on another edge, the fade goes to 1 at once. Magnification under the pointer never sends it
+ * away
  */
 fn covered(
     monitor: &Monitor,

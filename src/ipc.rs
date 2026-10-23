@@ -76,35 +76,9 @@ pub fn answer(arguments: &[String], reply: IpcReply) {
 }
 
 /*
- * what a call draws beyond the Services it writes, from its words, before the handler runs. A
- * `Write` of a Service already marks it, so the event loop draws every window that read it; a call
- * whose handler leaves every change to such a write therefore needs no redraw of its own. What it
- * must have is a redraw of its own when it changes something no Service carries.
- *
- * `Yes` is kept for the four that do, and for anything a later call adds without a decision here:
- *
- * - `settings` and `close-settings` open or close a window of the runtime's;
- * - `gesture` draws, records or closes the overlay window, which appears from hidden;
- * - `osd` shows a Surface at once;
- * - `brightness` writes a monitor's level to the DDC thread, which returns a quiet write, so
- *   nothing else would draw the Controls tile or the OSD it moved.
- *
- * `No` is everything else, which changes what a window shows only through a Service or the config:
- *
- * - the Island's own state (`IslandService`), and a Source's Service, which the `watch`es derive
- *   from (`activity`, `notifications clear`, `clipboard clear`, `caffeine`, `dnd`, `focus`,
- *   `dictate`, `battery`, `media`, `wifi`, `bluetooth`, `power-profile`, `wallpaper`,
- *   `reminders`, `weather`, `subscriptions`, `session`, `lock`, `dmenu`);
- * - the Settings file, which `settings::refresh` puts in the Settings Service and
- *   `config::announce` in the `Reloads` one, so the Settings window and every view of the config
- *   draw from those writes (`reload`, `night-light`, `modules enable|disable`);
- * - a window the runtime opens or closes, which `open_window`/`close_window` mark every window for;
- * - a `ui` act, which draws the one window it reached through that window's own
- *   `request_frame_on` (`crates/runtime/src/wayland/ui.rs`), so the call draws nothing itself;
- * - nothing at all: an answer read from state (`status`, `modules`, `lock status`, `idle status`,
- *   `validate`, `activity pressed`), a refusal, a file outside the config (`gesture forget`), a
- *   describe or a find in the windows, or a call niri or a daemon carries out over its own socket
- *   (a screenshot, a cast, a wallpaper through awww, a profile through power-profiles-daemon).
+ * what a call draws beyond the Services it writes: `Yes` for calls that change something no Service
+ * carries (`settings`, `close-settings`, `gesture`, `osd`, `brightness`); `No` for everything
+ * else, which changes a window's show only through a Service or the config.
  *
  * A call that does not parse changes nothing. A call whose Module is off is answered with a
  * refusal, and reads no Module here to say so: `modules::on` is read by views, so asking it on this

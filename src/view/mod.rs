@@ -677,14 +677,12 @@ fn body_pane(pane_body: pane::Body, body: Rect, radius: f32, merged: bool) -> Pa
 }
 
 /*
- * exactly the input region, so leaving it is leaving the island; niri also sends the leave
- * when the region shrinks away from a still pointer, which is what reports it here.
- * Hover, click and arming all take this one target: the runtime hit-tests only on pointer events,
- * so a body that grows under a still pointer (Peek) would never report it on the body.
- * It draws nothing, and comes first: the runtime knows what the pointer is on by its place among
- * the targets, so the shadow's pieces and the Satellites, which come and go, must not move it,
- * or a leave after they did would go to another target. With it, what a pointer move there tracks,
- * which a Dock's target over it passes on
+ * exactly the input region, so leaving it is leaving the island; niri also sends the leave when
+ * the region shrinks away from a still pointer. Hover, click and arming all take this one target:
+ * the runtime hit-tests only on pointer events, so a body that grows under a still pointer (Peek)
+ * would never report it on the body. It draws nothing, and comes first: the shadow's pieces and
+ * the Satellites, which come and go, must not move it, or a leave after they did would go to
+ * another target.
  */
 fn hover_target(
     monitor: &str,
