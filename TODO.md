@@ -106,24 +106,6 @@ Not worth changing, by this review:
 - [ ] An upright Rest and Compact have one length each (`geometry::rest`, `compact`), so a form that needs less (the timer) or more (a Rest with the battery) is padded or tight; the shape could take the primary Activity's Kind and the Rest's battery setting.
 - [ ] A body morphing through about square, between a wide and an upright form, overlaps its shadow's corners for a frame or two.
 
-## Island and Dock merge (ADR 0031)
-
-- [ ] Merged Docks on the left or right of an edge are only roughly aligned with the Island's body.
-- [ ] The Island's hover area and the Dock's overlap in a band; hover is notified for both.
-- [ ] A Keystone's window is as wide as the icons at the largest body, and its row is laid out every frame the Island morphs.
-- [x] Many apps with a wide Surface open overflow a Keystone's window: `src/merge.rs:285` takes `let width = left + canvas.width + right;` with no clamp to the output, while the height at `:287` is bounded by the strip. It needs `.min(monitor.width)`.
-  - Premise no longer holds: `among()` clamps the room beside the canvas before it sizes the window (`src/merge.rs:367`, the width at `:368`; commit 59c4f61), as `crown()` does (`:271`, the width at `:272`; 3f0e362), and the canvas is cut to the output before either (`src/view/shape.rs:109`, `Canvas::within` at `src/island/geometry.rs:46-49`), so a wide Surface open cannot grow it past the monitor. `shell_is_never_wider_than_the_output` (`src/merge.rs:499`) asserts `shell.size.0 <= screen` for both forms, every `Along` and `Edge`, at 900 and 1920; what it pins is the geometry — no one has opened a wide Surface on a merged Keystone and looked.
-- [ ] `pointed()` writes `Pointers`, redrawing the Docks, and a merged Island window, of its output, on each pointer move that changes x, now in merged Crown and Keystone too.
-- [ ] `Pointer.x` goes stale across a merge toggle, as its frame changes from the Dock's window to the shell's; it matters only while icons grow.
-- [x] Grown icons in a Keystone or Fold reach `Extent::rise` past the strip, which Banners and Surfaces below the Island do not clear (an unmerged Dock's strip does include its grown icons). `clearance_of` at `src/merge.rs:93` omits `extent.rise` while the merged window's own height at `:287` and the Dock's plate at `src/dock.rs:1306` both include it, so the gap is `size.icon * (most - 1.0)` — 56 px at `size = "large"`, `magnification = "large"`.
-  - Premise no longer holds: `clearance_of` subtracts `extent.rise` for Keystone and Fold (`src/merge.rs:93-101`), and `clearance_reaches_past_the_icons_grown` (`:617`) pins that the clearance grows by exactly `rise`.
-- [ ] A Dock that autohides on the Island's edge is only brought out by the Island, not by touching the edge along its width; it does not reserve space while autohiding.
-- [x] A non-liquid union has no border.
-  - Describes a removed finish: `look::Finish` has no liquid variant, and the union's rim comes from `pane.wgsl:69-71`.
-- [ ] Fold has no keyboard focus hold; its Tray and hover Peek need a right click. Its dots for running apps at rest show (`dock::dot`, `dock::between`, `merge::Shell::dotted`).
-- [x] Overview and fullscreen use the existing covered path only.
-  - A statement of an accepted limitation (`view/covered.rs:17-21`), not open work.
-
 ## Idle Island
 
 - [x] The strip's agenda width (`view::resize`, `rest::Agenda`) arms the minute timer when Calendar is on and any connected output shows the agenda, even if no window draws the time; an ended event stops taking room on the next minute.
@@ -225,25 +207,6 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 
 - [x] The stderr note for a layer that cannot be used prints for every notification, even one dropped because a sound already plays (`cue()` emits the notes before the `PLAYING` check): dedupe or rate-limit it.
   - Premise no longer holds: `says_once` (`src/sources/sound.rs:71`) says each note once, up to `SAID_MOST` (64) different ones, and `play` passes every note through it (`:229`).
-
-## Clipboard pins and previews (ADR 0114, 0115, low-level, unfixed)
-
-- [ ] Pins persist (ADR 0115) as one file rewritten whole on each change, up to 16 MiB; one save thread per change, each taking the latest set, so a burst of pins writes more than needed.
-  - Premise no longer holds for the thread half: `follow` is one long-lived worker (`src/sources/clipboard/pins.rs:462`) and `batch` drains the asks that queued during a write into that one write (`:478`), so a burst is one batch, pinned by `a_burst_of_changes_is_one_batch` (`:568`). The whole-file rewrite stands.
-- [ ] A newer Kanade's pins file, or one that could not be read at start, turns saving off for the run; a damaged one is kept as `clipboard-pins.bak`, which Kanade never removes.
-- [x] A pin change right before exit may not be saved: the save thread is detached.
-  - Premise no longer holds: the clean exit calls `pins::flush()` (`src/main.rs:88`), which saves and waits for the file, and `ASKED` (`src/sources/clipboard/pins.rs:382`) keeps it from writing where no pin changed this run.
-- [ ] Not run: a restart with pinned text and pictures on the session (pins back in order, thumbnails regenerated, Launcher `>`, unpin removes them from the file).
-
-- [x] A preview is written while the delete pass is held off (`preview::TURN`), so a 16 MiB picture holds a copy's `record` for the write; and the Surface copies the whole history (`to_vec`) on each draw and key, as before.
-  - Premise no longer holds for both: the bytes and their flush happen before `TURN` is taken (`src/sources/clipboard/preview.rs:318-341`), and the Surface's `fit` borrows the history instead of copying it (`src/surfaces/clipboard.rs:355-359`).
-- [ ] A Kanade that exits (cleanly, SIGTERM or killed) leaves its previews until the next start, which sweeps them (tmpfs clears at logout).
-  - Premise no longer holds for the second half: `sweep` deletes only the folders of pids that are gone or this shell's own (`src/sources/clipboard/preview.rs:133`), so a second Kanade's start leaves a running one's previews alone.
-- [ ] The runtime's thumbnail cache keeps a decoded thumbnail of a deleted preview until it evicts it (512 copies, 128 MiB).
-- [x] A preview's copied image bytes are bounded before they are decoded: `decode_png` calls `count(width, height)` and `bytes_fit(size)` before allocating, against `MOST_PIXELS` (`crates/runtime/src/graphics/image/decode.rs:94`), so a decompression bomb is refused rather than decoded.
-- [ ] `kanade ui press` closing the Surface is older than this change.
-- [ ] An unpin puts the entry at the top of the rest, not where its age would; entries keep no time.
-- [ ] Not run: the Surface (thumbnails, the pin stop and button, the footer copy) and the idle numbers with a history of pictures.
 
 ## Recording targets, audio and pause (ADR 0116, unfixed)
 - [ ] Recording quality and encoder choice (ADR 0116, Update): quality verified live: pending Iris. Not verified through `wf-recorder`: `-F`, `-p rc_mode=CQP -p qp=N`, the color `-p` tags (read back as BT.709 limited from libavcodec given the same options, not from a `wf-recorder` file), `-d`, NVENC and software; the runtime software fallback; the window path's probe and elements, and `va<node>postproc` with `va<node>h264enc` on a second VA-API node. A live run only: it needs the session, the GPUs and real footage, and nothing here is decidable or fixable from the code.
