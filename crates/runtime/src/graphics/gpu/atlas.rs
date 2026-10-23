@@ -115,7 +115,14 @@ impl Rows {
  * it in rows, and a full atlas starts over empty and fills again from what is shown
  */
 pub struct Atlas {
-    texture: Texture,
+    /*
+     * made when the first letter needs a place, so a window that draws no text, like the ones
+     * that only reserve room or take gestures, holds no megabyte of it
+     */
+    texture: Option<Texture>,
+
+    // what an atlas with no texture binds instead: one texel, since a pass binds an atlas anyway
+    blank: Texture,
 
     letters: HashMap<Key, Option<Letter>>,
 
@@ -124,30 +131,50 @@ pub struct Atlas {
 
 impl Atlas {
     pub fn new(device: &Device) -> Self {
-        let texture = device.create_texture(&TextureDescriptor {
+        let blank = device.create_texture(&TextureDescriptor {
             label: None,
             size: Extent3d {
-                width: SIZE,
-                height: SIZE,
+                width: 1,
+                height: 1,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: TextureFormat::R8Unorm,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            usage: TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
 
         Self {
-            texture,
+            texture: None,
+            blank,
             letters: HashMap::new(),
             rows: Rows::default(),
         }
     }
 
     pub fn texture(&self) -> &Texture {
-        &self.texture
+        self.texture.as_ref().unwrap_or(&self.blank)
+    }
+
+    fn start(&mut self, device: &Device) -> &Texture {
+        self.texture.get_or_insert_with(|| {
+            device.create_texture(&TextureDescriptor {
+                label: None,
+                size: Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::R8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        })
     }
 
     /*
@@ -159,6 +186,7 @@ impl Atlas {
      */
     pub fn letter(
         &mut self,
+        device: &Device,
         queue: &Queue,
         face: &'static Face<'static>,
         id: u16,
@@ -200,8 +228,10 @@ impl Atlas {
 
         let (x, y) = (spot.x, spot.y);
 
+        let texture = self.start(device);
+
         let target = TexelCopyTextureInfo {
-            texture: &self.texture,
+            texture,
             mip_level: 0,
             origin: Origin3d { x, y, z: 0 },
             aspect: TextureAspect::All,

@@ -40,6 +40,7 @@ impl Quads {
     #[allow(clippy::too_many_arguments)]
     pub fn letter(
         &mut self,
+        device: &Device,
         queue: &Queue,
         face: &'static Face<'static>,
         id: u16,
@@ -55,7 +56,7 @@ impl Quads {
          */
         let reads = !self.waiting.is_empty();
 
-        let letter = match self.atlas.letter(queue, face, id, size, reads) {
+        let letter = match self.atlas.letter(device, queue, face, id, size, reads) {
             Placement::Letter(letter) => letter,
             Placement::Nothing => return,
             Placement::Overflow => {

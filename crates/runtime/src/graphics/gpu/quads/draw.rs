@@ -35,6 +35,7 @@ impl Quads {
              */
             for letter in deferred {
                 self.letter(
+                    device,
                     queue,
                     letter.face,
                     letter.id,
@@ -72,7 +73,7 @@ impl Quads {
     ) {
         let put_off = self.deferred.len();
 
-        self.letter(queue, face, id, size, color, x, y, clips);
+        self.letter(device, queue, face, id, size, color, x, y, clips);
 
         if self.deferred.len() == put_off {
             return;
@@ -83,7 +84,7 @@ impl Quads {
 
         self.draw(device, queue, canvas);
 
-        self.letter(queue, face, id, size, color, x, y, clips);
+        self.letter(device, queue, face, id, size, color, x, y, clips);
     }
 
     fn paint(&mut self, device: &Device, queue: &Queue, canvas: &Texture) {

@@ -94,6 +94,19 @@ systemctl --user enable --now kanade.service
 
 The unit runs `~/.cargo/bin/kanade`; edit its `ExecStart` for another install. Remove any `spawn-at-startup "kanade"` from niri's config: a second shell stops at start. `kanade doctor` warns about a unit that is not enabled or does not run the shell. The unit restarts the shell however it ends; `systemctl --user stop kanade.service` stops it.
 
+On a machine with two GPUs, Kanade draws on the one its window can present on, which is usually the integrated one, but the Vulkan loader still opens every driver in `/usr/share/vulkan/icd.d/`. On an Intel or AMD laptop with an NVIDIA dGPU that means about 50 MiB of the NVIDIA libraries mapped and resident for a GPU the shell never draws on. Naming the drawing GPU's driver in the unit keeps the others out:
+
+```sh
+systemctl --user edit kanade.service
+```
+
+```ini
+[Service]
+Environment=VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json
+```
+
+Use `radeon_icd.json` for AMD, or leave it out on a machine whose only GPU is NVIDIA. The log line `kanade: drawing with <name>` names the GPU the shell picked, before and after. See `docs/memory.md` for what it saves.
+
 Kanade's own notifications, like the timer's, show its icon from the icon theme:
 
 ```sh
