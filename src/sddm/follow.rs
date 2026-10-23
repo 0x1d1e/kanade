@@ -92,7 +92,7 @@ pub fn wallpaper_changed(path: &Path) {
 
     if let Err(error) = spawned {
         PENDING.locked().running = false;
-        eprintln!("kanade: sddm: cannot follow the wallpaper: {error}");
+        super::on_stderr(&format!("cannot follow the wallpaper: {error}"));
     }
 }
 
@@ -140,7 +140,7 @@ fn follow(worker: u64) {
             Ok(_) => *said = None,
             Err(error) if said.as_deref() == Some(error.as_str()) => {}
             Err(error) => {
-                eprintln!("kanade: sddm: not following the wallpaper: {error}");
+                super::on_stderr(&format!("not following the wallpaper: {error}"));
                 *said = Some(error);
             }
         }

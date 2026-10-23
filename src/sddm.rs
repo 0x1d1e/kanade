@@ -862,8 +862,9 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
     let said = |error: io::Error| format!("{}: {error}", overlay.display());
     let (new, old) = (beside(overlay, ".new"), beside(overlay, ".old"));
 
-    // a run that died between the two fallback renames left the overlay gone and the last working
-    // theme in `.old`: put it back before the cleanup below would remove it
+    // a run that died with the overlay gone and the last working theme in `.old` is put back before
+    // the cleanup below would remove it; nothing here makes a `.old` any more, so this is for an
+    // older install or one that died before the exchange
     recover(overlay).map_err(said)?;
 
     // parts a run that died left
@@ -909,19 +910,12 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
         return Ok(());
     }
 
-    let aside = false;
-    if aside && let Err(error) = fs::rename(overlay, &old) {
-        let _ = fs::remove_dir_all(&new);
-        return Err(said(error));
-    }
+    // no overlay to exchange with, so the one built is moved into place; a run that dies before the
+    // move leaves no overlay and a `.new` the next run sweeps, never a theme aside in `.old`
     if let Err(error) = fs::rename(&new, overlay) {
-        if aside {
-            let _ = fs::rename(&old, overlay);
-        }
         let _ = fs::remove_dir_all(&new).or_else(|_| fs::remove_file(&new));
         return Err(said(error));
     }
-    let _ = fs::remove_dir_all(&old).or_else(|_| fs::remove_file(&old));
 
     Ok(())
 }

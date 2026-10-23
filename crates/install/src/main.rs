@@ -144,9 +144,14 @@ fn run() -> i32 {
             break Outcome::Fail(format!("failed to draw: {err}"));
         }
 
-        if !event::poll(Duration::from_millis(50)).unwrap_or(false) {
-            continue;
+        // an error here is not "no event": it would redraw at full speed with a screen that never
+        // changes, so it ends the loop and says why, as a failed draw does
+        match event::poll(Duration::from_millis(50)) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(err) => break Outcome::Fail(format!("failed to read the terminal: {err}")),
         }
+        // a key that could not be read is dropped, as the terminal may still answer the next one
         let Ok(happened) = event::read() else {
             continue;
         };
