@@ -1,12 +1,13 @@
 //! Synced lyrics for the Media Surface (`media.lyrics`, ADR 0063): the line of the playing track at
-//! its MPRIS position, from a `.lrc` file beside a local track, or also from LRCLIB.
+//! its MPRIS position, from a `.lrc` file beside the track a local URL names, or also from LRCLIB.
 //!
-//! Nothing here runs until the Surface is open and a track plays with the setting on. The media
-//! follower then says what it wants (`want`), and one worker thread, started on the first ask,
-//! looks it up: the `.lrc` file named like a `file://` track, else (`lrclib` only) the cache, else
-//! one `GET /api/get` over https for the track's title, artist, album and length. A failed
-//! look-up waits, for that track, past a pause or the Surface closing, and the Surface closing
-//! drops the lyrics, so nothing is asked for a track no one watches.
+//! Nothing here runs until the Surface is open with the setting on. The media follower then says
+//! what it wants (`want`), and one worker thread, started on the first ask, looks it up: the
+//! `.lrc` file beside the track a local URL names, read whether it plays or not, else (`lrclib`
+//! only, and only while it plays) the cache, else one `GET /api/get` over https for the track's
+//! title, artist, album and length. A failed look-up waits, for that track, past a pause or the
+//! Surface closing, and the Surface closing drops the lyrics, so nothing is asked for a track no
+//! one watches.
 //!
 //! The cache (`$XDG_CACHE_HOME/kanade/lyrics`) holds an answer per track, named by a hash of its
 //! title, artist, album and length, so no file name tells what was played; a miss is kept for
@@ -27,7 +28,8 @@ use kanade_runtime::queue::Queue;
 use ring::digest;
 use ureq::Agent;
 
-use super::{body, media};
+use super::media::{self, unescape};
+use super::body;
 use crate::atomic::{self, Mode};
 use crate::backoff::Backoff;
 use crate::config;
