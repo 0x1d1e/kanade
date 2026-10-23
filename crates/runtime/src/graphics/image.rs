@@ -23,11 +23,15 @@ const ICON_SIDE: f32 = 256.0;
 const WORKERS: usize = 3;
 
 /*
- * the most small copies kept, and their most bytes, a grid of a few hundred wallpapers' worth;
- * past either, those no window holds go, the longest unused first
+ * the most small copies kept, and their most bytes; past either, those no window holds go, the
+ * longest unused first. Every caller asks for an icon or a tile, never a picture: the largest is a
+ * Wallpapers tile at `SCALE` 2, 288x180 px, 202 KiB. One grid draws at most 30 of them, 5.9 MiB:
+ * six rows built and clipped between rows, four showing whole. Next a Dock icon at its most
+ * magnified, 144 KiB. So the bounds hold several gridfuls scrolled away and back, beside every
+ * Dock icon and other Surface's
  */
-const THUMBNAILS: usize = 512;
-const THUMBNAIL_BYTES: usize = 128 << 20;
+const THUMBNAILS: usize = 128;
+const THUMBNAIL_BYTES: usize = 24 << 20;
 
 // an svg's bytes drawn with the longest side `longest` pixels across: width, height, plain RGBA
 pub fn draw_svg(bytes: &[u8], longest: f32) -> Option<(u32, u32, Vec<u8>)> {
