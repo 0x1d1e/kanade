@@ -136,7 +136,10 @@ mod tests {
 
     #[test]
     fn restarting_gnome_is_suppressed_when_casts_are_active() {
-        use crate::sources::niri::{Niri, Target};
+        use crate::sources::niri::{NIRI_TURN, Niri, Target};
+        use kanade_runtime::MutexExt;
+
+        let _turn = NIRI_TURN.locked();
 
         Niri::write().connected = false;
         assert!(has_active_casts());

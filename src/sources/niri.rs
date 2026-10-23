@@ -74,6 +74,14 @@ impl Niri {
     }
 }
 
+/*
+ * the one `Niri` is the process's, so a test that writes it is every other test's input: one that
+ * reads it between a write and its undo sees a niri that is gone, or one casting nothing. Every
+ * test that reads or writes it takes this turn, so the writes land whole in tests that mean them
+ */
+#[cfg(test)]
+pub static NIRI_TURN: Mutex<()> = Mutex::new(());
+
 impl Service for Niri {
     fn new() -> Self {
         Self::default()
@@ -1003,7 +1011,7 @@ mod tests {
     // every post for this stream, and why it ended
     fn posts(lines: &[&str]) -> (Vec<Seen>, io::ErrorKind) {
         // `watch` writes the one `Niri` every test shares, so the tests that run it take turns
-        let _running = RUNNING.lock().unwrap();
+        let _turn = NIRI_TURN.locked();
 
         let mut posts = Vec::new();
         let mut posted = Seen::default();
@@ -1060,6 +1068,7 @@ mod tests {
 
     // what `windows` hears of this stream
     fn heard(lines: &[&str]) -> Vec<Heard> {
+        let _turn = NIRI_TURN.locked();
         let text = [&[OK], lines].concat().join("\n");
         let mut heard = Vec::new();
 
@@ -1282,6 +1291,7 @@ mod tests {
 
     // how many failed loads of its config this stream tells of
     fn failures(lines: &[&str]) -> usize {
+        let _turn = NIRI_TURN.locked();
         let text = [&[OK], lines].concat().join("\n");
         let mut failures = 0;
 
@@ -1309,6 +1319,7 @@ mod tests {
 
     // the layouts each switch of this stream goes to
     fn switches(lines: &[&str]) -> Vec<String> {
+        let _turn = NIRI_TURN.locked();
         let text = [&[OK], lines].concat().join("\n");
         let mut switches = Vec::new();
 
@@ -1400,13 +1411,10 @@ mod tests {
         assert_eq!(lost, io::ErrorKind::Other);
     }
 
-    // `run` writes the one `Niri` every test shares, so the tests that run it take turns
-    static RUNNING: Mutex<()> = Mutex::new(());
-
     // the core is told once, then niri is gone for good
     #[test]
     fn losing_the_stream_degrades_to_every_monitor_focused() {
-        let _running = RUNNING.lock().unwrap();
+        let _turn = NIRI_TURN.locked();
 
         let text = [OK, WORKSPACES, &overview(true), &cast(1)].join("\n");
         let mut posts = Vec::new();
@@ -1449,7 +1457,7 @@ mod tests {
 
     #[test]
     fn losing_the_stream_marks_niri_disconnected() {
-        let _running = RUNNING.lock().unwrap();
+        let _turn = NIRI_TURN.locked();
 
         let text = [OK, WORKSPACES].join("\n");
         let mut posted = Seen::default();
