@@ -399,6 +399,21 @@ fn black((width, height): (u32, u32)) -> Option<Pixmap> {
 }
 
 /*
+ * `data`, a frame's pixels, into `buffer`, which the pool rounds up to 64 bytes: it is longer than
+ * the image, and the padding past it is not drawn from, so only the front is written. `false` if
+ * the buffer is shorter than the image, which no surface is drawn from at all
+ */
+fn filled(buffer: &mut [u8], data: &[u8]) -> bool {
+    match buffer.get_mut(..data.len()) {
+        Some(to) => {
+            to.copy_from_slice(data);
+            true
+        }
+        None => false,
+    }
+}
+
+/*
  * `work`, or none if it panicked: a picture that crashes its decoder or the drawing only goes
  * undrawn, never ends the lock, which would crash again on the same picture as the shell restarts
  */
@@ -922,7 +937,12 @@ impl State {
             };
 
         match self.order {
-            Order::Rgba => canvas.copy_from_slice(pixmap.data()),
+            Order::Rgba => {
+                if !filled(canvas, pixmap.data()) {
+                    eprintln!("kanade: the lock screen's buffer is smaller than its frame");
+                    return;
+                }
+            }
             Order::Bgra => {
                 let (to, _) = canvas.as_chunks_mut::<4>();
                 let (from, _) = pixmap.data().as_chunks::<4>();
@@ -1422,3 +1442,27 @@ impl Dispatch<WpViewport, ()> for State {
 
 delegate_registry!(State);
 smithay_client_toolkit::delegate_dispatch2!(State);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the pool rounds a slot up to 64 bytes, so this frame's buffer is 16 bytes longer than it
+    #[test]
+    fn a_frame_fills_the_front_of_a_rounded_up_buffer() {
+        let (width, height) = (1433_u32, 972_u32);
+        let mut data = vec![0_u8; (width * height * 4) as usize];
+        for (at, byte) in data.iter_mut().enumerate() {
+            *byte = at as u8;
+        }
+        let rounded = data.len().next_multiple_of(64);
+        assert!(rounded > data.len());
+
+        let mut buffer = vec![0xAA_u8; rounded];
+        assert!(filled(&mut buffer, &data));
+        assert_eq!(buffer[..data.len()], data[..]);
+        assert!(buffer[data.len()..].iter().all(|byte| *byte == 0xAA));
+
+        assert!(!filled(&mut buffer[..data.len() - 1], &data));
+    }
+}
