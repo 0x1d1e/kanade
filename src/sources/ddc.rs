@@ -38,6 +38,23 @@ const SETTLE: Duration = Duration::from_millis(50);
 // after a failure the bus is left alone this long
 const COOLDOWN: Duration = Duration::from_secs(10);
 
+// I2C slave address of a monitor's EDID EEPROM; the lazy fallback when no `ddc` link exists
+const EDID_ADDRESS: u16 = 0x50;
+
+// the EDID segment register a read selects first
+const EDID_SEGMENT: u8 = 0x00;
+
+// a base EDID block is 128 bytes
+const EDID_SIZE: usize = 128;
+
+// offsets inside an EDID base block
+const EDID_MANUFACTURER: usize = 8;
+const EDID_PRODUCT: usize = 10;
+const EDID_SERIAL: usize = 12;
+
+// I2C adapters, each `i2c-N`, probed for a monitor's EDID when no `ddc` link exists
+const I2C_ADAPTERS: &str = "/sys/class/i2c-adapter";
+
 const DRM: &str = "/sys/class/drm";
 
 // a connector's link to its I2C adapter; split, as `boundary` reads a bare "ddc" as a hex color
@@ -139,6 +156,14 @@ pub struct Monitor {
     pub bus: u32,
 }
 
+/// A monitor's identity, from its EDID: manufacturer, product and serial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EdidIdentity {
+    manufacturer: String,
+    product: u16,
+    serial: u32,
+}
+
 // a laptop's own panel does not take DDC/CI, and a write to it is not wanted
 fn internal(connector: &str) -> bool {
     ["eDP", "LVDS", "DSI"]
@@ -165,6 +190,68 @@ fn bus_of(link: &Path) -> Option<u32> {
         .ok()
 }
 
+/// The three-character manufacturer code from EDID bytes 8-9.
+fn edid_manufacturer(edid: &[u8]) -> Option<String> {
+    let b0 = *edid.get(EDID_MANUFACTURER)?;
+    let b1 = *edid.get(EDID_MANUFACTURER + 1)?;
+
+    let c1 = char::from_u32(u32::from(b0 >> 3) + 64)?;
+    let c2 = char::from_u32(u32::from((b0 & 0x07) << 2 | (b1 >> 6)) + 64)?;
+    let c3 = char::from_u32(u32::from((b1 >> 1) & 0x1F) + 64)?;
+
+    Some(format!("{c1}{c2}{c3}"))
+}
+
+/// A monitor's identity, manufacturer, product and serial, from an EDID base block.
+fn edid_identity(edid: &[u8]) -> Option<EdidIdentity> {
+    let manufacturer = edid_manufacturer(edid)?;
+    let product = u16::from_le_bytes([*edid.get(EDID_PRODUCT)?, *edid.get(EDID_PRODUCT + 1)?]);
+    let serial = u32::from_le_bytes([
+        *edid.get(EDID_SERIAL)?,
+        *edid.get(EDID_SERIAL + 1)?,
+        *edid.get(EDID_SERIAL + 2)?,
+        *edid.get(EDID_SERIAL + 3)?,
+    ]);
+
+    Some(EdidIdentity {
+        manufacturer,
+        product,
+        serial,
+    })
+}
+
+/// The bus behind a connector with no `ddc` link, found by matching its EDID over I2C.
+///
+/// Reads the connector's sysfs EDID for its identity, then probes each I2C bus at slave 0x50,
+/// segment 0x00, and returns the first whose EDID matches — so a two-GPU machine cannot drive
+/// the wrong panel. Never writes to a bus until it has answered the EDID read.
+fn edid_bus(connector: &str, path: &Path) -> Option<Monitor> {
+    let expected = fs::read(path.join("edid"))
+        .ok()
+        .and_then(|edid| edid_identity(&edid))?;
+
+    let Ok(adapters) = fs::read_dir(I2C_ADAPTERS) else {
+        return None;
+    };
+
+    for entry in adapters.flatten() {
+        let bus = bus_of(&entry.path())?;
+
+        let Some(edid) = i2c_edid(bus) else {
+            continue;
+        };
+
+        if edid_identity(&edid) == Some(expected.clone()) {
+            return Some(Monitor {
+                connector: connector.to_owned(),
+                bus,
+            });
+        }
+    }
+
+    None
+}
+
 /// The connected external monitors whose connector has an I2C bus. Reads sysfs only.
 pub fn monitors() -> Vec<Monitor> {
     let Ok(entries) = fs::read_dir(DRM) else {
@@ -184,13 +271,20 @@ pub fn monitors() -> Vec<Monitor> {
                 return None;
             }
 
-            // `ddc` links to the adapter, `i2c-7`, whose own `i2c-dev/i2c-7` is the node
-            let bus = bus_of(&fs::canonicalize(path.join(LINK)).ok()?)?;
+            // fast path: the `ddc` symlink names the bus directly
+            if let Some(bus) = fs::canonicalize(path.join(LINK))
+                .ok()
+                .as_deref()
+                .and_then(bus_of)
+            {
+                return Some(Monitor {
+                    connector: connector.to_owned(),
+                    bus,
+                });
+            }
 
-            Some(Monitor {
-                connector: connector.to_owned(),
-                bus,
-            })
+            // fallback: NVIDIA connectors have no `ddc` link; match EDID over I2C instead
+            edid_bus(connector, &path)
         })
         .collect();
 
@@ -228,6 +322,20 @@ fn write(bus: u32, value: u16) -> Result<(), String> {
     thread::sleep(SETTLE);
 
     Ok(())
+}
+
+/// Reads a monitor's EDID from I2C slave 0x50 on `bus`: selects segment 0x00, then reads the
+/// 128-byte base block. Only reads — never writes a DDC/CI command — until the bus answers.
+fn i2c_edid(bus: u32) -> Option<Vec<u8>> {
+    let path = PathBuf::from(format!("/dev/i2c-{bus}"));
+    let mut file = clock::open_i2c(&path, EDID_ADDRESS).ok()?;
+
+    file.write_all(&[EDID_SEGMENT]).ok()?;
+
+    let mut edid = [0u8; EDID_SIZE];
+    file.read_exact(&mut edid).ok()?;
+
+    Some(edid.to_vec())
 }
 
 enum Job {
