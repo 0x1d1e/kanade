@@ -511,7 +511,7 @@ fn encode(picture: &Picture) -> Result<Vec<u8>, String> {
  * regular file; every write refuses links
  */
 fn backdrop(source: &Path, size: (u32, u32), blur: u32, dim: u32) -> Result<Vec<u8>, String> {
-    let named = source.display();
+    let named = class::plain(&source.display().to_string());
     let source = &fs::canonicalize(source).map_err(|error| format!("{named}: {error}"))?;
     let meta = fs::metadata(source).map_err(|error| format!("{named}: {error}"))?;
 
@@ -561,17 +561,26 @@ fn backdrop(source: &Path, size: (u32, u32), blur: u32, dim: u32) -> Result<Vec<
 
 // the overlay's directory is Kanade's: a directory the user owns, not a link, nobody else writes to
 fn owned(path: &Path) -> Result<(), String> {
-    let meta =
-        fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let meta = fs::symlink_metadata(path)
+        .map_err(|error| format!("{}: {error}", class::plain(&path.display().to_string())))?;
 
     if !meta.is_dir() {
-        return Err(format!("{} is not a directory", path.display()));
+        return Err(format!(
+            "{} is not a directory",
+            class::plain(&path.display().to_string())
+        ));
     }
     if meta.uid() != getuid().as_raw() {
-        return Err(format!("{} is not yours", path.display()));
+        return Err(format!(
+            "{} is not yours",
+            class::plain(&path.display().to_string())
+        ));
     }
     if meta.permissions().mode() & 0o022 != 0 {
-        return Err(format!("{} is writable by others", path.display()));
+        return Err(format!(
+            "{} is writable by others",
+            class::plain(&path.display().to_string())
+        ));
     }
 
     Ok(())
@@ -582,8 +591,8 @@ fn root_owned_ancestors(trusted_root: &Path, path: &Path) -> Result<(), String> 
     let relative = path.strip_prefix(trusted_root).map_err(|_| {
         format!(
             "{} is outside trusted root {}",
-            path.display(),
-            trusted_root.display()
+            class::plain(&path.display().to_string()),
+            class::plain(&trusted_root.display().to_string())
         )
     })?;
     let mut current = trusted_root.to_owned();
@@ -593,8 +602,9 @@ fn root_owned_ancestors(trusted_root: &Path, path: &Path) -> Result<(), String> 
         chain.push(current.clone());
     }
     for ancestor in chain {
-        let meta = fs::symlink_metadata(&ancestor)
-            .map_err(|error| format!("{}: {error}", ancestor.display()))?;
+        let meta = fs::symlink_metadata(&ancestor).map_err(|error| {
+            format!("{}: {error}", class::plain(&ancestor.display().to_string()))
+        })?;
         let mode = meta.permissions().mode();
         if !meta.is_dir()
             || meta.file_type().is_symlink()
@@ -603,7 +613,7 @@ fn root_owned_ancestors(trusted_root: &Path, path: &Path) -> Result<(), String> 
         {
             return Err(format!(
                 "{} must be a root-owned directory not writable by group or others",
-                ancestor.display()
+                class::plain(&ancestor.display().to_string())
             ));
         }
     }
@@ -612,8 +622,8 @@ fn root_owned_ancestors(trusted_root: &Path, path: &Path) -> Result<(), String> 
 
 pub(crate) fn root_owned_read_only(trusted_root: &Path, path: &Path) -> Result<(), String> {
     fn visit(path: &Path, expected_owner: u32) -> Result<(), String> {
-        let meta =
-            fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let meta = fs::symlink_metadata(path)
+            .map_err(|error| format!("{}: {error}", class::plain(&path.display().to_string())))?;
         let mode = meta.permissions().mode();
         let safe_type = if meta.is_dir() {
             mode & 0o005 == 0o005
@@ -629,14 +639,16 @@ pub(crate) fn root_owned_read_only(trusted_root: &Path, path: &Path) -> Result<(
         {
             return Err(format!(
                 "{} must be root-owned, readable by SDDM, and not writable by group or others",
-                path.display()
+                class::plain(&path.display().to_string())
             ));
         }
         if meta.is_dir() {
-            for entry in
-                fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?
-            {
-                let entry = entry.map_err(|error| format!("{}: {error}", path.display()))?;
+            for entry in fs::read_dir(path).map_err(|error| {
+                format!("{}: {error}", class::plain(&path.display().to_string()))
+            })? {
+                let entry = entry.map_err(|error| {
+                    format!("{}: {error}", class::plain(&path.display().to_string()))
+                })?;
                 visit(&entry.path(), expected_owner)?;
             }
         }
@@ -667,7 +679,7 @@ fn point_sddm(w: &Where, theme: &str) -> Result<String, String> {
 
     Ok(format!(
         "test -f {prefix}/themes/{theme}/metadata.desktop && printf '[Theme]\\nThemeDir={prefix}/themes\\nCurrent={theme}\\n' | install -D -m 644 /dev/stdin {}",
-        w.ours().display()
+        class::plain(&w.ours().display().to_string())
     ))
 }
 
@@ -685,11 +697,14 @@ fn plan(installed: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>, String> {
         out: &mut Vec<(PathBuf, Option<PathBuf>)>,
     ) -> Result<(), String> {
         if depth > DEEPEST || out.len() > MOST {
-            return Err(format!("{}: too large for a theme", dir.display()));
+            return Err(format!(
+                "{}: too large for a theme",
+                class::plain(&dir.display().to_string())
+            ));
         }
 
         let mut entries: Vec<_> = fs::read_dir(dir)
-            .map_err(|error| format!("{}: {error}", dir.display()))?
+            .map_err(|error| format!("{}: {error}", class::plain(&dir.display().to_string())))?
             .flatten()
             .collect();
         entries.sort_by_key(fs::DirEntry::file_name);
@@ -714,7 +729,10 @@ fn plan(installed: &Path) -> Result<Vec<(PathBuf, Option<PathBuf>)>, String> {
             // counted as it goes, so one huge directory trips the cap while it is read, not whole
             // before the next directory it enters finds it too large
             if out.len() > MOST {
-                return Err(format!("{}: too large for a theme", dir.display()));
+                return Err(format!(
+                    "{}: too large for a theme",
+                    class::plain(&dir.display().to_string())
+                ));
             }
         }
 
@@ -859,7 +877,8 @@ fn modes(dir: &Path, fix: bool) -> io::Result<Vec<PathBuf>> {
  */
 #[cfg(test)]
 fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Result<(), String> {
-    let said = |error: io::Error| format!("{}: {error}", overlay.display());
+    let said =
+        |error: io::Error| format!("{}: {error}", class::plain(&overlay.display().to_string()));
     let (new, old) = (beside(overlay, ".new"), beside(overlay, ".old"));
 
     // a run that died with the overlay gone and the last working theme in `.old` is put back before
@@ -903,7 +922,7 @@ fn farm(overlay: &Path, wanted: &[(PathBuf, Option<PathBuf>)], user: &str) -> Re
             let _ = fs::remove_dir_all(&new);
             return Err(format!(
                 "{}: atomic theme exchange is unavailable; active theme was left unchanged: {error}",
-                overlay.display()
+                class::plain(&overlay.display().to_string())
             ));
         }
         let _ = fs::remove_dir_all(&new).or_else(|_| fs::remove_file(&new));
@@ -1068,7 +1087,7 @@ fn copy_own(w: &Where, overlay: &Path) -> Result<usize, String> {
         }
 
         atomic::write(&path, content.as_bytes(), Mode::Exactly(0o644))
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+            .map_err(|error| format!("{}: {error}", class::plain(&path.display().to_string())))?;
         written += 1;
     }
 
@@ -1116,11 +1135,19 @@ fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), 
     let prefix = w.prefix();
     let present = match fs::symlink_metadata(&prefix) {
         Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-            return Err(format!("{} is not a plain directory", prefix.display()));
+            return Err(format!(
+                "{} is not a plain directory",
+                class::plain(&prefix.display().to_string())
+            ));
         }
         Ok(_) => true,
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(format!("{}: {error}", prefix.display())),
+        Err(error) => {
+            return Err(format!(
+                "{}: {error}",
+                class::plain(&prefix.display().to_string())
+            ));
+        }
     };
     if !present || root_owned_read_only(&w.root, &prefix).is_ok() {
         return Ok((None, None));
@@ -1130,8 +1157,10 @@ fn migrate_legacy_prefix(w: &Where) -> Result<(Option<String>, Option<String>), 
     root_owned_ancestors(&w.root, parent)?;
     let legacy = beside(&prefix, ".legacy");
     let settings = legacy_settings(&w.overlay(OWN));
-    remove_tree_entry(&legacy).map_err(|error| format!("{}: {error}", legacy.display()))?;
-    fs::rename(&prefix, &legacy).map_err(|error| format!("{}: {error}", prefix.display()))?;
+    remove_tree_entry(&legacy)
+        .map_err(|error| format!("{}: {error}", class::plain(&legacy.display().to_string())))?;
+    fs::rename(&prefix, &legacy)
+        .map_err(|error| format!("{}: {error}", class::plain(&prefix.display().to_string())))?;
     Ok(settings)
 }
 
@@ -1143,14 +1172,17 @@ fn install_own(w: &Where) -> Result<(), String> {
     let (legacy_qt, legacy_user) = migrate_legacy_prefix(w)?;
 
     if fs::symlink_metadata(&prefix).is_err() {
-        make_dir(&prefix).map_err(|error| format!("{}: {error}", prefix.display()))?;
+        make_dir(&prefix)
+            .map_err(|error| format!("{}: {error}", class::plain(&prefix.display().to_string())))?;
     }
     root_owned_read_only(&w.root, &prefix)?;
     if fs::symlink_metadata(themes).is_err() {
-        make_dir(themes).map_err(|error| format!("{}: {error}", themes.display()))?;
+        make_dir(themes)
+            .map_err(|error| format!("{}: {error}", class::plain(&themes.display().to_string())))?;
     }
     root_owned_read_only(&w.root, themes)?;
-    recover(&overlay).map_err(|error| format!("{}: {error}", overlay.display()))?;
+    recover(&overlay)
+        .map_err(|error| format!("{}: {error}", class::plain(&overlay.display().to_string())))?;
 
     let target_qt = legacy_qt
         .and_then(|v| v.parse().ok())
@@ -1162,8 +1194,9 @@ fn install_own(w: &Where) -> Result<(), String> {
         Ok(_) => fs::remove_file(&temp),
         Err(_) => Ok(()),
     }
-    .map_err(|error| format!("{}: {error}", temp.display()))?;
-    make_dir(&temp).map_err(|error| format!("{}: {error}", temp.display()))?;
+    .map_err(|error| format!("{}: {error}", class::plain(&temp.display().to_string())))?;
+    make_dir(&temp)
+        .map_err(|error| format!("{}: {error}", class::plain(&temp.display().to_string())))?;
 
     let built = (|| -> io::Result<()> {
         for (name, text) in THEME {
@@ -1178,7 +1211,10 @@ fn install_own(w: &Where) -> Result<(), String> {
     })();
     if let Err(error) = built {
         let _ = fs::remove_dir_all(&temp);
-        return Err(format!("{}: {error}", overlay.display()));
+        return Err(format!(
+            "{}: {error}",
+            class::plain(&overlay.display().to_string())
+        ));
     }
 
     if fs::symlink_metadata(&overlay).is_ok() {
@@ -1186,12 +1222,14 @@ fn install_own(w: &Where) -> Result<(), String> {
             let _ = fs::remove_dir_all(&temp);
             return Err(format!(
                 "{}: atomic theme exchange is unavailable; active theme was left unchanged: {error}",
-                overlay.display()
+                class::plain(&overlay.display().to_string())
             ));
         }
         let _ = fs::remove_dir_all(&temp);
     } else {
-        fs::rename(&temp, &overlay).map_err(|error| format!("{}: {error}", overlay.display()))?;
+        fs::rename(&temp, &overlay).map_err(|error| {
+            format!("{}: {error}", class::plain(&overlay.display().to_string()))
+        })?;
     }
     Ok(())
 }
@@ -1261,7 +1299,7 @@ fn reads(w: &Where, prefix: &str, theme: &str) -> Result<(), (Vec<String>, bool)
             Some((value, file)) if w.after_ours(file) => {
                 said.push(format!(
                     "{key}={value} wins, from {}, which SDDM reads after Kanade's {CONF}; remove or change its [Theme] {key}",
-                    file.display()
+                    class::plain(&file.display().to_string())
                 ));
             }
             Some((value, _)) => {
@@ -1453,7 +1491,10 @@ fn gather(w: &Where, config: &Config) -> Result<Status, String> {
         }
     }
     match owned(&w.data()) {
-        Ok(()) => lines.push(format!("mutable data: {} ready", w.data().display())),
+        Ok(()) => lines.push(format!(
+            "mutable data: {} ready",
+            class::plain(&w.data().display().to_string())
+        )),
         Err(error) => lines.push(format!("mutable data: {error}")),
     }
 
@@ -1697,7 +1738,10 @@ fn diagnose(w: &Where, config: &Config) -> Vec<Finding> {
     {
         match modes(&dir, false) {
             Ok(found) => closed.extend(found),
-            Err(error) => unchecked.push(format!("{}: {error}", dir.display())),
+            Err(error) => unchecked.push(format!(
+                "{}: {error}",
+                class::plain(&dir.display().to_string())
+            )),
         }
     }
     if !unchecked.is_empty() {
@@ -1782,7 +1826,7 @@ fn hold(w: &Where) -> Result<Option<File>, String> {
     let Some(path) = &w.lock else {
         return Ok(None);
     };
-    let said = |error: io::Error| format!("{}: {error}", path.display());
+    let said = |error: io::Error| format!("{}: {error}", class::plain(&path.display().to_string()));
 
     if let Some(dir) = path.parent() {
         DirBuilder::new()
@@ -1858,17 +1902,23 @@ pub(super) fn plain_target(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => Err(format!(
             "{} is a symbolic link; remove it, and Kanade writes the file",
-            path.display()
+            class::plain(&path.display().to_string())
         )),
-        Ok(meta) if !meta.is_file() => Err(format!("{} is not a file", path.display())),
+        Ok(meta) if !meta.is_file() => Err(format!(
+            "{} is not a file",
+            class::plain(&path.display().to_string())
+        )),
         Ok(meta) if meta.nlink() > 1 => Err(format!(
             "{} has {} names (a hard link); remove it, and Kanade writes the file",
-            path.display(),
+            class::plain(&path.display().to_string()),
             meta.nlink()
         )),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("{}: {error}", path.display())),
+        Err(error) => Err(format!(
+            "{}: {error}",
+            class::plain(&path.display().to_string())
+        )),
     }
 }
 
@@ -1877,7 +1927,7 @@ pub(super) fn put_picture(path: &Path, bytes: &[u8]) -> Result<(), String> {
     plain_target(path)?;
 
     atomic::write(path, bytes, Mode::Exactly(0o644))
-        .map_err(|error| format!("{}: {error}", path.display()))
+        .map_err(|error| format!("{}: {error}", class::plain(&path.display().to_string())))
 }
 
 /*
@@ -1890,10 +1940,16 @@ fn mend(w: &Where) -> Result<Vec<PathBuf>, String> {
 
     for dir in [w.prefix(), w.prefix().join("themes"), w.data()] {
         match fs::symlink_metadata(&dir) {
-            Ok(_) => mended
-                .extend(modes(&dir, true).map_err(|error| format!("{}: {error}", dir.display()))?),
+            Ok(_) => mended.extend(modes(&dir, true).map_err(|error| {
+                format!("{}: {error}", class::plain(&dir.display().to_string()))
+            })?),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", dir.display())),
+            Err(error) => {
+                return Err(format!(
+                    "{}: {error}",
+                    class::plain(&dir.display().to_string())
+                ));
+            }
         }
     }
 
@@ -1908,7 +1964,8 @@ fn mend(w: &Where) -> Result<Vec<PathBuf>, String> {
 fn ready(w: &Where, prefix: &str) -> Result<(), String> {
     let data = w.data();
     if !data.exists() {
-        make_dir(&data).map_err(|error| format!("{}: {error}", data.display()))?;
+        make_dir(&data)
+            .map_err(|error| format!("{}: {error}", class::plain(&data.display().to_string())))?;
     }
     if let Err(error) = owned(&data) {
         return Err(format!(
@@ -1924,13 +1981,14 @@ fn ready(w: &Where, prefix: &str) -> Result<(), String> {
     if !w.overlay(OWN).join("metadata.desktop").is_file() {
         return Err(format!(
             "{} is missing; run `kanade sddm setup` as root",
-            w.overlay(OWN).display()
+            class::plain(&w.overlay(OWN).display().to_string())
         ));
     }
 
     // a link in the way would send a write somewhere else
     if !data.exists() {
-        make_dir(&data).map_err(|error| format!("{}: {error}", data.display()))?;
+        make_dir(&data)
+            .map_err(|error| format!("{}: {error}", class::plain(&data.display().to_string())))?;
     }
     owned(&data)?;
 
@@ -1992,7 +2050,7 @@ fn apply(
             let _ = writeln!(
                 text,
                 "picture: {} ({})",
-                shown.display(),
+                class::plain(&shown.display().to_string()),
                 sizes(bytes.len() as u64)
             );
         }
@@ -2000,12 +2058,21 @@ fn apply(
             plain_target(&shown)?;
             match fs::remove_file(&shown) {
                 Ok(()) => {
-                    let _ = writeln!(text, "picture: removed {}", shown.display());
+                    let _ = writeln!(
+                        text,
+                        "picture: removed {}",
+                        class::plain(&shown.display().to_string())
+                    );
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     text.push_str("picture: none\n");
                 }
-                Err(error) => return Err(format!("{}: {error}", shown.display())),
+                Err(error) => {
+                    return Err(format!(
+                        "{}: {error}",
+                        class::plain(&shown.display().to_string())
+                    ));
+                }
             }
         }
     }

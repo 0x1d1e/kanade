@@ -208,7 +208,7 @@ fn info_text(w: &Where, config: &Config, name: &str) -> Result<String, String> {
     match found.source {
         Source::BuiltIn => text.push_str("from: built into this Kanade\n"),
         Source::Installed => {
-            let _ = writeln!(text, "from: {}", installed.display());
+            let _ = writeln!(text, "from: {}", plain(&installed.display().to_string()));
         }
         Source::OverlayOnly => {
             let _ = writeln!(
@@ -406,7 +406,10 @@ fn restore_picture(picture: &Path, saved: Option<&[u8]>) -> Result<(), String> {
             match fs::remove_file(picture) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(format!("{}: {error}", picture.display())),
+                Err(error) => Err(format!(
+                    "{}: {error}",
+                    plain(&picture.display().to_string())
+                )),
             }
         }
     }
@@ -519,11 +522,15 @@ fn disable_text(w: &Where, config: &Config) -> Result<String, String> {
             plain_target(&shown)?;
             match fs::remove_file(&shown) {
                 Ok(()) => {
-                    let _ = writeln!(text, "picture: removed {}", shown.display());
+                    let _ = writeln!(
+                        text,
+                        "picture: removed {}",
+                        plain(&shown.display().to_string())
+                    );
                     Ok(())
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(format!("{}: {error}", shown.display())),
+                Err(error) => Err(format!("{}: {error}", plain(&shown.display().to_string()))),
             }
         })?;
     }
@@ -533,19 +540,19 @@ fn disable_text(w: &Where, config: &Config) -> Result<String, String> {
         let _ = writeln!(
             text,
             "as root (Kanade never runs these), so SDDM stops reading the overlay:\n  rm {}",
-            ours.display()
+            plain(&ours.display().to_string())
         );
     } else {
         let _ = writeln!(
             text,
             "{} is not there: SDDM does not read the overlay through it",
-            ours.display()
+            plain(&ours.display().to_string())
         );
     }
     let _ = writeln!(
         text,
         "to remove the root-owned themes as root: `rm -r {}`",
-        w.prefix().join("themes").display()
+        plain(&w.prefix().join("themes").display().to_string())
     );
 
     Ok(text)

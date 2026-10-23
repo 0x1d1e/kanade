@@ -120,7 +120,7 @@ pub fn read(path: &Path) -> Result<Read, String> {
     use std::io::Read as _;
     use std::os::unix::fs::OpenOptionsExt;
 
-    let named = || path.display().to_string();
+    let named = || plain(&path.display().to_string());
     let meta = fs::metadata(path).map_err(|error| format!("{}: {error}", named()))?;
     if !meta.is_file() {
         return Err(format!("{} is not a file", named()));

@@ -208,8 +208,8 @@ pub fn refresh(
 
             Ok(format!(
                 "picture: {} from {}",
-                w.picture().display(),
-                source.display()
+                class::plain(&w.picture().display().to_string()),
+                class::plain(&source.display().to_string())
             ))
         } else {
             Err(String::from(
