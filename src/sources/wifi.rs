@@ -687,11 +687,11 @@ fn joined(
  * the one made is saved, and the old one, with the old password, deleted so it does not come back;
  * failed, the one made is deleted. With NetworkManager gone, so are its profiles: nothing is asked
  *
- * A save that fails is the join failing: the network is up, but it is not remembered, and a join
- * reads as done only when it is. A delete that fails is said on stderr and kept: the join is up
- * and usable, and the profile it could not remove holds a password that no longer works, which the
- * next join to that network replaces. So a save that fails ends it there: the network is up on the
- * profile it made, and neither it nor the one it would have replaced is deleted
+ * A save that fails is the join failing: the network is up but not remembered, and a join reads as
+ * done only when it is. A delete that fails is said on stderr and kept: the join is up and usable,
+ * and the profile it could not remove holds a password that no longer works, which the next join to
+ * that network replaces. So a save that fails ends it there: the network is up on the profile it
+ * made, and neither it nor the one it would have replaced is deleted
  */
 fn tidy(
     made: Option<&str>,

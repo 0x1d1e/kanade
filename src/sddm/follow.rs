@@ -156,11 +156,11 @@ fn fresh() -> Config {
 /*
  * writes the login screen's picture from `source`, if `config` (asked again once the lock is held)
  * still has the login screen follow the wallpaper: a `disable` that removed the picture while this
- * waited is not undone, since it turns `sddm.sync` off before it takes the lock. When the overlay's `theme.conf.user` already
- * names the picture, only the picture is written (the file the login screen reads, replaced whole);
- * else the whole look is written as `kanade sddm sync` would, which makes the overlay ready. Says
- * so when the overlay is missing, with the root command that makes it. Nothing happens for a theme
- * that reads no picture setting
+ * waited is not undone, since it turns `sddm.sync` off before it takes the lock. When the overlay's
+ * `theme.conf.user` already names the picture, only the picture is written; else the whole look is
+ * written as `kanade sddm sync` would, which makes the overlay ready. Says so when the overlay is
+ * missing, with the root command that makes it. Nothing happens for a theme that reads no picture
+ * setting
  */
 pub fn refresh(
     w: &Where,
