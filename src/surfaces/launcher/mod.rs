@@ -105,6 +105,9 @@ const ICON_GAP: f32 = 12.0;
 const QUERY: f32 = theme::text::TITLE;
 const CARET: f32 = 1.5;
 
+// the air the selection keeps around the letters it covers
+const SELECTION_INSET: f32 = 4.0;
+
 // pixels per wheel line
 const WHEEL: f32 = 40.0;
 
@@ -1353,15 +1356,41 @@ fn field(query: &str, caret: usize, select_all: bool, placeholder: &str) -> Rect
             .align(Center),
         )
     } else if select_all {
+        // measured on the whole query: one wider than the field shows its end instead
+        let whole = Text::new(query)
+            .size(QUERY)
+            .color(theme::island().on_surface)
+            .weight(theme::text::MEDIUM);
+
+        /*
+         * the selection is as wide as the letters it covers, with a little air around them, so
+         * the caret follows the text; a query wider than the field fills it
+         */
+        let (selected, selected_width, inset): (Box<dyn Widget>, f32, f32) = match whole.width() {
+            Size::Fixed(natural) if natural <= room => {
+                // the air gives way rather than push the caret out of the field
+                let inset = SELECTION_INSET.min((room - natural) / 2.0);
+
+                (Box::new(whole), natural + 2.0 * inset, inset)
+            }
+            _ => (Box::new(super::search::tail(query, room)), room, 0.0),
+        };
+
         Box::new(
             Row::new(children![
                 Rectangle::new()
-                    .width(room)
+                    .width(selected_width)
                     .height(QUERY + 4.0)
                     .fill(theme::island().surface_container_high)
                     .radius(radius::HAIRLINE)
+                    .padding(Padding {
+                        top: 0.0,
+                        right: inset,
+                        bottom: 0.0,
+                        left: inset,
+                    })
                     .align_child(Start, Center)
-                    .child(super::search::tail(query, room)),
+                    .child(selected),
                 caret_widget,
             ])
             .align(Center),
