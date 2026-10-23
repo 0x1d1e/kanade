@@ -1075,7 +1075,7 @@ fn accent(art: &str) -> Option<(u8, u8, u8)> {
 }
 
 // a link escapes bytes as %XX; one that does not decode to UTF-8 is not a path the runtime can open
-fn unescape(path: &str) -> Option<String> {
+pub(super) fn unescape(path: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(path.len());
     let mut rest = path.as_bytes();
 

@@ -163,11 +163,12 @@ static OUTCOME: Mutex<&'static str> = Mutex::new("nothing looked up yet");
 
 // what the follower asked of the worker
 enum Message {
-    // a track plays and its lyrics are wanted
-    Want(Box<Wanted>),
-
-    // it stopped playing: what was found stays, and a retry that waits goes on waiting
-    Pause,
+    /*
+     * the track that is shown and whether it plays: the `.lrc` beside it is read either way, the
+     * cache and LRCLIB wait for it to play. Of a track shown before, what was found stays, and a
+     * retry that waits goes on waiting
+     */
+    Show(Box<Wanted>, bool),
 
     // nobody watches: forget it all
     Stop,
@@ -180,8 +181,9 @@ static QUEUE: LazyLock<Queue<Message>> = LazyLock::new(Queue::new);
 static ASKED: Mutex<Option<(Wanted, bool)>> = Mutex::new(None);
 
 /*
- * the track that is shown, and whether it plays. Lyrics are looked up while it plays; paused, none
- * is, what was found stays on screen, and a retry that waits goes on waiting
+ * the track that is shown, and whether it plays. The `.lrc` beside it is read either way; the cache
+ * and LRCLIB are asked only while it plays. Paused, what was found stays on screen, and a retry
+ * that waits goes on waiting
  */
 pub fn want(wanted: &Wanted, playing: bool) {
     let mut asked = ASKED.locked();
@@ -196,11 +198,7 @@ pub fn want(wanted: &Wanted, playing: bool) {
     static STARTED: Once = Once::new();
     STARTED.call_once(|| supervise::spawn("lyrics", follow));
 
-    QUEUE.send(if playing {
-        Message::Want(Box::new(wanted.clone()))
-    } else {
-        Message::Pause
-    });
+    QUEUE.send(Message::Show(Box::new(wanted.clone()), playing));
     *asked = Some((wanted.clone(), playing));
 }
 
