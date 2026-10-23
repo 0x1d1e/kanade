@@ -9,9 +9,9 @@
 //! open Surface beside it, and fades back as it closes. It goes by its row at rest, so its own
 //! icons grown under the pointer at the row's end may draw over the edge of an Island they near.
 //! An autohide turned on or off slides it. It redraws when the apps, the pointer over it or the
-//! config change, when an output
-//! comes or goes, and when the Island on its edge changes; it asks for frames only while something
-//! it draws moves: its springs, a fade or slide, or the Island moving near it.
+//! config change, when an output comes or goes, and when the Island on its edge changes; it asks
+//! for frames only while something it draws moves: its springs, a fade or slide, or the Island
+//! moving near it.
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
@@ -1407,8 +1407,8 @@ fn band(monitor: &Monitor, place: Placement, items: &[Item], beyond: f32) -> Opt
 }
 
 /*
- * where in its window the row can be, grown to `widest`: against a side it only reaches as far as
- * it grows from there, centered it may stand anywhere the window allows
+ * where in its window the row can be, grown to `widest`: against a side it only reaches as far
+ * as it grows from there, centered it may stand anywhere the window allows
  */
 fn reach(along: Along, window: f32, widest: f32) -> (f32, f32) {
     match along {

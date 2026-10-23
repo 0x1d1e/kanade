@@ -299,15 +299,12 @@ pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> 
 
 /*
  * the arguments of `ffmpeg` that write the stream of `encoder` on stdin, and the audio if any, to
- * `file`, copying the video. It stamps by the wall clock: a PipeWire window cast gives every frame the
- * same timestamp through GStreamer's own muxer, and the clock is the only time the frames have. The
- * audio is stamped by it too, so sound and picture are in step to about a frame at best, not
- * guaranteed. A file that is there is never replaced (`-n`). The mp4 is fragmented, a fragment each
- * second (`frag_duration`, as a still window has long gaps between keyframes) and flushed to the file
- * as it is written (`flush_packets`, or a small stream stays in ffmpeg's buffer), so a writer that is
- * killed leaves a file that plays up to its last fragment instead of one with no `moov`. The stream
- * is tagged as BT.709 limited range, the matrix `encoder` converts with, which the encoder itself
- * does not write
+ * `file`, copying the video. It stamps by the wall clock (the only time a PipeWire window cast's
+ * frames have), so sound and picture are in step to about a frame at best. A file that is there is
+ * never replaced (`-n`). The mp4 is fragmented, a fragment each second (`frag_duration`) and flushed
+ * as it is written (`flush_packets`), so a killed writer leaves a file that plays to its last
+ * fragment instead of one with no `moov`. The stream is tagged as BT.709 limited range, the matrix
+ * `encoder` converts with, which the encoder itself does not write
  */
 pub fn muxer(audio: Audio, file: &str) -> Vec<String> {
     let mut arguments: Vec<String> = [

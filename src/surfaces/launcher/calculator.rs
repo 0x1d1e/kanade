@@ -1,13 +1,9 @@
 /*
- * the calculator, as a Launcher provider: a query that is arithmetic shows its value first, and
- * pressing it copies what is shown. Numbers, `+ - * / ^` (`**` too, and `× ÷ −`), parentheses and
- * signs; `^` binds tightest and right first, so `-2^2` is -4 and `2^3^2` is 512.
- *
- * Percentages: `20% of 50` is 10, `50 + 10%` is 55 and `50 - 10%` is 45 (a percent after `+` or
- * `-` is of what stands before it), `200 * 10%` is 20. Bases: `0xff`, `0b101` and `0o17` are
- * numbers, up to 2^53 so they are read exactly, and `255 to hex` writes `0xff` (also `bin`, `oct`,
- * `dec`). Units: `10 cm to in` (`in` and `as` read as `to`), from the table in `units.rs`. No
- * currency, nothing from the network.
+ * the calculator, as a Launcher provider: an arithmetic query shows its value first, and pressing
+ * it copies what is shown. Numbers, `+ - * / ^` (`**` too, and `× ÷ −`), parentheses and signs;
+ * `^` binds tightest and right first (`-2^2` is -4, `2^3^2` is 512). Percentages (`20% of 50`
+ * is 10), bases (`0xff`, `0b101`, `0o17`, exact to 2^53), units (`10 cm to in`). No currency,
+ * nothing from the network.
  */
 
 use super::provider::{Action, Answer, Fit, LauncherProvider, Mark};

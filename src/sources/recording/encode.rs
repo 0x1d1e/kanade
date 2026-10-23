@@ -252,13 +252,11 @@ impl Encoding {
 
     /*
      * the elements that end a window's chain when no buffer arrives for `QUIET`: `watchdog`
-     * (`gst-plugins-bad`) passes buffers through and raises an element error when they stop, which
-     * `gst-launch-1.0` exits on, so the segment ends as a failure `falls_back` sees instead of one
-     * that hangs until the take is stopped. It catches a cast that delivers nothing and an encoder
-     * that stops taking what arrives (the chain pushes, so a wedged encoder stalls the flow through
-     * it just the same). Without it a still window and a wedged chain are the same silence. It must
-     * sit before the encoding chain: `x264enc` holds its first byte for 9 s at a still window's
-     * cadence, which is no fault of the chain's
+     * passes buffers through and raises an element error when they stop, so the segment ends as a
+     * failure `falls_back` sees instead of one that hangs until stopped. It catches a cast that
+     * delivers nothing and an encoder that stops taking what arrives. Without it a still window
+     * and a wedged chain are the same silence. It must sit before the encoding chain: `x264enc`
+     * holds its first byte for 9 s at a still window's cadence, which is no fault of the chain's.
      *
      * It does not depend on the encoding; it is here so the chain and its trial cannot drift apart
      */
