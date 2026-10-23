@@ -28,8 +28,8 @@ use kanade_runtime::queue::Queue;
 use ring::digest;
 use ureq::Agent;
 
-use super::media::{self, unescape};
 use super::body;
+use super::media::{self, unescape};
 use crate::atomic::{self, Mode};
 use crate::backoff::Backoff;
 use crate::config;
@@ -403,12 +403,50 @@ fn stamp(tag: &str) -> Option<i64> {
     Some((minutes * 60 + seconds) * 1000 + millis)
 }
 
-// the `.lrc` named like a local track and beside it, if there is one
+// the `.lrc` named like a track this machine holds and beside it, if there is one
 fn beside(url: &str) -> Option<String> {
-    let path = media::file_path(url)?;
+    let path = local_path(url)?;
     let path = Path::new(&path).with_extension("lrc");
 
     read_file(&path)
+}
+/*
+ * the file a URL names on this machine: a `file://` one, whose path that is, or an `http://` or
+ * `https://` one addressed to this machine (`localhost`, `127.0.0.1`, `[::1]`, a port allowed),
+ * so a player that streams a track it holds here is found too. A stream from any other host names
+ * no file here, and its path is never opened as one, so a remote address could not read a local
+ * `.lrc`
+ */
+fn local_path(url: &str) -> Option<String> {
+    let rest = ["file://", "http://", "https://"]
+        .iter()
+        .find_map(|local| url.strip_prefix(local))?;
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, format!("/{}", path)),
+        None => (rest, String::new()),
+    };
+
+    if !path.starts_with('/') {
+        return None;
+    }
+
+    // the host of the authority, a port and an IPv6 bracket pair off; `file:///path` has none
+    let host = match authority.strip_prefix('[') {
+        Some(address) => format!("[{}]", address.split_once(']')?.0),
+        None => authority
+            .split_once(':')
+            .map_or(authority, |(name, _)| name)
+            .to_owned(),
+    };
+
+    // `file://localhost/path` may name this machine, and `file:///path` has no authority at all
+    let mine = host.is_empty() || matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
+
+    if !mine {
+        return None;
+    }
+
+    unescape(&path)
 }
 
 // a regular file of sane size, as text
@@ -642,7 +680,7 @@ impl Worker {
 
     fn apply(&mut self, message: Message) {
         match message {
-            Message::Want(wanted) => {
+            Message::Show(wanted, playing) => {
                 if self.current.as_ref() != Some(&*wanted) {
                     self.retry = self
                         .penalty
@@ -658,9 +696,8 @@ impl Worker {
                     self.backoff.reset();
                 }
 
-                self.playing = true;
+                self.playing = playing;
             }
-            Message::Pause => self.playing = false,
             Message::Stop => {
                 self.current = None;
                 self.playing = false;
@@ -672,8 +709,10 @@ impl Worker {
         }
     }
 
+    // whether a track's lyrics are still to look up: the `.lrc` beside it whenever one is shown,
+    // the cache and LRCLIB once it plays
     fn due(&self) -> bool {
-        self.playing && !self.resolved && self.retry.is_none() && self.current.is_some()
+        !self.resolved && self.retry.is_none() && self.current.is_some()
     }
 
     // finds the lyrics of the current track and hands them to the follower
@@ -681,6 +720,20 @@ impl Worker {
         let Some(wanted) = self.current.clone() else {
             return;
         };
+
+        // the `.lrc` beside it answers a paused track too: nothing leaves this machine
+        if let Some(lines) = beside(&wanted.url)
+            .map(|text| parse(&text))
+            .filter(|lines| !lines.is_empty())
+        {
+            self.show(wanted.key, lines, "found beside the track");
+            return;
+        }
+
+        // the cache and LRCLIB wait for it to play, and it is looked up then, as it is still to be
+        if !self.playing {
+            return;
+        }
 
         let (found, outcome) = match self.look_up(&wanted) {
             Ok(found) => found,
@@ -713,7 +766,22 @@ impl Worker {
         if self
             .penalty
             .as_ref()
-            .is_some_and(|(key, _)| *key == wanted.key)
+            .is_some_and(|(penalized, _)| *penalized == wanted.key)
+        {
+            self.penalty = None;
+        }
+
+        self.show(wanted.key, found, outcome);
+    }
+
+    // the lyrics shown for the track whose key this is, and how the look-up ended
+    fn show(&mut self, key: String, lines: Vec<Line>, outcome: &'static str) {
+        self.backoff.reset();
+
+        if self
+            .penalty
+            .as_ref()
+            .is_some_and(|(penalized, _)| *penalized == key)
         {
             self.penalty = None;
         }
@@ -722,23 +790,17 @@ impl Worker {
         *OUTCOME.locked() = outcome;
 
         *CURRENT.locked() = Some(Loaded {
-            key: wanted.key,
-            lines: found.into(),
+            key,
+            lines: lines.into(),
         });
         media::lyrics_ready();
     }
 
-    // the lines, or how long to wait before asking again and why
+    // the cache's answer or LRCLIB's, or how long to wait before asking LRCLIB again and why
     fn look_up(
         &mut self,
         wanted: &Wanted,
     ) -> Result<(Vec<Line>, &'static str), (Duration, &'static str)> {
-        let beside = beside(&wanted.url).map(|text| parse(&text));
-
-        if let Some(lines) = beside.filter(|lines| !lines.is_empty()) {
-            return Ok((lines, "found beside the track"));
-        }
-
         if wanted.mode != LyricsSource::Lrclib || !wanted.askable() {
             return Ok((Vec::new(), "none found"));
         }
@@ -1141,7 +1203,7 @@ mod tests {
         let mut worker = Worker::new(agent(false), &url, Some(dir.join("cache")));
         let track = wanted(LyricsSource::Lrclib, "");
 
-        worker.apply(Message::Want(Box::new(track.clone())));
+        worker.apply(Message::Show(Box::new(track.clone()), true));
         assert!(worker.due());
         worker.resolve();
 
@@ -1153,14 +1215,14 @@ mod tests {
 
         // another run with no server: the cache answers
         let mut again = Worker::new(agent(false), "http://127.0.0.1:9/", Some(dir.join("cache")));
-        again.apply(Message::Want(Box::new(track.clone())));
+        again.apply(Message::Show(Box::new(track.clone()), true));
         again.resolve();
         assert!(again.resolved);
         assert_eq!(asked.join().unwrap().len(), 1);
 
         // `local` never asks
         let local = wanted(LyricsSource::Local, "");
-        again.apply(Message::Want(Box::new(local.clone())));
+        again.apply(Message::Show(Box::new(local.clone()), true));
         again.resolve();
         assert!(again.resolved);
         assert_eq!(line(&local, Duration::from_secs(3)).text, None);
@@ -1179,10 +1241,10 @@ mod tests {
         );
         let until = Instant::now() + Duration::from_secs(60);
         again.penalty = Some((track.key.clone(), until));
-        again.apply(Message::Want(Box::new(other)));
+        again.apply(Message::Show(Box::new(other), true));
         assert_eq!(again.retry, None);
         again.apply(Message::Stop);
-        again.apply(Message::Want(Box::new(track.clone())));
+        again.apply(Message::Show(Box::new(track.clone()), true));
         assert_eq!(again.retry, Some(until));
         assert!(!again.due());
 
@@ -1199,14 +1261,14 @@ mod tests {
         let mut held = Worker::new(agent(false), "http://127.0.0.1:9/", Some(dir.join("cache")));
 
         held.cooldown = Some(cooled);
-        held.apply(Message::Want(Box::new(third.clone())));
+        held.apply(Message::Show(Box::new(third.clone()), true));
         assert!(held.due());
         held.resolve();
         assert!(!held.resolved);
         assert!(held.retry.is_some_and(|until| until >= cooled));
         assert_eq!(held.backoff.failed(), RETRY);
 
-        held.apply(Message::Want(Box::new(track.clone())));
+        held.apply(Message::Show(Box::new(track.clone()), true));
         held.retry = None;
         held.resolve();
         assert!(held.resolved);
