@@ -1292,8 +1292,20 @@ fn sizes(bytes: u64) -> String {
     format!("{:.1} MiB", bytes as f64 / f64::from(1 << 20))
 }
 
+// the line `on_stderr` writes: `message` filtered, as a path in it may carry a control character
+// whose escape sequence would rewrite the line around it
+fn stderr_line(message: &str) -> String {
+    format!("kanade: sddm: {}", class::plain(message))
+}
+
+// a message on stderr, which is a terminal's. The one seam every stderr line here goes through, so
+// a new one cannot print its path raw
+fn on_stderr(message: &str) {
+    eprintln!("{}", stderr_line(message));
+}
+
 fn fail(error: &str) -> ExitCode {
-    eprintln!("kanade: sddm: {error}");
+    on_stderr(error);
     ExitCode::FAILURE
 }
 
@@ -1748,12 +1760,12 @@ pub fn check_at_start() {
         .name(String::from("sddm check"))
         .spawn(|| {
             if let Some(note) = stale(&Where::here(), &crate::config::get()) {
-                eprintln!("kanade: sddm: {note}");
+                on_stderr(&note);
             }
         });
 
     if let Err(error) = spawned {
-        eprintln!("kanade: sddm: cannot check the overlay: {error}");
+        on_stderr(&format!("cannot check the overlay: {error}"));
     }
 }
 
@@ -2928,5 +2940,21 @@ mod tests {
         );
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    // the error a theme directory or mode file named with an escape reaches stderr through: one line,
+    // and nothing in it moves the cursor. `fail` and the start check both go through `stderr_line`,
+    // so this is the whole class and not the two sites that were caught
+    #[test]
+    fn a_path_on_stderr_cannot_rewrite_the_line() {
+        let said = stderr_line("/etc/sddm.conf.d/a\u{1b}[2Jb: permission denied\nsudo rm -rf ~");
+
+        assert_eq!(
+            said,
+            "kanade: sddm: /etc/sddm.conf.d/a[2Jb: permission deniedsudo rm -rf ~"
+        );
+        assert!(!said.chars().any(char::is_control), "{said:?}");
+        // the prefix is Kanade's own, outside the filter, so it is there whatever the message says
+        assert_eq!(stderr_line("\u{1b}"), "kanade: sddm: ");
     }
 }
