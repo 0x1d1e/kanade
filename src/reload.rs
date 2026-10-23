@@ -103,19 +103,24 @@ pub fn reload() -> Outcome {
                     appearance::sync(&next);
                 }
 
-                {
-                    // read under the write, so an output changing meanwhile cannot land first
-                    let mut island = IslandService::write();
-                    island.retime(next.animation_timings());
-                    view::resize(&mut island);
+                // only the timings the island draws by changed, so only then retime and resize
+                if next.animation_timings() != running.animation_timings() {
+                    {
+                        // read under the write, so an output changing meanwhile cannot land first
+                        let mut island = IslandService::write();
+                        island.retime(next.animation_timings());
+                        view::resize(&mut island);
+                    }
                 }
 
                 // last, so every other window that reads the config draws all of it at once
                 config::announce();
             }
 
-            // even unchanged, so a reload also finds the `.desktop` files installed since
-            modules::reread();
+            // only when a module was turned on or off; a reload that changed nothing else is a no-op
+            if next.off != running.off {
+                modules::reread();
+            }
 
             state.generation += 1;
             state.error = None;
