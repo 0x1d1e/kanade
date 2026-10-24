@@ -1180,9 +1180,9 @@ pub fn window(monitor: &Monitor) -> LayerWindow {
 
 /*
  * keeps windows off the Dock's strip of the output, `dock.reserve`: an empty window a pixel wide on
- * its edge, as thick as the Dock at rest and, beside the Island, the room it leaves the Island, as
- * layer-shell reserves the thickness of a window held to one edge. The Island's own reserve on the
- * same edge counts toward it, so the two keep off the larger, and none is left to reserve when
+ * its edge, as thick as the Dock at rest and, beside the Island, the room it leaves the Island,
+ * as layer-shell reserves the thickness of a window held to one edge. The Island's own reserve on
+ * the same edge counts toward it, so the two keep off the larger, and none is left to reserve when
  * the Island's covers it. The Dock's own window is taller, with room for the icons to grow.
  * Another bar's reserve on the same edge stacks under this one, while the Dock keeps its place
  * from the edge and so draws over that bar

@@ -788,9 +788,9 @@ pub fn lines() -> Vec<String> {
  * a check; only logind opens and shuts it, so a wake heard before this runs stays heard. Asks for
  * a lock and waits until niri holds it, for at most `patience`, so the sleep thread hears logind
  * again by then. Also what `crate::sleep` asks again as the machine wakes after a hold that ended
- * without the lock: asking it while one holds is harmless, as a held lock is `Next::Done` and no
- * new request is made, so a password typed meanwhile is not dropped. Without a PAM service file
- * it refuses to ask at all, as nothing could unlock the session; sleep never asks it then.
+ * without the lock: asking while one holds is harmless, as a held lock is `Next::Done` and no new
+ * request is made, so a password typed meanwhile is not dropped. Without a PAM service file it
+ * refuses to ask at all, as nothing could unlock the session; sleep never asks it then.
  */
 pub fn hold(patience: Duration) -> Result<(), String> {
     held(patience, None)

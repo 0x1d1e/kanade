@@ -76,9 +76,9 @@ pub struct Deck {
 
 /*
  * the accent as it changes, on its own spring: with the track, and again whenever the artwork's
- * accent turns up late, since a file not there yet is read again on a later tick. A change of
- * mind goes on from where it is and how fast it moves, so it never jumps; under reduced motion it
- * fades from where it is over the configured reduced-motion response.
+ * accent turns up late, since a file not there yet is read again on a later tick. A change of mind
+ * goes on from where it is and how fast it moves, so it never jumps; under reduced motion it fades
+ * from where it is over the configured reduced-motion response.
  *
  * It holds the artwork's raw color and how vivid it shows, and is fitted to the island's ramp only
  * when read, so a finish switched meanwhile recolors it with no new publish
