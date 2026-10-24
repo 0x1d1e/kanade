@@ -120,7 +120,7 @@ Not worth changing, by this review:
 
 ## Acknowledgements features (review, low-level, unfixed)
 
-- Keys and Wallpapers stat the files on each frame they draw (`binds()`, `wallpaper::images()`); cache by mtime if it shows.
+- [x] Keys and Wallpapers stat the files on each frame they draw (`binds()`, `wallpaper::images()`); cache by mtime if it shows: resolved (premise no longer holds) — both sites already cache scan results against filesystem metadata modification timestamps (`src/sources/binds.rs:94-118` via `READ`, `src/sources/wallpaper.rs:768-790` via `LISTED`); each frame checks mtimes with a stat to detect changes, while file reads, KDL parsing, and directory re-scans are fully short-circuited.
 - The image loader keeps queued thumbnails scrolled past; a thumbnail is keyed by path only, so a picture replaced in place shows the old one until restart.
 - [x] `night_light::turn` rereads the calendars it does not need: resolved in commit 2c50f08 by running `modules::reread()` only when module enablement changes (`next.off != running.off`).
 - [x] Reminders: MORE's `of` grows with each reminder joined; a deleted event's reminder stays until dismissed or due: resolved in commit c58bf5a via `fn stands()` and candidate reconciliation (`src/sources/reminders.rs:612`, `:1128`).
