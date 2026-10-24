@@ -560,7 +560,7 @@ fn reset_inputs(changed: Option<&[Vec<String>]>) {
                 (field.get)(&read).unwrap_or_default()
             }
             Kind::Text(_) => continue,
-            Kind::Node(field) => (field.get)(&read).unwrap_or_default(),
+            Kind::Node(field) | Kind::PamService(field) => (field.get)(&read).unwrap_or_default(),
             Kind::Location(field) => (field.get)(&read)
                 .map(|at| format!("{}, {}", at.latitude, at.longitude))
                 .unwrap_or_default(),

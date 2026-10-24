@@ -1137,6 +1137,10 @@ pub enum Kind {
     // a line of text, not empty; unset is none
     Text(Field<Option<String>>),
 
+    // a PAM service file name in PAM's directories: letters, digits, dots, dashes and underscores,
+    // up to 64, not starting with a dot or a dash, no path or whitespace; unset is none
+    PamService(Field<Option<String>>),
+
     // a DRM render node, `/dev/dri/renderD` and a number (`render_node`); unset is none. A name that
     // is anything else would reach a program as its `-d` argument or inside a `-init_hw_device`
     Node(Field<Option<String>>),
@@ -1228,6 +1232,17 @@ impl Kind {
                     .filter(|text| !text.trim().is_empty() && !text.contains('\n'))
                     .ok_or("expected a line of text")?;
                 (field.set)(config, Some(text.trim().to_owned()));
+            }
+            Kind::PamService(field) => {
+                let text = value.as_str();
+
+                match text {
+                    Some("") => (field.set)(config, None),
+                    Some(service) if pam_service(service) => {
+                        (field.set)(config, Some(service.to_owned()))
+                    }
+                    _ => return Err(String::from("expected a PAM service file name, not a path")),
+                }
             }
             Kind::Node(field) => {
                 let text = value.as_str();
@@ -1443,7 +1458,7 @@ impl Kind {
                 Value::Integer(i64::try_from((field.get)(config).as_secs() / 60).ok()?)
             }
             Kind::Choice(_, field) => Value::String((field.get)(config).to_owned()),
-            Kind::Path(field) | Kind::Text(field) | Kind::Node(field) => {
+            Kind::Path(field) | Kind::Text(field) | Kind::Node(field) | Kind::PamService(field) => {
                 Value::String((field.get)(config)?)
             }
             Kind::Location(field) => (field.get)(config)?.value(),
@@ -1503,7 +1518,9 @@ impl Kind {
             | Kind::Count(_, field) => field.copy(from, to),
             Kind::Minutes(_, field) => field.copy(from, to),
             Kind::Choice(_, field) => field.copy(from, to),
-            Kind::Path(field) | Kind::Text(field) | Kind::Node(field) => field.copy(from, to),
+            Kind::Path(field) | Kind::Text(field) | Kind::Node(field) | Kind::PamService(field) => {
+                field.copy(from, to)
+            }
             Kind::Location(field) => field.copy(from, to),
             Kind::DayTime(field) => field.copy(from, to),
             Kind::DesktopIds(field)
@@ -2785,7 +2802,7 @@ pub const LOCK: &[Setting] = &[
         key: "lock.pam_service",
         label: "PAM service",
         help: "the PAM service that checks the password, a file of that name in /etc/pam.d; unset uses login. Letters, digits, dots, dashes and underscores. Only the first hidden prompt gets the password; an echoed or later one fails the check, and PAM's own messages show under the field. A name with no file refuses every lock",
-        kind: Kind::Text(Field {
+        kind: Kind::PamService(Field {
             get: |config| config.lock_pam.clone(),
             set: |config, service| config.lock_pam = service,
         }),
@@ -4374,6 +4391,17 @@ fn render_node(text: &str) -> bool {
     })
 }
 
+// whether `name` is a file name in PAM's directories and no path: letters, digits, dots, dashes and
+// underscores, up to 64, not starting with a dot or a dash
+fn pam_service(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.starts_with(['.', '-'])
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4844,6 +4872,60 @@ mod tests {
         let next = restarted(&running, read);
         assert_eq!(next.clock, Hours::Twelve);
         assert_eq!(next.off, ["dictation", "idle", "media", "timer"]);
+    }
+
+    #[test]
+    fn pam_service_accepts_file_names_and_rejects_paths() {
+        let (config, problems) = one("lock.pam_service = \"login\"");
+        assert!(problems.is_empty());
+        assert_eq!(config.lock_pam, Some(String::from("login")));
+
+        let (config, problems) = one("lock.pam_service = \"kanade-lock_2.x\"");
+        assert!(problems.is_empty());
+        assert_eq!(config.lock_pam, Some(String::from("kanade-lock_2.x")));
+
+        let (config, problems) = one("lock.pam_service = \"\"");
+        assert!(problems.is_empty());
+        assert_eq!(config.lock_pam, None);
+
+        let rejected = [
+            "/etc/pam.d/login",
+            "../login",
+            "sub/login",
+            ".login",
+            "-login",
+            "login with spaces",
+        ];
+        for bad in rejected {
+            let (_, problems) = one(&format!("lock.pam_service = {bad:?}"));
+            assert_eq!(
+                problems,
+                said(&[(
+                    1,
+                    "lock.pam_service: expected a PAM service file name, not a path"
+                )]),
+                "should reject {bad}"
+            );
+        }
+
+        let too_long = "a".repeat(65);
+        let (_, problems) = one(&format!("lock.pam_service = {too_long:?}"));
+        assert_eq!(
+            problems,
+            said(&[(
+                1,
+                "lock.pam_service: expected a PAM service file name, not a path"
+            )])
+        );
+
+        let (_, problems) = one("lock.pam_service = 123");
+        assert_eq!(
+            problems,
+            said(&[(
+                1,
+                "lock.pam_service: expected a PAM service file name, not a path"
+            )])
+        );
     }
 
     /*

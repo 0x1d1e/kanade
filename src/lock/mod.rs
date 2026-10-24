@@ -29,6 +29,7 @@ use crate::clock::Note;
 use crate::config::{self, Config};
 use crate::hooks::{self, Event};
 use crate::later::{LATER, Later};
+use crate::modules;
 use crate::sources::{recording, sleep};
 
 mod keyboard;
@@ -767,13 +768,41 @@ pub fn grace() -> Option<Duration> {
 
 // the lines of `kanade status`: the sleep gate, and what the lock options change from the defaults
 pub fn lines() -> Vec<String> {
-    let mut lines = vec![sleep::status()];
     let service = service();
+    let config = config::get();
+    let idle_on = modules::on("idle");
+
+    status_lines(
+        sleep::status(),
+        &service,
+        pam().is_some(),
+        idle_on,
+        config.idle.lock,
+        grace(),
+    )
+}
+
+fn status_lines(
+    sleep_status: String,
+    service: &str,
+    pam_found: bool,
+    idle_on: bool,
+    idle_lock: Option<Duration>,
+    grace: Option<Duration>,
+) -> Vec<String> {
+    let mut lines = vec![sleep_status];
 
     if service != PAM {
-        lines.push(format!("lock: password checked with PAM service {service}"));
+        if pam_found {
+            lines.push(format!("lock: password checked with PAM service {service}"));
+        } else {
+            lines.push(format!("lock: no PAM service {service}"));
+        }
     }
-    if let Some(grace) = grace() {
+    if idle_on
+        && idle_lock.is_some_and(|lock| !lock.is_zero())
+        && let Some(grace) = grace
+    {
         lines.push(format!(
             "lock: grace {} s: input unlocks a lock the idle Module asks for, without a password",
             grace.as_secs()
@@ -1157,6 +1186,72 @@ mod tests {
     }
 
     #[test]
+    fn status_lines_reports_pam_and_grace_when_active() {
+        let sleep = String::from("sleep: gate open");
+
+        // default PAM service (login) produces no extra PAM line
+        assert_eq!(
+            status_lines(sleep.clone(), PAM, true, false, None, None),
+            vec![sleep.clone()]
+        );
+
+        // custom PAM service found
+        assert_eq!(
+            status_lines(sleep.clone(), "kanade-lock", true, false, None, None),
+            vec![
+                sleep.clone(),
+                String::from("lock: password checked with PAM service kanade-lock")
+            ]
+        );
+
+        // custom PAM service missing
+        assert_eq!(
+            status_lines(sleep.clone(), "missing-service", false, false, None, None),
+            vec![
+                sleep.clone(),
+                String::from("lock: no PAM service missing-service")
+            ]
+        );
+
+        // grace line is printed only when idle is on, idle.lock > 0, and grace > 0
+        let grace = Some(Duration::from_secs(5));
+        let idle_lock = Some(Duration::from_secs(300));
+        assert_eq!(
+            status_lines(sleep.clone(), PAM, true, true, idle_lock, grace),
+            vec![
+                sleep.clone(),
+                String::from(
+                    "lock: grace 5 s: input unlocks a lock the idle Module asks for, without a password"
+                )
+            ]
+        );
+
+        // idle module off -> no grace line
+        assert_eq!(
+            status_lines(sleep.clone(), PAM, true, false, idle_lock, grace),
+            vec![sleep.clone()]
+        );
+
+        // idle.lock is None -> no grace line
+        assert_eq!(
+            status_lines(sleep.clone(), PAM, true, true, None, grace),
+            vec![sleep.clone()]
+        );
+
+        // idle.lock is zero -> no grace line
+        assert_eq!(
+            status_lines(sleep.clone(), PAM, true, true, Some(Duration::ZERO), grace),
+            vec![sleep.clone()]
+        );
+
+        // grace is None -> no grace line
+        assert_eq!(
+            status_lines(sleep.clone(), PAM, true, true, idle_lock, None),
+            vec![sleep.clone()]
+        );
+    }
+
+    #[test]
     fn a_lock_niri_refused_is_denied_not_unlocked() {
         let mut requests = Requests::new();
 
@@ -1457,6 +1552,9 @@ mod tests {
 
         // a password was accepted since the newest request
         accepted: bool,
+
+        // the newest request granted a grace once confirmed
+        granted: u64,
     }
 
     #[derive(Clone, Copy, PartialEq)]
@@ -1534,6 +1632,21 @@ mod tests {
                     let sleep = self.requests.sleeps;
                     self.requests.woke(sleep);
                 }
+                10 if self.requests.confirmed > self.granted
+                    && self.requests.confirmed == self.requests.newest
+                    && self.requests.holding() == Holding::Held =>
+                {
+                    self.granted = self.requests.confirmed;
+                    self.requests
+                        .grant(self.requests.newest, Duration::from_secs(10));
+                }
+                11 if self.requests.grace.is_some() => {
+                    if !self.requests.touch(Duration::from_secs(1)) {
+                        return false;
+                    }
+                    self.asks.push(Asked::Unlock);
+                    self.accepted = true;
+                }
                 _ => return false,
             }
             true
@@ -1591,7 +1704,7 @@ mod tests {
             return;
         }
 
-        for action in 0..10 {
+        for action in 0..12 {
             let mut next = world.clone();
             if next.act(action) {
                 next.holds();
@@ -1612,6 +1725,7 @@ mod tests {
             asks: Vec::new(),
             check: None,
             accepted: false,
+            granted: 0,
         };
         explore(&world, 10);
     }

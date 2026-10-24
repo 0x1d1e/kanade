@@ -715,12 +715,41 @@ pub enum Note {
 // the longest note kept, in characters: the lock screen draws one line
 const NOTE: usize = 64;
 
+// whether `letter` is an invisible format character (Unicode Cf): zero-width, joiners, direction
+// marks and the like, which could reorder or hide what a line says
+fn is_format(letter: char) -> bool {
+    matches!(
+        letter,
+        '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
+
 // a note's text as one line of printable characters, none if nothing is left
 fn clean(text: &str) -> Option<String> {
     let line: String = text
         .chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_format(*c))
         .collect();
     let line = line.trim();
 
@@ -1031,6 +1060,15 @@ mod tests {
         let line = clean(&"x".repeat(200)).unwrap();
         assert_eq!(line.chars().count(), NOTE);
         assert!(line.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn a_note_strips_unicode_format_characters() {
+        assert_eq!(
+            clean("Place\u{200b} your\u{202e} finger\u{feff}"),
+            Some(String::from("Place your finger"))
+        );
+        assert_eq!(clean("\u{200b}\u{202e}\u{feff}"), None);
     }
 
     // radio 3, Bluetooth, soft-blocked

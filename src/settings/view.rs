@@ -1588,7 +1588,7 @@ fn control(
         Kind::Text(_) if key == "appearance.font" => {
             (Box::new(font_picker(settings, roles)), false)
         }
-        Kind::Path(_) | Kind::Text(_) | Kind::Node(_) => (
+        Kind::Path(_) | Kind::Text(_) | Kind::Node(_) | Kind::PamService(_) => (
             Box::new(field_with_hint(
                 input(setting),
                 setting.tail.example.unwrap_or("").trim_matches('"'),
