@@ -101,11 +101,11 @@ An island's visual level: `Rest | Compact | Split | Peek | Tray | Expanded(Surfa
 - **Avoid:** state (state is what Services hold)
 
 ## Surface
-Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Wallpapers | Keys | Session | Timer | Capture`.
+Full interactive content of an Expanded island: `Media | Notifications | Controls | Launcher | Tray | Clipboard | Calendar | Weather | Wallpapers | Keys | Session | Timer | Capture | Window`.
 - Media, Notifications and Session are also Activity Kinds. Compact and Peek are the Activity's own small form, and Expanded is its Surface. A Session Activity is a restart, power off or log out counting down, or the sleep, hibernation or power off `battery.critical_action` counts down at a critical battery, a lock, sleep, restart, power off or log out that was refused or failed, or one logind never answered, which may still happen; the Session Surface opens by user action too, and shows a countdown but no refusal, so a refusal or no answer closes it.
 - Media's timeline is seekable only in the Surface, never in the Island's forms, and only for a player that says `CanSeek` and gives a track id and a length; a seek never leaves the track.
-- Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Timer and Capture have no Activity of their own Kind. They open only by user action; a click on a Reminder opens Calendar.
-- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface`, `session`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
+- Controls, Launcher, Tray, Clipboard, Calendar, Weather, Wallpapers, Keys, Timer, Capture and Window have no Activity of their own Kind. They open only by user action; a click on a Reminder opens Calendar.
+- Each is drawn by a Module (`media`, `notification-surface`, `controls`, `launcher`, `tray`, `clipboard-surface`, `calendar-surface`, `weather-surface`, `wallpaper-surface`, `keys-surface`, `timer-surface`, `capture-surface`, `session`, `window-surface`). One whose Module is off is withheld: it never opens, by click, verb or AutoExpand. A click on an Activity whose own Surface is withheld opens Controls, as for a Kind without one; with Controls withheld too, or at Rest, a click opens nothing.
 - **Avoid:** panel, page, view (a view is the runtime's build function)
 
 ## Sub-surface

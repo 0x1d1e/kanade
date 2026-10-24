@@ -1323,6 +1323,28 @@ notifications dnd on until <HH:MM>
         }],
         start: |app| app,
     },
+    // column and window controls tied to the focused window
+    Module {
+        name: "window-surface",
+        about: "Column and window controls from the Island",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[Verb {
+            name: "window",
+            about: "Open the column and window controls Surface",
+            usage: || String::from("window open|close|toggle"),
+            parse: |arguments| {
+                Command::surface(Surface::Window, arguments)
+                    .map(Call::Island)
+                    .ok_or(Unparsed::Usage)
+            },
+        }],
+        start: |app| app,
+    },
     /*
      * a stroke drawn with the pointer runs a verb of Kanade (ADR 0105 to 0109): the overlay opens
      * only on `kanade gesture`, which the user binds, so Kanade grabs no key. Inert until a

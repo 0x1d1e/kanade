@@ -45,6 +45,9 @@ pub enum Surface {
     // a screenshot of an area, a window or the screen, and the screen recording
     Capture,
 
+    // column and window controls tied to the focused window
+    Window,
+
     // the one-time first-start tour
     Welcome,
 }

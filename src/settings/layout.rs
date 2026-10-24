@@ -110,6 +110,7 @@ pub const MODULE_GROUPS: &[(&str, &[&str])] = &[
             "keys-surface",
             "timer-surface",
             "capture-surface",
+            "window-surface",
             "gesture",
         ],
     ),

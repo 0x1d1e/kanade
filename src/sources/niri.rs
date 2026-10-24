@@ -49,6 +49,33 @@ pub struct Seen {
 
     // the window each output shows, by output; empty while unknown
     pub shown: BTreeMap<String, Showing>,
+
+    // the workspaces niri has, ordered by output and index
+    pub workspaces: Vec<WorkspaceInfo>,
+
+    // the focused window, or the last focused one across a layer surface focus
+    pub focused_window: Option<FocusedWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FocusedWindow {
+    pub id: u64,
+    pub title: String,
+    pub app_id: Option<String>,
+    pub is_floating: bool,
+    pub tile_count: usize, // number of windows in this column
+    pub column_width: Option<f64>,
+    pub workspace_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceInfo {
+    pub id: u64,
+    pub index: u32,
+    pub name: Option<String>,
+    pub output: Option<String>,
+    pub is_active: bool,
+    pub is_focused: bool,
 }
 
 // what a cast captures; a window is no more than that here, whose title and app stay with niri
@@ -182,6 +209,22 @@ struct Known {
 
     // every window by id: which app's, and its tile
     windows: HashMap<u64, Showing>,
+
+    last_focused_window: Option<u64>,
+
+    tracked_windows: HashMap<u64, TrackedWindow>,
+}
+
+#[derive(Debug, Clone)]
+struct TrackedWindow {
+    id: u64,
+    title: String,
+    app_id: Option<String>,
+    is_floating: bool,
+    is_focused: bool,
+    workspace_id: Option<u64>,
+    col: Option<u64>,
+    tile_width: Option<f64>,
 }
 
 impl Known {
@@ -251,11 +294,58 @@ impl Known {
                 .iter()
                 .filter_map(shown)
                 .collect();
+
+            self.tracked_windows.clear();
+            let mut focused_id = None;
+
+            for window in windows.unwrap_or_default() {
+                if let Some(tracked) = tracked_window(window) {
+                    if tracked.is_focused {
+                        focused_id = Some(tracked.id);
+                    }
+                    self.tracked_windows.insert(tracked.id, tracked);
+                }
+            }
+
+            if let Some(id) = focused_id {
+                self.last_focused_window = Some(id);
+            } else if let Some(last) = self.last_focused_window
+                && !self.tracked_windows.contains_key(&last)
+            {
+                self.last_focused_window = None;
+            }
         } else if let Some(opened) = event.get("WindowOpenedOrChanged") {
             self.windows.extend(opened.get("window").and_then(shown));
+            if let Some(window) = opened.get("window").and_then(tracked_window) {
+                if window.is_focused {
+                    self.last_focused_window = Some(window.id);
+                    for (id, other) in &mut self.tracked_windows {
+                        if *id != window.id {
+                            other.is_focused = false;
+                        }
+                    }
+                }
+                self.tracked_windows.insert(window.id, window);
+            }
         } else if let Some(closed) = event.get("WindowClosed") {
             if let Some(id) = closed.get("id").and_then(Json::as_u64) {
                 self.windows.remove(&id);
+                self.tracked_windows.remove(&id);
+                if self.last_focused_window == Some(id) {
+                    self.last_focused_window = None;
+                }
+            }
+        } else if let Some(focus) = event.get("WindowFocusChanged") {
+            let id = focus.get("id").and_then(Json::as_u64);
+            if let Some(id) = id {
+                self.last_focused_window = Some(id);
+                for (w_id, w) in &mut self.tracked_windows {
+                    w.is_focused = *w_id == id;
+                }
+            } else {
+                for w in self.tracked_windows.values_mut() {
+                    w.is_focused = false;
+                }
             }
         } else if let Some(changed) = event.get("WindowLayoutsChanged") {
             for change in changed
@@ -264,10 +354,21 @@ impl Known {
                 .unwrap_or_default()
             {
                 if let Some([id, layout]) = json::array(change)
-                    && let Some(window) = id.as_u64().and_then(|id| self.windows.get_mut(&id))
-                    && let Some(tile) = self::tile(layout)
+                    && let Some(id) = id.as_u64()
                 {
-                    window.tile = tile;
+                    if let Some(window) = self.windows.get_mut(&id)
+                        && let Some(tile) = self::tile(layout)
+                    {
+                        window.tile = tile;
+                    }
+                    if let Some(tracked) = self.tracked_windows.get_mut(&id) {
+                        if let Some(tile) = self::tile(layout) {
+                            tracked.tile_width = Some(tile.0);
+                        }
+                        if let Some(col) = self::col(layout) {
+                            tracked.col = Some(col);
+                        }
+                    }
                 }
             }
         } else if let Some(overview) = event.get("OverviewOpenedOrClosed")
@@ -317,6 +418,57 @@ impl Known {
             })
             .collect();
 
+        let focused_id = self.last_focused_window.or_else(|| {
+            self.tracked_windows
+                .values()
+                .find(|w| w.is_focused)
+                .map(|w| w.id)
+        });
+
+        let focused_window = focused_id
+            .and_then(|id| self.tracked_windows.get(&id))
+            .map(|w| {
+                let tile_count = match (w.workspace_id, w.col) {
+                    (Some(ws_id), Some(col)) if !w.is_floating => self
+                        .tracked_windows
+                        .values()
+                        .filter(|other| {
+                            !other.is_floating
+                                && other.workspace_id == Some(ws_id)
+                                && other.col == Some(col)
+                        })
+                        .count()
+                        .max(1),
+                    _ => 1,
+                };
+
+                let column_width = if w.is_floating { None } else { w.tile_width };
+
+                FocusedWindow {
+                    id: w.id,
+                    title: w.title.clone(),
+                    app_id: w.app_id.clone(),
+                    is_floating: w.is_floating,
+                    tile_count,
+                    column_width,
+                    workspace_id: w.workspace_id,
+                }
+            });
+
+        let mut workspaces: Vec<WorkspaceInfo> = self
+            .workspaces
+            .iter()
+            .map(|(&id, listed)| WorkspaceInfo {
+                id,
+                index: listed.index,
+                name: listed.name.clone(),
+                output: listed.output.clone(),
+                is_active: listed.active,
+                is_focused: self.focused == Some(id),
+            })
+            .collect();
+        workspaces.sort_by_key(|w| (w.output.clone(), w.index, w.id));
+
         Seen {
             focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
@@ -331,6 +483,8 @@ impl Known {
             dynamic: self.casts.values().any(|cast| cast.dynamic),
             paused: !self.casts.is_empty() && self.casts.values().all(|cast| !cast.active),
             shown,
+            workspaces,
+            focused_window,
         }
     }
 
@@ -356,6 +510,51 @@ fn shown(window: &Json) -> Option<(u64, Showing)> {
     let tile = tile(window.get("layout")?)?;
 
     Some((id, Showing { app_id, tile }))
+}
+
+fn tracked_window(window: &Json) -> Option<TrackedWindow> {
+    let id = window.get("id").and_then(Json::as_u64)?;
+    let title = window
+        .get("title")
+        .and_then(Json::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let app_id = window
+        .get("app_id")
+        .and_then(Json::as_str)
+        .map(String::from);
+    let is_floating = window
+        .get("is_floating")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    let is_focused = window
+        .get("is_focused")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
+    let workspace_id = window.get("workspace_id").and_then(Json::as_u64);
+
+    let layout = window.get("layout");
+    let col = layout.and_then(self::col);
+    let tile_width = layout.and_then(self::tile).map(|t| t.0);
+
+    Some(TrackedWindow {
+        id,
+        title,
+        app_id,
+        is_floating,
+        is_focused,
+        workspace_id,
+        col,
+        tile_width,
+    })
+}
+
+fn col(layout: &Json) -> Option<u64> {
+    let pos = layout.get("pos_in_scrolling_layout")?;
+    match json::array(pos)? {
+        [col, ..] => col.as_u64(),
+        _ => None,
+    }
 }
 
 fn tile(layout: &Json) -> Option<(f64, f64)> {
@@ -444,6 +643,38 @@ fn cast_with(cast: &Json, ours: impl Fn(u64) -> bool) -> Option<(u64, Cast)> {
 pub fn stop(session: u64) -> io::Result<Acted> {
     act(&format!(
         r#"{{"Action":{{"StopCast":{{"session_id":{session}}}}}}}"#
+    ))
+}
+
+pub fn consume_window_into_column() -> io::Result<Acted> {
+    act(r#"{"Action":"ConsumeWindowIntoColumn"}"#)
+}
+
+pub fn expel_window_from_column() -> io::Result<Acted> {
+    act(r#"{"Action":"ExpelWindowFromColumn"}"#)
+}
+
+pub fn set_column_width(proportion: f64) -> io::Result<Acted> {
+    act(&format!(
+        r#"{{"Action":{{"SetColumnWidth":{{"change":{{"SetProportion":{proportion}}}}}}}}}"#
+    ))
+}
+
+pub fn switch_preset_column_width() -> io::Result<Acted> {
+    act(r#"{"Action":"SwitchPresetColumnWidth"}"#)
+}
+
+pub fn toggle_window_floating() -> io::Result<Acted> {
+    act(r#"{"Action":"ToggleWindowFloating"}"#)
+}
+
+pub fn maximize_column() -> io::Result<Acted> {
+    act(r#"{"Action":"MaximizeColumn"}"#)
+}
+
+pub fn move_window_to_workspace(window_id: u64, workspace_id: u64) -> io::Result<Acted> {
+    act(&format!(
+        r#"{{"Action":{{"MoveWindowToWorkspace":{{"window_id":{window_id},"reference":{{"Id":{workspace_id}}},"focus":false}}}}}}"#
     ))
 }
 
@@ -1476,5 +1707,109 @@ mod tests {
         );
 
         assert!(!Niri::read().is_connected());
+    }
+
+    #[test]
+    fn window_layout_and_column_tracking() {
+        let mut known = Known {
+            workspaces: HashMap::new(),
+            focused: Some(1),
+            overview: false,
+            overviews: 0,
+            casts: HashMap::new(),
+            windows: HashMap::new(),
+            last_focused_window: None,
+            tracked_windows: HashMap::new(),
+        };
+
+        let workspaces_event = json::parse(
+            r#"{"WorkspacesChanged":{"workspaces":[{"id":1,"idx":1,"name":null,"output":"eDP-1","is_active":true,"is_focused":true,"active_window_id":10}]}}"#,
+        )
+        .unwrap();
+        known.apply(&workspaces_event);
+
+        let windows_event = json::parse(
+            r#"{"WindowsChanged":{"windows":[
+                {
+                    "id": 10,
+                    "title": "Terminal 1",
+                    "app_id": "alacritty",
+                    "is_floating": false,
+                    "is_focused": true,
+                    "workspace_id": 1,
+                    "layout": {"pos_in_scrolling_layout": [0, 0], "tile_size": [640.0, 480.0]}
+                },
+                {
+                    "id": 11,
+                    "title": "Terminal 2",
+                    "app_id": "alacritty",
+                    "is_floating": false,
+                    "is_focused": false,
+                    "workspace_id": 1,
+                    "layout": {"pos_in_scrolling_layout": [0, 1], "tile_size": [640.0, 480.0]}
+                },
+                {
+                    "id": 12,
+                    "title": "Browser",
+                    "app_id": "firefox",
+                    "is_floating": false,
+                    "is_focused": false,
+                    "workspace_id": 1,
+                    "layout": {"pos_in_scrolling_layout": [1, 0], "tile_size": [800.0, 960.0]}
+                }
+            ]}}"#,
+        )
+        .unwrap();
+        known.apply(&windows_event);
+
+        let seen = known.seen();
+        assert_eq!(seen.workspaces.len(), 1);
+        assert_eq!(seen.workspaces[0].id, 1);
+        assert_eq!(seen.workspaces[0].index, 1);
+        assert!(seen.workspaces[0].is_active);
+        assert!(seen.workspaces[0].is_focused);
+
+        let focused = seen.focused_window.expect("focused window present");
+        assert_eq!(focused.id, 10);
+        assert_eq!(focused.title, "Terminal 1");
+        assert_eq!(focused.app_id.as_deref(), Some("alacritty"));
+        assert!(!focused.is_floating);
+        // Column 0 has two windows (10 and 11)
+        assert_eq!(focused.tile_count, 2);
+        assert_eq!(focused.column_width, Some(640.0));
+        assert_eq!(focused.workspace_id, Some(1));
+
+        // When layer surface takes focus (WindowFocusChanged { id: None }), last focused window is held
+        let unfocus_event = json::parse(r#"{"WindowFocusChanged":{"id":null}}"#).unwrap();
+        known.apply(&unfocus_event);
+        let seen = known.seen();
+        let held = seen.focused_window.expect("last focused window held");
+        assert_eq!(held.id, 10);
+        assert_eq!(held.tile_count, 2);
+
+        // When focus moves to window 12 (column 1 with single window)
+        let focus_12 = json::parse(r#"{"WindowFocusChanged":{"id":12}}"#).unwrap();
+        known.apply(&focus_12);
+        let seen = known.seen();
+        let focused_12 = seen.focused_window.expect("window 12 focused");
+        assert_eq!(focused_12.id, 12);
+        assert_eq!(focused_12.tile_count, 1);
+        assert_eq!(focused_12.column_width, Some(800.0));
+
+        // WindowLayoutsChanged updates width
+        let layout_change = json::parse(
+            r#"{"WindowLayoutsChanged":{"changes":[[12, {"pos_in_scrolling_layout": [1, 0], "tile_size": [1000.0, 960.0]}]]}}"#,
+        )
+        .unwrap();
+        known.apply(&layout_change);
+        let seen = known.seen();
+        let updated = seen.focused_window.expect("window 12 updated");
+        assert_eq!(updated.column_width, Some(1000.0));
+
+        // Closing focused window clears it
+        let close_12 = json::parse(r#"{"WindowClosed":{"id":12}}"#).unwrap();
+        known.apply(&close_12);
+        let seen = known.seen();
+        assert_eq!(seen.focused_window, None);
     }
 }

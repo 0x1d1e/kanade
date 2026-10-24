@@ -379,7 +379,7 @@ pub const CONTROLS: Shape = Shape {
     radius: 32.0,
 };
 
-// the Surfaces of one row of tiles or a reading with pills (Session, Timer, Capture): as wide as
+// the Surfaces of one row of tiles or a reading with pills (Session, Timer, Capture, Window): as wide as
 // Controls, as tall as `surfaces/pad.rs` needs
 pub const PAD: Shape = Shape {
     width: CONTROLS.width,
@@ -587,7 +587,9 @@ pub fn shape(presentation: Presentation, largest: Shape, hang: Hang, peek: TimeP
             }
         }
         Presentation::Expanded(Surface::Controls | Surface::Weather) => CONTROLS,
-        Presentation::Expanded(Surface::Session | Surface::Timer | Surface::Capture) => PAD,
+        Presentation::Expanded(
+            Surface::Session | Surface::Timer | Surface::Capture | Surface::Window,
+        ) => PAD,
         Presentation::Expanded(Surface::Tray) => TRAY_LIST,
         Presentation::Expanded(Surface::Media) => MEDIA,
         Presentation::Expanded(Surface::Calendar) => CALENDAR,

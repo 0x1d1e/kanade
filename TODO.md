@@ -299,7 +299,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [x] Clipboard Surface: remove the preview box (the large box that shows the full text of the selected entry, ADR 0114).
   - Done: the box is gone for text and images; rows keep their one-line preview and thumbnails and take its room; ADR 0114, the wiki and the design are updated. Not run on the session: the Surface's layout.
 - [ ] niri strip minimap Surface: the columns and windows of each workspace on niri's scrolling strip, click to focus. Nothing like it exists in Kanade.
-- [ ] Column and window controls from the Island, tied to the focused window: consume or expel, column width presets, move to workspace.
+- [x] Column and window controls from the Island, tied to the focused window: consume or expel, column width presets, move to workspace (ADR 0132).
 - [x] Per-app volume mixer in Controls: each playing app gets its own level (`Line::Stream`/`Line::Route` in `src/surfaces/controls/audio.rs`, from `Stream` in `src/sources/audio.rs:101`), and a stream can be moved to another output.
   - Premise no longer holds: the mixer exists.
 - [ ] Emoji grid picker with recents, as a Surface (optional; `:emoji` search in the Launcher already exists).

@@ -32,6 +32,7 @@ pub enum Destination {
     Calendar,
     Wallpapers,
     Keys,
+    Window,
 
     // Settings, on the page of this name
     Settings(&'static str),
@@ -54,6 +55,7 @@ impl Destination {
             Destination::Calendar => "calendar",
             Destination::Wallpapers => "wallpapers",
             Destination::Keys => "keys",
+            Destination::Window => "window",
             Destination::Settings(page) => page,
         }
     }
@@ -75,6 +77,7 @@ pub struct Destinations {
     pub calendar: bool,
     pub wallpapers: bool,
     pub keys: bool,
+    pub window: bool,
     pub settings: bool,
 }
 
@@ -215,6 +218,14 @@ impl LauncherProvider for Destinations {
                 "Keybinds and shortcuts",
                 &["keys", "keybinds", "shortcuts", "hotkeys", "bindings"][..],
                 Destination::Keys,
+            ),
+            (
+                self.window,
+                Icon::Columns,
+                "Window",
+                "Column and window controls",
+                &["window", "column", "tile", "expel", "consume"][..],
+                Destination::Window,
             ),
         ];
 

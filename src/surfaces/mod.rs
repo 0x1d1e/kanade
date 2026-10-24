@@ -31,6 +31,7 @@ mod visit;
 pub mod wallpapers;
 pub mod weather;
 pub mod welcome;
+pub mod window;
 
 /*
  * held through a Surface's `fit`, which reads what it asks for and then posts it. Besides the
