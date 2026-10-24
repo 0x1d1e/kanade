@@ -1146,14 +1146,9 @@ fn sequence(component: &ICalendarComponent) -> i64 {
 }
 
 /*
- * restarts a rule a whole number of its periods on — the last whose start is before `before`
- * by the event's length — so expansion begins near the range. The rule's first-occurrence parts
- * are written out first, so each period from the new start on makes the same occurrences, and
- * their EXDATEs and RECURRENCE-IDs still match; the ones the old start made before it all ended
- * before the range. DTEND moves with DTSTART, keeping the length. A rule with a COUNT counts from
- * its own start: one under the limit expands whole, and `counted` turned a longer one into an
- * UNTIL. A change to occurrences from before the new start goes on after it (`take_over`), the
- * one it gives back
+ * advances recurrence expansion near the query range by stepping whole periods forward
+ * while preserving duration (DTEND), keeping occurrence alignment for EXDATE and
+ * RECURRENCE-ID, carrying forward prior modifications, and excluding COUNT rules.
  */
 fn restart(
     component: &mut ICalendarComponent,

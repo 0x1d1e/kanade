@@ -7,15 +7,9 @@ use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene}
 use super::{Gpu, texture};
 
 /*
- * a vello of its own for scenes that resolve no late bound resource (cuts, trims, shadows, fills
- * and paths only). vello sizes its image atlas from the scene's images, so a scene with none
- * leaves the atlas one texel wide: a new atlas, the old one freed, every window's images and
- * letters in it gone while vello still counts them as uploaded — they sample texels that hold
- * nothing. Nothing is ever sent here, so its atlas holds nothing to go stale.
- *
- * The price: vello's drop of what a visit left (memory.rs) is taken by whichever renderer
- * resolves first, so this one may take it and the shared one keeps those encodings a visit
- * longer. That is memory, not what is drawn; the next visit asks for the drop again.
+ * dedicated renderer for path-only scenes: prevents vello from collapsing its atlas to
+ * 1 texel wide when rendering scenes without images, which would evict glyph and image
+ * uploads.
  */
 thread_local! {
     static PATHS: RefCell<Option<Renderer>> = const { RefCell::new(None) };
