@@ -107,6 +107,11 @@ pub(super) fn surface(
             island.held(monitor),
         )),
         Surface::Welcome => Some(surfaces::welcome::surface(open, island.visit())),
+        Surface::Strip => Some(surfaces::strip::surface(
+            open,
+            island.visit(),
+            island.held(monitor),
+        )),
     }
 }
 

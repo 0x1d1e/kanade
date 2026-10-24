@@ -25,6 +25,7 @@ mod ring;
 mod search;
 pub mod session;
 pub(crate) mod slider;
+pub mod strip;
 pub mod timer;
 pub mod tray;
 mod visit;

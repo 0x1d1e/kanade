@@ -143,6 +143,10 @@ pub fn key(monitor: &str, key: Key) {
         return;
     }
 
+    if modules::on("strip-surface") && surfaces::strip::key(monitor, key) {
+        return;
+    }
+
     // the Launcher's actions are a level of it, so Escape closes them for the list, as a
     // sub-surface's Escape goes back rather than collapsing the island (`CONTEXT.md` Sub-surface)
     if modules::on("launcher") && surfaces::launcher::key(monitor, key) {

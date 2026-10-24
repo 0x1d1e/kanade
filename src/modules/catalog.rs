@@ -1345,6 +1345,43 @@ notifications dnd on until <HH:MM>
         }],
         start: |app| app,
     },
+    // the niri strip minimap across workspaces on the focused monitor
+    Module {
+        name: "strip-surface",
+        about: "Niri strip minimap from the Island",
+        requires: &[CORE],
+        optional: &[],
+        warns: None,
+        needs: &[],
+        settings: &[],
+        hooks: Hooks::NONE,
+        verbs: &[
+            Verb {
+                name: "strip",
+                about: "Open the niri strip minimap Surface",
+                usage: || String::from("strip open|close|toggle  (minimap works too)"),
+                parse: |arguments| {
+                    Command::surface(Surface::Strip, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+            Verb {
+                name: "minimap",
+                about: "Open the niri strip minimap Surface",
+                usage: || String::from("minimap open|close|toggle"),
+                parse: |arguments| {
+                    Command::surface(Surface::Strip, arguments)
+                        .map(Call::Island)
+                        .ok_or(Unparsed::Usage)
+                },
+            },
+        ],
+        start: |app| {
+            surfaces::strip::start();
+            app
+        },
+    },
     /*
      * a stroke drawn with the pointer runs a verb of Kanade (ADR 0105 to 0109): the overlay opens
      * only on `kanade gesture`, which the user binds, so Kanade grabs no key. Inert until a

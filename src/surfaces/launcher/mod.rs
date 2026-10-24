@@ -881,6 +881,7 @@ fn destinations() -> Destinations {
         wallpapers: modules::on("wallpaper-surface"),
         keys: modules::on("keys-surface"),
         window: modules::on("window-surface"),
+        strip: modules::on("strip-surface"),
         settings: modules::on("settings"),
     }
 }
@@ -1097,7 +1098,7 @@ struct Inputs {
 
     // which destinations exist, as the flags they are: `Destinations` is not compared, its file
     // not this one's
-    destinations: [bool; 15],
+    destinations: [bool; 16],
 
     // what the ranking read off the services, so a change to any of them ranks again
     radios: Radios,
@@ -1172,6 +1173,7 @@ fn found(visit: u64, apps: &[App], query: &str, recording: Rec, read: bool) -> A
             destinations.wallpapers,
             destinations.keys,
             destinations.window,
+            destinations.strip,
             destinations.settings,
         ],
         radios: *radios,
@@ -1230,7 +1232,7 @@ fn rank(
 }
 
 // the destinations the flags in a ranking's inputs name
-fn destination(flags: [bool; 15]) -> Destinations {
+fn destination(flags: [bool; 16]) -> Destinations {
     let [
         wifi,
         bluetooth,
@@ -1241,7 +1243,7 @@ fn destination(flags: [bool; 15]) -> Destinations {
         session,
         timer,
         capture,
-    ] = flags[..9].try_into().expect("nine of fifteen");
+    ] = flags[..9].try_into().expect("nine of sixteen");
 
     Destinations {
         wifi,
@@ -1258,7 +1260,8 @@ fn destination(flags: [bool; 15]) -> Destinations {
         wallpapers: flags[11],
         keys: flags[12],
         window: flags[13],
-        settings: flags[14],
+        strip: flags[14],
+        settings: flags[15],
     }
 }
 
@@ -2394,6 +2397,10 @@ fn open(monitor: &str, destination: &Destination) -> Result<(), &'static str> {
         }
         Destination::Window => {
             IslandService::write().open(monitor, Surface::Window, Instant::now());
+            Ok(())
+        }
+        Destination::Strip => {
+            IslandService::write().open(monitor, Surface::Strip, Instant::now());
             Ok(())
         }
         Destination::Settings(page) => {

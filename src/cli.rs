@@ -1108,6 +1108,8 @@ mod tests {
             (&["bluetooth", "off"], "bluetooth"),
             (&["power-profile", "set", "balanced"], "power"),
             (&["power-profile", "cycle"], "power"),
+            (&["strip", "open"], "strip-surface"),
+            (&["minimap", "open"], "strip-surface"),
         ] {
             let (module, _) = parse(words).expect("parses");
             assert_eq!(module.name, owner, "{words:?}");

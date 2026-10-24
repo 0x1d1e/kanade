@@ -50,6 +50,9 @@ pub enum Surface {
 
     // the one-time first-start tour
     Welcome,
+
+    // the niri strip minimap across workspaces on the focused monitor
+    Strip,
 }
 
 /*

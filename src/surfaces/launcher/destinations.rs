@@ -33,6 +33,7 @@ pub enum Destination {
     Wallpapers,
     Keys,
     Window,
+    Strip,
 
     // Settings, on the page of this name
     Settings(&'static str),
@@ -56,6 +57,7 @@ impl Destination {
             Destination::Wallpapers => "wallpapers",
             Destination::Keys => "keys",
             Destination::Window => "window",
+            Destination::Strip => "strip",
             Destination::Settings(page) => page,
         }
     }
@@ -78,6 +80,7 @@ pub struct Destinations {
     pub wallpapers: bool,
     pub keys: bool,
     pub window: bool,
+    pub strip: bool,
     pub settings: bool,
 }
 
@@ -226,6 +229,14 @@ impl LauncherProvider for Destinations {
                 "Column and window controls",
                 &["window", "column", "tile", "expel", "consume"][..],
                 Destination::Window,
+            ),
+            (
+                self.strip,
+                Icon::Columns,
+                "Strip",
+                "Niri strip minimap",
+                &["strip", "minimap", "overview", "windows"][..],
+                Destination::Strip,
             ),
         ];
 

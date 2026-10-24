@@ -55,6 +55,24 @@ pub struct Seen {
 
     // the focused window, or the last focused one across a layer surface focus
     pub focused_window: Option<FocusedWindow>,
+
+    // the windows tracked across workspaces for strip minimap
+    pub windows: Vec<StripWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StripWindow {
+    pub id: u64,
+    pub title: String,
+    pub app_id: Option<String>,
+    pub workspace_id: Option<u64>,
+    pub is_floating: bool,
+    pub is_focused: bool,
+    pub is_urgent: bool,
+    pub col: Option<u64>,
+    pub row: Option<u64>,
+    pub tile_width: Option<f64>,
+    pub tile_height: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -222,9 +240,12 @@ struct TrackedWindow {
     app_id: Option<String>,
     is_floating: bool,
     is_focused: bool,
+    is_urgent: bool,
     workspace_id: Option<u64>,
     col: Option<u64>,
+    row: Option<u64>,
     tile_width: Option<f64>,
+    tile_height: Option<f64>,
 }
 
 impl Known {
@@ -364,12 +385,23 @@ impl Known {
                     if let Some(tracked) = self.tracked_windows.get_mut(&id) {
                         if let Some(tile) = self::tile(layout) {
                             tracked.tile_width = Some(tile.0);
+                            tracked.tile_height = Some(tile.1);
                         }
                         if let Some(col) = self::col(layout) {
                             tracked.col = Some(col);
                         }
+                        if let Some(row) = self::row(layout) {
+                            tracked.row = Some(row);
+                        }
                     }
                 }
+            }
+        } else if let Some(urgency) = event.get("WindowUrgencyChanged") {
+            if let Some(id) = urgency.get("id").and_then(Json::as_u64)
+                && let Some(urgent) = urgency.get("urgent").and_then(Json::as_bool)
+                && let Some(tracked) = self.tracked_windows.get_mut(&id)
+            {
+                tracked.is_urgent = urgent;
             }
         } else if let Some(overview) = event.get("OverviewOpenedOrClosed")
             && let Some(open) = overview.get("is_open").and_then(Json::as_bool)
@@ -469,6 +501,25 @@ impl Known {
             .collect();
         workspaces.sort_by_key(|w| (w.output.clone(), w.index, w.id));
 
+        let mut windows: Vec<StripWindow> = self
+            .tracked_windows
+            .values()
+            .map(|w| StripWindow {
+                id: w.id,
+                title: w.title.clone(),
+                app_id: w.app_id.clone(),
+                workspace_id: w.workspace_id,
+                is_floating: w.is_floating,
+                is_focused: w.is_focused,
+                is_urgent: w.is_urgent,
+                col: w.col,
+                row: w.row,
+                tile_width: w.tile_width,
+                tile_height: w.tile_height,
+            })
+            .collect();
+        windows.sort_by_key(|w| (w.workspace_id, w.col, w.row, w.id));
+
         Seen {
             focused_output: focused.and_then(|(_, listed)| listed.output.clone()),
             overview: self.overview,
@@ -485,6 +536,7 @@ impl Known {
             shown,
             workspaces,
             focused_window,
+            windows,
         }
     }
 
@@ -531,11 +583,18 @@ fn tracked_window(window: &Json) -> Option<TrackedWindow> {
         .get("is_focused")
         .and_then(Json::as_bool)
         .unwrap_or(false);
+    let is_urgent = window
+        .get("is_urgent")
+        .and_then(Json::as_bool)
+        .unwrap_or(false);
     let workspace_id = window.get("workspace_id").and_then(Json::as_u64);
 
     let layout = window.get("layout");
     let col = layout.and_then(self::col);
-    let tile_width = layout.and_then(self::tile).map(|t| t.0);
+    let row = layout.and_then(self::row);
+    let tile_size = layout.and_then(self::tile);
+    let tile_width = tile_size.map(|t| t.0);
+    let tile_height = tile_size.map(|t| t.1);
 
     Some(TrackedWindow {
         id,
@@ -543,9 +602,12 @@ fn tracked_window(window: &Json) -> Option<TrackedWindow> {
         app_id,
         is_floating,
         is_focused,
+        is_urgent,
         workspace_id,
         col,
+        row,
         tile_width,
+        tile_height,
     })
 }
 
@@ -553,6 +615,14 @@ fn col(layout: &Json) -> Option<u64> {
     let pos = layout.get("pos_in_scrolling_layout")?;
     match json::array(pos)? {
         [col, ..] => col.as_u64(),
+        _ => None,
+    }
+}
+
+fn row(layout: &Json) -> Option<u64> {
+    let pos = layout.get("pos_in_scrolling_layout")?;
+    match json::array(pos)? {
+        [_, row, ..] => row.as_u64(),
         _ => None,
     }
 }
@@ -676,6 +746,10 @@ pub fn move_window_to_workspace(window_id: u64, workspace_id: u64) -> io::Result
     act(&format!(
         r#"{{"Action":{{"MoveWindowToWorkspace":{{"window_id":{window_id},"reference":{{"Id":{workspace_id}}},"focus":false}}}}}}"#
     ))
+}
+
+pub fn focus_window(id: u64) -> io::Result<Acted> {
+    act(&format!(r#"{{"Action":{{"FocusWindow":{{"id":{id}}}}}}}"#))
 }
 
 /*
@@ -1811,5 +1885,177 @@ mod tests {
         known.apply(&close_12);
         let seen = known.seen();
         assert_eq!(seen.focused_window, None);
+    }
+
+    #[test]
+    fn strip_window_tracking_and_deterministic_order() {
+        let mut known = Known {
+            workspaces: HashMap::new(),
+            focused: Some(1),
+            overview: false,
+            overviews: 0,
+            casts: HashMap::new(),
+            windows: HashMap::new(),
+            last_focused_window: None,
+            tracked_windows: HashMap::new(),
+        };
+
+        // Two workspaces
+        let workspaces_event = json::parse(
+            r#"{"WorkspacesChanged":{"workspaces":[
+                {"id":1,"idx":1,"name":null,"output":"eDP-1","is_active":true,"is_focused":true,"active_window_id":20},
+                {"id":2,"idx":2,"name":null,"output":"eDP-1","is_active":false,"is_focused":false,"active_window_id":null}
+            ]}}"#,
+        )
+        .unwrap();
+        known.apply(&workspaces_event);
+
+        // Windows intentionally out of order across workspaces, columns, and rows
+        let windows_event = json::parse(
+            r#"{"WindowsChanged":{"windows":[
+                {
+                    "id": 30,
+                    "title": "Editor",
+                    "app_id": "code",
+                    "is_floating": false,
+                    "is_focused": false,
+                    "workspace_id": 2,
+                    "layout": {"pos_in_scrolling_layout": [0, 0], "tile_size": [1000.0, 900.0]}
+                },
+                {
+                    "id": 21,
+                    "title": "Sub Terminal",
+                    "app_id": "foot",
+                    "is_floating": false,
+                    "is_focused": false,
+                    "workspace_id": 1,
+                    "layout": {"pos_in_scrolling_layout": [0, 1], "tile_size": [700.0, 400.0]}
+                },
+                {
+                    "id": 20,
+                    "title": "Main Terminal",
+                    "app_id": "foot",
+                    "is_floating": false,
+                    "is_focused": true,
+                    "workspace_id": 1,
+                    "layout": {"pos_in_scrolling_layout": [0, 0], "tile_size": [700.0, 600.0]}
+                },
+                {
+                    "id": 22,
+                    "title": "Web Browser",
+                    "app_id": "firefox",
+                    "is_floating": false,
+                    "is_focused": false,
+                    "workspace_id": 1,
+                    "layout": {"pos_in_scrolling_layout": [1, 0], "tile_size": [900.0, 1000.0]}
+                },
+                {
+                    "id": 40,
+                    "title": "Floating Note",
+                    "app_id": "notes",
+                    "is_floating": true,
+                    "is_focused": false,
+                    "workspace_id": 1,
+                    "layout": null
+                }
+            ]}}"#,
+        )
+        .unwrap();
+        known.apply(&windows_event);
+
+        let seen = known.seen();
+        assert_eq!(seen.windows.len(), 5);
+
+        // Deterministic sort: (workspace_id, col, row, id)
+        // 1. Floating window (col: None, row: None) on ws 1
+        assert_eq!(seen.windows[0].id, 40);
+        assert!(seen.windows[0].is_floating);
+        assert_eq!(seen.windows[0].col, None);
+        assert_eq!(seen.windows[0].row, None);
+
+        // 2. ws 1, col 0, row 0 -> id 20
+        assert_eq!(seen.windows[1].id, 20);
+        assert_eq!(seen.windows[1].title, "Main Terminal");
+        assert_eq!(seen.windows[1].app_id.as_deref(), Some("foot"));
+        assert_eq!(seen.windows[1].workspace_id, Some(1));
+        assert_eq!(seen.windows[1].col, Some(0));
+        assert_eq!(seen.windows[1].row, Some(0));
+        assert_eq!(seen.windows[1].tile_width, Some(700.0));
+        assert_eq!(seen.windows[1].tile_height, Some(600.0));
+        assert!(seen.windows[1].is_focused);
+
+        // 3. ws 1, col 0, row 1 -> id 21
+        assert_eq!(seen.windows[2].id, 21);
+        assert_eq!(seen.windows[2].col, Some(0));
+        assert_eq!(seen.windows[2].row, Some(1));
+        assert_eq!(seen.windows[2].tile_width, Some(700.0));
+        assert_eq!(seen.windows[2].tile_height, Some(400.0));
+        assert!(!seen.windows[2].is_focused);
+
+        // 4. ws 1, col 1, row 0 -> id 22
+        assert_eq!(seen.windows[3].id, 22);
+        assert_eq!(seen.windows[3].col, Some(1));
+        assert_eq!(seen.windows[3].row, Some(0));
+
+        // 5. ws 2, col 0, row 0 -> id 30
+        assert_eq!(seen.windows[4].id, 30);
+        assert_eq!(seen.windows[4].workspace_id, Some(2));
+        assert_eq!(seen.windows[4].col, Some(0));
+        assert_eq!(seen.windows[4].row, Some(0));
+
+        // WindowLayoutsChanged updates col, row, width, height
+        let layout_event = json::parse(
+            r#"{"WindowLayoutsChanged":{"changes":[
+                [20, {"pos_in_scrolling_layout": [2, 0], "tile_size": [850.0, 950.0]}]
+            ]}}"#,
+        )
+        .unwrap();
+        known.apply(&layout_event);
+
+        let seen = known.seen();
+        let w20 = seen.windows.iter().find(|w| w.id == 20).unwrap();
+        assert_eq!(w20.col, Some(2));
+        assert_eq!(w20.row, Some(0));
+        assert_eq!(w20.tile_width, Some(850.0));
+        assert_eq!(w20.tile_height, Some(950.0));
+
+        // WindowFocusChanged updates is_focused
+        let focus_event = json::parse(r#"{"WindowFocusChanged":{"id":22}}"#).unwrap();
+        known.apply(&focus_event);
+        let seen = known.seen();
+        assert!(!seen.windows.iter().find(|w| w.id == 20).unwrap().is_focused);
+        assert!(seen.windows.iter().find(|w| w.id == 22).unwrap().is_focused);
+
+        // WindowUrgencyChanged updates is_urgent
+        let urgency_event =
+            json::parse(r#"{"WindowUrgencyChanged":{"id":20,"urgent":true}}"#).unwrap();
+        known.apply(&urgency_event);
+        let seen = known.seen();
+        assert!(seen.windows.iter().find(|w| w.id == 20).unwrap().is_urgent);
+
+        // WindowOpenedOrChanged adds new window with focus
+        let open_event = json::parse(
+            r#"{"WindowOpenedOrChanged":{"window":{
+                "id": 50,
+                "title": "Music",
+                "app_id": "spotify",
+                "is_floating": false,
+                "is_focused": true,
+                "workspace_id": 1,
+                "layout": {"pos_in_scrolling_layout": [0, 0], "tile_size": [600.0, 800.0]}
+            }}}"#,
+        )
+        .unwrap();
+        known.apply(&open_event);
+        let seen = known.seen();
+        let w50 = seen.windows.iter().find(|w| w.id == 50).unwrap();
+        assert!(w50.is_focused);
+        assert!(!seen.windows.iter().find(|w| w.id == 22).unwrap().is_focused);
+
+        // WindowClosed removes the window
+        let close_event = json::parse(r#"{"WindowClosed":{"id":50}}"#).unwrap();
+        known.apply(&close_event);
+        let seen = known.seen();
+        assert!(seen.windows.iter().find(|w| w.id == 50).is_none());
     }
 }
