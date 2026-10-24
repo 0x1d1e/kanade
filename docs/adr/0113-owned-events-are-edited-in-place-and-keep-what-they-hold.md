@@ -38,7 +38,7 @@ Scope: events Kanade owns (ADR 0045: UID `<name>@kanade`, the file `<name>.ics` 
 ## Consequences
 
 - A hand-edited event the field cannot say (above) can only be removed, or edited in its file.
-- After "Changed elsewhere" the field keeps the baseline it was opened with, so it stays refused until Escape drops it and the event is opened again.
-- The pointer hold on `remove` shows the footer wording of the key ("Keep holding d to remove").
+- After "Changed elsewhere" the field retakes the event as its file now reads (`add::reread`), or drops what it cannot say, so the next Enter does not refuse on the old baseline again.
+- The pointer hold on `remove` fills the same, and the footer wording names no key for one held with the pointer (`confirm::pointer`).
 - DTSTAMP is not touched by a change.
 - Not tested live here: the buttons on the row, the pointer hold on `remove` and the footer message need a run on the session.

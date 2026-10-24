@@ -132,8 +132,8 @@ Not worth changing, by this review:
 - A dmenu started in the background holds the keyboard until answered (as rofi does); Escape always reaches it.
 
 - Calendar Surface: no undo for a removed event, and recurrence, place and a reminder cannot be typed (a file that holds them keeps them, ADR 0113); a change is read, checked and written in separate steps, so another writer between them wins.
-- Calendar Surface: after "Changed elsewhere" the open field keeps its old baseline until Escape; the pointer hold on an event's Remove shows the key wording "Keep holding d to remove".
-- Text fields: an open Calendar edit field survives the Surface collapsing and reopening (pre-existing). A `kanade ui press` is followed by the Surface collapsing after about 0.5 s (pre-existing).
+- [x] Calendar Surface: after "Changed elsewhere" the open field keeps its old baseline until Escape; the pointer hold on an event's Remove shows the key wording "Keep holding d to remove": resolved via `add::reread`, which the save's end calls to retake the event as its file now reads or drop what it cannot say (`src/surfaces/calendar.rs` `settled`), and `confirm::pointer`, which the footer asks so a pointer hold names no key (`src/surfaces/confirm.rs`).
+- Text fields: [x] an open Calendar edit field survives the Surface collapsing and reopening (pre-existing): resolved via `surfaces::calendar::start` watching `IslandService`, which drops the open field the moment the Surface is not showing (`src/surfaces/calendar.rs` `follow`). A `kanade ui press` is followed by the Surface collapsing after about 0.5 s (pre-existing).
 
 ## Design audit (not done)
 

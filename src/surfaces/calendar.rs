@@ -20,7 +20,10 @@ use kanade_runtime::{
     Center, Column, Cursor, Key, Padding, Parent, Rectangle, Row, Scroll, SpaceBetween, Start,
     Text, Widget, children,
 };
-use kanade_runtime::{MutexExt, service::Service};
+use kanade_runtime::{
+    MutexExt,
+    service::{self, Service},
+};
 
 use crate::clock;
 use crate::config;
@@ -922,7 +925,11 @@ fn agenda(
     {
         Some(event) if event.added.is_none() => String::from("Read-only here"),
         Some(event) if confirm::fill(removal(event)) > 0.0 => {
-            String::from("Keep holding d to remove")
+            if confirm::pointer(removal(event)) {
+                String::from("Keep holding to remove")
+            } else {
+                String::from("Keep holding d to remove")
+            }
         }
         Some(_) => String::from("e changes, hold d to remove"),
         None => count,
@@ -969,7 +976,7 @@ fn add_pill(monitor: &str) -> Rectangle {
         .align_child(Center, Center)
         .cursor(Cursor::Pointer)
         .semantics(|| Semantics::new(Role::Button, "new"))
-        .on_click(super::on_left(move || start(&monitor)))
+        .on_click(super::on_left(move || add_event(&monitor)))
         .child(
             Text::new("+ Add")
                 .size(theme::text::LABEL_SMALL)
@@ -1252,7 +1259,7 @@ pub fn key(monitor: &str, key: Key) -> bool {
         });
     }
     if key == Key::Character('a') {
-        start(monitor);
+        add_event(monitor);
         return true;
     }
     if added(monitor, key) {
@@ -1379,14 +1386,52 @@ fn settled(visit: u64, id: u64, written: Result<(), String>) {
         Ok(()) => *adding = Adding::begin(visit),
         Err(problem) => {
             adding.saving = None;
+
+            // the file changed under us: the field takes the event as it now reads, or drops
+            // what it cannot say, so the next Enter does not refuse on the old baseline again
+            if problem == add::CHANGED {
+                match adding.replacing.as_ref().and_then(|r| add::reread(&r.stem)) {
+                    Some(fresh) => {
+                        adding.text = Some(add::text(&fresh));
+                        adding.replacing = Some(Replacing {
+                            stem: fresh.added.clone().unwrap_or_default(),
+                            was: fresh,
+                        });
+                    }
+                    None => {
+                        adding.text = None;
+                        adding.replacing = None;
+                    }
+                }
+            }
+
             adding.problem = Some(problem);
         }
     }
 }
 
 // an empty event to type, on the visit open now
-fn start(monitor: &str) {
+fn add_event(monitor: &str) {
     change(monitor, String::new(), None);
+}
+
+// the Calendar Surface is open: its watches go up once, when the Module starts
+pub fn start() {
+    service::watch::<IslandService>(follow);
+}
+
+/*
+ * the edit field belongs to a visit of the Surface, and to the Surface alone: once it is not
+ * showing, any open field, its text and its baseline are over, so reopening starts fresh
+ */
+fn follow() {
+    let open = IslandService::read().surface() == Some(Surface::Calendar);
+    let adding = Adding::read();
+
+    if !open && (adding.text.is_some() || adding.replacing.is_some() || adding.problem.is_some()) {
+        drop(adding);
+        store(Adding::default());
+    }
 }
 
 // `text` to type on the visit open now, in place of the event `replacing`, if any
@@ -1576,7 +1621,17 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use chrono::{NaiveTime, TimeDelta};
+
     use super::*;
+
+    const TEST: &str = "test";
+
+    // `Adding` and the island are one global Service each, so tests that write them take this in turn
+    fn field_tests() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
 
     // pressing a day wrote the Browse it still held a read of, which hung the UI thread for good
     #[test]
@@ -1593,5 +1648,121 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("choose hung");
         assert_eq!(Browse::read().day, Some(date));
+    }
+
+    // the field of a visit is over once the Surface is not showing, however it stopped showing
+    #[test]
+    fn an_open_field_is_dropped_once_the_surface_is_not_showing() {
+        let _lock = field_tests();
+
+        // a visit with a field open, as typing leaves it
+        IslandService::write().open(TEST, Surface::Calendar, Instant::now());
+        let visit = IslandService::read().visit();
+        store(Adding {
+            visit,
+            text: Some(String::from("Dentist")),
+            problem: Some(String::from("Changed elsewhere")),
+            ..Adding::default()
+        });
+
+        // the Surface still shows: the field stays
+        follow();
+        assert!(Adding::read().text.is_some());
+
+        // another Surface in its place, as any collapse leaves it
+        IslandService::write().open(TEST, Surface::Controls, Instant::now());
+        follow();
+
+        let text = Adding::read().text.clone();
+
+        assert_eq!(text, None);
+    }
+
+    // after Changed elsewhere the field takes the event as the file now reads, or drops what it
+    // cannot say, so the next Enter does not refuse on the old baseline again
+    #[test]
+    fn a_change_elsewhere_retakes_the_event_or_drops_the_field() {
+        let _lock = field_tests();
+        let start = NaiveDate::from_ymd_opt(2026, 10, 24)
+            .unwrap()
+            .and_time(NaiveTime::from_hms_opt(14, 30, 0).unwrap());
+        let visit = IslandService::read().visit();
+
+        *Adding::write() = Adding {
+            visit,
+            text: Some(String::from("Dentist")),
+            replacing: Some(Replacing {
+                stem: String::from("elsewhere-1"),
+                was: Occurrence {
+                    title: String::from("Dentist"),
+                    location: None,
+                    start,
+                    end: start + TimeDelta::hours(1),
+                    span: (0, 3600),
+                    all_day: false,
+                    added: Some(String::from("elsewhere-1")),
+                },
+            }),
+            problem: None,
+            saving: Some(7),
+        };
+
+        // nothing to re-read, as when the event was deleted: the stale field is dropped
+        settled(visit, 7, Err(String::from(add::CHANGED)));
+
+        // read apart, since the next case writes
+        let (text, replacing, problem, saving) = {
+            let adding = Adding::read();
+
+            (
+                adding.text.clone(),
+                adding.replacing.clone(),
+                adding.problem.clone(),
+                adding.saving,
+            )
+        };
+
+        assert_eq!(saving, None);
+        assert_eq!(problem.as_deref(), Some(add::CHANGED));
+        assert_eq!(text, None);
+        assert_eq!(replacing, None);
+
+        // what went wrong in the writing itself keeps the text to correct
+        *Adding::write() = Adding {
+            visit,
+            text: Some(String::from("Dentist")),
+            saving: Some(8),
+            ..Adding::default()
+        };
+        settled(visit, 8, Err(String::from("Could not save: disk full")));
+
+        let (text, problem) = {
+            let adding = Adding::read();
+
+            (adding.text.clone(), adding.problem.clone())
+        };
+
+        assert_eq!(text.as_deref(), Some("Dentist"));
+        assert_eq!(problem.as_deref(), Some("Could not save: disk full"));
+    }
+
+    // a save of an earlier field, or one already settled, changes nothing
+    #[test]
+    fn a_stale_save_settles_nothing() {
+        let _lock = field_tests();
+        let visit = IslandService::read().visit();
+
+        *Adding::write() = Adding {
+            visit,
+            text: Some(String::from("Dentist")),
+            saving: Some(9),
+            ..Adding::default()
+        };
+
+        settled(visit + 1, 9, Ok(()));
+        assert_eq!(Adding::read().text.as_deref(), Some("Dentist"));
+
+        settled(visit, 10, Ok(()));
+        assert_eq!(Adding::read().text.as_deref(), Some("Dentist"));
     }
 }

@@ -982,7 +982,10 @@ notifications dnd on until <HH:MM>
                     .ok_or(Unparsed::Usage)
             },
         }],
-        start: |app| app,
+        start: |app| {
+            surfaces::calendar::start();
+            app
+        },
     },
     // the events' reminders, on the island (ADR 0043)
     Module {

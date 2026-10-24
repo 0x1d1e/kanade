@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
 
+use calcard::icalendar::{ICalendarComponentType, ICalendarProperty};
+
 use super::{Occurrence, data_home};
 use crate::atomic::{self, Mode};
 use crate::clock;
@@ -219,7 +221,7 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-const CHANGED: &str = "Changed elsewhere";
+pub const CHANGED: &str = "Changed elsewhere";
 const UNSAFE: &str = "Its file holds more than Kanade can change safely";
 const UNSAID: &str = "The field cannot say this event; change its file";
 
@@ -252,6 +254,51 @@ pub fn replace(stem: &str, event: &Event, was: &Occurrence) -> io::Result<()> {
 // the file of event `stem` removed, if it is still as `was` showed it
 pub fn remove(stem: &str, was: &Occurrence) -> io::Result<()> {
     remove_in(&events()?, stem, was, clock::local_time)
+}
+
+// the event in file `stem` re-read from disk, if it is still owned, typable, and valid
+pub fn reread(stem: &str) -> Option<Occurrence> {
+    reread_in(&events().ok()?, stem, clock::local_time)
+}
+
+fn reread_in(
+    dir: &Path,
+    stem: &str,
+    local: impl Fn(i64) -> Option<NaiveDateTime>,
+) -> Option<Occurrence> {
+    let path = file_in(dir, stem).ok()?;
+    let text = current(&path).ok()?;
+    let read = super::parse(&text).ok()?;
+
+    if !super::kept_here(&path, &read, Some(dir)) {
+        return None;
+    }
+
+    let calendars: Vec<_> = read.into_iter().flat_map(super::series).collect();
+    let event = calendars
+        .iter()
+        .flat_map(|calendar| &calendar.components)
+        .find(|component| {
+            component.component_type == ICalendarComponentType::VEvent
+                && super::text(component, &ICalendarProperty::Uid)
+                    .as_deref()
+                    .and_then(self::stem)
+                    == Some(stem)
+        })?;
+
+    let date = super::start_of(event)?.to_date_time()?.date_time.date();
+    let last = date.succ_opt().unwrap_or(date);
+    let found = super::occurrences(&calendars, date, last, local);
+    let fresh = found
+        .occurrences
+        .into_iter()
+        .find(|now| now.added.as_deref() == Some(stem))?;
+
+    if !typable(&fresh) {
+        return None;
+    }
+
+    Some(fresh)
 }
 
 fn events() -> io::Result<PathBuf> {
@@ -1197,5 +1244,28 @@ mod tests {
             at("DTEND;VALUE=DATE:20261014"),
             at("DTSTART;VALUE=DATE:20261013") + 1
         );
+    }
+
+    // after a change elsewhere, the event is re-read from disk with its new values
+    #[test]
+    fn reread_returns_updated_occurrence_and_none_when_gone_or_unsafe() {
+        let scratch = Scratch::new("reread");
+        let original = rich("Dentist", "cd-2@kanade");
+        scratch.put("cd-2", &original);
+
+        let read = reread_in(&scratch.0, "cd-2", utc).unwrap();
+        assert_eq!(read.title, "Dentist");
+        assert_eq!(read.added.as_deref(), Some("cd-2"));
+
+        // modified event with new title
+        let modified = original.replace("SUMMARY:Dentist", "SUMMARY:Doctor");
+        scratch.put("cd-2", &modified);
+
+        let read2 = reread_in(&scratch.0, "cd-2", utc).unwrap();
+        assert_eq!(read2.title, "Doctor");
+
+        // deleted file returns None
+        let _ = fs::remove_file(scratch.0.join("cd-2.ics"));
+        assert_eq!(reread_in(&scratch.0, "cd-2", utc), None);
     }
 }

@@ -33,6 +33,9 @@ pub struct Confirm {
     // what is held, by hash
     what: u64,
 
+    // whether the hold was started with the pointer rather than a key
+    pointer: bool,
+
     // when the press began, none once it is let go or acted
     since: Option<Instant>,
 
@@ -49,9 +52,10 @@ impl Service for Confirm {
 }
 
 impl Confirm {
-    fn pressed(&mut self, what: u64, now: Instant) -> u64 {
+    fn pressed(&mut self, what: u64, pointer: bool, now: Instant) -> u64 {
         self.serial += 1;
         self.what = what;
+        self.pointer = pointer;
         self.since = Some(now);
         self.drain = None;
 
@@ -127,8 +131,17 @@ fn name(what: impl Hash) -> u64 {
  * new visit of the Surface between. Pointer and key alike end it with `release`
  */
 pub fn press(what: impl Hash, then: Arc<dyn Fn() + Send + Sync>) {
+    press_by(what, false, then);
+}
+
+// starts holding `what` with the pointer
+pub fn press_pointer(what: impl Hash, then: Arc<dyn Fn() + Send + Sync>) {
+    press_by(what, true, then);
+}
+
+fn press_by(what: impl Hash, pointer: bool, then: Arc<dyn Fn() + Send + Sync>) {
     let visit = IslandService::read().visit();
-    let serial = Confirm::write().pressed(name(what), Instant::now());
+    let serial = Confirm::write().pressed(name(what), pointer, Instant::now());
 
     // a timer that cannot start leaves a hold that never acts
     let _ = thread::Builder::new()
@@ -149,6 +162,13 @@ pub fn press(what: impl Hash, then: Arc<dyn Fn() + Send + Sync>) {
                 then();
             }
         });
+}
+
+// whether `what` is being held by the pointer rather than a key
+pub fn pointer(what: impl Hash) -> bool {
+    let hold = Confirm::read();
+
+    hold.what == name(what) && hold.pointer
 }
 
 // the press ends: the pointer or a key came up, the pointer left or another key came down
@@ -185,7 +205,7 @@ pub fn target(
         .on_hold(move |down| {
             if down {
                 crate::view::claim();
-                press(what.clone(), then.clone());
+                press_pointer(what.clone(), then.clone());
             } else {
                 release();
             }
@@ -223,12 +243,12 @@ mod tests {
         let start = Instant::now();
         let mut hold = Confirm::default();
 
-        let tap = hold.pressed(1, start);
+        let tap = hold.pressed(1, false, start);
         assert!(hold.released(start + HOLD / 2));
         assert!(!hold.due(tap, start + HOLD));
 
-        let replaced = hold.pressed(1, start);
-        let newer = hold.pressed(1, start + HOLD / 2);
+        let replaced = hold.pressed(1, false, start);
+        let newer = hold.pressed(1, false, start + HOLD / 2);
         assert!(!hold.due(replaced, start + HOLD));
         assert!(!hold.due(newer, start + HOLD - Duration::from_millis(1)));
         assert!(hold.due(newer, start + HOLD / 2 + HOLD));
@@ -241,7 +261,7 @@ mod tests {
         let start = Instant::now();
         let mut hold = Confirm::default();
 
-        hold.pressed(7, start);
+        hold.pressed(7, false, start);
 
         assert_eq!(hold.fill_at(7, start + HOLD / 2, false), (0.5, true));
         assert_eq!(hold.fill_at(8, start + HOLD / 2, false), (0.0, false));
@@ -255,5 +275,18 @@ mod tests {
             (0.0, false)
         );
         assert_eq!(hold.fill_at(7, start + HOLD / 2, true), (0.0, false));
+    }
+
+    // a pointer hold remembers that the pointer started it, so the wording names no key
+    #[test]
+    fn pointer_hold_is_distinguished_from_key_hold() {
+        let start = Instant::now();
+        let mut hold = Confirm::default();
+
+        hold.pressed(42, true, start);
+        assert!(hold.pointer);
+
+        hold.pressed(42, false, start);
+        assert!(!hold.pointer);
     }
 }

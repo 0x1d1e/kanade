@@ -965,7 +965,7 @@ fn instant(at: NaiveDateTime, local: &impl Fn(i64) -> Option<NaiveDateTime>) -> 
         .or(Some(wall - before))
 }
 
-fn start_of(component: &ICalendarComponent) -> Option<&PartialDateTime> {
+pub(super) fn start_of(component: &ICalendarComponent) -> Option<&PartialDateTime> {
     match component
         .property(&ICalendarProperty::Dtstart)?
         .values
@@ -976,7 +976,7 @@ fn start_of(component: &ICalendarComponent) -> Option<&PartialDateTime> {
     }
 }
 
-fn text(component: &ICalendarComponent, property: &ICalendarProperty) -> Option<String> {
+pub(super) fn text(component: &ICalendarComponent, property: &ICalendarProperty) -> Option<String> {
     component
         .property(property)?
         .values
