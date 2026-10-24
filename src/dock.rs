@@ -1453,12 +1453,10 @@ fn beside(island: Anchor, dock: Anchor) -> bool {
             || dock.sits() == Along::Center)
 }
 
-// how far a body of the Island on `anchor` reaches off its edge: its height, or its width on a side
 /*
- * how far, 0 to 1, the Dock has faded out of the Island's way: the Island's body or Satellites
- * reaching across the row now or where the body heads sends the fade toward 0; beside the Island,
- * or on another edge, the fade goes to 1 at once. Magnification under the pointer never sends it
- * away
+ * how far (0..1) the Dock yields to an overlapping Island body or Satellite: the body reaching
+ * across the row now, or where it heads, sends the fade toward 0; on another edge it goes back
+ * to 1 at once. Pointer magnification never triggers fade-out.
  */
 fn covered(
     monitor: &Monitor,

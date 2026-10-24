@@ -1,9 +1,6 @@
 /*
- * the calculator, as a Launcher provider: an arithmetic query shows its value first, and pressing
- * it copies what is shown. Numbers, `+ - * / ^` (`**` too, and `× ÷ −`), parentheses and signs;
- * `^` binds tightest and right first (`-2^2` is -4, `2^3^2` is 512). Percentages (`20% of 50`
- * is 10), bases (`0xff`, `0b101`, `0o17`, exact to 2^53), units (`10 cm to in`). No currency,
- * nothing from the network.
+ * Launcher arithmetic and conversion provider. Evaluates operators (`^` binds tightest and
+ * right first), percentages, bases (exact to 2^53), and units. Offline only: no network.
  */
 
 use super::provider::{Action, Answer, Fit, LauncherProvider, Mark};

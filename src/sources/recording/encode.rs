@@ -251,14 +251,9 @@ impl Encoding {
     }
 
     /*
-     * the elements that end a window's chain when no buffer arrives for `QUIET`: `watchdog`
-     * passes buffers through and raises an element error when they stop, so the segment ends as a
-     * failure `falls_back` sees instead of one that hangs until stopped. It catches a cast that
-     * delivers nothing and an encoder that stops taking what arrives. Without it a still window
-     * and a wedged chain are the same silence. It must sit before the encoding chain: `x264enc`
-     * holds its first byte for 9 s at a still window's cadence, which is no fault of the chain's.
-     *
-     * It does not depend on the encoding; it is here so the chain and its trial cannot drift apart
+     * `watchdog` ends the pipeline if buffers stop for `QUIET`, failing into `falls_back`.
+     * Placed before the encoder so `x264enc`'s initial 9 s buffer hold on still windows does
+     * not trigger it, and kept here so the trial and live pipelines stay in sync.
      */
     pub fn guard(&self) -> Vec<String> {
         let timeout = format!("timeout={}", QUIET.as_millis());
@@ -269,17 +264,9 @@ impl Encoding {
     }
 
     /*
-     * the GStreamer elements of a window's pipeline from the first converter to the encoder, at
-     * `size`, the `!` between them included. `add-borders` keeps the aspect, so a resized window
-     * stays whole in the frame, provided the cast is held to square pixels (`plan::encoder`; else
-     * `vapostproc` cannot calculate the borders and stretches the picture). The caps fix them on
-     * the output too and name BT.709, the matrix the picture is converted with, which the muxer
-     * then tags. niri's cast offers DMA-BUF only (a mandatory modifier list, Intel's compressed
-     * tiled ones among them), and `pipewiresrc` offers a format only if the element after it takes
-     * it: `vapostproc` does, a CPU converter does not (`no more input formats`,
-     * not-negotiated). So NVENC and x264 get frames in system memory from the VA-API
-     * post-processor of a node that works (converts and scales on the way), or else through EGL
-     * (`Download::Gl`), which Mesa refuses for the compressed tiled ones
+     * pipeline elements from converter to encoder at `size`. `add-borders` preserves aspect
+     * under square pixels, tagged BT.709. niri casts DMA-BUF only, so CPU converters cannot
+     * take `pipewiresrc` directly; NVENC and x264 download frames through VA-API or EGL.
      */
     pub fn chain(&self, size: (u32, u32)) -> Vec<String> {
         let (width, height) = size;

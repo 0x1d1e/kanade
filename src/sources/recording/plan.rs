@@ -247,21 +247,9 @@ pub fn recorder(source: &Source, audio: Audio, file: &str, encoding: &Encoding) 
 const SQUARE_PIXELS: &str = "video/x-raw(ANY),pixel-aspect-ratio=1/1";
 
 /*
- * the arguments of `gst-launch-1.0` for one segment of a window: the PipeWire node niri casts it on,
- * encoded as `encoding` says at the window's size, written to stdout as H.264 for `muxer`.
- * Interrupted, it ends the stream (`-e`) rather than cut it off.
- *
- * `keepalive-time` and `resend-last` make `pipewiresrc` re-emit the last buffer every second when
- * the window is static (no damage), so a still window keeps producing buffers and `muxer` stamps
- * them by the wall clock into the duration it really had. Nothing here paces the frames (no
- * `videorate`): a variable frame rate is the recording (ADR 0117). `pipewiresrc` offers no fixed
- * framerate, and fed caps that fix none, `videorate` emits a single frame: a 30 s take became a
- * file of 2 s. It must never be added back for the still-window case
- *
- * `encoding.guard()` follows the square-pixel caps and ends the chain when buffers stop arriving
- * for `QUIET`, so a chain that hangs is a failure `falls_back` gets, not one that waits forever.
- * It sits before the encoding chain, where it sees what the cast delivers rather than what the
- * encoder has got round to emitting
+ * GStreamer arguments encoding a PipeWire segment to stdout as H.264 (-e ends the stream).
+ * `keepalive-time` and `resend-last` re-emit static buffers so wallclock muxing keeps duration;
+ * variable framerate is preserved without `videorate` (ADR 0117, which collapses to one frame).
  */
 pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> {
     let mut arguments: Vec<String> = [
@@ -298,13 +286,9 @@ pub fn encoder(node: u64, size: (u32, u32), encoding: &Encoding) -> Vec<String> 
 }
 
 /*
- * the arguments of `ffmpeg` that write the stream of `encoder` on stdin, and the audio if any, to
- * `file`, copying the video. It stamps by the wall clock (the only time a PipeWire window cast's
- * frames have), so sound and picture are in step to about a frame at best. A file that is there is
- * never replaced (`-n`). The mp4 is fragmented, a fragment each second (`frag_duration`) and flushed
- * as it is written (`flush_packets`), so a killed writer leaves a file that plays to its last
- * fragment instead of one with no `moov`. The stream is tagged as BT.709 limited range, the matrix
- * `encoder` converts with, which the encoder itself does not write
+ * ffmpeg arguments muxing stdin H.264 and optional audio to `file` (-n). Uses wallclock
+ * timestamps (the only time PipeWire window frames carry), tags BT.709 limited range, and
+ * fragments MP4 per second (`flush_packets`) so a killed writer leaves a playable file.
  */
 pub fn muxer(audio: Audio, file: &str) -> Vec<String> {
     let mut arguments: Vec<String> = [

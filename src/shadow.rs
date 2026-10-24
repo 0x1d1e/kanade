@@ -1,11 +1,7 @@
 /*
- * the body's drop shadow: eight images around the body — four corners at their own size, four
- * edges stretched along it. Corners reach a blur down the body's long sides; on a side edge they
- * turn to reach down rather than across, which on a narrow pill would overlap. The runtime's own
- * shadow goes through Vello, costing enough gpu time per morphing frame to drop frames; images
- * only move textures. Every piece is cut out where the body covers it, none for the middle. Each
- * piece is its own draw, which on an integrated gpu costs more than the pixels it fills, so
- * corners stay whole rather than cut down to what the body leaves showing
+ * drop shadow drawn as eight textured images (four corners, four stretched edges) rather
+ * than Vello to avoid morph frame drops. Pieces are cut out where the body covers them;
+ * corners stay whole to minimize draw call overhead on integrated GPUs.
  */
 
 use std::collections::HashMap;
