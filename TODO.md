@@ -59,7 +59,7 @@ Not worth changing, by this review:
 - [x] `Image::blurred`, the loader's blur key and `graphics/image/soften.rs` are gone (no caller after ADR 0049).
 - [x] Dead after ADR 0049: `shadow.rs` still cuts each piece where the body covers it, which an opaque body no longer needs.
   - Premise no longer holds: ADR 0057's Blur made the pane translucent again (`pane::BLUR_FILL`), so the cut is live. Keep it.
-- [ ] A plain (unmerged) pane needs no shader: a `Rectangle` fill would drop the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
+- [x] A plain (unmerged) pane needs no shader: a `Rectangle` fill drops the pane shader file's dependency on `XDG_RUNTIME_DIR` for the common case; only the merged outline needs it.
 ## Architecture (#208 review)
 
 - [x] Input and invalidation (ADR 0034, 0035; a copy redraws only its pane's readers)
@@ -154,7 +154,7 @@ Unfixed, no visual change wanted. Fixed in the same pass: notification `image-da
 - [x] `Atlas::place` defers a glyph that would wrap rather than overwriting it: `Placement::{Letter, Nothing, Overflow}` returns `Overflow` where the row would wrap, `batch.rs` pushes a `Deferred` entry, and `Quads::draw` re-places it once the batch has drawn, so the order is safe and terminates (a letter larger than the atlas is `Nothing`, not deferred).
 - [x] `ipc` reads and runs its handlers inline (1 s read timeout) and `request_frames` followed every call. The read stays off the draw thread and the handlers stay on it (moving them is a separate, riskier item), but the redraw is now the call's own answer: `ipc::draws` classifies the verb from its words before the handler runs, `Draws::Yes` only for `settings`/`close-settings`, `gesture draw|record`, `osd` and `brightness set|up|down`, and a `ui` act needs no frame of its own, since it draws the one window it reached through that window's `request_frame_on` and a `ui describe` or `ui wait` draws nothing. A verb whose change rides a Service write or `open_window`/`close_window`'s `mark_all` draws nothing extra, so `kanade status`, `module list`, `config validate`, `lock status`, `idle status`, `ui describe`, `ui wait`, `activity list`, `activity pressed` and `brightness status` draw no frame at all (measured: 15 calls, 0 frames).
 - [x] `update_surface` no longer commits before `present` does: it applies the layer settings and reports that a commit is owed, and `redraw` commits them itself only when it presents no frame (unconfigured or hidden, a view with no root, or a skipped `Gpu::draw`), since a presented frame's own commit carries them. A hidden window showing again still gets its buffer-less commit, which is what makes the compositor configure it (a Banner appearing was checked on the session).
-- [ ] A property-only change still resends every setting through `layer::apply`; `Settings` compares whole and could send only the fields that differ.
+- [x] A property-only change still resends every setting through `layer::apply`; `Settings` compares whole and could send only the fields that differ.
 - [ ] `open_normal` runs the view once only to read title and size.
 - [ ] `Brightness` polls every 500 ms and the trimmer wakes every 10 s (ADR 0004 knows them); `osd` and `notifications` still spawn `pactl subscribe` and `dbus-monitor` and settle-poll.
 - [x] `elide` and the `tail` helpers re-measured from the start per removed letter (quadratic).
