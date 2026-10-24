@@ -3,8 +3,8 @@
 //!
 //! Nothing here runs until the Surface is open with the setting on. The media follower then says
 //! what it wants (`want`), and one worker thread, started on the first ask, looks it up: the
-//! `.lrc` file beside the track a local URL names, read whether it plays or not, else (`lrclib`
-//! only, and only while it plays) the cache, else one `GET /api/get` over https for the track's
+//! `.lrc` file beside the track a local URL names, or in the cache (read whether it plays or not),
+//! else (`lrclib` only, and only while it plays) one `GET /api/get` over https for the track's
 //! title, artist, album and length. A failed look-up waits, for that track, past a pause or the
 //! Surface closing, and the Surface closing drops the lyrics, so nothing is asked for a track no
 //! one watches.
@@ -181,9 +181,9 @@ static QUEUE: LazyLock<Queue<Message>> = LazyLock::new(Queue::new);
 static ASKED: Mutex<Option<(Wanted, bool)>> = Mutex::new(None);
 
 /*
- * the track that is shown, and whether it plays. The `.lrc` beside it is read either way; the cache
- * and LRCLIB are asked only while it plays. Paused, what was found stays on screen, and a retry
- * that waits goes on waiting
+ * the track that is shown, and whether it plays. The `.lrc` beside it and the cache are read
+ * either way; LRCLIB is asked only while it plays. Paused, what was found stays on screen, and a
+ * retry that waits goes on waiting
  */
 pub fn want(wanted: &Wanted, playing: bool) {
     let mut asked = ASKED.locked();
@@ -338,7 +338,7 @@ fn is_format(letter: char) -> bool {
     matches!(letter,
         '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}'
         | '\u{890}'..='\u{891}' | '\u{8e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
-        | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}'
+        | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}'
         | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{110bd}' | '\u{110cd}'
         | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}'
         | '\u{e0001}' | '\u{e0020}'..='\u{e007f}')
@@ -347,7 +347,7 @@ fn is_format(letter: char) -> bool {
 /*
  * the text of a line without its word-by-word stamps, like `<00:12.30>`, without control or format
  * characters, which a server's answer could otherwise use to reorder or hide it, and cut to a sane
- * length
+ * length. `\t` is kept if lines use it
  */
 fn words(text: &str) -> String {
     let mut plain = String::new();
@@ -369,9 +369,10 @@ fn words(text: &str) -> String {
     plain.push_str(rest);
 
     plain
-        .trim()
+        .trim_end()
+        .trim_start_matches(|letter: char| letter.is_whitespace() && letter != '\t')
         .chars()
-        .filter(|letter| !letter.is_control() && !is_format(*letter))
+        .filter(|letter| (*letter == '\t' || !letter.is_control()) && !is_format(*letter))
         .take(LINE_CHARS)
         .collect()
 }
@@ -710,7 +711,7 @@ impl Worker {
     }
 
     // whether a track's lyrics are still to look up: the `.lrc` beside it whenever one is shown,
-    // the cache and LRCLIB once it plays
+    // the cache whenever one is shown, and LRCLIB once it plays
     fn due(&self) -> bool {
         !self.resolved && self.retry.is_none() && self.current.is_some()
     }
@@ -730,12 +731,36 @@ impl Worker {
             return;
         }
 
-        // the cache and LRCLIB wait for it to play, and it is looked up then, as it is still to be
+        if wanted.mode != LyricsSource::Lrclib || !wanted.askable() {
+            self.show(wanted.key, Vec::new(), "none found");
+            return;
+        }
+
+        let name = wanted.cache_name();
+
+        // the cache answers a paused track too: nothing leaves this machine
+        match self.cache.as_ref().and_then(|cache| cache.read(&name)) {
+            Some(Cached::Found(text)) => {
+                let lines = parse(&text);
+
+                if !lines.is_empty() {
+                    self.show(wanted.key, lines, "found in the cache");
+                    return;
+                }
+            }
+            Some(Cached::Missing) => {
+                self.show(wanted.key, Vec::new(), "none found, remembered");
+                return;
+            }
+            None => {}
+        }
+
+        // LRCLIB waits for it to play, and it is looked up then, as it is still to be
         if !self.playing {
             return;
         }
 
-        let (found, outcome) = match self.look_up(&wanted) {
+        let (found, outcome) = match self.ask_lrclib(&wanted, &name) {
             Ok(found) => found,
             Err((wait, outcome)) => {
                 let now = Instant::now();
@@ -796,23 +821,12 @@ impl Worker {
         media::lyrics_ready();
     }
 
-    // the cache's answer or LRCLIB's, or how long to wait before asking LRCLIB again and why
-    fn look_up(
+    // requests LRCLIB for the track and writes the answer to the cache, or how long to wait
+    fn ask_lrclib(
         &mut self,
         wanted: &Wanted,
+        name: &str,
     ) -> Result<(Vec<Line>, &'static str), (Duration, &'static str)> {
-        if wanted.mode != LyricsSource::Lrclib || !wanted.askable() {
-            return Ok((Vec::new(), "none found"));
-        }
-
-        let name = wanted.cache_name();
-
-        match self.cache.as_ref().and_then(|cache| cache.read(&name)) {
-            Some(Cached::Found(text)) => return Ok((parse(&text), "found in the cache")),
-            Some(Cached::Missing) => return Ok((Vec::new(), "none found, remembered")),
-            None => {}
-        }
-
         // the files and the cache above answer through a rate limit; only a request waits for it
         if let Some(wait) = self
             .cooldown
@@ -836,7 +850,7 @@ impl Worker {
         };
 
         if let (Some(cache), Some(cached)) = (&self.cache, &cached) {
-            cache.write(&name, cached);
+            cache.write(name, cached);
         }
 
         match answer {
@@ -929,12 +943,14 @@ mod tests {
         );
     }
 
-    // a line is drawn as it reads: no control or bidi character reorders or hides it
+    // a line is drawn as it reads: no control or bidi character reorders or hides it, and \t is kept
     #[test]
     fn a_line_keeps_no_control_or_format_character() {
         let line = &parse("[00:01.00]a\u{202e}b\u{1b}[31m c\u{200b}d\n")[0].text;
-
         assert_eq!(line, "ab[31m cd");
+
+        let with_tab = &parse("[00:01.00]\ta\u{2028}b\t\u{2066}c\u{07}d\u{2069}\n")[0].text;
+        assert_eq!(with_tab, "\tab\tcd");
     }
 
     #[test]
@@ -1272,6 +1288,93 @@ mod tests {
         held.retry = None;
         held.resolve();
         assert!(held.resolved);
+
+        drop(fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn lrclib_answers_strip_bidi_and_control_characters() {
+        let (url, _asked) = serve(vec![answer(
+            "200 OK",
+            "",
+            r#"{"syncedLyrics":"[00:01.00]hello\u202e\u0007\tworld\u2069"}"#,
+        )]);
+
+        let dir = scratch("lrclib-bidi");
+        let mut worker = Worker::new(agent(false), &url, Some(dir.join("cache")));
+        let track = wanted(LyricsSource::Lrclib, "");
+
+        worker.apply(Message::Show(Box::new(track.clone()), true));
+        worker.resolve();
+        assert!(worker.resolved);
+        assert_eq!(
+            line(&track, Duration::from_secs(2)).text.as_deref(),
+            Some("hello\tworld")
+        );
+
+        drop(fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn a_paused_track_finds_local_beside_and_cached_lyrics() {
+        let dir = scratch("paused");
+        let (url, _asked) = serve(vec![answer(
+            "200 OK",
+            "",
+            r#"{"syncedLyrics":"[00:02.00]cached"}"#,
+        )]);
+
+        // a paused track with a .lrc file beside it is read
+        let beside_file = dir.join("track.lrc");
+        fs::write(&beside_file, "[00:01.00]beside\n").unwrap();
+        let beside_url = format!("file://{}", dir.join("track.flac").display());
+        let beside_track = wanted(LyricsSource::Local, &beside_url);
+
+        let mut worker = Worker::new(agent(false), &url, Some(dir.join("cache")));
+        worker.apply(Message::Show(Box::new(beside_track.clone()), false));
+        assert!(worker.due());
+        worker.resolve();
+        assert!(worker.resolved);
+        assert_eq!(
+            line(&beside_track, Duration::from_secs(2)).text.as_deref(),
+            Some("beside")
+        );
+
+        // a paused track with lyrics in the cache is read without asking network
+        let cached_track = wanted(LyricsSource::Lrclib, "https://example.com/stream");
+        let cache = Cache {
+            dir: dir.join("cache"),
+        };
+        cache.write(
+            &cached_track.cache_name(),
+            &Cached::Found(String::from("[00:03.00]from-cache")),
+        );
+
+        let mut paused_worker =
+            Worker::new(agent(false), "http://127.0.0.1:9/", Some(dir.join("cache")));
+        paused_worker.apply(Message::Show(Box::new(cached_track.clone()), false));
+        assert!(paused_worker.due());
+        paused_worker.resolve();
+        assert!(paused_worker.resolved);
+        assert_eq!(
+            line(&cached_track, Duration::from_secs(4)).text.as_deref(),
+            Some("from-cache")
+        );
+
+        // a paused track not in cache does not fetch over the network
+        let net_track = Wanted::new(
+            LyricsSource::Lrclib,
+            "https://example.com/other",
+            "Uncached",
+            "Artist",
+            "Album",
+            Duration::from_secs(180),
+        );
+        paused_worker.apply(Message::Show(Box::new(net_track.clone()), false));
+        assert!(paused_worker.due());
+        paused_worker.resolve();
+        assert!(!paused_worker.resolved);
+        assert_eq!(line(&net_track, Duration::from_secs(1)).text, None);
 
         drop(fs::remove_dir_all(&dir));
     }
