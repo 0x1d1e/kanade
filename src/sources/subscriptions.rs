@@ -197,9 +197,10 @@ enum Message {
     // the config was read again
     Reread,
 
-    // a fetch finished for the entry at `index` with `generation`; the result is applied only if
-    // the entry's generation still matches, so a late answer from a superseded fetch is dropped
-    Fetched(usize, u64, Result<Fetched, Problem>),
+    // a fetch finished for the entry with `id` and `generation`; the result is applied only if
+    // the entry is still present and its generation matches, so a late answer from a superseded
+    // fetch is dropped
+    Fetched(u64, u64, Result<Fetched, Problem>),
 }
 
 // the fetch thread's queue, which outlives a restart of it
@@ -365,6 +366,9 @@ fn fetch(agent: &Agent, url: &str, known: Option<&Validators>) -> Result<Fetched
 }
 
 struct Entry {
+    // unique id across this worker, stable across config rereads
+    id: u64,
+
     // never printed
     url: String,
     name: String,
@@ -387,6 +391,7 @@ struct Worker {
     dir: Option<PathBuf>,
     interval: Duration,
     entries: Vec<Entry>,
+    next_id: u64,
 
     // how many fetches are in flight, capped at IN_FLIGHT
     in_flight: usize,
@@ -402,6 +407,7 @@ impl Worker {
             dir,
             interval: Duration::from_secs(u64::from(config::get().subscription_interval) * 60),
             entries: Vec::new(),
+            next_id: 1,
             in_flight: 0,
             stale: true,
         }
@@ -440,7 +446,7 @@ impl Worker {
     }
 
     // a feed new to this thread, with the copy a run before kept
-    fn entry(&self, url: &str, now: Instant) -> Entry {
+    fn entry(&mut self, url: &str, now: Instant) -> Entry {
         let name = file_name(url);
         let text = self
             .dir
@@ -448,7 +454,11 @@ impl Worker {
             .and_then(|dir| fs::read_to_string(dir.join(&name)).ok())
             .filter(|text| calendar_text(text));
 
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+
         Entry {
+            id,
             url: url.to_owned(),
             name,
             state: Feed {
@@ -467,7 +477,7 @@ impl Worker {
     // submits a fetch for every due entry that is not already fetching, up to IN_FLIGHT in flight;
     // each fetch runs on its own thread and wakes this worker through the queue when done
     fn submit_due(&mut self, now: Instant) {
-        for (index, entry) in self.entries.iter_mut().enumerate() {
+        for entry in &mut self.entries {
             if self.in_flight >= IN_FLIGHT {
                 break;
             }
@@ -480,29 +490,30 @@ impl Worker {
             let url = entry.url.clone();
             let agent = self.agent.clone();
             let generation = entry.generation.wrapping_add(1);
+            let id = entry.id;
             entry.generation = generation;
             entry.fetching = true;
             self.in_flight += 1;
 
             thread::spawn(move || {
                 let result = fetch(&agent, &url, known.as_ref());
-                QUEUE.send(Message::Fetched(index, generation, result));
+                QUEUE.send(Message::Fetched(id, generation, result));
             });
         }
     }
 
     // applies a finished fetch's result to its entry, dropping it if the generation no longer
     // matches (the entry was re-fetched or removed in the meantime)
-    fn apply_fetched(&mut self, index: usize, generation: u64, result: Result<Fetched, Problem>) {
+    fn apply_fetched(&mut self, id: u64, generation: u64, result: Result<Fetched, Problem>) {
+        self.in_flight = self.in_flight.saturating_sub(1);
         let now = Instant::now();
-        let Some(entry) = self.entries.get_mut(index) else {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
             return;
         };
         if entry.generation != generation {
             return;
         }
         entry.fetching = false;
-        self.in_flight = self.in_flight.saturating_sub(1);
 
         match result {
             Ok(fetched) => {
@@ -526,6 +537,11 @@ impl Worker {
                 entry.state.problem = Some(problem);
             }
         }
+
+        if self.stale {
+            self.mirror();
+        }
+        self.publish();
     }
 
     // writes what changed, and deletes the files of feeds gone
@@ -602,11 +618,10 @@ impl Worker {
             // own thread and wakes this worker through the queue when done
             self.submit_due(Instant::now());
 
-            // nothing in flight: mirror any changes and publish the feeds' state
-            if self.in_flight == 0 && self.stale {
+            if self.stale {
                 self.mirror();
-                self.publish();
             }
+            self.publish();
 
             // how long until the next feed that is not already being fetched is due
             let wait = self
@@ -639,10 +654,11 @@ impl Worker {
                 }
                 Some(Message::Reread) => {
                     self.reread(Instant::now());
+                    self.mirror();
                     self.publish();
                 }
-                Some(Message::Fetched(index, generation, result)) => {
-                    self.apply_fetched(index, generation, result);
+                Some(Message::Fetched(id, generation, result)) => {
+                    self.apply_fetched(id, generation, result);
                 }
                 None => {}
             }
@@ -856,12 +872,13 @@ mod tests {
         let file = dir.join(&entry.name);
         let known = entry.text.is_some().then(|| entry.validators.clone());
         let generation = entry.generation.wrapping_add(1);
+        let id = entry.id;
         entry.generation = generation;
         entry.fetching = true;
         worker.in_flight = 1;
         let result = fetch(&agent(false), &entry.url, known.as_ref());
         worker.entries.push(entry);
-        worker.apply_fetched(0, generation, result);
+        worker.apply_fetched(id, generation, result);
         worker.mirror();
         assert_eq!(fs::read_to_string(&file).ok().as_deref(), Some(FEED));
         assert_eq!(worker.entries[0].state.problem, None);
@@ -872,11 +889,12 @@ mod tests {
             .is_some()
             .then(|| worker.entries[0].validators.clone());
         let generation = worker.entries[0].generation.wrapping_add(1);
+        let id = worker.entries[0].id;
         worker.entries[0].generation = generation;
         worker.entries[0].fetching = true;
         worker.in_flight = 1;
         let result = fetch(&agent(false), &worker.entries[0].url, known.as_ref());
-        worker.apply_fetched(0, generation, result);
+        worker.apply_fetched(id, generation, result);
         worker.mirror();
         assert_eq!(worker.entries[0].state.problem, Some(Problem::Status(503)));
         assert!(worker.entries[0].state.kept);
@@ -887,6 +905,63 @@ mod tests {
         assert_eq!(again.text.as_deref(), Some(FEED));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_fetch_results_preserve_feed_order_and_survive_feed_removal() {
+        let now = Instant::now();
+        let mut worker = Worker::new(agent(false), None);
+        let mut entry1 = worker.entry("https://a.example.org/feed.ics", now);
+        let mut entry2 = worker.entry("https://b.example.org/feed.ics", now);
+
+        let id1 = entry1.id;
+        let gen1 = entry1.generation.wrapping_add(1);
+        entry1.generation = gen1;
+        entry1.fetching = true;
+
+        let id2 = entry2.id;
+        let gen2 = entry2.generation.wrapping_add(1);
+        entry2.generation = gen2;
+        entry2.fetching = true;
+
+        worker.in_flight = 2;
+        worker.entries.push(entry1);
+        worker.entries.push(entry2);
+
+        // Feed 2 finishes first (out of order) with an error
+        worker.apply_fetched(id2, gen2, Err(Problem::Offline));
+        assert_eq!(worker.in_flight, 1);
+        assert_eq!(worker.entries[0].state.problem, None);
+        assert_eq!(worker.entries[1].state.problem, Some(Problem::Offline));
+
+        // Feed 1 finishes second with success
+        worker.apply_fetched(
+            id1,
+            gen1,
+            Ok(Fetched::New(FEED.to_owned(), Validators::default())),
+        );
+        assert_eq!(worker.in_flight, 0);
+        assert_eq!(worker.entries[0].state.problem, None);
+        assert!(worker.entries[0].state.synced.is_some());
+        assert_eq!(worker.entries[1].state.problem, Some(Problem::Offline));
+
+        // Feeds in Subscriptions service match config order, not completion order
+        let published = Subscriptions::read().feeds.clone();
+        assert_eq!(published.len(), 2);
+        assert_eq!(published[0].problem, None);
+        assert_eq!(published[1].problem, Some(Problem::Offline));
+
+        // In-flight fetch for an entry removed from config decrements in_flight without leaking
+        let mut entry3 = worker.entry("https://c.example.org/feed.ics", now);
+        let id3 = entry3.id;
+        let gen3 = entry3.generation.wrapping_add(1);
+        entry3.generation = gen3;
+        entry3.fetching = true;
+        worker.in_flight = 1;
+        // Entry 3 is dropped (as happens during config reread when a feed is removed)
+        drop(entry3);
+        worker.apply_fetched(id3, gen3, Err(Problem::Offline));
+        assert_eq!(worker.in_flight, 0);
     }
 
     #[test]
