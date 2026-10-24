@@ -1,4 +1,4 @@
-//! Wallpaper (docs/design.md Wallpaper): Kanade selects, awww renders. `kanade wallpaper set
+//! Wallpaper (docs/archived/design.md Wallpaper): Kanade selects, awww renders. `kanade wallpaper set
 //! <path>` and the Wallpapers Surface both ask `set`, which hands the image to `awww img`.
 //!
 //! awww draws through its daemon, which Kanade runs as a holder (ADR 0011) while the Module is on,

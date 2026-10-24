@@ -1,4 +1,4 @@
-//! The Weather Surface (ADR 0017, docs/design.md Weather): the weather now on the left and
+//! The Weather Surface (ADR 0017, docs/archived/design.md Weather): the weather now on the left and
 //! the days ahead on the right, from `sources::weather`. It opens only from IPC or a keybind and
 //! has no targets, so Escape or a typed character collapses it; without a location, Enter or the
 //! pill opens Settings. A forecast that is not the latest,

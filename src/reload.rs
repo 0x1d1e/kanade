@@ -1,4 +1,4 @@
-//! Config hot reload (docs/design.md Hot reload): a change to a layer's file, or
+//! Config hot reload (docs/archived/design.md Hot reload): a change to a layer's file, or
 //! `kanade config reload`, reads every layer again. A config without a problem applies
 //! whole, at once; one with any problem changes nothing, so a half-typed edit never reverts a key
 //! to its default, and the problems go to stderr and the last reload error. A key that only

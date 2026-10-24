@@ -1,4 +1,4 @@
-//! The settings file's writes (docs/design.md Config): a few keys changed at once, over the file as
+//! The settings file's writes (docs/archived/design.md Config): a few keys changed at once, over the file as
 //! it stands, so what the window does not show, like an output's keys, stays. A value the layers
 //! below already give removes the key instead, so the file holds only real overrides. The file is
 //! written whole to a temporary file beside it and renamed over it, so a reader never sees half of

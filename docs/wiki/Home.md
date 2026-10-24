@@ -15,4 +15,4 @@ Kanade is a desktop shell for [niri](https://github.com/niri-wm/niri), centered 
 | [Keyboard](Keyboard.md) | niri keybinds, idle locking, keys inside each Surface |
 | [Limitations](Limitations.md) | known gaps and what runs worse without an optional tool |
 
-For the target design and the decisions behind it, see [design](../design.md) and the [ADRs](../adr/). The names used here, such as Island, Surface and Activity, are defined in [CONTEXT.md](../../CONTEXT.md).
+For the decisions behind it, see the [ADRs](../adr/), and the archived target design at [design](../archived/design.md). The names used here, such as Island, Surface and Activity, are defined in [CONTEXT.md](../../CONTEXT.md).

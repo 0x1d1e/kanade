@@ -1,4 +1,4 @@
-//! Lock before sleep (docs/design.md Idle/suspend): logind says `PrepareForSleep(true)` as the
+//! Lock before sleep (docs/archived/design.md Idle/suspend): logind says `PrepareForSleep(true)` as the
 //! machine is about to suspend or hibernate, and waits on delay inhibitors, up to its
 //! `InhibitDelayMaxUSec`, before it sleeps. While awake Kanade holds one, asks for a lock as sleep
 //! comes, and lets go once a lock screen confirms it (`lock::hold`), so the session wakes locked

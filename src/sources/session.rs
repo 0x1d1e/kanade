@@ -1,4 +1,4 @@
-//! The session (docs/design.md Session): the Session Surface and `kanade session` lock,
+//! The session (docs/archived/design.md Session): the Session Surface and `kanade session` lock,
 //! sleep, restart, power off and log out. A lock is the lock Module's, and sleep is asked of logind
 //! at once. A restart, power off or log out ends what is open, so it counts down `COUNTDOWN` first,
 //! as a Critical Session Activity on every island with Cancel and Now; another asked meanwhile

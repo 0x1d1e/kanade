@@ -1,4 +1,4 @@
-//! Screen recording (docs/design.md Capture, ADR 0013, ADR 0116, ADR 0117): `kanade capture record
+//! Screen recording (docs/archived/design.md Capture, ADR 0013, ADR 0116, ADR 0117): `kanade capture record
 //! start` records the focused output or an area with wf-recorder, or a window with niri's screen
 //! cast (`window`), encoded on the GPU through VA-API or NVENC, else on the CPU, with no sound, the speakers' or the
 //! microphone's, to `~/Videos/Screencasts`; `pause` and `resume` end

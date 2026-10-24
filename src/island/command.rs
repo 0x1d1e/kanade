@@ -1,4 +1,4 @@
-//! What `kanade <verb>` asks of the island (docs/design.md CLI). Pure: words in, Command out;
+//! What `kanade <verb>` asks of the island (docs/archived/design.md CLI). Pure: words in, Command out;
 //! `crate::cli` says which words reach which of these.
 
 use std::time::Duration;

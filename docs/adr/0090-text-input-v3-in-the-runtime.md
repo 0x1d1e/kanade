@@ -1,6 +1,6 @@
 # 90. Input methods through text-input-v3, in the runtime
 
-Status: accepted. Fills a gap left by [ADR 0028](0028-the-runtime-is-ported-from-amane.md) (the runtime owns input); keys and compose stay as [ADR 0034](0034-key-repeat-and-toplevels-in-the-runtime.md) has them.
+Status: accepted. Fills a gap left by [ADR 0028](0028-the-runtime-is-ported-from-amane.md) (the runtime owns input); keys and compose stay as [ADR 0034](0034-input-and-toplevels-in-the-runtime.md) has them.
 
 ## Context
 

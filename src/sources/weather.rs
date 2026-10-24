@@ -1,4 +1,4 @@
-//! Weather (ADR 0017, docs/design.md Weather): the current conditions and a short forecast
+//! Weather (ADR 0017, docs/archived/design.md Weather): the current conditions and a short forecast
 //! for `weather.location`, from Open-Meteo, which needs no account or key. Only the location's
 //! coordinates leave the machine, and only while the Module is on and a location is set: with
 //! none, the thread waits on its queue and nothing is asked or timed.

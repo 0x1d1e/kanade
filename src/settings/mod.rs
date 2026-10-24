@@ -1,4 +1,4 @@
-//! The Settings window (docs/design.md Settings): a normal window over the schema
+//! The Settings window (docs/archived/design.md Settings): a normal window over the schema
 //! registry, its pages by task (`layout`, ADR 0029), each setting drawn by its Kind. A change
 //! writes the settings file (`file`), the top layer, which the reload watch then applies like any
 //! other edit: a live-safe key at once, one that takes a restart as pending. It never writes the

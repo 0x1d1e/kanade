@@ -1,4 +1,4 @@
-//! `kanade doctor` (docs/design.md CLI): read-only diagnostics of what Kanade runs on, a line
+//! `kanade doctor` (docs/archived/design.md CLI): read-only diagnostics of what Kanade runs on, a line
 //! each: versions, the shell, niri, the Wayland protocols, the buses and PipeWire, the config, the
 //! Modules it turns on and what each needs outside Kanade. Runs without a shell, which may be what
 //! is wrong, so it reads everything itself. A failure means Kanade, or a Module that is on, cannot work; a
@@ -28,7 +28,7 @@ use crate::sources::{
     binds, bus, cava, clipboard, keys, niri, pipewire, radios, recording, sound, wake, wallpaper,
 };
 
-// the oldest niri Kanade follows (docs/design.md Constraints)
+// the oldest niri Kanade follows (docs/archived/design.md Constraints)
 const NIRI: (u32, u32) = (26, 4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

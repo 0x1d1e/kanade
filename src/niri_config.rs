@@ -1,4 +1,4 @@
-//! The niri config editor's engine and CLI (ADR 0119, docs/design.md Config): `kanade niri-config`
+//! The niri config editor's engine and CLI (ADR 0119, docs/archived/design.md Config): `kanade niri-config`
 //! reads, sets and removes single settings in niri's `config.kdl`, undoes the last change and
 //! restores a backup. The file is the user's: it is changed only on request, by splicing text into
 //! its own bytes (`edit`), never rewritten from a tree, and only after `niri validate` accepted

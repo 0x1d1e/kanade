@@ -1,4 +1,4 @@
-//! The config (docs/design.md Config): TOML, read at start in layers, each over the
+//! The config (docs/archived/design.md Config): TOML, read at start in layers, each over the
 //! ones before it: the defaults, then every `*.toml` in `$XDG_CONFIG_HOME/kanade/` (else
 //! `~/.config/kanade/`) in alphabetical order, then `$XDG_STATE_HOME/kanade/settings.toml` (else
 //! `~/.local/state/kanade/settings.toml`), the layer the Settings window owns (`crate::settings`),

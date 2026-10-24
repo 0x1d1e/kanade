@@ -1,4 +1,4 @@
-//! Google Calendar sync (ADR 0016, docs/design.md Calendar): an optional account whose
+//! Google Calendar sync (ADR 0016, docs/archived/design.md Calendar): an optional account whose
 //! calendars the `calendar` Module shows beside the local ones. `kanade google-calendar sign-in
 //! <client.json>` signs in through the browser with the user's own OAuth client (`oauth`); the
 //! client and the refresh token go to the Secret Service (`secret`), never to the config or a log.

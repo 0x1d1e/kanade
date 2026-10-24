@@ -1,4 +1,4 @@
-//! Running windows and apps (docs/design.md Modules, ADR 0014): niri's windows, grouped by
+//! Running windows and apps (docs/archived/design.md Modules, ADR 0014): niri's windows, grouped by
 //! the app each belongs to, for the Dock. niri.rs reads them off its stream and hands them here as
 //! `Heard`, which it defines; this keeps them, matches each `app_id` to a `.desktop` entry and
 //! publishes the result as the `Windows` Service, which holds nothing of niri's but its window ids.

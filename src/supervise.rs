@@ -1,4 +1,4 @@
-//! Restarting a source thread that panicked (docs/design.md Constraints + SLOs). The runtime does
+//! Restarting a source thread that panicked (docs/archived/design.md Constraints + SLOs). The runtime does
 //! this for a Service's `listen()`; Kanade's own source threads come back the same way, so one bad
 //! reading costs a pause rather than the source for good. What a source has posted lives outside
 //! what restarts, so a restart neither posts it again nor forgets to withdraw it. A source's thread

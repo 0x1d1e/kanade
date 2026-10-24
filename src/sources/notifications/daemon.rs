@@ -21,7 +21,7 @@ pub struct Notifications {
     running: bool,
 }
 
-// the history's bounds (docs/design.md): this many of one app, and this many in all
+// the history's bounds (docs/archived/design.md): this many of one app, and this many in all
 const PER_APP: usize = 20;
 const TOTAL: usize = 100;
 

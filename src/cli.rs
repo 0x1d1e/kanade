@@ -1,4 +1,4 @@
-//! The public CLI (docs/design.md CLI): `kanade` runs the shell, `kanade <verb> [args]` asks
+//! The public CLI (docs/archived/design.md CLI): `kanade` runs the shell, `kanade <verb> [args]` asks
 //! the running one over the runtime's IPC. Each Module names the verbs it owns (`Module::verbs`), so the
 //! usage and the parse follow from the Modules, and the shell refuses the verbs of a Module that is
 //! off. Both sides parse the same words: this process to answer a typo without a shell, the shell to

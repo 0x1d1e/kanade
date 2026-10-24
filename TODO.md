@@ -65,7 +65,7 @@ Not worth changing, by this review:
 - [x] Input and invalidation (ADR 0034, 0035; a copy redraws only its pane's readers)
 - [x] The Island's scene (ADR 0036)
 - [x] GPU glass (ADR 0037; removed by ADR 0049)
-- [x] The layers in `docs/design.md`
+- [x] The layers in `docs/archived/design.md`
 - [x] `view.rs`, `modules.rs`, `lock.rs` and `glass.rs` (now `pane/`) split by responsibility, `view::island` into its layers
 - [x] Scene: the largest body is per output (#212)
 - [ ] Invalidation: `service.rs` and `changes.rs` still use process-global state.
