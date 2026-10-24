@@ -110,7 +110,7 @@ Not worth changing, by this review:
 
 - [x] The strip's agenda width (`view::resize`, `rest::Agenda`) arms the minute timer when Calendar is on and any connected output shows the agenda, even if no window draws the time; an ended event stops taking room on the next minute.
   - Not run: hidden-clock agenda expiry in the live session.
-- [ ] The Tray Surface shrinks to its list as a menu goes back to it, under the pointer; Clipboard does the same on a query.
+- [x] The Tray Surface shrinks to its list as a menu goes back to it, under the pointer; Clipboard does the same on a query.
 
 ## Privacy dots (ADR 0033)
 

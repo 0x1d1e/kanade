@@ -1252,7 +1252,7 @@ impl IslandService {
             nudge();
         }
 
-        // what an ask held off while the pointer was on the body
+        // in case sizes changed while the pointer was on the body
         if !inside {
             self.retarget(now);
         }
@@ -1413,8 +1413,9 @@ fn follow(
 
 /*
  * a body headed for a size no longer asked for heads for the new one from where it stands, its
- * content as it shows: re-aiming starts a new leg, which must not fade the content again. It never
- * shrinks from under the pointer, which would leave the body and collapse it, only once it left
+ * content as it shows: re-aiming starts a new leg, which must not fade the content again. It
+ * shrinks under the pointer while holding the previous bounds in `under` so a still pointer is
+ * never left outside the input region
  */
 fn reaim(
     island: &mut Island,
@@ -1422,20 +1423,18 @@ fn reaim(
     duration: Duration,
     now: Instant,
 ) {
-    let mut target: [f32; 3] = sizes
+    let target: [f32; 3] = sizes
         .target(island.content.target().presentation, visit, holds)
         .into();
 
     if let Some(spring) = &mut island.shape
-        && island.inside
-    {
-        let stands = spring.target();
-        target = std::array::from_fn(|index| target[index].max(stands[index]));
-    }
-
-    if let Some(spring) = &mut island.shape
         && spring.target() != target
     {
+        let stands = spring.target();
+        if island.inside && (target[0] < stands[0] || target[1] < stands[1]) {
+            island.under.get_or_insert_with(|| Shape::from(stands));
+        }
+
         island.content.rebase(spring.progress(now));
         spring.to(target, duration, now);
     }
@@ -1605,15 +1604,23 @@ mod tests {
         }
     }
 
-    // a body never shrinks from under the pointer, which would leave it and collapse the Surface
+    // a body shrinks under the pointer, holding the previous bounds in under until the pointer moves inside
     #[test]
-    fn a_body_shrinks_only_once_the_pointer_left() {
+    fn a_body_shrinks_under_the_pointer_and_holds_the_input_region() {
         let now = Instant::now();
         let second = Duration::from_secs(2);
         let mut island = IslandService::new();
+        let largest = geometry::largest(520.0, 600.0);
+        island.resize(
+            (largest, TimePeek::ALL),
+            HashMap::new(),
+            Hang::default(),
+            now,
+        );
         island.open(MONITOR, Surface::Launcher, now);
         island.fit(Surface::Launcher, 600.0, None, now);
-        let fresh = island.shape(MONITOR, now + second).height;
+        let fresh = island.shape(MONITOR, now + second);
+        assert_eq!(fresh.height, 600.0);
 
         island.hover(MONITOR, true, true, now + second);
         island.fit(
@@ -1622,24 +1629,25 @@ mod tests {
             Some((island.visit(), 150.0)),
             now + second,
         );
-        assert_eq!(island.shape(MONITOR, now + 2 * second).height, fresh);
+        assert_eq!(island.shape(MONITOR, now + 2 * second).height, 150.0);
+        assert_eq!(island.under(MONITOR), Some(fresh));
 
-        island.fit(
-            Surface::Launcher,
-            600.0,
-            Some((island.visit(), 900.0)),
-            now + 2 * second,
+        let canvas = Canvas::around(largest, Hang::default());
+        let body = geometry::input_area(
+            geometry::body(
+                island.shape(MONITOR, now + 2 * second),
+                Hang::default(),
+                canvas,
+            ),
+            canvas,
         );
-        island.fit(
-            Surface::Launcher,
-            600.0,
-            Some((island.visit(), 150.0)),
-            now + 2 * second,
+        island.moved(
+            MONITOR,
+            body.x + body.width / 2.0,
+            body.y + body.height / 2.0,
+            canvas,
         );
-        assert_eq!(island.shape(MONITOR, now + 3 * second).height, fresh);
-
-        island.hover(MONITOR, false, true, now + 3 * second);
-        assert!(island.shape(MONITOR, now + 4 * second).height < fresh);
+        assert_eq!(island.under(MONITOR), None);
     }
 
     // a small output shrinks only its own body
